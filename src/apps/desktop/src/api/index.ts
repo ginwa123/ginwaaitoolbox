@@ -177,6 +177,36 @@ export async function reorderWorkspaces(
   return response.json()
 }
 
+/**
+ * Persist a new top-to-bottom display order for the items of a single
+ * workspace. POST /api/workspaces/:workspace_id/items/reorder with
+ * body `{ordered_ids: [...]}`. The server reverses the array when
+ * assigning position values (top of list = highest position). On any
+ * non-2xx response, throws `new Error("HTTP <status>")` so the caller
+ * can roll back its optimistic update.
+ *
+ * Mirrors `reorderWorkspaces` but scoped to a single workspace's
+ * items. The list shape is the *full* ordered set for that
+ * workspace, not a delta.
+ *
+ * Plan: docs/superpowers/plans/2026-06-16-workspace-item-position-reorder.md
+ */
+export async function reorderWorkspaceItems(
+  workspaceId: string,
+  orderedIds: string[],
+): Promise<{ success: boolean; count: number }> {
+  const response = await fetch(
+    `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/items/reorder`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ordered_ids: orderedIds }),
+    },
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
 // Task API
 /**
  * Fetch tasks for a workspace item, with optional cursor pagination.
