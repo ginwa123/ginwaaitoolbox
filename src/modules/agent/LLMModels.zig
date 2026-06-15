@@ -15,7 +15,7 @@ pub const MINIMAX_2_7 = LLMModels{
 pub const MINIMAX_3 = LLMModels{
     .name = "MiniMax-M3",
     .description = "Minimax-M3 is a large language model trained by Anthropic. It is a variant of the MiniMax model, which is a transformer-based language model. It is trained on a diverse range of text sources, including books, articles, and websites.",
-    .token_count = 1000000,
+    .token_count = 500000,
 };
 
 /// Get model token count by model name string
