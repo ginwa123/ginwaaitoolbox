@@ -2174,13 +2174,18 @@ pub fn deleteWorkspaceItem(
     try db.exec(allocator, sql, &.{id});
 }
 
-/// List all workspace items by workspace_id
+/// List all workspace items by workspace_id.
+///
+/// Sorted by `position DESC, id ASC`. The `position` column is the
+/// drag-and-drop sort key (added by Migration 045). The `id ASC`
+/// tiebreaker makes the order deterministic when two items share a
+/// position (shouldn't happen post-reorder, but defense-in-depth).
 pub fn listWorkspaceItems(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     workspace_id: []const u8,
 ) ![]WorkspaceItemInfo {
-    const sql = "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items WHERE workspace_id = ? ORDER BY created_at DESC";
+    const sql = "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items WHERE workspace_id = ? ORDER BY position DESC, id ASC";
 
     var rows = try db.query(allocator, sql, &.{workspace_id});
     defer rows.deinit();
@@ -2208,12 +2213,16 @@ pub fn listWorkspaceItems(
     return try items.toOwnedSlice(allocator);
 }
 
-/// List ALL workspace items (for N+1 fix)
+/// List ALL workspace items (for N+1 fix). Same sort as the
+/// per-workspace list: `position DESC, id ASC`. New items get
+/// position = MAX(position) + 1 (scoped by workspace_id) at insert
+/// time, so the per-workspace "newest at top" visual order is
+/// preserved here too.
 pub fn listAllWorkspaceItems(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
 ) ![]WorkspaceItemInfo {
-    const sql = "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items ORDER BY created_at DESC";
+    const sql = "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items ORDER BY position DESC, id ASC";
 
     var rows = try db.query(allocator, sql, &.{});
     defer rows.deinit();

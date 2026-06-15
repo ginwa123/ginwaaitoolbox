@@ -14,7 +14,12 @@ const std = @import("std");
 const testing = std.testing;
 
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/workspace_items_reorder.zig";
-const LIST_PATH = "src/ai_workflow/tui/http_handlers/workspace_items_get.zig";
+// workspace_items_list's SQL is delegated to
+// `ai_mod.workspace_items.listWorkspaceItems`, which lives in
+// `llm_history.zig` (the workspace_items module is re-exported from
+// there per `mod.zig`). The test enforces the contract at the file
+// where the actual SELECT lives, not at the thin handler wrapper.
+const LIST_PATH = "src/ai_workflow/tui/llm_history.zig";
 const CREATE_PATH = "src/ai_workflow/tui/http_handlers/workspace_items_create.zig";
 const RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
 const MIGRATION_PATH = "src/ai_workflow/tui/migration.zig";

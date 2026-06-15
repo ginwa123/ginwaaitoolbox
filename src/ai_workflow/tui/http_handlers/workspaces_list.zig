@@ -91,7 +91,7 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
         try in_clause.appendSlice(alloc, ")");
 
         // Fetch all items for these workspaces
-        const items_sql = try std.fmt.allocPrint(alloc, "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items WHERE workspace_id IN {s} ORDER BY created_at DESC", .{in_clause.items});
+        const items_sql = try std.fmt.allocPrint(alloc, "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items WHERE workspace_id IN {s} ORDER BY position DESC, id ASC", .{in_clause.items});
         var items_rows = try db.query(alloc, items_sql, workspace_ids.items);
 
         // Collect items and their IDs
