@@ -192,6 +192,10 @@ const handleDelete = async () => {
     isDeleting.value = false
   }
 }
+
+// Expose `startCreate` so the parent (MemoriesSettings) can trigger
+// create mode from the "+ New Memory" button in the list header.
+defineExpose({ startCreate })
 </script>
 
 <template>

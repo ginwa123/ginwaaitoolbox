@@ -9,9 +9,22 @@ const emit = defineEmits<{
 
 const selectedMemoryName = ref<string | null>(null)
 const memoryListRef = ref<InstanceType<typeof MemoryList> | null>(null)
+const memoryDetailRef = ref<InstanceType<typeof MemoryDetail> | null>(null)
 
 const handleSelectMemory = (name: string) => {
   selectedMemoryName.value = name
+}
+
+/**
+ * Open the create-mode form in the right panel. Wired to the
+ * "+ New Memory" button in the list header so the user doesn't have
+ * to first deselect the current memory. Existing edits in
+ * edit/create mode are discarded (consistent with the rest of the
+ * app — no confirm dialog for this action).
+ */
+const handleCreateClick = () => {
+  selectedMemoryName.value = null
+  memoryDetailRef.value?.startCreate()
 }
 
 const handleMemoryDeleted = (_name: string) => {
@@ -38,10 +51,20 @@ const handleError = (message: string) => {
         class="rounded-xl p-6 flex-1 flex flex-col overflow-hidden"
         style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
       >
-        <h2
-          class="text-base font-semibold mb-4 shrink-0"
-          style="color: var(--semantic-text);"
-        >Memories</h2>
+        <div class="flex items-start justify-between gap-2 mb-4 shrink-0">
+          <h2
+            class="text-base font-semibold"
+            style="color: var(--semantic-text);"
+          >Memories</h2>
+          <button
+            @click="handleCreateClick"
+            class="px-3 py-1 text-xs rounded font-medium shrink-0"
+            style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: white;"
+            title="Create a new memory"
+          >
+            + New Memory
+          </button>
+        </div>
         <p class="text-sm mb-4 shrink-0" style="color: var(--semantic-text-muted);">
           Global markdown notes the agent can reference. Files live in <code>~/.config/nalar/memories/</code>.
         </p>
