@@ -1,4 +1,4 @@
-# Web Fetching Service
+# Nalar Browser
 
 Anti-bot bypass scraping API using CloakBrowser - a stealth Chromium browser that bypasses Cloudflare Turnstile, reCAPTCHA v3, FingerprintJS, and other anti-bot detection systems.
 
@@ -39,7 +39,7 @@ Response:
 ```json
 {
   "status": "ok",
-  "service": "web-scraping-api",
+  "service": "nalar-browser",
   "version": "1.0.0",
   "timestamp": "2025-01-20T00:00:00.000Z"
 }
@@ -189,3 +189,30 @@ curl -X POST http://localhost:3000/scrape \
 - Profiles are cleaned up after each request
 - reCAPTCHA v3 scores are per-session - rotating IPs mid-session can lower scores
 - CloakBrowser prevents CAPTCHAs from appearing, doesn't solve them
+
+## Building
+
+Requires **Bun ≥ 1.1.0** (for `bun build --compile`).
+
+```bash
+# Dev (hot reload; process name is `bun` in task managers)
+bun --watch index.ts
+
+# Production: compile a standalone `nalar_browser` binary
+bun run build:compile
+./nalar_browser
+```
+
+The compiled binary (`./nalar_browser`, ~50–100 MB) bundles the Bun runtime + this service. The OS process is named `nalar_browser` — visible as such in `top` / `htop` / `ps` / `gnome-system-monitor`. No runtime Bun required.
+
+The binary is `.gitignore`d; rebuild it after pulling source changes.
+
+## Development
+
+| Task | Command |
+|---|---|
+| Type-check + format check | `bun run check` |
+| Lint | `bun run lint` |
+| Format | `bun run format` |
+| Dev server (hot reload) | `bun run dev` |
+| Production binary | `bun run build:compile && bun run start:compiled` |
