@@ -69,6 +69,10 @@ pub const skillDeleteHandler = @import("skill_delete.zig").skillDeleteHandler;
 
 // Memories API handlers
 pub const memoriesListHandler = @import("memories_list.zig").memoriesListHandler;
+pub const memoryDetailHandler = @import("memories_detail.zig").memoryDetailHandler;
+pub const memoryCreateHandler = @import("memories_create.zig").memoryCreateHandler;
+pub const memoryUpdateHandler = @import("memories_update.zig").memoryUpdateHandler;
+pub const memoryDeleteHandler = @import("memories_delete.zig").memoryDeleteHandler;
 
 // Git API handlers
 pub const gitStatusHandler = @import("git_status.zig").gitStatusHandler;

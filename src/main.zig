@@ -277,6 +277,10 @@ pub fn main(init: std.process.Init) !void {
 
     // Memories routes
     try gs.router.get("/api/memories", ai_mod.http_handlers.memoriesListHandler);
+    try gs.router.get("/api/memories/:name", ai_mod.http_handlers.memoryDetailHandler);
+    try gs.router.post("/api/memories", ai_mod.http_handlers.memoryCreateHandler);
+    try gs.router.put("/api/memories/:name", ai_mod.http_handlers.memoryUpdateHandler);
+    try gs.router.delete("/api/memories/:name", ai_mod.http_handlers.memoryDeleteHandler);
 
     // Nalar config routes (reads/writes config.json as nalar.json mapping)
     try gs.router.get("/api/config/nalar", ai_mod.http_handlers.nalarConfigGetHandler);
