@@ -47,10 +47,33 @@ export interface FolderEntry {
 }
 
 // Task interface for project tasks
+//
+// `task_type` distinguishes standard chat tasks from cron-scheduled
+// routines (Chunk 5 of the task-routines plan). Optional so legacy
+// task literals without it keep type-checking; runtime code defaults
+// to 'standard'.
+//
+// `routine` is present iff `task_type === 'routine'`. It mirrors the
+// API response shape from getTasks / createTask.
+export interface RoutineMeta {
+  schedule: string
+  initial_prompt: string
+  enabled: boolean
+  last_run_at: string | null
+  next_run_at: string
+  last_status: 'success' | 'failed' | 'running' | null
+  last_error: string | null
+}
+
 export interface Task {
   id: string
   name: string
   description?: string
+  // NEW (Chunk 5 of task-routines plan). Optional for backwards
+  // compat with legacy task literals (tests + offline fallbacks).
+  task_type?: 'standard' | 'routine'
+  // NEW: present iff task_type === 'routine'.
+  routine?: RoutineMeta
   completed?: boolean
   createdAt?: Date
   updatedAt?: Date
@@ -421,8 +444,30 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
-  // Add a task to a workspace item
-  async function addTask(workspaceId: string, itemId: string, name: string, description?: string): Promise<string | undefined> {
+  // Add a task to a workspace item.
+  //
+  // The third arg is a single params object. For a standard task
+  // (the default), pass `{ name, description? }`. For a routine, pass
+  // `{ name, taskType: 'routine', routine: { schedule, initial_prompt, enabled? } }`.
+  //
+  // taskType defaults to 'standard' so a caller that omits it gets
+  // the legacy behavior. For routines, `routine` must include
+  // `schedule` + `initial_prompt`; `enabled` defaults to true on the
+  // backend.
+  async function addTask(
+    workspaceId: string,
+    itemId: string,
+    params: {
+      name: string
+      description?: string
+      taskType?: 'standard' | 'routine'
+      routine?: {
+        schedule: string
+        initial_prompt: string
+        enabled?: boolean
+      }
+    },
+  ): Promise<string | undefined> {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
     if (!workspace) return undefined
 
@@ -433,23 +478,108 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       item.tasks = []
     }
 
+    const taskType: 'standard' | 'routine' = params.taskType ?? 'standard'
+
     try {
-      const newTask = await api.createTask(workspaceId, itemId, name, description)
+      const newTask = await api.createTask(workspaceId, itemId, {
+        name: params.name,
+        description: params.description,
+        taskType,
+        routine: params.routine,
+      })
       item.tasks.unshift(newTask)
       return newTask.id
     } catch (err) {
       console.error('Failed to create task:', err)
-      // Fallback to local creation if API fails
+      // Fallback to local creation if API fails. Match the
+      // pre-existing fallback contract (returns a taskId, populates
+      // the item's tasks list) and now also carry task_type +
+      // routine so the offline UI still branches correctly.
       const taskId = `task-${Date.now()}`
       item.tasks.unshift({
         id: taskId,
-        name,
-        description,
+        name: params.name,
+        description: params.description,
+        task_type: taskType,
+        routine: params.routine
+          ? {
+              schedule: params.routine.schedule,
+              initial_prompt: params.routine.initial_prompt,
+              enabled: params.routine.enabled ?? true,
+              last_run_at: null,
+              next_run_at: '',
+              last_status: null,
+              last_error: null,
+            }
+          : undefined,
         completed: false,
         createdAt: new Date(),
         updatedAt: new Date(),
       })
       return taskId
+    }
+  }
+
+  // Manually fire a routine. Returns the backend's
+  // `{ session_id }` on success, or `undefined` on failure (the
+  // caller's responsibility to navigate / show an error).
+  //
+  // We deliberately do NOT navigate here — that's a UI concern
+  // owned by Sidebar.vue. The store action is pure: it calls
+  // the API and returns the result. This matches the `addTask`
+  // pattern (store action returns a taskId; the component decides
+  // what to do with it).
+  async function runRoutine(
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+  ): Promise<{ session_id: string } | undefined> {
+    try {
+      return await api.runRoutine(workspaceId, itemId, taskId)
+    } catch (err) {
+      console.error('Failed to run routine:', err)
+      return undefined
+    }
+  }
+
+  // PATCH-equivalent for routine tasks. The backend's
+  // updateTaskSimple accepts name + routine fields, so this is
+  // a thin wrapper that calls the API and updates the local
+  // task's name (optimistic) on success. Schedule + initial_prompt
+  // + enabled live on the routine row; their updates surface via
+  // the routines table's next refresh (or the SSE event the
+  // backend emits on update — see Chunk 4 for the broadcast).
+  async function updateRoutine(
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+    fields: {
+      name?: string
+      description?: string
+      schedule?: string
+      initial_prompt?: string
+      enabled?: boolean
+    },
+  ): Promise<{ success: boolean }> {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return { success: false }
+    const item = workspace.items.find((i) => i.id === itemId)
+    if (!item || !item.tasks) return { success: false }
+    const task = item.tasks.find((t) => t.id === taskId)
+    if (!task) return { success: false }
+
+    const previousName = task.name
+    if (fields.name !== undefined && fields.name.trim() !== task.name) {
+      task.name = fields.name.trim()
+    }
+
+    try {
+      return await api.updateTaskSimple(taskId, fields)
+    } catch (err) {
+      console.error('Failed to update routine:', err)
+      // Rollback the optimistic name change on error.
+      task.name = previousName
+      return { success: false }
     }
   }
 
@@ -937,6 +1067,8 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     deleteTask,
     loadMoreTasks,
     renameTask,
+    runRoutine,
+    updateRoutine,
     initializeFromSystemFolder,
     subscribeToSessionEvents,
     fetchSystemFolder,

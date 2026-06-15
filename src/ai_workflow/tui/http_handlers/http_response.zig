@@ -35,12 +35,36 @@ pub const TaskCreateResponse = struct { id: []const u8, name: []const u8, descri
 // Request types
 pub const TaskCreateRequest = struct {
     name: []const u8,
+    /// Free-form text the frontend attaches to every task (the
+    /// `AddTaskDialog` and `AddRoutineDialog` both emit it).
+    /// `workspace_item_tasks` has no `description` column, so the
+    /// value is parsed and accepted but not persisted — the
+    /// frontend holds the authoritative copy.
+    description: ?[]const u8 = null,
     session_id: ?[]const u8 = null,
+    /// Task type. Defaults to 'standard' (preserves the existing flow).
+    /// Set to 'routine' to create a cron-scheduled task backed by a
+    /// `routines` table row.
+    task_type: []const u8 = "standard",
+    /// 5-field cron expression. Required iff task_type='routine'.
+    schedule: ?[]const u8 = null,
+    /// What the LLM sees on every fire. Required iff task_type='routine'.
+    initial_prompt: ?[]const u8 = null,
+    /// Whether the routine is active. Defaults to true.
+    enabled: bool = true,
 };
 
 pub const TaskUpdateRequest = struct {
     name: ?[]const u8 = null,
     session_id: ?[]const u8 = null,
+    /// Routine-only. New cron expression. Validated by the handler.
+    /// When changed, next_run_at is recomputed.
+    schedule: ?[]const u8 = null,
+    /// Routine-only. New prompt text.
+    initial_prompt: ?[]const u8 = null,
+    /// Routine-only. New active flag. When false, the routine stays
+    /// in the DB but is skipped by the scheduler.
+    enabled: ?bool = null,
 };
 
 pub const GitStageResponse = struct {
@@ -242,7 +266,30 @@ pub fn makeWorkspaceItemListObjectResponse(allocator: std.mem.Allocator, items: 
 }
 
 // Workspace Item Task types
-pub const WorkspaceItemTaskResponse = struct { id: []const u8, name: []const u8, workspace_item_id: []const u8, session_id: ?[]const u8 = null, created_at: ?[]const u8 = null, updated_at: ?[]const u8 = null };
+/// Wire shape for the inline `routine` field on `WorkspaceItemTaskResponse`.
+/// Mirrors the API response in the design doc.
+pub const RoutineMetaResponse = struct {
+    schedule: []const u8,
+    initial_prompt: []const u8,
+    enabled: bool,
+    last_run_at: ?[]const u8 = null,
+    next_run_at: []const u8,
+    last_status: ?[]const u8 = null, // "success" | "failed" | "running" | null
+    last_error: ?[]const u8 = null,
+};
+
+pub const WorkspaceItemTaskResponse = struct {
+    id: []const u8,
+    name: []const u8,
+    workspace_item_id: []const u8,
+    session_id: ?[]const u8 = null,
+    /// Task type. Always present; 'standard' for legacy rows.
+    task_type: []const u8 = "standard",
+    /// Inline routine metadata. Present iff task_type === 'routine'.
+    routine: ?RoutineMetaResponse = null,
+    created_at: ?[]const u8 = null,
+    updated_at: ?[]const u8 = null,
+};
 
 pub const WorkspaceItemTaskListResponse = struct {
     tasks: []const WorkspaceItemTaskResponse,
@@ -255,6 +302,36 @@ pub const WorkspaceItemTaskListResponse = struct {
     // supply them still compile.
     has_more: bool = false,
     next_cursor: ?[]const u8 = null,
+};
+
+/// One entry in the `GET /api/routines` list response. Includes
+/// `workspace_id` + `workspace_item_id` + `task_name` so the caller
+/// can navigate from the listing to the routine's source without a
+/// second round-trip to `GET /api/workspaces` + grep.
+///
+/// `last_run_at` / `last_status` / `last_error` are nullable for
+/// routines that have never fired (the corresponding DB columns are
+/// NULL). `next_run_at` is `NOT NULL` per Migration 044.
+pub const RoutinesListEntry = struct {
+    id: []const u8,
+    task_id: []const u8,
+    workspace_id: []const u8,
+    workspace_item_id: []const u8,
+    task_name: []const u8,
+    schedule: []const u8,
+    initial_prompt: []const u8,
+    enabled: bool,
+    last_run_at: ?[]const u8 = null,
+    next_run_at: []const u8,
+    /// "success" | "failed" | "running" | null (null = never fired or
+    /// unknown string → matches `RoutineRunStatus.idle`).
+    last_status: ?[]const u8 = null,
+    last_error: ?[]const u8 = null,
+};
+
+pub const RoutinesListResponse = struct {
+    routines: []const RoutinesListEntry,
+    count: u32,
 };
 
 pub fn makeWorkspaceItemTaskResponse(allocator: std.mem.Allocator, response: WorkspaceItemTaskResponse) ![]u8 {
@@ -272,6 +349,17 @@ pub fn makeWorkspaceItemTaskListResponse(
         .count = @intCast(tasks.len),
         .has_more = has_more,
         .next_cursor = next_cursor,
+    };
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
+pub fn makeRoutinesListResponse(
+    allocator: std.mem.Allocator,
+    routines: []const RoutinesListEntry,
+) ![]u8 {
+    const response = RoutinesListResponse{
+        .routines = routines,
+        .count = @intCast(routines.len),
     };
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }

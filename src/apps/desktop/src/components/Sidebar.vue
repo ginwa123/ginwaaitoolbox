@@ -11,7 +11,12 @@ import RenameWorkspaceModal from './RenameWorkspaceModal.vue'
 import RenameTaskModal from './RenameTaskModal.vue'
 import AddItemDialog from './AddItemDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
-import type { WorkspaceItem } from '../stores/workspaces'
+import AddTaskDialog from './AddTaskDialog.vue'
+import AddTaskPickerDialog from './AddTaskPickerDialog.vue'
+import AddRoutineDialog from './AddRoutineDialog.vue'
+import EditRoutineDialog from './EditRoutineDialog.vue'
+import type { EditRoutineParams } from './EditRoutineDialog.vue'
+import type { RoutineMeta, WorkspaceItem } from '../stores/workspaces'
 import * as api from '../api'
 
 // Inject isLLMProcessing from App.vue
@@ -79,6 +84,44 @@ const renameTargetTaskWorkspaceId = ref<string | null>(null)
 const renameTargetTaskItemId = ref<string | null>(null)
 const renameTargetTaskId = ref<string | null>(null)
 const renameTargetTaskName = ref('')
+
+// ─── Add Task picker + dialog state (Chunk 6) ──────────────────────────────
+//
+// When the user clicks the green `+` on a workspace item:
+//   1. AddTaskPickerDialog opens with two cards (Standard / Routine).
+//   2. On pick, the picker closes and either AddTaskDialog (standard)
+//      or AddRoutineDialog (routine) opens.
+//   3. The create callback calls `workspacesStore.addTask(...)` with
+//      the appropriate params and closes the dialog.
+//
+// We track workspaceId + itemId on each dialog's `Open` ref so the
+// create callback knows where to create the task. We don't auto-
+// navigate to the new task (the original behavior did) — creating
+// a routine doesn't make sense to "open" the same way (the routine
+// fires on a schedule, not on user input), and a standard task
+// can be opened from the sidebar by the user.
+const showAddTaskPicker = ref(false)
+const pickerWorkspaceId = ref<string | null>(null)
+const pickerItemId = ref<string | null>(null)
+const showAddTaskDialog = ref(false)
+const addTaskDialogWorkspaceId = ref<string | null>(null)
+const addTaskDialogItemId = ref<string | null>(null)
+const showAddRoutineDialog = ref(false)
+const addRoutineDialogWorkspaceId = ref<string | null>(null)
+const addRoutineDialogItemId = ref<string | null>(null)
+
+// Edit routine (Chunk 7 of task-routines plan): opened by
+// handleEditRoutine (triggered by the routine-task row's pencil
+// via WorkspaceItemTask → WorkspaceItem → WorkspaceList → Sidebar).
+// The dialog is prefilled with the routine's current values via
+// `editRoutineTarget` (RoutineMeta | null) and the task's name via
+// `editRoutineTaskName`. We keep workspaceId + itemId + taskId on
+// separate refs (not a single object) so the submit callback can
+// resolve the right routine for the updateRoutine store action.
+const showEditRoutineDialog = ref(false)
+const editRoutineWorkspaceId = ref<string | null>(null)
+const editRoutineItemId = ref<string | null>(null)
+const editRoutineTaskId = ref<string | null>(null)
 
 // Resize handling
 const isResizing = ref(false)
@@ -347,13 +390,103 @@ const handleCloseTaskRenameModal = () => {
   renameTargetTaskName.value = ''
 }
 
-const handleAddTask = async (workspaceId: string, item: WorkspaceItem) => {
-  const name = `Task ${new Date().toLocaleTimeString()}`
-  const taskId = await workspacesStore.addTask(workspaceId, item.id, name)
+// Open the picker when the user clicks the green `+` on a
+// workspace item. Chunk 6: previously this directly created a
+// `Task <time>` row and auto-navigated. Now we route through
+// AddTaskPickerDialog → AddTaskDialog or AddRoutineDialog.
+const handleAddTask = (workspaceId: string, item: WorkspaceItem) => {
+  pickerWorkspaceId.value = workspaceId
+  pickerItemId.value = item.id
+  showAddTaskPicker.value = true
+}
+
+// Route the pick to the right create dialog. The picker dialog
+// auto-closes itself in its template (handlePick emits both
+// 'pick' and 'close' in the same call), so we don't need to
+// close it from here.
+const handleAddTaskPick = (taskType: 'standard' | 'routine') => {
+  if (taskType === 'standard') {
+    addTaskDialogWorkspaceId.value = pickerWorkspaceId.value
+    addTaskDialogItemId.value = pickerItemId.value
+    showAddTaskDialog.value = true
+  } else {
+    addRoutineDialogWorkspaceId.value = pickerWorkspaceId.value
+    addRoutineDialogItemId.value = pickerItemId.value
+    showAddRoutineDialog.value = true
+  }
+  // Clear the picker targets so a stale workspaceId/itemId
+  // doesn't leak into a future accidental re-open.
+  pickerWorkspaceId.value = null
+  pickerItemId.value = null
+}
+
+const handleCloseAddTaskPicker = () => {
+  showAddTaskPicker.value = false
+  pickerWorkspaceId.value = null
+  pickerItemId.value = null
+}
+
+// Standard path: user filled in the name + description in
+// AddTaskDialog, hit Create Task. Persist via the store and
+// navigate to the new task.
+const handleAddTaskCreated = async (name: string, description?: string) => {
+  const workspaceId = addTaskDialogWorkspaceId.value
+  const itemId = addTaskDialogItemId.value
+  if (!workspaceId || !itemId) return
+  const taskId = await workspacesStore.addTask(workspaceId, itemId, {
+    name,
+    description,
+  })
+  showAddTaskDialog.value = false
+  addTaskDialogWorkspaceId.value = null
+  addTaskDialogItemId.value = null
   if (taskId) {
     workspacesStore.setActiveTask(taskId)
     router.replace({ path: '/app', query: { view: 'task', task: taskId } })
   }
+}
+
+const handleCloseAddTaskDialog = () => {
+  showAddTaskDialog.value = false
+  addTaskDialogWorkspaceId.value = null
+  addTaskDialogItemId.value = null
+}
+
+// Routine path: user filled in name, description (optional),
+// initial_prompt, schedule, enabled in AddRoutineDialog, hit
+// Create Routine. Persist via the store with taskType='routine'.
+// We do NOT navigate to the new routine — routines are not
+// user-driven chats; the user opens the routine from the
+// sidebar to inspect its runs.
+const handleAddRoutineCreated = async (params: {
+  name: string
+  description?: string
+  initial_prompt: string
+  schedule: string
+  enabled: boolean
+}) => {
+  const workspaceId = addRoutineDialogWorkspaceId.value
+  const itemId = addRoutineDialogItemId.value
+  if (!workspaceId || !itemId) return
+  await workspacesStore.addTask(workspaceId, itemId, {
+    name: params.name,
+    description: params.description,
+    taskType: 'routine',
+    routine: {
+      schedule: params.schedule,
+      initial_prompt: params.initial_prompt,
+      enabled: params.enabled,
+    },
+  })
+  showAddRoutineDialog.value = false
+  addRoutineDialogWorkspaceId.value = null
+  addRoutineDialogItemId.value = null
+}
+
+const handleCloseAddRoutineDialog = () => {
+  showAddRoutineDialog.value = false
+  addRoutineDialogWorkspaceId.value = null
+  addRoutineDialogItemId.value = null
 }
 
 const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) => {
@@ -389,6 +522,129 @@ const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
 const handleReorderWorkspaces = (orderedIds: string[]) => {
   workspacesStore.reorderWorkspaces(orderedIds)
 }
+
+// ─── Routines (Chunk 7 of task-routines plan) ────────────────────────────
+// These two handlers close the wiring loop from the routine-task
+// row in WorkspaceItemTask.vue (which emits `runRoutine` and
+// `editRoutine`) up through WorkspaceItem → WorkspaceList → here.
+// Sidebar is the only component that touches the store, so it
+// owns the user-visible side effects (route to chat, open the
+// edit dialog, call runRoutine / updateRoutine).
+
+// Run now: fire the routine via the store, then navigate to the
+// task's chat view. The backend returns the session_id (= task.id
+// by codebase invariant); we set the active task and route. The
+// chat view's existing SSE /chat-view connection picks up the new
+// user message when the worker writes it (see Task 7.5 E2E).
+const handleRunRoutine = async (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  const result = await workspacesStore.runRoutine(workspaceId, itemId, taskId)
+  if (result?.session_id) {
+    workspacesStore.setActiveTask(taskId)
+    router.replace({
+      path: '/app',
+      query: { view: 'task', task: taskId, session: result.session_id },
+    })
+  }
+}
+
+// Edit routine: capture the workspace / item / task ids on the
+// three refs and open the dialog. The dialog's `routine` and
+// `taskName` props are bound to the two `computed`s below, which
+// look up the routine in the workspaces tree (and tolerate a
+// stale id by returning null / '' — the dialog renders only when
+// `routine` is non-null, so a missing target simply doesn't
+// open).
+const handleEditRoutine = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  editRoutineWorkspaceId.value = workspaceId
+  editRoutineItemId.value = itemId
+  editRoutineTaskId.value = taskId
+  showEditRoutineDialog.value = true
+}
+
+const handleEditRoutineClose = () => {
+  showEditRoutineDialog.value = false
+  editRoutineWorkspaceId.value = null
+  editRoutineItemId.value = null
+  editRoutineTaskId.value = null
+}
+
+// Submit: pass the form fields to the store's updateRoutine
+// action (added in Chunk 5). The store action does an optimistic
+// name update + API call + rollback on error. Routine schedule /
+// initial_prompt / enabled updates surface on the next SSE
+// refresh (the backend recomputes next_run_at on update).
+const handleEditRoutineSubmitted = async (params: EditRoutineParams) => {
+  if (
+    !editRoutineWorkspaceId.value ||
+    !editRoutineItemId.value ||
+    !editRoutineTaskId.value
+  ) {
+    return
+  }
+  await workspacesStore.updateRoutine(
+    editRoutineWorkspaceId.value,
+    editRoutineItemId.value,
+    editRoutineTaskId.value,
+    {
+      name: params.name,
+      schedule: params.schedule,
+      initial_prompt: params.initial_prompt,
+      enabled: params.enabled,
+    },
+  )
+  showEditRoutineDialog.value = false
+  editRoutineWorkspaceId.value = null
+  editRoutineItemId.value = null
+  editRoutineTaskId.value = null
+}
+
+// Look up the routine being edited in the workspaces tree. The
+// EditRoutineDialog's `routine` prop expects RoutineMeta | null;
+// returning null when the lookup misses keeps the dialog from
+// opening (the dialog's v-if="show && routine" gate handles it).
+const editRoutineTarget = computed<RoutineMeta | null>(() => {
+  if (
+    !editRoutineWorkspaceId.value ||
+    !editRoutineItemId.value ||
+    !editRoutineTaskId.value
+  ) {
+    return null
+  }
+  for (const ws of workspacesStore.workspaces) {
+    if (ws.id !== editRoutineWorkspaceId.value) continue
+    const item = ws.items.find((i) => i.id === editRoutineItemId.value)
+    const task = item?.tasks?.find((t) => t.id === editRoutineTaskId.value)
+    return task?.routine ?? null
+  }
+  return null
+})
+
+// The task's display name (for the dialog's subtitle). Mirrors
+// editRoutineTarget's lookup but returns the name.
+const editRoutineTaskName = computed<string>(() => {
+  if (
+    !editRoutineWorkspaceId.value ||
+    !editRoutineItemId.value ||
+    !editRoutineTaskId.value
+  ) {
+    return ''
+  }
+  for (const ws of workspacesStore.workspaces) {
+    if (ws.id !== editRoutineWorkspaceId.value) continue
+    const item = ws.items.find((i) => i.id === editRoutineItemId.value)
+    const task = item?.tasks?.find((t) => t.id === editRoutineTaskId.value)
+    if (task) return task.name
+  }
+  return ''
+})
 </script>
 
 <template>
@@ -479,6 +735,8 @@ const handleReorderWorkspaces = (orderedIds: string[]) => {
           @select-task="handleSelectTask"
           @delete-task="handleDeleteTask"
           @rename-task="handleRenameTask"
+          @run-routine="handleRunRoutine"
+          @edit-routine="handleEditRoutine"
           @load-more-tasks="handleLoadMoreTasks"
           @reorder-workspaces="handleReorderWorkspaces"
         />
@@ -512,6 +770,16 @@ const handleReorderWorkspaces = (orderedIds: string[]) => {
     <RenameWorkspaceModal :show="showRenameWorkspaceModal" :current-name="renameTargetName" @close="handleCloseRenameModal" @rename="handleConfirmRename" />
     <RenameTaskModal :show="showRenameTaskModal" :current-name="renameTargetTaskName" @close="handleCloseTaskRenameModal" @rename="handleConfirmTaskRename" />
     <AddItemDialog :show="showAddItemDialog" @close="handleCloseAddItemDialog" @create="handleCreateItem" />
+    <AddTaskPickerDialog :show="showAddTaskPicker" @close="handleCloseAddTaskPicker" @pick="handleAddTaskPick" />
+    <AddTaskDialog :show="showAddTaskDialog" @close="handleCloseAddTaskDialog" @create="handleAddTaskCreated" />
+    <AddRoutineDialog :show="showAddRoutineDialog" @close="handleCloseAddRoutineDialog" @create="handleAddRoutineCreated" />
+    <EditRoutineDialog
+      :show="showEditRoutineDialog"
+      :routine="editRoutineTarget"
+      :task-name="editRoutineTaskName"
+      @close="handleEditRoutineClose"
+      @submit="handleEditRoutineSubmitted"
+    />
     <ConfirmDialog
       :show="showDeleteConfirm"
       :title="deleteConfirmConfig?.title || 'Confirm'"

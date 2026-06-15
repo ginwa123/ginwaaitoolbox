@@ -226,5 +226,17 @@ pub const SqliteBackend = struct {
             _ = c.sqlite3_close(d);
         }
     }
+
+    /// Number of rows changed by the most recent INSERT/UPDATE/DELETE
+    /// statement. Used by callers that need to know whether their
+    /// `db.exec` actually matched any rows (the API doesn't return the
+    /// change count directly). See `sqlite3_changes` in the C API.
+    /// Caller is responsible for being on the same thread (or holding
+    /// the mutex) as the most recent write — the count is per-connection
+    /// state in SQLite, not per-statement.
+    pub fn changes(self: *SqliteBackend) i64 {
+        const db = self.db orelse return 0;
+        return c.sqlite3_changes(db);
+    }
 };
 

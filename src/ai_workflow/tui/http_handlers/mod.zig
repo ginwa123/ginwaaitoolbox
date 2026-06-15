@@ -53,6 +53,8 @@ pub const tasksCreateHandler = @import("task_create.zig").tasksCreateHandler;
 pub const tasksUpdateHandler = @import("task_update.zig").tasksUpdateHandler;
 pub const tasksUpdateByIdHandler = @import("task_update.zig").tasksUpdateByIdHandler;
 pub const tasksDeleteHandler = @import("task_delete.zig").tasksDeleteHandler;
+pub const routinesRunHandler = @import("routines_run.zig").routinesRunHandler;
+pub const routinesListHandler = @import("routines_list.zig").routinesListHandler;
 
 // Worker API handlers
 pub const workerGetHandler = @import("worker_get.zig").workerGetHandler;

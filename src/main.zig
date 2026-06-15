@@ -92,6 +92,18 @@ pub fn main(init: std.process.Init) !void {
     defer event_bus.deinit();
     ctxParent.event_bus = &event_bus;
 
+    // Submit the routine scheduler as a concurrent Io task. Runs
+    // forever in the background, processing due routines every 5s.
+    // Mirrors the project's async I/O pattern (the same one
+    // session_create.zig:161 uses for per-session LLM work); no
+    // thread is spawned. MUST run after setSingleton (so `di` is
+    // available) and after the event bus is wired (so the
+    // scheduler's fire path can emit ai_workflow.RunParamsNew
+    // events).
+    ai_mod.startup.start(allocator, &dbSqlite, ctxParent, io) catch |err| {
+        std.log.err("Failed to submit routine scheduler: {s}", .{@errorName(err)});
+    };
+
     var active_loops = ai_mod.models.ActiveLoops.init(allocator);
     defer active_loops.deinit(allocator);
     ctxParent.active_loops = &active_loops;
@@ -298,6 +310,8 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.put("/api/workspaces/tasks/:task_id", ai_mod.http_handlers.tasksUpdateByIdHandler);
     try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksUpdateHandler);
     try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksDeleteHandler);
+    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/run", ai_mod.http_handlers.routinesRunHandler);
+    try gs.router.get("/api/routines", ai_mod.http_handlers.routinesListHandler);
 
     // testing debug
     try gs.router.post("/test/shutdown", ai_mod.http_handlers.shutdownHandler);

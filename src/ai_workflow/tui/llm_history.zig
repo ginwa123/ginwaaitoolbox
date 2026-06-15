@@ -7,6 +7,7 @@ const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("nalarcore").llm_models;
 const ai_mod = @import("mod.zig");
 const on_event_sent = ai_mod.on_event_sent;
+const routines_model = @import("routines/model.zig");
 
 pub fn markMessageNotForLlmRun(
     allocator: std.mem.Allocator,
@@ -2244,12 +2245,30 @@ pub fn listAllWorkspaceItems(
 // Workspace Item Tasks Functions (migrated from workspace_item_tasks_table.zig)
 // =============================================================================
 
+/// Inline routine metadata embedded in `WorkspaceItemTaskInfo`.
+/// Mirrors the API response shape. Populated by the LEFT JOIN in
+/// the listers; null for standard tasks.
+pub const RoutineMeta = struct {
+    schedule: []const u8,
+    initial_prompt: []const u8,
+    enabled: bool,
+    last_run_at: ?[]const u8 = null,
+    next_run_at: []const u8,
+    last_status: routines_model.RoutineRunStatus = .idle,
+    last_error: ?[]const u8 = null,
+};
+
 /// WorkspaceItemTask info for CRUD operations
 pub const WorkspaceItemTaskInfo = struct {
     id: []u8,
     name: []u8,
     workspace_item_id: []u8,
     session_id: ?[]u8 = null,
+    /// Task type. 'standard' for legacy rows; 'routine' for routine tasks.
+    /// Every constructor explicitly allocates this so deinit can free it.
+    task_type: []u8 = &.{},
+    /// Inline routine metadata. Populated for routine tasks only.
+    routine: ?RoutineMeta = null,
     created_at: ?[]u8 = null,
     updated_at: ?[]u8 = null,
 
@@ -2258,6 +2277,14 @@ pub const WorkspaceItemTaskInfo = struct {
         allocator.free(self.name);
         allocator.free(self.workspace_item_id);
         if (self.session_id) |s| allocator.free(s);
+        if (self.task_type.len > 0) allocator.free(self.task_type);
+        if (self.routine) |r| {
+            allocator.free(r.schedule);
+            allocator.free(r.initial_prompt);
+            if (r.last_run_at) |lr| allocator.free(lr);
+            allocator.free(r.next_run_at);
+            if (r.last_error) |le| allocator.free(le);
+        }
         if (self.created_at) |ca| allocator.free(ca);
         if (self.updated_at) |ua| allocator.free(ua);
     }
@@ -2271,13 +2298,18 @@ pub fn createWorkspaceItemTask(
     name: []const u8,
     workspace_item_id: []const u8,
     session_id: ?[]const u8,
+    task_type: []const u8,
 ) !WorkspaceItemTaskInfo {
+    if (!std.mem.eql(u8, task_type, "standard") and !std.mem.eql(u8, task_type, "routine")) {
+        return error.InvalidTaskType;
+    }
+
     if (session_id) |sid| {
-        const sql = "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id) VALUES (?, ?, ?, ?)";
-        try db.exec(allocator, sql, &.{ id, name, workspace_item_id, sid });
+        const sql = "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id, task_type) VALUES (?, ?, ?, ?, ?)";
+        try db.exec(allocator, sql, &.{ id, name, workspace_item_id, sid, task_type });
     } else {
-        const sql = "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES (?, ?, ?)";
-        try db.exec(allocator, sql, &.{ id, name, workspace_item_id });
+        const sql = "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES (?, ?, ?, ?)";
+        try db.exec(allocator, sql, &.{ id, name, workspace_item_id, task_type });
     }
 
     return WorkspaceItemTaskInfo{
@@ -2285,6 +2317,8 @@ pub fn createWorkspaceItemTask(
         .name = try allocator.dupe(u8, name),
         .workspace_item_id = try allocator.dupe(u8, workspace_item_id),
         .session_id = if (session_id) |s| try allocator.dupe(u8, s) else null,
+        .task_type = try allocator.dupe(u8, task_type),
+        .routine = null,
     };
 }
 
@@ -2294,7 +2328,7 @@ pub fn getWorkspaceItemTask(
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?WorkspaceItemTaskInfo {
-    const sql = "SELECT id, name, workspace_item_id, session_id, created_at, updated_at FROM workspace_item_tasks WHERE id = ?";
+    const sql = "SELECT id, name, workspace_item_id, session_id, created_at, updated_at, task_type FROM workspace_item_tasks t WHERE t.id = ?";
 
     var rows = try db.query(allocator, sql, &.{id});
     defer rows.deinit();
@@ -2307,6 +2341,8 @@ pub fn getWorkspaceItemTask(
             .session_id = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
             .created_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
             .updated_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .task_type = if (row.values[6].len > 0) try allocator.dupe(u8, row.values[6]) else try allocator.dupe(u8, "standard"),
+            .routine = null, // single-row fetch path; routine loaded on demand
         };
         row.deinit(allocator);
         return task;
@@ -2370,7 +2406,12 @@ pub fn listWorkspaceItemTasks(
     db: *sqlite.SqliteBackend,
     workspace_item_id: []const u8,
 ) ![]WorkspaceItemTaskInfo {
-    const sql = "SELECT id, name, workspace_item_id, session_id, created_at, updated_at FROM workspace_item_tasks WHERE workspace_item_id = ? ORDER BY created_at DESC";
+    const sql =
+        \\SELECT t.id, t.name, t.workspace_item_id, t.session_id, t.created_at, t.updated_at, t.task_type,
+        \\       r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error
+        \\FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id
+        \\WHERE t.workspace_item_id = ? ORDER BY t.created_at DESC
+    ;
 
     var rows = try db.query(allocator, sql, &.{workspace_item_id});
     defer rows.deinit();
@@ -2382,6 +2423,33 @@ pub fn listWorkspaceItemTasks(
     }
 
     while (try rows.next()) |row| {
+        // Row indices 0-5: task core; 6: task_type; 7-13: routine fields.
+        // routine.schedule is NOT NULL, so its presence discriminates
+        // joined routine rows from standard tasks.
+        const task_type = if (row.values[6].len > 0)
+            try allocator.dupe(u8, row.values[6])
+        else
+            try allocator.dupe(u8, "standard");
+        const has_routine = row.values[7].len > 0;
+        const routine_meta: ?RoutineMeta = if (has_routine) blk: {
+            const v = row.values[12];
+            const last_status: routines_model.RoutineRunStatus =
+                if (v.len == 0) .idle
+                else if (std.mem.eql(u8, v, "success")) .success
+                else if (std.mem.eql(u8, v, "failed")) .failed
+                else if (std.mem.eql(u8, v, "running")) .running
+                else .idle;
+            break :blk RoutineMeta{
+                .schedule = try allocator.dupe(u8, row.values[7]),
+                .initial_prompt = try allocator.dupe(u8, row.values[8]),
+                .enabled = std.mem.eql(u8, row.values[9], "1"),
+                .last_run_at = if (row.values[10].len > 0) try allocator.dupe(u8, row.values[10]) else null,
+                .next_run_at = try allocator.dupe(u8, row.values[11]),
+                .last_status = last_status,
+                .last_error = if (row.values[13].len > 0) try allocator.dupe(u8, row.values[13]) else null,
+            };
+        } else null;
+
         const task = WorkspaceItemTaskInfo{
             .id = try allocator.dupe(u8, row.values[0]),
             .name = try allocator.dupe(u8, row.values[1]),
@@ -2389,6 +2457,8 @@ pub fn listWorkspaceItemTasks(
             .session_id = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
             .created_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
             .updated_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .task_type = task_type,
+            .routine = routine_meta,
         };
         try tasks.append(allocator, task);
         row.deinit(allocator);
@@ -2434,10 +2504,17 @@ pub fn listWorkspaceItemTasksWithCursor(
     // Build the ORDER BY column expression for the sort field. We
     // hardcode the column name (not the value) into the SQL string
     // — only the values are parameterized, so this is safe.
+    //
+    // Qualify with `t.` because the LEFT JOIN on `routines` exposes
+    // `id`, `created_at`, and `updated_at` from BOTH tables (the
+    // routines table also has all three per Migration 044), and
+    // SQLite rejects unqualified references as "ambiguous column
+    // name" — see the runtime error from `nalar --port 8081 ...`
+    // after the JOIN was added.
     const sort_col = switch (sort_field) {
-        .created_at => "created_at",
-        .updated_at => "updated_at",
-        .name => "name",
+        .created_at => "t.created_at",
+        .updated_at => "t.updated_at",
+        .name => "t.name",
     };
     const sort_dir_str = switch (sort_direction) {
         .asc => "ASC",
@@ -2445,7 +2522,7 @@ pub fn listWorkspaceItemTasksWithCursor(
     };
     const order_by = try std.fmt.allocPrint(
         allocator,
-        "ORDER BY {s} {s}, id {s}",
+        "ORDER BY {s} {s}, t.id {s}",
         .{ sort_col, sort_dir_str, sort_dir_str },
     );
     defer allocator.free(order_by);
@@ -2475,7 +2552,7 @@ pub fn listWorkspaceItemTasksWithCursor(
         };
         break :blk try std.fmt.allocPrint(
             allocator,
-            " AND ({s} {s} '{s}' OR ({s} = '{s}' AND id {s} '{s}'))",
+            " AND ({s} {s} '{s}' OR ({s} = '{s}' AND t.id {s} '{s}'))",
             .{ sort_col, cmp, sort_value, sort_col, sort_value, cmp, id_value },
         );
     };
@@ -2483,7 +2560,7 @@ pub fn listWorkspaceItemTasksWithCursor(
 
     const sql = try std.fmt.allocPrint(
         allocator,
-        "SELECT id, name, workspace_item_id, session_id, created_at, updated_at FROM workspace_item_tasks WHERE workspace_item_id = ?{s} {s} LIMIT {s}",
+        "SELECT t.id, t.name, t.workspace_item_id, t.session_id, t.created_at, t.updated_at, t.task_type, r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id WHERE t.workspace_item_id = ?{s} {s} LIMIT {s}",
         .{ cursor_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -2498,6 +2575,33 @@ pub fn listWorkspaceItemTasksWithCursor(
     }
 
     while (try rows.next()) |row| {
+        // Row indices 0-5: task core; 6: task_type; 7-13: routine fields.
+        // routine.schedule is NOT NULL, so its presence discriminates
+        // joined routine rows from standard tasks.
+        const task_type = if (row.values[6].len > 0)
+            try allocator.dupe(u8, row.values[6])
+        else
+            try allocator.dupe(u8, "standard");
+        const has_routine = row.values[7].len > 0;
+        const routine_meta: ?RoutineMeta = if (has_routine) blk: {
+            const v = row.values[12];
+            const last_status: routines_model.RoutineRunStatus =
+                if (v.len == 0) .idle
+                else if (std.mem.eql(u8, v, "success")) .success
+                else if (std.mem.eql(u8, v, "failed")) .failed
+                else if (std.mem.eql(u8, v, "running")) .running
+                else .idle;
+            break :blk RoutineMeta{
+                .schedule = try allocator.dupe(u8, row.values[7]),
+                .initial_prompt = try allocator.dupe(u8, row.values[8]),
+                .enabled = std.mem.eql(u8, row.values[9], "1"),
+                .last_run_at = if (row.values[10].len > 0) try allocator.dupe(u8, row.values[10]) else null,
+                .next_run_at = try allocator.dupe(u8, row.values[11]),
+                .last_status = last_status,
+                .last_error = if (row.values[13].len > 0) try allocator.dupe(u8, row.values[13]) else null,
+            };
+        } else null;
+
         const task = WorkspaceItemTaskInfo{
             .id = try allocator.dupe(u8, row.values[0]),
             .name = try allocator.dupe(u8, row.values[1]),
@@ -2505,6 +2609,8 @@ pub fn listWorkspaceItemTasksWithCursor(
             .session_id = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
             .created_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
             .updated_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .task_type = task_type,
+            .routine = routine_meta,
         };
         try tasks.append(allocator, task);
         row.deinit(allocator);
