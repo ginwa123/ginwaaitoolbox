@@ -18,6 +18,14 @@ const props = defineProps<{
   item: WorkspaceItem
   isActive: boolean
   workspaceId: string
+  // Drag-and-drop visual state, owned by the parent
+  // <WorkspaceList> and passed down so the <li> can dim when
+  // being dragged and show a violet drop indicator on hover. The
+  // handlers themselves live in <WorkspaceList> (event delegation
+  // on the <ul>); we just need the visual signal here. See
+  // docs/plans/2026-06-16-workspace-item-position-reorder.md.
+  isItemDragging?: boolean
+  isItemDragOver?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -147,7 +155,17 @@ const handleLoadMoreTasks = (event: Event) => {
 </script>
 
 <template>
-  <li>
+  <li
+    :class="{ 'opacity-50': isItemDragging }"
+    :style="{
+      boxShadow: isItemDragOver && !isItemDragging
+        ? '0 -2px 0 0 var(--color-violet)'
+        : 'none',
+    }"
+    draggable="true"
+    :data-item-id="item.id"
+    :data-workspace-id="workspaceId"
+  >
     <div class="flex flex-col">
       <!-- Main Item Row -->
       <div class="flex items-center group/item">

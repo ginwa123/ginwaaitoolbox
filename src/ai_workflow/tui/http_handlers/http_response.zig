@@ -427,3 +427,16 @@ pub const WorkspacesReorderResponse = struct {
 pub fn makeWorkspacesReorderResponse(allocator: std.mem.Allocator, count: usize) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, WorkspacesReorderResponse{ .count = count }, .{});
 }
+
+// Typed response for `POST /api/workspaces/:workspace_id/items/reorder`.
+// Mirrors WorkspacesReorderResponse — same shape, same std.json.Stringify
+// pattern. The frontend reads `{success, count}` to confirm the reorder
+// took effect.
+pub const WorkspaceItemReorderResponse = struct {
+    success: bool = true,
+    count: usize,
+};
+
+pub fn makeWorkspaceItemReorderResponse(allocator: std.mem.Allocator, count: usize) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, WorkspaceItemReorderResponse{ .count = count }, .{});
+}

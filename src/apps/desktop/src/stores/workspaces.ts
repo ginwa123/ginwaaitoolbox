@@ -903,6 +903,82 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  /**
+   * Reorder the items of one workspace to match `orderedIds` and
+   * persist the new order via
+   * `POST /api/workspaces/:workspace_id/items/reorder`. Mirrors
+   * `reorderWorkspaces` but scoped to a single workspace's items.
+   *
+   * Optimistic: the workspace's items array is reordered immediately
+   * so the UI snaps to the new position on drop. On API failure, the
+   * snapshot is restored and the error is logged.
+   *
+   * No-op when `orderedIds` is empty or matches the current order.
+   * Length mismatch is rejected (the client is out of sync — drag
+   * handlers send the full list, not a delta).
+   *
+   * Plan: docs/superpowers/plans/2026-06-16-workspace-item-position-reorder.md
+   */
+  async function reorderWorkspaceItems(workspaceId: string, orderedIds: string[]) {
+    const workspace = workspaces.value.find((w) => w.id === workspaceId)
+    if (!workspace) {
+      console.error(
+        `[workspacesStore.reorderWorkspaceItems] workspace ${workspaceId} not found`,
+      )
+      return
+    }
+    const current = workspace.items
+    if (orderedIds.length === 0) return
+    if (orderedIds.length !== current.length) {
+      console.error(
+        `[workspacesStore.reorderWorkspaceItems] orderedIds length ${orderedIds.length} != current ${current.length}; refusing reorder`,
+      )
+      return
+    }
+
+    // No-op: same set of IDs in (potentially) different order. The
+    // set-equality check is an O(n) walk — fine for the realistic
+    // items-per-workspace count.
+    const currentIdSet = new Set(current.map((i) => i.id))
+    const newIdSet = new Set(orderedIds)
+    const isSameSet =
+      currentIdSet.size === newIdSet.size && [...currentIdSet].every((id) => newIdSet.has(id))
+    if (isSameSet && current.every((i, idx) => i.id === orderedIds[idx])) {
+      return
+    }
+
+    // Snapshot for rollback.
+    const previousOrder = current.slice()
+
+    // Optimistic local reorder. The workspace is a ref inside the
+    // workspaces array; mutating `workspace.items` in place preserves
+    // Vue reactivity (the workspace's items array is what the
+    // sidebar's v-for is bound to).
+    const byId = new Map(current.map((i) => [i.id, i]))
+    const reordered: WorkspaceItem[] = []
+    for (const id of orderedIds) {
+      const item = byId.get(id)
+      if (item) reordered.push(item)
+    }
+    // If any current rows were missed, append them at the end
+    // (should not happen given the length check, but defensive).
+    for (const item of current) {
+      if (!orderedIds.includes(item.id)) reordered.push(item)
+    }
+    workspace.items = reordered
+
+    // Persist to backend.
+    try {
+      await api.reorderWorkspaceItems(workspaceId, orderedIds)
+    } catch (err) {
+      console.error(
+        '[workspacesStore.reorderWorkspaceItems] API call failed, rolling back:',
+        err,
+      )
+      workspace.items = previousOrder
+    }
+  }
+
   // Update workspace item path from system folder
   function updateWorkspaceItemPath(workspaceId: string, itemId: string, newPath: string) {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
@@ -1061,6 +1137,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     removeWorkspace,
     renameWorkspace,
     reorderWorkspaces,
+    reorderWorkspaceItems,
     updateWorkspaceItemPath,
     addTask,
     toggleTask,

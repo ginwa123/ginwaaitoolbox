@@ -90,8 +90,13 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
         }
         try in_clause.appendSlice(alloc, ")");
 
-        // Fetch all items for these workspaces
-        const items_sql = try std.fmt.allocPrint(alloc, "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items WHERE workspace_id IN {s} ORDER BY created_at DESC", .{in_clause.items});
+        // Fetch all items for these workspaces. Uses the
+        // project's "always alias tables in SQL" convention —
+        // see the cross-ref comment in
+        // `llm_history.zig:listWorkspaceItems`. The `wi` alias
+        // matches the short-single-letter pattern used elsewhere
+        // (`h` for `llm_history`, `s` for `sessions`, etc.).
+        const items_sql = try std.fmt.allocPrint(alloc, "SELECT wi.id, wi.workspace_id, wi.item_type, wi.name, wi.path, wi.created_at, wi.updated_at FROM workspace_items wi WHERE wi.workspace_id IN {s} ORDER BY wi.position DESC, wi.id ASC", .{in_clause.items});
         var items_rows = try db.query(alloc, items_sql, workspace_ids.items);
 
         // Collect items and their IDs
