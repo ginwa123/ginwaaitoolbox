@@ -35,6 +35,12 @@ pub const TaskCreateResponse = struct { id: []const u8, name: []const u8, descri
 // Request types
 pub const TaskCreateRequest = struct {
     name: []const u8,
+    /// Free-form text the frontend attaches to every task (the
+    /// `AddTaskDialog` and `AddRoutineDialog` both emit it).
+    /// `workspace_item_tasks` has no `description` column, so the
+    /// value is parsed and accepted but not persisted — the
+    /// frontend holds the authoritative copy.
+    description: ?[]const u8 = null,
     session_id: ?[]const u8 = null,
     /// Task type. Defaults to 'standard' (preserves the existing flow).
     /// Set to 'routine' to create a cron-scheduled task backed by a
