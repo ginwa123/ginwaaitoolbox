@@ -1,8 +1,11 @@
 /**
- * Web Scraping API Service
+ * Nalar Browser Service
  *
- * Anti-bot bypass scraping service using CloakBrowser.
+ * Anti-bot bypass stealth-browser service using CloakBrowser.
  * Uses native Bun HTTP server (no external framework).
+ *
+ * The compiled binary (built via `bun run build:compile`) runs as a process
+ * named `nalar_browser` — visible as such in `top` / `htop` / `ps` / etc.
  */
 
 // Import from handler modules
@@ -105,7 +108,7 @@ const port = parseInt(Bun.argv[2] ?? "3000");
 
 console.log(`
 ╔══════════════════════════════════════════════════════╗
-║     Web Scraping API (CloakBrowser)                   ║
+║     Nalar Browser (anti-bot stealth Chromium)         ║
 ╠══════════════════════════════════════════════════════╣
 ║  Health:      GET  /health                           ║
 ║  Launch:      POST /launch                            ║
