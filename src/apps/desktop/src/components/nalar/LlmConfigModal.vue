@@ -6,15 +6,20 @@ export interface LlmConfigModalValue {
   config: LlmConfig
 }
 
-const props = defineProps<{
-  modelValue: LlmConfigModalValue
-  errors?: { name?: string; model?: string; base_url?: string; api_key?: string }
-  title: string
-  /** When true, the name field is editable (Add mode). When false (Edit mode), it's disabled. */
-  nameEditable: boolean
-  /** Optional slot name to render after the LLM config form (e.g. 'extra'). */
-  extraSlotName?: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    modelValue: LlmConfigModalValue
+    errors?: { name?: string; model?: string; base_url?: string; api_key?: string }
+    title: string
+    /** When true, the name field is editable (Add mode). When false (Edit mode), it's disabled. */
+    nameEditable: boolean
+    /** Optional slot name to render after the LLM config form (e.g. 'extra'). */
+    extraSlotName?: string
+    /** Tailwind max-width class for the dialog. Default `max-w-md` (28rem). */
+    maxWidthClass?: 'max-w-md' | 'max-w-lg' | 'max-w-xl' | 'max-w-2xl' | 'max-w-3xl'
+  }>(),
+  { maxWidthClass: 'max-w-md' },
+)
 
 const emit = defineEmits<{
   'update:modelValue': [value: LlmConfigModalValue]
@@ -38,7 +43,7 @@ function updateConfig(cfg: LlmConfig) {
       @click.self="emit('cancel')"
     >
       <div
-        class="w-full max-w-md mx-4 rounded-md flex flex-col"
+        :class="['w-full mx-4 rounded-md flex flex-col', props.maxWidthClass]"
         style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
         role="dialog"
         aria-modal="true"

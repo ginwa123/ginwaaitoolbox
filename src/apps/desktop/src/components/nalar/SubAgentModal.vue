@@ -32,6 +32,7 @@ function updateSystemPrompt(val: string) {
     :title="mode === 'add' ? 'Add sub-agent' : 'Edit sub-agent'"
     :name-editable="mode === 'add'"
     extra-slot-name="extra"
+    max-width-class="max-w-2xl"
     @update:model-value="updateBase"
     @cancel="emit('cancel')"
     @save="emit('save')"
@@ -44,7 +45,7 @@ function updateSystemPrompt(val: string) {
         <textarea
           :value="modelValue.system_prompt"
           @input="updateSystemPrompt(($event.target as HTMLTextAreaElement).value)"
-          rows="5"
+          rows="8"
           placeholder="System prompt for this sub-agent…"
           class="w-full px-3 py-2 rounded-md border text-sm font-sans resize-none"
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
