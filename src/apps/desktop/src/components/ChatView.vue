@@ -32,6 +32,7 @@ import EditSkill from './tool_outputs/EditSkill.vue'
 import RemoveSkill from './tool_outputs/RemoveSkill.vue'
 import RemoveFile from './tool_outputs/RemoveFile.vue'
 import SpawnSubAgent from './tool_outputs/SpawnSubAgent.vue'
+import NalarBrowser from './tool_outputs/NalarBrowser.vue'
 import SkillsPopup from './SkillsPopup.vue'
 import ImagePreview from './ImagePreview.vue'
 import { parseSpawnSubAgentArgs } from '../helpers/parseSpawnSubAgentArgs'
@@ -618,6 +619,13 @@ const innerToolData = (m: Message): string => {
   const unwrapped = unwrappedByMessageId.value.get(m.id)
   if (unwrapped === null || unwrapped === undefined) return m.content // legacy
   return unwrapped.data ?? m.content // error case: fall back to full content
+}
+
+// Helper used in the template: get the JSON-string tool-call arguments
+// for a tool message. Falls back to '{}' for legacy messages that
+// don't carry the envelope.
+const getParametersForMessage = (m: Message): string => {
+  return unwrappedByMessageId.value.get(m.id)?.parameters ?? '{}'
 }
 
 // ─── FIX: Compute tool call names per assistant group ─────────────────────────
@@ -1897,6 +1905,12 @@ const compactSession = async () => {
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                             :sub-agent-args="findSubAgentArgsForToolGroup(msg.tool_call_id, messageGroups, groupIndex)"
+                          />
+                          <NalarBrowser
+                            v-else-if="msg.tool_name === 'nalar_browser'"
+                            :content="innerToolData(msg)"
+                            :parameters="getParametersForMessage(msg)"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />
                           <div v-else class="tool-expandable">
                             <button
