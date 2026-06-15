@@ -1,4 +1,4 @@
-# Web Fetching Service
+# Nalar Browser
 
 Anti-bot bypass scraping API using CloakBrowser - a stealth Chromium browser that bypasses Cloudflare Turnstile, reCAPTCHA v3, FingerprintJS, and other anti-bot detection systems.
 
@@ -39,7 +39,7 @@ Response:
 ```json
 {
   "status": "ok",
-  "service": "web-scraping-api",
+  "service": "nalar-browser",
   "version": "1.0.0",
   "timestamp": "2025-01-20T00:00:00.000Z"
 }

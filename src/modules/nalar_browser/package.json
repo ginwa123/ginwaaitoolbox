@@ -1,13 +1,11 @@
 {
-  "name": "web_fetching_service",
+  "name": "nalar_browser",
   "module": "index.ts",
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "bun run check && bun run index.ts",
     "dev": "bun --watch index.ts",
-    "build": "bun build index.ts --target=bun --external=playwright-core --external=cloakbrowser --outdir=dist",
-    "start:dist": "bun run dist/index.js",
+    "start": "bun run check && bun run index.ts",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "format": "biome format --write .",

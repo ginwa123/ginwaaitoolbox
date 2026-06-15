@@ -56,7 +56,7 @@ pub const SurgicalChanges = prompts.SurgicalChanges;
 pub const GoalDrivenExecution = prompts.GoalDrivenExecution;
 pub const SuccessCriteria = prompts.SuccessCriteria;
 pub const AntiPatterns = prompts.AntiPatterns;
-pub const CloakBrowserPrompt = browsing.CloakBrowserPrompt;
+pub const NalarBrowserPrompt = browsing.NalarBrowserPrompt;
 
 // Agentic Coding enhancements
 pub const AutonomousBehavior = prompts.AutonomousBehavior;
@@ -137,7 +137,7 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
     // .{ .name = "deep_research", .content = DeepResearch },
     // .{ .name = "file_editing", .content = FileEditingRules },
     // .{ .name = "dynamic_properties", .content = DynamicProperties, .requires_tool = "set_agent_properties" },
-    // .{ .name = "cloakbrowser", .content = CloakBrowserPrompt, .requires_tool = "browse" },
+    // .{ .name = "nalar_browser", .content = NalarBrowserPrompt, .requires_tool = "browse" },
 
     // === Workflow: classify → plan → execute → escalate ===
     .{ .name = "classification", .content = Classification },

@@ -3,8 +3,8 @@ const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
 const Value = std.json.Value;
 
-/// Input for CloakBrowser tool execution
-pub const CloakBrowserInput = struct {
+/// Input for NalarBrowser tool execution
+pub const NalarBrowserInput = struct {
     /// Action to perform: launch, open_page, snapshot, click, fill, press, close_page, close_browser
     action: []const u8,
     /// Browser ID from launch action
@@ -23,8 +23,8 @@ pub const CloakBrowserInput = struct {
     api_url: ?[]const u8 = null,
 };
 
-/// Result from CloakBrowser action execution
-pub const CloakBrowserResult = struct {
+/// Result from NalarBrowser action execution
+pub const NalarBrowserResult = struct {
     success: bool,
     browser_id: ?[]const u8 = null,
     page_id: ?[]const u8 = null,
@@ -35,8 +35,8 @@ pub const CloakBrowserResult = struct {
     err_msg: ?[]const u8 = null,
 };
 
-/// Execute a CloakBrowser action
-pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: CloakBrowserInput) !CloakBrowserResult {
+/// Execute a NalarBrowser action
+pub fn execute_nalar_browser(allocator: std.mem.Allocator, io: std.Io, input: NalarBrowserInput) !NalarBrowserResult {
     const api_url = input.api_url orelse "http://localhost:3000";
 
     // Build endpoint based on action
@@ -59,7 +59,7 @@ pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: Cl
         if (input.page_id) |pid| {
             endpoint_heap = try std.fmt.allocPrint(allocator, "/page/close/{s}", .{pid});
         } else {
-            return CloakBrowserResult{
+            return NalarBrowserResult{
                 .success = false,
                 .err_msg = try allocator.dupe(u8, "page_id required for close_page action"),
             };
@@ -68,13 +68,13 @@ pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: Cl
         if (input.browser_id) |bid| {
             endpoint_heap = try std.fmt.allocPrint(allocator, "/close/{s}", .{bid});
         } else {
-            return CloakBrowserResult{
+            return NalarBrowserResult{
                 .success = false,
                 .err_msg = try allocator.dupe(u8, "browser_id required for close_browser action"),
             };
         }
     } else {
-        return CloakBrowserResult{
+        return NalarBrowserResult{
             .success = false,
             .err_msg = try std.fmt.allocPrint(allocator, "Unknown action: {s}", .{input.action}),
         };
@@ -105,7 +105,7 @@ pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: Cl
     defer client.deinit();
 
     const uri = std.Uri.parse(full_url) catch |err| {
-        return CloakBrowserResult{
+        return NalarBrowserResult{
             .success = false,
             .err_msg = try std.fmt.allocPrint(allocator, "Invalid URL: {s}", .{@errorName(err)}),
         };
@@ -117,7 +117,7 @@ pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: Cl
             .content_type = .{ .override = "application/json" },
         },
     }) catch |err| {
-        return CloakBrowserResult{
+        return NalarBrowserResult{
             .success = false,
             .err_msg = try std.fmt.allocPrint(allocator, "HTTP request failed: {s}", .{@errorName(err)}),
         };
@@ -139,18 +139,18 @@ pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: Cl
 
     // DEBUG: Log response body details
     if (resp_bytes.len < 500) {
-        std.debug.print("DEBUG cloak_browser: url={s}, body={s}, status={d}, resp_len={d}, resp={s}\n", .{ full_url, body, status_code, resp_bytes.len, resp_bytes });
+        std.debug.print("DEBUG nalar_browser: url={s}, body={s}, status={d}, resp_len={d}, resp={s}\n", .{ full_url, body, status_code, resp_bytes.len, resp_bytes });
     } else {
-        std.debug.print("DEBUG cloak_browser: url={s}, body={s}, status={d}, resp_len={d}, resp_first_200={s}\n", .{ full_url, body, status_code, resp_bytes.len, resp_bytes[0..200] });
+        std.debug.print("DEBUG nalar_browser: url={s}, body={s}, status={d}, resp_len={d}, resp_first_200={s}\n", .{ full_url, body, status_code, resp_bytes.len, resp_bytes[0..200] });
     }
 
     // Parse JSON response
     const parsed = std.json.parseFromSlice(Value, allocator, resp_bytes, .{}) catch |err| {
-        std.debug.print("DEBUG cloak_browser: JSON parse error: {s}, body_len={d}\n", .{ @errorName(err), resp_bytes.len });
+        std.debug.print("DEBUG nalar_browser: JSON parse error: {s}, body_len={d}\n", .{ @errorName(err), resp_bytes.len });
         if (resp_bytes.len > 0) {
-            std.debug.print("DEBUG cloak_browser: body_content (first 500)={s}\n", .{resp_bytes[0..@min(500, resp_bytes.len)]});
+            std.debug.print("DEBUG nalar_browser: body_content (first 500)={s}\n", .{resp_bytes[0..@min(500, resp_bytes.len)]});
         }
-        return CloakBrowserResult{
+        return NalarBrowserResult{
             .success = false,
             .err_msg = try std.fmt.allocPrint(allocator, "JSON parse failed: {s}", .{@errorName(err)}),
         };
@@ -194,7 +194,7 @@ pub fn execute_cloak_browser(allocator: std.mem.Allocator, io: std.Io, input: Cl
         if (v == .string) err_msg = try allocator.dupe(u8, v.string);
     }
 
-    return CloakBrowserResult{
+    return NalarBrowserResult{
         .success = success,
         .browser_id = browser_id,
         .page_id = page_id,
@@ -229,7 +229,7 @@ fn buildJsonBody(allocator: std.mem.Allocator, map: *std.StringHashMap([]const u
 }
 
 /// Convert successful result to XML string
-pub fn toXMLSuccess(allocator: std.mem.Allocator, result: CloakBrowserResult) ![]const u8 {
+pub fn toXMLSuccess(allocator: std.mem.Allocator, result: NalarBrowserResult) ![]const u8 {
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
@@ -279,12 +279,12 @@ pub fn toXMLSuccess(allocator: std.mem.Allocator, result: CloakBrowserResult) ![
 }
 
 /// Convert error result to XML string
-pub fn toXMLError(allocator: std.mem.Allocator, result: CloakBrowserResult, action: []const u8) ![]const u8 {
+pub fn toXMLError(allocator: std.mem.Allocator, result: NalarBrowserResult, action: []const u8) ![]const u8 {
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     try buf.appendSlice(allocator, "<error>");
-    try buf.appendSlice(allocator, "CloakBrowser ");
+    try buf.appendSlice(allocator, "NalarBrowser ");
     try buf.appendSlice(allocator, action);
     try buf.appendSlice(allocator, " failed: ");
     if (result.err_msg) |msg| {
@@ -295,12 +295,12 @@ pub fn toXMLError(allocator: std.mem.Allocator, result: CloakBrowserResult, acti
     return try buf.toOwnedSlice(allocator);
 }
 
-/// CloakBrowser tool definition for agent
-pub const cloak_browser_tool = AgentTool{
+/// NalarBrowser tool definition for agent
+pub const nalar_browser_tool = AgentTool{
     .type = "function",
     .function = .{
-        .name = "cloak_browser",
-        .description = "CloakBrowser - stealth Chromium browser for anti-bot bypass. " ++
+        .name = "nalar_browser",
+        .description = "Nalar Browser - stealth Chromium browser for anti-bot bypass. " ++
             "Use this to browse websites that block automated tools (Cloudflare, reCAPTCHA, etc). " ++
             "Workflow: 1) launch to get browser_id, 2) open_page with url to get page_id+title, " ++
             "3) snapshot to get elements with their refs (e1, e2...), 4) click/fill/press to interact, " ++
@@ -346,7 +346,7 @@ pub const cloak_browser_tool = AgentTool{
                 .{
                     .name = "api_url",
                     .type = "string",
-                    .description = "CloakBrowser API server URL. Defaults to http://localhost:3000. Change if service runs on different port.",
+                    .description = "Nalar Browser API server URL. Defaults to http://localhost:3000. Change if service runs on different port.",
                 },
             },
             .required = &.{"action"},

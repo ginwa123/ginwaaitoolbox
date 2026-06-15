@@ -1,8 +1,8 @@
 const std = @import("std");
-const cloak_browser = @import("cloak_browser.zig");
+const nalar_browser = @import("nalar_browser.zig");
 
-test "CloakBrowserInput default values" {
-    const input = cloak_browser.CloakBrowserInput{ .action = "launch" };
+test "NalarBrowserInput default values" {
+    const input = nalar_browser.NalarBrowserInput{ .action = "launch" };
     try std.testing.expect(std.mem.eql(u8, input.action, "launch"));
     try std.testing.expect(input.browser_id == null);
     try std.testing.expect(input.page_id == null);
@@ -13,8 +13,8 @@ test "CloakBrowserInput default values" {
     try std.testing.expect(input.api_url == null);
 }
 
-test "CloakBrowserInput with all fields" {
-    const input = cloak_browser.CloakBrowserInput{
+test "NalarBrowserInput with all fields" {
+    const input = nalar_browser.NalarBrowserInput{
         .action = "open_page",
         .browser_id = "browser_123",
         .page_id = "page_456",
@@ -34,8 +34,8 @@ test "CloakBrowserInput with all fields" {
     try std.testing.expect(std.mem.eql(u8, input.api_url.?, "http://localhost:9000"));
 }
 
-test "CloakBrowserResult success with all fields" {
-    const result = cloak_browser.CloakBrowserResult{
+test "NalarBrowserResult success with all fields" {
+    const result = nalar_browser.NalarBrowserResult{
         .success = true,
         .browser_id = "browser_abc",
         .page_id = "page_xyz",
@@ -52,8 +52,8 @@ test "CloakBrowserResult success with all fields" {
     try std.testing.expect(result.err_msg == null);
 }
 
-test "CloakBrowserResult error case" {
-    const result = cloak_browser.CloakBrowserResult{
+test "NalarBrowserResult error case" {
+    const result = nalar_browser.NalarBrowserResult{
         .success = false,
         .err_msg = "Connection refused",
     };
@@ -65,9 +65,9 @@ test "CloakBrowserResult error case" {
 
 test "toXMLSuccess with minimal result" {
     const allocator = std.testing.allocator;
-    const result = cloak_browser.CloakBrowserResult{ .success = true };
+    const result = nalar_browser.NalarBrowserResult{ .success = true };
 
-    const xml = try cloak_browser.toXMLSuccess(allocator, result);
+    const xml = try nalar_browser.toXMLSuccess(allocator, result);
     defer allocator.free(xml);
 
     try std.testing.expect(std.mem.indexOf(u8, xml, "<success>1</success>") != null);
@@ -76,7 +76,7 @@ test "toXMLSuccess with minimal result" {
 
 test "toXMLSuccess with all fields" {
     const allocator = std.testing.allocator;
-    const result = cloak_browser.CloakBrowserResult{
+    const result = nalar_browser.NalarBrowserResult{
         .success = true,
         .browser_id = "browser_test",
         .page_id = "page_test",
@@ -85,7 +85,7 @@ test "toXMLSuccess with all fields" {
         .tree_json = "[{\"ref\":\"e1\",\"text\":\"Click Here\",\"href\":\"https://example.com/link\"}]",
     };
 
-    const xml = try cloak_browser.toXMLSuccess(allocator, result);
+    const xml = try nalar_browser.toXMLSuccess(allocator, result);
     defer allocator.free(xml);
 
     try std.testing.expect(std.mem.indexOf(u8, xml, "<browser_id>browser_test</browser_id>") != null);
@@ -97,42 +97,42 @@ test "toXMLSuccess with all fields" {
 
 test "toXMLError with error message" {
     const allocator = std.testing.allocator;
-    const result = cloak_browser.CloakBrowserResult{
+    const result = nalar_browser.NalarBrowserResult{
         .success = false,
         .err_msg = "Page not found",
     };
 
-    const xml = try cloak_browser.toXMLError(allocator, result, "open_page");
+    const xml = try nalar_browser.toXMLError(allocator, result, "open_page");
     defer allocator.free(xml);
 
-    try std.testing.expect(std.mem.indexOf(u8, xml, "<error>CloakBrowser open_page failed: Page not found</error>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<error>NalarBrowser open_page failed: Page not found</error>") != null);
 }
 
 test "toXMLError with null error message" {
     const allocator = std.testing.allocator;
-    const result = cloak_browser.CloakBrowserResult{
+    const result = nalar_browser.NalarBrowserResult{
         .success = false,
         .err_msg = null,
     };
 
-    const xml = try cloak_browser.toXMLError(allocator, result, "click");
+    const xml = try nalar_browser.toXMLError(allocator, result, "click");
     defer allocator.free(xml);
 
-    try std.testing.expect(std.mem.indexOf(u8, xml, "<error>CloakBrowser click failed: </error>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<error>NalarBrowser click failed: </error>") != null);
 }
 
-test "cloak_browser_tool definition" {
-    try std.testing.expect(std.mem.eql(u8, cloak_browser.cloak_browser_tool.type, "function"));
-    try std.testing.expect(std.mem.eql(u8, cloak_browser.cloak_browser_tool.function.name, "cloak_browser"));
-    try std.testing.expect(cloak_browser.cloak_browser_tool.function.description.len > 0);
-    try std.testing.expect(std.mem.eql(u8, cloak_browser.cloak_browser_tool.function.parameters.type, "object"));
-    try std.testing.expect(cloak_browser.cloak_browser_tool.function.parameters.properties.len == 8);
-    try std.testing.expect(cloak_browser.cloak_browser_tool.function.parameters.required.len == 1);
-    try std.testing.expect(std.mem.eql(u8, cloak_browser.cloak_browser_tool.function.parameters.required[0], "action"));
+test "nalar_browser_tool definition" {
+    try std.testing.expect(std.mem.eql(u8, nalar_browser.nalar_browser_tool.type, "function"));
+    try std.testing.expect(std.mem.eql(u8, nalar_browser.nalar_browser_tool.function.name, "nalar_browser"));
+    try std.testing.expect(nalar_browser.nalar_browser_tool.function.description.len > 0);
+    try std.testing.expect(std.mem.eql(u8, nalar_browser.nalar_browser_tool.function.parameters.type, "object"));
+    try std.testing.expect(nalar_browser.nalar_browser_tool.function.parameters.properties.len == 8);
+    try std.testing.expect(nalar_browser.nalar_browser_tool.function.parameters.required.len == 1);
+    try std.testing.expect(std.mem.eql(u8, nalar_browser.nalar_browser_tool.function.parameters.required[0], "action"));
 }
 
-test "cloak_browser_tool has correct property names" {
-    const props = cloak_browser.cloak_browser_tool.function.parameters.properties;
+test "nalar_browser_tool has correct property names" {
+    const props = nalar_browser.nalar_browser_tool.function.parameters.properties;
     const expected_names = &[_][]const u8{
         "action", "browser_id", "page_id", "url", "ref", "text", "key", "api_url",
     };

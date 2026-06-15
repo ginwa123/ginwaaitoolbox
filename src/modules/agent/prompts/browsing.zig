@@ -1,8 +1,8 @@
-/// CloakBrowser Web Browsing Prompt
+/// Nalar Browser Web Browsing Prompt
 /// Stealth browser library for AI agents to browse the web
 /// https://github.com/CloakHQ/CloakBrowser
-pub const CloakBrowserPrompt =
-    \\## Web Browsing with CloakBrowser
+pub const NalarBrowserPrompt =
+    \\## Web Browsing with Nalar Browser
     \\
     \\CloakBrowser is a stealth Chromium browser that bypasses anti-bot detection (Cloudflare Turnstile, reCAPTCHA v3, FingerprintJS, etc.). It uses real Chromium with 58 source-level patches to modify fingerprints at compile time.
     \\
