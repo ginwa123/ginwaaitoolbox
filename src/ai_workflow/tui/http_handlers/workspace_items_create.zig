@@ -61,8 +61,17 @@ pub fn workspaceItemsCreateHandler(ctx: gserverz.HttpContext, req: gserverz.Http
 
     const item_id = try generateItemId(allocator, ctx.io);
 
-    // Insert with timestamps and item_type, name, path columns
-    sqlite_db.exec(allocator, "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))", &.{ item_id, workspace_id, item_type, name, path }) catch {
+    // Insert with timestamps, item_type, name, path, AND a fresh
+    // `position` value. The position is computed as
+    // `COALESCE(MAX(position), -1) + 1` scoped to the workspace —
+    // the COALESCE handles the empty-workspace case (no rows →
+    // MAX is NULL → -1 → position 0). The new item appears at the
+    // top of the expanded workspace (ORDER BY position DESC puts
+    // the highest position first). The drag-reorder endpoint can
+    // later reassign these values. `workspace_id` is bound twice
+    // in the args tuple: once for the column, once for the
+    // correlated subquery.
+    sqlite_db.exec(allocator, "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1, datetime('now'), datetime('now'))", &.{ item_id, workspace_id, item_type, name, path, workspace_id }) catch {
         return res.jsonResponse(.{ .status_code = 500, .data = "{\"error\":\"Failed to create workspace item\"" });
     };
 
