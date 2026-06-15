@@ -3,9 +3,6 @@
  *
  * Anti-bot bypass stealth-browser service using CloakBrowser.
  * Uses native Bun HTTP server (no external framework).
- *
- * The compiled binary (built via `bun run build:compile`) runs as a process
- * named `nalar_browser` — visible as such in `top` / `htop` / `ps` / etc.
  */
 
 // Import from handler modules

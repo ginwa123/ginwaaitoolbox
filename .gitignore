@@ -11,7 +11,3 @@ test_main
 .nalar/tasks/
 /docs
 /zig-pkg
-
-# nalar_browser compiled binary
-src/modules/nalar_browser/nalar_browser
-src/modules/nalar_browser/nalar_browser.exe

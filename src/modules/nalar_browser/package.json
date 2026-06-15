@@ -3,16 +3,9 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
-  "engines": {
-    "bun": ">=1.1.0"
-  },
   "scripts": {
     "dev": "bun --watch index.ts",
-    "build": "bun build index.ts --target=bun --external=playwright-core --external=cloakbrowser --outdir=dist",
-    "build:compile": "bun build --compile ./index.ts --external=playwright-core --external=cloakbrowser --outfile nalar_browser",
-    "start": "bun run check && ./nalar_browser",
-    "start:dist": "bun run dist/index.js",
-    "start:compiled": "./nalar_browser",
+    "start": "bun run check && bun run index.ts",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "format": "biome format --write .",
