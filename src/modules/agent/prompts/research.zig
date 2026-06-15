@@ -16,8 +16,8 @@ pub const Research =
     \\- Understanding a symbol? → Use `lsp_definition`, `lsp_hover`, `lsp_references`
     \\- Finding files? → Use bash with `fd` (faster than find)
     \\- Searching patterns? → Use bash with `rg` (ripgrep, faster than grep)
-    \\- **Need knowledge from the web?** → Use CloakBrowser ⭐ (stealth Chromium, bypasses anti-bot)
-    \\- Need docs? → Use CloakBrowser for latest examples
+    \\- **Need knowledge from the web?** → Use nalar_browser ⭐ (stealth Chromium, bypasses anti-bot)
+    \\- Need docs? → Use nalar_browser for latest examples
     \\**Never write code you haven't verified with tools first.**
 ;
 
@@ -108,11 +108,11 @@ pub const ResearchTriggers =
     \\- **Understanding types/functions?** → `lsp_definition`, `lsp_hover`, `lsp_references`
     \\- **Finding files?** → bash with `fd` — faster than find
     \\- **Searching text?** → bash with `rg` — faster than grep
-    \\- **Need knowledge from the web?** → CloakBrowser ⭐ (stealth Chromium, bypasses anti-bot)
-    \\- **Unknown library/API?** → CloakBrowser for latest docs + examples
-    \\- **New language feature?** → look it up with CloakBrowser
-    \\- **Best practices uncertain?** → find current recommendations with CloakBrowser
-    \\- **Error unfamiliar?** → research error + solution with CloakBrowser
+    \\- **Need knowledge from the web?** → nalar_browser ⭐ (stealth Chromium, bypasses anti-bot)
+    \\- **Unknown library/API?** → nalar_browser for latest docs + examples
+    \\- **New language feature?** → look it up with nalar_browser
+    \\- **Best practices uncertain?** → find current recommendations with nalar_browser
+    \\- **Error unfamiliar?** → research error + solution with nalar_browser
     \\- **About to write code from memory?** → STOP → use tools → verify → write
     \\- **Navigating codebase?** → `lsp_workspace_symbol`, bash with `fd`/`rg`
 ;
@@ -185,7 +185,7 @@ pub const AvailableTools =
     \\- `lsp_document_symbol` — get all symbols in file
     \\
     \\**🌐 WEB RESEARCH (PRIMARY):** ⭐
-    \\- CloakBrowser — stealth Chromium that bypasses anti-bot detection
+    \\- nalar_browser — stealth Chromium that bypasses anti-bot detection
     \\- Achieves reCAPTCHA v3 score of 0.9 (vs 0.1 for stock browser)
     \\- Supports: open, snapshot, get, click, fill, press for interactive browsing
     \\  - Example: `web_browse({url: "https://docs.example.com", action: "snapshot"})`
@@ -208,7 +208,7 @@ pub const AvailableTools =
     \\- **Searching text?** → bash with `rg` (**NEVER bash `grep`**)**
     \\- **Directory structure?** → bash with `tree` | head
     \\- **Navigating code?** → LSP tools (**NEVER manual search**)**
-    \\- **Knowledge/info from web?** → CloakBrowser ⭐ (stealth Chromium, bypasses anti-bot)
+    \\- **Knowledge/info from web?** → nalar_browser ⭐ (stealth Chromium, bypasses anti-bot)
     \\- **2+ tasks in parallel?** → `spawn_sub_agent` (**NOT sequential!**)**
     \\- **Running commands?** → `bash` (**ONLY allowed for commands, not files!**)**
 ;
