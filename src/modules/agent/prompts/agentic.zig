@@ -32,7 +32,7 @@ pub const DeepResearch =
     \\- Check how similar features are implemented
     \\- Look at tests to understand expected behavior
     \\**Step 2: Research external knowledge**
-    \\- Use CloakBrowser for all external research ⭐ (bypasses anti-bot detection)
+    \\- Use nalar_browser for all external research ⭐ (bypasses anti-bot detection)
     \\- Search for patterns other developers use
     \\**Step 3: Form hypothesis**
     \\- State what you believe the solution is
@@ -172,7 +172,7 @@ pub const ProactiveLearning =
     \\- Unfamiliar pattern → research until understood
     \\
     \\**Learning sources:**
-    \\- CloakBrowser — all web research (bypasses anti-bot detection)
+    \\- nalar_browser — all web research (bypasses anti-bot detection)
     \\- `read_file` — existing codebase patterns
     \\
     \\**After learning, DOCUMENT it:**
