@@ -54,11 +54,27 @@ pub fn main(init: std.process.Init) !void {
     const dist_path = args_iter.next() orelse return error.MissingDistPath;
     const out_path = args_iter.next() orelse return error.MissingOutPath;
 
+    // Check if dist_path exists. If not, emit a stub webapp_assets.zig
+    // (empty assets array) so the nalar-desktop build doesn't fail when
+    // `bun run build` hasn't been run yet (e.g., on a fresh checkout).
+    // The embedded webview will be blank in that case, but the server
+    // binary (install:linux) still builds cleanly. Run `bun run build`
+    // in src/apps/desktop/ to populate dist/ and regenerate.
+    const dist_exists = if (std.fs.cwd().access(dist_path, .{})) true else |err| switch (err) {
+        error.FileNotFound => false,
+        else => return err,
+    };
+    if (!dist_exists) {
+        std.debug.print("warning: {s} not found; emitting empty webapp_assets.zig stub. Run 'bun run build' in the webapp dir to populate.\n", .{dist_path});
+    }
+
     // Walk the dist/ tree and collect every file's path (relative to the
     // root, with forward slashes — the walker normalizes them).
     var files: std.ArrayList([]const u8) = .empty;
     defer files.deinit(allocator);
-    try walkDir(allocator, dist_path, "", &files);
+    if (dist_exists) {
+        try walkDir(allocator, dist_path, "", &files);
+    }
 
     // Deterministic output order: sort lexicographically. Without this the
     // generated file would change order across runs (the walk order is
@@ -176,7 +192,11 @@ pub fn main(init: std.process.Init) !void {
         written += n;
     }
 
-    std.debug.print("Generated {s} with {d} assets\n", .{ out_path, files.items.len });
+    if (dist_exists) {
+        std.debug.print("Generated {s} with {d} assets\n", .{ out_path, files.items.len });
+    } else {
+        std.debug.print("Generated {s} with 0 assets (stub: dist/ was not found; run 'bun run build' to populate)\n", .{out_path});
+    }
 }
 
 fn lessThan(_: void, a: []const u8, b: []const u8) bool {
