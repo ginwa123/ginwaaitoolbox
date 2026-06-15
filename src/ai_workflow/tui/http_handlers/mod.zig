@@ -47,6 +47,7 @@ pub const workspaceItemsCreateHandler = @import("workspace_items_create.zig").wo
 pub const workspaceItemsListHandler = @import("workspace_items_get.zig").workspaceItemsListHandler;
 pub const workspaceItemsGetHandler = @import("workspace_items_get.zig").workspaceItemsGetHandler;
 pub const workspaceItemsUpdateHandler = @import("workspace_items_update.zig").workspaceItemsUpdateHandler;
+pub const workspaceItemsReorderHandler = @import("workspace_items_reorder.zig").workspaceItemsReorderHandler;
 pub const workspaceItemsDeleteHandler = @import("workspace_items_delete.zig").workspaceItemsDeleteHandler;
 pub const tasksListHandler = @import("tasks_list.zig").tasksListHandler;
 pub const tasksCreateHandler = @import("task_create.zig").tasksCreateHandler;
