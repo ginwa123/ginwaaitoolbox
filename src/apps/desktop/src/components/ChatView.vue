@@ -195,6 +195,62 @@ const renderResponse = (
         return `<span class="tool-inline">${tool_name}</span>`
       }
 
+      if (tool_name === 'nalar_browser') {
+        // Use the same action-aware summariser the standalone component uses,
+        // so the collapsed preview ("nalar_browser · open_page · Example Domain")
+        // matches what the user will see in the expanded body.
+        const nalarUnwrapped = tryUnwrapToolOutput(content)
+        if (nalarUnwrapped === null) {
+          return `<span class="tool-inline">${tool_name} → ${escapeHtml(content)}</span>`
+        }
+        const a = nalarUnwrapped.parameters
+        let action = 'unknown'
+        try {
+          const parsed = JSON.parse(a)
+          if (parsed && typeof parsed === 'object' && typeof parsed.action === 'string') {
+            action = parsed.action
+          }
+        } catch {
+          /* fall through */
+        }
+        const label = (() => {
+          if (nalarUnwrapped.error) return nalarUnwrapped.error
+          switch (action) {
+            case 'launch':
+              return nalarUnwrapped.data?.match(/<browser_id>([\s\S]*?)<\/browser_id>/)?.[1] ?? action
+            case 'open_page':
+              return (
+                nalarUnwrapped.data?.match(/<title>([\s\S]*?)<\/title>/)?.[1] ??
+                nalarUnwrapped.data?.match(/<url>([\s\S]*?)<\/url>/)?.[1] ??
+                action
+              )
+            case 'snapshot':
+              return (
+                (() => {
+                  const tree = nalarUnwrapped.data?.match(/<tree>([\s\S]*?)<\/tree>/)?.[1]
+                  if (!tree) return action
+                  try {
+                    const arr = JSON.parse(tree)
+                    return Array.isArray(arr)
+                      ? `snapshot · ${arr.length} element${arr.length !== 1 ? 's' : ''}`
+                      : action
+                  } catch {
+                    return action
+                  }
+                })()
+              )
+            case 'click':
+            case 'fill':
+            case 'press':
+            case 'close_page':
+            case 'close_browser':
+              return action
+            default:
+              return action
+          }
+        })()
+        return `<span class="tool-inline">${tool_name} · ${escapeHtml(action)} · ${escapeHtml(label)}</span>`
+      }
       if (tool_name === 'spawn_sub_agent') {
         const agentMatches = content.match(/<agent name="([^"]*)" success="([^"]*)">/g)
         const agentCount = agentMatches ? agentMatches.length : 0
