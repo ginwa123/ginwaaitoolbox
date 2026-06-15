@@ -806,13 +806,12 @@ pub fn callCompactAgentNew(
 ) ?[]const u8 {
     _ = cwd;
 
-    messages.items[0] = .{ .role = .system, .content = prompt.CompactionAgent };
-
     const last_idx = messages.items.len - 1;
 
     // Collect content from all messages between first and last
     var parts: std.ArrayList([]const u8) = .empty;
     defer parts.deinit(allocator);
+
     for (messages.items[1..last_idx]) |msg| {
         if (msg.content) |c| parts.append(allocator, c) catch |err| {
             logger.errFmt("[COMPACTION] Failed to collect message content: {s}", .{@errorName(err)});
@@ -850,30 +849,51 @@ pub fn callCompactAgentNew(
     };
     defer allocator.free(compact_message);
 
-    messages.items[last_idx] = .{ .role = .user, .content = compact_message };
+    // Build a fresh message list — never touch the caller's messages
+    var messages_convocompact: std.ArrayList(agent.AgentMessage) = .empty;
+    defer messages_convocompact.deinit(allocator);
+
+    messages_convocompact.append(allocator, .{
+        .role = .system,
+        .content = prompt.CompactionAgent,
+    }) catch |err| {
+        logger.errFmt("[COMPACTION] Failed to append system message: {s}", .{@errorName(err)});
+        return null;
+    };
+
+    messages_convocompact.append(allocator, .{
+        .role = .user,
+        .content = compact_message,
+    }) catch |err| {
+        logger.errFmt("[COMPACTION] Failed to append user message: {s}", .{@errorName(err)});
+        return null;
+    };
 
     var compaction_agent = agent.Agent.init(allocator, io) catch |err| {
         logger.errFmt("[COMPACTION] Agent.init failed: {s}", .{@errorName(err)});
         return null;
     };
     defer compaction_agent.deinit();
+
     compaction_agent.apiKey = api_key;
     compaction_agent.model = model;
     compaction_agent.baseUrl = base_url;
 
     const response = compaction_agent.callStreaming(.{
         .tools = &.{},
-        .messages = messages.items,
+        .messages = messages_convocompact.items,
         .temperature = 0.0,
     }, null, noopStreamCallbackNew) catch |err| {
         logger.errFmt("[COMPACTION] callStreaming failed: {s}", .{@errorName(err)});
         return null;
     };
     defer response.deinit();
+
     const content = response.content orelse {
         logger.errFmt("[COMPACTION] Response content is null", .{});
         return null;
     };
+
     if (content.len == 0) {
         logger.warnFmt("[COMPACTION] Empty response from CompactionAgent", .{});
         return null;
@@ -883,6 +903,7 @@ pub fn callCompactAgentNew(
         logger.errFmt("[COMPACTION] Failed to duplicate content: {s}", .{@errorName(err)});
         return null;
     };
+
     return duplicated;
 }
 
