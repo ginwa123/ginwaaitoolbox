@@ -2504,10 +2504,17 @@ pub fn listWorkspaceItemTasksWithCursor(
     // Build the ORDER BY column expression for the sort field. We
     // hardcode the column name (not the value) into the SQL string
     // — only the values are parameterized, so this is safe.
+    //
+    // Qualify with `t.` because the LEFT JOIN on `routines` exposes
+    // `id`, `created_at`, and `updated_at` from BOTH tables (the
+    // routines table also has all three per Migration 044), and
+    // SQLite rejects unqualified references as "ambiguous column
+    // name" — see the runtime error from `nalar --port 8081 ...`
+    // after the JOIN was added.
     const sort_col = switch (sort_field) {
-        .created_at => "created_at",
-        .updated_at => "updated_at",
-        .name => "name",
+        .created_at => "t.created_at",
+        .updated_at => "t.updated_at",
+        .name => "t.name",
     };
     const sort_dir_str = switch (sort_direction) {
         .asc => "ASC",
@@ -2515,7 +2522,7 @@ pub fn listWorkspaceItemTasksWithCursor(
     };
     const order_by = try std.fmt.allocPrint(
         allocator,
-        "ORDER BY {s} {s}, id {s}",
+        "ORDER BY {s} {s}, t.id {s}",
         .{ sort_col, sort_dir_str, sort_dir_str },
     );
     defer allocator.free(order_by);
@@ -2545,7 +2552,7 @@ pub fn listWorkspaceItemTasksWithCursor(
         };
         break :blk try std.fmt.allocPrint(
             allocator,
-            " AND ({s} {s} '{s}' OR ({s} = '{s}' AND id {s} '{s}'))",
+            " AND ({s} {s} '{s}' OR ({s} = '{s}' AND t.id {s} '{s}'))",
             .{ sort_col, cmp, sort_value, sort_col, sort_value, cmp, id_value },
         );
     };
