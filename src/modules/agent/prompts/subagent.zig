@@ -19,7 +19,7 @@ pub const SubAgentPrompt =
     \\
     \\Don't know → research immediately. Don't assume APIs or behavior.
     \\- Local: `lsp_*`, `read_file`, bash (`fd`, `rg`, `tree`)
-    \\- External: CloakBrowser for web research
+    \\- External: nalar_browser for web research
     \\
     \\## Explore Well
     \\1. Read brief. Understand hypothesis before touching anything.
