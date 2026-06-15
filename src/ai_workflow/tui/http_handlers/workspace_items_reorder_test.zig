@@ -115,11 +115,18 @@ test "workspace_items_get handler orders by position DESC" {
     const source = try readSource(allocator, LIST_PATH);
     defer allocator.free(source);
 
-    if (std.mem.indexOf(u8, source, "ORDER BY position DESC") == null) {
+    // The check is intentionally permissive: it looks for the
+    // substring "position DESC" (not "ORDER BY position DESC")
+    // so it works whether or not the column is aliased (the
+    // project's "always alias tables" convention uses
+    // `ORDER BY wi.position DESC` — see the cross-ref comment
+    // in `llm_history.zig:listWorkspaceItems`).
+    if (std.mem.indexOf(u8, source, "position DESC") == null) {
         std.debug.print(
             "\n!! {s} does not ORDER BY position DESC !!\n" ++
                 "   Drag-reorder will be lost on the next page load.\n" ++
-                "   Restore: ORDER BY position DESC (in the workspace_items SELECT)\n",
+                "   Restore: ORDER BY position DESC (or wi.position DESC) in\n" ++
+                "   the workspace_items SELECT.\n",
             .{LIST_PATH},
         );
         return error.OrderByPositionMissing;
