@@ -46,6 +46,12 @@ pub const OnEventInputLLMHistory = struct {
     total_tokens: ?u32 = null,
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
+    // Pipe-separated image URLs (matches the REST `image_url` shape in
+    // http_response.zig/SessionMessageResponse). Default null keeps
+    // every existing caller compiling without change; only the
+    // user-message-arrival path in workflow.zig and any future caller
+    // that has a user-attached image should set it.
+    image_url: ?[]const u8 = null,
     session_skills: ?[]const llm_history.SkillInfo = null,
 };
 
@@ -74,6 +80,7 @@ pub const SseEventLLMHistory = struct {
     total_tokens: ?u32 = null,
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
+    image_url: ?[]const u8 = null,
     session_skills: ?[]const SkillInfo = null,
 };
 
@@ -248,6 +255,7 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         .total_tokens = input.total_tokens,
         .diffview_before = input.diffview_before,
         .diffview_after = input.diffview_after,
+        .image_url = input.image_url,
         .session_skills = session_skills_json,
     };
 

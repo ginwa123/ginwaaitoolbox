@@ -3,6 +3,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const memories_mod = nalarcore.memories;
 const list_memory_mod = nalarcore.list_memory_tool;
+const http_response = @import("http_response.zig");
 
 /// GET /api/memories - List all global memory files (markdown) in
 /// $XDG_CONFIG_HOME/nalar/memories/ or ~/.config/nalar/memories/.
@@ -21,7 +22,7 @@ pub fn memoriesListHandler(
     const environment = di.environment orelse {
         return res.jsonResponse(.{
             .status_code = 500,
-            .data = "{\"error\":\"Missing environment\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing environment" }),
         });
     };
 

@@ -279,3 +279,231 @@ test "listMemoriesInDir free contract: empty list is safe to free" {
     memories.freeMemoriesList(alloc, list);
     // No panic — success criterion.
 }
+
+// -------------------------------------------------------------------------
+// CRUD helpers — Chunk 1 of the memories-settings-menu plan.
+//
+// The CRUD functions (readMemoryFile / writeMemoryFile / deleteMemoryFile /
+// memoryExists / editMemoryFile) all take a `*const std.process.Environ.Map`
+// and resolve the global memories dir from `HOME` (or `XDG_CONFIG_HOME`).
+// The tests below build a real `Environ.Map` with just `HOME` set to a
+// temp directory under `/tmp/`. The temp dir is created with a unique
+// name per test and torn down in a `defer` to keep the suite hermetic.
+// -------------------------------------------------------------------------
+
+/// Build a fresh `Environ.Map` with `HOME` set to `home_path`, plus a
+/// per-test scratch dir under `/tmp/`. The returned path is freshly
+/// created and must be removed with `deleteTree` by the caller. The
+/// returned env map must be `deinit`'d by the caller.
+fn setupMemoryHomeEnv(alloc: std.mem.Allocator, io: std.Io, scratch_name: []const u8) !struct {
+    env: std.process.Environ.Map,
+    home_path: []u8,
+} {
+    const home_path = try std.fs.path.join(alloc, &.{ "/tmp", scratch_name });
+    errdefer alloc.free(home_path);
+
+    // Clean any leftover state from a previous run, then create the dir.
+    std.Io.Dir.cwd().deleteTree(io, home_path) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, home_path);
+
+    var env = std.process.Environ.Map.init(alloc);
+    errdefer env.deinit();
+    try env.put("HOME", home_path);
+    return .{ .env = env, .home_path = home_path };
+}
+
+// -------------------------------------------------------------------------
+// isValidMemoryName — pure validator tests
+// -------------------------------------------------------------------------
+
+test "isValidMemoryName rejects empty, whitespace, no .md, slashes, parent ref" {
+    // Reject cases
+    const reject = &[_][]const u8{
+        "",                  // empty
+        "   ",               // whitespace only
+        "\t\r\n",            // other whitespace
+        "foo",               // no .md
+        "foo.txt",           // wrong extension
+        "foo.MD",            // case-sensitive — only lowercase .md is OK
+        "path/to.md",        // forward slash
+        "path\\to.md",       // backslash
+        "..",                // bare parent ref
+        "../escape.md",      // starts with parent ref
+        "subdir/../foo.md",  // contains parent ref anywhere
+    };
+    for (reject) |name| {
+        try std.testing.expect(!memories.isValidMemoryName(name));
+    }
+}
+
+test "isValidMemoryName accepts simple, hyphenated, and dotted .md names" {
+    // Accept cases
+    const accept = &[_][]const u8{
+        "foo.md",
+        "user-preferences.md",
+        "user_preferences.md",
+        "with.dots.in.name.md", // dots are OK; only ".." is rejected
+        "a.md",
+        "x-y-z.md",
+        "  trimmed.md  ",      // leading/trailing whitespace is trimmed
+    };
+    for (accept) |name| {
+        try std.testing.expect(memories.isValidMemoryName(name));
+    }
+}
+
+// -------------------------------------------------------------------------
+// readMemoryFile — invalid name + missing file
+// -------------------------------------------------------------------------
+
+test "readMemoryFile returns null on invalid name" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const env_or_err = try setupMemoryHomeEnv(alloc, io, "nalar-crud-invalid-name");
+    var env = env_or_err.env;
+    defer env.deinit();
+    defer alloc.free(env_or_err.home_path);
+    defer std.Io.Dir.cwd().deleteTree(io, env_or_err.home_path) catch {};
+
+    // Invalid names should return null even if the file would otherwise
+    // be readable — validation is the first guard.
+    try std.testing.expect(memories.readMemoryFile(alloc, io, &env, "") == null);
+    try std.testing.expect(memories.readMemoryFile(alloc, io, &env, "no-extension") == null);
+    try std.testing.expect(memories.readMemoryFile(alloc, io, &env, "../escape.md") == null);
+    try std.testing.expect(memories.readMemoryFile(alloc, io, &env, "sub/dir.md") == null);
+}
+
+test "readMemoryFile returns null on missing file" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const env_or_err = try setupMemoryHomeEnv(alloc, io, "nalar-crud-missing-read");
+    var env = env_or_err.env;
+    defer env.deinit();
+    defer alloc.free(env_or_err.home_path);
+    defer std.Io.Dir.cwd().deleteTree(io, env_or_err.home_path) catch {};
+
+    // No file written yet → null (not a panic / error throw).
+    const result = memories.readMemoryFile(alloc, io, &env, "never-written.md");
+    try std.testing.expect(result == null);
+}
+
+// -------------------------------------------------------------------------
+// writeMemoryFile — creates parent dir, overwrites
+// -------------------------------------------------------------------------
+
+test "writeMemoryFile creates parent dir if missing" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const env_or_err = try setupMemoryHomeEnv(alloc, io, "nalar-crud-create-parent");
+    var env = env_or_err.env;
+    defer env.deinit();
+    defer alloc.free(env_or_err.home_path);
+    defer std.Io.Dir.cwd().deleteTree(io, env_or_err.home_path) catch {};
+
+    // The memories/ subdir does not exist yet. writeMemoryFile must
+    // create it (via createDirPath) before writing the file.
+    try std.testing.expect(memories.writeMemoryFile(alloc, io, &env, "new.md", "# Hello\n"));
+
+    // Read it back to confirm the write actually landed.
+    const read_back = memories.readMemoryFile(alloc, io, &env, "new.md");
+    try std.testing.expect(read_back != null);
+    defer if (read_back) |r| alloc.free(r);
+    try std.testing.expectEqualStrings("# Hello\n", read_back.?);
+}
+
+test "writeMemoryFile overwrites existing file" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const env_or_err = try setupMemoryHomeEnv(alloc, io, "nalar-crud-overwrite");
+    var env = env_or_err.env;
+    defer env.deinit();
+    defer alloc.free(env_or_err.home_path);
+    defer std.Io.Dir.cwd().deleteTree(io, env_or_err.home_path) catch {};
+
+    // First write
+    try std.testing.expect(memories.writeMemoryFile(alloc, io, &env, "mem.md", "v1 content"));
+    {
+        const r1 = memories.readMemoryFile(alloc, io, &env, "mem.md");
+        try std.testing.expect(r1 != null);
+        defer if (r1) |r| alloc.free(r);
+        try std.testing.expectEqualStrings("v1 content", r1.?);
+    }
+    // Overwrite with new content
+    try std.testing.expect(memories.writeMemoryFile(alloc, io, &env, "mem.md", "v2 content (longer)"));
+    {
+        const r2 = memories.readMemoryFile(alloc, io, &env, "mem.md");
+        try std.testing.expect(r2 != null);
+        defer if (r2) |r| alloc.free(r);
+        try std.testing.expectEqualStrings("v2 content (longer)", r2.?);
+    }
+}
+
+// -------------------------------------------------------------------------
+// memoryExists — stat-based check
+// -------------------------------------------------------------------------
+
+test "memoryExists: false on missing, true after write, false after delete" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const env_or_err = try setupMemoryHomeEnv(alloc, io, "nalar-crud-exists");
+    var env = env_or_err.env;
+    defer env.deinit();
+    defer alloc.free(env_or_err.home_path);
+    defer std.Io.Dir.cwd().deleteTree(io, env_or_err.home_path) catch {};
+
+    // Missing → false
+    try std.testing.expect(!memories.memoryExists(alloc, io, &env, "absent.md"));
+
+    // Write → true
+    try std.testing.expect(memories.writeMemoryFile(alloc, io, &env, "present.md", "hello"));
+    try std.testing.expect(memories.memoryExists(alloc, io, &env, "present.md"));
+
+    // Delete → false
+    try std.testing.expect(memories.deleteMemoryFile(alloc, io, &env, "present.md"));
+    try std.testing.expect(!memories.memoryExists(alloc, io, &env, "present.md"));
+}
+
+// -------------------------------------------------------------------------
+// deleteMemoryFile — idempotent
+// -------------------------------------------------------------------------
+
+test "deleteMemoryFile is idempotent (returns true on missing)" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const env_or_err = try setupMemoryHomeEnv(alloc, io, "nalar-crud-idem-delete");
+    var env = env_or_err.env;
+    defer env.deinit();
+    defer alloc.free(env_or_err.home_path);
+    defer std.Io.Dir.cwd().deleteTree(io, env_or_err.home_path) catch {};
+
+    // Delete a file that was never written — must return true (idempotent).
+    try std.testing.expect(memories.deleteMemoryFile(alloc, io, &env, "never.md"));
+
+    // And on an invalid name — must return false (validation is the
+    // first guard, so an invalid name short-circuits to false before
+    // we even check the FS).
+    try std.testing.expect(!memories.deleteMemoryFile(alloc, io, &env, "no-ext"));
+    try std.testing.expect(!memories.deleteMemoryFile(alloc, io, &env, "../escape.md"));
+}
+
+// -------------------------------------------------------------------------
+// editMemoryFile — fails on missing
+// -------------------------------------------------------------------------
+
+test "editMemoryFile returns false when target does not exist" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const env_or_err = try setupMemoryHomeEnv(alloc, io, "nalar-crud-edit-missing");
+    var env = env_or_err.env;
+    defer env.deinit();
+    defer alloc.free(env_or_err.home_path);
+    defer std.Io.Dir.cwd().deleteTree(io, env_or_err.home_path) catch {};
+
+    // Edit on a file that was never written → false.
+    const result = try memories.editMemoryFile(alloc, io, &env, "ghost.md", "replacement");
+    try std.testing.expect(!result);
+
+    // And the file must NOT have been created as a side-effect — the
+    // whole point of edit (vs write) is to require pre-existence.
+    try std.testing.expect(!memories.memoryExists(alloc, io, &env, "ghost.md"));
+}

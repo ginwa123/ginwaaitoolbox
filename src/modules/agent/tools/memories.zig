@@ -353,3 +353,180 @@ pub fn freeMemoriesList(allocator: std.mem.Allocator, list: []MemoryInfo) void {
     }
     allocator.free(list);
 }
+
+// -------------------------------------------------------------------------
+// CRUD helpers — used by the settings-menu HTTP handlers (Chunk 3) and
+// eventually by the `read_memory` / `write_memory` agent tools. Kept here
+// (next to the listers) so the file remains the single source of truth
+// for memory-file IO.
+// -------------------------------------------------------------------------
+
+/// Validate a memory filename. Rejects:
+///   - empty / whitespace-only
+///   - anything not ending in ".md"
+///   - path separators ("/", "\")
+///   - parent references ("..")
+///
+/// Does NOT check whether the file exists — only that the name is safe to
+/// use as a single path component under the global memories directory.
+pub fn isValidMemoryName(name: []const u8) bool {
+    const trimmed = std.mem.trim(u8, name, " \t\r\n");
+    if (trimmed.len == 0) return false;
+    if (!std.mem.endsWith(u8, trimmed, ".md")) return false;
+    if (std.mem.indexOfAny(u8, trimmed, "/\\") != null) return false;
+    if (std.mem.indexOf(u8, trimmed, "..") != null) return false;
+    return true;
+}
+
+/// Read a single global memory file by name (e.g. "user-preferences.md").
+///
+/// Returns allocated content the caller owns and must free. Returns `null`
+/// when:
+///   - the name fails validation (empty, no `.md`, path sep, `..`)
+///   - the global memories dir cannot be resolved from the environment
+///   - the file does not exist or cannot be read
+pub fn readMemoryFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environment: *const std.process.Environ.Map,
+    name: []const u8,
+) ?[]u8 {
+    if (!isValidMemoryName(name)) return null;
+    const dir_path = get_global_memories_path(allocator, environment) orelse return null;
+    defer allocator.free(dir_path);
+
+    const full_path = std.fs.path.join(allocator, &.{ dir_path, name }) catch return null;
+    defer allocator.free(full_path);
+
+    return std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        allocator,
+        std.Io.Limit.limited(std.math.maxInt(usize)),
+    ) catch null;
+}
+
+/// Write content to a global memory file. Creates the parent dir if it
+/// is missing. Overwrites an existing file with the same name.
+///
+/// Returns `true` on success, `false` on validation error, IO failure, or
+/// OOM. The write is atomic-ish: content is first written to a temp file
+/// (`<name>.md.tmp`) and then renamed onto the final path. This avoids
+/// leaving a half-written file behind if the process is killed mid-write.
+///
+/// Note: a stale `<name>.md.tmp` from a prior crashed write is NOT cleaned
+/// up here. `writeMemoryFile` always overwrites it before renaming, so
+/// the temp file is always either renamed away (success) or left
+/// untouched (we never partially wrote to the temp). For the settings
+/// menu's UX this is acceptable; if it ever matters, a sweeper can scan
+/// for `*.tmp` files older than N minutes and remove them.
+pub fn writeMemoryFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environment: *const std.process.Environ.Map,
+    name: []const u8,
+    content: []const u8,
+) bool {
+    if (!isValidMemoryName(name)) return false;
+    const dir_path = get_global_memories_path(allocator, environment) orelse return false;
+    defer allocator.free(dir_path);
+
+    // Ensure the global memories directory exists. createDirPath is a
+    // no-op if the dir already exists, so it is safe on every call.
+    std.Io.Dir.cwd().createDirPath(io, dir_path) catch return false;
+
+    const full_path = std.fs.path.join(allocator, &.{ dir_path, name }) catch return false;
+    defer allocator.free(full_path);
+
+    // Atomic-ish: write to a temp file then rename. The temp path is
+    // `<dir>/<name>.md.tmp` — an extra `.tmp` suffix on the final
+    // filename. We can't use `path.join(full_path, ".tmp")` because
+    // `join` treats its arguments as path components and would produce
+    // `<dir>/<name>.md/.tmp` (a `.tmp` entry inside the memory file).
+    const tmp_path = allocator.alloc(u8, full_path.len + 4) catch return false;
+    defer allocator.free(tmp_path);
+    @memcpy(tmp_path[0..full_path.len], full_path);
+    @memcpy(tmp_path[full_path.len..][0..4], ".tmp");
+
+    {
+        const file = std.Io.Dir.cwd().createFile(io, tmp_path, .{}) catch return false;
+        defer std.Io.File.close(file, io);
+        std.Io.File.writeStreamingAll(file, io, content) catch return false;
+    }
+    // renameAbsolute asserts both paths are absolute. We joined to an
+    // absolute dir_path, so this is safe.
+    std.Io.Dir.renameAbsolute(tmp_path, full_path, io) catch return false;
+    return true;
+}
+
+/// Edit = overwrite an existing memory. Returns `false` if the file does
+/// not exist; callers should branch to `writeMemoryFile` for the "create
+/// new" case. Validation of the name follows the same rules as
+/// `writeMemoryFile`; an invalid name also returns `false`.
+///
+/// Returns `!bool` (error union) rather than `bool` to reserve the option
+/// of returning a richer error type in the future without breaking the
+/// call sites. Today no operation inside this function can fail in a way
+/// that bubbles out — every internal failure is mapped to `false`.
+pub fn editMemoryFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environment: *const std.process.Environ.Map,
+    name: []const u8,
+    content: []const u8,
+) !bool {
+    if (!isValidMemoryName(name)) return false;
+    const dir_path = get_global_memories_path(allocator, environment) orelse return false;
+    defer allocator.free(dir_path);
+    const full_path = try std.fs.path.join(allocator, &.{ dir_path, name });
+    defer allocator.free(full_path);
+
+    // Fail if the file does not exist — caller can branch to add.
+    _ = std.Io.Dir.cwd().statFile(io, full_path, .{}) catch return false;
+
+    return writeMemoryFile(allocator, io, environment, name, content);
+}
+
+/// Delete a global memory file by name. Returns `true` on success OR if
+/// the file did not exist (idempotent delete — caller does not need to
+/// distinguish "was there" from "removed"). Returns `false` on validation
+/// error, missing env, or an unexpected IO failure.
+pub fn deleteMemoryFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environment: *const std.process.Environ.Map,
+    name: []const u8,
+) bool {
+    if (!isValidMemoryName(name)) return false;
+    const dir_path = get_global_memories_path(allocator, environment) orelse return false;
+    defer allocator.free(dir_path);
+
+    const full_path = std.fs.path.join(allocator, &.{ dir_path, name }) catch return false;
+    defer allocator.free(full_path);
+
+    std.Io.Dir.cwd().deleteFile(io, full_path) catch |err| {
+        if (err == error.FileNotFound) return true; // idempotent
+        return false;
+    };
+    return true;
+}
+
+/// Returns `true` if a memory with the given name exists in the global
+/// folder. A validation failure (empty name, no `.md`, path sep, `..`)
+/// also returns `false`.
+pub fn memoryExists(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environment: *const std.process.Environ.Map,
+    name: []const u8,
+) bool {
+    if (!isValidMemoryName(name)) return false;
+    const dir_path = get_global_memories_path(allocator, environment) orelse return false;
+    defer allocator.free(dir_path);
+
+    const full_path = std.fs.path.join(allocator, &.{ dir_path, name }) catch return false;
+    defer allocator.free(full_path);
+
+    _ = std.Io.Dir.cwd().statFile(io, full_path, .{}) catch return false;
+    return true;
+}

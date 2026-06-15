@@ -616,6 +616,12 @@ export interface SseEvent {
   // Diff view data for text_replace tool
   diffview_before?: string
   diffview_after?: string
+  // Pipe-separated image URLs (matches the REST SessionMessageResponse
+  // shape and the backend onEventSendLLMHistory payload). Frontend
+  // splits on '|' to populate Message.image_urls. Null for messages
+  // without attached images (most assistant responses, error paths,
+  // tool results that don't carry image data).
+  image_url?: string
 }
 
 // Create SSE connection for real-time updates.
@@ -977,6 +983,78 @@ export async function deleteSkill(
     params.set('cwd', options.cwd)
   }
   const response = await fetch(`${API_BASE}/skills?${params}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
+// Memories API
+export interface Memory {
+  name: string
+  title: string
+  path: string
+  size: number
+}
+
+export interface MemoryDetail extends Memory {
+  content: string
+}
+
+export interface MemoryDetailResponse {
+  memory: MemoryDetail | null
+  error_message: string | null
+}
+
+export interface MemoryDeleteResponse {
+  success: boolean
+  name: string
+  error_message: string | null
+}
+
+export async function getMemories(): Promise<{ memories: Memory[] }> {
+  const response = await fetch(`${API_BASE}/memories`)
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
+export async function getMemoryDetail(name: string): Promise<MemoryDetailResponse> {
+  const response = await fetch(`${API_BASE}/memories/${encodeURIComponent(name)}`)
+  if (!response.ok) {
+    if (response.status === 404) return { memory: null, error_message: 'Memory not found' }
+    throw new Error(`HTTP ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function createMemory(name: string, content: string): Promise<{ memory: Memory }> {
+  const response = await fetch(`${API_BASE}/memories`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, content }),
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(text || `HTTP ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function updateMemory(name: string, content: string): Promise<{ memory: Memory }> {
+  const response = await fetch(`${API_BASE}/memories/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(text || `HTTP ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function deleteMemory(name: string): Promise<MemoryDeleteResponse> {
+  const response = await fetch(`${API_BASE}/memories/${encodeURIComponent(name)}`, {
     method: 'DELETE',
   })
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
