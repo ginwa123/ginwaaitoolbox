@@ -82,7 +82,6 @@ pub const CallbackAiWorkerFlow = struct {
                 .parent_session_id = session_id,
                 .is_input = true,
                 .is_output = false,
-                .image_url = null,
             }) catch {};
 
             const session_skills_err = llm_history.getSessionSkills(allocator, db, session_id) catch null;
@@ -109,6 +108,7 @@ pub const CallbackAiWorkerFlow = struct {
                 .parent_session_id = session_id,
                 .is_input = true,
                 .is_output = false,
+                .image_url = null,
                 .session_skills = session_skills_err,
             }) catch {};
         };
