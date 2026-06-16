@@ -97,6 +97,7 @@ pub const SessionBroadcastInfo = struct {
     updated_at: []const u8,
     agent: []const u8,
     selected_profile_model: []const u8,
+    git_worktree_cwd: []const u8,
 };
 
 /// Get a list of sessions from the database
@@ -1749,6 +1750,7 @@ pub const SessionTableInfo = struct {
     created_at: []u8,
     updated_at: []u8,
     selected_profile_model: []u8,
+    git_worktree_cwd: []u8,
 
     pub fn deinit(self: SessionTableInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -1758,6 +1760,7 @@ pub const SessionTableInfo = struct {
         allocator.free(self.created_at);
         allocator.free(self.updated_at);
         allocator.free(self.selected_profile_model);
+        allocator.free(self.git_worktree_cwd);
     }
 };
 
@@ -1781,6 +1784,7 @@ pub fn create_session(
         .created_at = "",
         .updated_at = "",
         .selected_profile_model = "",
+        .git_worktree_cwd = "",
     }) catch {};
 
     return SessionTableInfo{
@@ -1790,6 +1794,7 @@ pub fn create_session(
         .created_at = try allocator.dupe(u8, ""),
         .updated_at = try allocator.dupe(u8, ""),
         .selected_profile_model = try allocator.dupe(u8, ""),
+        .git_worktree_cwd = try allocator.dupe(u8, ""),
     };
 }
 
@@ -1799,7 +1804,7 @@ pub fn getSession(
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?SessionTableInfo {
-    const sql = "SELECT id, name, status, COALESCE(cwd, ''), COALESCE(created_at, ''), COALESCE(updated_at, ''), COALESCE(selected_profile_model, '') FROM sessions WHERE id = ?";
+    const sql = "SELECT id, name, status, COALESCE(cwd, ''), COALESCE(created_at, ''), COALESCE(updated_at, ''), COALESCE(selected_profile_model, ''), COALESCE(git_worktree_cwd, '') FROM sessions WHERE id = ?";
 
     var rows = try db.query(allocator, sql, &.{id});
     defer rows.deinit();
@@ -1813,6 +1818,7 @@ pub fn getSession(
             .created_at = try allocator.dupe(u8, row.values[4]),
             .updated_at = try allocator.dupe(u8, row.values[5]),
             .selected_profile_model = try allocator.dupe(u8, row.values[6]),
+            .git_worktree_cwd = try allocator.dupe(u8, row.values[7]),
         };
         row.deinit(allocator);
         return session;
@@ -1844,6 +1850,7 @@ pub fn update_session_status(
             .created_at = s.created_at,
             .updated_at = s.updated_at,
             .selected_profile_model = s.selected_profile_model,
+            .git_worktree_cwd = s.git_worktree_cwd,
         }) catch {};
     }
 }
@@ -1871,6 +1878,7 @@ pub fn updateSessionName(
             .created_at = s.created_at,
             .updated_at = s.updated_at,
             .selected_profile_model = s.selected_profile_model,
+            .git_worktree_cwd = s.git_worktree_cwd,
         }) catch {};
     }
 }
@@ -1938,6 +1946,37 @@ pub fn updateSessionSelectedProfileModel(
             .created_at = s.created_at,
             .updated_at = s.updated_at,
             .selected_profile_model = s.selected_profile_model,
+            .git_worktree_cwd = s.git_worktree_cwd,
+        }) catch {};
+    }
+}
+
+/// Update session git_worktree_cwd. Pass empty string or null to clear.
+/// When the value changes, broadcast a session.updated SSE event so the
+/// ChatsList sidebar updates its 🌳 badge in real time.
+pub fn updateSessionGitWorktreeCwd(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    git_worktree_cwd: ?[]const u8,
+) !void {
+    const effective: []const u8 = git_worktree_cwd orelse "";
+    const sql = "UPDATE sessions SET git_worktree_cwd = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    try db.exec(allocator, sql, &.{ effective, id });
+
+    const session = getSession(allocator, db, id) catch null;
+    if (session) |s| {
+        defer s.deinit(allocator);
+        ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+            .action = "updated",
+            .id = s.id,
+            .name = s.name,
+            .status = s.status,
+            .cwd = s.cwd,
+            .created_at = s.created_at,
+            .updated_at = s.updated_at,
+            .selected_profile_model = s.selected_profile_model,
+            .git_worktree_cwd = s.git_worktree_cwd,
         }) catch {};
     }
 }
@@ -1961,6 +2000,7 @@ pub fn delete_session(
         .created_at = "",
         .updated_at = "",
         .selected_profile_model = "",
+        .git_worktree_cwd = "",
     }) catch {};
 }
 
@@ -2648,7 +2688,7 @@ pub fn getSessionsForBroadcast(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
 ) ![]SessionBroadcastInfo {
-    const sql = "SELECT s.id, COALESCE(s.name, ''), COALESCE(s.status, 'active'), COALESCE(s.cwd, ''), COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(h.agent, 'Agent'), COALESCE(s.selected_profile_model, '') FROM sessions s LEFT JOIN llm_history h ON s.id = h.session_id ORDER BY s.updated_at DESC";
+    const sql = "SELECT s.id, COALESCE(s.name, ''), COALESCE(s.status, 'active'), COALESCE(s.cwd, ''), COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(h.agent, 'Agent'), COALESCE(s.selected_profile_model, ''), COALESCE(s.git_worktree_cwd, '') FROM sessions s LEFT JOIN llm_history h ON s.id = h.session_id ORDER BY s.updated_at DESC";
 
     var rows = db.query(allocator, sql, &[_][]const u8{}) catch return &[_]SessionBroadcastInfo{};
     defer rows.deinit();
@@ -2666,6 +2706,7 @@ pub fn getSessionsForBroadcast(
             .updated_at = try allocator.dupe(u8, row.values[5]),
             .agent = try allocator.dupe(u8, row.values[6]),
             .selected_profile_model = try allocator.dupe(u8, row.values[7]),
+            .git_worktree_cwd = try allocator.dupe(u8, row.values[8]),
         };
         try sessions.append(allocator, session);
     }
@@ -2683,6 +2724,7 @@ pub fn freeSessionsForBroadcast(allocator: std.mem.Allocator, sessions: []Sessio
         allocator.free(s.created_at);
         allocator.free(s.updated_at);
         allocator.free(s.agent);
+        allocator.free(s.git_worktree_cwd);
     }
     allocator.free(sessions);
 }

@@ -99,7 +99,7 @@ pub const ToolCallJson = struct {
 };
 
 /// Input parameters for sending SSE session events
-/// Reflects the sessions table columns: id, name, status, cwd, created_at, updated_at, selected_profile_model
+/// Reflects the sessions table columns: id, name, status, cwd, created_at, updated_at, selected_profile_model, git_worktree_cwd
 pub const OnEventInputSessions = struct {
     action: []const u8, // "created", "updated", "deleted"
     id: []const u8,
@@ -109,6 +109,7 @@ pub const OnEventInputSessions = struct {
     created_at: []const u8,
     updated_at: []const u8,
     selected_profile_model: []const u8 = "",
+    git_worktree_cwd: []const u8 = "",
 };
 
 /// JSON event payload for SSE session events
