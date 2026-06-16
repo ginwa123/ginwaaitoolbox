@@ -832,6 +832,9 @@ export interface Session {
   agent: string
   sessionName: string
   selectedProfile?: string
+  // Bound git worktree path (empty string when no worktree is bound;
+  // optional because older sessions predate the set_git_worktree tool).
+  git_worktree_cwd?: string
 }
 
 export async function getSession(sessionId: string): Promise<Session | null> {
@@ -1158,6 +1161,10 @@ export interface SessionEvent {
   created_at: string
   updated_at: string
   selected_profile_model?: string
+  // Mirrors `git_worktree_cwd` on the Session interface: empty
+  // string when no worktree is bound, omitted for events that don't
+  // carry session fields (e.g. delete).
+  git_worktree_cwd?: string
 }
 
 // Create SSE connection for session events (global chat list updates).
