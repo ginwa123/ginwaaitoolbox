@@ -137,3 +137,80 @@ test "deriveBranchFromPath returns worktree/<basename>" {
     defer allocator.free(b3);
     try testing.expectEqualStrings("worktree/fix-bug-123", b3);
 }
+
+// ─── Static wiring tests (Chunk 3) ───────────────────────────────────────
+
+const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/tool_registry.zig";
+
+test "tool_registry.zig imports set_git_worktree module" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "set_git_worktree_mod") == null) {
+        std.debug.print("!! tool_registry.zig does not import set_git_worktree_mod !!\n", .{});
+        return error.SetGitWorktreeModImportMissing;
+    }
+    if (std.mem.indexOf(u8, source, "const set_git_worktree_mod = nalar_mod.set_git_worktree;") == null) {
+        std.debug.print("!! tool_registry.zig does not bind set_git_worktree_mod = nalar_mod.set_git_worktree !!\n", .{});
+        return error.SetGitWorktreeModBindingMissing;
+    }
+}
+
+test "tool_registry.zig defines execSetGitWorktree" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "pub fn execSetGitWorktree(") == null) {
+        std.debug.print("!! tool_registry.zig does not define pub fn execSetGitWorktree !!\n", .{});
+        return error.ExecSetGitWorktreeMissing;
+    }
+    if (std.mem.indexOf(u8, source, "updateSessionGitWorktreeCwd") == null) {
+        std.debug.print("!! execSetGitWorktree does not call updateSessionGitWorktreeCwd for DB persistence !!\n", .{});
+        return error.PersistenceCallMissing;
+    }
+}
+
+test "UNIFIED_TOOL_REGISTRY contains set_git_worktree entry" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    defer allocator.free(source);
+    // The registry entry should be a struct literal that wires the
+    // exec function and the tool definition together.
+    if (std.mem.indexOf(u8, source, ".name = \"set_git_worktree\"") == null) {
+        std.debug.print("!! UNIFIED_TOOL_REGISTRY is missing the set_git_worktree name entry !!\n", .{});
+        return error.RegistryNameEntryMissing;
+    }
+    if (std.mem.indexOf(u8, source, ".exec = execSetGitWorktree") == null) {
+        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = execSetGitWorktree !!\n", .{});
+        return error.RegistryExecBindingMissing;
+    }
+    if (std.mem.indexOf(u8, source, ".tool_def = set_git_worktree_mod.set_git_worktree_tool") == null) {
+        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .tool_def = set_git_worktree_mod.set_git_worktree_tool !!\n", .{});
+        return error.RegistryToolDefBindingMissing;
+    }
+}
+
+test "allAgentTools comptime list contains set_git_worktree tool def" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "set_git_worktree_mod.set_git_worktree_tool,") == null) {
+        std.debug.print("!! allAgentTools comptime list is missing set_git_worktree_mod.set_git_worktree_tool !!\n", .{});
+        return error.AllAgentToolsEntryMissing;
+    }
+}
+
+test "ToolExecContext has cwd_override field (Plan B forward-compat)" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    defer allocator.free(source);
+    // Plan B (conservative) for the CWD override: add the field as
+    // future-proofing. Mutating it from a tool exec is currently
+    // dead-letter (ToolExecContext is passed by value), but the field
+    // is required to be present so a follow-up plan can opt exec
+    // functions in to read it.
+    if (std.mem.indexOf(u8, source, "cwd_override: ?[]const u8 = null") == null) {
+        std.debug.print("!! ToolExecContext is missing the cwd_override field !!\n", .{});
+        return error.CwdOverrideFieldMissing;
+    }
+}
