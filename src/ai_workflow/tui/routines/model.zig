@@ -169,7 +169,7 @@ pub fn loadRoutineByTaskId(allocator: std.mem.Allocator, db: *SqliteBackend, tas
 pub fn listDueRoutineIds(allocator: std.mem.Allocator, db: *SqliteBackend, now_sqlite: []const u8) ![][]u8 {
     var q = try db.query(allocator,
         \\SELECT task_id FROM routines r
-        \\JOIN workspace_item_tasks wit ON wit.task_id = r.task_id
+        \\JOIN workspace_item_tasks wit ON wit.id = r.task_id
         \\WHERE r.enabled = 1
         \\  AND r.next_run_at <= ?
         \\  AND (r.last_status IS NULL OR r.last_status != 'running')
