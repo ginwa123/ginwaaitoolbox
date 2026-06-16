@@ -228,7 +228,7 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
     try sqlite_db.exec(allocator, session_sql, &.{ session_id, copy_session_name, copy_cwd, copy_profile });
 
     // Broadcast session created event
-    ai_workflow.on_event_sent.onEventSendSessions(allocator, .{
+    try ai_workflow.on_event_sent.onEventSendSessions(allocator, .{
         .action = "created",
         .id = session_id,
         .name = session_name,
@@ -237,5 +237,5 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
         .created_at = "",
         .updated_at = "",
         .selected_profile_model = effective_profile,
-    }) catch {};
+    });
 }

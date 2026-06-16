@@ -520,6 +520,10 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     };
                 }
 
+                llm_history.markSessionIdle(allocator, db, copy_session_id) catch |err| {
+                    logger.errFmt("Failed to mark session idle: {s}", .{@errorName(err)});
+                };
+
                 break;
             } else if (finish_reason == .length) {
                 current_max_tokens += 4096;
@@ -826,23 +830,48 @@ pub fn callCompactAgentNew(
     defer allocator.free(history_str);
 
     const compact_message = std.fmt.allocPrint(allocator,
-        \\You are compacting an AI agent's conversation history to reduce context length.
-        \\Preserve ALL of the following:
-        \\- The original task or goal
-        \\- Key decisions made and why
-        \\- Tool calls and their results (file reads, command outputs, etc.)
-        \\- Current progress and what remains
-        \\- Any errors encountered and how they were resolved
+        \\Create a handoff summary for another AI coding agent.
         \\
-        \\Format your response exactly as:
-        \\**Goal:** <one sentence>
-        \\**Progress:** <what has been done>
-        \\**Key findings:** <important outputs, facts, file contents>
-        \\**Next step:** <specific actionable next action>
+        \\Assume the next agent will never see the original conversation.
+        \\Preserve all information needed to continue work immediately.
         \\
-        \\History to compact:
+        \\Focus on:
+        \\1. What the agent is trying to accomplish
+        \\2. Current repository state
+        \\3. Current worktree and branch
+        \\4. Files touched and why
+        \\5. Important code discoveries
+        \\6. Failed approaches and why they failed
+        \\7. User requirements and preferences
+        \\8. Exact next task
+        \\
+        \\Avoid narrative conversation summaries.
+        \\Prefer operational state and actionable information.
+        \\
+        \\Output:
+        \\
+        \\GOAL:
+        \\
+        \\CURRENT STATE:
+        \\- cwd:
+        \\- repo:
+        \\- branch:
+        \\- worktree:
+        \\
+        \\TECH STACK:
+        \\
+        \\FILES MODIFIED:
+        \\
+        \\KEY DISCOVERIES:
+        \\
+        \\FAILED ATTEMPTS:
+        \\
+        \\OPEN ISSUES:
+        \\
+        \\NEXT ACTION:
+        \\
+        \\History:
         \\{s}
-        \\
     , .{history_str}) catch |err| {
         logger.errFmt("[COMPACTION] Failed to format compact message: {s}", .{@errorName(err)});
         return null;
