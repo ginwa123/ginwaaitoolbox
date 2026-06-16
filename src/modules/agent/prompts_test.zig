@@ -818,3 +818,491 @@ test "build_agent_prompt with sub_agents_listing: section is omitted when empty"
 
     try std.testing.expect(!contains(prompt, "## Available Sub-Agents"));
 }
+
+// ---------------------------------------------------------------------------
+// loadGlobalKnowledge — direct unit tests for the memory-file loader.
+//
+// The function is `pub` in `prompts.zig` solely for testability from this
+// file. The tests below set up a real `Environ.Map` with `HOME` pointing
+// at a temp directory under `/tmp/`, create real `.md` files in the
+// expected `~/.config/nalar/memories/` subdir, then call
+// `loadGlobalKnowledge` directly and assert the returned markdown blob
+// matches the documented format:
+//
+//   ### <title> (`<filename>`)\n\n<full file content>\n\n
+//
+// Per-file errors (open / read / title extraction) skip the file and
+// continue — covered by the "corrupt file is skipped" test.
+// ---------------------------------------------------------------------------
+
+test "loadGlobalKnowledge returns empty string when env is null" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const result = try prompts.loadGlobalKnowledge(alloc, io, null);
+    defer alloc.free(result);
+
+    // Graceful degradation: no error, no content.
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "loadGlobalKnowledge returns empty string when HOME has no memories subdir" {
+    // First-run case: HOME exists but the user has not created
+    // ~/.config/nalar/memories/ yet. Must not error, must return "".
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_home = "/tmp/nalar-load-global-knowledge-missing-dir";
+    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, tmp_home);
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("HOME", tmp_home);
+
+    const result = try prompts.loadGlobalKnowledge(alloc, io, &env);
+    defer alloc.free(result);
+
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "loadGlobalKnowledge returns empty string when memories dir exists but is empty" {
+    // The dir exists but contains no .md files. Mirrors the first-run
+    // contract: no memories → no Global Knowledge content.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_home = "/tmp/nalar-load-global-knowledge-empty-dir";
+    const memories_dir = "/tmp/nalar-load-global-knowledge-empty-dir/.config/nalar/memories";
+    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, memories_dir);
+
+    // Drop a non-md file to confirm it's ignored, not picked up as a memory.
+    const txt_path = "/tmp/nalar-load-global-knowledge-empty-dir/.config/nalar/memories/notes.txt";
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, txt_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io, "should be ignored");
+    }
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("HOME", tmp_home);
+
+    const result = try prompts.loadGlobalKnowledge(alloc, io, &env);
+    defer alloc.free(result);
+
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "loadGlobalKnowledge loads a single memory file with H1 title" {
+    // The happy path: one .md file with an H1 heading. The function
+    // must emit `### <title> (`<filename>`)` followed by the full file
+    // content. The H1 line itself appears in the file content (the
+    // function does NOT strip the source H1 — it just renders a new
+    // `### <title> ...` heading derived from the H1).
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_home = "/tmp/nalar-load-global-knowledge-single-h1";
+    const memories_dir = "/tmp/nalar-load-global-knowledge-single-h1/.config/nalar/memories";
+    const file_path = "/tmp/nalar-load-global-knowledge-single-h1/.config/nalar/memories/regression-test-rule.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, memories_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Write a Regression Test First
+            \\
+            \\After fixing a tricky bug, write a regression test before
+            \\touching anything else. Fixes without tests regress.
+            \\
+        );
+    }
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("HOME", tmp_home);
+
+    const result = try prompts.loadGlobalKnowledge(alloc, io, &env);
+    defer alloc.free(result);
+
+    // Heading uses the H1 title in backticks, paired with the filename.
+    try std.testing.expect(contains(result, "### Write a Regression Test First (`regression-test-rule.md`)"));
+    // Full file content is included (not truncated).
+    try std.testing.expect(contains(result, "After fixing a tricky bug, write a regression test before"));
+    try std.testing.expect(contains(result, "touching anything else. Fixes without tests regress"));
+    // Trailing blank line separator between entries.
+    try std.testing.expect(contains(result, "regress.\n\n"));
+}
+
+test "loadGlobalKnowledge uses filename stem as title when no H1 is present" {
+    // No H1 → `extractTitle` falls back to the filename stem (e.g.
+    // "random-name.md" → "random-name"). The rendered heading must use
+    // the stem in place of an H1 title.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_home = "/tmp/nalar-load-global-knowledge-no-h1";
+    const memories_dir = "/tmp/nalar-load-global-knowledge-no-h1/.config/nalar/memories";
+    const file_path = "/tmp/nalar-load-global-knowledge-no-h1/.config/nalar/memories/random-name.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, memories_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io, "Just some prose, no header at all.\n");
+    }
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("HOME", tmp_home);
+
+    const result = try prompts.loadGlobalKnowledge(alloc, io, &env);
+    defer alloc.free(result);
+
+    // Title is the stem (without .md), not the full filename.
+    try std.testing.expect(contains(result, "### random-name (`random-name.md`)"));
+    // File body is present.
+    try std.testing.expect(contains(result, "Just some prose, no header at all."));
+}
+
+test "loadGlobalKnowledge concatenates multiple memory files" {
+    // Two .md files in the same dir → both rendered, separated by a
+    // blank line. We don't assert on file order (dir iteration is
+    // OS-dependent); we just verify both files appear with their
+    // headings and content somewhere in the output.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_home = "/tmp/nalar-load-global-knowledge-multi";
+    const memories_dir = "/tmp/nalar-load-global-knowledge-multi/.config/nalar/memories";
+    const file1 = "/tmp/nalar-load-global-knowledge-multi/.config/nalar/memories/after-fix-test.md";
+    const file2 = "/tmp/nalar-load-global-knowledge-multi/.config/nalar/memories/stderr-debug.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, memories_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, file1, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Write Regression Test First
+            \\
+            \\Always add a regression test after fixing a tricky bug.
+            \\
+        );
+    }
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, file2, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Use stderr for Debug Output
+            \\
+            \\Stderr can be redirected without affecting stdout.
+            \\
+        );
+    }
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("HOME", tmp_home);
+
+    const result = try prompts.loadGlobalKnowledge(alloc, io, &env);
+    defer alloc.free(result);
+
+    // Both headings appear.
+    try std.testing.expect(contains(result, "### Write Regression Test First (`after-fix-test.md`)"));
+    try std.testing.expect(contains(result, "### Use stderr for Debug Output (`stderr-debug.md`)"));
+    // Both bodies appear.
+    try std.testing.expect(contains(result, "Always add a regression test after fixing a tricky bug."));
+    try std.testing.expect(contains(result, "Stderr can be redirected without affecting stdout."));
+}
+
+test "loadGlobalKnowledge skips a corrupt file and loads the rest" {
+    // Mirrors the "openFile/readFile errors skip-and-continue" contract
+    // from `loadGlobalKnowledge`. A file that's been replaced by a
+    // directory of the same name can't be opened as a regular file, so
+    // it's silently skipped. The other file must still load.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_home = "/tmp/nalar-load-global-knowledge-corrupt-skip";
+    const memories_dir = "/tmp/nalar-load-global-knowledge-corrupt-skip/.config/nalar/memories";
+    const bad_path = "/tmp/nalar-load-global-knowledge-corrupt-skip/.config/nalar/memories/broken.md";
+    const good_path = "/tmp/nalar-load-global-knowledge-corrupt-skip/.config/nalar/memories/working.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, memories_dir);
+
+    // Create `broken.md` AS A DIRECTORY (so openFile fails — it's not
+    // a regular file). This simulates a corrupt / permission-denied
+    // file. The loader must skip it, not abort.
+    try std.Io.Dir.cwd().createDirPath(io, bad_path);
+
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, good_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Good Memory
+            \\
+            \\This file loads fine.
+            \\
+        );
+    }
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("HOME", tmp_home);
+
+    const result = try prompts.loadGlobalKnowledge(alloc, io, &env);
+    defer alloc.free(result);
+
+    // The good file is rendered; the bad one is silently absent.
+    try std.testing.expect(contains(result, "### Good Memory (`working.md`)"));
+    try std.testing.expect(contains(result, "This file loads fine."));
+    try std.testing.expect(!contains(result, "broken.md"));
+}
+
+// ---------------------------------------------------------------------------
+// loadLocalKnowledge — direct unit tests for the per-project memory loader.
+//
+// Sibling of `loadGlobalKnowledge`, but scoped to `<cwd>/.nalar/memories/`
+// instead of `<HOME>/.config/nalar/memories/`. The function does NOT take
+// an environment — local knowledge is project-scoped, not user-scoped.
+//
+// The tests mirror the `loadGlobalKnowledge` suite (empty cwd, missing
+// subdir, empty dir, single H1, no-H1 fallback, multiple files, corrupt
+// skip) so the two loaders are tested in parallel and their contract
+// symmetry is enforced.
+// ---------------------------------------------------------------------------
+
+test "loadLocalKnowledge returns empty string when cwd is empty" {
+    // No project context → no local knowledge. Mirrors the first-run
+    // contract: an empty cwd must NOT error, must return "".
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const result = try prompts.loadLocalKnowledge(alloc, io, "");
+    defer alloc.free(result);
+
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "loadLocalKnowledge returns empty string when cwd has no .nalar/memories subdir" {
+    // First-run case: cwd is a real path but the user has not created
+    // `<cwd>/.nalar/memories/` yet. Must not error, must return "".
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_cwd = "/tmp/nalar-load-local-knowledge-missing-dir";
+    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, tmp_cwd);
+
+    const result = try prompts.loadLocalKnowledge(alloc, io, tmp_cwd);
+    defer alloc.free(result);
+
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "loadLocalKnowledge returns empty string when memories dir exists but is empty" {
+    // The dir exists but contains no .md files. Mirrors the first-run
+    // contract: no memories → no Local Knowledge content.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_cwd = "/tmp/nalar-load-local-knowledge-empty-dir";
+    const memories_dir = "/tmp/nalar-load-local-knowledge-empty-dir/.nalar/memories";
+    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, memories_dir);
+
+    // Drop a non-md file to confirm it's ignored, not picked up as a memory.
+    const txt_path = "/tmp/nalar-load-local-knowledge-empty-dir/.nalar/memories/notes.txt";
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, txt_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io, "should be ignored");
+    }
+
+    const result = try prompts.loadLocalKnowledge(alloc, io, tmp_cwd);
+    defer alloc.free(result);
+
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "loadLocalKnowledge loads a single memory file with H1 title" {
+    // Happy path: one .md file with an H1 heading. The function must
+    // emit `### <title> (<filename>)` followed by the full file
+    // content. The H1 line itself appears in the file content (the
+    // function does NOT strip the source H1 — it just renders a new
+    // `### <title> ...` heading derived from the H1).
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_cwd = "/tmp/nalar-load-local-knowledge-single-h1";
+    const memories_dir = "/tmp/nalar-load-local-knowledge-single-h1/.nalar/memories";
+    const file_path = "/tmp/nalar-load-local-knowledge-single-h1/.nalar/memories/project-build-rule.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, memories_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Project Build Rule
+            \\
+            \\Always run `zig build test:ai_workflow:tui` before declaring
+            \\a task done in this repo. Fixes without tests regress.
+            \\
+        );
+    }
+
+    const result = try prompts.loadLocalKnowledge(alloc, io, tmp_cwd);
+    defer alloc.free(result);
+
+    // Heading uses the H1 title in backticks, paired with the filename.
+    try std.testing.expect(contains(result, "### Project Build Rule (`project-build-rule.md`)"));
+    // Full file content is included (not truncated).
+    try std.testing.expect(contains(result, "Always run `zig build test:ai_workflow:tui` before declaring"));
+    try std.testing.expect(contains(result, "a task done in this repo. Fixes without tests regress"));
+    // Trailing blank line separator between entries.
+    try std.testing.expect(contains(result, "regress.\n\n"));
+}
+
+test "loadLocalKnowledge uses filename stem as title when no H1 is present" {
+    // No H1 → `extractTitle` falls back to the filename stem (e.g.
+    // "random-name.md" → "random-name"). The rendered heading must use
+    // the stem in place of an H1 title.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_cwd = "/tmp/nalar-load-local-knowledge-no-h1";
+    const memories_dir = "/tmp/nalar-load-local-knowledge-no-h1/.nalar/memories";
+    const file_path = "/tmp/nalar-load-local-knowledge-no-h1/.nalar/memories/random-name.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, memories_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io, "Just some prose, no header at all.\n");
+    }
+
+    const result = try prompts.loadLocalKnowledge(alloc, io, tmp_cwd);
+    defer alloc.free(result);
+
+    // Title is the stem (without .md), not the full filename.
+    try std.testing.expect(contains(result, "### random-name (`random-name.md`)"));
+    // File body is present.
+    try std.testing.expect(contains(result, "Just some prose, no header at all."));
+}
+
+test "loadLocalKnowledge concatenates multiple memory files" {
+    // Two .md files in the same dir → both rendered, separated by a
+    // blank line. We don't assert on file order (dir iteration is
+    // OS-dependent); we just verify both files appear with their
+    // headings and content somewhere in the output.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_cwd = "/tmp/nalar-load-local-knowledge-multi";
+    const memories_dir = "/tmp/nalar-load-local-knowledge-multi/.nalar/memories";
+    const file1 = "/tmp/nalar-load-local-knowledge-multi/.nalar/memories/run-tests-first.md";
+    const file2 = "/tmp/nalar-load-local-knowledge-multi/.nalar/memories/commit-style.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, memories_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, file1, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Run Tests First
+            \\
+            \\Always run the test suite before committing.
+            \\
+        );
+    }
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, file2, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Commit Style
+            \\
+            \\Use conventional commits for this project.
+            \\
+        );
+    }
+
+    const result = try prompts.loadLocalKnowledge(alloc, io, tmp_cwd);
+    defer alloc.free(result);
+
+    // Both headings appear.
+    try std.testing.expect(contains(result, "### Run Tests First (`run-tests-first.md`)"));
+    try std.testing.expect(contains(result, "### Commit Style (`commit-style.md`)"));
+    // Both bodies appear.
+    try std.testing.expect(contains(result, "Always run the test suite before committing."));
+    try std.testing.expect(contains(result, "Use conventional commits for this project."));
+}
+
+test "loadLocalKnowledge skips a corrupt file and loads the rest" {
+    // Mirrors the "openFile/readFile errors skip-and-continue" contract
+    // from `loadLocalKnowledge`. A file that's been replaced by a
+    // directory of the same name can't be opened as a regular file, so
+    // it's silently skipped. The other file must still load.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_cwd = "/tmp/nalar-load-local-knowledge-corrupt-skip";
+    const memories_dir = "/tmp/nalar-load-local-knowledge-corrupt-skip/.nalar/memories";
+    const bad_path = "/tmp/nalar-load-local-knowledge-corrupt-skip/.nalar/memories/broken.md";
+    const good_path = "/tmp/nalar-load-local-knowledge-corrupt-skip/.nalar/memories/working.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, memories_dir);
+
+    // Create `broken.md` AS A DIRECTORY (so openFile fails — it's not
+    // a regular file). This simulates a corrupt / permission-denied
+    // file. The loader must skip it, not abort.
+    try std.Io.Dir.cwd().createDirPath(io, bad_path);
+
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, good_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Good Memory
+            \\
+            \\This file loads fine.
+            \\
+        );
+    }
+
+    const result = try prompts.loadLocalKnowledge(alloc, io, tmp_cwd);
+    defer alloc.free(result);
+
+    // The good file is rendered; the bad one is silently absent.
+    try std.testing.expect(contains(result, "### Good Memory (`working.md`)"));
+    try std.testing.expect(contains(result, "This file loads fine."));
+    try std.testing.expect(!contains(result, "broken.md"));
+}

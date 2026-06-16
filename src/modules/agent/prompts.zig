@@ -202,7 +202,11 @@ fn hasTool(tools: []const tool_models.AgentTool, name: []const u8) bool {
 /// if total memory content exceeds that, the LLM call will fail and the
 /// user must trim. We trust users to keep their memories reasonable in
 /// size.
-fn loadGlobalKnowledge(
+// `pub` so the unit test in `prompts_test.zig` can call it directly. The
+// function is still internal to the agent module — no external caller in
+// the codebase imports it. Visibility widening is the standard Zig
+// testability pattern for private helpers.
+pub fn loadGlobalKnowledge(
     allocator: std.mem.Allocator,
     io: std.Io,
     environment: ?*const std.process.Environ.Map,
@@ -254,7 +258,9 @@ fn loadGlobalKnowledge(
 /// Per-file errors (open, read, title extraction) skip the file and
 /// continue — never break the prompt. **No cap** on aggregate or per-file
 /// size; mirrors `loadGlobalKnowledge`'s trust-the-user policy.
-fn loadLocalKnowledge(
+// `pub` so the unit test in `prompts_test.zig` can call it directly.
+// Mirrors the `pub` decision on `loadGlobalKnowledge` above.
+pub fn loadLocalKnowledge(
     allocator: std.mem.Allocator,
     io: std.Io,
     cwd: []const u8,

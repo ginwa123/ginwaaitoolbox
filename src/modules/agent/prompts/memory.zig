@@ -84,57 +84,76 @@ pub const NalarMdAutoUpdate =
 pub const GlobalMemorySystem =
     \\## Global Memory System
     \\
-    \\Persistent memory lives in `~/.config/nalar/memories/` (XDG-aware).
-    \\Each memory is a standalone markdown file, shared across all sessions
+    \\Persistent memory lives in the platform-specific user configuration
+    \\directory under `nalar/memories/`.
+    \\
+    \\Each memory is a standalone markdown file shared across all sessions
     \\and projects.
     \\
     \\### Reading memories
     \\
-    \\All memory files are **auto-injected into your context** — you never
-    \\need to read them manually. Call `list_memory` only when you need to:
-    \\
-    \\- Edit or delete a memory (to get its path)
-    \\- Verify a name isn't already taken before creating a new file
+    \\All memory files are automatically injected into context. You do not
+    \\need to read them manually during normal work.
     \\
     \\### Writing memories
     \\
-    \\After every task, ask: *would this help a future agent in a different
-    \\context?* If yes, update memory. This is **mandatory** when you:
+    \\After every completed task, ask:
     \\
-    \\- Hit a non-obvious error and found the fix
-    \\- Learned a project convention, gotcha, or build quirk
-    \\- Discovered a reusable pattern or best practice
-    \\- Were corrected by the user — capture the right approach
+    \\> Would this knowledge help a future agent solve a similar problem?
     \\
-    \\**Before creating a new file**, call `list_memory` to check for
-    \\duplicates. Prefer `text_replace` on an existing file over a new one.
+    \\If yes, update memory.
     \\
-    \\**File conventions:**
-    \\- Path: `~/.config/nalar/memories/<kebab-case>.md`
+    \\Creating or updating memory is mandatory when:
+    \\
+    \\- You encountered a non-obvious error and found the fix
+    \\- You spent meaningful time debugging before discovering the root cause
+    \\- You solved a difficult problem through investigation, experimentation,
+    \\  research, or trial and error
+    \\- You learned a project convention, build quirk, or environment gotcha
+    \\- You discovered a reusable pattern or best practice
+    \\- The user corrected your approach
+    \\- You found platform-specific behavior or compatibility issues
+    \\- You identified a common failure mode and its resolution
+    \\
+    \\IMPORTANT:
+    \\If another competent agent could reasonably get stuck on the same
+    \\problem in the future, you MUST create or update a memory describing:
+    \\
+    \\- The symptoms
+    \\- The root cause
+    \\- The successful solution
+    \\- Any failed approaches worth avoiding
+    \\
+    \\Do not skip memory creation simply because the task is complete.
+    \\
+    \\### File conventions
+    \\
     \\- Start with a `# H1` title
-    \\- One insight per file — concise, not a brain dump
+    \\- Use kebab-case filenames
+    \\- One insight per file
+    \\- Keep memories concise and reusable
+    \\- Prefer root causes over symptoms
     \\
     \\### Maintaining memories
     \\
-    \\Memories can go stale. When you encounter an existing memory, ask:
-    \\*is this still accurate and useful?* If not:
+    \\Memories can become stale. When encountering an existing memory:
     \\
-    \\- **Outdated** — update it with `text_replace`
-    \\- **Wrong or misleading** — fix it immediately with `text_replace`
-    \\- **No longer relevant** — delete it with `remove_file`
+    \\- Outdated → update it
+    \\- Wrong or misleading → fix it immediately
+    \\- No longer relevant → delete it
     \\
-    \\Don't let bad memories persist. A wrong memory is worse than no memory.
+    \\Do not let incorrect memories persist.
     \\
     \\### Write for reuse, not for today
     \\
-    \\Memories are global. Write insights that generalise beyond the current
-    \\task. If an insight is language-specific, say so in the filename.
+    \\Memories are global. Write insights that generalize beyond the current
+    \\task.
     \\
-    \\| ❌ Too specific | ✅ Generalised |
+    \\| ❌ Too specific | ✅ Generalized |
     \\|---|---|
-    \\| "Use `std.ArrayList` in Zig 0.15" | "Prefer dynamic arrays when length is unknown at compile time" |
-    \\| "Call `fmt.Println` for debug in Go" | "Write debug output to stderr so it doesn't pollute stdout" |
-    \\| "compile_commands.json is at /build" | "After fixing a tricky bug, write a regression test immediately" |
+    \\| "Use std.ArrayList in Zig 0.15" | "Prefer dynamic arrays when length is unknown at compile time" |
+    \\| "compile_commands.json is at /build" | "Regenerate generated artifacts after build-system changes" |
+    \\| "Changed line 52 in foo.zig" | "After fixing a tricky bug, add a regression test immediately" |
 ;
 
 pub const TaskManagementPrompt =
