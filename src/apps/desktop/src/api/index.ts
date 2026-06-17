@@ -1678,22 +1678,18 @@ export async function getGitFileDiff(
   filePath: string,
   staged: boolean = false,
 ): Promise<GitFileDiff> {
-  const response = await fetch(
-    `${API_BASE}/git/file/diff?path=${encodeURIComponent(cwd)}&file=${encodeURIComponent(filePath)}&staged=${staged}`,
+  return await apiFetch<GitFileDiff>(
+    `/git/file/diff?path=${encodeURIComponent(cwd)}&file=${encodeURIComponent(filePath)}&staged=${staged}`,
   )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 export async function readGitFile(
   cwd: string,
   filePath: string,
 ): Promise<{ content: string; encoding: string }> {
-  const response = await fetch(
-    `${API_BASE}/git/file/read?path=${encodeURIComponent(cwd)}&file=${encodeURIComponent(filePath)}`,
+  return await apiFetch<{ content: string; encoding: string }>(
+    `/git/file/read?path=${encodeURIComponent(cwd)}&file=${encodeURIComponent(filePath)}`,
   )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 // Read file content API (for CodeEditor)
@@ -1739,12 +1735,10 @@ export interface GitStageResponse {
 }
 
 export async function stageGitFiles(cwd: string, files: string[]): Promise<GitStageResponse> {
-  const response = await fetch(
-    `${API_BASE}/git/stage?path=${encodeURIComponent(cwd)}&files=${encodeURIComponent(files.join(','))}`,
+  return await apiFetch<GitStageResponse>(
+    `/git/stage?path=${encodeURIComponent(cwd)}&files=${encodeURIComponent(files.join(','))}`,
     { method: 'POST' },
   )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 export async function unstageGitFiles(cwd: string, files: string[]): Promise<GitStageResponse> {
