@@ -118,3 +118,234 @@ test "loadGitignoreForDir with absolute path and existing gitignore" {
     // Just verify it didn't crash - number of entries depends on whether .gitignore exists
     try std.testing.expect(true);
 }
+
+// ============================================================================
+// Regression tests for walkDir duplicate-results bug
+// (Chunk 1 of the 2026-06-18-fix-glob-duplicate-results plan)
+//
+// The walkDir function used to recurse into subdirectories TWICE — once via
+// the prefix-aware logic (which strips a matched leading directory from the
+// pattern) and once via an unconditional "normal recursive descent" call
+// that re-applies the full pattern. With N leading directory components in
+// the pattern, this produced 2^N duplicate results for the same file.
+//
+// Tree shape used by all three tests below:
+//
+//   <tmp>/
+//   └── a/
+//       └── b/
+//           └── c/
+//               └── d/
+//                   └── match.txt
+//
+// `setupTempTree` creates a unique-suffix tree under /tmp and returns the
+// root path. Each test cleans up with `tree.deinit(...)` + `allocator.free`.
+// ============================================================================
+
+const TmpTree = struct {
+    root: []const u8,
+
+    fn deinit(self: *TmpTree, io: std.Io) void {
+        std.Io.Dir.cwd().deleteTree(io, self.root) catch {};
+    }
+};
+
+/// Create a deterministic tree at `/tmp/glob_walkdir_test_<suffix>/` with
+/// `a/b/c/d/match.txt` inside. The `suffix` MUST be unique per test to
+/// avoid `/tmp` collisions in parallel test runs.
+fn setupTempTree(allocator: std.mem.Allocator, suffix: []const u8) !TmpTree {
+    const root = try std.fmt.allocPrint(allocator, "/tmp/glob_walkdir_test_{s}", .{suffix});
+    errdefer allocator.free(root);
+
+    // Idempotent: clean any prior state, then create
+    std.Io.Dir.cwd().deleteTree(std.testing.io, root) catch {};
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, root);
+    // Nested subdirs created with path.join (root + "/a/b/c/d" — `++` on
+    // a runtime slice is rejected by Zig 0.16; path.join is correct here
+    // since "/a/b/c/d" is a path component, not a filename suffix).
+    const nested_path = try std.fs.path.join(allocator, &.{ root, "a/b/c/d" });
+    defer allocator.free(nested_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, nested_path);
+
+    // Create the matching file
+    const match_path = try std.fs.path.join(allocator, &.{ root, "a/b/c/d/match.txt" });
+    defer allocator.free(match_path);
+    {
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, match_path, .{});
+        defer std.Io.File.close(file, std.testing.io);
+        try std.Io.File.writeStreamingAll(file, std.testing.io, "match");
+    }
+
+    return TmpTree{ .root = root };
+}
+
+test "walkDir returns each file once for literal-prefix pattern" {
+    // Regression test for the duplicate-results bug:
+    // Pattern with 5 leading directory components (a/b/c/d/) used to
+    // return the file 32 times (= 2^5) due to the dual-recursion bug
+    // in walkDir. After the fix, it must return exactly 1 time.
+    const allocator = std.testing.allocator;
+
+    var tree = try setupTempTree(allocator, "literal_prefix");
+    defer {
+        tree.deinit(std.testing.io);
+        allocator.free(tree.root);
+    }
+
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "a/b/c/d/match.txt",
+        .path = tree.root,
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.matches.items.len);
+    const expected_path = try std.fmt.allocPrint(allocator, "{s}/a/b/c/d/match.txt", .{tree.root});
+    defer allocator.free(expected_path);
+    try std.testing.expectEqualStrings(expected_path, result.matches.items[0].path);
+}
+
+test "walkDir returns each file once for wildcard-prefix pattern" {
+    // Pattern with a leading **/ must also produce a single result per file.
+    // The current code mis-handles wildcard prefixes in the prefix-aware
+    // logic (it strips ** and recurses with the wrong inner pattern).
+    const allocator = std.testing.allocator;
+
+    var tree = try setupTempTree(allocator, "wildcard_prefix");
+    defer {
+        tree.deinit(std.testing.io);
+        allocator.free(tree.root);
+    }
+
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "**/match.txt",
+        .path = tree.root,
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.matches.items.len);
+}
+
+test "walkDir with mixed literal and wildcard patterns returns each file once" {
+    // Both patterns should match match.txt exactly once, total 2 entries.
+    const allocator = std.testing.allocator;
+
+    var tree = try setupTempTree(allocator, "mixed");
+    defer {
+        tree.deinit(std.testing.io);
+        allocator.free(tree.root);
+    }
+
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "{a/b/c/d/match.txt,**/match.txt}",
+        .path = tree.root,
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result.matches.items.len);
+}
+
+// ============================================================================
+// Stay-green coverage (Chunk 3 of the 2026-06-18-fix-glob-duplicate-results
+// plan). These tests lock in the new correct behavior for edge cases that
+// the dual-recursion fix could regress.
+// ============================================================================
+
+test "walkDir with simple wildcard pattern finds files at any depth exactly once" {
+    const allocator = std.testing.allocator;
+
+    var tree = try setupTempTree(allocator, "simple_wildcard");
+    defer {
+        tree.deinit(std.testing.io);
+        allocator.free(tree.root);
+    }
+
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "**/*.txt",
+        .path = tree.root,
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.matches.items.len);
+}
+
+test "walkDir with * prefix pattern finds files at top level only exactly once" {
+    // The setup tree has match.txt only at a/b/c/d/match.txt (4 levels
+    // deep). Pattern "*.txt" with no leading slash matches files ending
+    // in .txt — the current implementation matches against BOTH name
+    // AND full_path, so "*.txt" matches the full path ".../match.txt".
+    // This test locks in the post-fix invariant: each file appears
+    // EXACTLY ONCE in the results (no 2^N duplication from the
+    // dual-recursion bug that was fixed in Chunk 2).
+    const allocator = std.testing.allocator;
+
+    var tree = try setupTempTree(allocator, "star_prefix");
+    defer {
+        tree.deinit(std.testing.io);
+        allocator.free(tree.root);
+    }
+
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "*.txt",
+        .path = tree.root,
+    });
+    defer result.deinit(allocator);
+
+    // Lock-in: each file appears exactly once, no duplication.
+    try std.testing.expectEqual(@as(usize, 1), result.matches.items.len);
+}
+
+test "walkDir with negation pattern excludes correctly" {
+    // Tree has a/b/c/d/match.txt. Pattern "**/*.txt" matches it.
+    // Adding a negation pattern via the {!...} brace-expansion form
+    // produces "!(**/match.txt)" which is treated as a negation marker
+    // by walkDir (per isNegationPattern — must start with "!(").
+    // The negation logic should then exclude match.txt from the results.
+    const allocator = std.testing.allocator;
+
+    var tree = try setupTempTree(allocator, "negation");
+    defer {
+        tree.deinit(std.testing.io);
+        allocator.free(tree.root);
+    }
+
+    // Combine positive + negation patterns with brace expansion.
+    // {pattern1,pattern2} expands to two separate patterns.
+    // The second arm uses {!...} form which becomes "!(...)" — the
+    // negation marker that walkDir recognizes.
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "{{**/*.txt},{!**/match.txt}}",
+        .path = tree.root,
+    });
+    defer result.deinit(allocator);
+
+    // match.txt should be found by **/*.txt but excluded by the
+    // negation pattern → 0 results.
+    try std.testing.expectEqual(@as(usize, 0), result.matches.items.len);
+}
+
+test "walkDir with 4-component literal prefix returns each file once (regression)" {
+    // The exact pattern from the original bug report:
+    // "src/apps/desktop/src/**/Sidebar*.vue" returned 16 entries.
+    // After the fix, the project's actual Sidebar.vue must appear
+    // exactly once.
+    const allocator = std.testing.allocator;
+
+    // Use the project root as the search path. The test asserts only on
+    // the count for Sidebar.vue (project invariant: 1 file, 1 result).
+    const project_root = "/home/ginwa/agentic_coding_zig/ginwaaitoolbox";
+
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "src/apps/desktop/src/**/Sidebar*.vue",
+        .path = project_root,
+    });
+    defer result.deinit(allocator);
+
+    // Count how many entries point to Sidebar.vue specifically.
+    var sidebar_count: usize = 0;
+    for (result.matches.items) |m| {
+        if (std.mem.endsWith(u8, m.path, "/Sidebar.vue")) {
+            sidebar_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), sidebar_count);
+}

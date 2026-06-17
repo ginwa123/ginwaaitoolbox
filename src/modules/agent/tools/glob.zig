@@ -392,6 +392,21 @@ fn globMatch(glob: []const u8, text: []const u8, nocase: bool) bool {
     return ti == text.len;
 }
 
+/// Check if a glob pattern segment contains wildcard metacharacters.
+/// Used to decide whether the prefix-aware logic in walkDir applies:
+/// literal segments can be safely stripped as directory prefixes;
+/// wildcard segments (`*`, `?`, `[`, `**`) must be re-applied at every
+/// recursion level.
+fn isWildcardPattern(pat: []const u8) bool {
+    for (pat) |c| {
+        switch (c) {
+            '*', '?', '[' => return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
 // ============================================================================
 // Brace Expansion
 // ============================================================================
@@ -658,67 +673,122 @@ fn walkDir(
         }
 
         if (is_dir) {
-            // Handle patterns with leading directory paths like "src/**" or "src/**/*.zig"
-            // We need to recurse into directories that could match the pattern prefix
+            // Build the list of patterns that the "normal recursive descent"
+            // will pass down. A pattern is "consumed" when the prefix-aware
+            // logic below successfully strips its leading directory segment
+            // (e.g. "src/**" → "**" for the "src" child) — re-applying the
+            // consumed pattern at the next level would re-match the same
+            // files, producing 2^N duplicate results. Unconsumed patterns
+            // (those whose first segment is a wildcard, or those that did
+            // not match this child's name) are passed down unchanged.
+            var unconsumed: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer unconsumed.deinit(allocator);
+
             for (regular_patterns.items) |pat| {
+                var consumed = false;
                 var pat_idx: usize = 0;
 
-                // Check if pattern starts with a literal directory name followed by /
+                // Skip the prefix-aware logic entirely for wildcard first
+                // segments. The prefix-aware logic recurses with a
+                // prefix-stripped pattern; for `**`, `*`, `?`, or `[...]`
+                // first segments, the stripped pattern has the wrong
+                // semantics (it stops being recursive). Mark the pattern
+                // unconsumed and let the fallback recursion handle it.
+                // NOTE: we cannot `continue` here because the trailing
+                // `if (!consumed)` block would also be skipped — we must
+                // append to unconsumed explicitly before continuing.
+                {
+                    const first_slash = std.mem.indexOfScalar(u8, pat, '/') orelse pat.len;
+                    const first_seg = pat[0..first_slash];
+                    if (isWildcardPattern(first_seg)) {
+                        unconsumed.append(allocator, pat) catch continue;
+                        continue;
+                    }
+                }
+
                 while (pat_idx < pat.len) {
                     const remaining_pat = pat[pat_idx..];
-
-                    // Check if this is a directory name prefix we need to match
                     const slash_idx = std.mem.indexOfScalar(u8, remaining_pat, '/') orelse remaining_pat.len;
                     const dir_part = remaining_pat[0..slash_idx];
 
-                    // Check if the current directory entry name matches this prefix
                     if (globMatch(dir_part, name, opts.nocase)) {
-                        // Check if there's more pattern after the directory
+                        // Matched a literal prefix segment — recurse with the
+                        // prefix-stripped pattern and mark this pattern as
+                        // consumed (do NOT also re-apply the full pattern
+                        // via the fallback recursion below).
                         const next_idx = pat_idx + slash_idx + 1;
                         if (next_idx < pat.len) {
                             const remaining_pattern = pat[next_idx..];
 
-                            // Check if remaining pattern starts with ** (recursive)
-                            if (remaining_pattern.len >= 2 and remaining_pattern[0] == '*' and remaining_pattern[1] == '*') {
-                                // This is a recursive pattern - recurse into this directory
-                                // Skip past ** and optional / to get the inner pattern
+                            if (remaining_pattern.len >= 2 and
+                                remaining_pattern[0] == '*' and
+                                remaining_pattern[1] == '*')
+                            {
+                                // Recursive "**" suffix — recurse with the
+                                // inner pattern.
                                 var inner_start: usize = 2;
-                                if (inner_start < remaining_pattern.len and remaining_pattern[inner_start] == '/') {
+                                if (inner_start < remaining_pattern.len and
+                                    remaining_pattern[inner_start] == '/')
+                                {
                                     inner_start += 1;
                                 }
-                                const inner_pattern = if (inner_start < remaining_pattern.len) remaining_pattern[inner_start..] else "*";
+                                const inner_pattern =
+                                    if (inner_start < remaining_pattern.len)
+                                        remaining_pattern[inner_start..]
+                                    else
+                                        "*";
 
-                                // Recurse with the inner pattern
                                 var new_patterns: std.ArrayListUnmanaged([]const u8) = .empty;
                                 new_patterns.append(allocator, inner_pattern) catch break;
-                                walkDir(allocator, io, full_path, new_patterns.items, opts, results, depth + 1, gitignore_ctx);
+                                walkDir(allocator, io, full_path, new_patterns.items,
+                                    opts, results, depth + 1, gitignore_ctx);
                                 new_patterns.deinit(allocator);
                             } else {
-                                // Non-recursive pattern with directory prefix
-                                // Match against the remaining pattern in this directory
+                                // Non-recursive suffix — recurse with it.
                                 var new_patterns: std.ArrayListUnmanaged([]const u8) = .empty;
                                 new_patterns.append(allocator, remaining_pattern) catch break;
-                                walkDir(allocator, io, full_path, new_patterns.items, opts, results, depth + 1, gitignore_ctx);
+                                walkDir(allocator, io, full_path, new_patterns.items,
+                                    opts, results, depth + 1, gitignore_ctx);
                                 new_patterns.deinit(allocator);
                             }
                         } else {
-                            // Pattern ends with directory name - this directory itself matches
-                            // (already handled above, but we recurse to check children if pattern has *)
+                            // Pattern ends with the matched directory name —
+                            // this directory itself matches; recurse to
+                            // check children.
                             if (pat[pat_idx + slash_idx - 1] != '*') {
-                                walkDir(allocator, io, full_path, patterns, opts, results, depth + 1, gitignore_ctx);
+                                walkDir(allocator, io, full_path, patterns,
+                                    opts, results, depth + 1, gitignore_ctx);
                             }
                         }
+                        consumed = true;
                         break;
                     } else {
-                        // This directory name doesn't match - skip past this part of pattern
                         pat_idx += slash_idx + 1;
                         if (pat_idx > pat.len) break;
                     }
                 }
+
+                if (!consumed) {
+                    unconsumed.append(allocator, pat) catch continue;
+                }
             }
 
-            // Also do normal recursive descent
-            walkDir(allocator, io, full_path, patterns, opts, results, depth + 1, gitignore_ctx);
+            // Always include negation patterns in the fallback recursion —
+            // they have no leading directory prefix and must be re-applied
+            // at every level.
+            for (negation_patterns.items) |pat| {
+                unconsumed.append(allocator, pat) catch continue;
+            }
+
+            // Fallback recursion with the unconsumed patterns only.
+            // This is the single recursion path that PASSES PATTERNS DOWN.
+            // The prefix-aware recursions above recurse with the
+            // prefix-stripped pattern; the fallback recurses with the
+            // patterns that the prefix-aware did NOT consume.
+            if (unconsumed.items.len > 0) {
+                walkDir(allocator, io, full_path, unconsumed.items,
+                    opts, results, depth + 1, gitignore_ctx);
+            }
         }
         allocator.free(full_path);
     }
@@ -761,10 +831,18 @@ pub fn executeGlob(allocator: std.mem.Allocator, io: std.Io, input: GlobInput) !
 
     // Walk directory
     var results: std.ArrayListUnmanaged([]const u8) = .empty;
+    // Free the ArrayList's backing slice on BOTH error and success.
+    // The `defer` fires in both paths (defer runs even on error in Zig).
+    // The individual `r` strings (allocator.dupe'd by walkDir) are SHARED
+    // with `matches[i].path` below on success — so result.deinit(allocator)
+    // owns freeing them on the success path. On the error path they never
+    // made it into `matches`, so the errdefer frees them. The errdefer
+    // does NOT call results.deinit — only the defer does, to avoid a
+    // double-free of the backing slice on the error path.
     errdefer {
         for (results.items) |r| allocator.free(r);
-        results.deinit(allocator);
     }
+    defer results.deinit(allocator);
 
     // Create gitignore context for the root search path
     var gitignore_ctx = GitignoreContext.init(input.path);
