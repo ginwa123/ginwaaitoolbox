@@ -199,10 +199,9 @@ test "walkDir returns each file once for literal-prefix pattern" {
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.matches.items.len);
-    try std.testing.expectEqualStrings(
-        try std.fmt.allocPrint(allocator, "{s}/a/b/c/d/match.txt", .{tree.root}),
-        result.matches.items[0].path,
-    );
+    const expected_path = try std.fmt.allocPrint(allocator, "{s}/a/b/c/d/match.txt", .{tree.root});
+    defer allocator.free(expected_path);
+    try std.testing.expectEqualStrings(expected_path, result.matches.items[0].path);
 }
 
 test "walkDir returns each file once for wildcard-prefix pattern" {
