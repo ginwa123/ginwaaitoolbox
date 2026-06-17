@@ -434,6 +434,7 @@ export async function getChatHistory(
   has_more: boolean
   next_cursor: string | null
   cwd?: string
+  git_worktree_cwd?: string
   max_total_tokens?: number
   max_capacity_total_tokens?: number
   total_count?: number
@@ -477,6 +478,7 @@ export async function getChatHistory(
       has_more: data.has_more,
       next_cursor: data.next_cursor,
       cwd: data.cwd,
+      git_worktree_cwd: data.git_worktree_cwd,
       max_total_tokens: data.max_total_tokens,
       max_capacity_total_tokens: data.max_capacity_total_tokens,
       total_count: data.total_count,
@@ -490,6 +492,7 @@ export async function getChatHistory(
       has_more: false,
       next_cursor: null,
       cwd: undefined,
+      git_worktree_cwd: undefined,
       max_total_tokens: undefined,
       max_capacity_total_tokens: undefined,
       total_count: undefined,
@@ -1123,6 +1126,82 @@ export async function getGitChanges(cwd: string): Promise<GitChangesResponse> {
       untracked_files: [],
     }
   }
+}
+
+// Git worktree info — used by the "Create a PR" dialog to pre-fill
+// the form. The optional `base` parameter is forwarded as
+// `?base=<branch>` to the backend (Chunk 2 design decision #12): when
+// the user changes the base branch and clicks Auto-fill, we want the
+// diff re-computed against the new base.
+export interface GitWorktreeInfo {
+  is_git_repo: boolean
+  branch: string
+  last_commit_sha: string
+  last_commit_msg: string
+  default_base: string
+  commits_ahead: number
+  diff_summary: string
+  draft_title: string
+  draft_body: string
+}
+
+export async function getGitWorktreeInfo(
+  worktreePath: string,
+  base?: string,
+): Promise<GitWorktreeInfo> {
+  try {
+    const params = new URLSearchParams({ path: worktreePath })
+    if (base && base.trim() !== '') {
+      params.set('base', base)
+    }
+    const response = await fetch(`${API_BASE}/git/worktree/info?${params}`)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return response.json()
+  } catch (error) {
+    console.error('Failed to get git worktree info:', error)
+    return {
+      is_git_repo: false,
+      branch: '',
+      last_commit_sha: '',
+      last_commit_msg: '',
+      default_base: base || 'main',
+      commits_ahead: 0,
+      diff_summary: '',
+      draft_title: '',
+      draft_body: '',
+    }
+  }
+}
+
+// Create a PR via `gh pr create` in the worktree path. The backend
+// runs the command and returns the PR URL on stdout.
+export interface GitPrCreateResponse {
+  success: boolean
+  pr_url: string
+  error_message: string
+}
+
+export async function createGitPr(
+  worktreePath: string,
+  base: string,
+  title: string,
+  body: string,
+): Promise<GitPrCreateResponse> {
+  const response = await fetch(`${API_BASE}/git/pr`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      worktree_path: worktreePath,
+      base,
+      title,
+      body,
+    }),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`HTTP ${response.status}: ${text}`)
+  }
+  return response.json()
 }
 
 // File listing for autocomplete
