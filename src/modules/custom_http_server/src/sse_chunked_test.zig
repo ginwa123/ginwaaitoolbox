@@ -173,3 +173,64 @@ test "SseManager: removeClient sends the terminating chunk (0\\r\\n\\r\\n) befor
         buf[0..total],
     );
 }
+
+// ============================================================================
+// Task 3: HTTP response headers declare Transfer-Encoding: chunked
+// ============================================================================
+//
+// Regression guard for
+// `net::ERR_INCOMPLETE_CHUNKED_ENCODING 200 (OK)` in the browser.
+//
+// Per RFC 9112 §6, an HTTP/1.1 response with neither `Content-Length` nor
+// `Transfer-Encoding` is implicitly framed by connection-close. For an
+// SSE stream we never close the connection voluntarily, so we MUST declare
+// chunked encoding in the response headers. Without this declaration,
+// intermediaries (Vite, nginx, Cloudflare, ALB) misinterpret the response
+// and surface `ERR_INCOMPLETE_CHUNKED_ENCODING` on disconnect.
+//
+// We test this via static source-check (the pattern used by 12+ other
+// tests in this codebase, e.g.
+// `src/ai_workflow/tui/http_handlers/git_pr_create_test.zig`). A
+// behavioural GinwaServer-level test would require spinning up a real
+// Io runtime + concurrent group + accepting socket, which is brittle for
+// a unit test and out of scope for this task. The source-check is the
+// canonical regression guard for "header X is present on response Y".
+
+const HTTP_SERVER_PATH = "src/modules/custom_http_server/src/http_server.zig";
+
+fn readHttpServerSource(allocator: std.mem.Allocator) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        HTTP_SERVER_PATH,
+        allocator,
+        .limited(64 * 1024),
+    );
+}
+
+test "HTTP server: SSE response declares Transfer-Encoding: chunked" {
+    // Regression for `net::ERR_INCOMPLETE_CHUNKED_ENCODING`. The SSE
+    // response headers in the `.sse =>` arm of `GinwaServer.handle` must
+    // include `Transfer-Encoding: chunked` so HTTP/1.1 intermediaries
+    // forward the body using chunked-decoding semantics.
+    const source = try readHttpServerSource(std.testing.allocator);
+    defer std.testing.allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "Transfer-Encoding: chunked") == null) {
+        std.debug.print("\n!! http_server.zig missing Transfer-Encoding: chunked !!\n", .{});
+        return error.TransferEncodingChunkedMissing;
+    }
+}
+
+test "HTTP server: SSE response sets X-Accel-Buffering: no" {
+    // Regression for `net::ERR_INCOMPLETE_CHUNKED_ENCODING` under Vite /
+    // nginx / Cloudflare / ALB. `X-Accel-Buffering: no` is the de-facto
+    // standard signal to disable response buffering so SSE chunks reach
+    // the client as soon as the server writes them.
+    const source = try readHttpServerSource(std.testing.allocator);
+    defer std.testing.allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "X-Accel-Buffering: no") == null) {
+        std.debug.print("\n!! http_server.zig missing X-Accel-Buffering: no !!\n", .{});
+        return error.XAccelBufferingMissing;
+    }
+}

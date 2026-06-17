@@ -211,7 +211,22 @@ pub const GinwaServer = struct {
                                     };
                                 },
                                 .sse => |sse| {
-                                    const headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
+                                    const headers = "HTTP/1.1 200 OK\r\n" ++
+                                        "Content-Type: text/event-stream\r\n" ++
+                                        "Cache-Control: no-cache\r\n" ++
+                                        "Connection: keep-alive\r\n" ++
+                                        // Required by HTTP/1.1: a response with neither Content-Length
+                                        // nor Transfer-Encoding is implicitly framed by connection-close.
+                                        // For SSE we never close the connection voluntarily, so we MUST
+                                        // declare chunked encoding. Otherwise Vite / proxies / browsers
+                                        // will misinterpret the response and surface
+                                        // ERR_INCOMPLETE_CHUNKED_ENCODING on disconnect.
+                                        "Transfer-Encoding: chunked\r\n" ++
+                                        // Tell intermediaries (Vite, nginx, Cloudflare, ALB) not to
+                                        // buffer. X-Accel-Buffering is the de-facto convention.
+                                        "X-Accel-Buffering: no\r\n" ++
+                                        "Access-Control-Allow-Origin: *\r\n" ++
+                                        "\r\n";
                                     _ = server.sendToClient(fd, headers) catch {
                                         _ = socket.close(fd);
                                         return;
