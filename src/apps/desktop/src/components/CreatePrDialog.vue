@@ -158,6 +158,7 @@ const onClose = () => {
               background-color: var(--semantic-input-bg, var(--semantic-card-bg));
               border: 1px solid var(--color-border);
               color: var(--semantic-text);
+              color-scheme: dark;
             "
             placeholder="main"
           />
@@ -175,6 +176,7 @@ const onClose = () => {
               background-color: var(--semantic-input-bg, var(--semantic-card-bg));
               border: 1px solid var(--color-border);
               color: var(--semantic-text);
+              color-scheme: dark;
             "
             placeholder="PR title"
           />
@@ -192,6 +194,7 @@ const onClose = () => {
               background-color: var(--semantic-input-bg, var(--semantic-card-bg));
               border: 1px solid var(--color-border);
               color: var(--semantic-text);
+              color-scheme: dark;
             "
             placeholder="Describe the changes..."
           ></textarea>

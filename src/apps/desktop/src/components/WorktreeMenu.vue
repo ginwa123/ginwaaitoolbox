@@ -1,19 +1,36 @@
 <script setup lang="ts">
 /**
- * Dropdown menu for the worktree indicator in the chat status bar.
- * Three actions:
- *   - "Create a PR" — emits 'create-pr' so the parent opens CreatePrDialog
- *   - "View in folder" — emits 'view-folder' so the parent opens a folder browser
- *   - "Clear worktree" — emits 'clear' so the parent sends the LLM a system message
+ * Dropdown menu for the git indicator in the chat status bar.
+ *
+ * Shows different actions based on whether a worktree is bound:
+ *
+ * With worktree (`hasWorktree=true`):
+ *   - 🔀 "Create a PR"    — emits 'create-pr' so the parent opens CreatePrDialog
+ *   - 📁 "View in folder" — emits 'view-folder' (parent copies worktree path to clipboard)
+ *   - 🗑️ "Clear worktree" — emits 'clear' so the parent sends the LLM a system message
+ *
+ * Without worktree (`hasWorktree=false`):
+ *   - 📁 "Open in folder" — emits 'view-folder' (parent copies session cwd to clipboard)
+ *   - 🔄 "Refresh status" — emits 'refresh' so the parent re-fetches git status
  *
  * The menu closes itself after any action via the parent's v-if binding.
  */
 import { ref, onMounted, onUnmounted } from 'vue'
 
+const props = defineProps<{
+  /** Whether a worktree is currently bound to this session. */
+  hasWorktree: boolean
+  /** Current branch name, shown as a header inside the menu. */
+  branch: string
+  /** Optional status text (e.g. "clean", "2 uncommitted changes"). */
+  status?: string
+}>()
+
 const emit = defineEmits<{
   (e: 'create-pr'): void
   (e: 'view-folder'): void
   (e: 'clear'): void
+  (e: 'refresh'): void
   (e: 'close'): void
 }>()
 
@@ -47,6 +64,10 @@ const onClear = () => {
     emit('close')
   }
 }
+const onRefresh = () => {
+  emit('refresh')
+  emit('close')
+}
 </script>
 
 <template>
@@ -58,32 +79,76 @@ const onClear = () => {
       border: 1px solid var(--color-border);
     "
   >
-    <button
-      data-testid="worktree-menu-create-pr"
-      @click="onCreatePr"
-      class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
-      style="color: var(--semantic-text)"
+    <!-- Header — shows current branch and (optional) status. Gives the
+         user context for what they're acting on. -->
+    <div
+      class="px-3 py-2 text-[10px] uppercase tracking-wider"
+      style="
+        color: var(--semantic-text-dim);
+        border-bottom: 1px solid var(--color-border);
+        background-color: var(--semantic-sidebar-bg);
+      "
     >
-      <span>🔀</span>
-      <span>Create a PR</span>
-    </button>
-    <button
-      data-testid="worktree-menu-view-folder"
-      @click="onViewFolder"
-      class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
-      style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
-    >
-      <span>📁</span>
-      <span>View in folder</span>
-    </button>
-    <button
-      data-testid="worktree-menu-clear"
-      @click="onClear"
-      class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
-      style="color: var(--color-red); border-top: 1px solid var(--color-border)"
-    >
-      <span>🗑️</span>
-      <span>Clear worktree</span>
-    </button>
+      <div class="flex items-center gap-1.5">
+        <span>🌿</span>
+        <span style="font-family: monospace;">{{ branch || 'detached' }}</span>
+      </div>
+      <div v-if="status" class="mt-0.5 normal-case tracking-normal" style="color: var(--semantic-text-muted)">
+        {{ status }}
+      </div>
+    </div>
+
+    <!-- Worktree-bound actions -->
+    <template v-if="hasWorktree">
+      <button
+        data-testid="worktree-menu-create-pr"
+        @click="onCreatePr"
+        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
+        style="color: var(--semantic-text)"
+      >
+        <span>🔀</span>
+        <span>Create a PR</span>
+      </button>
+      <button
+        data-testid="worktree-menu-view-folder"
+        @click="onViewFolder"
+        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
+        style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
+      >
+        <span>📁</span>
+        <span>View in folder</span>
+      </button>
+      <button
+        data-testid="worktree-menu-clear"
+        @click="onClear"
+        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
+        style="color: var(--color-red); border-top: 1px solid var(--color-border)"
+      >
+        <span>🗑️</span>
+        <span>Clear worktree</span>
+      </button>
+    </template>
+
+    <!-- No-worktree actions -->
+    <template v-else>
+      <button
+        data-testid="worktree-menu-view-folder"
+        @click="onViewFolder"
+        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
+        style="color: var(--semantic-text)"
+      >
+        <span>📁</span>
+        <span>Open in folder</span>
+      </button>
+      <button
+        data-testid="worktree-menu-refresh"
+        @click="onRefresh"
+        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
+        style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
+      >
+        <span>🔄</span>
+        <span>Refresh status</span>
+      </button>
+    </template>
   </div>
 </template>

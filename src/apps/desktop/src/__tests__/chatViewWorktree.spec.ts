@@ -149,24 +149,37 @@ describe('ChatView worktree status button', () => {
     vi.restoreAllMocks()
   })
 
-  it('when git_worktree_cwd is empty, the status button is disabled (not clickable)', async () => {
+  it('when git_worktree_cwd is empty, the status button is still clickable and opens a context-appropriate dropdown', async () => {
     installChatViewMocks({ gitWorktreeCwd: '' })
 
     wrapper = await mountChatView('session_no_wt')
     const btn = wrapper!.find('[data-testid="worktree-status-button"]')
     expect(btn.exists()).toBe(true)
-    // The production template binds `:disabled="!gitWorktreeCwd"`.
-    // When no worktree is bound, the button must be a plain
-    // `disabled` button — clicking it does nothing (the @click handler
-    // also short-circuits).
+    // The button is ALWAYS clickable now (no `:disabled` binding).
+    // Clicking opens a dropdown with the no-worktree menu items
+    // ("Open in folder", "Refresh status") — NOT the worktree-bound
+    // items ("Create a PR", "Clear worktree").
     const htmlBtn = btn.element as HTMLButtonElement
-    expect(htmlBtn.disabled).toBe(true)
+    expect(htmlBtn.disabled).toBe(false)
     // The 🌳-basename template block should be absent (it's gated on
     // v-if="gitWorktreeCwd").
     expect(wrapper!.text()).not.toContain('🌳')
+
+    // Open the dropdown.
+    await btn.trigger('click')
+    await nextTick()
+    await nextTick()
+
+    // No-worktree menu items — "Refresh status" is the unambiguous
+    // tell. "Open in folder" shares its data-testid with the
+    // worktree-bound "View in folder" item.
+    expect(wrapper!.find('[data-testid="worktree-menu-refresh"]').exists()).toBe(true)
+    // Worktree-bound items should NOT be present.
+    expect(wrapper!.find('[data-testid="worktree-menu-create-pr"]').exists()).toBe(false)
+    expect(wrapper!.find('[data-testid="worktree-menu-clear"]').exists()).toBe(false)
   })
 
-  it('when git_worktree_cwd is set, the status button shows the worktree basename with 🌳 <basename> text', async () => {
+  it('when git_worktree_cwd is set, the status button shows branch + caret; worktree basename is in the menu', async () => {
     installChatViewMocks({
       gitWorktreeCwd: '/abs/.worktrees/auth-fix',
     })
@@ -175,11 +188,24 @@ describe('ChatView worktree status button', () => {
     const btn = wrapper!.find('[data-testid="worktree-status-button"]')
     expect(btn.exists()).toBe(true)
     expect((btn.element as HTMLButtonElement).disabled).toBe(false)
-    // The button text contains the basename (last path segment).
-    expect(btn.text()).toContain('🌳')
-    expect(btn.text()).toContain('auth-fix')
-    // The dropdown caret is rendered when a worktree is bound.
+    // The chip keeps the branch name visible. The worktree basename is
+    // intentionally NOT shown in the chip anymore (it was noisy when
+    // branch and basename were nearly identical strings); the menu
+    // header carries the worktree info instead.
+    expect(btn.text()).toContain('main')
+    expect(btn.text()).not.toContain('🌳')
+    expect(btn.text()).not.toContain('auth-fix')
+    // The dropdown caret is always rendered now (chip is always clickable).
     expect(btn.text()).toContain('▾')
+
+    // The worktree basename surfaces inside the dropdown menu header
+    // (added in the no-worktree-aware menu refactor).
+    await btn.trigger('click')
+    await nextTick()
+    await nextTick()
+    expect(wrapper!.text()).toContain('main')
+    // The full worktree path is still discoverable via the title tooltip.
+    expect(btn.attributes('title') ?? '').toContain('/abs/.worktrees/auth-fix')
   })
 
   it('when git_worktree_cwd is set, clicking the status button opens the dropdown', async () => {

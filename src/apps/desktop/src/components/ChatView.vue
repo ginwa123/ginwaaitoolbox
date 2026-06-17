@@ -581,14 +581,22 @@ const onWorktreeMenuCreatePr = () => {
 }
 
 const onWorktreeMenuViewFolder = () => {
-  // Open the worktree path in the system file manager.
-  // Implementation: use the existing /api/system/folder?path=<worktree>
-  // to confirm the directory is accessible, then emit a window event
-  // that the right-sidebar file explorer subscribes to. For v1, the
-  // simplest implementation is to copy the path to the clipboard and
-  // show a toast — see ChatsList.vue for the clipboard pattern.
-  navigator.clipboard.writeText(gitWorktreeCwd.value)
+  // Open the worktree path (or session cwd if no worktree) in the
+  // system file manager. Implementation: use the existing
+  // /api/system/folder?path=<worktree> to confirm the directory is
+  // accessible, then emit a window event that the right-sidebar file
+  // explorer subscribes to. For v1, the simplest implementation is
+  // to copy the path to the clipboard and show a toast — see
+  // ChatsList.vue for the clipboard pattern.
+  const path = gitWorktreeCwd.value || cwd.value
+  navigator.clipboard.writeText(path)
   // TODO: open a folder-explorer modal in a follow-up
+}
+
+const onWorktreeMenuRefresh = () => {
+  // Re-fetch git status from the backend so the chip shows the latest
+  // state immediately (instead of waiting for the next poll tick).
+  checkGitStatus()
 }
 
 const onWorktreeMenuClear = async () => {
@@ -2356,15 +2364,15 @@ const compactSession = async () => {
                 ></div>
               </div>
             </div>
-            <!-- Git status indicator — clickable when a worktree is bound -->
+            <!-- Git status indicator — always clickable; opens a dropdown
+                 menu with context-appropriate actions (worktree-bound vs.
+                 no-worktree). -->
             <div ref="worktreeMenuRef" class="relative">
               <button
                 v-if="gitStatus && gitStatus.is_git_repo"
-                @click.stop="gitWorktreeCwd ? (showWorktreeMenu = !showWorktreeMenu) : null"
-                :disabled="!gitWorktreeCwd"
+                @click.stop="showWorktreeMenu = !showWorktreeMenu"
                 data-testid="worktree-status-button"
-                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-all duration-200"
-                :class="gitWorktreeCwd ? 'hover:scale-105 cursor-pointer' : 'cursor-default'"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-all duration-200 cursor-pointer hover:scale-105"
                 style="
                   background-color: var(--semantic-card-bg);
                   border: 1px solid var(--color-border);
@@ -2377,21 +2385,19 @@ const compactSession = async () => {
               >
                 <span>🌿</span>
                 <span style="color: var(--semantic-text)">{{ gitStatus.branch || 'main' }}</span>
-                <template v-if="gitWorktreeCwd">
-                  <span style="color: var(--semantic-text-dim)">·</span>
-                  <span style="color: var(--color-emerald); font-family: monospace;">
-                    🌳 {{ gitWorktreeCwd.split('/').pop() }}
-                  </span>
-                </template>
                 <span v-if="!gitStatus.is_clean" style="color: var(--color-orange)">●</span>
                 <span v-else style="color: var(--color-green)">✓</span>
-                <span v-if="gitWorktreeCwd" class="text-[10px]">▾</span>
+                <span class="text-[10px]">▾</span>
               </button>
               <WorktreeMenu
                 v-if="showWorktreeMenu"
+                :has-worktree="!!gitWorktreeCwd"
+                :branch="gitStatus?.branch || 'detached'"
+                :status="gitStatus?.status"
                 @create-pr="onWorktreeMenuCreatePr"
                 @view-folder="onWorktreeMenuViewFolder"
                 @clear="onWorktreeMenuClear"
+                @refresh="onWorktreeMenuRefresh"
                 @close="showWorktreeMenu = false"
               />
             </div>
