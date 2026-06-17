@@ -202,7 +202,7 @@ fn runGitWorktreeRemove(
         .argv = &.{
             "git", "worktree", "remove", "--force", worktree_path,
         },
-        .cwd = null, // git infers the owning repo from the worktree's gitdir
+        .cwd = .inherit, // use the nalar process's cwd (the session cwd is inside the original repo)
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
