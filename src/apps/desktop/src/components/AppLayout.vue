@@ -9,6 +9,7 @@ import ChatView from './ChatView.vue'
 import Chats from './Chats.vue'
 import SettingsView from './SettingsView.vue'
 import CodeEditor from './CodeEditor.vue'
+import NotificationContainer from './NotificationContainer.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
@@ -771,5 +772,8 @@ watch(chatSessionCwd, (newCwd) => {
       @code-editor-file-click="handleCodeEditorFileClick"
       @resize="handleRightSidebarResize"
     />
+
+    <!-- Global error notification stack -->
+    <NotificationContainer />
   </div>
 </template>
