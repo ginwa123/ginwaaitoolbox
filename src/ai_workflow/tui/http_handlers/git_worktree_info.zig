@@ -69,9 +69,15 @@ fn getWorktreeInfoUseCase(
     } else {
         const bases = [_][]const u8{ "main", "master", "develop" };
         for (bases) |b| {
-            const probe = std.process.run(allocator, io, .{
-                .argv = &.{ "git", "-C", path, "rev-parse", "--verify", "origin/" ++ b },
-            }) catch continue;
+            // Build "origin/<b>" at runtime — the `++` operator on
+            // string slices in Zig 0.16 requires comptime-known slices,
+            // and `b` is a loop variable. Use std.fmt.bufPrint to a
+            // stack buffer instead (no allocator needed, the buffer
+            // outlives the `run` call).
+            var origin_b_buf: [64]u8 = undefined;
+            const origin_b = std.fmt.bufPrint(origin_b_buf[0..], "origin/{s}", .{b}) catch continue;
+            const argv = [_][]const u8{ "git", "-C", path, "rev-parse", "--verify", origin_b };
+            const probe = std.process.run(allocator, io, .{ .argv = &argv }) catch continue;
             if (probe.term.exited == 0) {
                 default_base = b;
                 break;
@@ -81,27 +87,33 @@ fn getWorktreeInfoUseCase(
 
     // 5) Commits ahead of `origin/<default_base>`.
     var commits_ahead: i64 = 0;
-    if (std.process.run(allocator, io, .{
-        .argv = &.{ "git", "-C", path, "rev-list", "--count", "origin/" ++ default_base ++ "..HEAD" },
-    })) |ahead_result| {
-        if (ahead_result.term.exited == 0) {
-            const trimmed = std.mem.trim(u8, ahead_result.stdout, " \n\r");
-            commits_ahead = std.fmt.parseInt(i64, trimmed, 10) catch 0;
+    {
+        var range_buf: [128]u8 = undefined;
+        const range = std.fmt.bufPrint(range_buf[0..], "origin/{s}..HEAD", .{default_base}) catch "";
+        const argv = [_][]const u8{ "git", "-C", path, "rev-list", "--count", range };
+        if (std.process.run(allocator, io, .{ .argv = &argv })) |ahead_result| {
+            if (ahead_result.term.exited == 0) {
+                const trimmed = std.mem.trim(u8, ahead_result.stdout, " \n\r");
+                commits_ahead = std.fmt.parseInt(i64, trimmed, 10) catch 0;
+            }
+        } else |_| {
+            // rev-list failed (e.g. base ref doesn't exist) — leave at 0.
         }
-    } else |_| {
-        // rev-list failed (e.g. base ref doesn't exist) — leave at 0.
     }
 
     // 6) Diff shortstat against `origin/<default_base>`.
     var diff_summary: []const u8 = "";
-    if (std.process.run(allocator, io, .{
-        .argv = &.{ "git", "-C", path, "diff", "--shortstat", "origin/" ++ default_base ++ "..HEAD" },
-    })) |diff_result| {
-        if (diff_result.term.exited == 0) {
-            diff_summary = std.mem.trim(u8, diff_result.stdout, " \n\r");
+    {
+        var range_buf: [128]u8 = undefined;
+        const range = std.fmt.bufPrint(range_buf[0..], "origin/{s}..HEAD", .{default_base}) catch "";
+        const argv = [_][]const u8{ "git", "-C", path, "diff", "--shortstat", range };
+        if (std.process.run(allocator, io, .{ .argv = &argv })) |diff_result| {
+            if (diff_result.term.exited == 0) {
+                diff_summary = std.mem.trim(u8, diff_result.stdout, " \n\r");
+            }
+        } else |_| {
+            // Same rationale as rev-list.
         }
-    } else |_| {
-        // Same rationale as rev-list.
     }
 
     return WorktreeInfoResult{
