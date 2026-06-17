@@ -94,7 +94,7 @@ test "Migration046AddGitWorktreeCwdToSessions adds git_worktree_cwd column defau
     // NULL is mapped to the empty string by COALESCE at the read site
     // (matching the convention used for cwd, created_at, updated_at,
     // and selected_profile_model).
-    const v = try scalarText(alloc, &ctx.db, "SELECT COALESCE(git_worktree_cwd, '') FROM sessions WHERE id = 't1'", &.{});
+    const v = try scalarText(alloc, &ctx.db, "SELECT COALESCE(s.git_worktree_cwd, '') FROM sessions s WHERE s.id = 't1'", &.{});
     defer alloc.free(v);
     try testing.expectEqualStrings("", v);
 }
@@ -112,7 +112,7 @@ test "Migration046AddGitWorktreeCwdToSessions accepts explicit value" {
     try ctx.db.exec(alloc, "INSERT INTO sessions (id, name) VALUES ('t1', 'foo')", &.{});
     try ctx.db.exec(alloc, "UPDATE sessions SET git_worktree_cwd = '/abs/path' WHERE id = 't1'", &.{});
 
-    const v = try scalarText(alloc, &ctx.db, "SELECT git_worktree_cwd FROM sessions WHERE id = 't1'", &.{});
+    const v = try scalarText(alloc, &ctx.db, "SELECT s.git_worktree_cwd FROM sessions s WHERE s.id = 't1'", &.{});
     defer alloc.free(v);
     try testing.expectEqualStrings("/abs/path", v);
 }

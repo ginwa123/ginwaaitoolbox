@@ -1804,7 +1804,7 @@ pub fn getSession(
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?SessionTableInfo {
-    const sql = "SELECT id, name, status, COALESCE(cwd, ''), COALESCE(created_at, ''), COALESCE(updated_at, ''), COALESCE(selected_profile_model, ''), COALESCE(git_worktree_cwd, '') FROM sessions WHERE id = ?";
+    const sql = "SELECT s.id, s.name, s.status, COALESCE(s.cwd, ''), COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(s.selected_profile_model, ''), COALESCE(s.git_worktree_cwd, '') FROM sessions s WHERE s.id = ?";
 
     var rows = try db.query(allocator, sql, &.{id});
     defer rows.deinit();

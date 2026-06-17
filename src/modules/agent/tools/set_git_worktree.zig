@@ -114,7 +114,7 @@ fn readExistingWorktreeCwd(
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) ![]u8 {
-    const sql = "SELECT COALESCE(git_worktree_cwd, '') FROM sessions WHERE id = ?";
+    const sql = "SELECT COALESCE(s.git_worktree_cwd, '') FROM sessions s WHERE s.id = ?";
     var q = try db.query(allocator, sql, &.{session_id});
     defer q.deinit();
     if (try q.next()) |row| {
