@@ -1,0 +1,225 @@
+/**
+ * Tests for the worktree-aware status bar in ChatView.vue.
+ *
+ * The chat status bar (the small git-branch + worktree chip at the
+ * bottom of the chat) becomes a clickable button when the session is
+ * bound to a worktree. The button:
+ *   - is rendered only when `gitStatus.is_git_repo` is true
+ *   - is `:disabled` when `gitWorktreeCwd` is empty (no worktree bound)
+ *   - shows `🌳 <basename>` when a worktree is bound
+ *   - clicking it opens the WorktreeMenu dropdown
+ *   - exposes the full worktree path via its `title` attribute
+ *
+ * The `gitWorktreeCwd` ref is populated by `loadChatHistory` from the
+ * `git_worktree_cwd` field of the `/api/llm/session/:id/messages`
+ * response (Chunk 4 backend wiring). The `gitStatus` ref is populated
+ * by `startGitStatusPoll` from `api.getGitStatus(effectiveCwd)`.
+ *
+ * Guards the Chunk 7 wiring:
+ *   - The status button has the expected `data-testid="worktree-status-button"`
+ *   - The `:disabled` binding tracks `!gitWorktreeCwd` correctly
+ *   - The `<template v-if="gitWorktreeCwd">` block renders the
+ *     `🌳 <basename>` text
+ *   - The `:title` binding shows the full worktree path
+ *
+ * Mounting ChatView is heavier than the standalone components: it
+ * opens an SSE stream, polls git status, calls `getChatHistory`,
+ * `getQueuedMessages`, `getNalarConfig`, and sets up a spacer
+ * MutationObserver. All of those are stubbed via `vi.spyOn(api, ...)`.
+ */
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { nextTick } from 'vue'
+import { mount, type VueWrapper } from '@vue/test-utils'
+
+import * as api from '../api'
+import ChatView from '../components/ChatView.vue'
+
+// jsdom 29 (the version used by this project's Vitest) does not
+// implement `Element.prototype.scrollTo`. The VirtualScroller's
+// `scrollToBottom` calls `containerRef.value.scrollTo({top, behavior})`
+// on every render. With a 0×0 test container the call still reaches
+// the method and would throw `TypeError: containerRef.value.scrollTo
+// is not a function` as an unhandled rejection, polluting the test
+// log. Polyfill a no-op `scrollTo` on the jsdom HTMLElement prototype
+// so the existing code path runs cleanly. Other tests in the
+// project that hit this path (e.g. NalarBrowserInlinePreview.spec.ts)
+// continue to log the unhandled error — this is a pre-existing
+// issue in the test infrastructure, not a ChatView-specific
+// regression, and a global polyfill belongs in setup.ts (out of
+// scope for Chunk 8).
+if (
+  typeof (globalThis as { HTMLElement?: { prototype: { scrollTo?: unknown } } }).HTMLElement
+    ?.prototype.scrollTo === 'undefined'
+) {
+  ;(
+    globalThis as unknown as { HTMLElement: { prototype: { scrollTo: () => void } } }
+  ).HTMLElement.prototype.scrollTo = function () {
+    // no-op
+  }
+}
+
+// ─── shared SSE stub ────────────────────────────────────────────────────────
+// Both the chat SSE stream and the queue-messages SSE stream return
+// objects that match the SseClient interface (close / reconnect /
+// getState / onStateChange). Tests don't fire events; they just need
+// the close() call to be a no-op so onUnmounted doesn't throw.
+function makeSseStub(): api.SseClient {
+  return {
+    close: vi.fn(),
+    reconnect: vi.fn(),
+    getState: vi.fn(() => 'open' as const),
+    onStateChange: vi.fn(() => () => {}),
+  } as unknown as api.SseClient
+}
+
+// ─── default mocks ──────────────────────────────────────────────────────────
+// `installChatViewMocks` wires up the 6 api.* dependencies the
+// component touches in onMounted. The `getChatHistory` callback lets
+// each test customize the `git_worktree_cwd` field (and the cwd) the
+// mocked response returns.
+function installChatViewMocks(opts: {
+  gitWorktreeCwd?: string
+  cwd?: string
+} = {}) {
+  vi.spyOn(api, 'getChatHistory').mockResolvedValue({
+    messages: [],
+    has_more: false,
+    next_cursor: null,
+    cwd: opts.cwd ?? '/tmp/main-repo',
+    git_worktree_cwd: opts.gitWorktreeCwd ?? '',
+    max_total_tokens: 0,
+    max_capacity_total_tokens: 0,
+  } as any)
+  vi.spyOn(api, 'getQueuedMessages').mockResolvedValue({ messages: [] } as any)
+  // A `watch(() => sessionId.value, ...)` in ChatView fires
+  // `api.getSession(newId)` once onMounted sets the sessionId. The
+  // mock must return a session-shaped object so the watch's
+  // `session?.selectedProfile` lookup is safe.
+  vi.spyOn(api, 'getSession').mockResolvedValue({
+    session_id: 'placeholder',
+    session_name: '',
+    selectedProfile: null,
+    cwd: '',
+    git_worktree_cwd: '',
+  } as any)
+  // The status poll checks `is_git_repo` to decide whether to render
+  // the status button. We always return a clean repo so the button
+  // shows.
+  vi.spyOn(api, 'getGitStatus').mockResolvedValue({
+    is_git_repo: true,
+    branch: 'main',
+    has_changes: false,
+    is_clean: true,
+    current: 'main',
+    status: 'clean',
+  } as any)
+  // loadProfiles() is called outside onMounted; the response shape
+  // matches the real `/api/config/nalar` payload.
+  vi.spyOn(api, 'getNalarConfig').mockResolvedValue({
+    profiles: {},
+  } as any)
+  vi.spyOn(api, 'createSseConnection').mockReturnValue(makeSseStub())
+  vi.spyOn(api, 'createQueueMessagesSseConnection').mockReturnValue(makeSseStub())
+}
+
+// ─── mount helper ───────────────────────────────────────────────────────────
+async function mountChatView(chatId = 'session_test') {
+  const wrapper = mount(ChatView, {
+    props: { chatId, chatName: 'Test Chat' },
+    attachTo: document.body,
+  })
+  // onMounted is async: loadChatHistory → connectSse → startGitStatusPoll
+  // → getQueuedMessages. Wait several ticks for all the awaits to
+  // resolve and the template to re-render with the loaded values.
+  await new Promise((r) => setTimeout(r, 0))
+  await nextTick()
+  await new Promise((r) => setTimeout(r, 0))
+  await nextTick()
+  await new Promise((r) => setTimeout(r, 0))
+  await nextTick()
+  return wrapper
+}
+
+describe('ChatView worktree status button', () => {
+  let wrapper: VueWrapper | null = null
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    vi.restoreAllMocks()
+  })
+
+  it('when git_worktree_cwd is empty, the status button is disabled (not clickable)', async () => {
+    installChatViewMocks({ gitWorktreeCwd: '' })
+
+    wrapper = await mountChatView('session_no_wt')
+    const btn = wrapper!.find('[data-testid="worktree-status-button"]')
+    expect(btn.exists()).toBe(true)
+    // The production template binds `:disabled="!gitWorktreeCwd"`.
+    // When no worktree is bound, the button must be a plain
+    // `disabled` button — clicking it does nothing (the @click handler
+    // also short-circuits).
+    const htmlBtn = btn.element as HTMLButtonElement
+    expect(htmlBtn.disabled).toBe(true)
+    // The 🌳-basename template block should be absent (it's gated on
+    // v-if="gitWorktreeCwd").
+    expect(wrapper!.text()).not.toContain('🌳')
+  })
+
+  it('when git_worktree_cwd is set, the status button shows the worktree basename with 🌳 <basename> text', async () => {
+    installChatViewMocks({
+      gitWorktreeCwd: '/abs/.worktrees/auth-fix',
+    })
+
+    wrapper = await mountChatView('session_with_wt')
+    const btn = wrapper!.find('[data-testid="worktree-status-button"]')
+    expect(btn.exists()).toBe(true)
+    expect((btn.element as HTMLButtonElement).disabled).toBe(false)
+    // The button text contains the basename (last path segment).
+    expect(btn.text()).toContain('🌳')
+    expect(btn.text()).toContain('auth-fix')
+    // The dropdown caret is rendered when a worktree is bound.
+    expect(btn.text()).toContain('▾')
+  })
+
+  it('when git_worktree_cwd is set, clicking the status button opens the dropdown', async () => {
+    installChatViewMocks({
+      gitWorktreeCwd: '/abs/.worktrees/auth-fix',
+    })
+
+    wrapper = await mountChatView('session_with_wt_dropdown')
+    const btn = wrapper!.find('[data-testid="worktree-status-button"]')
+    expect(btn.exists()).toBe(true)
+
+    // The WorktreeMenu uses the three testids we created in
+    // worktreeMenu.spec.ts. Before the click, none of them exist
+    // (the menu is v-if-bound to showWorktreeMenu=false).
+    expect(wrapper!.find('[data-testid="worktree-menu-create-pr"]').exists()).toBe(false)
+
+    await btn.trigger('click')
+    await nextTick()
+    await nextTick()
+
+    // The WorktreeMenu has mounted. All 3 of its items are present.
+    expect(wrapper!.find('[data-testid="worktree-menu-create-pr"]').exists()).toBe(true)
+    expect(wrapper!.find('[data-testid="worktree-menu-view-folder"]').exists()).toBe(true)
+    expect(wrapper!.find('[data-testid="worktree-menu-clear"]').exists()).toBe(true)
+  })
+
+  it('the status button title attribute shows the full worktree path', async () => {
+    installChatViewMocks({
+      gitWorktreeCwd: '/abs/.worktrees/auth-fix',
+    })
+
+    wrapper = await mountChatView('session_with_wt_title')
+    const btn = wrapper!.find('[data-testid="worktree-status-button"]')
+    expect(btn.exists()).toBe(true)
+    // The production template binds:
+    //   :title="gitWorktreeCwd ? `Worktree: ${gitWorktreeCwd}\n...` : `...`"
+    // The full path must appear in the title (the basename is too
+    // short to be a unique identifier when the user has multiple
+    // worktrees named the same).
+    const title = btn.attributes('title') ?? ''
+    expect(title).toContain('/abs/.worktrees/auth-fix')
+  })
+})
