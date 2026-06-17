@@ -1162,9 +1162,7 @@ export async function getGitWorktreeInfo(
     if (base && base.trim() !== '') {
       params.set('base', base)
     }
-    const response = await fetch(`${API_BASE}/git/worktree/info?${params}`)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    return response.json()
+    return await apiFetch<GitWorktreeInfo>(`/git/worktree/info?${params}`)
   } catch (error) {
     console.error('Failed to get git worktree info:', error)
     return {
@@ -1199,21 +1197,15 @@ export async function createGitPr(
   title: string,
   body: string,
 ): Promise<GitPrCreateResponse> {
-  const response = await fetch(`${API_BASE}/git/pr`, {
+  return await apiFetch<GitPrCreateResponse>('/git/pr', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+    body: {
       worktree_path: worktreePath,
       base,
       title,
       body,
-    }),
+    },
   })
-  if (!response.ok) {
-    const text = await response.text()
-    throw new Error(`HTTP ${response.status}: ${text}`)
-  }
-  return response.json()
 }
 
 // File listing for autocomplete
@@ -1729,10 +1721,8 @@ export async function stageGitFiles(cwd: string, files: string[]): Promise<GitSt
 }
 
 export async function unstageGitFiles(cwd: string, files: string[]): Promise<GitStageResponse> {
-  const response = await fetch(
-    `${API_BASE}/git/unstage?path=${encodeURIComponent(cwd)}&files=${encodeURIComponent(files.join(','))}`,
+  return await apiFetch<GitStageResponse>(
+    `/git/unstage?path=${encodeURIComponent(cwd)}&files=${encodeURIComponent(files.join(','))}`,
     { method: 'POST' },
   )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
