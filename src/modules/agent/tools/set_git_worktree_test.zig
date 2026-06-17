@@ -54,6 +54,50 @@ test "set_git_worktree input struct has path + clear + branch fields" {
     }
 }
 
+test "xmlError for add failure surfaces git stderr, not a generic literal" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    // Regression: the previous line was
+    //     return xmlError(allocator, session_id, "git worktree add failed");
+    // which left the user with zero info about WHY git refused (path
+    // already exists? not a git repo? bad branch name?). The fix
+    // surfaces the captured git stderr (e.g. "fatal: '/foo' already exists")
+    // via runGitWorktreeAdd's new ![]u8 return type. This test guards
+    // against the generic literal coming back.
+    //
+    // We look for the specific xmlError call pattern (not just the bare
+    // phrase) so the test does not false-positive on docstring mentions
+    // of the old behavior.
+    if (std.mem.indexOf(u8, source, "xmlError(allocator, session_id, \"git worktree add failed\")") != null) {
+        std.debug.print("!! set_git_worktree.zig still calls xmlError(..., \"git worktree add failed\") — surface git's captured stderr instead !!\n", .{});
+        return error.GenericGitWorktreeAddErrorLiteralPresent;
+    }
+}
+
+test "runGitWorktreeAdd returns captured stderr on failure" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    // The new contract: runGitWorktreeAdd returns ![]u8 — empty string
+    // on success, captured stderr (or descriptive fallback) on failure.
+    // The caller uses the returned string as the XML error detail.
+    // Check that the function signature includes the ![]u8 return type
+    // and that the caller binds the result to a `git_detail` variable.
+    if (std.mem.indexOf(u8, source, "fn runGitWorktreeAdd(") == null) {
+        std.debug.print("!! runGitWorktreeAdd function is missing !!\n", .{});
+        return error.RunGitWorktreeAddMissing;
+    }
+    if (std.mem.indexOf(u8, source, "const git_detail = runGitWorktreeAdd(") == null) {
+        std.debug.print("!! caller of runGitWorktreeAdd does not bind the result to a 'git_detail' variable !!\n", .{});
+        return error.GitDetailBindingMissing;
+    }
+    if (std.mem.indexOf(u8, source, "if (git_detail.len > 0)") == null) {
+        std.debug.print("!! caller of runGitWorktreeAdd does not check git_detail.len > 0 to surface stderr !!\n", .{});
+        return error.GitDetailCheckMissing;
+    }
+}
+
 // ─── Behavioral tests for validatePath ────────────────────────────────────
 
 test "validatePath accepts valid absolute paths" {

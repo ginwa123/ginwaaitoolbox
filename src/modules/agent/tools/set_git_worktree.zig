@@ -125,14 +125,19 @@ fn readExistingWorktreeCwd(
 }
 
 /// Run `git worktree add -b <branch> <worktree_path>` in the given
-/// repository root. Returns the captured stderr on non-zero exit.
+/// repository root. On success, returns an empty string. On failure
+/// (non-zero exit, spawn failure, wait failure, signal), returns a
+/// diagnostic string suitable for surfacing to the user — usually
+/// git's own stderr (e.g. "fatal: '/foo' already exists"), or a
+/// descriptive fallback that includes the exit code when stderr is
+/// empty. The caller owns the returned slice.
 fn runGitWorktreeAdd(
     allocator: std.mem.Allocator,
     io: std.Io,
     repo_root: []const u8,
     worktree_path: []const u8,
     branch: []const u8,
-) !void {
+) ![]u8 {
     var child = std.process.spawn(io, .{
         .argv = &.{
             "git", "worktree", "add", "-b", branch, worktree_path,
@@ -141,7 +146,14 @@ fn runGitWorktreeAdd(
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
-    }) catch |err| return err;
+    }) catch |err| {
+        std.debug.print("git worktree add spawn failed: {s}\n", .{@errorName(err)});
+        return try std.fmt.allocPrint(
+            allocator,
+            "failed to spawn git worktree add: {s}",
+            .{@errorName(err)},
+        );
+    };
 
     // Short-lived command (worktree add is sub-second); use a bounded
     // blocking read rather than the threaded + timeout pattern that
@@ -150,10 +162,23 @@ fn runGitWorktreeAdd(
     const stderr_pipe = child.stderr orelse {
         // No stderr pipe (shouldn't happen with .pipe above); just wait
         // and return based on exit code.
-        const term = child.wait(io) catch return error.GitWaitFailed;
+        const term = child.wait(io) catch {
+            return try allocator.dupe(
+                u8,
+                "git worktree add: child process wait failed (no stderr pipe)",
+            );
+        };
         return switch (term) {
-            .exited => |code| if (code == 0) return else return error.GitAddFailed,
-            else => error.GitAddFailed,
+            .exited => |code| if (code == 0)
+                try allocator.dupe(u8, "")
+            else
+                try std.fmt.allocPrint(
+                    allocator,
+                    "git worktree add exited with code {d} (no stderr captured)",
+                    .{code},
+                ),
+            .signal => try allocator.dupe(u8, "git worktree add was killed by a signal (no stderr captured)"),
+            else => try allocator.dupe(u8, "git worktree add terminated abnormally (no stderr captured)"),
         };
     };
 
@@ -170,23 +195,35 @@ fn runGitWorktreeAdd(
         }
     }
 
-    const term = child.wait(io) catch return error.GitWaitFailed;
+    const term = child.wait(io) catch {
+        return try allocator.dupe(u8, "git worktree add: failed to wait for child process");
+    };
     switch (term) {
         .exited => |code| {
-            if (code == 0) return;
-            const msg = if (stderr_buf.items.len == 0)
-                try allocator.dupe(u8, "git worktree add failed (no stderr)")
+            if (code == 0) return try allocator.dupe(u8, "");
+            const stderr_text = stderr_buf.items;
+            std.debug.print("git worktree add failed (exit={d}): {s}\n", .{ code, stderr_text });
+            // Surface git's own stderr to the user. Common messages:
+            //   - "fatal: '/abs/path' already exists"
+            //   - "fatal: not a git repository"
+            //   - "fatal: invalid reference: <branch>"
+            //   - "fatal: '<branch>' is already checked out at '<path>'"
+            // These tell the user EXACTLY what's wrong and how to fix it,
+            // which the previous generic "git worktree add failed" did not.
+            return if (stderr_text.len == 0)
+                try std.fmt.allocPrint(
+                    allocator,
+                    "git worktree add exited with code {d} (no stderr output)",
+                    .{code},
+                )
             else
-                try allocator.dupe(u8, stderr_buf.items);
-            errdefer allocator.free(msg);
-            std.debug.print("git worktree add failed (exit={d}): {s}\n", .{ code, msg });
-            return error.GitAddFailed;
+                try allocator.dupe(u8, stderr_text);
         },
         .signal => {
             std.debug.print("git worktree add killed by signal\n", .{});
-            return error.GitAddFailed;
+            return try allocator.dupe(u8, "git worktree add was killed by a signal");
         },
-        else => return error.GitAddFailed,
+        else => return try allocator.dupe(u8, "git worktree add terminated abnormally"),
     }
 }
 
@@ -297,11 +334,20 @@ pub fn executeSetGitWorktreeToString(
     defer if (branch_owned) |b| allocator.free(b);
     const branch: []const u8 = if (input.branch.len > 0) input.branch else branch_owned.?;
 
-    runGitWorktreeAdd(allocator, io, cwd, worktree_path, branch) catch |err| {
-        const msg = @errorName(err);
-        std.debug.print("set_git_worktree add failed: {s}\n", .{msg});
-        return xmlError(allocator, session_id, "git worktree add failed");
+    // runGitWorktreeAdd returns the captured git stderr on failure (or a
+    // descriptive fallback including the exit code). Empty string = success.
+    // We surface this directly in the XML error so the user sees WHY git
+    // refused (e.g. "fatal: '/foo' already exists") instead of the previous
+    // generic "git worktree add failed" which left them guessing.
+    const git_detail = runGitWorktreeAdd(allocator, io, cwd, worktree_path, branch) catch |err| {
+        // Alloc failure inside runGitWorktreeAdd — extremely rare.
+        std.debug.print("set_git_worktree add dispatch failed: {s}\n", .{@errorName(err)});
+        return xmlError(allocator, session_id, @errorName(err));
     };
+    defer allocator.free(git_detail);
+    if (git_detail.len > 0) {
+        return xmlError(allocator, session_id, git_detail);
+    }
     return successSetToXml(allocator, session_id, worktree_path, branch);
 }
 
