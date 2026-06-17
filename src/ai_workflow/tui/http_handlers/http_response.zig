@@ -411,6 +411,19 @@ pub fn makeGitWorktreeInfoResponse(allocator: std.mem.Allocator, response: GitWo
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
+// ─── Git PR create types ──────────────────────────────────────────────────
+// Wire shape for `POST /api/git/pr`. See Chunk 3 of the
+// git-worktree-cwd-pr plan.
+pub const GitPrCreateResponse = struct {
+    success: bool = false,
+    pr_url: []const u8 = "",
+    error_message: []const u8 = "",
+};
+
+pub fn makeGitPrCreateResponse(allocator: std.mem.Allocator, response: GitPrCreateResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
 // Profile types
 pub const LlmProfileResponse = struct {
     name: []const u8,
