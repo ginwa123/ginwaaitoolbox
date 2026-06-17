@@ -27,6 +27,7 @@ test {
     _ = @import("llm_history_routines_test.zig");
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     _ = @import("http_handlers/workspace_items_reorder_test.zig");
+    _ = @import("http_handlers/git_worktree_info_test.zig");
     // _ = @import("session_helpers_test.zig"); // DISABLED - requires std.Io which needs Init
     // _ = @import("session_table_test.zig"); // DISABLED - requires std.Io which needs Init
     _ = @import("transform_llm_history_to_agent_messages_test.zig");

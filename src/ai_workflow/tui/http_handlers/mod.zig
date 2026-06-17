@@ -81,6 +81,7 @@ pub const gitFileDiffHandler = @import("git_file_diff.zig").gitFileDiffHandler;
 pub const gitFileReadHandler = @import("git_file_diff.zig").gitFileReadHandler;
 pub const gitStageHandler = @import("git_file_stage.zig").gitStageHandler;
 pub const gitUnstageHandler = @import("git_file_stage.zig").gitUnstageHandler;
+pub const gitWorktreeInfoHandler = @import("git_worktree_info.zig").gitWorktreeInfoHandler;
 
 // Queue messages handlers
 pub const queueMessagesStreamHandler = @import("queue_messages_sse.zig").queueMessagesStreamHandler;

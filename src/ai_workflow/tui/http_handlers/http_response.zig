@@ -389,6 +389,28 @@ pub fn makeGitStageResponse(allocator: std.mem.Allocator, response: GitStageResp
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
+// ─── Git worktree info types ───────────────────────────────────────────────
+// Wire shape for `GET /api/git/worktree/info?path=<worktree>[&base=<branch>]`
+// consumed by the desktop app's CreatePrDialog. Mirrors the response
+// struct in `git_worktree_info.zig` so a future contract change is one
+// struct definition to update. See Chunk 2 of the
+// git-worktree-cwd-pr plan.
+pub const GitWorktreeInfoResponse = struct {
+    is_git_repo: bool = false,
+    branch: []const u8 = "",
+    last_commit_sha: []const u8 = "",
+    last_commit_msg: []const u8 = "",
+    default_base: []const u8 = "",
+    commits_ahead: i64 = 0,
+    diff_summary: []const u8 = "",
+    draft_title: []const u8 = "",
+    draft_body: []const u8 = "",
+};
+
+pub fn makeGitWorktreeInfoResponse(allocator: std.mem.Allocator, response: GitWorktreeInfoResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
 // Profile types
 pub const LlmProfileResponse = struct {
     name: []const u8,
