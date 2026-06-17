@@ -121,7 +121,11 @@ pub const Logger = struct {
         }
     }
 
-    /// Ensure log file is open, creating parent directories if needed
+    /// Ensure log file is open, creating parent directories if needed.
+    /// NOTE: Zig 0.16's `std.Io.File` has no `seekTo` API — after `createFile`,
+    /// the kernel's file position is always 0, even for an existing file. We
+    /// track the end-of-file offset ourselves in `self.current_file_size` and
+    /// use `writePositionalAll` in `writeEntry` to append at that offset.
     fn ensureLogFileOpen(self: *Logger) !void {
         if (self.log_file != null) return;
 
@@ -131,11 +135,13 @@ pub const Logger = struct {
         const dir_path = std.fs.path.dirname(path) orelse ".";
         try std.Io.Dir.cwd().createDirPath(self.io, dir_path);
 
-        // Open or create the log file
+        // Open or create the log file. `.truncate = false` preserves any
+        // existing content; the new file's position is 0 (kernel default).
         const file = try std.Io.Dir.cwd().createFile(self.io, path, .{ .truncate = false });
         errdefer file.close(self.io);
 
-        // Get current file size (to append at end)
+        // Record the current end-of-file offset; this is where the next
+        // write will land (via writePositionalAll in writeEntry).
         const file_size = std.Io.File.length(file, self.io) catch 0;
         self.current_file_size = file_size;
         self.log_file = file;
@@ -299,7 +305,13 @@ pub const Logger = struct {
 
             // Write to file
             if (self.log_file) |log_file| {
-                try std.Io.File.writeStreamingAll(log_file, self.io, output);
+                // Use writePositionalAll (pwrite) at the tracked end-of-file
+                // offset. The kernel's file position is 0 right after
+                // createFile, so writeStreamingAll would overwrite the
+                // beginning of the file. writePositionalAll is independent of
+                // the kernel's position and writes at the absolute offset we
+                // provide.
+                try std.Io.File.writePositionalAll(log_file, self.io, output, self.current_file_size);
                 self.current_file_size += output.len;
             }
         }

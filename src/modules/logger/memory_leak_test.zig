@@ -151,3 +151,38 @@ test "Logger directory creation - no memory leak" {
 
     try logger_inst.log(.info, "Test directory creation");
 }
+
+test "Logger appends across restarts - no memory leak" {
+    const allocator = std.testing.allocator;
+    const test_log_path = "/tmp/test_logger_append_leak.log";
+
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_log_path) catch {};
+
+    // First process
+    {
+        var lgr1 = Logger.init(allocator, std.testing.io, .{
+            .min_level = .info,
+            .log_file_path = test_log_path,
+            .output_mode = .file,
+            .include_timestamp = false,
+            .include_request_id = false,
+        });
+        try lgr1.log(.info, "first batch");
+        lgr1.deinit();
+    }
+
+    // Second process — appends to the same file
+    {
+        var lgr2 = Logger.init(allocator, std.testing.io, .{
+            .min_level = .info,
+            .log_file_path = test_log_path,
+            .output_mode = .file,
+            .include_timestamp = false,
+            .include_request_id = false,
+        });
+        defer lgr2.deinit();
+        try lgr2.log(.info, "second batch");
+    }
+
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_log_path) catch {};
+}
