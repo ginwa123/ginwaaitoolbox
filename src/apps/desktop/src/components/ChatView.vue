@@ -2498,6 +2498,7 @@ const compactSession = async () => {
     />
     <CreateWorktreeDialog
       v-if="showCreateWorktreeDialog"
+      :initial-cwd="cwd"
       @create="onCreateWorktree"
       @close="showCreateWorktreeDialog = false"
     />
