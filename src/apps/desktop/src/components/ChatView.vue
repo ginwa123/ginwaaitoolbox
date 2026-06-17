@@ -36,6 +36,8 @@ import NalarBrowser from './tool_outputs/NalarBrowser.vue'
 import SetGitWorktree from './tool_outputs/SetGitWorktree.vue'
 import SkillsPopup from './SkillsPopup.vue'
 import ImagePreview from './ImagePreview.vue'
+import WorktreeMenu from './WorktreeMenu.vue'
+import CreatePrDialog from './CreatePrDialog.vue'
 import { parseSpawnSubAgentArgs } from '../helpers/parseSpawnSubAgentArgs'
 import type { SubAgentArgs } from '../helpers/parseSpawnSubAgentArgs'
 
@@ -499,6 +501,14 @@ const isAtBottom = ref(true)
 // real value before the first render.
 const scrollerIsScrollable = ref(false)
 const cwd = ref('')
+// Bound git worktree path (empty string when no worktree is bound).
+// Updated by loadChatHistory() from the API response and by the
+// sessions SSE stream when the LLM calls set_git_worktree.
+const gitWorktreeCwd = ref('')
+// The cwd we run git status against. Prefers the worktree when set
+// (so the branch display reflects the worktree's branch, not the
+// session's original cwd). Falls back to the session's original cwd.
+const effectiveCwd = computed(() => gitWorktreeCwd.value || cwd.value)
 const maxTotalTokens = ref(0)
 const maxCapacityTotalTokens = ref(200000)
 
@@ -554,6 +564,66 @@ const closeOnOutsideClick = (e: MouseEvent) => {
   }
 }
 
+// ─── Worktree dropdown + PR dialog ────────────────────────────────────────────
+// The chat status bar's git branch indicator becomes a clickable button
+// when a worktree is bound (`gitWorktreeCwd` is non-empty). Clicking
+// opens a small dropdown (WorktreeMenu) with three actions: Create a
+// PR, View in folder, Clear worktree. Create a PR opens the
+// CreatePrDialog modal; Clear worktree asks the LLM to call
+// `set_git_worktree(clear=true)` (LLM-mediated so the cleanup
+// re-uses the existing tool path — see plan design decision #5).
+const showWorktreeMenu = ref(false)
+const worktreeMenuRef = ref<HTMLElement | null>(null)
+const showCreatePrDialog = ref(false)
+
+const onWorktreeMenuCreatePr = () => {
+  showCreatePrDialog.value = true
+}
+
+const onWorktreeMenuViewFolder = () => {
+  // Open the worktree path in the system file manager.
+  // Implementation: use the existing /api/system/folder?path=<worktree>
+  // to confirm the directory is accessible, then emit a window event
+  // that the right-sidebar file explorer subscribes to. For v1, the
+  // simplest implementation is to copy the path to the clipboard and
+  // show a toast — see ChatsList.vue for the clipboard pattern.
+  navigator.clipboard.writeText(gitWorktreeCwd.value)
+  // TODO: open a folder-explorer modal in a follow-up
+}
+
+const onWorktreeMenuClear = async () => {
+  // Send a system message to the LLM asking it to clear the worktree.
+  // The LLM calls set_git_worktree(clear=true), which removes the
+  // directory and clears the binding. The SSE event updates the UI.
+  // Uses cwd.value (the session's ORIGINAL cwd) so the LLM's context
+  // matches the session it was started from.
+  if (!sessionId.value) return
+  try {
+    await api.sendChatMessage(
+      sessionId.value,
+      'Please call set_git_worktree with clear=true to remove the current worktree binding.',
+      cwd.value,
+      [],
+      selectedProfile.value ?? undefined,
+    )
+  } catch (err) {
+    console.error('Failed to send clear-worktree message:', err)
+  }
+}
+
+const onPrCreated = (url: string) => {
+  showCreatePrDialog.value = false
+  // Show a brief toast (use the existing notification pattern)
+  // For v1, just open the PR URL in a new tab
+  window.open(url, '_blank')
+}
+
+const onPrError = (message: string) => {
+  console.error('PR creation failed:', message)
+  // Show a toast with the error
+  // For v1, just log — the dialog stays open with the form intact
+}
+
 // ─── Scroll logger ────────────────────────────────────────────────────────────
 //
 // A dedicated logger for the scroll subsystem. Bound to the active chat
@@ -600,12 +670,12 @@ const gitStatus = ref<api.GitStatus | null>(null)
 let gitStatusPollInterval: ReturnType<typeof setInterval> | null = null
 
 const checkGitStatus = async () => {
-  if (!cwd.value) {
+  if (!effectiveCwd.value) {
     gitStatus.value = null
     return
   }
   try {
-    const status = await api.getGitStatus(cwd.value)
+    const status = await api.getGitStatus(effectiveCwd.value)
     gitStatus.value = status
   } catch (err) {
     console.error('Failed to check git status:', err)
@@ -817,6 +887,10 @@ const loadChatHistory = async (loadMore = false) => {
 
     if (!loadMore && data.cwd) {
       cwd.value = data.cwd
+    }
+
+    if (!loadMore && data.git_worktree_cwd !== undefined) {
+      gitWorktreeCwd.value = data.git_worktree_cwd
     }
 
     if (!loadMore) {
@@ -1639,7 +1713,7 @@ watch(
 )
 
 watch(
-  () => cwd.value,
+  () => effectiveCwd.value,
   (newCwd) => {
     if (newCwd) {
       checkGitStatus()
@@ -2282,22 +2356,44 @@ const compactSession = async () => {
                 ></div>
               </div>
             </div>
-            <!-- Git status display -->
-            <div
-              v-if="gitStatus && gitStatus.is_git_repo"
-              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
-              style="
-                background-color: var(--semantic-card-bg);
-                border: 1px solid var(--color-border);
-              "
-              :title="
-                gitStatus.status === 'clean' ? 'Working tree clean' : 'Working tree has changes'
-              "
-            >
-              <span>🌿</span>
-              <span style="color: var(--semantic-text)">{{ gitStatus.branch || 'main' }}</span>
-              <span v-if="!gitStatus.is_clean" style="color: var(--color-orange)">●</span>
-              <span v-else style="color: var(--color-green)">✓</span>
+            <!-- Git status indicator — clickable when a worktree is bound -->
+            <div ref="worktreeMenuRef" class="relative">
+              <button
+                v-if="gitStatus && gitStatus.is_git_repo"
+                @click.stop="gitWorktreeCwd ? (showWorktreeMenu = !showWorktreeMenu) : null"
+                :disabled="!gitWorktreeCwd"
+                data-testid="worktree-status-button"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-all duration-200"
+                :class="gitWorktreeCwd ? 'hover:scale-105 cursor-pointer' : 'cursor-default'"
+                style="
+                  background-color: var(--semantic-card-bg);
+                  border: 1px solid var(--color-border);
+                "
+                :title="
+                  gitWorktreeCwd
+                    ? `Worktree: ${gitWorktreeCwd}\n${gitStatus.status === 'clean' ? 'Working tree clean' : 'Working tree has changes'}`
+                    : (gitStatus.status === 'clean' ? 'Working tree clean' : 'Working tree has changes')
+                "
+              >
+                <span>🌿</span>
+                <span style="color: var(--semantic-text)">{{ gitStatus.branch || 'main' }}</span>
+                <template v-if="gitWorktreeCwd">
+                  <span style="color: var(--semantic-text-dim)">·</span>
+                  <span style="color: var(--color-emerald); font-family: monospace;">
+                    🌳 {{ gitWorktreeCwd.split('/').pop() }}
+                  </span>
+                </template>
+                <span v-if="!gitStatus.is_clean" style="color: var(--color-orange)">●</span>
+                <span v-else style="color: var(--color-green)">✓</span>
+                <span v-if="gitWorktreeCwd" class="text-[10px]">▾</span>
+              </button>
+              <WorktreeMenu
+                v-if="showWorktreeMenu"
+                @create-pr="onWorktreeMenuCreatePr"
+                @view-folder="onWorktreeMenuViewFolder"
+                @clear="onWorktreeMenuClear"
+                @close="showWorktreeMenu = false"
+              />
             </div>
             <!-- Session skills display -->
             <button
@@ -2348,6 +2444,19 @@ const compactSession = async () => {
 
     <!-- Image Preview Popup -->
     <ImagePreview :src="previewImageUrl ?? ''" @close="closeImagePreview" />
+
+    <!--
+      Create-PR modal. Mounted when the user picks "Create a PR" from
+      the WorktreeMenu. The dialog pre-fills from getGitWorktreeInfo,
+      submits to /api/git/pr, and emits pr-created (URL) or error.
+    -->
+    <CreatePrDialog
+      v-if="showCreatePrDialog"
+      :worktree-path="gitWorktreeCwd"
+      @pr-created="onPrCreated"
+      @error="onPrError"
+      @close="showCreatePrDialog = false"
+    />
   </div>
 </template>
 
