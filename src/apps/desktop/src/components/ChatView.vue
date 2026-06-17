@@ -638,16 +638,18 @@ const onPrError = (message: string) => {
   // For v1, just log — the dialog stays open with the form intact
 }
 
-const onCreateWorktree = async (name: string) => {
+const onCreateWorktree = async (path: string) => {
   if (!sessionId.value) return
   if (!cwd.value) {
     console.error('Create worktree: no session cwd available')
     showCreateWorktreeDialog.value = false
     return
   }
-  const cleanCwd = cwd.value.endsWith('/') ? cwd.value.slice(0, -1) : cwd.value
-  const fullPath = `${cleanCwd}/.worktrees/${name}`
-  const message = `Please call set_git_worktree with path=${fullPath} to create a new worktree for me.`
+  // The dialog passes the user's absolute path verbatim. The LLM calls
+  // set_git_worktree(path=<path>) which validates (must be absolute, no
+  // .., basename matches [A-Za-z0-9._-]{1,100}) and runs git worktree
+  // add. The branch is auto-derived as worktree/<basename(path)>.
+  const message = `Please call set_git_worktree with path=${path} to create a new worktree for me.`
   try {
     await api.sendChatMessage(
       sessionId.value,
