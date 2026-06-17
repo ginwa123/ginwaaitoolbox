@@ -3,13 +3,18 @@
  * to assert URL, method, and error handling without hitting the
  * network.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setActivePinia, createPinia } from 'pinia'
 
 import { deleteProfile } from '../api'
 
 describe('api.deleteProfile', () => {
   const originalFetch = global.fetch
   const fetchMock = vi.fn()
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
 
   afterEach(() => {
     fetchMock.mockReset()
@@ -21,6 +26,7 @@ describe('api.deleteProfile', () => {
       ok: status >= 200 && status < 300,
       status,
       json: () => Promise.resolve(body),
+      text: () => Promise.resolve(JSON.stringify(body)),
     } as Response)
     global.fetch = fetchMock as unknown as typeof fetch
   }

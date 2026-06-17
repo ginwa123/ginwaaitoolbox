@@ -1132,11 +1132,13 @@ export async function getGitStatus(cwd: string): Promise<GitStatus> {
 
 export async function getGitChanges(cwd: string): Promise<GitChangesResponse> {
   try {
-    const response = await fetch(`${API_BASE}/git/changes?path=${encodeURIComponent(cwd)}`)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    return response.json()
+    return await apiFetch<GitChangesResponse>(
+      `/git/changes?path=${encodeURIComponent(cwd)}`,
+    )
   } catch (error) {
-    // Return non-repo status on error
+    // Return non-repo status on error (apiFetch also fires a toast
+    // notification on non-2xx; the empty status fallback ensures the
+    // UI doesn't crash while the user sees the error).
     return {
       is_git_repo: false,
       branch: null,
@@ -1232,11 +1234,9 @@ export async function createGitPr(
 export async function listFiles(cwd: string, dirPath?: string): Promise<string[]> {
   try {
     const targetPath = dirPath || cwd
-    const response = await fetch(
-      `${API_BASE}/system/folder?path=${encodeURIComponent(targetPath)}&action=list`,
+    const data = await apiFetch<{ entries: FolderEntry[] }>(
+      `/system/folder?path=${encodeURIComponent(targetPath)}&action=list`,
     )
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const data = await response.json()
     // Return names sorted, directories first
     const entries = data.entries || []
     return entries
@@ -1450,11 +1450,9 @@ export async function getQueuedMessages(sessionId: string): Promise<{
   messages: QueuedMessage[]
   count: number
 }> {
-  const response = await fetch(`${API_BASE}/llm/session/${sessionId}/queue_messages`)
-  if (!response.ok) {
-    throw new Error(`Failed to get queued messages: ${response.statusText}`)
-  }
-  return response.json()
+  return await apiFetch<{ messages: QueuedMessage[]; count: number }>(
+    `/llm/session/${sessionId}/queue_messages`,
+  )
 }
 
 // Workers SSE event types
@@ -1624,22 +1622,17 @@ export interface NalarConfig {
 
 export async function getNalarConfig(): Promise<NalarConfig> {
   try {
-    const response = await fetch(`${API_BASE}/config/nalar`)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    return response.json()
+    return await apiFetch<NalarConfig>('/config/nalar')
   } catch {
     return {}
   }
 }
 
 export async function saveNalarConfig(config: NalarConfig): Promise<{ success: boolean }> {
-  const response = await fetch(`${API_BASE}/config/nalar`, {
+  return await apiFetch<{ success: boolean }>('/config/nalar', {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
+    body: config,
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 /**
@@ -1667,11 +1660,10 @@ export interface ProfileDeleteResponse {
  * (optimistic update, rollback, notification).
  */
 export async function deleteProfile(name: string): Promise<ProfileDeleteResponse> {
-  const response = await fetch(`${API_BASE}/config/nalar/profiles/${encodeURIComponent(name)}`, {
-    method: 'DELETE',
-  })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  return await apiFetch<ProfileDeleteResponse>(
+    `/config/nalar/profiles/${encodeURIComponent(name)}`,
+    { method: 'DELETE' },
+  )
 }
 
 // Git File Diff API
