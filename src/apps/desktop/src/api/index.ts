@@ -615,21 +615,16 @@ export async function updateSession(
   sessionId: string,
   updates: { selectedProfile?: string | null; name?: string },
 ): Promise<{ id: string; name: string; status: string; selected_profile_model: string }> {
-  const body = JSON.stringify({
-    selected_profile_model: updates.selectedProfile ?? '',
-    name: updates.name ?? '',
-  })
-  const response = await fetch(`${API_BASE}/llm/session/${sessionId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body,
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    console.error(`updateSession HTTP ${response.status}: ${text}`)
-    throw new Error(`HTTP ${response.status}`)
-  }
-  return response.json()
+  return await apiFetch<{ id: string; name: string; status: string; selected_profile_model: string }>(
+    `/llm/session/${sessionId}`,
+    {
+      method: 'PUT',
+      body: {
+        selected_profile_model: updates.selectedProfile ?? '',
+        name: updates.name ?? '',
+      },
+    },
+  )
 }
 
 // SSE event types matching the backend
@@ -791,10 +786,12 @@ export async function getChats(
     if (cursor) {
       params.set('cursor', cursor)
     }
-    const response = await fetch(`${API_BASE}/llm/session?${params}`)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-
-    const data = await response.json()
+    const data = await apiFetch<{
+      sessions: any[]
+      has_more?: boolean
+      next_cursor?: string | null
+      total?: number
+    }>(`/llm/session?${params}`)
 
     // Fix: handle "undefined" or missing session_id in each session
     if (data.sessions && Array.isArray(data.sessions)) {
@@ -834,7 +831,10 @@ export async function getChats(
       total: data.total || 0,
     }
   } catch (error) {
-    // Return empty sessions when LLM backend unavailable
+    // Return empty sessions when LLM backend unavailable (apiFetch
+    // also fires a toast notification on non-2xx; the empty-array
+    // fallback ensures the UI doesn't crash while the user sees
+    // the error).
     return { sessions: [], has_more: false, next_cursor: null, total: 0 }
   }
 }
@@ -848,25 +848,18 @@ export interface ChatLegacy {
 }
 
 export async function getChatsLegacy(): Promise<{ chats: ChatLegacy[] }> {
-  const response = await fetch(`${API_BASE}/chats`)
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  return await apiFetch<{ chats: ChatLegacy[] }>('/chats')
 }
 
 export async function createChat(name: string, icon: string = '💬'): Promise<ChatLegacy> {
-  const response = await fetch(`${API_BASE}/chats`, {
+  return await apiFetch<ChatLegacy>('/chats', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, icon }),
+    body: { name, icon },
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 export async function deleteChat(id: string): Promise<{ success: boolean }> {
-  const response = await fetch(`${API_BASE}/chats/${id}`, { method: 'DELETE' })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  return await apiFetch<{ success: boolean }>(`/chats/${id}`, { method: 'DELETE' })
 }
 
 // Session API - Fetch session info including cwd
@@ -907,12 +900,10 @@ export async function compactSession(
   sessionId: string,
 ): Promise<{ success: boolean; message?: string }> {
   try {
-    const response = await fetch(`${API_BASE}/session/${sessionId}/compact`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    return response.json()
+    return await apiFetch<{ success: boolean; message?: string }>(
+      `/session/${sessionId}/compact`,
+      { method: 'POST' },
+    )
   } catch (error) {
     console.error('Failed to compact session:', error)
     return { success: false, message: 'Failed to compact session' }
