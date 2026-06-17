@@ -299,11 +299,11 @@ export async function getTasks(
   if (cursor) {
     params.set('cursor', cursor)
   }
-  const response = await fetch(
-    `${API_BASE}/workspaces/${workspaceId}/items/${itemId}/tasks?${params.toString()}`,
-  )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  const data = await response.json()
+  const data = await apiFetch<{
+    tasks: Task[]
+    has_more: boolean
+    next_cursor: string | null
+  }>(`/workspaces/${workspaceId}/items/${itemId}/tasks?${params.toString()}`)
   return {
     tasks: data.tasks ?? [],
     has_more: data.has_more ?? false,
@@ -350,13 +350,10 @@ export async function createTask(
       body.enabled = params.routine.enabled
     }
   }
-  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/items/${itemId}/tasks`, {
+  return await apiFetch<Task>(`/workspaces/${workspaceId}/items/${itemId}/tasks`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body,
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 export async function updateTask(
@@ -365,16 +362,13 @@ export async function updateTask(
   taskId: string,
   data: Partial<Task>,
 ): Promise<{ success: boolean }> {
-  const response = await fetch(
-    `${API_BASE}/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}`,
+  return await apiFetch<{ success: boolean }>(
+    `/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}`,
     {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
+      body: data,
     },
   )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 // Task API - Simple version (just task_id + optional fields)
@@ -397,13 +391,10 @@ export async function updateTaskSimple(
     enabled?: boolean
   },
 ): Promise<{ success: boolean }> {
-  const response = await fetch(`${API_BASE}/workspaces/tasks/${taskId}`, {
+  return await apiFetch<{ success: boolean }>(`/workspaces/tasks/${taskId}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    body: data,
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 export async function deleteTask(
@@ -411,12 +402,10 @@ export async function deleteTask(
   itemId: string,
   taskId: string,
 ): Promise<{ success: boolean }> {
-  const response = await fetch(
-    `${API_BASE}/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}`,
+  return await apiFetch<{ success: boolean }>(
+    `/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}`,
     { method: 'DELETE' },
   )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 /**
@@ -435,12 +424,10 @@ export async function runRoutine(
   itemId: string,
   taskId: string,
 ): Promise<{ session_id: string }> {
-  const response = await fetch(
-    `${API_BASE}/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}/run`,
+  return await apiFetch<{ session_id: string }>(
+    `/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}/run`,
     { method: 'POST' },
   )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 // Chat API - Zig Backend Integration (Zig backend calls LLM backend internally)

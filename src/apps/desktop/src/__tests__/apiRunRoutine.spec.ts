@@ -7,6 +7,7 @@
  * Plan: docs/superpowers/plans/2026-06-13-add-task-routines-chunks-5.md
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setActivePinia, createPinia } from 'pinia'
 
 import { createTask, runRoutine, updateTaskSimple } from '../api'
 
@@ -15,6 +16,7 @@ describe('api.runRoutine', () => {
   const fetchMock = vi.fn()
 
   beforeEach(() => {
+    setActivePinia(createPinia())
     fetchMock.mockReset()
     global.fetch = fetchMock as unknown as typeof fetch
   })
@@ -28,6 +30,7 @@ describe('api.runRoutine', () => {
       ok: status >= 200 && status < 300,
       status,
       json: () => Promise.resolve(body),
+      text: () => Promise.resolve(JSON.stringify(body)),
     } as Response)
   }
 
@@ -63,6 +66,7 @@ describe('api.createTask (extended signature)', () => {
   const fetchMock = vi.fn()
 
   beforeEach(() => {
+    setActivePinia(createPinia())
     fetchMock.mockReset()
     global.fetch = fetchMock as unknown as typeof fetch
   })
@@ -76,6 +80,7 @@ describe('api.createTask (extended signature)', () => {
       ok: status >= 200 && status < 300,
       status,
       json: () => Promise.resolve(body),
+      text: () => Promise.resolve(JSON.stringify(body)),
     } as Response)
   }
 
@@ -129,6 +134,7 @@ describe('api.updateTaskSimple (routine fields)', () => {
   const fetchMock = vi.fn()
 
   beforeEach(() => {
+    setActivePinia(createPinia())
     fetchMock.mockReset()
     global.fetch = fetchMock as unknown as typeof fetch
   })
@@ -142,6 +148,7 @@ describe('api.updateTaskSimple (routine fields)', () => {
       ok: status >= 200 && status < 300,
       status,
       json: () => Promise.resolve(body),
+      text: () => Promise.resolve(JSON.stringify(body)),
     } as Response)
   }
 
