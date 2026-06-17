@@ -830,45 +830,56 @@ pub fn callCompactAgentNew(
     defer allocator.free(history_str);
 
     const compact_message = std.fmt.allocPrint(allocator,
-        \\Create a handoff summary for another AI coding agent.
+        \\You are preparing a handoff package for a fresh AI coding agent.
+        \\The next agent has ZERO context. It cannot ask questions. It must act immediately.
         \\
-        \\Assume the next agent will never see the original conversation.
-        \\Preserve all information needed to continue work immediately.
+        \\Rules:
+        \\- Be surgical. No narrative, no filler, no summaries of conversation.
+        \\- Every line must help the next agent take action or avoid a mistake.
+        \\- If something was tried and failed, say exactly why — not just "it failed".
+        \\- If a file was modified, say what changed and why, not just the filename.
+        \\- The NEXT ACTION must be a single concrete step, not a vague goal.
+        \\- If there are blockers, say what they are and what was tried to unblock them.
         \\
-        \\Focus on:
-        \\1. What the agent is trying to accomplish
-        \\2. Current repository state
-        \\3. Current worktree and branch
-        \\4. Files touched and why
-        \\5. Important code discoveries
-        \\6. Failed approaches and why they failed
-        \\7. User requirements and preferences
-        \\8. Exact next task
-        \\
-        \\Avoid narrative conversation summaries.
-        \\Prefer operational state and actionable information.
-        \\
-        \\Output:
+        \\Output exactly this structure, no extra sections:
         \\
         \\GOAL:
+        \\(The original user objective, one or two sentences max)
         \\
         \\CURRENT STATE:
         \\- cwd:
         \\- repo:
         \\- branch:
         \\- worktree:
+        \\- build status: (passing / failing / unknown)
+        \\- test status: (passing / failing / unknown)
         \\
         \\TECH STACK:
+        \\(Languages, frameworks, build tools — only what is relevant to the task)
         \\
         \\FILES MODIFIED:
+        \\(path — what changed and why, one line per file)
         \\
         \\KEY DISCOVERIES:
+        \\(Non-obvious things learned about the codebase, APIs, or constraints)
         \\
         \\FAILED ATTEMPTS:
+        \\(What was tried, what happened, root cause if known)
         \\
         \\OPEN ISSUES:
+        \\(Unresolved problems blocking or threatening progress)
+        \\
+        \\ASSUMPTIONS MADE:
+        \\(Decisions taken without explicit user confirmation)
         \\
         \\NEXT ACTION:
+        \\(Exactly one concrete step. File to edit, command to run, function to write.)
+        \\
+        \\AFTER THAT:
+        \\(The 2-3 steps that follow NEXT ACTION, in order)
+        \\
+        \\DO NOT:
+        \\(Pitfalls, wrong paths, things that look right but aren't)
         \\
         \\History:
         \\{s}
@@ -932,8 +943,45 @@ pub fn callCompactAgentNew(
         logger.errFmt("[COMPACTION] Failed to duplicate content: {s}", .{@errorName(err)});
         return null;
     };
+    errdefer allocator.free(duplicated);
 
-    return duplicated;
+    // Get the last 20 messages (excluding system message at index 0)
+    const working_messages = messages.items[1..];
+    const tail_start = if (working_messages.len > 20) working_messages.len - 20 else 0;
+    const recent_messages = working_messages[tail_start..];
+
+    // Collect recent message content
+    var recent_parts: std.ArrayList([]const u8) = .empty;
+    defer recent_parts.deinit(allocator);
+
+    for (recent_messages) |msg| {
+        if (msg.content) |c| recent_parts.append(allocator, c) catch |err| {
+            logger.errFmt("[COMPACTION] Failed to collect recent message: {s}", .{@errorName(err)});
+            allocator.free(duplicated);
+            return null;
+        };
+    }
+
+    const recent_str = std.mem.join(allocator, "\n", recent_parts.items) catch |err| {
+        logger.errFmt("[COMPACTION] Failed to join recent messages: {s}", .{@errorName(err)});
+        allocator.free(duplicated);
+        return null;
+    };
+    defer allocator.free(recent_str);
+
+    const result = std.fmt.allocPrint(allocator,
+        \\{s}
+        \\
+        \\---RECENT MESSAGES (last 20)---
+        \\{s}
+    , .{ duplicated, recent_str }) catch |err| {
+        logger.errFmt("[COMPACTION] Failed to build final result: {s}", .{@errorName(err)});
+        allocator.free(duplicated);
+        return null;
+    };
+
+    allocator.free(duplicated);
+    return result;
 }
 
 /// Compact messages in memory based on CompactionAgent output
