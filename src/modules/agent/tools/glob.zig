@@ -831,21 +831,18 @@ pub fn executeGlob(allocator: std.mem.Allocator, io: std.Io, input: GlobInput) !
 
     // Walk directory
     var results: std.ArrayListUnmanaged([]const u8) = .empty;
-    // Free the ArrayList's backing on both error and success. The
-    // individual `r` strings (allocator.dupe'd by walkDir) are SHARED
-    // with `matches[i].path` below, so result.deinit(allocator) owns
-    // freeing them. We must NOT call `allocator.free(r)` on success
-    // — that would double-free. On error the `errdefer` does free
-    // the items because they never made it into `matches`.
+    // Free the ArrayList's backing slice on BOTH error and success.
+    // The `defer` fires in both paths (defer runs even on error in Zig).
+    // The individual `r` strings (allocator.dupe'd by walkDir) are SHARED
+    // with `matches[i].path` below on success — so result.deinit(allocator)
+    // owns freeing them on the success path. On the error path they never
+    // made it into `matches`, so the errdefer frees them. The errdefer
+    // does NOT call results.deinit — only the defer does, to avoid a
+    // double-free of the backing slice on the error path.
     errdefer {
         for (results.items) |r| allocator.free(r);
-        results.deinit(allocator);
     }
-    defer {
-        // Success path: free the ArrayList's backing slice, but the
-        // items (r) are owned by the returned GlobResult's matches.
-        results.deinit(allocator);
-    }
+    defer results.deinit(allocator);
 
     // Create gitignore context for the root search path
     var gitignore_ctx = GitignoreContext.init(input.path);
