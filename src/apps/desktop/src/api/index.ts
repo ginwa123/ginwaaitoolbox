@@ -1178,7 +1178,11 @@ export async function getGitWorktreeInfo(
 export interface GitPrCreateResponse {
   success: boolean
   pr_url: string
-  error_message: string
+  // Renamed from `error_message` per PR review (git_pr_create.zig:60).
+  // The Zig struct field is `@"error"` (because `error` is a Zig keyword)
+  // and serializes to JSON `"error"`. This frontend field name matches
+  // the JSON wire format.
+  error: string
 }
 
 export async function createGitPr(

@@ -179,7 +179,7 @@ describe('CreatePrDialog', () => {
     expect(regenBtn.disabled).toBe(true)
 
     // Resolve the create promise so cleanup runs.
-    resolveCreate({ success: true, pr_url: 'https://example/pr/1', error_message: '' })
+    resolveCreate({ success: true, pr_url: 'https://example/pr/1', error: '' })
     await flushPromises()
   })
 
@@ -220,7 +220,7 @@ describe('CreatePrDialog', () => {
     )
     const createSpy = vi
       .spyOn(api, 'createGitPr')
-      .mockResolvedValue({ success: true, pr_url: 'https://example.com/pr/42', error_message: '' })
+      .mockResolvedValue({ success: true, pr_url: 'https://example.com/pr/42', error: '' })
 
     wrapper = mount(CreatePrDialog, {
       props: { worktreePath: '/tmp/wt' },
@@ -272,17 +272,17 @@ describe('CreatePrDialog', () => {
     expect(wrapper.find('[data-testid="create-pr-submit"]').exists()).toBe(true)
   })
 
-  it('on createGitPr success=false, emits error with the response error_message', async () => {
-    // The backend can return HTTP 200 with `{success: false,
-    // error_message: ...}` (e.g. when `gh pr create` exited non-zero).
-    // The component must handle this distinctly from an exception.
+  it('on createGitPr success=false, emits error with the response error', async () => {
+    // The backend can return HTTP 500 with `{success: false, error: ...}`
+    // (e.g. when `gh pr create` exited non-zero). The component must
+    // handle this distinctly from an exception.
     vi.spyOn(api, 'getGitWorktreeInfo').mockResolvedValue(
       makeInfo({ draft_title: 'My PR', draft_body: 'My body' }),
     )
     vi.spyOn(api, 'createGitPr').mockResolvedValue({
       success: false,
       pr_url: '',
-      error_message: 'gh: not authenticated',
+      error: 'gh: not authenticated',
     })
 
     wrapper = mount(CreatePrDialog, {
@@ -307,7 +307,7 @@ describe('CreatePrDialog', () => {
     vi.spyOn(api, 'createGitPr').mockResolvedValue({
       success: true,
       pr_url: 'https://example/pr/1',
-      error_message: '',
+      error: '',
     })
 
     wrapper = mount(CreatePrDialog, {
@@ -356,7 +356,7 @@ describe('CreatePrDialog', () => {
     expect((cancelBtn.element as HTMLButtonElement).disabled).toBe(true)
     expect((closeBtn.element as HTMLButtonElement).disabled).toBe(true)
 
-    resolveCreate({ success: true, pr_url: 'https://example/pr/1', error_message: '' })
+    resolveCreate({ success: true, pr_url: 'https://example/pr/1', error: '' })
     await flushPromises()
   })
 })

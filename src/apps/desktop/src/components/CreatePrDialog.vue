@@ -67,7 +67,7 @@ const onSubmit = async () => {
     if (resp.success) {
       emit('pr-created', resp.pr_url)
     } else {
-      emit('error', resp.error_message || 'Unknown error from gh pr create')
+      emit('error', resp.error || 'Unknown error from gh pr create')
     }
   } catch (err) {
     emit('error', `Failed to create PR: ${err}`)

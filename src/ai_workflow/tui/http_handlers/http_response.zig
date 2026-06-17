@@ -417,7 +417,10 @@ pub fn makeGitWorktreeInfoResponse(allocator: std.mem.Allocator, response: GitWo
 pub const GitPrCreateResponse = struct {
     success: bool = false,
     pr_url: []const u8 = "",
-    error_message: []const u8 = "",
+    // Renamed from `error_message` per PR review (line 60 of git_pr_create.zig).
+    // `error` is a Zig keyword, so the field is `@"error"` here; it serializes
+    // to JSON `"error"` via std.json.Stringify.
+    @"error": []const u8 = "",
 };
 
 pub fn makeGitPrCreateResponse(allocator: std.mem.Allocator, response: GitPrCreateResponse) ![]u8 {
