@@ -4,7 +4,8 @@
  * assert URL, method, body shape, and error handling without hitting
  * the network. Mirrors apiDeleteProfile.spec.ts style.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setActivePinia, createPinia } from 'pinia'
 
 import {
   getMemories,
@@ -17,6 +18,10 @@ import {
 describe('api.memories', () => {
   const originalFetch = global.fetch
   const fetchMock = vi.fn()
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
 
   afterEach(() => {
     fetchMock.mockReset()
@@ -101,11 +106,16 @@ describe('api.memories', () => {
       expect(result.memory.name).toBe('new.md')
     })
 
-    it('throws on 409 (duplicate) with the response body as the error message', async () => {
-      // createMemory throws `new Error(text || 'HTTP ${status}')` — when
-      // the body has content, the body is the message (NOT 'HTTP 409').
+    it('throws on 409 (duplicate) with the response body preserved on the ApiError', async () => {
+      // After the apiFetch migration, the body is no longer in
+      // `err.message` (which is now `HTTP 409`) — callers that want
+      // the body must read `err.body`. The toast notification also
+      // surfaces the `error` field from the JSON body automatically.
       mockFetchOnce(409, { error: 'Memory already exists' })
-      await expect(createMemory('dup.md', 'x')).rejects.toThrow(/Memory already exists/)
+      await expect(createMemory('dup.md', 'x')).rejects.toMatchObject({
+        status: 409,
+        body: expect.stringContaining('Memory already exists'),
+      })
     })
   })
 

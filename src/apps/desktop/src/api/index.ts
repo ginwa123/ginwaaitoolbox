@@ -1042,52 +1042,49 @@ export interface MemoryDeleteResponse {
 }
 
 export async function getMemories(): Promise<{ memories: Memory[] }> {
-  const response = await fetch(`${API_BASE}/memories`)
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  return await apiFetch<{ memories: Memory[] }>('/memories')
 }
 
 export async function getMemoryDetail(name: string): Promise<MemoryDetailResponse> {
-  const response = await fetch(`${API_BASE}/memories/${encodeURIComponent(name)}`)
-  if (!response.ok) {
-    if (response.status === 404) return { memory: null, error_message: 'Memory not found' }
-    throw new Error(`HTTP ${response.status}`)
+  try {
+    return await apiFetch<MemoryDetailResponse>(
+      `/memories/${encodeURIComponent(name)}`,
+    )
+  } catch (err) {
+    // Preserve the "404 = not found" semantics — the caller uses the
+    // returned shape to decide whether to show a "create new memory"
+    // prompt vs. an error toast. apiFetch surfaces 404 as ApiError,
+    // so we translate it back into the original { memory: null,
+    // error_message } shape.
+    if (err instanceof ApiError && err.status === 404) {
+      return { memory: null, error_message: 'Memory not found' }
+    }
+    throw err
   }
-  return response.json()
 }
 
 export async function createMemory(name: string, content: string): Promise<{ memory: Memory }> {
-  const response = await fetch(`${API_BASE}/memories`, {
+  return await apiFetch<{ memory: Memory }>('/memories', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, content }),
+    body: { name, content },
   })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(text || `HTTP ${response.status}`)
-  }
-  return response.json()
 }
 
 export async function updateMemory(name: string, content: string): Promise<{ memory: Memory }> {
-  const response = await fetch(`${API_BASE}/memories/${encodeURIComponent(name)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(text || `HTTP ${response.status}`)
-  }
-  return response.json()
+  return await apiFetch<{ memory: Memory }>(
+    `/memories/${encodeURIComponent(name)}`,
+    {
+      method: 'PUT',
+      body: { content },
+    },
+  )
 }
 
 export async function deleteMemory(name: string): Promise<MemoryDeleteResponse> {
-  const response = await fetch(`${API_BASE}/memories/${encodeURIComponent(name)}`, {
-    method: 'DELETE',
-  })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  return await apiFetch<MemoryDeleteResponse>(
+    `/memories/${encodeURIComponent(name)}`,
+    { method: 'DELETE' },
+  )
 }
 
 // Git Status API
@@ -1117,11 +1114,11 @@ export interface GitChangesResponse {
 
 export async function getGitStatus(cwd: string): Promise<GitStatus> {
   try {
-    const response = await fetch(`${API_BASE}/git/status?path=${encodeURIComponent(cwd)}`)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    return response.json()
+    return await apiFetch<GitStatus>(`/git/status?path=${encodeURIComponent(cwd)}`)
   } catch (error) {
-    // Return non-repo status on error
+    // Return non-repo status on error (apiFetch also fires a toast
+    // notification on non-2xx; the empty status fallback ensures the
+    // UI doesn't crash while the user sees the error).
     return {
       is_git_repo: false,
       branch: '',
