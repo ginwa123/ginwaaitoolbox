@@ -686,7 +686,20 @@ defineExpose({
    */
   flex: 1 1 0;
   min-height: 0;
-  min-height: 100px;
+  /*
+   * No explicit min-height: the Tailwind `min-h-0` class on the parent
+   * (set by every consumer: ChatsList's chat list div, ChatView's
+   * messages wrapper) provides the "shrink below content size" behavior
+   * needed for the scroller to participate correctly in a flex column.
+   * The previous `min-height: 100px` was a misnamed safety net that
+   * caused the scroller to overflow its parent when the parent's
+   * available height was less than 100px (e.g. ChatsList with a small
+   * `chatsHeight` percentage), making the last visible chat row render
+   * ON TOP of the WORKSPACES section header below. The "non-flex
+   * parent" case the old comment worried about would already be broken
+   * (no height to scroll in) — the 100 px floor just hid the bug
+   * behind an even bigger layout collision.
+   */
 }
 .virtual-scroller-content {
   display: flex;

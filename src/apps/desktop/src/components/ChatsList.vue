@@ -467,7 +467,7 @@ defineExpose({
     </button>
 
     <!-- Chat List -->
-    <div v-if="sidebarStore.navExpanded" class="flex-1 min-h-0 flex flex-col">
+    <div v-if="sidebarStore.navExpanded" class="flex-1 min-h-0 flex flex-col overflow-hidden">
       <VirtualScroller
         ref="virtualScrollerRef"
         :totalCount="chatsTotal"
@@ -542,11 +542,13 @@ defineExpose({
       <!-- Drag Resize Handle -->
       <div
         class="h-3 cursor-row-resize flex items-center justify-center group/resize shrink-0 mt-1"
+        :class="'bg-[--color-border]/20 hover:bg-[--color-border]/40 transition-colors'"
+        title="Drag to resize"
         @mousedown="startChatsResize"
       >
         <div
-          class="w-full h-0.5 transition-all duration-200 group-hover/resize:h-1 rounded"
-          style="background: linear-gradient(90deg, transparent, var(--color-border), transparent)"
+          class="w-2/3 h-0.5 transition-all duration-200 group-hover/resize:h-1 rounded"
+          style="background: var(--color-border);"
         />
       </div>
     </div>

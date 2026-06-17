@@ -24,6 +24,7 @@ import * as path from 'node:path'
 const CHATSLIST_PATH = path.resolve(__dirname, '../components/ChatsList.vue')
 const WORKSPACELIST_PATH = path.resolve(__dirname, '../components/WorkspaceList.vue')
 const WORKSPACEITEM_PATH = path.resolve(__dirname, '../components/WorkspaceItem.vue')
+const VIRTUALSCROLLER_PATH = path.resolve(__dirname, '../helpers/VirtualScroller.vue')
 
 const readSource = (filePath: string): string =>
   fs.readFileSync(filePath, 'utf-8')
@@ -67,6 +68,30 @@ describe('ChatsList.vue spacing', () => {
     if (!source.includes("item.active ? 'border-[--color-border]/60'")) {
       throw new Error(
         'ChatsList active chat row is missing the active-state top border (active row blends into the header above)',
+      )
+    }
+  })
+
+  it('chat list wrapper has overflow-hidden (defense against VirtualScroller overflow)', () => {
+    // If a future change to VirtualScroller reintroduces a min-height,
+    // this overflow-hidden on the wrapper ensures the overflow is clipped
+    // at the chat list boundary instead of bleeding into the WORKSPACES
+    // section header below.
+    if (
+      !source.includes('class="flex-1 min-h-0 flex flex-col overflow-hidden"')
+    ) {
+      throw new Error(
+        'ChatsList chat list wrapper is missing overflow-hidden (overflow from VirtualScroller would bleed into WORKSPACES)',
+      )
+    }
+  })
+
+  it('resize handle has a visible background tint (so the CHATS↔WORKSPACES boundary is always visible)', () => {
+    // Old: just a 2px transparent gradient line — invisible on dark theme.
+    // New: subtle bg-[--color-border]/20 background + solid line — always visible.
+    if (!source.includes("'bg-[--color-border]/20 hover:bg-[--color-border]/40 transition-colors'")) {
+      throw new Error(
+        'ChatsList resize handle is missing the visible background tint (boundary between CHATS and WORKSPACES is invisible)',
       )
     }
   })
@@ -124,3 +149,36 @@ describe('WorkspaceItem.vue spacing', () => {
     }
   })
 })
+
+describe('VirtualScroller.vue layout (the actual overflow bug)', () => {
+  const source = readSource(VIRTUALSCROLLER_PATH)
+
+  it('does NOT have a hard min-height: 100px floor on the scroller', () => {
+    // The previous `min-height: 100px` made the scroller 100 px tall even
+    // when its parent was smaller, causing the last visible chat row to
+    // overflow into the WORKSPACES section. The `min-h-0` Tailwind class
+    // on the parent provides the correct "shrink to 0" behavior.
+    //
+    // Match only CSS declarations (which end in `;`) so we don't false-
+    // positive on the explanatory comment that mentions the old value.
+    if (/min-height:\s*100px\s*;/.test(source)) {
+      throw new Error(
+        'VirtualScroller still has min-height: 100px as a CSS rule — this is the root cause of the CHATS↔WORKSPACES overflow. Remove it; the parent\'s `min-h-0` is sufficient.',
+      )
+    }
+  })
+
+  it('keeps the flex: 1 1 0 and min-height: 0 contract for the parent flex column', () => {
+    if (!/flex:\s*1 1 0/.test(source)) {
+      throw new Error(
+        'VirtualScroller is missing `flex: 1 1 0` (required for the scroller to participate in the parent flex column)',
+      )
+    }
+    if (!/min-height:\s*0/.test(source)) {
+      throw new Error(
+        'VirtualScroller is missing `min-height: 0` (required for the scroller to shrink below its content size in a flex column)',
+      )
+    }
+  })
+})
+
