@@ -5,6 +5,85 @@ import { createSseClient, type SseClient } from '../helpers/sseClient'
 
 export const API_BASE = '/api'
 
+import { useNotificationStore } from '../stores/notifications'
+
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly statusText: string,
+    public readonly body: string,
+  ) {
+    super(`HTTP ${status} ${statusText}`)
+    this.name = 'ApiError'
+  }
+}
+
+export interface ApiFetchOptions extends Omit<RequestInit, 'body'> {
+  body?: unknown
+  /** When true, skip the error notification (caller handles UI inline). */
+  silent?: boolean
+}
+
+/**
+ * Centralized HTTP wrapper. Auto-fires a toast notification on 4xx/5xx
+ * responses (unless `silent: true`). Throws `ApiError` on non-OK so
+ * callers can still implement fallback UI.
+ *
+ * Network failures (fetch rejects) propagate WITHOUT a notification —
+ * those are covered by SseStatusBadge for SSE, and a global offline
+ * toast is out of scope for v1.
+ */
+export async function apiFetch<T = unknown>(
+  url: string,
+  opts: ApiFetchOptions = {},
+): Promise<T> {
+  const { body, silent, ...init } = opts
+
+  const fetchInit: RequestInit = {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init.headers as Record<string, string> | undefined),
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  }
+
+  const response = await fetch(`${API_BASE}${url}`, fetchInit)
+
+  if (!response.ok) {
+    const responseBody = await response.text().catch(() => '')
+
+    if (!silent) {
+      const parsedError = tryParseJsonErrorField(responseBody)
+      const message = parsedError ?? `HTTP ${response.status} ${response.statusText}`
+      const details = parsedError ? responseBody : responseBody || undefined
+      useNotificationStore().notifyError(message, details)
+    }
+
+    throw new ApiError(response.status, response.statusText, responseBody)
+  }
+
+  // 204 No Content — return undefined cast to T
+  if (response.status === 204) {
+    return undefined as T
+  }
+
+  return (await response.json()) as T
+}
+
+function tryParseJsonErrorField(body: string): string | null {
+  if (!body) return null
+  try {
+    const obj = JSON.parse(body)
+    if (obj && typeof obj === 'object' && typeof obj.error === 'string') {
+      return obj.error
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 // Re-export SseClient so call sites that hold a reference
 // (e.g. `const workersSse: api.SseClient | null = null`) can
 // import it from the same place they import the factory

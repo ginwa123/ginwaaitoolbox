@@ -38,7 +38,7 @@ describe('apiFetch', () => {
 
   it('notifies and throws ApiError on 5xx response', async () => {
     const { useNotificationStore } = await import('../stores/notifications')
-    const fakeResponse = new Response('Internal Server Error', { status: 500 })
+    const fakeResponse = new Response('Internal Server Error', { status: 500, statusText: 'Internal Server Error' })
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse)
 
     await expect(apiFetch('/test')).rejects.toBeInstanceOf(ApiError)
