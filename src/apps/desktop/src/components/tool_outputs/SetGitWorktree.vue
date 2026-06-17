@@ -80,14 +80,14 @@ const copyPath = async (e: Event) => {
   >
     <!-- Header -->
     <div
-      class="group flex items-center gap-1 px-2 py-1 cursor-pointer select-none hover:bg-emerald-500/5"
+      class="group flex items-center gap-1 px-2 py-1 cursor-pointer select-none hover:bg-violet-500/5"
       @click="toggle"
       role="button"
       tabindex="0"
     >
-      <span class="text-emerald-600 dark:text-emerald-400 font-semibold text-xs">🌳 set_git_worktree</span>
+      <span class="text-[var(--color-violet)] font-semibold text-xs">set_git_worktree</span>
       <span
-        class="flex-1 truncate text-left text-emerald-700 dark:text-emerald-300 font-medium"
+        class="flex-1 truncate text-left text-[var(--semantic-text-dim)]"
         :title="path ?? ''"
       >
         {{ headerLabel }}
@@ -101,7 +101,7 @@ const copyPath = async (e: Event) => {
       <!-- Copy button (only for SET path — there's a path to copy) -->
       <button
         v-if="path"
-        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-emerald-500 text-base transition-opacity"
+        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
         @click="copyPath"
         title="Copy worktree path"
       >
@@ -128,19 +128,19 @@ const copyPath = async (e: Event) => {
       <!-- Worktree path (SET path) -->
       <div
         v-if="path"
-        class="flex gap-2 px-2 py-1.5 text-emerald-600 dark:text-emerald-400 text-xs border-b border-dashed border-[var(--color-border)]"
+        class="flex gap-2 px-2 py-1.5 text-xs border-b border-dashed border-[var(--color-border)]"
       >
-        <span class="font-semibold shrink-0">Path:</span>
-        <span class="whitespace-pre-wrap break-all text-[var(--semantic-text-dim)]">{{ path }}</span>
+        <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Path:</span>
+        <span class="whitespace-pre-wrap break-all text-[var(--color-violet)]" :title="path">{{ path }}</span>
       </div>
 
       <!-- Branch name (SET path) -->
       <div
         v-if="branch"
-        class="flex gap-2 px-2 py-1.5 text-emerald-600 dark:text-emerald-400 text-xs border-b border-dashed border-[var(--color-border)]"
+        class="flex gap-2 px-2 py-1.5 text-xs border-b border-dashed border-[var(--color-border)]"
       >
-        <span class="font-semibold shrink-0">Branch:</span>
-        <span class="whitespace-pre-wrap break-all text-[var(--semantic-text-dim)] font-mono">{{ branch }}</span>
+        <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Branch:</span>
+        <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)] font-mono">{{ branch }}</span>
       </div>
 
       <!-- Cleared status (CLEAR path) -->

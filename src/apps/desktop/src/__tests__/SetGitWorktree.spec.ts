@@ -125,10 +125,10 @@ describe('SetGitWorktree', () => {
     expect(wrapper.text()).toContain('Worktree binding removed and directory deleted.')
   })
 
-  it('renders the 🌳 glyph in the header for visual consistency with the sidebar badge', () => {
+  it('does NOT include the 🌳 emoji in the header (matches other tool components which are emoji-free)', () => {
     wrapper = mount(SetGitWorktree, {
       props: { content: SET_SUCCESS },
     })
-    expect(wrapper.text()).toContain('🌳')
+    expect(wrapper.text()).not.toContain('🌳')
   })
 })
