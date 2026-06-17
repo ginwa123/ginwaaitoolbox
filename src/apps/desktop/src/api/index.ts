@@ -158,41 +158,33 @@ export async function healthCheck(): Promise<{
   status: string
   timestamp: number
 }> {
-  const response = await fetch(`${API_BASE}/health`)
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  return await apiFetch<{ status: string; timestamp: number }>('/health')
 }
 
 // System Folder API
 export async function getSystemFolder(): Promise<FolderInfo> {
-  const response = await fetch(`${API_BASE}/system/folder?action=list`)
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  return await apiFetch<FolderInfo>('/system/folder?action=list')
 }
 
 export async function listFolder(path: string): Promise<FolderInfo> {
-  const response = await fetch(
-    `${API_BASE}/system/folder?path=${encodeURIComponent(path)}&action=list`,
+  return await apiFetch<FolderInfo>(
+    `/system/folder?path=${encodeURIComponent(path)}&action=list`,
   )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 // Workspace API
 export async function getWorkspaces(): Promise<{ workspaces: Workspace[] }> {
   // Items are loaded separately via getWorkspacesItems(workspace_id) —
   // this keeps the workspaces list small and lets us fetch items lazily.
-  const response = await fetch(`${API_BASE}/workspaces?is_include_items=false`)
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  return await apiFetch<{ workspaces: Workspace[] }>('/workspaces?is_include_items=false')
 }
 
 export async function getWorkspacesItems(
   workspace_id: string,
 ): Promise<{ items: WorkspaceItem[]; count: number }> {
-  const response = await fetch(`${API_BASE}/workspaces/${workspace_id}/items`)
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  return await apiFetch<{ items: WorkspaceItem[]; count: number }>(
+    `/workspaces/${workspace_id}/items`,
+  )
 }
 
 export async function createWorkspace(name: string, icon: string = '📁'): Promise<Workspace> {
