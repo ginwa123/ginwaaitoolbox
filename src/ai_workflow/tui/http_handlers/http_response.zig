@@ -101,6 +101,11 @@ pub const SessionMessagesResponse = struct {
     has_more: bool,
     next_cursor: ?[]const u8,
     cwd: ?[]const u8 = null,
+    /// Session's bound git worktree path (NULL/empty when no worktree is
+    /// bound). Mirrors `sessions.git_worktree_cwd`. Populated by
+    /// `sessionMessagesHandler` from `llm_history.SessionMessageResponse`.
+    /// See Chunk 1 of the git-worktree-cwd-pr plan.
+    git_worktree_cwd: ?[]const u8 = null,
     max_total_tokens: u32 = 0,
     max_capacity_total_tokens: u32 = 0,
     total: ?u32 = null, // Total count of messages for VirtualScroller
