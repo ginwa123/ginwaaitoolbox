@@ -253,7 +253,15 @@ pub const SseManager = struct {
 
         var it = self.clients.iterator();
         while (it.next()) |entry| {
-            _ = socket.write(entry.value_ptr.*.fd, close_msg.ptr, close_msg.len);
+            const fd = entry.value_ptr.*.fd;
+            // Send the close event as one chunked frame, then send the
+            // chunked-encoding terminator (0\r\n\r\n) so the peer can
+            // finalize its chunked-decoding state cleanly. Both writes
+            // are best-effort — `forceDestroy` below closes the fd
+            // regardless, and a stale peer will get EPOLLHUP on its
+            // next read.
+            writeChunkedFrame(fd, close_msg) catch {};
+            _ = sendAll(fd, "0\r\n\r\n");
         }
 
         while (self.clients.count() > 0) {
@@ -398,8 +406,11 @@ pub const SseManager = struct {
 
         for (client_ptrs.items) |client| {
             client.last_heartbeat = timestamp();
-            const n = socket.write(client.fd, ping.ptr, ping.len);
-            if (n < 0) {
+            // Send the heartbeat as a chunked frame so the peer can
+            // decode the byte stream as HTTP/1.1 chunked-transfer-
+            // encoding. Failure (peer already gone) means the client
+            // is dead; remove it so the next iteration skips it.
+            if (writeChunkedFrame(client.fd, ping)) |_| {} else |_| {
                 dead_ids.append(self.allocator, client.id) catch break;
             }
         }
@@ -410,12 +421,15 @@ pub const SseManager = struct {
     }
 
     pub fn sendToClient(self: *SseManager, id: [16]u8, data: []const u8) !void {
-        const client = self.clients.get(id);
+        const client = self.clients.get(id) orelse return error.ClientNotFound;
 
-        if (client == null) return error.ClientNotFound;
-
-        const n = socket.write(client.?.fd, data.ptr, data.len);
-        if (n < 0) {
+        // Route through the chunked-encoding helper so the peer's
+        // HTTP/1.1 chunked-decoder can parse the byte stream. A
+        // write failure (peer gone) means the client is dead; remove
+        // it and bubble up the error to the caller.
+        if (writeChunkedFrame(client.fd, data)) {
+            // success
+        } else |_| {
             self.removeClient(id);
             return error.ClientDisconnected;
         }
@@ -436,8 +450,15 @@ pub const SseManager = struct {
         self.lock.unlock(self.io);
 
         for (client_ptrs.items) |client| {
-            const n = socket.write(client.fd, event.ptr, event.len);
-            if (n < 0) self.removeClient(client.id);
+            // Send the broadcast as a chunked frame so the peer's
+            // HTTP/1.1 chunked-decoder can parse the byte stream. A
+            // write failure (peer gone) means the client is dead;
+            // remove it from the manager.
+            if (writeChunkedFrame(client.fd, event)) {
+                // success
+            } else |_| {
+                self.removeClient(client.id);
+            }
         }
     }
 
@@ -456,8 +477,15 @@ pub const SseManager = struct {
         self.lock.unlock(self.io);
 
         for (client_ptrs.items) |client| {
-            const n = socket.write(client.fd, event.ptr, event.len);
-            if (n < 0) self.removeClient(client.id);
+            // Send the typed broadcast as a chunked frame so the
+            // peer's HTTP/1.1 chunked-decoder can parse the byte
+            // stream. A write failure (peer gone) means the client
+            // is dead; remove it from the manager.
+            if (writeChunkedFrame(client.fd, event)) {
+                // success
+            } else |_| {
+                self.removeClient(client.id);
+            }
         }
     }
 

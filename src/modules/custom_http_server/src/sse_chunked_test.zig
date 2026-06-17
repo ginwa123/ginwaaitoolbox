@@ -107,3 +107,69 @@ test "SseManager: sendChunked on missing client returns ClientNotFound" {
     const err = mgr.sendChunked(bogus, "data: x\n\n") catch |e| e;
     try std.testing.expectEqual(error.ClientNotFound, err);
 }
+
+// ============================================================================
+// Task 2: removeClient sends the chunked-encoding terminator before closing
+// ============================================================================
+
+test "SseManager: removeClient sends the terminating chunk (0\\r\\n\\r\\n) before close" {
+    // Regression test for the
+    // `net::ERR_INCOMPLETE_CHUNKED_ENCODING 200 (OK)` browser error: every
+    // SSE connection must end with `0\r\n\r\n` so the peer's chunked-
+    // decoder can finalize cleanly. `removeClient` is responsible for
+    // flushing the terminator before closing the fd.
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    // Wrap the server_allocator in an ArenaAllocator so the hash map's
+    // backing memory is freed when the arena is deinit'd (SseManager.deinit
+    // calls clearRetainingCapacity which keeps the storage around, and
+    // DebugAllocator flags the residual as a leak otherwise).
+    var server_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer server_arena.deinit();
+    const server_allocator = server_arena.allocator();
+
+    var mgr = try SseManager.init(std.testing.allocator, server_allocator, threaded.io());
+    defer mgr.deinit();
+
+    const pair = try createSocketPair();
+    // We do NOT close pair[0] here — removeClient's sendTerminatingChunk
+    // will write to it, and then deinit() will close it. We only own
+    // the read end.
+    defer _ = posix.system.close(pair[1]);
+
+    // Use registerClientForTest so the random-id path (which requires
+    // being on the Io thread) is bypassed.
+    const id = try mgr.registerClientForTest(pair[0], .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+
+    // Send one event so the peer has a chunked frame on the wire.
+    try mgr.sendChunked(id, "event: ping\ndata: 1\n\n");
+
+    // removeClient must (a) flush the terminator, then (b) close the fd.
+    mgr.removeClient(id);
+
+    // Read everything available on the peer end. Expected sequence:
+    //   "15\r\nevent: ping\ndata: 1\n\n\r\n0\r\n\r\n"
+    //  =  4 + 21 + 2 + 5 = 32 bytes.
+    //  (the hex length "15" is 2 chars, then \r\n, then the 21-byte
+    //  data, then \r\n trailer, then the 5-byte terminator "0\r\n\r\n")
+    var buf: [64]u8 = undefined;
+    // posix.system.read takes ([*]u8, usize), so we pass `&buf` (which
+    // coerces from *[64]u8 to [*]u8) and `buf.len`. We do best-effort:
+    // the close from removeClient causes the remaining bytes to be
+    // available; we may need one or two reads to drain the kernel
+    // buffer.
+    var total: usize = 0;
+    while (total < 32) {
+        const n = posix.system.read(pair[1], &buf, buf.len - total);
+        if (n <= 0) break;
+        total += @intCast(n);
+    }
+
+    try std.testing.expect(total == 32);
+    try std.testing.expectEqualSlices(
+        u8,
+        "15\r\nevent: ping\ndata: 1\n\n\r\n0\r\n\r\n",
+        buf[0..total],
+    );
+}
