@@ -68,9 +68,7 @@ fn createPullRequestUseCase(
     // Read stdout + stderr in parallel, bounded to 64KB each (matches the
     // set_git_worktree.zig:160-190 pattern).
     var stdout_buf: std.ArrayList(u8) = .empty;
-    defer stdout_buf.deinit(allocator);
     var stderr_buf: std.ArrayList(u8) = .empty;
-    defer stderr_buf.deinit(allocator);
 
     var read_buf: [4096]u8 = undefined;
     if (child.stdout) |pipe| {
