@@ -433,7 +433,7 @@ const handleItemDragEnd = () => {
           <template v-for="workspace in workspaces" :key="workspace.id">
           <!-- Workspace Header (draggable for reordering) -->
           <div
-            class="flex items-center group/workspace rounded-lg transition-all duration-150"
+            class="flex items-center group/workspace rounded-lg transition-all duration-150 border-b border-[--color-border]/40"
             :class="{
               'opacity-50': draggingId === workspace.id,
             }"
@@ -550,6 +550,7 @@ const handleItemDragEnd = () => {
             :workspace-id="workspace.id"
             :is-item-dragging="draggingItemId === item.id"
             :is-item-drag-over="dragOverItemId === item.id && draggingItemId !== item.id"
+            class="first:mt-1.5"
             @click="handleItemClick(workspace.id, $event.id)"
             @delete="handleDeleteItem(workspace.id, $event.id)"
             @add-task="handleAddTask(workspace.id, $event)"

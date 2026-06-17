@@ -423,7 +423,7 @@ defineExpose({
   >
     <!-- Header with expand/collapse toggle -->
     <button
-      class="px-3 py-2 flex items-center gap-2 w-full text-left hover:opacity-70 transition-opacity shrink-0"
+      class="px-3 py-2.5 flex items-center gap-2 w-full text-left hover:opacity-70 transition-opacity shrink-0 border-b border-[--color-border]/40"
       @click="toggleNavSection"
     >
       <span
@@ -481,7 +481,8 @@ defineExpose({
         <template #default="{ item }">
           <button
             @click="setActive(item.id)"
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150"
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150 border-t border-transparent"
+            :class="item.active ? 'border-[--color-border]/60' : ''"
             :style="
               item.active
                 ? 'background: var(--semantic-active-bg); color: var(--semantic-active-text);'
