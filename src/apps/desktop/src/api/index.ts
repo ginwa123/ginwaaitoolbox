@@ -188,37 +188,27 @@ export async function getWorkspacesItems(
 }
 
 export async function createWorkspace(name: string, icon: string = '📁'): Promise<Workspace> {
-  const response = await fetch(`${API_BASE}/workspaces`, {
+  return await apiFetch<Workspace>('/workspaces', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: { name },
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 export async function getWorkspace(id: string): Promise<Workspace> {
-  const response = await fetch(`${API_BASE}/workspaces/${id}`)
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  return await apiFetch<Workspace>(`/workspaces/${id}`)
 }
 
 export async function deleteWorkspace(id: string): Promise<{ success: boolean }> {
-  const response = await fetch(`${API_BASE}/workspaces/${id}`, {
+  return await apiFetch<{ success: boolean }>(`/workspaces/${id}`, {
     method: 'DELETE',
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 export async function updateWorkspace(id: string, data: Partial<Workspace>): Promise<Workspace> {
-  const response = await fetch(`${API_BASE}/workspaces/${id}`, {
+  return await apiFetch<Workspace>(`/workspaces/${id}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    body: data,
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 /**
@@ -239,13 +229,10 @@ export async function updateWorkspace(id: string, data: Partial<Workspace>): Pro
 export async function reorderWorkspaces(
   orderedIds: string[],
 ): Promise<{ success: boolean; count: number }> {
-  const response = await fetch(`${API_BASE}/workspaces/reorder`, {
+  return await apiFetch<{ success: boolean; count: number }>('/workspaces/reorder', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ordered_ids: orderedIds }),
+    body: { ordered_ids: orderedIds },
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 /**
@@ -266,16 +253,13 @@ export async function reorderWorkspaceItems(
   workspaceId: string,
   orderedIds: string[],
 ): Promise<{ success: boolean; count: number }> {
-  const response = await fetch(
-    `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/items/reorder`,
+  return await apiFetch<{ success: boolean; count: number }>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/items/reorder`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ordered_ids: orderedIds }),
+      body: { ordered_ids: orderedIds },
     },
   )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 // Task API
