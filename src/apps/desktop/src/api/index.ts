@@ -931,9 +931,7 @@ export async function getWorkers(
   const params = new URLSearchParams({ limit: limit.toString() })
   if (status) params.set('status', status)
   if (sessionId) params.set('session_id', sessionId)
-  const response = await fetch(`${API_BASE}/workers?${params}`)
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  return await apiFetch<{ workers: Worker[]; count: number }>(`/workers?${params}`)
 }
 
 // Workspace Item API
@@ -943,24 +941,20 @@ export async function createWorkspaceItem(
   path: string,
   itemType: string = 'folder',
 ): Promise<WorkspaceItem> {
-  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/items`, {
+  return await apiFetch<WorkspaceItem>(`/workspaces/${workspaceId}/items`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, path, item_type: itemType }),
+    body: { name, path, item_type: itemType },
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 export async function deleteWorkspaceItem(
   workspaceId: string,
   itemId: string,
 ): Promise<{ success: boolean }> {
-  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/items/${itemId}`, {
-    method: 'DELETE',
-  })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  return await apiFetch<{ success: boolean }>(
+    `/workspaces/${workspaceId}/items/${itemId}`,
+    { method: 'DELETE' },
+  )
 }
 
 // Skills API
@@ -991,9 +985,7 @@ export async function getSkills(cwd?: string): Promise<{
     params.set('cwd', cwd)
   }
   const query = params.toString() ? `?${params.toString()}` : ''
-  const response = await fetch(`${API_BASE}/skills${query}`)
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  return await apiFetch<{ global_skills: Skill[]; local_skills: Skill[] }>(`/skills${query}`)
 }
 
 export async function getSkillDetail(
@@ -1005,9 +997,9 @@ export async function getSkillDetail(
     params.set('cwd', cwd)
   }
   const query = params.toString() ? `?${params.toString()}` : ''
-  const response = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}${query}`)
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
+  return await apiFetch<{ skill: SkillDetail | null; error_message: string | null }>(
+    `/skills/${encodeURIComponent(name)}${query}`,
+  )
 }
 
 export async function deleteSkill(
@@ -1021,11 +1013,9 @@ export async function deleteSkill(
   if (options.cwd) {
     params.set('cwd', options.cwd)
   }
-  const response = await fetch(`${API_BASE}/skills?${params}`, {
+  return await apiFetch<SkillDeleteResponse>(`/skills?${params}`, {
     method: 'DELETE',
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 // Memories API
