@@ -243,3 +243,109 @@ test "walkDir with mixed literal and wildcard patterns returns each file once" {
 
     try std.testing.expectEqual(@as(usize, 2), result.matches.items.len);
 }
+
+// ============================================================================
+// Stay-green coverage (Chunk 3 of the 2026-06-18-fix-glob-duplicate-results
+// plan). These tests lock in the new correct behavior for edge cases that
+// the dual-recursion fix could regress.
+// ============================================================================
+
+test "walkDir with simple wildcard pattern finds files at any depth exactly once" {
+    const allocator = std.testing.allocator;
+
+    var tree = try setupTempTree(allocator, "simple_wildcard");
+    defer {
+        tree.deinit(std.testing.io);
+        allocator.free(tree.root);
+    }
+
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "**/*.txt",
+        .path = tree.root,
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.matches.items.len);
+}
+
+test "walkDir with * prefix pattern finds files at top level only exactly once" {
+    // The setup tree has match.txt only at a/b/c/d/match.txt (4 levels
+    // deep). Pattern "*.txt" with no leading slash matches files ending
+    // in .txt — the current implementation matches against BOTH name
+    // AND full_path, so "*.txt" matches the full path ".../match.txt".
+    // This test locks in the post-fix invariant: each file appears
+    // EXACTLY ONCE in the results (no 2^N duplication from the
+    // dual-recursion bug that was fixed in Chunk 2).
+    const allocator = std.testing.allocator;
+
+    var tree = try setupTempTree(allocator, "star_prefix");
+    defer {
+        tree.deinit(std.testing.io);
+        allocator.free(tree.root);
+    }
+
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "*.txt",
+        .path = tree.root,
+    });
+    defer result.deinit(allocator);
+
+    // Lock-in: each file appears exactly once, no duplication.
+    try std.testing.expectEqual(@as(usize, 1), result.matches.items.len);
+}
+
+test "walkDir with negation pattern excludes correctly" {
+    // Tree has a/b/c/d/match.txt. Pattern "**/*.txt" matches it.
+    // Adding a negation pattern via the {!...} brace-expansion form
+    // produces "!(**/match.txt)" which is treated as a negation marker
+    // by walkDir (per isNegationPattern — must start with "!(").
+    // The negation logic should then exclude match.txt from the results.
+    const allocator = std.testing.allocator;
+
+    var tree = try setupTempTree(allocator, "negation");
+    defer {
+        tree.deinit(std.testing.io);
+        allocator.free(tree.root);
+    }
+
+    // Combine positive + negation patterns with brace expansion.
+    // {pattern1,pattern2} expands to two separate patterns.
+    // The second arm uses {!...} form which becomes "!(...)" — the
+    // negation marker that walkDir recognizes.
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "{{**/*.txt},{!**/match.txt}}",
+        .path = tree.root,
+    });
+    defer result.deinit(allocator);
+
+    // match.txt should be found by **/*.txt but excluded by the
+    // negation pattern → 0 results.
+    try std.testing.expectEqual(@as(usize, 0), result.matches.items.len);
+}
+
+test "walkDir with 4-component literal prefix returns each file once (regression)" {
+    // The exact pattern from the original bug report:
+    // "src/apps/desktop/src/**/Sidebar*.vue" returned 16 entries.
+    // After the fix, the project's actual Sidebar.vue must appear
+    // exactly once.
+    const allocator = std.testing.allocator;
+
+    // Use the project root as the search path. The test asserts only on
+    // the count for Sidebar.vue (project invariant: 1 file, 1 result).
+    const project_root = "/home/ginwa/agentic_coding_zig/ginwaaitoolbox";
+
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "src/apps/desktop/src/**/Sidebar*.vue",
+        .path = project_root,
+    });
+    defer result.deinit(allocator);
+
+    // Count how many entries point to Sidebar.vue specifically.
+    var sidebar_count: usize = 0;
+    for (result.matches.items) |m| {
+        if (std.mem.endsWith(u8, m.path, "/Sidebar.vue")) {
+            sidebar_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), sidebar_count);
+}
