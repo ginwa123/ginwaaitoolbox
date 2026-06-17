@@ -491,9 +491,13 @@ export async function getChatHistory(
     if (cursor) {
       params.set('cursor', cursor)
     }
-    const response = await fetch(`${API_BASE}/llm/session/${sessionId}/messages?${params}`)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const data = await response.json()
+    // silent: true — AppLayout.fetchChatSessionCwd swallows this
+    // error to fall back to a message-derived cwd, so a toast on
+    // 404/5xx would be noise.
+    const data = await apiFetch<any>(
+      `/llm/session/${sessionId}/messages?${params}`,
+      { silent: true },
+    )
     return {
       messages: data.messages.map(
         (msg: {
@@ -550,62 +554,40 @@ export async function sendChatMessage(
   imageUrls?: string[],
   selectedProfile?: string,
 ): Promise<{ status: string }> {
-  let body: string
-
   // Join image URLs with pipe separator (same format as other parts of the system)
   const imageUrlsStr = imageUrls?.join('|') || ''
 
-  // Step 1: Safely serialize — catch any JSON.stringify failures
   try {
-    body = JSON.stringify({
-      session_id: sessionId,
-      queue_message: message,
-      allowed_tools: 'all',
-      cwd_session: cwdSession,
-      image_urls: imageUrlsStr,
-      selected_profile_model: selectedProfile || '',
-    })
-  } catch (serializeError) {
-    console.error('Failed to serialize request body:', serializeError)
-    return { status: 'invalid_payload' }
-  }
-
-  // Step 2: Validate the serialized body can be parsed back (round-trip check)
-  try {
-    JSON.parse(body)
-  } catch (parseError) {
-    console.error('Serialized body failed round-trip validation:', parseError)
-    return { status: 'invalid_payload' }
-  }
-
-  // Step 3: Send the request
-  try {
-    const response = await fetch(`${API_BASE}/llm/session`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '')
-      console.error(`HTTP ${response.status}: ${errorText}`)
-
-      // Distinguish backend JSON rejection from other HTTP errors
-      if (response.status === 400) return { status: 'bad_request' }
-      if (response.status === 422) return { status: 'unprocessable_entity' }
-      throw new Error(`HTTP ${response.status}`)
+    // silent: true — ChatView already surfaces these failures inline
+    // (e.g. the LLM-not-configured banner) and the new global
+    // notification system would duplicate the message.
+    return await apiFetch<{ status: string }>(
+      '/llm/session',
+      {
+        method: 'POST',
+        body: {
+          session_id: sessionId,
+          queue_message: message,
+          allowed_tools: 'all',
+          cwd_session: cwdSession,
+          image_urls: imageUrlsStr,
+          selected_profile_model: selectedProfile || '',
+        },
+        silent: true,
+      },
+    )
+  } catch (err) {
+    // Preserve the original return-shape semantics so ChatView can
+    // branch on `status` for user-facing messages:
+    //   'bad_request'         — backend 400
+    //   'unprocessable_entity'— backend 422
+    //   'http_error'          — backend 4xx/5xx other than the above
+    //   'offline'             — network failure / fetch rejected
+    if (err instanceof ApiError) {
+      if (err.status === 400) return { status: 'bad_request' }
+      if (err.status === 422) return { status: 'unprocessable_entity' }
+      return { status: 'http_error' }
     }
-
-    // Step 4: Safely parse response JSON
-    const text = await response.text()
-    try {
-      return JSON.parse(text)
-    } catch {
-      console.error('Response is not valid JSON:', text)
-      return { status: 'invalid_response' }
-    }
-  } catch (error) {
-    console.error('Request failed:', error)
     return { status: 'offline' }
   }
 }
@@ -878,9 +860,13 @@ export interface Session {
 export async function getSession(sessionId: string): Promise<Session | null> {
   try {
     // Use the same endpoint as getChatHistory - it returns session info including cwd
-    const response = await fetch(`${API_BASE}/llm/session/${sessionId}/messages?limit=1`)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const data = await response.json()
+    // silent: true — AppLayout.fetchChatSessionCwd swallows this
+    // error to fall back to a message-derived cwd, so a toast on
+    // 404/5xx would be noise.
+    const data = await apiFetch<{
+      cwd?: string
+      messages?: { session_name?: string }[]
+    }>(`/llm/session/${sessionId}/messages?limit=1`, { silent: true })
     // The session info is in the cwd field - construct session object
     return {
       sessionId: sessionId,
@@ -1699,11 +1685,12 @@ export interface ReadFileResponse {
 }
 
 export async function readFileContent(cwd: string, filePath: string): Promise<ReadFileResponse> {
-  const response = await fetch(
-    `${API_BASE}/system/folder?path=${encodeURIComponent(cwd)}&action=read&file=${encodeURIComponent(filePath)}`,
+  // silent: true — AppLayout shows a fullscreen error view in the
+  // code editor; a toast on every read failure would be redundant noise.
+  return await apiFetch<ReadFileResponse>(
+    `/system/folder?path=${encodeURIComponent(cwd)}&action=read&file=${encodeURIComponent(filePath)}`,
+    { silent: true },
   )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 // Write file content API (for CodeEditor save)
@@ -1712,18 +1699,18 @@ export async function writeFileContent(
   filePath: string,
   content: string,
 ): Promise<{ success: boolean; message?: string }> {
-  const response = await fetch(`${API_BASE}/system/folder`, {
+  // silent: true — AppLayout surfaces save failures inline in the
+  // code editor; a toast would duplicate the message.
+  return await apiFetch<{ success: boolean; message?: string }>('/system/folder', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+    body: {
       action: 'write',
       path: cwd,
       file: filePath,
       content,
-    }),
+    },
+    silent: true,
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  return response.json()
 }
 
 // Git Stage/Unstage API
