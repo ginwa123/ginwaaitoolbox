@@ -91,3 +91,32 @@ Expected frontend delta: +~2 spec files
 - [x] Frontend: bun run build clean, vitest 279/279 pass (+19 from baseline)
 - [x] Manual smoke for HTTP (5/5 curl calls) — done in Chunk 3
 - [ ] Manual smoke for UI (deferred — would need interactive browser)
+
+## [done] 20260618_102200 — set_git_worktree tool + sessions.git_worktree_cwd plan (v1 — runtime CWD override deferred to follow-up)
+
+Branch: `feature/set-git-worktree` (worktree at `.worktrees/feature-set-git-worktree`)
+Plan: `docs/plans/2026-06-18-set-git-worktree-tool.md` (executed)
+Follow-up: `docs/plans/2026-06-18-set-git-worktree-cwd-override.md` (deferred — see "Runtime CWD override" below)
+Status: All 4 chunks shipped. v1.0 complete; runtime CWD-override deliberately deferred to a tracked follow-up (not orphaned — see NALAR.md entry for the `cwd_override` dead-letter field warning).
+
+### Commits (in order)
+- `65b36e56` — **Chunk 1 (backend)**: Migration 046 (`sessions.git_worktree_cwd`), `OnEventInputSessions.git_worktree_cwd`, `updateSessionGitWorktreeCwd` helper, 5 call sites in workflow.zig. Spec review: SPEC_COMPLIANT. Tests: 514→516 (+2 migration).
+- `ba2cb938` — **Chunk 2 (backend)**: `src/modules/agent/tools/set_git_worktree.zig` (375 lines) + `set_git_worktree_test.zig` (216 lines) + re-exports in `tools.zig`/`root.zig`. Validates absolute `path`, derives `branch` from basename (`worktree/<basename>`), supports `clear=true`. Spec review: SPEC_COMPLIANT. Tests: 516→529 (+13).
+- `2626c797` — **Chunk 3 (backend wiring)**: `execSetGitWorktree` in `tool_registry.zig` + `cwd_override` field on `ToolExecContext` (dead-letter — see follow-up). Spec review: SPEC_PARTIAL (Step 4 deferred). Tests: 529→534 (+5 static wiring).
+- `eead77b1` — **Chunk 4 (frontend)**: `Session` + `SessionEvent` interface extended with `git_worktree_cwd`; `ChatsList.vue` renders 🌳 badge; `chatsListGitWorktree.spec.ts` (4 tests). Frontend build clean, vitest 351/351 pass.
+
+### Runtime CWD override (DEFERRED — tracked)
+- The `cwd_override: ?[]const u8 = null` field on `ToolExecContext` is declared and accepted by `execSetGitWorktree`'s input struct, but is **never read, never populated, and never mutated anywhere in the dispatch path** — it is dead-letter code as of v1.0.
+- Effect: calling `set_git_worktree` with `path=/abs/.worktrees/foo` persists the binding to the DB, but the next `execBash` / `execReadFile` / `execWriteFile` / `execTextReplace` / `execGlob` / `execSearch` call still runs in `ctx.cwd` (the session's original cwd), not the worktree path.
+- Workaround for the LLM today: re-call `set_git_worktree` to refresh; or pass absolute paths in every `bash` invocation.
+- Follow-up plan `docs/plans/2026-06-18-set-git-worktree-cwd-override.md` (307 lines, 5 chunks) implements the runtime override by switching `ToolExecFunc` to `fn (ctx: *ToolExecContext, tc) !R` (pointer-pass) and reading `ctx.cwd_override ?? ctx.cwd` in the 5 filesystem tools.
+- NALAR.md has a dedicated "DEAD-LETTER FIELD" entry warning future agents not to remove the field and not to assume it's populated at runtime.
+
+### Final verification
+- [x] Backend: `zig build test` clean (534 tests, +20 from baseline 514)
+- [x] Frontend: `bun run build` clean, `bunx vitest run` 351/351 pass (+4)
+- [x] 4 commits on `feature/set-git-worktree` branch, no uncommitted changes in worktree
+- [x] Follow-up plan filed at `docs/plans/2026-06-18-set-git-worktree-cwd-override.md` (gitignored via `/docs`)
+- [x] NALAR.md updated with the `cwd_override` dead-letter warning
+- [x] .nalar/tasks.md updated (this block)
+- [ ] Manual smoke test (cannot run — no headless browser in this env; HTTP-level path proven by the static wiring tests)

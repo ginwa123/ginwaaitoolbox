@@ -812,6 +812,21 @@ pub const Migration045AddPositionToWorkspaceItems = struct {
     }
 };
 
+pub const Migration046AddGitWorktreeCwdToSessions = struct {
+    pub const version: u32 = 46;
+    pub const name = "add_git_worktree_cwd_to_sessions";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Nullable: NULL means "no worktree bound". The application code
+        // maps NULL → "" via COALESCE for the API surface, matching the
+        // convention used for `cwd`, `created_at`, `updated_at`, and
+        // `selected_profile_model` (see llm_history.zig:1802).
+        try db.exec(allocator,
+            "ALTER TABLE sessions ADD COLUMN git_worktree_cwd TEXT",
+            &[_][]const u8{});
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -909,6 +924,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration043AddPositionToWorkspaces.version, .name = Migration043AddPositionToWorkspaces.name, .up = Migration043AddPositionToWorkspaces.up },
     .{ .version = Migration044AddRoutines.version, .name = Migration044AddRoutines.name, .up = Migration044AddRoutines.up },
     .{ .version = Migration045AddPositionToWorkspaceItems.version, .name = Migration045AddPositionToWorkspaceItems.name, .up = Migration045AddPositionToWorkspaceItems.up },
+    .{ .version = Migration046AddGitWorktreeCwdToSessions.version, .name = Migration046AddGitWorktreeCwdToSessions.name, .up = Migration046AddGitWorktreeCwdToSessions.up },
 };
 
 /// Register all migrations with a MigrationManager

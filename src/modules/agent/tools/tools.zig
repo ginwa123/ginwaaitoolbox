@@ -15,6 +15,7 @@ pub const edit_skill = @import("edit_skill.zig");
 pub const view_skill = @import("view_skill.zig");
 pub const add_agent = @import("add_agent.zig");
 pub const semantic_search = @import("semantic_search.zig");
+pub const set_git_worktree = @import("set_git_worktree.zig");
 
 pub const list_agents_tool = list_agents.list_agents_tool;
 pub const list_memory_tool = list_memory.list_memory_tool;
@@ -31,3 +32,4 @@ pub const view_skill_tool = view_skill.view_skill_tool;
 pub const add_agent_tool = add_agent.add_agent_tool;
 pub const semantic_search_tool = semantic_search.semantic_search_tool;
 pub const index_codebase_tool = semantic_search.index_codebase_tool;
+pub const set_git_worktree_tool = set_git_worktree.set_git_worktree_tool;

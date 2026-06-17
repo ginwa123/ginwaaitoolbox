@@ -33,6 +33,7 @@ import RemoveSkill from './tool_outputs/RemoveSkill.vue'
 import RemoveFile from './tool_outputs/RemoveFile.vue'
 import SpawnSubAgent from './tool_outputs/SpawnSubAgent.vue'
 import NalarBrowser from './tool_outputs/NalarBrowser.vue'
+import SetGitWorktree from './tool_outputs/SetGitWorktree.vue'
 import SkillsPopup from './SkillsPopup.vue'
 import ImagePreview from './ImagePreview.vue'
 import { parseSpawnSubAgentArgs } from '../helpers/parseSpawnSubAgentArgs'
@@ -193,6 +194,21 @@ const renderResponse = (
         tool_name === 'view_skill'
       ) {
         return `<span class="tool-inline">${tool_name}</span>`
+      }
+
+      if (tool_name === 'set_git_worktree') {
+        // SET success: <created>true</created><path>...</path>
+        const pathMatch = content.match(/<path>([\s\S]*?)<\/path>/)
+        if (pathMatch) {
+          return `<span class="tool-inline">${tool_name} → ${escapeHtml(pathMatch[1]?.trim() || '')}</span>`
+        }
+        // CLEAR success: <cleared>true</cleared>
+        if (/<cleared>\s*true\s*<\/cleared>/.test(content)) {
+          return `<span class="tool-inline">${tool_name} → cleared</span>`
+        }
+        // Error: <created>false</created><error>...</error>
+        const errMatch = content.match(/<error>([\s\S]*?)<\/error>/)
+        return `<span class="tool-inline">${tool_name} → ${escapeHtml(errMatch?.[1]?.trim() || 'error')}</span>`
       }
 
       if (tool_name === 'nalar_browser') {
@@ -1971,6 +1987,11 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'nalar_browser'"
                             :content="innerToolData(msg)"
                             :parameters="getParametersForMessage(msg)"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <SetGitWorktree
+                            v-else-if="msg.tool_name === 'set_git_worktree'"
+                            :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />
                           <div v-else class="tool-expandable">

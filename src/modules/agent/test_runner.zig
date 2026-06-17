@@ -23,6 +23,7 @@ test {
     _ = @import("tools/spawn_sub_agent_test.zig");
     _ = @import("tools/view_skill_test.zig");
     _ = @import("tools/nalar_browser_test.zig");
+    _ = @import("tools/set_git_worktree_test.zig");
 
     // Bash tool cross-platform tests
     _ = @import("tools/bash_test.zig");

@@ -25,6 +25,7 @@ const remove_skill_mod = nalar_mod.remove_skill_tool;
 const list_agents_mod = nalar_mod.list_agents;
 const add_skill_mod = nalar_mod.add_skill;
 const edit_skill_mod = nalar_mod.edit_skill;
+const set_git_worktree_mod = nalar_mod.set_git_worktree;
 const add_agent_mod = nalar_mod.add_agent;
 const remove_agent_mod = nalar_mod.remove_agent;
 const remove_file_mod = nalar_mod.remove_file;
@@ -74,6 +75,13 @@ pub const ToolExecContext = struct {
     /// per-profile sub_agents lookup (locked decision #1 in
     /// the plan).
     selected_profile_model: []const u8 = "",
+    /// Optional CWD override set by `set_git_worktree`. When non-null,
+    /// exec functions MAY prefer this path over `cwd` for filesystem
+    /// operations. Currently a no-op at the exec layer (the field is
+    /// reserved for a follow-up plan; see Chunk 3 of the
+    /// set_git_worktree plan in NALAR.md). DB persistence is the
+    /// MUST-HAVE — the override field is forward-looking only.
+    cwd_override: ?[]const u8 = null,
 };
 
 /// Tool execution result with optional agent state changes
@@ -458,6 +466,67 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     }
 
     const output = try wrapToolOutput(ctx.allocator, "add_skill", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+pub fn execSetGitWorktree(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        set_git_worktree_mod.SetGitWorktreeInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "set_git_worktree failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "set_git_worktree", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    // executeSetGitWorktreeToString returns ![]const u8 — errors are
+    // also encoded as <error>...</error> in the XML on success paths.
+    // We must catch the error union separately.
+    const inner = set_git_worktree_mod.executeSetGitWorktreeToString(
+        ctx.allocator,
+        ctx.io,
+        ctx.db,
+        ctx.cwd,
+        ctx.session_id,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "set_git_worktree failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "set_git_worktree", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "set_git_worktree", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    // SUCCESS: persist the new git_worktree_cwd to the DB so the
+    // session remembers it across tool calls. For CLEAR, pass null
+    // (the function treats null and "" identically as "clear the
+    // binding"). For SET, extract the <path>...</path> from the
+    // inner XML and persist it.
+    const effective: ?[]const u8 = if (parsed.value.clear) null else blk: {
+        const path_start = (std.mem.indexOf(u8, inner, "<path>") orelse 0) + "<path>".len;
+        const path_end = std.mem.indexOf(u8, inner[path_start..], "</path>") orelse inner.len;
+        const worktree_path = inner[path_start .. path_start + path_end];
+        if (worktree_path.len == 0) break :blk null;
+        // Borrow the slice from `inner` (still alive for the duration
+        // of this call). `updateSessionGitWorktreeCwd` only reads it
+        // and never frees it, so this is safe.
+        break :blk worktree_path;
+    };
+
+    llm_history.updateSessionGitWorktreeCwd(ctx.allocator, ctx.db, ctx.session_id, effective) catch |err| {
+        ctx.logger.errFmt("set_git_worktree: failed to persist git_worktree_cwd: {s}", .{@errorName(err)});
+    };
+
+    const output = try wrapToolOutput(ctx.allocator, "set_git_worktree", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
@@ -1433,6 +1502,9 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "text_replace", .exec = execTextReplace, .tool_def = text_replace_mod.text_replace_tool },
     .{ .name = "remove_file", .exec = execRemoveFile, .tool_def = remove_file_mod.remove_file_tool },
 
+    // === GIT WORKTREE BINDING ===
+    .{ .name = "set_git_worktree", .exec = execSetGitWorktree, .tool_def = set_git_worktree_mod.set_git_worktree_tool },
+
     // === LSP TOOLS ===
     .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool },
     .{ .name = "lsp_references", .exec = execLspReferences, .tool_def = lsp_references_mod.lsp_references_tool },
@@ -1480,6 +1552,7 @@ pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool
         glob_tool_mod.glob_tool,
         search_tool_mod.search_tool,
         nalar_browser_mod.nalar_browser_tool,
+        set_git_worktree_mod.set_git_worktree_tool,
     };
     return allocator.dupe(tool_models.AgentTool, tools_list) catch return &.{};
 }

@@ -31,7 +31,7 @@ const processingState = inject<Ref<Record<string, boolean>>>('processingState', 
 
 // State
 const chatsLoading = ref(false)
-const navItems = ref<{ id: string; name: string; active?: boolean; processing?: boolean; relativeTime?: string; selected_profile_model?: string }[]>([])
+const navItems = ref<{ id: string; name: string; active?: boolean; processing?: boolean; relativeTime?: string; selected_profile_model?: string; git_worktree_cwd?: string }[]>([])
 const chatsHasMore = ref(false)
 const chatsNextCursor = ref<string | null>(null)
 const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
@@ -135,6 +135,7 @@ const loadChats = async () => {
       processing: !!processingState.value[session.session_id], // Show spinner for any processing chat
       relativeTime: formatRelativeTime(session.updated_at),
       selected_profile_model: session.selected_profile_model || '',
+      git_worktree_cwd: session.git_worktree_cwd || '',
     }))
     console.log('[ChatsList] navItems set to:', navItems.value)
     chatsHasMore.value = data.has_more
@@ -319,6 +320,7 @@ const handleSessionEvent = (event: api.SessionEvent) => {
           ...existing,
           name: event.name || existing.name,
           selected_profile_model: event.selected_profile_model ?? existing.selected_profile_model,
+          git_worktree_cwd: event.git_worktree_cwd ?? existing.git_worktree_cwd,
         }
       }
     } else {
@@ -502,6 +504,13 @@ defineExpose({
                 class="ml-1 text-[10px]"
                 style="color: var(--color-violet);"
                 >🤖 {{ item.selected_profile_model }}</span
+              >
+              <span
+                v-if="item.git_worktree_cwd"
+                class="ml-1 text-xs text-emerald-600 dark:text-emerald-400 font-mono"
+                :title="item.git_worktree_cwd"
+                data-testid="worktree-badge"
+                >🌳 worktree</span
               >
             </span>
             <span class="text-xs opacity-60 shrink-0 ml-2">{{ item.relativeTime || 'now' }}</span>
