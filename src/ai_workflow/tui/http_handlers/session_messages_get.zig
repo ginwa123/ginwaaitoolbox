@@ -89,6 +89,7 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
         .has_more = msg_response.has_more,
         .next_cursor = msg_response.next_cursor,
         .cwd = msg_response.cwd,
+        .git_worktree_cwd = msg_response.git_worktree_cwd,
         .skills = msg_response.skills,
         .max_total_tokens = msg_response.max_total_tokens,
         .max_capacity_total_tokens = msg_response.max_capacity_total_tokens,

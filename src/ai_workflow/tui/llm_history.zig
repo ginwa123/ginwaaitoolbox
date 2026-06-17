@@ -454,6 +454,12 @@ pub const SessionMessageResponse = struct {
     has_more: bool,
     next_cursor: ?[]const u8,
     cwd: ?[]const u8 = null,
+    /// Session's bound git worktree path (NULL/empty when no worktree is
+    /// bound). Mirrors `sessions.git_worktree_cwd`. Added by Chunk 1 of
+    /// the git-worktree-cwd-pr plan so the frontend can render the
+    /// worktree's branch/path in the chat status bar from the moment
+    /// the chat loads (not just after the user re-fetches).
+    git_worktree_cwd: ?[]const u8 = null,
     max_total_tokens: u32 = 0,
     max_capacity_total_tokens: u32 = 0,
     total_count: ?u32 = null, // Total count of messages in session (for VirtualScroller)
@@ -509,7 +515,7 @@ pub fn getSessionMessagesSorted(
         sql = try std.fmt.allocPrint(allocator,
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
-            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(h.reasoning_content, ''),
+            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''),
             \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s}{s} LIMIT ?
@@ -527,7 +533,7 @@ pub fn getSessionMessagesSorted(
         sql = try std.fmt.allocPrint(allocator,
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
-            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(h.reasoning_content, ''),
+            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''),
             \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s} LIMIT ?
@@ -547,13 +553,23 @@ pub fn getSessionMessagesSorted(
 
     // Get cwd from first row (same for all rows since we filter by session_id)
     var cwd: ?[]u8 = null;
+    var git_worktree_cwd: ?[]u8 = null;
 
     while (try rows.next()) |row| {
-        // Extract cwd from last column of first row (index 9, reasoning_content is at 10)
+        // Extract cwd + git_worktree_cwd from the first row (same for all
+        // rows since we filter by session_id). Column indices match the
+        // SELECT list above: cwd at 9, git_worktree_cwd at 10,
+        // reasoning_content at 11, diffview_before at 12, ...
         if (cwd == null) {
             const cwd_val = row.values[9];
             if (cwd_val.len > 0) {
                 cwd = try allocator.dupe(u8, cwd_val);
+            }
+        }
+        if (git_worktree_cwd == null) {
+            const wt_val = row.values[10];
+            if (wt_val.len > 0) {
+                git_worktree_cwd = try allocator.dupe(u8, wt_val);
             }
         }
 
@@ -567,16 +583,16 @@ pub fn getSessionMessagesSorted(
             .is_output = try allocator.dupe(u8, row.values[6]),
             .tool_name = try allocator.dupe(u8, row.values[7]),
             .finish_reason = try allocator.dupe(u8, row.values[8]),
-            .reasoning_content = try allocator.dupe(u8, row.values[10]),
-            .diffview_before = if (row.values[11].len > 0) try allocator.dupe(u8, row.values[11]) else null,
-            .diffview_after = if (row.values[12].len > 0) try allocator.dupe(u8, row.values[12]) else null,
-            .image_urls = if (row.values[13].len > 0) blk: {
+            .reasoning_content = try allocator.dupe(u8, row.values[11]),
+            .diffview_before = if (row.values[12].len > 0) try allocator.dupe(u8, row.values[12]) else null,
+            .diffview_after = if (row.values[13].len > 0) try allocator.dupe(u8, row.values[13]) else null,
+            .image_urls = if (row.values[14].len > 0) blk: {
                 var urls = std.ArrayList([]const u8).empty;
                 errdefer {
                     for (urls.items) |u| allocator.free(u);
                     urls.deinit(allocator);
                 }
-                var iter = std.mem.splitScalar(u8, row.values[13], '|');
+                var iter = std.mem.splitScalar(u8, row.values[14], '|');
                 while (iter.next()) |url| {
                     if (url.len > 0) {
                         try urls.append(allocator, try allocator.dupe(u8, url));
@@ -584,8 +600,8 @@ pub fn getSessionMessagesSorted(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
-            .tool_call_id = if (row.values[14].len > 0) try allocator.dupe(u8, row.values[14]) else null,
-            .tool_calls_json = if (row.values[15].len > 0) try allocator.dupe(u8, row.values[15]) else null,
+            .tool_call_id = if (row.values[15].len > 0) try allocator.dupe(u8, row.values[15]) else null,
+            .tool_calls_json = if (row.values[16].len > 0) try allocator.dupe(u8, row.values[16]) else null,
         };
         try messages.append(allocator, msg);
         row.deinit(allocator);
@@ -615,6 +631,7 @@ pub fn getSessionMessagesSorted(
         .has_more = has_more,
         .next_cursor = next_cursor,
         .cwd = cwd,
+        .git_worktree_cwd = git_worktree_cwd,
         .max_total_tokens = getMaxTotalTokensForSession(allocator, db, session_id) catch 0,
         .max_capacity_total_tokens = if (nalarcore.getSingleton() catch null) |di|
             llm_models.getModelTokenCount(nalarcore.getLlmConfig(di).model)

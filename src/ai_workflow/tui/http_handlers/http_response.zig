@@ -101,6 +101,11 @@ pub const SessionMessagesResponse = struct {
     has_more: bool,
     next_cursor: ?[]const u8,
     cwd: ?[]const u8 = null,
+    /// Session's bound git worktree path (NULL/empty when no worktree is
+    /// bound). Mirrors `sessions.git_worktree_cwd`. Populated by
+    /// `sessionMessagesHandler` from `llm_history.SessionMessageResponse`.
+    /// See Chunk 1 of the git-worktree-cwd-pr plan.
+    git_worktree_cwd: ?[]const u8 = null,
     max_total_tokens: u32 = 0,
     max_capacity_total_tokens: u32 = 0,
     total: ?u32 = null, // Total count of messages for VirtualScroller
@@ -381,6 +386,44 @@ pub fn makeGitStatusErrorResponse(allocator: std.mem.Allocator, message: []const
 }
 
 pub fn makeGitStageResponse(allocator: std.mem.Allocator, response: GitStageResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
+// ─── Git worktree info types ───────────────────────────────────────────────
+// Wire shape for `GET /api/git/worktree/info?path=<worktree>[&base=<branch>]`
+// consumed by the desktop app's CreatePrDialog. Mirrors the response
+// struct in `git_worktree_info.zig` so a future contract change is one
+// struct definition to update. See Chunk 2 of the
+// git-worktree-cwd-pr plan.
+pub const GitWorktreeInfoResponse = struct {
+    is_git_repo: bool = false,
+    branch: []const u8 = "",
+    last_commit_sha: []const u8 = "",
+    last_commit_msg: []const u8 = "",
+    default_base: []const u8 = "",
+    commits_ahead: i64 = 0,
+    diff_summary: []const u8 = "",
+    draft_title: []const u8 = "",
+    draft_body: []const u8 = "",
+};
+
+pub fn makeGitWorktreeInfoResponse(allocator: std.mem.Allocator, response: GitWorktreeInfoResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
+// ─── Git PR create types ──────────────────────────────────────────────────
+// Wire shape for `POST /api/git/pr`. See Chunk 3 of the
+// git-worktree-cwd-pr plan.
+pub const GitPrCreateResponse = struct {
+    success: bool = false,
+    pr_url: []const u8 = "",
+    // Renamed from `error_message` per PR review (line 60 of git_pr_create.zig).
+    // `error` is a Zig keyword, so the field is `@"error"` here; it serializes
+    // to JSON `"error"` via std.json.Stringify.
+    @"error": []const u8 = "",
+};
+
+pub fn makeGitPrCreateResponse(allocator: std.mem.Allocator, response: GitPrCreateResponse) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
