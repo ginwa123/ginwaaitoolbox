@@ -171,7 +171,7 @@ const handleLoadMoreTasks = (event: Event) => {
       <div class="flex items-center group/item">
         <button
           @click="handleClick"
-          class="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-all duration-200"
+          class="flex-1 flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-all duration-200"
           :style="isActive
             ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
             : `color: var(--semantic-text-muted);`"
@@ -254,7 +254,7 @@ const handleLoadMoreTasks = (event: Event) => {
            row lives in <WorkspaceItemTask> (extracted 2026-06-10);
            events bubble up via the pass-through handlers in the
            <script setup> block. -->
-      <div v-if="isExpanded && item.tasks && item.tasks.length > 0" class="ml-8 mt-1 space-y-0.5">
+      <div v-if="isExpanded && item.tasks && item.tasks.length > 0" class="ml-8 mt-1.5 space-y-0.5 pl-2 border-l border-[--color-border]/30">
         <WorkspaceItemTask
           v-for="task in item.tasks"
           :key="task.id"

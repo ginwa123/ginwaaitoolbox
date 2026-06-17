@@ -423,7 +423,7 @@ defineExpose({
   >
     <!-- Header with expand/collapse toggle -->
     <button
-      class="px-3 py-2 flex items-center gap-2 w-full text-left hover:opacity-70 transition-opacity shrink-0"
+      class="px-3 py-2.5 flex items-center gap-2 w-full text-left hover:opacity-70 transition-opacity shrink-0 border-b border-[--color-border]/40"
       @click="toggleNavSection"
     >
       <span
@@ -467,7 +467,7 @@ defineExpose({
     </button>
 
     <!-- Chat List -->
-    <div v-if="sidebarStore.navExpanded" class="flex-1 min-h-0 flex flex-col">
+    <div v-if="sidebarStore.navExpanded" class="flex-1 min-h-0 flex flex-col overflow-hidden">
       <VirtualScroller
         ref="virtualScrollerRef"
         :totalCount="chatsTotal"
@@ -481,7 +481,8 @@ defineExpose({
         <template #default="{ item }">
           <button
             @click="setActive(item.id)"
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150"
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150 border-t border-transparent"
+            :class="item.active ? 'border-[--color-border]/60' : ''"
             :style="
               item.active
                 ? 'background: var(--semantic-active-bg); color: var(--semantic-active-text);'
@@ -541,11 +542,13 @@ defineExpose({
       <!-- Drag Resize Handle -->
       <div
         class="h-3 cursor-row-resize flex items-center justify-center group/resize shrink-0 mt-1"
+        :class="'bg-[--color-border]/20 hover:bg-[--color-border]/40 transition-colors'"
+        title="Drag to resize"
         @mousedown="startChatsResize"
       >
         <div
-          class="w-full h-0.5 transition-all duration-200 group-hover/resize:h-1 rounded"
-          style="background: linear-gradient(90deg, transparent, var(--color-border), transparent)"
+          class="w-2/3 h-0.5 transition-all duration-200 group-hover/resize:h-1 rounded"
+          style="background: var(--color-border);"
         />
       </div>
     </div>
