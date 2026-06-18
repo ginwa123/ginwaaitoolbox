@@ -1,4 +1,5 @@
 import { fileURLToPath, URL } from 'node:url'
+import type { Buffer } from 'node:buffer'
 
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
@@ -23,18 +24,69 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:8081',  // Point to Zig backend
+        target: 'http://localhost:8081', // Point to Zig backend
         changeOrigin: true,
-        // SSE requires streaming, disable buffering
+        // We take over writing the downstream response ourselves so
+        // http-proxy does not buffer the upstream SSE body. The
+        // previous version set `x-no-proxy-buffering` (a CloudFront-
+        // specific header) inside the `configure` callback, which
+        // http-proxy ignores — that's why SSE events arrived in
+        // bursts instead of real-time, and the browser DevTools
+        // showed ERR_INCOMPLETE_CHUNKED_ENCODING on disconnect.
+        selfHandleResponse: true,
         configure: (proxy) => {
-          proxy.on('proxyRes', (proxyRes) => {
-            if (proxyRes.headers['transfer-encoding'] === 'chunked') {
-              proxyRes.headers['x-no-proxy-buffering'] = 'true';
+          proxy.on('proxyRes', (proxyRes, _req, res) => {
+            // Mirror upstream status / headers that matter for SSE.
+            // Do NOT touch Transfer-Encoding: the upstream (Zig) now
+            // sends chunked-encoded frames and we want to forward
+            // those bytes verbatim.
+            res.statusCode = proxyRes.statusCode ?? 200
+            for (const [key, value] of Object.entries(proxyRes.headers)) {
+              // Skip hop-by-hop headers (per RFC 9110 §7.6.1) — these
+              // are managed by the HTTP stack, not forwarded.
+              const lower = key.toLowerCase()
+              if (
+                lower === 'transfer-encoding' ||
+                lower === 'connection' ||
+                lower === 'keep-alive' ||
+                lower === 'upgrade'
+              ) {
+                continue
+              }
+              res.setHeader(key, value as string | string[])
             }
-          });
+            // Set the de-facto "don't buffer me" header for any
+            // downstream intermediary that respects it (nginx, ALB,
+            // Cloudflare). This is the standard SSE hardening header.
+            res.setHeader('X-Accel-Buffering', 'no')
+
+            // Pipe the upstream body to the downstream response
+            // without buffering. Each 'data' event from proxyRes is
+            // one chunked-encoded frame from the Zig backend; we
+            // forward it as-is.
+            proxyRes.on('data', (chunk: Buffer) => {
+              // res.write returns false if the downstream buffer is
+              // full; we do NOT pause proxyRes because http-proxy's
+              // backpressure handling for SSE is unreliable. The
+              // downstream socket will apply TCP backpressure itself.
+              res.write(chunk)
+            })
+            proxyRes.on('end', () => {
+              res.end()
+            })
+            proxyRes.on('error', (_err: Error) => {
+              // Upstream died (e.g. backend restart). End the
+              // downstream response so the browser sees a clean
+              // chunked-encoding terminator instead of
+              // ERR_INCOMPLETE_CHUNKED_ENCODING.
+              if (!res.writableEnded) {
+                res.end()
+              }
+            })
+          })
         },
         // Increase timeouts for long-running SSE streams
-        timeout: 300000, // 5 minute timeout
+        timeout: 300_000, // 5 minutes; matches the previous value
       },
     },
   },
