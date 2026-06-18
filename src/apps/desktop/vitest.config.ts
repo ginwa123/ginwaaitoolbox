@@ -18,6 +18,9 @@ export default mergeConfig(
         'monaco-editor': fileURLToPath(
           new URL('./src/__tests__/stubs/monaco-editor.ts', import.meta.url),
         ),
+        'media-recorder-stub': fileURLToPath(
+          new URL('./src/__tests__/stubs/mediaRecorder.ts', import.meta.url),
+        ),
       },
     },
     test: {
