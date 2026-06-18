@@ -312,3 +312,109 @@ describe('MicButton — error states', () => {
     expect(wrapper.find('[data-testid="mic-button"]').attributes('data-state')).toBe('error')
   })
 })
+
+// ── FileInput + MicButton integration ─────────────────────────────────────
+
+import FileInput from '../components/FileInput.vue'
+
+describe('FileInput — MicButton integration', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    lastRecorder = null
+    apiTranscribeMock.mockReset()
+    getUserMediaMock.mockReset()
+    // Default: getUserMedia succeeds with a fake stream.
+    getUserMediaMock.mockResolvedValue({
+      getTracks: () => [{ kind: 'audio', stop: vi.fn() }],
+      getAudioTracks: () => [{ kind: 'audio', stop: vi.fn() }],
+    })
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    vi.clearAllMocks()
+  })
+
+  it('renders the MicButton in the input form', () => {
+    wrapper = mount(FileInput, { props: { cwd: '/tmp' } })
+    expect(wrapper.find('[data-testid="mic-button"]').exists()).toBe(true)
+  })
+
+  it('inserts transcribed text at the cursor (cursor at end of existing text)', async () => {
+    apiTranscribeMock.mockResolvedValueOnce({ text: 'added by mic' })
+
+    wrapper = mount(FileInput, { props: { cwd: '/tmp' } })
+
+    // Type something into the textarea first
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('Hello')
+    // Place cursor at end (after "Hello")
+    const ta = textarea.element as HTMLTextAreaElement
+    ta.selectionStart = ta.selectionEnd = 5
+
+    // Trigger full toggle cycle
+    await wrapper.find('[data-testid="mic-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="mic-button"]').trigger('click')
+    lastRecorder!.emitDataAvailable(new Blob(['x'], { type: 'audio/webm' }))
+    lastRecorder!.emitStop()
+    await flushPromises()
+
+    // Text was inserted with a leading space because "Hello" is non-empty.
+    // No trailing space because `after` is empty (cursor was at end of text).
+    expect((wrapper.vm as unknown as { inputText: string }).inputText).toBe('Hello added by mic')
+  })
+
+  it('inserts transcribed text without leading space when textarea is empty', async () => {
+    apiTranscribeMock.mockResolvedValueOnce({ text: 'first words' })
+
+    wrapper = mount(FileInput, { props: { cwd: '/tmp' } })
+    await wrapper.find('[data-testid="mic-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="mic-button"]').trigger('click')
+    lastRecorder!.emitDataAvailable(new Blob(['x'], { type: 'audio/webm' }))
+    lastRecorder!.emitStop()
+    await flushPromises()
+
+    expect((wrapper.vm as unknown as { inputText: string }).inputText).toBe('first words')
+  })
+
+  it('disables the MicButton while LLM is processing', () => {
+    wrapper = mount(FileInput, {
+      props: { cwd: '/tmp', isLLMProcessing: true },
+    })
+    const btn = wrapper.find('[data-testid="mic-button"]')
+    expect(btn.attributes('disabled')).toBeDefined()
+  })
+
+  it('disables the MicButton while isLoading is true', () => {
+    wrapper = mount(FileInput, {
+      props: { cwd: '/tmp', isLoading: true },
+    })
+    const btn = wrapper.find('[data-testid="mic-button"]')
+    expect(btn.attributes('disabled')).toBeDefined()
+  })
+
+  it('works in review mode', async () => {
+    apiTranscribeMock.mockResolvedValueOnce({ text: 'review note' })
+
+    wrapper = mount(FileInput, {
+      props: { cwd: '/tmp', reviewMode: true },
+    })
+
+    // MicButton should still be present in review mode
+    expect(wrapper.find('[data-testid="mic-button"]').exists()).toBe(true)
+
+    // Toggle + transcribe cycle still works
+    await wrapper.find('[data-testid="mic-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="mic-button"]').trigger('click')
+    lastRecorder!.emitDataAvailable(new Blob(['x'], { type: 'audio/webm' }))
+    lastRecorder!.emitStop()
+    await flushPromises()
+
+    expect((wrapper.vm as unknown as { inputText: string }).inputText).toBe('review note')
+  })
+})
