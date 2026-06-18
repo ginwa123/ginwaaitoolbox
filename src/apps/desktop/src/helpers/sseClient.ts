@@ -113,12 +113,7 @@
  *                   5xx) before any `open` fired, or
  *                   `maxAttempts` was reached.
  */
-export type SseState =
-  | 'connecting'
-  | 'open'
-  | 'reconnecting'
-  | 'closed'
-  | 'failed'
+export type SseState = 'connecting' | 'open' | 'reconnecting' | 'closed' | 'failed'
 
 /**
  * Side-channel info attached to every state emission. Lets UI
@@ -146,14 +141,7 @@ export interface SseStateInfo {
    *   - `exhausted`        — `maxAttempts` reached (only on `failed`)
    *   - `non-recoverable`  — first-attempt failure (4xx/5xx) (only on `failed`)
    */
-  reason?:
-    | 'error'
-    | 'closed'
-    | 'online'
-    | 'visible'
-    | 'manual'
-    | 'exhausted'
-    | 'non-recoverable'
+  reason?: 'error' | 'closed' | 'online' | 'visible' | 'manual' | 'exhausted' | 'non-recoverable'
 }
 
 export interface SseClientOptions {
@@ -734,7 +722,11 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     if (visibilityTarget && typeof visibilityTarget.removeEventListener === 'function') {
       visibilityTarget.removeEventListener('visibilitychange', onVisibilityChange)
     }
-    if (reconnectOnOnline && onlineTarget && typeof onlineTarget.removeEventListener === 'function') {
+    if (
+      reconnectOnOnline &&
+      onlineTarget &&
+      typeof onlineTarget.removeEventListener === 'function'
+    ) {
       onlineTarget.removeEventListener('online', onOnline)
     }
     if (closeOnUnload && unloadTarget && typeof unloadTarget.removeEventListener === 'function') {

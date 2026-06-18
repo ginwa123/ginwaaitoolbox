@@ -1,7 +1,6 @@
 const nalar_mod = @import("nalarcore");
 const llm_history = @import("llm_history.zig");
 const build_msg_prompt = @import("build_messages_for_agent_prompt.zig");
-const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
 const models = @import("models.zig");
 const on_event_sent = @import("on_event_sent.zig");
 const tool_registry = @import("tool_registry.zig");
@@ -180,14 +179,6 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     var is_have_queue_message = false;
 
     // Ensure cleanup happens even on error - remove from worker table
-    defer {
-        is_have_queue_message = llm_history.hasQueuedMessages(db, copy_session_id);
-        if (is_have_queue_message == false) {
-            llm_history.markSessionIdle(parent_allocator, db, copy_session_id) catch |err| {
-                logger.errFmt("Failed to mark session idle: {s}", .{@errorName(err)});
-            };
-        }
-    }
 
     const initial_agent_state = try llm_history.get_current_agent_by_session_id(
         parent_allocator,
@@ -199,32 +190,27 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     // Check if session is already running (exists in worker table)
     if (llm_history.isSessionRunning(db, copy_session_id) and active_loops.contains(io, copy_session_id)) {
         // Session is already running, queue the message
-        llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_message, copy_image_urls) catch {
-            logger.warnFmt("Failed to queue message for session {s}", .{copy_session_id});
-        };
-        logger.debugFmt("WORKFLOW: queued message for session {s}", .{copy_session_id});
+        try llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_message, copy_image_urls);
         is_have_queue_message = true;
         return;
     }
+    defer {
+        llm_history.markSessionIdle(parent_allocator, db, copy_session_id) catch |err| {
+            logger.errFmt("Failed to mark session idle: {s}", .{@errorName(err)});
+        };
+    }
+
     defer active_loops.remove(io, copy_session_id);
 
     // Register in worker table (upsertWorker already does this)
-    llm_history.upsertWorker(parent_allocator, db, copy_session_id, copy_session_id, copy_cwd) catch {
-        logger.warnFmt("Failed to upsert worker info for {s}", .{copy_session_id});
-    };
+    try llm_history.upsertWorker(parent_allocator, db, copy_session_id, copy_session_id, copy_cwd);
 
-    llm_history.updateSessionUpdatedAt(parent_allocator, db, copy_session_id) catch {
-        logger.warnFmt("Failed to update session updated at for {s}", .{copy_session_id});
-    };
+    try llm_history.updateSessionUpdatedAt(parent_allocator, db, copy_session_id);
 
-    llm_history.updateWorkspaceUpdatedAt(parent_allocator, db, copy_session_id) catch {
-        logger.warnFmt("Failed to update workspace item tasks updated at for {s}", .{copy_session_id});
-    };
+    try llm_history.updateWorkspaceUpdatedAt(parent_allocator, db, copy_session_id);
 
     // Queue the initial message
-    llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_message, copy_image_urls) catch {
-        logger.warnFmt("Failed to queue initial message for session {s}", .{copy_session_id});
-    };
+    try llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_message, copy_image_urls);
 
     var retry_count: usize = 0;
     var current_max_tokens: usize = 20000;
@@ -239,9 +225,6 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
     // Filter and merge tools based on allowed_tools setting
     const merged_tools = try filterAndMergeTools(parent_allocator, mcp_tools_fetched, copy_allowed_tools, copy_is_sub_agent);
-
-    // Debug: check merged_tools
-    std.debug.print("DEBUG_MERGE: merged_tools count={d}\n", .{merged_tools.len});
 
     while (true) {
         _ = active_loops.tryInsert(io, copy_session_id);
@@ -280,7 +263,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                 } else {
                     // Fallback: try to extract from message content
                     image_urls = helpers.image.extractBase64ImageUrls(queued.message, allocator) catch |err| blk: {
-                        logger.warnFmt("Failed to extract image URLs: {s}", .{@errorName(err)});
+                        logger.errFmt("Failed to extract image URLs: {s}", .{@errorName(err)});
                         break :blk null;
                     };
                 }
@@ -291,7 +274,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     }
                 }
 
-                _ = try llm_history.saveMessage(allocator, io, db, .{
+                try llm_history.saveMessage(allocator, io, db, .{
                     .session_id = copy_session_id,
                     .model = effective_model,
                     .cwd = copy_cwd,
@@ -321,7 +304,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     parent_allocator.free(skill.content);
                 };
 
-                on_event_sent.onEventSendLLMHistory(allocator, .{
+                try on_event_sent.onEventSendLLMHistory(allocator, .{
                     .session_id = copy_session_id,
                     .model = effective_model,
                     .cwd = copy_cwd,
@@ -341,14 +324,14 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .is_output = false,
                     .image_url = if (queued.image_url.len > 0) queued.image_url else null,
                     .session_skills = session_skills_queued,
-                }) catch {};
+                });
 
                 _ = try llm_history.deleteQueuedMessage(allocator, db, copy_session_id, queued.message);
             }
         }
 
         // Update worker activity in DB to show we're actively processing
-        llm_history.updateWorkerActivity(allocator, db, copy_session_id) catch {};
+        try llm_history.updateWorkerActivity(allocator, db, copy_session_id);
 
         if (retry_count > 10) return error.TooManyRetries;
 
@@ -434,7 +417,6 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
         try messagesLists.appendSlice(allocator, initialMessages);
 
-        logger.debugFmt("[COMPACTION] Total tokens from DB: {} ({} messages)", .{ total_tokens, messagesLists.items.len });
         try maybeCompactMessagesNew(allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger);
 
         const res_dynamic_agent = callDynamicAgentNew(allocator, io, &messagesLists, agent_temperature, current_max_tokens, isThinking, effective_api_key, effective_model, effective_base_url, effective_url_style, copy_session_id, merged_tools) catch |err| {
@@ -473,8 +455,8 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
                 // Send SSE event directly with the agent's response content
                 // Don't use getLatestMessage as it might return wrong message if timestamps collide
-                const session_skills_dynamic = llm_history.getSessionSkills(allocator, db, copy_session_id) catch null;
-                defer if (session_skills_dynamic) |s| for (s) |*skill| {
+                const session_skills_dynamic = try llm_history.getSessionSkills(allocator, db, copy_session_id);
+                defer for (session_skills_dynamic) |*skill| {
                     allocator.free(skill.skill_name);
                     allocator.free(skill.content);
                 };
@@ -515,22 +497,16 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                 // logged and ignored so the LLM workflow never blocks.
                 if (config.notify_on_complete) {
                     const preview = if (res_dynamic_agent.content) |c| c else "(empty response)";
-                    notifications.notify(io, allocator, "Agent Nalar", preview) catch |err| {
-                        logger.warnFmt("notifications: {s}", .{@errorName(err)});
-                    };
+                    try notifications.notify(io, allocator, "Agent Nalar", preview);
                 }
 
-                llm_history.markSessionIdle(allocator, db, copy_session_id) catch |err| {
-                    logger.errFmt("Failed to mark session idle: {s}", .{@errorName(err)});
-                };
+                try llm_history.markSessionIdle(allocator, db, copy_session_id);
 
                 break;
             } else if (finish_reason == .length) {
                 current_max_tokens += 4096;
-                logger.debugFmt("Increased max tokens to {d}", .{current_max_tokens});
                 continue;
             } else if (finish_reason == .tool_calls) {
-                std.debug.print("DEBUG_WORKFLOW: finish_reason == .tool_calls, calling handle_tool\n", .{});
                 try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, copy_selected_profile_model);
             } else if (finish_reason == .assistant) {
                 if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
@@ -560,8 +536,8 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
                     // Send SSE event directly with the agent's response content
                     // Don't use getLatestMessage as it might return wrong message if timestamps collide
-                    const session_skills_assistant = llm_history.getSessionSkills(allocator, db, copy_session_id) catch null;
-                    defer if (session_skills_assistant) |s| for (s) |*skill| {
+                    const session_skills_assistant = try llm_history.getSessionSkills(allocator, db, copy_session_id);
+                    defer for (session_skills_assistant) |*skill| {
                         allocator.free(skill.skill_name);
                         allocator.free(skill.content);
                     };
@@ -599,15 +575,13 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                 }
             } else {
                 retry_count += 1;
-                logger.errFmt("Error calling agent: maybe streaming failed", .{});
-
-                const session_skills_retry = llm_history.getSessionSkills(allocator, db, copy_session_id) catch null;
-                defer if (session_skills_retry) |s| for (s) |*skill| {
+                const session_skills_retry = try llm_history.getSessionSkills(allocator, db, copy_session_id);
+                defer for (session_skills_retry) |*skill| {
                     allocator.free(skill.skill_name);
                     allocator.free(skill.content);
                 };
 
-                on_event_sent.onEventSendLLMHistory(allocator, .{
+                _ = try on_event_sent.onEventSendLLMHistory(allocator, .{
                     .session_id = copy_session_id,
                     .model = effective_model,
                     .cwd = copy_cwd,
@@ -628,7 +602,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                     .parent_id = copy_parent_session_id,
                     .image_url = null,
                     .session_skills = session_skills_retry,
-                }) catch {};
+                });
                 break;
             }
 

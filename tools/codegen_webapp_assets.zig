@@ -60,9 +60,21 @@ pub fn main(init: std.process.Init) !void {
     // The embedded webview will be blank in that case, but the server
     // binary (install:linux) still builds cleanly. Run `bun run build`
     // in src/apps/desktop/ to populate dist/ and regenerate.
-    const dist_exists = if (std.fs.cwd().access(dist_path, .{})) true else |err| switch (err) {
-        error.FileNotFound => false,
-        else => return err,
+    // Use raw `faccessat(2)` instead of `std.fs.cwd().access(...)` because
+    // `std.fs.cwd()` is gone in Zig 0.16. The tool already uses raw syscalls
+    // throughout (see `mkdirsRecursive` below for the same pattern), so this
+    // stays consistent. ENOENT means the dist/ hasn't been built yet — emit
+    // a stub so the desktop build still succeeds; any other errno is a real
+    // error (permissions, I/O) and we propagate it.
+    var dist_path_buf: [8192:0]u8 = undefined;
+    const dist_path_z = copyToNull(&dist_path_buf, dist_path);
+    const acc_rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, dist_path_z, 0, 0);
+    const dist_exists = acc: {
+        if (acc_rc == 0) break :acc true;
+        const rc_signed: isize = @bitCast(acc_rc);
+        const errno: usize = @intCast(-rc_signed);
+        if (errno == @intFromEnum(std.os.linux.E.NOENT)) break :acc false;
+        return error.AccessFailed;
     };
     if (!dist_exists) {
         std.debug.print("warning: {s} not found; emitting empty webapp_assets.zig stub. Run 'bun run build' in the webapp dir to populate.\n", .{dist_path});
