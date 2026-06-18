@@ -2,6 +2,7 @@
 import { ref, watch, nextTick, computed } from 'vue'
 import * as api from '../api'
 import FilePreview from './FilePreview.vue'
+import MicButton from './MicButton.vue'
 
 export interface QueuedMessage {
   id: string
@@ -370,6 +371,51 @@ const sendMessage = () => {
   // Use sendMessageWithFiles for full functionality with base64 encoding
   sendMessageWithFiles()
 }
+
+const handleTranscribed = (text: string) => {
+  insertTextAtCursor(text)
+}
+
+/**
+ * Insert text at the current cursor position in the textarea.
+ * If text is already selected, the selection is replaced.
+ * Adds a trailing space if existing content is non-empty.
+ */
+const insertTextAtCursor = (text: string) => {
+  const textarea = document.querySelector(
+    '.file-input-wrapper textarea',
+  ) as HTMLTextAreaElement | null
+
+  if (!textarea) {
+    // Fallback: just append
+    inputText.value = inputText.value
+      ? `${inputText.value} ${text}`
+      : text
+    return
+  }
+
+  const start = textarea.selectionStart ?? inputText.value.length
+  const end = textarea.selectionEnd ?? start
+  const before = inputText.value.slice(0, start)
+  const after = inputText.value.slice(end)
+  const needsLeadingSpace = before.length > 0 && !before.endsWith(' ') && !before.endsWith('\n')
+  const needsTrailingSpace = after.length > 0 && !after.startsWith(' ')
+
+  const insertion = `${needsLeadingSpace ? ' ' : ''}${text}${needsTrailingSpace ? ' ' : ''}`
+  inputText.value = before + insertion + after
+
+  // Restore cursor position after the inserted text
+  nextTick(() => {
+    const newPos = start + insertion.length
+    textarea.setSelectionRange(newPos, newPos)
+    textarea.focus()
+  })
+}
+
+// Expose for parent tests (ChatView integration tests use these)
+defineExpose({
+  inputText,
+})
 </script>
 
 <template>
@@ -498,6 +544,12 @@ const sendMessage = () => {
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.586a6 6 0 108.486 8.486L20.5 13"/>
         </svg>
       </button>
+      <!-- Microphone button -->
+      <MicButton
+        :disabled="isLoading || isLLMProcessing"
+        @transcribed="handleTranscribed"
+        @error="(msg: string) => console.warn('Mic error:', msg)"
+      />
       <button type="submit" :disabled="isLoading || isLLMProcessing"
         class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200 border flex items-center gap-2"
         :class="isLoading || isLLMProcessing ? 'cursor-not-allowed' : 'hover:opacity-90 active:scale-95'"
