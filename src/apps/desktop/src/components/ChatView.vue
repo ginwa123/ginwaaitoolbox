@@ -1523,11 +1523,13 @@ const connectSse = () => {
         return
       }
 
-      if (event.type === 'chunk' && event.content) {
-        streamingContent.value = event.content
-        updateStreamingMessage()
-        return
-      }
+
+      // disabled this
+      // if (event.type === 'chunk' && event.content) {
+      //   streamingContent.value = event.content
+      //   updateStreamingMessage()
+      //   return
+      // }
 
       if (event.type === 'full' && event.finish_reason && event.content) {
         messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
