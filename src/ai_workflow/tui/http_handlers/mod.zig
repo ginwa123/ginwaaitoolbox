@@ -103,6 +103,11 @@ pub const NalarConfigJsonForDelete = @import("nalar_config_profile_delete.zig").
 // full LLM stream. See /docs/superpowers/plans/2026-01-15-llm-completion-notification.md
 pub const notifyTestHandler = @import("notify_test.zig").notifyTestHandler;
 
+// Audio transcription handler — proxies MediaRecorder audio to the
+// user's configured Whisper endpoint (see plan:
+// docs/plans/2026-06-19-file-input-microphone.md).
+pub const transcribeHandler = @import("transcribe.zig").transcribeHandler;
+
 // =============================================================================
 // Shared Types & Helpers
 // =============================================================================

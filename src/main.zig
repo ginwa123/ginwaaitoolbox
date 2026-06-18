@@ -267,6 +267,7 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.sse("/api/llm/session/:session_id/queue_messages/stream", ai_mod.http_handlers.queueMessagesStreamHandler);
     try gs.router.sse("/api/llm/stream/:session_id", ai_mod.http_handlers.llmHistorySSE);
     try gs.router.sse("/api/sessions/stream", ai_mod.http_handlers.sessionsStreamHandler);
+    try gs.router.post("/api/transcribe", ai_mod.http_handlers.transcribeHandler);
     // try gs.router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
     //
     // // Desktop app routes (system, health, workspaces)
