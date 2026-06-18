@@ -112,7 +112,37 @@ pub fn getSessionList(
     _ = status;
     _ = agent_type;
 
-    const sql = "SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at, COALESCE(h.agent, 'Agent'), COALESCE(s.name, '') FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT ? OFFSET ?";
+    // Rewritten to use idx_llm_history_created_session(created_at DESC,
+    // session_id) — see Migration 048. The inner subquery groups
+    // session_id + MAX(created_at) and applies LIMIT/OFFSET so the
+    // planner can walk the covering index in created_at DESC order and
+    // stop at LIMIT. The outer query LEFT JOINs sessions for cwd/name,
+    // and a correlated subquery picks the agent of the LATEST message
+    // in the session (fixes the original's loose-GROUP-BY agent
+    // semantics, which were implementation-defined).
+    const sql =
+        \\SELECT sub.session_id,
+        \\       sub.created_at,
+        \\       COALESCE(s.cwd, '') AS cwd,
+        \\       COALESCE(s.name, '') AS session_name,
+        \\       COALESCE(
+        \\         (SELECT h2.agent
+        \\            FROM llm_history h2
+        \\           WHERE h2.session_id = sub.session_id
+        \\           ORDER BY h2.created_at DESC
+        \\           LIMIT 1),
+        \\         'Agent'
+        \\       ) AS agent
+        \\FROM (
+        \\  SELECT h.session_id, MAX(h.created_at) AS created_at
+        \\    FROM llm_history h
+        \\   GROUP BY h.session_id
+        \\   ORDER BY created_at DESC
+        \\   LIMIT ? OFFSET ?
+        \\) sub
+        \\LEFT JOIN sessions s ON s.id = sub.session_id
+        \\ORDER BY sub.created_at DESC
+    ;
 
     const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
     const offset_str = try std.fmt.allocPrint(allocator, "{d}", .{offset});
