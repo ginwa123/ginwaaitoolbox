@@ -4,40 +4,30 @@
  * "Create worktree" in the WorktreeMenu (no-worktree branch).
  *
  * The dialog is a small folder-picker + name input. The user picks a
- * parent directory by:
- *   - Clicking folders in the FolderExplorer to navigate into them
- *   - Typing/editing the path in the breadcrumb-style input at top
- *   - Clicking the ↑ button to go up one directory
+ * PARENT DIRECTORY via the FilePickerDialog (modal), then types a SHORT
+ * BASENAME (e.g. "auth-fix", "bug-123") for the worktree itself. The
+ * dialog composes the final absolute path as `${parentDir}/${basename}`
+ * and emits `create(path)`. The parent sends a system message to the
+ * LLM asking it to call set_git_worktree(path=<full_path>).
  *
- * Then types a SHORT BASENAME (e.g. "auth-fix", "bug-123") for the
- * worktree itself. The dialog composes the final absolute path as
- * `${parentDir}/${basename}` and emits `create(path)`. The parent
- * sends a system message to the LLM asking it to call
- * set_git_worktree(path=<full_path>).
+ * Migrated from an inline FolderExplorer + breadcrumb + "Up" button to
+ * the shared FilePickerDialog component. Net effect: ~150 fewer lines,
+ * the picker is a proper modal with search/hidden-files/keyboard nav,
+ * and the user no longer has to type paths in a tiny text input.
  *
- * The FolderExplorer is the existing component from src/apps/desktop/
- * src/components/FolderExplorer.vue (used in RightSidebar for the
- * workspace file browser). This dialog listens for its new
- * `folder-click` event to navigate. Existing FolderExplorer callers
- * (RightSidebar) are unaffected — they don't listen for folder-click.
+ * Public API (unchanged from before the migration):
+ *   props:  initialCwd? (absolute path used as the starting parent dir)
+ *   emits:  create(path: string), close()
  *
  * The tool handles path validation (must be absolute, no .., no null
  * bytes, ≤ 4096 chars, basename matches [A-Za-z0-9._-]{1,100}) and the
  * worktree-add subprocess. The branch defaults to
  * worktree/<basename(path)> in the tool, so the LLM doesn't need to
  * pass it.
- *
- * Why this is simpler than CreatePrDialog:
- *   - No async pre-fill (no getGitWorktreeInfo call)
- *   - No base branch field (tool's default is correct for new worktrees)
- *   - The actual work is done by the LLM after the user clicks Create,
- *     so the dialog itself is fire-and-forget
- *
- * The dialog closes itself via the parent's v-if binding.
  */
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import FolderExplorer from './FolderExplorer.vue'
-import type { FolderEntry } from '../api'
+import { ref, computed, onMounted, nextTick, onBeforeUnmount } from 'vue'
+import { getSystemFolder, listFolder, type FolderEntry } from '../api'
+import FilePickerDialog from './FilePickerDialog.vue'
 
 const props = defineProps<{
   /** Absolute path used as the initial parent directory (typically the session cwd). */
@@ -49,19 +39,39 @@ const emit = defineEmits<{
   (e: 'close'): void
 }>()
 
+// ─── State ─────────────────────────────────────────────────────────────────
+
 // Parent directory of the new worktree. Starts at initialCwd (the
 // session cwd), or falls back to '/' if not provided.
-const parentDir = ref(props.initialCwd && props.initialCwd.trim() !== '' ? props.initialCwd : '/')
+const parentDir = ref(
+  props.initialCwd && props.initialCwd.trim() !== '' ? props.initialCwd : '/',
+)
 
 // Basename of the new worktree (e.g. "auth-fix", "bug-123").
 const basename = ref('')
 
 const isSubmitting = ref(false)
+const showPicker = ref(false)
+const nameInput = ref<HTMLInputElement | null>(null)
+
+// ─── Picker data source ────────────────────────────────────────────────────
+
+// Adapts the existing listFolder/getSystemFolder API to the picker's
+// agnostic (path: string) => Promise<T[]> contract. When path is empty
+// we return the system folder root entries.
+const loadItemsForPicker = async (path: string): Promise<FolderEntry[]> => {
+  const data = path ? await listFolder(path) : await getSystemFolder()
+  return (data.entries || []) as FolderEntry[]
+}
+
+// ─── Computed ──────────────────────────────────────────────────────────────
 
 // Final path that will be sent to set_git_worktree. Avoids double-slash
 // when parentDir is "/".
 const fullPath = computed(() => {
-  const base = parentDir.value.endsWith('/') ? parentDir.value.slice(0, -1) : parentDir.value
+  const base = parentDir.value.endsWith('/')
+    ? parentDir.value.slice(0, -1)
+    : parentDir.value
   const trimmed = basename.value.trim()
   if (trimmed === '') return `${base}/`
   return `${base}/${trimmed}`
@@ -71,38 +81,24 @@ const fullPath = computed(() => {
 // parent dir. The tool's validatePath is the source of truth; this is
 // only the client-side guard to disable the button.
 const canSubmit = computed(() => {
-  return !isSubmitting.value && basename.value.trim() !== '' && parentDir.value.trim() !== ''
+  return (
+    !isSubmitting.value &&
+    basename.value.trim() !== '' &&
+    parentDir.value.trim() !== ''
+  )
 })
 
-// Navigate into a folder clicked in the FolderExplorer.
-const onFolderClick = (folder: FolderEntry) => {
-  if (folder.is_directory) {
-    parentDir.value = folder.path
-  }
+// ─── Handlers ──────────────────────────────────────────────────────────────
+
+const handleFolderSelected = (path: string) => {
+  parentDir.value = path
+  // Close the picker on selection — matches the expected UX (the picker
+  // dismisses and the user is returned to the CreateWorktreeDialog with
+  // the chosen path filled in). The real FilePickerDialog has a
+  // `closeOnSelect` prop but it defaults to false, so we close from the
+  // parent instead.
+  showPicker.value = false
 }
-
-// Navigate up one directory from the current parentDir.
-const goUp = () => {
-  const trimmed = parentDir.value.replace(/\/+$/, '') || '/'
-  if (trimmed === '/') return  // already at root
-  const lastSlash = trimmed.lastIndexOf('/')
-  parentDir.value = lastSlash === 0 ? '/' : trimmed.slice(0, lastSlash)
-}
-
-// Update parentDir when the user types in the path bar.
-const onPathInput = (e: Event) => {
-  const target = e.target as HTMLInputElement
-  parentDir.value = target.value
-}
-
-onMounted(() => {
-  // Esc closes the dialog (no submit guard needed — empty basename disables Create)
-  document.addEventListener('keydown', handleKeydown)
-})
-
-onUnmounted(() => {
-  document.removeEventListener('keydown', handleKeydown)
-})
 
 const handleKeydown = (e: KeyboardEvent) => {
   if (e.key === 'Escape' && !isSubmitting.value) emit('close')
@@ -119,108 +115,145 @@ const onSubmit = () => {
 const onClose = () => {
   if (!isSubmitting.value) emit('close')
 }
+
+// ─── Lifecycle ─────────────────────────────────────────────────────────────
+
+// Focus the basename input on mount. The dialog is mounted by the parent
+// (ChatView) via v-if, so this fires exactly once per open/close cycle.
+onMounted(() => {
+  nextTick(() => nameInput.value?.focus())
+})
+
+onBeforeUnmount(() => {
+  document.body.style.overflow = ''
+})
 </script>
 
 <template>
-  <div
-    class="fixed inset-0 z-50 flex items-center justify-center p-4"
-    style="background-color: rgba(0, 0, 0, 0.5)"
-    @click.self="onClose"
-  >
+  <Teleport to="body">
     <div
-      class="w-full max-w-xl rounded-lg shadow-xl overflow-hidden flex flex-col"
-      style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); max-height: 80vh"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+      @click.self="onClose"
+      @keydown="handleKeydown"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="create-worktree-title"
       data-testid="create-worktree-dialog"
     >
+      <!-- Backdrop -->
       <div
-        class="px-4 py-3 flex items-center justify-between shrink-0"
-        style="border-bottom: 1px solid var(--color-border)"
-      >
-        <h2 class="text-sm font-semibold" style="color: var(--semantic-text)">
-          🌳 Create a worktree
-        </h2>
-        <button
-          @click="onClose"
-          :disabled="isSubmitting"
-          data-testid="create-worktree-close"
-          class="opacity-60 hover:opacity-100"
-          style="color: var(--semantic-text)"
-        >
-          ✕
-        </button>
-      </div>
+        class="absolute inset-0 backdrop-blur-md"
+        style="background: rgba(0, 0, 0, 0.6);"
+        @click="onClose"
+      />
 
-      <div class="flex-1 overflow-hidden flex flex-col">
-        <!-- Parent directory: path bar + Up button + FolderExplorer -->
-        <div class="px-4 py-3 space-y-2 flex-1 overflow-hidden flex flex-col">
-          <label class="block text-xs font-medium" style="color: var(--semantic-text-dim)">
+      <!-- Dialog Card -->
+      <div
+        class="relative w-full max-w-md mx-4 rounded-xl shadow-2xl flex flex-col overflow-hidden"
+        style="
+          background-color: var(--semantic-card-bg);
+          border: 1px solid var(--color-border);
+          box-shadow:
+            0 1px 2px rgba(0, 0, 0, 0.4),
+            0 8px 24px rgba(0, 0, 0, 0.35);
+          max-height: 80vh;
+        "
+      >
+        <!-- Header -->
+        <div class="px-5 pt-5 pb-4 flex items-start justify-between">
+          <div>
+            <h3
+              id="create-worktree-title"
+              class="text-base font-semibold flex items-center gap-2"
+              style="color: var(--semantic-text);"
+            >
+              <span aria-hidden="true">🌳</span>
+              Create a worktree
+            </h3>
+            <p
+              class="text-xs mt-1"
+              style="color: var(--semantic-text-dim);"
+            >
+              Pick a parent directory and a short name
+            </p>
+          </div>
+          <button
+            type="button"
+            @click="onClose"
+            :disabled="isSubmitting"
+            data-testid="create-worktree-close"
+            class="opacity-60 hover:opacity-100 text-base shrink-0"
+            style="color: var(--semantic-text);"
+          >
+            ✕
+          </button>
+        </div>
+
+        <!-- Parent directory -->
+        <div class="px-5 pb-4">
+          <label
+            class="block text-xs font-medium mb-2"
+            style="color: var(--semantic-text-dim);"
+          >
             Parent directory
           </label>
-          <div class="flex items-center gap-2">
-            <input
-              :value="parentDir"
-              @input="onPathInput"
-              data-testid="create-worktree-parent"
-              type="text"
-              class="flex-1 px-2 py-1.5 text-xs rounded font-mono"
-              style="
-                background-color: var(--semantic-input-bg, var(--semantic-card-bg));
-                border: 1px solid var(--color-border);
-                color: var(--semantic-text);
-                color-scheme: dark;
-              "
-              spellcheck="false"
-            />
-            <button
-              @click="goUp"
-              :disabled="parentDir === '/'"
-              :title="'Go up one directory'"
-              data-testid="create-worktree-up"
-              class="px-2 py-1.5 text-xs rounded shrink-0"
-              :class="parentDir === '/' ? 'opacity-40 cursor-not-allowed' : 'hover:opacity-80'"
-              style="
-                background-color: var(--semantic-card-bg);
-                border: 1px solid var(--color-border);
-                color: var(--semantic-text);
-              "
-            >
-              ↑
-            </button>
-          </div>
-
-          <!-- Folder explorer — bounded height so the dialog doesn't grow unbounded -->
-          <div
-            class="flex-1 overflow-y-auto rounded"
-            style="border: 1px solid var(--color-border); min-height: 200px; max-height: 320px;"
-            data-testid="create-worktree-explorer"
+          <button
+            type="button"
+            @click="showPicker = true"
+            data-testid="create-worktree-choose-parent"
+            class="w-full px-3 py-2 rounded-lg text-sm flex items-center justify-between gap-2 transition-all duration-200 hover:opacity-80"
+            :style="{
+              backgroundColor: parentDir && parentDir !== '/'
+                ? 'var(--semantic-active-bg)'
+                : 'var(--semantic-sidebar-bg)',
+              border: '1px solid var(--color-border)',
+              color: parentDir && parentDir !== '/'
+                ? 'var(--semantic-text)'
+                : 'var(--semantic-text-dim)',
+            }"
           >
-            <FolderExplorer
-              :cwd="parentDir"
-              @folder-click="onFolderClick"
-            />
-          </div>
+            <span
+              class="truncate flex-1 text-left font-mono"
+              :title="parentDir"
+            >
+              {{ parentDir === '/' ? 'Choose parent directory…' : parentDir }}
+            </span>
+            <span
+              class="text-xs shrink-0"
+              style="color: var(--semantic-text-dim);"
+              aria-hidden="true"
+            >
+              {{ parentDir && parentDir !== '/' ? 'Change' : '📂' }}
+            </span>
+          </button>
         </div>
 
         <!-- Basename + hint -->
-        <div class="px-4 pb-3 space-y-2 shrink-0">
-          <label class="block text-xs font-medium" style="color: var(--semantic-text-dim)">
+        <div class="px-5 pb-4">
+          <label
+            class="block text-xs font-medium mb-2"
+            style="color: var(--semantic-text-dim);"
+          >
             Name
           </label>
           <input
+            ref="nameInput"
             v-model="basename"
             data-testid="create-worktree-name"
             type="text"
-            class="w-full px-2 py-1.5 text-xs rounded font-mono"
+            placeholder="auth-fix"
+            class="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200 font-mono"
             style="
-              background-color: var(--semantic-input-bg, var(--semantic-card-bg));
+              background-color: var(--semantic-sidebar-bg);
               border: 1px solid var(--color-border);
               color: var(--semantic-text);
-              color-scheme: dark;
             "
-            placeholder="auth-fix"
             @keyup.enter="onSubmit"
           />
-          <p class="text-[10px]" style="color: var(--semantic-text-dim)">
+          <p
+            class="text-[10px] mt-2"
+            style="color: var(--semantic-text-dim);"
+          >
             The worktree will be created at
             <code style="font-family: monospace;">{{ fullPath }}</code>.
             The branch will be auto-derived as
@@ -228,39 +261,53 @@ const onClose = () => {
             The parent directory must already exist.
           </p>
         </div>
-      </div>
 
-      <div
-        class="px-4 py-3 flex items-center justify-end gap-2 shrink-0"
-        style="border-top: 1px solid var(--color-border)"
-      >
-        <button
-          @click="onClose"
-          :disabled="isSubmitting"
-          data-testid="create-worktree-cancel"
-          class="px-3 py-1.5 text-xs rounded"
-          style="
-            background-color: var(--semantic-card-bg);
-            border: 1px solid var(--color-border);
-            color: var(--semantic-text);
-          "
-        >
-          Cancel
-        </button>
-        <button
-          @click="onSubmit"
-          :disabled="!canSubmit"
-          data-testid="create-worktree-submit"
-          class="px-3 py-1.5 text-xs font-medium rounded"
-          :class="!canSubmit ? 'opacity-50 cursor-not-allowed' : 'hover:opacity-80'"
-          style="
-            background-color: var(--color-violet);
-            color: white;
-          "
-        >
-          <span>{{ isSubmitting ? 'Creating...' : 'Create' }}</span>
-        </button>
+        <!-- Actions -->
+        <div class="px-5 pb-5 flex justify-end gap-2">
+          <button
+            type="button"
+            @click="onClose"
+            :disabled="isSubmitting"
+            data-testid="create-worktree-cancel"
+            class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
+            style="
+              background-color: var(--semantic-card-bg);
+              border: 1px solid var(--color-border);
+              color: var(--semantic-text);
+            "
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            @click="onSubmit"
+            :disabled="!canSubmit"
+            data-testid="create-worktree-submit"
+            class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
+            :class="!canSubmit ? 'opacity-50 cursor-not-allowed' : 'hover:opacity-80'"
+            style="
+              background-color: var(--color-violet);
+              color: white;
+            "
+          >
+            {{ isSubmitting ? 'Creating…' : 'Create' }}
+          </button>
+        </div>
       </div>
     </div>
-  </div>
+
+    <!-- File picker (modal on top of this dialog) -->
+    <FilePickerDialog
+      v-model="showPicker"
+      :load-items="loadItemsForPicker"
+      :key-for="(item: FolderEntry) => item.path"
+      :path-for="(item: FolderEntry) => item.path"
+      :is-expandable="(item: FolderEntry) => item.is_directory"
+      :label-for="(item: FolderEntry) => item.name"
+      :initial-path="parentDir"
+      :selected-path="parentDir"
+      title="Select parent directory"
+      @select="handleFolderSelected"
+    />
+  </Teleport>
 </template>
