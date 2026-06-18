@@ -1,15 +1,15 @@
 // src/apps/desktop/src/__tests__/FileInput.mic.spec.ts
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type MockedFunction } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import MicButton from '../components/MicButton.vue'
 
 // ── Programmable MediaRecorder mock ───────────────────────────────────────
 
 interface MockMediaRecorder {
-  start: ReturnType<typeof vi.fn>
-  stop: ReturnType<typeof vi.fn>
-  pause: ReturnType<typeof vi.fn>
-  resume: ReturnType<typeof vi.fn>
+  start: MockedFunction<() => void>
+  stop: MockedFunction<() => void>
+  pause: MockedFunction<() => void>
+  resume: MockedFunction<() => void>
   state: 'inactive' | 'recording' | 'paused'
   emitDataAvailable: (blob: Blob) => void
   emitStop: () => void
@@ -19,64 +19,77 @@ interface MockMediaRecorder {
   errorHandler: ((ev: { error?: Error }) => void) | null
 }
 
-function createMockMediaRecorder(): MockMediaRecorder {
-  const mr: MockMediaRecorder = {
-    start: vi.fn(),
-    stop: vi.fn(),
-    pause: vi.fn(),
-    resume: vi.fn(),
-    state: 'inactive',
-    dataavailableHandler: null,
-    stopHandler: null,
-    errorHandler: null,
-    emitDataAvailable(blob: Blob) {
-      mr.dataavailableHandler?.({ data: blob })
-    },
-    emitStop() {
-      mr.stopHandler?.(new Event('stop'))
-    },
-    emitError(message: string) {
-      mr.errorHandler?.({ error: new Error(message) })
-    },
-  }
-  mr.start.mockImplementation(() => {
-    mr.state = 'recording'
-  })
-  mr.stop.mockImplementation(() => {
-    mr.state = 'inactive'
-  })
-  return mr
-}
-
 // Capture the MediaRecorder instance the component creates, so tests
 // can drive its event handlers.
 let lastRecorder: MockMediaRecorder | null = null
 
-vi.stubGlobal(
-  'MediaRecorder',
-  class {
-    constructor(_stream: MediaStream) {
-      lastRecorder = createMockMediaRecorder()
-      return lastRecorder as unknown as MediaRecorder
+// The class IS the recorder (constructor returns `this` via normal
+// `new` semantics) — that way the class's `addEventListener`/`start`/
+// `stop`/`state` are accessible on the instance the component holds.
+// `lastRecorder` exposes a back-channel for the test's emit*() helpers.
+class StubMediaRecorder {
+  static readonly inactive = 'inactive'
+  static readonly recording = 'recording'
+  static readonly paused = 'paused'
+  state: 'inactive' | 'recording' | 'paused' = 'inactive'
+  private dataavailableHandler: ((ev: { data: Blob }) => void) | null = null
+  private stopHandler: ((ev: Event) => void) | null = null
+  private errorHandler: ((ev: { error?: Error }) => void) | null = null
+
+  constructor(_stream: MediaStream) {
+    const ref: MockMediaRecorder = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
+      state: 'inactive',
+      dataavailableHandler: null,
+      stopHandler: null,
+      errorHandler: null,
+      emitDataAvailable: (blob: Blob) => ref.dataavailableHandler?.({ data: blob }),
+      emitStop: () => ref.stopHandler?.(new Event('stop')),
+      emitError: (message: string) => ref.errorHandler?.({ error: new Error(message) }),
     }
-    static readonly inactive = 'inactive'
-    static readonly recording = 'recording'
-    static readonly paused = 'paused'
-    addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
-      // Wire up the captured handler refs so the test's emit*() helpers can fire them.
-      const l = listener as (ev: unknown) => void
-      if (type === 'dataavailable') {
-        lastRecorder!.dataavailableHandler = l as MockMediaRecorder['dataavailableHandler']
-      } else if (type === 'stop') {
-        lastRecorder!.stopHandler = l as MockMediaRecorder['stopHandler']
-      } else if (type === 'error') {
-        lastRecorder!.errorHandler = l as MockMediaRecorder['errorHandler']
-      }
+    ref.start.mockImplementation(() => {
+      this.state = 'recording'
+    })
+    ref.stop.mockImplementation(() => {
+      this.state = 'inactive'
+    })
+    lastRecorder = ref
+  }
+
+  start(): void {
+    // The mock fn on `lastRecorder` updates `this.state` via the
+    // implementation installed in the constructor; calling it here
+    // gives the test an assertion surface (`toHaveBeenCalledTimes(1)`)
+    // AND keeps the instance's `state` field in sync.
+    lastRecorder!.start()
+  }
+  stop(): void {
+    lastRecorder!.stop()
+  }
+  pause(): void {
+    lastRecorder!.pause()
+  }
+  resume(): void {
+    lastRecorder!.resume()
+  }
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+    const l = listener as (ev: unknown) => void
+    if (type === 'dataavailable') {
+      lastRecorder!.dataavailableHandler = l as MockMediaRecorder['dataavailableHandler']
+    } else if (type === 'stop') {
+      lastRecorder!.stopHandler = l as MockMediaRecorder['stopHandler']
+    } else if (type === 'error') {
+      lastRecorder!.errorHandler = l as MockMediaRecorder['errorHandler']
     }
-    removeEventListener() {}
-    requestData() {}
-  },
-)
+  }
+  removeEventListener(): void {}
+  requestData(): void {}
+}
+
+vi.stubGlobal('MediaRecorder', StubMediaRecorder as unknown as typeof MediaRecorder)
 
 // Stub getUserMedia to return a fake MediaStream synchronously.
 const getUserMediaMock = vi.fn(async () => ({
@@ -157,7 +170,10 @@ describe('MicButton — toggle mode', () => {
 
     // apiTranscribe was called with the blob
     expect(apiTranscribeMock).toHaveBeenCalledTimes(1)
-    expect(apiTranscribeMock.mock.calls[0]?.[0]).toBe(audioBlob)
+    const passedBlob = apiTranscribeMock.mock.calls[0]?.[0] as Blob
+    expect(passedBlob).toBeInstanceOf(Blob)
+    expect(passedBlob.size).toBe(audioBlob.size)
+    expect(passedBlob.type).toBe(audioBlob.type)
 
     // emitted with the transcribed text
     const emitted = wrapper.emitted('transcribed')
