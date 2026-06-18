@@ -55,8 +55,15 @@ pub const SseClient = struct {
     }
 
     pub fn markDisconnected(self: *SseClient) void {
-        self.lock.lock();
-        defer self.lock.unlock();
+        // Zig 0.16 std.Io.Mutex requires the `io` argument for
+        // lock/unlock. The previous zero-arg call form compiled
+        // under Zig 0.15 but is a compile error in 0.16 (member
+        // function expected 1 argument(s), found 0). This function
+        // is currently dead code (no callers in the codebase), but
+        // fixing it now prevents the next person who wires it up
+        // from hitting the same error.
+        self.lock.lock(self.io) catch return;
+        defer self.lock.unlock(self.io);
         self.alive = false;
     }
 
