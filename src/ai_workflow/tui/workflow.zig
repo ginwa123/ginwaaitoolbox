@@ -495,7 +495,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                 // mid-conversation events the user is already watching. Fire-
                 // and-forget: a missing notify-send (or denied daemon) is
                 // logged and ignored so the LLM workflow never blocks.
-                if (config.notify_on_complete) {
+                if (config.notify_on_complete and copy_is_sub_agent == false) {
                     const preview = if (res_dynamic_agent.content) |c| c else "(empty response)";
                     try notifications.notify(io, allocator, "Agent Nalar", preview);
                 }
