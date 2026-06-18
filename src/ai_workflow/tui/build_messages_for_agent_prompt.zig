@@ -135,7 +135,7 @@ pub fn buildMessages(
 /// Build activity info string for the agent prompt
 /// Uses worker table as the SOLE source of active workers info
 /// Filters out current session to avoid self-reference
-fn buildActivityInfo(allocator: std.mem.Allocator, io: std.Io,db: *sqlite.SqliteBackend, current_session_id: []const u8) ![]const u8 {
+fn buildActivityInfo(allocator: std.mem.Allocator, io: std.Io, db: *sqlite.SqliteBackend, current_session_id: []const u8) ![]const u8 {
     const workers = try llm_history.getActiveWorker(allocator, db);
     defer {
         for (workers) |*worker| worker.deinit(allocator);
@@ -276,7 +276,7 @@ const McpToolResponse = struct {
 };
 
 const InputSchema = struct {
-    @"type": []const u8,
+    type: []const u8,
     properties: json.Value,
     required: ?[]const []const u8 = null,
 };
@@ -683,7 +683,6 @@ pub fn BuildDynamicAgentContent(
     return result;
 }
 
-
 /// Maximum length (in chars) of the sub-agent's `system_prompt`
 /// preview to embed in the listing. Truncated beyond this to
 /// keep the prompt lean — the LLM doesn't need a 2KB persona to
@@ -784,4 +783,26 @@ fn BuildSubAgentsListing(
     defer listing.deinit(allocator);
     try prompt.appendSubAgentsListing(allocator, &listing, row_buf.items);
     return try listing.toOwnedSlice(allocator);
+}
+
+fn buildWorkspaceTaskList(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !void {
+    _ = allocator;
+    _ = db;
+    _ = session_id;
+
+    // TODO: replaced by BuildWorkspaceContext in Chunk 2 of
+    // docs/plans/2026-06-19-workspace-siblings-in-prompt.md.
+    // Original draft SQL (preserved for reference, NOT compiled):
+    //   SELECT wi.workspace_id, wi.path,
+    //          CASE WHEN wi.id = wi2.id THEN 1 ELSE 0 END AS is_self
+    //   FROM workspace_items wi
+    //   JOIN workspace_items wi2 ON wi.workspace_id = wi2.workspace_id
+    //   JOIN workspace_item_tasks wit ON wit.workspace_item_id = wi2.id
+    //   WHERE wit.id = 'task_1781675891911';
+
+    return error.Unimplemented;
 }
