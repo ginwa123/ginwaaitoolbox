@@ -10,6 +10,7 @@
  *   - 🗑️ "Clear worktree" — emits 'clear' so the parent sends the LLM a system message
  *
  * Without worktree (`hasWorktree=false`):
+ *   - 🌳 "Create worktree" — emits 'create-worktree' (parent opens CreateWorktreeDialog)
  *   - 📁 "Open in folder" — emits 'view-folder' (parent copies session cwd to clipboard)
  *   - 🔄 "Refresh status" — emits 'refresh' so the parent re-fetches git status
  *
@@ -28,6 +29,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'create-pr'): void
+  (e: 'create-worktree'): void
   (e: 'view-folder'): void
   (e: 'clear'): void
   (e: 'refresh'): void
@@ -66,6 +68,10 @@ const onClear = () => {
 }
 const onRefresh = () => {
   emit('refresh')
+  emit('close')
+}
+const onCreateWorktree = () => {
+  emit('create-worktree')
   emit('close')
 }
 </script>
@@ -132,10 +138,19 @@ const onRefresh = () => {
     <!-- No-worktree actions -->
     <template v-else>
       <button
+        data-testid="worktree-menu-create-worktree"
+        @click="onCreateWorktree"
+        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
+        style="color: var(--semantic-text)"
+      >
+        <span>🌳</span>
+        <span>Create worktree</span>
+      </button>
+      <button
         data-testid="worktree-menu-view-folder"
         @click="onViewFolder"
         class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
-        style="color: var(--semantic-text)"
+        style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
       >
         <span>📁</span>
         <span>Open in folder</span>

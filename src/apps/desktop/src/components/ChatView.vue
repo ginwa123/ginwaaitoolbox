@@ -38,6 +38,7 @@ import SkillsPopup from './SkillsPopup.vue'
 import ImagePreview from './ImagePreview.vue'
 import WorktreeMenu from './WorktreeMenu.vue'
 import CreatePrDialog from './CreatePrDialog.vue'
+import CreateWorktreeDialog from './CreateWorktreeDialog.vue'
 import { parseSpawnSubAgentArgs } from '../helpers/parseSpawnSubAgentArgs'
 import type { SubAgentArgs } from '../helpers/parseSpawnSubAgentArgs'
 
@@ -575,9 +576,14 @@ const closeOnOutsideClick = (e: MouseEvent) => {
 const showWorktreeMenu = ref(false)
 const worktreeMenuRef = ref<HTMLElement | null>(null)
 const showCreatePrDialog = ref(false)
+const showCreateWorktreeDialog = ref(false)
 
 const onWorktreeMenuCreatePr = () => {
   showCreatePrDialog.value = true
+}
+
+const onWorktreeMenuCreateWorktree = () => {
+  showCreateWorktreeDialog.value = true
 }
 
 const onWorktreeMenuViewFolder = () => {
@@ -630,6 +636,32 @@ const onPrError = (message: string) => {
   console.error('PR creation failed:', message)
   // Show a toast with the error
   // For v1, just log — the dialog stays open with the form intact
+}
+
+const onCreateWorktree = async (path: string) => {
+  if (!sessionId.value) return
+  if (!cwd.value) {
+    console.error('Create worktree: no session cwd available')
+    showCreateWorktreeDialog.value = false
+    return
+  }
+  // The dialog passes the user's absolute path verbatim. The LLM calls
+  // set_git_worktree(path=<path>) which validates (must be absolute, no
+  // .., basename matches [A-Za-z0-9._-]{1,100}) and runs git worktree
+  // add. The branch is auto-derived as worktree/<basename(path)>.
+  const message = `Please call set_git_worktree with path=${path} to create a new worktree for me.`
+  try {
+    await api.sendChatMessage(
+      sessionId.value,
+      message,
+      cwd.value,
+      [],
+      selectedProfile.value ?? undefined,
+    )
+  } catch (err) {
+    console.error('Failed to send create-worktree message:', err)
+  }
+  showCreateWorktreeDialog.value = false
 }
 
 // ─── Scroll logger ────────────────────────────────────────────────────────────
@@ -2395,6 +2427,7 @@ const compactSession = async () => {
                 :branch="gitStatus?.branch || 'detached'"
                 :status="gitStatus?.status"
                 @create-pr="onWorktreeMenuCreatePr"
+                @create-worktree="onWorktreeMenuCreateWorktree"
                 @view-folder="onWorktreeMenuViewFolder"
                 @clear="onWorktreeMenuClear"
                 @refresh="onWorktreeMenuRefresh"
@@ -2462,6 +2495,12 @@ const compactSession = async () => {
       @pr-created="onPrCreated"
       @error="onPrError"
       @close="showCreatePrDialog = false"
+    />
+    <CreateWorktreeDialog
+      v-if="showCreateWorktreeDialog"
+      :initial-cwd="cwd"
+      @create="onCreateWorktree"
+      @close="showCreateWorktreeDialog = false"
     />
   </div>
 </template>

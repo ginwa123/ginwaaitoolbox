@@ -244,3 +244,136 @@ test "Logger backward compatibility - default config works" {
     try std.testing.expectEqual(LogLevel.debug, logger_inst.getMinLevel());
     try logger_inst.log(.info, "Backward compatibility test");
 }
+
+// Helper: read entire log file into a buffer. Returns number of bytes read.
+fn readEntireFile(io: std.Io, path: []const u8, buf: []u8) !usize {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    return try std.Io.File.readStreaming(file, io, &.{buf});
+}
+
+test "Logger file rotation keeps recent messages and writes cleanly" {
+    const allocator = std.testing.allocator;
+    const test_log_path = "/tmp/test_logger_rotation_content.log";
+
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_log_path) catch {};
+
+    var logger_inst = Logger.init(allocator, std.testing.io, .{
+        .min_level = .info,
+        .log_file_path = test_log_path,
+        .output_mode = .file,
+        .max_file_size_bytes = 50, // Small limit; forces multiple rotations
+        .enable_auto_rotation = true,
+        .include_timestamp = false,
+        .include_request_id = false,
+    });
+    defer {
+        logger_inst.deinit();
+        std.Io.Dir.cwd().deleteFile(std.testing.io, test_log_path) catch {};
+    }
+
+    // Each "[INFO] XXX\n" line is 11 bytes. Write 10 to trigger ~3 rotations.
+    try logger_inst.log(.info, "AAA");
+    try logger_inst.log(.info, "BBB");
+    try logger_inst.log(.info, "CCC");
+    try logger_inst.log(.info, "DDD");
+    try logger_inst.log(.info, "EEE");
+    try logger_inst.log(.info, "FFF");
+    try logger_inst.log(.info, "GGG");
+    try logger_inst.log(.info, "HHH");
+    try logger_inst.log(.info, "III");
+    try logger_inst.log(.info, "JJJ");
+
+    var buf: [4096]u8 = undefined;
+    const n = try readEntireFile(std.testing.io, test_log_path, &buf);
+    const content = buf[0..n];
+
+    // File must contain ONLY valid "[INFO] XXX\n" lines — no binary garbage.
+    var i: usize = 0;
+    var msg_count: usize = 0;
+    while (i < n) {
+        const prefix = "[INFO] ";
+        if (i + prefix.len + 3 + 1 > n) {
+            std.debug.print("FAIL: truncated line at offset {d}\n", .{i});
+            return error.FileCorrupted;
+        }
+        if (!std.mem.eql(u8, content[i..i + prefix.len], prefix)) {
+            std.debug.print("FAIL: garbage at offset {d} (byte=0x{x:0>2})\n", .{ i, content[i] });
+            return error.FileCorrupted;
+        }
+        i += prefix.len + 3; // skip "[INFO] " and the 3-char message body
+        if (content[i] != '\n') {
+            std.debug.print("FAIL: missing newline at offset {d} (byte=0x{x:0>2})\n", .{ i, content[i] });
+            return error.FileCorrupted;
+        }
+        i += 1;
+        msg_count += 1;
+    }
+
+    try std.testing.expect(msg_count > 0);
+    try std.testing.expect(msg_count <= 10);
+
+    // The most recent message ("JJJ") must always survive — never rotated away
+    // while the process is still running.
+    if (std.mem.indexOf(u8, content, "JJJ") == null) {
+        std.debug.print("FAIL: most-recent message 'JJJ' missing after rotation\n", .{});
+        return error.LastMessageMissing;
+    }
+}
+
+test "Logger appends to existing file across process restarts" {
+    const allocator = std.testing.allocator;
+    const test_log_path = "/tmp/test_logger_append_restart.log";
+
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_log_path) catch {};
+
+    // First "process" (Logger instance) — writes FIRST_RUN_MESSAGE, then closes.
+    {
+        var lgr1 = Logger.init(allocator, std.testing.io, .{
+            .min_level = .info,
+            .log_file_path = test_log_path,
+            .output_mode = .file,
+            .include_timestamp = false,
+            .include_request_id = false,
+        });
+        try lgr1.log(.info, "FIRST_RUN_MESSAGE");
+        lgr1.deinit();
+    }
+
+    // Second "process" — opens the same file (position is 0 after open) and
+    // writes SECOND_RUN_MESSAGE. With the bug, this overwrites the first
+    // message. With the fix, it appends.
+    {
+        var lgr2 = Logger.init(allocator, std.testing.io, .{
+            .min_level = .info,
+            .log_file_path = test_log_path,
+            .output_mode = .file,
+            .include_timestamp = false,
+            .include_request_id = false,
+        });
+        defer lgr2.deinit();
+        try lgr2.log(.info, "SECOND_RUN_MESSAGE");
+    }
+
+    var buf: [4096]u8 = undefined;
+    const n = try readEntireFile(std.testing.io, test_log_path, &buf);
+    const content = buf[0..n];
+
+    // Both messages must be present (the original "FIRST_RUN_MESSAGE" must NOT
+    // have been overwritten by the second process's write at position 0).
+    if (std.mem.indexOf(u8, content, "FIRST_RUN_MESSAGE") == null) {
+        std.debug.print("FAIL: FIRST_RUN_MESSAGE was overwritten by second process (n={d})\n{s}\n", .{ n, content });
+        return error.AppendBug;
+    }
+    if (std.mem.indexOf(u8, content, "SECOND_RUN_MESSAGE") == null) {
+        std.debug.print("FAIL: SECOND_RUN_MESSAGE missing from file (n={d})\n{s}\n", .{ n, content });
+        return error.SecondMessageMissing;
+    }
+
+    // File size must equal the sum of the two formatted lines (no overwrites,
+    // no padding, no missing data).
+    const expected_size = "[INFO] FIRST_RUN_MESSAGE\n".len + "[INFO] SECOND_RUN_MESSAGE\n".len;
+    try std.testing.expectEqual(expected_size, n);
+
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_log_path) catch {};
+}
