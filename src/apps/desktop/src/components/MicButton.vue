@@ -46,6 +46,7 @@ async function startRecording() {
       state.value = 'error'
       errorMessage.value = errEvent.error?.message ?? 'Recording error'
       emit('error', errorMessage.value)
+      cleanupStream()
     })
 
     mediaRecorder.start()
@@ -104,11 +105,26 @@ function cleanupStream() {
 //      matching mouseup/touchend stops it and transcribes. Used for users
 //      who prefer "press and hold".
 //
-// We deliberately call `e.preventDefault()` on `mousedown` to suppress the
-// browser's automatic `click` event that fires on mouseup — otherwise the
-// click handler would re-trigger start/stop after every press.
+// `e.preventDefault()` on mousedown suppresses the BROWSER's default
+// action (e.g. text selection on a drag) but does NOT prevent the
+// synthetic 'click' event that fires after mouseup. The 'click'
+// handler still runs; the reason this is safe is the state-machine
+// guard at the top of `onClick` and `onMouseDown` — after mousedown
+// fired, state is 'recording' and the click is a no-op (the
+// `if (state.value === 'idle')` branch doesn't match). `onClick`
+// additionally ignores 'processing' and 'error' states. Net effect:
+// the synthetic click is absorbed by the state machine, not by
+// preventDefault.
 
-function onClick() {
+function onClick(e: MouseEvent) {
+  // The browser still fires a synthetic 'click' after mousedown+mouseup
+  // even though we call e.preventDefault() in onMouseDown (which only
+  // suppresses the default browser action, not the event itself). The
+  // state machine has already advanced past 'idle' by the time this
+  // runs, so the guard below makes the click a no-op rather than
+  // re-triggering start. This no-op is the second line of defense
+  // against any double-trigger logic the browser might add.
+  e.preventDefault()
   if (state.value === 'idle') {
     void startRecording()
   } else if (state.value === 'recording') {
@@ -119,7 +135,13 @@ function onClick() {
 }
 
 function onMouseDown(e: MouseEvent) {
-  e.preventDefault() // suppress the synthetic click on mouseup
+  // e.preventDefault() here suppresses the BROWSER's default action
+  // (e.g. text selection on a drag) but does NOT prevent the synthetic
+  // 'click' event that fires after mouseup. The 'click' handler is a
+  // no-op once state has advanced past 'idle' (see onClick), and
+  // onMouseUp handles the actual stop transition. So the state
+  // machine absorbs the double-trigger, not preventDefault.
+  e.preventDefault()
   if (state.value !== 'idle') return
   void startRecording()
 }

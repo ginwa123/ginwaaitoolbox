@@ -25,6 +25,14 @@ const SUPPORTED_FORMATS = [_]AudioFormat{
     .{ .mime = "audio/wav", .ext = "wav" },
 };
 
+/// Per-process counter for transcribe temp filenames. Two concurrent
+/// requests from the same nalar process would otherwise collide on
+/// `nalar-transcribe.<pid>.<ext>` — request A's temp file would be
+/// deleted by request B's `defer deleteFileAbsolute` while curl is
+/// still streaming request A's body to the upstream Whisper. Using a
+/// fetchAdd counter guarantees uniqueness across the process lifetime.
+var temp_file_counter: std.atomic.Value(u64) = .init(0);
+
 /// Detect audio format from the request's Content-Type header.
 /// Returns the default (webm) when the header is missing, empty,
 /// or doesn't start with any known MIME prefix.
@@ -104,13 +112,18 @@ pub fn transcribeHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, r
     // Use a deterministic, recognisable filename so multiple
     // concurrent transcribes don't collide on /tmp/nalar-transcribe.bin
     // (the per-request arena will clean up after we return, but the
-    // file may outlive the request if curl is slow).
+    // file may outlive the request if curl is slow). The per-process
+    // atomic counter ensures uniqueness even when two requests arrive
+    // within the same nanosecond.
     var pid_buf: [16]u8 = undefined;
     const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{std.c.getpid()}) catch "0";
+    const counter = temp_file_counter.fetchAdd(1, .seq_cst);
+    var counter_buf: [16]u8 = undefined;
+    const counter_str = std.fmt.bufPrint(&counter_buf, "{d}", .{counter}) catch "0";
 
     const tmp_path = try std.fs.path.join(allocator, &.{ tmp_root, "nalar-transcribe" });
     errdefer allocator.free(tmp_path);
-    const tmp_filename = try std.fmt.allocPrint(allocator, "{s}.{s}.{s}", .{ tmp_path, pid_str, format.ext });
+    const tmp_filename = try std.fmt.allocPrint(allocator, "{s}.{s}.{s}.{s}", .{ tmp_path, pid_str, counter_str, format.ext });
     errdefer allocator.free(tmp_filename);
 
     {
@@ -223,8 +236,9 @@ fn shellEscapeSingle(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
 }
 
 /// Spawn `bash -c <shell_cmd>` and capture stdout. Stderr is
-/// discarded. Returns the captured text or an error if the spawn
-/// itself fails. The returned slice is owned by the caller.
+/// discarded via a background drain thread. Returns the captured
+/// text or an error if the spawn itself fails. The returned slice
+/// is owned by the caller.
 fn runCurlCapture(io: std.Io, allocator: std.mem.Allocator, shell_cmd: []const u8) ![]u8 {
     var child = std.process.spawn(io, .{
         .argv = &[_][]const u8{ "bash", "-c", shell_cmd },
@@ -232,6 +246,15 @@ fn runCurlCapture(io: std.Io, allocator: std.mem.Allocator, shell_cmd: []const u
         .stdout = .pipe,
         .stderr = .pipe,
     }) catch return error.UpstreamSpawnFailed;
+
+    // Drain stderr in a background thread. If we drained stderr AFTER
+    // reading stdout (the previous implementation), and curl wrote
+    // >64KB to stderr, the kernel pipe buffer would fill, curl would
+    // block on write(2), and our `readStreaming(stdout)` would block
+    // forever — a classic pipe-buffer deadlock. Reading both pipes
+    // concurrently avoids the trap. The thread exits when
+    // `child.wait` closes the pipe (read returns 0).
+    const stderr_thread = std.Thread.spawn(.{}, drainPipeToVoid, .{ child.stderr, io }) catch null;
 
     var stdout_buf: std.ArrayList(u8) = .empty;
     errdefer stdout_buf.deinit(allocator);
@@ -244,17 +267,22 @@ fn runCurlCapture(io: std.Io, allocator: std.mem.Allocator, shell_cmd: []const u
             try stdout_buf.appendSlice(allocator, read_buf[0..n]);
         }
     }
-    // Drain stderr so curl doesn't block on a full pipe; we don't
-    // surface it (curl -sS already writes errors to stdout on
-    // failure, and our status-code path catches non-200).
-    if (child.stderr) |pipe| {
-        var drain_buf: [1024]u8 = undefined;
-        while (true) {
-            const n = std.Io.File.readStreaming(pipe, io, &.{&drain_buf}) catch break;
-            if (n == 0) break;
-        }
-    }
 
     _ = child.wait(io) catch return error.UpstreamWaitFailed;
+    if (stderr_thread) |t| t.join();
     return try stdout_buf.toOwnedSlice(allocator);
+}
+
+/// Background thread helper for `runCurlCapture`. Reads from `pipe`
+/// in 1 KiB chunks and discards the bytes; exits when the pipe is
+/// closed (read returns 0) or any read error is encountered. The
+/// null-pipe case is a no-op (e.g. when the spawn failed to set up
+/// stderr redirection).
+fn drainPipeToVoid(pipe: ?std.Io.File, io: std.Io) void {
+    const p = pipe orelse return;
+    var buf: [1024]u8 = undefined;
+    while (true) {
+        const n = std.Io.File.readStreaming(p, io, &.{&buf}) catch break;
+        if (n == 0) break;
+    }
 }
