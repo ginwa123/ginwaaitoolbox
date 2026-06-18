@@ -55,20 +55,29 @@ pub const SseClient = struct {
     }
 
     pub fn markDisconnected(self: *SseClient) void {
-        self.lock.lock();
-        defer self.lock.unlock();
+        // Zig 0.16 std.Io.Mutex requires the `io` argument for
+        // lock/unlock. The previous zero-arg call form compiled
+        // under Zig 0.15 but is a compile error in 0.16 (member
+        // function expected 1 argument(s), found 0). This function
+        // is currently dead code (no callers in the codebase), but
+        // fixing it now prevents the next person who wires it up
+        // from hitting the same error.
+        self.lock.lock(self.io) catch return;
+        defer self.lock.unlock(self.io);
         self.alive = false;
     }
 
     pub fn sendEvent(self: *SseClient, event: []const u8) !void {
-        self.lock.lock();
-        defer self.lock.unlock();
+        // The lock covers all three writes of the chunked frame so a
+        // concurrent sendHeartbeat / sendToClient on the same fd cannot
+        // interleave its hex length between our hex length and data.
+        self.lock.lock(self.io) catch return error.ClientDisconnected;
+        defer self.lock.unlock(self.io);
         if (!self.alive) return error.ClientDisconnected;
-        const n = socket.write(self.fd, event.ptr, event.len);
-        if (n < 0) {
+        writeChunkedFrame(self.fd, event) catch {
             self.alive = false;
             return error.ClientDisconnected;
-        }
+        };
     }
 };
 
@@ -113,6 +122,7 @@ pub const SseManager = struct {
         var it = self.clients.iterator();
         while (it.next()) |entry| {
             entry.value_ptr.*.forceDestroy();
+            self.server_allocator.destroy(entry.value_ptr);
         }
         self.clients.clearRetainingCapacity();
         self.fd_to_id.clearRetainingCapacity();
@@ -145,12 +155,41 @@ pub const SseManager = struct {
         return id;
     }
 
+    /// Test-only helper that registers `fd` with a caller-provided id,
+    /// bypassing `self.io.random` (which requires being called on the
+    /// Io runtime's own thread and therefore crashes when called from
+    /// a unit test's main thread). NOT for production use — production
+    /// code should call `registerClient` so the id is cryptographically
+    /// random and collisions are detected.
+    pub fn registerClientForTest(self: *SseManager, fd: i32, id: [16]u8) ![16]u8 {
+        // Skip the std.Io.Mutex here: the Io runtime's `lock` requires
+        // being called from the Io thread, and we're in a unit test's
+        // main thread. Tests must not call this concurrently with
+        // other SseManager methods.
+        if (self.fd_to_id.get(fd)) |existing| return existing;
+        if (self.clients.contains(id)) return error.TestIdAlreadyUsed;
+
+        const client = try self.server_allocator.create(SseClient);
+        client.* = SseClient.init(id, fd, self.allocator, self.io);
+
+        try self.clients.put(self.server_allocator, id, client);
+        try self.fd_to_id.put(self.server_allocator, fd, id);
+
+        return id;
+    }
+
     pub fn removeClient(self: *SseManager, id: [16]u8) void {
         self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
 
         if (self.clients.fetchRemove(id)) |entry| {
             _ = self.fd_to_id.remove(entry.value.*.fd);
+            // Send the chunked-encoding terminator (0\r\n\r\n) BEFORE
+            // closing the fd so intermediaries (Vite, browser) can
+            // finalize their chunked-decoding state cleanly. The
+            // write will fail silently if the peer is already gone
+            // (which is the common POLL.HUP case), and that's fine.
+            _ = sendAll(entry.value.*.fd, "0\r\n\r\n");
             entry.value.*.deinit();
             self.server_allocator.destroy(entry.value);
             if (self.on_disconnect) |cb| cb(id);
@@ -164,6 +203,8 @@ pub const SseManager = struct {
         if (self.fd_to_id.fetchRemove(fd)) |entry| {
             const id = entry.value;
             if (self.clients.fetchRemove(id)) |client_entry| {
+                // Same as removeClient: send terminator BEFORE close.
+                _ = sendAll(client_entry.value.*.fd, "0\r\n\r\n");
                 client_entry.value.*.deinit();
                 self.server_allocator.destroy(client_entry.value);
             }
@@ -219,7 +260,15 @@ pub const SseManager = struct {
 
         var it = self.clients.iterator();
         while (it.next()) |entry| {
-            _ = socket.write(entry.value_ptr.*.fd, close_msg.ptr, close_msg.len);
+            const fd = entry.value_ptr.*.fd;
+            // Send the close event as one chunked frame, then send the
+            // chunked-encoding terminator (0\r\n\r\n) so the peer can
+            // finalize its chunked-decoding state cleanly. Both writes
+            // are best-effort — `forceDestroy` below closes the fd
+            // regardless, and a stale peer will get EPOLLHUP on its
+            // next read.
+            writeChunkedFrame(fd, close_msg) catch {};
+            _ = sendAll(fd, "0\r\n\r\n");
         }
 
         while (self.clients.count() > 0) {
@@ -364,8 +413,11 @@ pub const SseManager = struct {
 
         for (client_ptrs.items) |client| {
             client.last_heartbeat = timestamp();
-            const n = socket.write(client.fd, ping.ptr, ping.len);
-            if (n < 0) {
+            // Send the heartbeat as a chunked frame so the peer can
+            // decode the byte stream as HTTP/1.1 chunked-transfer-
+            // encoding. Failure (peer already gone) means the client
+            // is dead; remove it so the next iteration skips it.
+            if (writeChunkedFrame(client.fd, ping)) |_| {} else |_| {
                 dead_ids.append(self.allocator, client.id) catch break;
             }
         }
@@ -376,12 +428,15 @@ pub const SseManager = struct {
     }
 
     pub fn sendToClient(self: *SseManager, id: [16]u8, data: []const u8) !void {
-        const client = self.clients.get(id);
+        const client = self.clients.get(id) orelse return error.ClientNotFound;
 
-        if (client == null) return error.ClientNotFound;
-
-        const n = socket.write(client.?.fd, data.ptr, data.len);
-        if (n < 0) {
+        // Route through the chunked-encoding helper so the peer's
+        // HTTP/1.1 chunked-decoder can parse the byte stream. A
+        // write failure (peer gone) means the client is dead; remove
+        // it and bubble up the error to the caller.
+        if (writeChunkedFrame(client.fd, data)) {
+            // success
+        } else |_| {
             self.removeClient(id);
             return error.ClientDisconnected;
         }
@@ -402,8 +457,15 @@ pub const SseManager = struct {
         self.lock.unlock(self.io);
 
         for (client_ptrs.items) |client| {
-            const n = socket.write(client.fd, event.ptr, event.len);
-            if (n < 0) self.removeClient(client.id);
+            // Send the broadcast as a chunked frame so the peer's
+            // HTTP/1.1 chunked-decoder can parse the byte stream. A
+            // write failure (peer gone) means the client is dead;
+            // remove it from the manager.
+            if (writeChunkedFrame(client.fd, event)) {
+                // success
+            } else |_| {
+                self.removeClient(client.id);
+            }
         }
     }
 
@@ -422,8 +484,15 @@ pub const SseManager = struct {
         self.lock.unlock(self.io);
 
         for (client_ptrs.items) |client| {
-            const n = socket.write(client.fd, event.ptr, event.len);
-            if (n < 0) self.removeClient(client.id);
+            // Send the typed broadcast as a chunked frame so the
+            // peer's HTTP/1.1 chunked-decoder can parse the byte
+            // stream. A write failure (peer gone) means the client
+            // is dead; remove it from the manager.
+            if (writeChunkedFrame(client.fd, event)) {
+                // success
+            } else |_| {
+                self.removeClient(client.id);
+            }
         }
     }
 
@@ -432,7 +501,92 @@ pub const SseManager = struct {
         defer self.lock.unlock(self.io);
         return self.clients.count();
     }
+
+    /// Send `data` as one HTTP/1.1 chunked-transfer-encoding frame
+    /// on the wire: `<hex length>\r\n<data>\r\n`. Returns
+    /// `error.ClientDisconnected` if the peer hung up (peer socket
+    /// closed) or the write itself failed.
+    ///
+    /// Allocates a small stack-buffer for the length header (16 bytes
+    /// is enough for any 64-bit length).
+    pub fn sendChunked(self: *SseManager, id: [16]u8, data: []const u8) !void {
+        const client = self.clients.get(id) orelse return error.ClientNotFound;
+        try writeChunkedFrame(client.fd, data);
+    }
+
+    /// Send the chunked-encoding terminator: `0\r\n\r\n`. Call this
+    /// once on every SSE connection just before closing the socket,
+    /// so that intermediaries (Vite, browser) can finalize their
+    /// chunked decoding state cleanly. Failure is non-fatal — the
+    /// socket close itself signals end-of-stream.
+    pub fn sendTerminatingChunk(self: *SseManager, id: [16]u8) void {
+        const client = self.clients.get(id) orelse return;
+        // Failure is non-fatal — caller is about to close the fd anyway.
+        _ = sendAll(client.fd, "0\r\n\r\n");
+    }
 };
+
+/// Write one HTTP/1.1 chunked-transfer-encoding frame to `fd`:
+/// `<hex length>\r\n<data>\r\n`. Returns `error.WriteFailed` if the
+/// underlying send fails for any reason.
+///
+/// This is a free function so both `SseManager.sendChunked` (which
+/// looks up the client by id) and `SseClient.sendEvent` (which
+/// already has the fd and is inside its per-client lock) can call
+/// it without duplicating the 3-write loop.
+pub fn writeChunkedFrame(fd: i32, data: []const u8) !void {
+    var len_buf: [16]u8 = undefined;
+    const len_str = std.fmt.bufPrint(&len_buf, "{x}\r\n", .{data.len}) catch
+        return error.WriteFailed;
+    const trailer = "\r\n";
+
+    if (sendAll(fd, len_str) < len_str.len) return error.WriteFailed;
+    if (sendAll(fd, data) < data.len) return error.WriteFailed;
+    if (sendAll(fd, trailer) < trailer.len) return error.WriteFailed;
+}
+
+/// Write all of `data` to `fd`, looping on short writes. Returns
+/// the number of bytes actually written, or -1 on error.
+///
+/// On Linux uses `sendto(fd, buf, len, MSG_NOSIGNAL, null, 0)` so a
+/// peer-closed socket returns `EPIPE` instead of killing the process
+/// with SIGPIPE. On non-Linux platforms falls back to
+/// `posix.system.write` (macOS has SIGPIPE ignored by default in
+/// many setups; Windows has no SIGPIPE at all).
+fn sendAll(fd: i32, data: []const u8) isize {
+    if (is_linux) {
+        var sent: usize = 0;
+        const flags: u32 = std.os.linux.MSG.NOSIGNAL;
+        while (sent < data.len) {
+            // sendto(fd, buf, len, flags, addr=null, alen=0) is
+            // equivalent to send(2) on a connected socket — but
+            // unlike send(2), sendto accepts flags so we can pass
+            // MSG_NOSIGNAL to suppress SIGPIPE on peer close.
+            const rc = std.os.linux.sendto(fd, data[sent..].ptr, data.len - sent, flags, null, 0);
+            if (rc > std.math.maxInt(i32)) return -1;
+            const n: isize = @intCast(rc);
+            if (n < 0) return -1;
+            if (n == 0) return -1;
+            sent += @as(usize, @intCast(n));
+        }
+        return @intCast(sent);
+    } else {
+        // macOS / Windows / BSD: use posix.system.write. SIGPIPE
+        // is a no-op on Windows (no signal) and on macOS the default
+        // disposition varies; the SseClient-side `self.alive` flag
+        // and the next `sendEvent` call will surface the disconnect.
+        var sent: usize = 0;
+        while (sent < data.len) {
+            const rc = posix.system.write(fd, data[sent..].ptr, data.len - sent);
+            if (rc > std.math.maxInt(i32)) return -1;
+            const n: isize = @intCast(rc);
+            if (n < 0) return -1;
+            if (n == 0) return -1;
+            sent += @as(usize, @intCast(n));
+        }
+        return @intCast(sent);
+    }
+}
 
 fn timestamp() u64 {
     var ts: socket.timespec = undefined;

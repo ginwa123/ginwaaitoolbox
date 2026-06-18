@@ -1,0 +1,236 @@
+//! Regression tests for HTTP/1.1 chunked-transfer-encoding in
+//! `sse_manager.zig` (Tasks 1 & 2 of
+//! `docs/superpowers/plans/2026-06-19-fix-sse-incomplete-chunked-encoding.md`).
+//!
+//! NOTE: this file lives next to `sse_manager_test.zig` but is a
+//! separate file because `sse_manager_test.zig` is currently dead in
+//! this branch — it uses `std.Io.init()` which doesn't compile on
+//! Zig 0.16, and the project's root test runner only imports
+//! `test_session_lifecycle.zig` from this module, not
+//! `sse_manager_test.zig`. This file is registered in
+//! `src/root.zig` (line 401) so it runs as part of the project-wide
+//! `zig build test` step.
+
+const std = @import("std");
+const posix = std.posix;
+const sse_manager = @import("sse_manager.zig");
+const SseManager = sse_manager.SseManager;
+const builtin = @import("builtin");
+
+fn createSocketPair() ![2]i32 {
+    if (builtin.os.tag == .windows) {
+        // On Windows we need socket + accept/connect instead of socketpair.
+        const server_sock = try posix.socket(.ipv6, .stream, .passive);
+        defer _ = posix.system.close(server_sock);
+        const addr = std.net.Address.initIpv6([_]u8{0} ** 16, 0, 0, 0, 0, 0, 0, 0, 127, 0, 0, 1);
+        try posix.bind(server_sock, &addr);
+        _ = posix.listen(server_sock, 1);
+        const bound_addr = try posix.getsockname(server_sock, null);
+        const client_sock = try posix.socket(.ipv6, .stream, .active);
+        _ = posix.connect(client_sock, &bound_addr);
+        const server_conn = try posix.accept(server_sock, null, null);
+        return [2]i32{ client_sock, server_conn };
+    } else {
+        var fds: [2]i32 = undefined;
+        // AF_UNIX (1), SOCK_STREAM (1), protocol 0. socketpair returns
+        // 0 on success, -1 on failure.
+        const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+        if (rc != 0) return error.SocketPairFailed;
+        return fds;
+    }
+}
+
+// ============================================================================
+// Task 1: writeChunkedFrame / sendChunked / sendTerminatingChunk
+// ============================================================================
+
+test "writeChunkedFrame: writes <hex len>\\r\\n<data>\\r\\n" {
+    const pair = try createSocketPair();
+    defer _ = posix.system.close(pair[0]);
+    defer _ = posix.system.close(pair[1]);
+
+    try sse_manager.writeChunkedFrame(pair[0], "event: ping\ndata: 1\n\n");
+
+    // Read on the OTHER end of the socketpair and assert the chunked frame.
+    // Data is 21 bytes → hex len "15" → "15\r\n" (4) + data (21) + "\r\n" (2) = 27.
+    var buf: [64]u8 = undefined;
+    const n = posix.system.read(pair[1], &buf, buf.len);
+    try std.testing.expect(n == 27);
+    try std.testing.expectEqualSlices(u8, "15\r\nevent: ping\ndata: 1\n\n\r\n", buf[0..@intCast(n)]);
+}
+
+test "writeChunkedFrame: empty data writes 0\\r\\n\\r\\n (chunked terminator)" {
+    const pair = try createSocketPair();
+    defer _ = posix.system.close(pair[0]);
+    defer _ = posix.system.close(pair[1]);
+
+    try sse_manager.writeChunkedFrame(pair[0], "");
+
+    var buf: [16]u8 = undefined;
+    const n = posix.system.read(pair[1], &buf, buf.len);
+    try std.testing.expect(n == 5);
+    try std.testing.expectEqualSlices(u8, "0\r\n\r\n", buf[0..@intCast(n)]);
+}
+
+test "SseClient: sendEvent writes <hex len>\\r\\n<data>\\r\\n" {
+    const pair = try createSocketPair();
+    defer _ = posix.system.close(pair[0]);
+    defer _ = posix.system.close(pair[1]);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    const id: [16]u8 = .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
+    var client: sse_manager.SseClient = .init(id, pair[0], std.testing.allocator, threaded.io());
+    // Suppress the per-client arena cleanup on scope-exit (it would
+    // double-free the fd that `posix.system.close(pair[0])` above
+    // also closes). The test only needs `client.sendEvent` to write
+    // the chunked frame; we explicitly call `forceDestroy` to close
+    // the fd without deinitialising the arena.
+    defer client.forceDestroy();
+    try client.sendEvent("event: ping\ndata: 1\n\n");
+
+    var buf: [64]u8 = undefined;
+    const n = posix.system.read(pair[1], &buf, buf.len);
+    try std.testing.expect(n == 27);
+    try std.testing.expectEqualSlices(u8, "15\r\nevent: ping\ndata: 1\n\n\r\n", buf[0..@intCast(n)]);
+}
+
+test "SseManager: sendChunked on missing client returns ClientNotFound" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var mgr = try SseManager.init(std.testing.allocator, std.testing.allocator, threaded.io());
+    defer mgr.deinit();
+
+    var bogus: [16]u8 = undefined;
+    @memset(&bogus, 0xAB);
+    const err = mgr.sendChunked(bogus, "data: x\n\n") catch |e| e;
+    try std.testing.expectEqual(error.ClientNotFound, err);
+}
+
+// ============================================================================
+// Task 2: removeClient sends the chunked-encoding terminator before closing
+// ============================================================================
+
+test "SseManager: removeClient sends the terminating chunk (0\\r\\n\\r\\n) before close" {
+    // Regression test for the
+    // `net::ERR_INCOMPLETE_CHUNKED_ENCODING 200 (OK)` browser error: every
+    // SSE connection must end with `0\r\n\r\n` so the peer's chunked-
+    // decoder can finalize cleanly. `removeClient` is responsible for
+    // flushing the terminator before closing the fd.
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+
+    // Wrap the server_allocator in an ArenaAllocator so the hash map's
+    // backing memory is freed when the arena is deinit'd (SseManager.deinit
+    // calls clearRetainingCapacity which keeps the storage around, and
+    // DebugAllocator flags the residual as a leak otherwise).
+    var server_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer server_arena.deinit();
+    const server_allocator = server_arena.allocator();
+
+    var mgr = try SseManager.init(std.testing.allocator, server_allocator, threaded.io());
+    defer mgr.deinit();
+
+    const pair = try createSocketPair();
+    // We do NOT close pair[0] here — removeClient's sendTerminatingChunk
+    // will write to it, and then deinit() will close it. We only own
+    // the read end.
+    defer _ = posix.system.close(pair[1]);
+
+    // Use registerClientForTest so the random-id path (which requires
+    // being on the Io thread) is bypassed.
+    const id = try mgr.registerClientForTest(pair[0], .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+
+    // Send one event so the peer has a chunked frame on the wire.
+    try mgr.sendChunked(id, "event: ping\ndata: 1\n\n");
+
+    // removeClient must (a) flush the terminator, then (b) close the fd.
+    mgr.removeClient(id);
+
+    // Read everything available on the peer end. Expected sequence:
+    //   "15\r\nevent: ping\ndata: 1\n\n\r\n0\r\n\r\n"
+    //  =  4 + 21 + 2 + 5 = 32 bytes.
+    //  (the hex length "15" is 2 chars, then \r\n, then the 21-byte
+    //  data, then \r\n trailer, then the 5-byte terminator "0\r\n\r\n")
+    var buf: [64]u8 = undefined;
+    // posix.system.read takes ([*]u8, usize), so we pass `&buf` (which
+    // coerces from *[64]u8 to [*]u8) and `buf.len`. We do best-effort:
+    // the close from removeClient causes the remaining bytes to be
+    // available; we may need one or two reads to drain the kernel
+    // buffer.
+    var total: usize = 0;
+    while (total < 32) {
+        const n = posix.system.read(pair[1], &buf, buf.len - total);
+        if (n <= 0) break;
+        total += @intCast(n);
+    }
+
+    try std.testing.expect(total == 32);
+    try std.testing.expectEqualSlices(
+        u8,
+        "15\r\nevent: ping\ndata: 1\n\n\r\n0\r\n\r\n",
+        buf[0..total],
+    );
+}
+
+// ============================================================================
+// Task 3: HTTP response headers declare Transfer-Encoding: chunked
+// ============================================================================
+//
+// Regression guard for
+// `net::ERR_INCOMPLETE_CHUNKED_ENCODING 200 (OK)` in the browser.
+//
+// Per RFC 9112 §6, an HTTP/1.1 response with neither `Content-Length` nor
+// `Transfer-Encoding` is implicitly framed by connection-close. For an
+// SSE stream we never close the connection voluntarily, so we MUST declare
+// chunked encoding in the response headers. Without this declaration,
+// intermediaries (Vite, nginx, Cloudflare, ALB) misinterpret the response
+// and surface `ERR_INCOMPLETE_CHUNKED_ENCODING` on disconnect.
+//
+// We test this via static source-check (the pattern used by 12+ other
+// tests in this codebase, e.g.
+// `src/ai_workflow/tui/http_handlers/git_pr_create_test.zig`). A
+// behavioural GinwaServer-level test would require spinning up a real
+// Io runtime + concurrent group + accepting socket, which is brittle for
+// a unit test and out of scope for this task. The source-check is the
+// canonical regression guard for "header X is present on response Y".
+
+const HTTP_SERVER_PATH = "src/modules/custom_http_server/src/http_server.zig";
+
+fn readHttpServerSource(allocator: std.mem.Allocator) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        HTTP_SERVER_PATH,
+        allocator,
+        .limited(64 * 1024),
+    );
+}
+
+test "HTTP server: SSE response declares Transfer-Encoding: chunked" {
+    // Regression for `net::ERR_INCOMPLETE_CHUNKED_ENCODING`. The SSE
+    // response headers in the `.sse =>` arm of `GinwaServer.handle` must
+    // include `Transfer-Encoding: chunked` so HTTP/1.1 intermediaries
+    // forward the body using chunked-decoding semantics.
+    const source = try readHttpServerSource(std.testing.allocator);
+    defer std.testing.allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "Transfer-Encoding: chunked") == null) {
+        std.debug.print("\n!! http_server.zig missing Transfer-Encoding: chunked !!\n", .{});
+        return error.TransferEncodingChunkedMissing;
+    }
+}
+
+test "HTTP server: SSE response sets X-Accel-Buffering: no" {
+    // Regression for `net::ERR_INCOMPLETE_CHUNKED_ENCODING` under Vite /
+    // nginx / Cloudflare / ALB. `X-Accel-Buffering: no` is the de-facto
+    // standard signal to disable response buffering so SSE chunks reach
+    // the client as soon as the server writes them.
+    const source = try readHttpServerSource(std.testing.allocator);
+    defer std.testing.allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "X-Accel-Buffering: no") == null) {
+        std.debug.print("\n!! http_server.zig missing X-Accel-Buffering: no !!\n", .{});
+        return error.XAccelBufferingMissing;
+    }
+}
