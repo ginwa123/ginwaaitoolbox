@@ -785,24 +785,126 @@ fn BuildSubAgentsListing(
     return try listing.toOwnedSlice(allocator);
 }
 
-fn buildWorkspaceTaskList(
+/// Build a "## Workspace Context" section listing the workspace items
+/// and tasks in the same workspace as the current task. Returns `""`
+/// when the session is not bound to any workspace_item_task (caller
+/// omits the section silently — matches `appendSkillsListing` behavior).
+///
+/// Cap: 20 items (siblings), 5 tasks per item. When exceeded, the
+/// `… and N more` footer is rendered.
+///
+/// The block has this shape (omitted when empty):
+///
+/// ```markdown
+/// ## Workspace Context
+///
+/// This task is part of workspace `<workspace_id>`. Sibling items
+/// (same workspace, listed for discovery):
+///
+/// - **<name>** (item_type: `<type>`, path: `<path>`) *(this task)*
+///   - task: `<task_name>` (type: standard|routine, session: `<sid>`)
+///   - ...
+/// - **<name>** (item_type: `<type>`, path: `<path>`)
+///   - task: `<task_name>` ...
+///
+/// … and N more items in this workspace.
+/// ```
+///
+/// Inserted into the system prompt right after the
+/// `**Current working directory:**` line. See Chunk 3 for wiring.
+pub fn BuildWorkspaceContext(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
-) !void {
-    _ = allocator;
-    _ = db;
-    _ = session_id;
+) ![]const u8 {
+    if (session_id.len == 0) return allocator.dupe(u8, "");
 
-    // TODO: replaced by BuildWorkspaceContext in Chunk 2 of
-    // docs/plans/2026-06-19-workspace-siblings-in-prompt.md.
-    // Original draft SQL (preserved for reference, NOT compiled):
-    //   SELECT wi.workspace_id, wi.path,
-    //          CASE WHEN wi.id = wi2.id THEN 1 ELSE 0 END AS is_self
-    //   FROM workspace_items wi
-    //   JOIN workspace_items wi2 ON wi.workspace_id = wi2.workspace_id
-    //   JOIN workspace_item_tasks wit ON wit.workspace_item_id = wi2.id
-    //   WHERE wit.id = 'task_1781675891911';
+    const ctx = (llm_history.getWorkspaceContext(allocator, db, session_id) catch |err| {
+        std.log.warn("BuildWorkspaceContext: lookup failed: {}", .{err});
+        return allocator.dupe(u8, "");
+    }) orelse return allocator.dupe(u8, "");
+    defer ctx.deinit(allocator);
 
-    return error.Unimplemented;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "\n\n## Workspace Context\n\n");
+    try out.appendSlice(allocator, "This task is part of workspace `");
+    try out.appendSlice(allocator, ctx.workspace_id);
+    try out.appendSlice(allocator,
+        \\`. The other items in this workspace are listed below for
+        \\discovery — you can read or reference their files via `bash`,
+        \\`read_file`, etc. by using the `path` shown for each item.
+        \\
+        \\The item marked *(this task)* is the one your session is bound
+        \\to. Sibling items may be running other conversations; treat
+        \\their files as a shared workspace, not as something to modify
+        \\without the user asking.
+        \\
+    );
+
+    if (ctx.self_path) |p| {
+        try out.appendSlice(allocator, "**Your task's working directory (cwd hint):** `");
+        try out.appendSlice(allocator, p);
+        try out.appendSlice(allocator, "`\n\n");
+    } else {
+        try out.appendSlice(allocator,
+            \\**Your task's working directory:** (none recorded)
+            \\
+        );
+    }
+
+    for (ctx.siblings) |sib| {
+        // "- **<name>** (item_type: `<type>`, path: `<path>`)"
+        try out.appendSlice(allocator, "- **");
+        if (sib.name) |n| {
+            try out.appendSlice(allocator, n);
+        } else {
+            try out.appendSlice(allocator, sib.id);
+        }
+        try out.appendSlice(allocator, "** (item_type: `");
+        try out.appendSlice(allocator, sib.item_type);
+        try out.appendSlice(allocator, "`, path: `");
+        if (sib.path) |p| {
+            try out.appendSlice(allocator, p);
+        } else {
+            try out.appendSlice(allocator, "(none)");
+        }
+        try out.appendSlice(allocator, "`)");
+        if (sib.is_self) try out.appendSlice(allocator, " *(this task)*");
+        try out.appendSlice(allocator, "\n");
+
+        for (sib.tasks) |t| {
+            try out.appendSlice(allocator, "  - task: `");
+            try out.appendSlice(allocator, t.name);
+            try out.appendSlice(allocator, "` (type: ");
+            try out.appendSlice(allocator, t.task_type);
+            if (t.session_id) |sid| {
+                try out.appendSlice(allocator, ", session: `");
+                try out.appendSlice(allocator, sid);
+                try out.appendSlice(allocator, "`");
+            }
+            try out.appendSlice(allocator, ")\n");
+        }
+
+        if (sib.truncated_tasks_count > 0) {
+            const footer = try std.fmt.allocPrint(allocator,
+                "    … and {d} more task{s} under this item\n",
+                .{ sib.truncated_tasks_count, if (sib.truncated_tasks_count == 1) "" else "s" },
+            );
+            defer allocator.free(footer);
+            try out.appendSlice(allocator, footer);
+        }
+    }
+
+    if (ctx.truncated_items_count > 0) {
+        const footer = try std.fmt.allocPrint(allocator,
+            "\n… and {d} more item{s} in this workspace (cap: {d} shown).\n",
+            .{ ctx.truncated_items_count, if (ctx.truncated_items_count == 1) "" else "s", llm_history.MAX_SIBLING_ITEMS },
+        );
+        defer allocator.free(footer);
+        try out.appendSlice(allocator, footer);
+    }
+
+    return out.toOwnedSlice(allocator);
 }

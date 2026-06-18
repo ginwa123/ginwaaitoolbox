@@ -27,6 +27,7 @@ const sqlite = nalarcore.sqlite;
 
 const llm_history = @import("llm_history.zig");
 const WorkspaceContext = llm_history.WorkspaceContext;
+const build_messages = @import("build_messages_for_agent_prompt.zig");
 
 // ─── Test helpers ─────────────────────────────────────────────────────────
 
@@ -339,4 +340,121 @@ test "BuildWorkspaceContext caps tasks at 5 per item" {
     try testing.expectEqual(@as(usize, 1), wc.siblings.len);
     try testing.expectEqual(@as(usize, 5), wc.siblings[0].tasks.len);
     try testing.expectEqual(@as(u32, 3), wc.siblings[0].truncated_tasks_count);
+}
+
+// ─── Test 6: renderer — markdown shape (self marker + tasks) ──────────────
+
+test "BuildWorkspaceContext renders markdown with self marker and tasks" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Same seed as Test 2 ("self item first") plus a task under
+    // each item so the task-rendering branch is exercised. The
+    // self task's session_id is "sess_self" — the renderer must
+    // include that exact id in the "session: `<sid>`" fragment.
+    try seedWorkspace(&ctx.db, alloc, .{
+        .workspace_id = "ws_md",
+        .items = &.{
+            .{ .id = "wi_a", .path = "/abs/a", .name = "Alpha" },
+            .{ .id = "wi_b", .path = "/abs/b", .name = "Beta" },
+        },
+        .tasks = &.{
+            .{ .id = "task_a1", .workspace_item_id = "wi_a", .session_id = "sess_self", .name = "task-a1" },
+            .{ .id = "task_b1", .workspace_item_id = "wi_b", .session_id = "sess_b1", .name = "task-b1" },
+        },
+    });
+
+    const md = try build_messages.BuildWorkspaceContext(alloc, &ctx.db, "sess_self");
+    defer alloc.free(md);
+
+    // Section header is required.
+    try testing.expect(std.mem.indexOf(u8, md, "## Workspace Context") != null);
+
+    // Preamble references the workspace id.
+    try testing.expect(std.mem.indexOf(u8, md, "ws_md") != null);
+
+    // Self marker on the right item.
+    try testing.expect(std.mem.indexOf(u8, md, "*(this task)*") != null);
+
+    // item_type rendering.
+    try testing.expect(std.mem.indexOf(u8, md, "item_type: `chat`") != null);
+
+    // Task name and session id rendering (the self task is "task-a1"
+    // and its session is "sess_self" — both must appear).
+    try testing.expect(std.mem.indexOf(u8, md, "`task-a1`") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "session: `sess_self`") != null);
+
+    // The other item's task is also rendered.
+    try testing.expect(std.mem.indexOf(u8, md, "`task-b1`") != null);
+
+    // Sanity: the cwd hint is present (Alpha's path was /abs/a).
+    try testing.expect(std.mem.indexOf(u8, md, "/abs/a") != null);
+}
+
+// ─── Test 7: renderer — truncation footer for 25 items ────────────────────
+
+test "BuildWorkspaceContext renders truncation footer when over 20 items" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // 25 items; only wi_0 binds a task. Each row's id is independently
+    // allocated (shared buffer would alias — see Test 4's comment).
+    var items: [25]ItemSeed = undefined;
+    for (items[0..], 0..) |*it, i| {
+        const id_owned = try std.fmt.allocPrint(alloc, "wi_{d}", .{i});
+        errdefer alloc.free(id_owned);
+        it.* = .{
+            .id = id_owned,
+            .item_type = "chat",
+            .path = "/abs/x",
+            .name = "x",
+        };
+    }
+    defer for (items[0..]) |it| alloc.free(it.id);
+
+    try seedWorkspace(&ctx.db, alloc, .{
+        .workspace_id = "ws_trunc",
+        .items = items[0..],
+        .tasks = &.{
+            .{ .id = "task_a1", .workspace_item_id = "wi_0", .session_id = "sess_self" },
+        },
+    });
+
+    const md = try build_messages.BuildWorkspaceContext(alloc, &ctx.db, "sess_self");
+    defer alloc.free(md);
+
+    // Section header is still present.
+    try testing.expect(std.mem.indexOf(u8, md, "## Workspace Context") != null);
+
+    // Truncation footer: 25 - 20 = 5 hidden, with the cap-stated.
+    try testing.expect(std.mem.indexOf(u8, md, "and 5 more items") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "cap: 20 shown") != null);
+
+    // The 21st item (wi_20) MUST NOT appear in the output.
+    try testing.expect(std.mem.indexOf(u8, md, "wi_20") == null);
+}
+
+// ─── Test 8: renderer — empty string for unbound session ──────────────────
+
+test "BuildWorkspaceContext returns empty string for empty workspace" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Workspace exists, but no items and no tasks. A session query
+    // that doesn't match any task row returns null → renderer returns "".
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspaces (id, name) VALUES (?, ?)",
+        &.{ "ws_empty", "empty" },
+    );
+
+    const md = try build_messages.BuildWorkspaceContext(alloc, &ctx.db, "sess_any");
+    defer alloc.free(md);
+
+    try testing.expectEqualStrings("", md);
 }
