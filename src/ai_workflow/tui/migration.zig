@@ -827,6 +827,67 @@ pub const Migration046AddGitWorktreeCwdToSessions = struct {
     }
 };
 
+pub const Migration048AddChatListIndex = struct {
+    pub const version: u32 = 48;
+    pub const name = "add_chat_list_index";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Hot read path: getSessionList (llm_history.zig:115) does
+        // GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT/OFFSET
+        // with no WHERE. Today the planner does a full table scan +
+        // sort. With this covering index, the inner subquery becomes
+        // a forward index scan: walk the index in created_at DESC
+        // order, read session_id from the leaf, group, stop at LIMIT.
+        //
+        // NOT a duplicate of idx_llm_history_session_created — that
+        // one is (session_id, created_at DESC) for filtering BY
+        // session; this one is the reverse for the no-WHERE scan.
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_llm_history_created_session " ++
+            "ON llm_history(created_at DESC, session_id)",
+            &[_][]const u8{});
+
+        // ANALYZE so the query planner sees the new index on
+        // pre-existing databases.
+        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
+    }
+};
+
+pub const Migration049AddDefensiveIndexes = struct {
+    pub const version: u32 = 49;
+    pub const name = "add_defensive_indexes";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Defensive: covers listAllWorkspaceItems (llm_history.zig:2317)
+        // which today has no callers. The query is
+        // ORDER BY wi.position DESC, wi.id ASC with no WHERE. The
+        // compound (position DESC, id ASC) makes it a single covering
+        // index scan if a future "all items across all workspaces" view
+        // invokes it. The id tiebreaker is the same one
+        // Migration045AddPositionToWorkspaceItems uses on its backfill
+        // UPDATE so index-backed ORDER BYs match that ordering.
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_workspace_items_position_id " ++
+            "ON workspace_items(position DESC, id ASC)",
+            &[_][]const u8{});
+
+        // Defensive: covers resetStuckRunning (routines/Scheduler.zig:51)
+        // which runs once at startup. The WHERE on last_status='running'
+        // has no index today. Acceptable while routines < 10 000 rows;
+        // this index makes the future cost independent of table size.
+        // Cardinality is tiny (a handful of distinct values: 'pending',
+        // 'running', 'success', 'failed') but the index is still O(log N)
+        // for the WHERE filter — meaningful once 'failed' rows accumulate
+        // over months of operation.
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_routines_last_status " ++
+            "ON routines(last_status)",
+            &[_][]const u8{});
+
+        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -925,6 +986,8 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration044AddRoutines.version, .name = Migration044AddRoutines.name, .up = Migration044AddRoutines.up },
     .{ .version = Migration045AddPositionToWorkspaceItems.version, .name = Migration045AddPositionToWorkspaceItems.name, .up = Migration045AddPositionToWorkspaceItems.up },
     .{ .version = Migration046AddGitWorktreeCwdToSessions.version, .name = Migration046AddGitWorktreeCwdToSessions.name, .up = Migration046AddGitWorktreeCwdToSessions.up },
+    .{ .version = Migration048AddChatListIndex.version, .name = Migration048AddChatListIndex.name, .up = Migration048AddChatListIndex.up },
+    .{ .version = Migration049AddDefensiveIndexes.version, .name = Migration049AddDefensiveIndexes.name, .up = Migration049AddDefensiveIndexes.up },
 };
 
 /// Register all migrations with a MigrationManager
