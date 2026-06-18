@@ -123,7 +123,7 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
     // .{ .name = "change_agent", .content = ChangeAgent },
     // .{ .name = "specialization_table", .content = SpecializationTable },
     // .{ .name = "aggressive_delegation", .content = AggressiveDelegation },
-    .{ .name = "tool_chaining", .content = ToolChaining },
+    // .{ .name = "tool_chaining", .content = ToolChaining },
 
     // === Skills system ===
     .{ .name = "skills_system", .content = memory_prompts.skills_system_prompt },

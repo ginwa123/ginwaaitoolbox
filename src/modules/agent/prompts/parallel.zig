@@ -3,35 +3,60 @@
 // =============================================================================
 
 pub const ParallelWork =
-    \\## Parallel Work (Mandatory for Independent Tasks)
+    \\## Parallel Work
     \\
-    \\spawn sub_agent whenever 2+ tasks can run independently.
-    \\The rule is simple: **discovery tasks → parallelize, execution tasks → sequential.**
+    \\**Rule:** If 2+ tasks share zero dependencies, spawn sub-agents. No exceptions.
     \\
-    \\### When to Spawn (Always)
-    \\
-    \\| Task Type              | Strategy                  |
-    \\|------------------------|---------------------------|
-    \\| Research 2+ topics     | 1 agent per topic         |
-    \\| Read 2+ files          | 1 agent per file          |
-    \\| Search 2+ patterns     | 1 agent per pattern       |
-    \\| Debug 2+ failures      | 1 agent per failure       |
-    \\| Investigate components | 1 agent per component     |
-    \\| Browse 2+ URLs         | 1 agent per URL           |
-    \\
-    \\### When NOT to Spawn
-    \\
-    \\- Writing or fixing code
-    \\- Running tests or builds
-    \\- Single-file edits
-    \\- Any task with sequential dependencies
-    \\
-    \\### Correct vs. Wrong
-    \\
-    \\**Wrong — sequential, slow:**
     \\```
-    \\// "Let me search X, then Y, then Z..."
-    \\search(X); search(Y); search(Z);
+    \\independent tasks → parallelize (always)
+    \\dependent tasks   → sequential  (always)
+    \\```
+    \\
+    \\### Spawn Sub-Agents For
+    \\
+    \\| Scenario                  | Strategy                         |
+    \\|---------------------------|----------------------------------|
+    \\| Read N files              | N agents, 1 per file             |
+    \\| Research N topics         | N agents, 1 per topic            |
+    \\| Search N patterns/symbols | N agents, 1 per pattern          |
+    \\| Investigate N components  | N agents, 1 per component        |
+    \\| Debug N independent bugs  | N agents, 1 per bug              |
+    \\| Fetch N URLs              | N agents, 1 per URL              |
+    \\| Run N independent tests   | N agents, 1 per test suite       |
+    \\
+    \\### Never Spawn For
+    \\
+    \\- Writing or modifying code (race conditions on shared files)
+    \\- Any task where step B needs output from step A
+    \\- Single-file edits or single-target operations
+    \\- Build/test pipelines with ordered stages
+    \\
+    \\### Decision Test
+    \\
+    \\Before starting: ask "Can task B begin before task A finishes?"
+    \\- Yes → parallel
+    \\- No  → sequential
+    \\
+    \\### Examples
+    \\
+    \\**Wrong — sequential read:**
+    \\```
+    \\read(auth.ts); read(router.ts); read(db.ts); // slow, wasteful
+    \\```
+    \\
+    \\**Right — parallel read:**
+    \\```
+    \\spawn(read(auth.ts), read(router.ts), read(db.ts)); // 3x faster
+    \\```
+    \\
+    \\**Wrong — parallel write:**
+    \\```
+    \\spawn(edit(auth.ts), edit(auth.ts)); // race condition, corrupts file
+    \\```
+    \\
+    \\**Right — sequential write:**
+    \\```
+    \\edit(auth.ts); edit(auth.ts); // safe, ordered
     \\```
     \\
 ;
