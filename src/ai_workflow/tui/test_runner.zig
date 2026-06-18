@@ -5,6 +5,7 @@ test {
     _ = @import("migration_performance_indexes_test.zig");
     _ = @import("migration_routines_test.zig");
     _ = @import("migration_git_worktree_test.zig");
+    _ = @import("migration_chat_list_index_test.zig");
     _ = @import("routines/model_test.zig");
     _ = @import("routines/cron_test.zig");
     _ = @import("routines/fire_test.zig");
