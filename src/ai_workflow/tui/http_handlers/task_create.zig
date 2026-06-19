@@ -3,27 +3,38 @@ const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const ai_mod = nalarcore.ai_mod;
+const memories_mod = nalarcore.memories;
 const cron = @import("../routines/cron.zig");
 const fire = @import("../routines/fire.zig");
 
 /// POST /api/workspaces/:workspace_id/items/:item_id/tasks
 ///
-/// Body: { name, session_id?, task_type? ('standard'|'routine'),
-///         schedule?, initial_prompt?, enabled? }.
+/// Body: { name, session_id?, task_type? ('standard'|'routine'|'memory'),
+///         schedule?, initial_prompt?, enabled?,
+///         memory_name?, memory_content? }.
 ///
-/// Standard tasks (the default) take the existing
-/// `createWorkspaceItemTask` path which lets the migration's
-/// `task_type` column default to 'standard'.
+/// Three task types are supported:
 ///
-/// Routine tasks inline the workspace_item_tasks INSERT (so we can
-/// set `task_type='routine'` explicitly), then validate the cron
-/// expression, compute the first `next_run_at` via
-/// `cron.nextFireTime` + `fire.formatSqliteDatetime`, and INSERT a
-/// matching row into the `routines` table. The scheduler polls
-/// `routines` (not `workspace_item_tasks`) so the routines row is
-/// what makes the task actually fire.
+///  - **standard** (default): existing `createWorkspaceItemTask` path;
+///    the migration's `task_type` column default is 'standard'.
 ///
-/// Plan: docs/superpowers/plans/2026-06-13-add-task-routines-chunk-4.md
+///  - **routine**: inlines both the workspace_item_tasks INSERT (so we
+///    can set task_type='routine' explicitly) and the routines INSERT.
+///    The scheduler polls `routines` so the routines row is what makes
+///    the task fire.
+///
+///  - **memory** (new): a local memory file scoped to the parent
+///    workspace_item's directory. The .md file is created at
+///    `<workspace_item.path>/.nalar/memories/<memory_name>` (the
+///    directory is created if missing) so `loadLocalKnowledge` picks
+///    it up on the next chat. The task row has `task_type='memory'`
+///    and no `session_id` — the file is the content. Requires
+///    `memory_name` (must pass `isValidMemoryName`) and `memory_content`
+///    in the body.
+///
+/// Plans:
+///  - docs/superpowers/plans/2026-06-13-add-task-routines-chunk-4.md (routine)
+///  - docs/plans/2026-06-20-add-markdown-memory.md (memory)
 pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
@@ -49,15 +60,10 @@ pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     const ts = std.Io.Timestamp.now(ctx.io, .real);
     const task_id = try std.fmt.allocPrint(allocator, "task_{d}", .{@divTrunc(ts.nanoseconds, 1_000_000)});
 
-    // Branch on task_type. The routine path inlines both the
-    // workspace_item_tasks INSERT (so we can set task_type='routine'
-    // explicitly) and the routines INSERT. The standard path keeps
-    // using createWorkspaceItemTask — the migration's column default
-    // is 'standard', so the 6-arg signature still produces a
-    // well-formed row.
-    const is_routine = std.mem.eql(u8, json_body.task_type, "routine");
-    if (is_routine) {
-        // Routine-specific validation + initial next_run_at computation.
+    // Routine branch — inlined (preserves the v1 routine flow). The
+    // task_id is generated above; the routine path uses it for both
+    // the workspace_item_tasks INSERT and the routines INSERT.
+    if (std.mem.eql(u8, json_body.task_type, "routine")) {
         const schedule = json_body.schedule orelse {
             return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "schedule is required for routine tasks" }) });
         };
@@ -74,46 +80,32 @@ pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         const next_run_at = try fire.formatSqliteDatetime(allocator, next_ns);
         defer allocator.free(next_run_at);
 
-        // Inline the workspace_item_tasks INSERT for routines so we can
-        // set task_type='routine' explicitly. The migration added the
-        // column with default 'standard', so the standard path's
-        // `createWorkspaceItemTask` call (below) is unaffected.
         if (json_body.session_id) |sid| {
             sqlite_db.exec(allocator,
                 "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id, task_type) VALUES (?, ?, ?, ?, 'routine')",
-                &.{ task_id, json_body.name, item_id, sid },
+                &[_][]const u8{ task_id, json_body.name, item_id, sid },
             ) catch {
                 return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create task" }) });
             };
         } else {
             sqlite_db.exec(allocator,
                 "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES (?, ?, ?, 'routine')",
-                &.{ task_id, json_body.name, item_id },
+                &[_][]const u8{ task_id, json_body.name, item_id },
             ) catch {
                 return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create task" }) });
             };
         }
 
-        // Insert the routines row in the same handler call. The
-        // scheduler reads from this table; without the row, the
-        // routine would never fire.
         const routine_id = try std.fmt.allocPrint(allocator, "routine_{s}", .{task_id});
         defer allocator.free(routine_id);
         const enabled_str = if (json_body.enabled) "1" else "0";
         sqlite_db.exec(allocator,
             "INSERT INTO routines (id, task_id, schedule, initial_prompt, enabled, next_run_at) VALUES (?, ?, ?, ?, ?, ?)",
-            &.{ routine_id, task_id, schedule, initial_prompt, enabled_str, next_run_at },
+            &[_][]const u8{ routine_id, task_id, schedule, initial_prompt, enabled_str, next_run_at },
         ) catch {
             return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create routine row" }) });
         };
 
-        // session_id may be null; emit JSON null literally rather than
-        // going through std.json.Stringify (the WorkspaceItemTaskResponse
-        // struct doesn't yet carry task_type / routine — those land in
-        // Task 4.5). sid is a runtime value, so we have to use
-        // allocPrint (comptimePrint would require it to be comptime).
-        // The arena-owned allocator reaps the slice at request end — no
-        // explicit free needed.
         const session_id_json: []const u8 = if (json_body.session_id) |sid|
             try std.fmt.allocPrint(allocator, "\"{s}\"", .{sid})
         else
@@ -128,19 +120,92 @@ pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         }) });
     }
 
+    // Memory branch — new in 2026-06-20. Resolves the parent
+    // workspace_item's `path`, builds the local memories dir,
+    // validates the memory name, writes the .md file, then inserts
+    // a single task row with `task_type='memory'` and no
+    // `session_id`. The file is the content; there is no chat
+    // session for memory tasks.
+    if (std.mem.eql(u8, json_body.task_type, "memory")) {
+        // 1. Validate the memory-specific body fields.
+        const memory_name = json_body.memory_name orelse {
+            return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "memory_name is required for memory tasks" }) });
+        };
+        if (!memories_mod.isValidMemoryName(memory_name)) {
+            return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid memory name (must end in .md, no /, no ..)" }) });
+        }
+        const memory_content = json_body.memory_content orelse {
+            return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "memory_content is required for memory tasks" }) });
+        };
+
+        // 2. Look up the parent workspace_item to get its `path`
+        // (this is the project root — the .md file is scoped to
+        // `<path>/.nalar/memories/<name>.md`).
+        const item_opt = ai_mod.workspace_item_tasks.getWorkspaceItem(allocator, sqlite_db, item_id) catch null;
+        const item = item_opt orelse {
+            return res.jsonResponse(.{ .status_code = 404, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Workspace item not found" }) });
+        };
+        defer item.deinit(allocator);
+
+        // 3. Refuse non-folder items. The agent's loadLocalKnowledge
+        // reads from `<cwd>/.nalar/memories/`, so the cwd must be a
+        // real directory (which is what a 'folder' item's path is).
+        if (!std.mem.eql(u8, item.item_type, "folder")) {
+            return res.jsonResponse(.{ .status_code = 400, .data = try std.fmt.allocPrint(allocator, "Memory tasks can only be added to folder-type workspace items (item has type '{s}')", .{item.item_type}) });
+        }
+        const cwd = item.path orelse {
+            return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Workspace item has no path; the folder must have been created with a real path" }) });
+        };
+
+        // 4. Build the local memories dir: <cwd>/.nalar/memories/.
+        const dir_path = memories_mod.get_local_memories_path_for_dir(allocator, cwd) orelse {
+            return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to build local memories path" }) });
+        };
+        defer allocator.free(dir_path);
+
+        // 5. Write the .md file. Creates `<dir>/.nalar/memories/`
+        // if missing; uses atomic-rename.
+        if (!memories_mod.writeLocalMemoryFile(allocator, ctx.io, dir_path, memory_name, memory_content)) {
+            return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to write memory file" }) });
+        }
+
+        // 6. Insert the task row. No session_id for memory tasks —
+        // the file IS the content.
+        sqlite_db.exec(allocator,
+            "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES (?, ?, ?, 'memory')",
+            &[_][]const u8{ task_id, json_body.name, item_id },
+        ) catch {
+            // Roll back the file on task-row failure so we don't leave
+            // an orphan .md with no task pointing at it. The helper is
+            // idempotent (returns true on already-missing), so this is
+            // safe even if the file disappeared in the meantime.
+            _ = memories_mod.deleteLocalMemoryFile(allocator, ctx.io, dir_path, memory_name);
+            return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create task row" }) });
+        };
+
+        return res.jsonResponse(.{ .status_code = 201, .data = try std.fmt.allocPrint(allocator,
+            \\{{"id":"{s}","name":"{s}","workspace_item_id":"{s}","task_type":"memory","session_id":null,"created_at":null,"updated_at":null}}
+        , .{
+            task_id,
+            json_body.name,
+            item_id,
+        }) });
+    }
+
     // Standard task path — unchanged from the pre-routines code.
     const task = ai_mod.workspace_item_tasks.createWorkspaceItemTask(allocator, sqlite_db, task_id, json_body.name, item_id, json_body.session_id, "standard") catch {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create task" }) });
     };
     defer task.deinit(allocator);
 
-    return res.jsonResponse(.{ .status_code = 201, .data = try http_response.makeWorkspaceItemTaskResponse(allocator, http_response.WorkspaceItemTaskResponse{
-        .id = task.id,
-        .name = task.name,
-        .workspace_item_id = task.workspace_item_id,
-        .session_id = task.session_id,
-        .task_type = task.task_type,
-        .created_at = task.created_at,
-        .updated_at = task.updated_at,
+    const session_id_json: []const u8 = if (json_body.session_id) |sid|
+        try std.fmt.allocPrint(allocator, "\"{s}\"", .{sid})
+    else
+        "null";
+    return res.jsonResponse(.{ .status_code = 201, .data = try std.fmt.allocPrint(allocator, "{{\"id\":\"{s}\",\"name\":\"{s}\",\"workspace_item_id\":\"{s}\",\"task_type\":\"standard\",\"session_id\":{s}}}", .{
+        task.id,
+        task.name,
+        task.workspace_item_id,
+        session_id_json,
     }) });
 }

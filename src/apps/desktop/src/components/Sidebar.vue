@@ -112,6 +112,12 @@ const addTaskDialogItemId = ref<string | null>(null)
 const showAddRoutineDialog = ref(false)
 const addRoutineDialogWorkspaceId = ref<string | null>(null)
 const addRoutineDialogItemId = ref<string | null>(null)
+// Memory task flow (2026-06-20): picked from the AddTaskPickerDialog
+// "Memory" card, opens AddMemoryDialog in `mode='task'`, then
+// the create callback calls addTask with taskType='memory'.
+const showAddMemoryTaskDialog = ref(false)
+const addMemoryTaskWorkspaceId = ref<string | null>(null)
+const addMemoryTaskItemId = ref<string | null>(null)
 
 // Edit routine (Chunk 7 of task-routines plan): opened by
 // handleEditRoutine (triggered by the routine-task row's pencil
@@ -347,12 +353,27 @@ const resolveCwdForMemory = (workspaceId: string): string => {
   return ''
 }
 
+/**
+ * Resolve the cwd to scope a new memory TASK to. Unlike
+ * `resolveCwdForMemory` (which uses the workspace's first folder),
+ * this function takes the SPECIFIC item_id the user picked — the
+ * memory task is attached to that item, and the .md file is
+ * scoped to that item's path. Returns '' if the item can't be
+ * found or has no path (in which case the AddMemoryDialog will
+ * show its own "no cwd" error and refuse to submit).
+ */
+const resolveCwdForItem = (itemId: string): string => {
+  const item = workspacesStore.allWorkspaceItems.find((i) => i.id === itemId)
+  if (!item) return ''
+  return item.path ?? ''
+}
+
 const handleCloseAddMemoryDialog = () => {
   showAddMemoryDialog.value = false
   addMemoryTargetWorkspaceId.value = null
 }
 
-const handleCreateMemory = async (name: string, path: string) => {
+const handleCreateMemory = async (name: string, _content: string, path: string) => {
   // The local memory file is created by AddMemoryDialog (via
   // createLocalMemory API) and lives at
   // `<cwd>/.nalar/memories/<name>.md`. The next chat in this
@@ -363,6 +384,11 @@ const handleCreateMemory = async (name: string, path: string) => {
   //     has notifyError, so this would require a `notifySuccess`).
   //   - Register a workspace-item reference so the memory shows
   //     up in the sidebar list (mirrors Add Project's behavior).
+  //
+  // The 3-arg signature `(name, content, path)` matches the
+  // AddMemoryDialog emit shape; the legacy flow doesn't need
+  // `content` (the dialog already sent it to the API), so we
+  // prefix-underscore it to silence the unused-arg warning.
   console.info(`[Sidebar] local memory created: ${name} at ${path}`)
 }
 
@@ -450,19 +476,27 @@ const handleAddTask = (workspaceId: string, item: WorkspaceItem) => {
 }
 
 // Route the pick to the right create dialog. The picker dialog
-// self-closes on pick (see AddTaskPickerDialog.vue: handleStandard
-// and handleRoutine emit both 'pick' and 'close'), so the @close
-// handler (handleCloseAddTaskPicker) runs as a side effect of the
-// pick — no explicit close call needed here.
-const handleAddTaskPick = (taskType: 'standard' | 'routine') => {
+// self-closes on pick (see AddTaskPickerDialog.vue: handleStandard,
+// handleRoutine, and handleMemory emit both 'pick' and 'close'),
+// so the @close handler (handleCloseAddTaskPicker) runs as a side
+// effect of the pick — no explicit close call needed here.
+const handleAddTaskPick = (taskType: 'standard' | 'routine' | 'memory') => {
   if (taskType === 'standard') {
     addTaskDialogWorkspaceId.value = pickerWorkspaceId.value
     addTaskDialogItemId.value = pickerItemId.value
     showAddTaskDialog.value = true
-  } else {
+  } else if (taskType === 'routine') {
     addRoutineDialogWorkspaceId.value = pickerWorkspaceId.value
     addRoutineDialogItemId.value = pickerItemId.value
     showAddRoutineDialog.value = true
+  } else {
+    // 'memory' (2026-06-20): open AddMemoryDialog in `mode='task'`
+    // (it won't call the API itself; the create callback here
+    // calls addTask with taskType='memory' which triggers the
+    // backend's file-write + task-insert in one POST).
+    addMemoryTaskWorkspaceId.value = pickerWorkspaceId.value
+    addMemoryTaskItemId.value = pickerItemId.value
+    showAddMemoryTaskDialog.value = true
   }
   // Clear the picker targets so a stale workspaceId/itemId
   // doesn't leak into a future accidental re-open.
@@ -549,6 +583,46 @@ const handleCloseAddRoutineDialog = () => {
   showAddRoutineDialog.value = false
   addRoutineDialogWorkspaceId.value = null
   addRoutineDialogItemId.value = null
+}
+
+// Memory task flow (2026-06-20). AddMemoryDialog in `mode='task'`
+// emits `create(name, content, path)` when the user submits; we
+// forward to addTask which POSTs to the backend with
+// taskType='memory'. The backend's task_create.zig handles the
+// .md file write AND the workspace_item_tasks INSERT in one call
+// (and rolls back the .md on task-row failure — no orphan files).
+//
+// We do NOT navigate to the new memory task — memory tasks have
+// no chat session (the .md file IS the content; the AI reads it
+// on the next chat in this workspace). The task row shows up in
+// the sidebar's task list where the user can inspect it.
+const handleCreateMemoryTask = async (
+  name: string,
+  content: string,
+  _path: string,
+) => {
+  const workspaceId = addMemoryTaskWorkspaceId.value
+  const itemId = addMemoryTaskItemId.value
+  if (!workspaceId || !itemId) return
+  await workspacesStore.addTask(workspaceId, itemId, {
+    name,
+    taskType: 'memory',
+    memory: { name, content },
+  })
+  showAddMemoryTaskDialog.value = false
+  addMemoryTaskWorkspaceId.value = null
+  addMemoryTaskItemId.value = null
+  // Defensive: close the picker too. AddTaskPickerDialog already
+  // self-closes on pick, but the create callback is the last word
+  // on dialog state — see handleAddTaskCreated for the same
+  // rationale applied to the standard path.
+  handleCloseAddTaskPicker()
+}
+
+const handleCloseAddMemoryTaskDialog = () => {
+  showAddMemoryTaskDialog.value = false
+  addMemoryTaskWorkspaceId.value = null
+  addMemoryTaskItemId.value = null
 }
 
 const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) => {
@@ -855,6 +929,14 @@ const editRoutineTaskName = computed<string>(() => {
     <AddTaskPickerDialog :show="showAddTaskPicker" @close="handleCloseAddTaskPicker" @pick="handleAddTaskPick" />
     <AddTaskDialog :show="showAddTaskDialog" @close="handleCloseAddTaskDialog" @create="handleAddTaskCreated" />
     <AddRoutineDialog :show="showAddRoutineDialog" @close="handleCloseAddRoutineDialog" @create="handleAddRoutineCreated" />
+    <AddMemoryDialog
+      v-if="addMemoryTaskItemId"
+      :show="showAddMemoryTaskDialog"
+      :cwd="resolveCwdForItem(addMemoryTaskItemId)"
+      mode="task"
+      @close="handleCloseAddMemoryTaskDialog"
+      @create="handleCreateMemoryTask"
+    />
     <EditRoutineDialog
       :show="showEditRoutineDialog"
       :routine="editRoutineTarget"

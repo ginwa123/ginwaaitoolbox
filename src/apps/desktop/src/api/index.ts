@@ -317,11 +317,15 @@ export async function getTasks(
  * The third arg is a single params object. For a standard task
  * (the default), pass `{ name, description?, taskType: 'standard' }`.
  * For a routine, pass `{ name, taskType: 'routine', routine: { schedule, initial_prompt, enabled? } }`.
+ * For a memory, pass `{ name, taskType: 'memory', memory: { name, content } }`.
  *
  * The backend stores `task_type` on `workspace_item_tasks` and
  * (for routines) creates a row in the `routines` table inside the
- * same transaction. On a bad cron expression, the backend
- * returns 400 and the error surfaces as a thrown `Error('HTTP 400')`.
+ * same transaction. For memories, the backend creates the .md file
+ * at `<workspace_item.path>/.nalar/memories/<name>.md` AND inserts
+ * the task row pointing at it. On a bad cron expression, the
+ * backend returns 400 and the error surfaces as a thrown
+ * `Error('HTTP 400')`.
  */
 export async function createTask(
   workspaceId: string,
@@ -329,11 +333,15 @@ export async function createTask(
   params: {
     name: string
     description?: string
-    taskType?: 'standard' | 'routine'
+    taskType?: 'standard' | 'routine' | 'memory'
     routine?: {
       schedule: string
       initial_prompt: string
       enabled?: boolean
+    }
+    memory?: {
+      name: string
+      content: string
     }
   },
 ): Promise<Task> {
@@ -349,6 +357,10 @@ export async function createTask(
     if (params.routine.enabled !== undefined) {
       body.enabled = params.routine.enabled
     }
+  }
+  if (taskType === 'memory' && params.memory) {
+    body.memory_name = params.memory.name
+    body.memory_content = params.memory.content
   }
   return await apiFetch<Task>(`/workspaces/${workspaceId}/items/${itemId}/tasks`, {
     method: 'POST',

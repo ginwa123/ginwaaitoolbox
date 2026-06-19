@@ -71,9 +71,15 @@ export interface Task {
   description?: string
   // NEW (Chunk 5 of task-routines plan). Optional for backwards
   // compat with legacy task literals (tests + offline fallbacks).
-  task_type?: 'standard' | 'routine'
+  // 'memory' added in 2026-06-20 for the markdown-memory feature
+  // (plan: docs/plans/2026-06-20-add-markdown-memory.md).
+  task_type?: 'standard' | 'routine' | 'memory'
   // NEW: present iff task_type === 'routine'.
   routine?: RoutineMeta
+  // NEW: present iff task_type === 'memory'. Captures the .md
+  // file name (no extension in the path; just the basename like
+  // 'project-notes.md') for the UI badge.
+  memory_name?: string
   completed?: boolean
   createdAt?: Date
   updatedAt?: Date
@@ -449,22 +455,29 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // The third arg is a single params object. For a standard task
   // (the default), pass `{ name, description? }`. For a routine, pass
   // `{ name, taskType: 'routine', routine: { schedule, initial_prompt, enabled? } }`.
+  // For a memory, pass `{ name, taskType: 'memory', memory: { name, content } }`.
   //
   // taskType defaults to 'standard' so a caller that omits it gets
   // the legacy behavior. For routines, `routine` must include
   // `schedule` + `initial_prompt`; `enabled` defaults to true on the
-  // backend.
+  // backend. For memories, `memory.name` is the .md filename (must
+  // end in .md, validated server-side) and `memory.content` is the
+  // initial body of the .md file.
   async function addTask(
     workspaceId: string,
     itemId: string,
     params: {
       name: string
       description?: string
-      taskType?: 'standard' | 'routine'
+      taskType?: 'standard' | 'routine' | 'memory'
       routine?: {
         schedule: string
         initial_prompt: string
         enabled?: boolean
+      }
+      memory?: {
+        name: string
+        content: string
       }
     },
   ): Promise<string | undefined> {
@@ -478,7 +491,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       item.tasks = []
     }
 
-    const taskType: 'standard' | 'routine' = params.taskType ?? 'standard'
+    const taskType: 'standard' | 'routine' | 'memory' = params.taskType ?? 'standard'
 
     try {
       const newTask = await api.createTask(workspaceId, itemId, {
@@ -486,6 +499,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         description: params.description,
         taskType,
         routine: params.routine,
+        memory: params.memory,
       })
       item.tasks.unshift(newTask)
       return newTask.id
@@ -494,7 +508,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Fallback to local creation if API fails. Match the
       // pre-existing fallback contract (returns a taskId, populates
       // the item's tasks list) and now also carry task_type +
-      // routine so the offline UI still branches correctly.
+      // routine + memory so the offline UI still branches correctly.
       const taskId = `task-${Date.now()}`
       item.tasks.unshift({
         id: taskId,
@@ -512,6 +526,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
               last_error: null,
             }
           : undefined,
+        memory_name: params.memory?.name,
         completed: false,
         createdAt: new Date(),
         updatedAt: new Date(),

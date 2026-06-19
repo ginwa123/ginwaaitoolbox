@@ -43,8 +43,14 @@ pub const TaskCreateRequest = struct {
     description: ?[]const u8 = null,
     session_id: ?[]const u8 = null,
     /// Task type. Defaults to 'standard' (preserves the existing flow).
-    /// Set to 'routine' to create a cron-scheduled task backed by a
-    /// `routines` table row.
+    ///   - 'standard': interactive chat task (default; creates a session).
+    ///   - 'routine':  cron-scheduled task backed by a `routines` row.
+    ///   - 'memory':   a local memory file scoped to the parent
+    ///                 workspace_item's directory. The .md file is
+    ///                 created at <workspace_item.path>/.nalar/memories/
+    ///                 so `loadLocalKnowledge` picks it up on the
+    ///                 next chat. Requires `memory_name` and
+    ///                 `memory_content` in the body.
     task_type: []const u8 = "standard",
     /// 5-field cron expression. Required iff task_type='routine'.
     schedule: ?[]const u8 = null,
@@ -52,6 +58,12 @@ pub const TaskCreateRequest = struct {
     initial_prompt: ?[]const u8 = null,
     /// Whether the routine is active. Defaults to true.
     enabled: bool = true,
+    /// Filename for the memory file. Must end in `.md` and contain
+    /// no path separators or `..` (validated by `memories.isValidMemoryName`).
+    /// Required iff task_type='memory'.
+    memory_name: ?[]const u8 = null,
+    /// Initial content of the memory file. Required iff task_type='memory'.
+    memory_content: ?[]const u8 = null,
 };
 
 pub const TaskUpdateRequest = struct {

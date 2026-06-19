@@ -18,14 +18,24 @@
        to the cwd prop), and a content textarea
     2. The user can change the folder via the file picker if the
        default cwd isn't what they want
-    3. Clicking "Create" emits `create(name, path)` and the backend
-       writes `<picked_cwd>/.nalar/memories/<name>.md`
+    3. Clicking "Create":
+         - In `mode='standalone'` (default): the dialog calls
+           `createLocalMemory(name, content, cwd)` and emits
+           `create(name, path)`.
+         - In `mode='task'`: the dialog does NOT call the API
+           (the backend's `task_create.zig` for memory tasks
+           does both the file write AND the task-row insert in
+           one POST). It emits `create(name, content, path)` and
+           the parent (Sidebar.vue) calls
+           `addTask(workspaceId, itemId, { taskType: 'memory', memory: { name, content } })`.
 
   Public API:
     props:  show (boolean), cwd (string — initial cwd; the user can
                               change it via the folder picker)
+            mode ('standalone' | 'task'; default 'standalone')
     emits:  close
-            create(name: string, path: string)
+            create(name: string, path: string)             // standalone
+            create(name: string, content: string, path: string)  // task
 -->
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
@@ -33,7 +43,7 @@ import { createLocalMemory, getSystemFolder, listFolder, type FolderEntry } from
 import { useNotificationStore } from '../stores/notifications'
 import FilePickerDialog from './FilePickerDialog.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   show: boolean
   /**
    * The initial cwd to scope the new memory to. Used as the starting
@@ -43,11 +53,37 @@ const props = defineProps<{
    * absolute path works.
    */
   cwd: string
-}>()
+  /**
+   * 'standalone' (default) — the legacy flow: this dialog calls
+   * `createLocalMemory` and emits `create(name, path)`.
+   * 'task' — the new flow (2026-06-20): this dialog does NOT call
+   * the API. It emits `create(name, content, path)` and the parent
+   * calls `addTask(..., { taskType: 'memory', memory: { name, content } })`.
+   * The backend's `task_create.zig` for memory tasks handles both
+   * the file write AND the task-row insert in a single POST, so the
+   * parent only needs to make one API call.
+   */
+  mode?: 'standalone' | 'task'
+}>(), {
+  mode: 'standalone',
+})
 
 const emit = defineEmits<{
   close: []
-  create: [name: string, path: string]
+  /**
+   * The dialog always emits 3 args: `create(name, content, path)`.
+   * In `mode='standalone'`, the dialog calls `createLocalMemory`
+   * directly and emits the API-returned path (the `content` arg is
+   * the value sent to the API; same as the dialog's textarea).
+   * In `mode='task'`, the dialog doesn't call the API; the path
+   * is the locally-computed `<cwd>/.nalar/memories/<name>` and
+   * the parent uses all 3 args to call addTask.
+   *
+   * Single 3-tuple shape (instead of a union of 2-tuple / 3-tuple)
+   * keeps Vue's emit type system happy and matches the existing
+   * AddTaskDialog pattern (always `(name, description)`).
+   */
+  create: [name: string, content: string, path: string]
 }>()
 
 // ─── State ─────────────────────────────────────────────────────────────────
@@ -121,15 +157,28 @@ const handleCreate = async () => {
 
   isSubmitting.value = true
   try {
-    // Pass the current `cwd.value` (which the user may have changed
-    // via the file picker) so the file lands in the folder the user
-    // actually picked, not just the default the parent passed in.
+    // 'standalone' (default) flow: the dialog calls
+    // createLocalMemory directly and emits (name, content, path).
+    // The content arg is the same value sent to the API (the
+    // dialog's textarea). Parents that don't need content (the
+    // legacy standalone flow) can ignore it.
+    //
+    // The 'task' mode does NOT call the API — it just emits
+    // the data the parent needs to call addTask. The parent's
+    // task_create.zig will write the .md file and insert the
+    // task row in one POST.
+    if (props.mode === 'task') {
+      const finalPath = `${cwd.value}/.nalar/memories/${trimmedName}`
+      emit('create', trimmedName, content.value, finalPath)
+      handleClose()
+      return
+    }
     const result = await createLocalMemory(trimmedName, content.value, cwd.value)
     // createLocalMemory returns { memory: { name, title, path, size } } on
     // success. The ApiError throw handles the non-2xx case (toast is
     // auto-fired by apiFetch), so reaching this line means the memory
     // exists.
-    emit('create', result.memory.name, result.memory.path)
+    emit('create', result.memory.name, content.value, result.memory.path)
     handleClose()
   } catch (err) {
     // apiFetch already shows the error toast. The dialog stays open

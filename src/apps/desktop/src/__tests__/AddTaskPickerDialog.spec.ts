@@ -59,7 +59,7 @@ describe('AddTaskPickerDialog', () => {
     expect(document.querySelector('[data-testid="add-task-picker"]')).toBeNull()
   })
 
-  it('renders both cards when show=true', async () => {
+  it('renders all three cards when show=true', async () => {
     mountPicker({ show: true })
     // Two ticks: first for the v-if to render, second for the
     // <Transition> wrapper to commit.
@@ -67,9 +67,11 @@ describe('AddTaskPickerDialog', () => {
     expect(document.querySelector('[data-testid="add-task-picker"]')).not.toBeNull()
     expect(document.querySelector('[data-testid="picker-standard"]')).not.toBeNull()
     expect(document.querySelector('[data-testid="picker-routine"]')).not.toBeNull()
+    expect(document.querySelector('[data-testid="picker-memory"]')).not.toBeNull()
     // Human-readable labels present
     expect(document.body.textContent).toContain('Standard Chat')
     expect(document.body.textContent).toContain('Routine')
+    expect(document.body.textContent).toContain('Memory')
   })
 
   it('emits pick="standard" when the Standard Chat card is clicked', async () => {
@@ -100,6 +102,25 @@ describe('AddTaskPickerDialog', () => {
     expect(w.emitted('pick')![0]).toEqual(['routine'])
     // Same self-close contract as the Standard Chat card — see
     // the assertion in the standard-card test above.
+    expect(w.emitted('close')).toBeDefined()
+    expect(w.emitted('close')!.length).toBe(1)
+  })
+
+  it('emits pick="memory" when the Memory card is clicked', async () => {
+    // The Memory card was added in 2026-06-20 (plan: docs/plans/
+    // 2026-06-20-add-markdown-memory.md). It opens a flow where
+    // the user creates a local .md file and a task row pointing
+    // at it (via AddMemoryDialog in mode='task' → addTask).
+    const w = mountPicker({ show: true })
+    await w.vm.$nextTick()
+    const card = document.querySelector<HTMLElement>('[data-testid="picker-memory"]')!
+    expect(card).toBeTruthy()
+    card.click()
+    expect(w.emitted('pick')).toBeDefined()
+    expect(w.emitted('pick')!.length).toBe(1)
+    expect(w.emitted('pick')![0]).toEqual(['memory'])
+    // Same self-close contract as the other two cards — see the
+    // assertion in the standard-card test above.
     expect(w.emitted('close')).toBeDefined()
     expect(w.emitted('close')!.length).toBe(1)
   })

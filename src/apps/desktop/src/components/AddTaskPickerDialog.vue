@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // AddTaskPickerDialog — shown when the user clicks the green `+`
-// button on a workspace item. Two large cards: "Standard Chat" and
-// "Routine". The parent (Sidebar.vue) decides which creation flow
-// to open based on the emitted `pick` value.
+// button on a workspace item. Three large cards: "Standard Chat",
+// "Routine", and "Memory". The parent (Sidebar.vue) decides which
+// creation flow to open based on the emitted `pick` value.
 //
 // Style match: backdrop + card wrapper copied verbatim from
 // AddTaskDialog.vue:44-143 so the visual language is consistent
@@ -15,7 +15,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
-  pick: [taskType: 'standard' | 'routine']
+  pick: [taskType: 'standard' | 'routine' | 'memory']
 }>()
 
 const handleClose = () => emit('close')
@@ -33,6 +33,11 @@ const handleStandard = () => {
 
 const handleRoutine = () => {
   emit('pick', 'routine')
+  handleClose()
+}
+
+const handleMemory = () => {
+  emit('pick', 'memory')
   handleClose()
 }
 
@@ -60,7 +65,7 @@ const handleKeydown = (event: KeyboardEvent) => {
 
         <!-- Dialog Content -->
         <div
-          class="relative w-full max-w-lg mx-4 rounded-xl shadow-2xl"
+          class="relative w-full max-w-2xl mx-4 rounded-xl shadow-2xl"
           style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
           data-testid="add-task-picker"
         >
@@ -77,8 +82,8 @@ const handleKeydown = (event: KeyboardEvent) => {
             </p>
           </div>
 
-          <!-- Two cards side-by-side -->
-          <div class="px-5 pb-5 grid grid-cols-2 gap-3">
+          <!-- Three cards side-by-side -->
+          <div class="px-5 pb-5 grid grid-cols-3 gap-3">
             <!-- Standard Chat card -->
             <button
               type="button"
@@ -106,6 +111,24 @@ const handleKeydown = (event: KeyboardEvent) => {
               <span class="text-sm font-semibold" style="color: var(--semantic-text);">Routine</span>
               <span class="text-xs" style="color: var(--semantic-text-dim);">
                 A scheduled task. The AI runs your prompt on a schedule; you see the runs in the chat.
+              </span>
+            </button>
+
+            <!-- Memory card (new in 2026-06-20). Creates a local
+                 .md file scoped to the parent workspace_item's
+                 directory; the task row is a thin index pointing
+                 at the file. See plans/2026-06-20-add-markdown-memory.md. -->
+            <button
+              type="button"
+              @click="handleMemory"
+              data-testid="picker-memory"
+              class="flex flex-col items-start gap-2 p-4 rounded-lg text-left transition-all duration-200 hover:scale-[1.02]"
+              style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border);"
+            >
+              <span class="text-2xl" aria-hidden="true">📝</span>
+              <span class="text-sm font-semibold" style="color: var(--semantic-text);">Memory</span>
+              <span class="text-xs" style="color: var(--semantic-text-dim);">
+                A local .md file. The AI sees its content on every chat in this project.
               </span>
             </button>
           </div>

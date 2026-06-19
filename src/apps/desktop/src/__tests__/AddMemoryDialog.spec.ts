@@ -287,7 +287,7 @@ describe('AddMemoryDialog — create event', () => {
     expect(submitBtn?.disabled).toBe(true)
   })
 
-  it('emits create(name, path) on successful create', async () => {
+  it('emits create(name, content, path) on successful create', async () => {
     mockCreate.mockResolvedValue({
       memory: {
         name: 'foo.md',
@@ -300,6 +300,8 @@ describe('AddMemoryDialog — create event', () => {
     wrapper = mountDialog(true)
     await flushPromises()
 
+    // Set name and content (content is the default '# New Memory\n\n...'
+    // — overwritten below so the assertion has a known value).
     const nameInput = findInDom<HTMLInputElement>(
       '[data-testid="add-memory-name"]',
     )!
@@ -307,11 +309,23 @@ describe('AddMemoryDialog — create event', () => {
     nameInput.dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
 
+    const textarea = findInDom<HTMLTextAreaElement>(
+      '[data-testid="add-memory-content"]',
+    )!
+    textarea.value = 'My memory body'
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
     clickInDom('[data-testid="add-memory-submit"]')
     await flushPromises()
 
+    // The dialog always emits 3 args: (name, content, path) so the
+    // parent can choose to use any subset. The standalone (default)
+    // flow doesn't need content (it just called the API itself),
+    // but the tuple shape is uniform across modes.
     expect(wrapper.emitted('create')?.[0]).toEqual([
       'foo.md',
+      'My memory body',
       `${TEST_CWD}/.nalar/memories/foo.md`,
     ])
     expect(wrapper.emitted('close')).toBeTruthy()
