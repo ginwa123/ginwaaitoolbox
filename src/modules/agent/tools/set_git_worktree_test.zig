@@ -258,3 +258,327 @@ test "ToolExecContext has cwd_override field (Plan B forward-compat)" {
         return error.CwdOverrideFieldMissing;
     }
 }
+
+// ─── Chunk 1 helpers: classifyPath / runGitWorktreeList ───────────────
+
+test "set_git_worktree.zig defines PathState tagged union" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "pub const PathState = union(enum) {") == null) {
+        std.debug.print("!! set_git_worktree.zig is missing 'pub const PathState = union(enum)' !!\n", .{});
+        return error.PathStateMissing;
+    }
+    if (std.mem.indexOf(u8, source, "not_found,") == null) {
+        std.debug.print("!! PathState is missing the 'not_found' variant !!\n", .{});
+        return error.PathStateNotFoundMissing;
+    }
+    if (std.mem.indexOf(u8, source, "plain_directory:") == null) {
+        std.debug.print("!! PathState is missing the 'plain_directory' variant !!\n", .{});
+        return error.PathStatePlainDirectoryMissing;
+    }
+    if (std.mem.indexOf(u8, source, "orphaned_worktree:") == null) {
+        std.debug.print("!! PathState is missing the 'orphaned_worktree' variant !!\n", .{});
+        return error.PathStateOrphanedWorktreeMissing;
+    }
+    if (std.mem.indexOf(u8, source, "registered_worktree: RegisteredWorktree") == null) {
+        std.debug.print("!! PathState is missing the 'registered_worktree' variant !!\n", .{});
+        return error.PathStateRegisteredWorktreeMissing;
+    }
+}
+
+test "set_git_worktree.zig defines classifyPath function" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "pub fn classifyPath(") == null) {
+        std.debug.print("!! set_git_worktree.zig is missing 'pub fn classifyPath' !!\n", .{});
+        return error.ClassifyPathMissing;
+    }
+    // Must take the 4 documented args: allocator, io, repo_root, target.
+    if (std.mem.indexOf(u8, source, "pub fn classifyPath(\n    allocator: std.mem.Allocator,\n    io: std.Io,\n    repo_root: []const u8,\n    target: []const u8,\n) !PathState {") == null) {
+        std.debug.print("!! classifyPath signature does not match the documented 4-arg form !!\n", .{});
+        return error.ClassifyPathSignatureMismatch;
+    }
+}
+
+test "set_git_worktree.zig defines runGitWorktreeList (private)" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "fn runGitWorktreeList(") == null) {
+        std.debug.print("!! set_git_worktree.zig is missing 'fn runGitWorktreeList' !!\n", .{});
+        return error.RunGitWorktreeListMissing;
+    }
+    // Must use --porcelain (machine-readable output) for parsing.
+    if (std.mem.indexOf(u8, source, "\"--porcelain\"") == null) {
+        std.debug.print("!! runGitWorktreeList does not pass --porcelain to git !!\n", .{});
+        return error.RunGitWorktreeListNotPorcelain;
+    }
+}
+
+// ─── Behavioral tests for isCompatibleBranchFamily (pure) ──────────────
+
+test "isCompatibleBranchFamily matches same-family branches" {
+    // refactor/x ↔ refactor/y  →  same family
+    try testing.expect(swt.isCompatibleBranchFamily("refactor/x", "refactor/y"));
+    // feature/x ↔ feature/y  →  same family
+    try testing.expect(swt.isCompatibleBranchFamily("feature/auth", "feature/routines"));
+    // fix/x ↔ fix/y  →  same family
+    try testing.expect(swt.isCompatibleBranchFamily("fix/typo", "fix/bug-42"));
+    // feat/x ↔ feat/y  →  same family
+    try testing.expect(swt.isCompatibleBranchFamily("feat/ui-redesign", "feat/api-rename"));
+    // main ↔ main  →  no family, but the question is "compatible?" — same
+    //   exact branch name is the strongest compatibility, but this helper
+    //   only tests family prefixes (used as a tie-breaker, not a final answer).
+    try testing.expect(!swt.isCompatibleBranchFamily("main", "main"));
+    // worktree/x ↔ refactor/x  →  different family
+    try testing.expect(!swt.isCompatibleBranchFamily("worktree/x", "refactor/x"));
+    // Empty strings are never compatible.
+    try testing.expect(!swt.isCompatibleBranchFamily("", "refactor/x"));
+    try testing.expect(!swt.isCompatibleBranchFamily("refactor/x", ""));
+    try testing.expect(!swt.isCompatibleBranchFamily("", ""));
+    // One branch in a known family, the other in a non-family prefix.
+    try testing.expect(!swt.isCompatibleBranchFamily("refactor/x", "main"));
+    try testing.expect(!swt.isCompatibleBranchFamily("main", "refactor/x"));
+}
+
+test "isCompatibleBranchFamily rejects cross-family combinations" {
+    const cases = [_][2][]const u8{
+        .{ "refactor/x", "feature/y" },
+        .{ "feature/x", "fix/y" },
+        .{ "fix/x", "feat/y" },
+        .{ "feat/x", "refactor/y" },
+    };
+    for (cases) |pair| {
+        try testing.expect(!swt.isCompatibleBranchFamily(pair[0], pair[1]));
+    }
+}
+
+// ─── Chunk 2: precheck wired into executeSetGitWorktreeToString ────────
+
+test "executeSetGitWorktreeToString calls classifyPath before runGitWorktreeAdd" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    // The precheck call must appear textually before the
+    // runGitWorktreeAdd call in the source (Zig source order is
+    // execution order; the precheck must run first).
+    const pre_idx = std.mem.indexOf(u8, source, "classifyPath(allocator, io, cwd, worktree_path)") orelse {
+        std.debug.print("!! set_git_worktree.zig does not call classifyPath on worktree_path !!\n", .{});
+        return error.ClassifyPathCallMissing;
+    };
+    const add_idx = std.mem.indexOf(u8, source, "runGitWorktreeAdd(allocator, io, cwd, worktree_path, branch)") orelse {
+        std.debug.print("!! set_git_worktree.zig is missing the runGitWorktreeAdd call !!\n", .{});
+        return error.RunGitWorktreeAddCallMissing;
+    };
+    if (pre_idx >= add_idx) {
+        std.debug.print("!! classifyPath must be called BEFORE runGitWorktreeAdd !!\n", .{});
+        return error.ClassifyPathNotBeforeRunGitWorktreeAdd;
+    }
+}
+
+test "executeSetGitWorktreeToString handles all 4 PathState variants" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    // Look for the explicit switch arm names that the precheck must
+    // contain. (Zig's switch on tagged unions does not require an
+    // else branch if all variants are listed, but the runtime error
+    // for an unhandled variant is unhelpful — we want all 4.)
+    const required_arms = [_][]const u8{
+        ".not_found =>",
+        ".registered_worktree =>",
+        ".orphaned_worktree =>",
+        ".plain_directory =>",
+    };
+    for (required_arms) |arm| {
+        if (std.mem.indexOf(u8, source, arm) == null) {
+            std.debug.print("!! set_git_worktree.zig is missing switch arm '{s}' !!\n", .{arm});
+            return error.SwitchArmMissing;
+        }
+    }
+}
+
+test "executeSetGitWorktreeToString auto-binds on compatible branch" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    // The auto-bind path should call successSetToXml directly from
+    // inside the .registered_worktree arm, without re-invoking git.
+    // The specific marker is "auto-bound session" — that's the log
+    // line + the early return is on the same block.
+    if (std.mem.indexOf(u8, source, "auto-bound session") == null) {
+        std.debug.print("!! set_git_worktree.zig is missing the 'auto-bound session' log line !!\n", .{});
+        return error.AutoBindLogMissing;
+    }
+    if (std.mem.indexOf(u8, source, "isCompatibleBranchFamily(rwt.branch, branch)") == null) {
+        std.debug.print("!! set_git_worktree.zig does not call isCompatibleBranchFamily in the precheck !!\n", .{});
+        return error.IsCompatibleBranchFamilyCallMissing;
+    }
+}
+
+test "set_git_worktree.zig defines freePathState helper" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "pub fn freePathState(") == null) {
+        std.debug.print("!! set_git_worktree.zig is missing 'pub fn freePathState' !!\n", .{});
+        return error.FreePathStateMissing;
+    }
+}
+
+test "structured error for incompatible branch mentions existing branch name" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    // The XML error must include the existing branch name and the
+    // requested branch name so the LLM can recognize the conflict.
+    if (std.mem.indexOf(u8, source, "is already a worktree on branch") == null) {
+        std.debug.print("!! set_git_worktree.zig's precheck error does not mention 'is already a worktree on branch' !!\n", .{});
+        return error.StructuredErrorMissingBranchName;
+    }
+    if (std.mem.indexOf(u8, source, "you requested") == null) {
+        std.debug.print("!! set_git_worktree.zig's precheck error does not mention the requested branch !!\n", .{});
+        return error.StructuredErrorMissingRequestedBranch;
+    }
+}
+
+// ─── Chunk 3: rewriteGitStderr ─────────────────────────────────────────
+
+test "set_git_worktree.zig defines rewriteGitStderr function" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "pub fn rewriteGitStderr(") == null) {
+        std.debug.print("!! set_git_worktree.zig is missing 'pub fn rewriteGitStderr' !!\n", .{});
+        return error.RewriteGitStderrMissing;
+    }
+    if (std.mem.indexOf(u8, source, "already exists") == null) {
+        std.debug.print("!! rewriteGitStderr does not handle 'already exists' pattern !!\n", .{});
+        return error.RewriteGitStderrMissingAlreadyExists;
+    }
+    if (std.mem.indexOf(u8, source, "is already checked out") == null) {
+        std.debug.print("!! rewriteGitStderr does not handle 'is already checked out' pattern !!\n", .{});
+        return error.RewriteGitStderrMissingAlreadyCheckedOut;
+    }
+    if (std.mem.indexOf(u8, source, "not a git repository") == null) {
+        std.debug.print("!! rewriteGitStderr does not handle 'not a git repository' pattern !!\n", .{});
+        return error.RewriteGitStderrMissingNotARepo;
+    }
+    if (std.mem.indexOf(u8, source, "invalid reference") == null) {
+        std.debug.print("!! rewriteGitStderr does not handle 'invalid reference' pattern !!\n", .{});
+        return error.RewriteGitStderrMissingInvalidReference;
+    }
+}
+
+test "rewriteGitStderr rewrites 'already exists' to recovery advice" {
+    const allocator = testing.allocator;
+    const out = try swt.rewriteGitStderr(
+        allocator,
+        "fatal: '/abs/.worktrees/foo' already exists",
+        "/abs/.worktrees/foo",
+        "worktree/foo",
+    );
+    defer allocator.free(out);
+    // The original "fatal: ... already exists" must be GONE (replaced),
+    // and the new message must mention recovery.
+    if (std.mem.indexOf(u8, out, "fatal:") != null) {
+        std.debug.print("!! rewriteGitStderr left the 'fatal:' prefix in the output !!\n", .{});
+        return error.RewriteKeptFatalPrefix;
+    }
+    if (std.mem.indexOf(u8, out, "git -C <repo> worktree list --porcelain") == null) {
+        std.debug.print("!! rewriteGitStderr's 'already exists' branch does not suggest worktree list !!\n", .{});
+        return error.RewriteMissingWorktreeListSuggestion;
+    }
+}
+
+test "rewriteGitStderr rewrites 'is already checked out' to branch advice" {
+    const allocator = testing.allocator;
+    const out = try swt.rewriteGitStderr(
+        allocator,
+        "fatal: 'worktree/foo' is already checked out at '/abs/.worktrees/foo'",
+        "/abs/.worktrees/new",
+        "worktree/foo",
+    );
+    defer allocator.free(out);
+    if (std.mem.indexOf(u8, out, "auto-derived branch name") == null) {
+        std.debug.print("!! rewriteGitStderr's branch-conflict branch does not mention auto-derived branch name !!\n", .{});
+        return error.RewriteMissingAutoDerivedSuggestion;
+    }
+}
+
+test "rewriteGitStderr rewrites 'not a git repository'" {
+    const allocator = testing.allocator;
+    const out = try swt.rewriteGitStderr(
+        allocator,
+        "fatal: not a git repository (or any parent up to mount point /)",
+        "/abs/.worktrees/foo",
+        "worktree/foo",
+    );
+    defer allocator.free(out);
+    if (std.mem.indexOf(u8, out, "set_git_worktree requires being called from within a git repo") == null) {
+        std.debug.print("!! rewriteGitStderr's not-a-repo branch does not mention the git-repo requirement !!\n", .{});
+        return error.RewriteMissingNotARepoExplanation;
+    }
+}
+
+test "rewriteGitStderr rewrites 'invalid reference' to branch-name rules" {
+    const allocator = testing.allocator;
+    const out = try swt.rewriteGitStderr(
+        allocator,
+        "fatal: invalid reference: bad..name",
+        "/abs/.worktrees/foo",
+        "bad..name",
+    );
+    defer allocator.free(out);
+    if (std.mem.indexOf(u8, out, "Valid branch names must not contain") == null) {
+        std.debug.print("!! rewriteGitStderr's invalid-reference branch does not explain branch-name rules !!\n", .{});
+        return error.RewriteMissingBranchRules;
+    }
+}
+
+test "rewriteGitStderr passes through unknown stderr verbatim" {
+    const allocator = testing.allocator;
+    const unknown = "fatal: some weird edge-case error we did not anticipate\n";
+    const out = try swt.rewriteGitStderr(allocator, unknown, "/x", "worktree/x");
+    defer allocator.free(out);
+    try testing.expectEqualStrings(unknown, out);
+}
+
+test "rewriteGitStderr returns empty for empty input" {
+    const allocator = testing.allocator;
+    const out = try swt.rewriteGitStderr(allocator, "", "/x", "worktree/x");
+    defer allocator.free(out);
+    try testing.expectEqualStrings("", out);
+}
+
+// ─── Chunk 4: tool description recovery guidance ───────────────────────
+
+test "set_git_worktree description mentions recovery on error" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "On error, recover by:") == null) {
+        std.debug.print("!! set_git_worktree.zig description is missing the 'On error, recover by:' guidance !!\n", .{});
+        return error.RecoveryGuidanceMissing;
+    }
+    if (std.mem.indexOf(u8, source, "pass `branch=<existing-branch>` to auto-bind to it") == null) {
+        std.debug.print("!! set_git_worktree.zig description does not mention auto-bind recovery !!\n", .{});
+        return error.AutoBindRecoveryMissing;
+    }
+}
+
+test "set_git_worktree description warns against rm -rf" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "NEVER `rm -rf` the conflicting path") == null) {
+        std.debug.print("!! set_git_worktree.zig description does not warn against 'rm -rf' !!\n", .{});
+        return error.RmRfWarningMissing;
+    }
+    if (std.mem.indexOf(u8, source, "uncommitted work") == null) {
+        std.debug.print("!! set_git_worktree.zig description does not mention uncommitted work risk !!\n", .{});
+        return error.UncommittedWorkWarningMissing;
+    }
+}
