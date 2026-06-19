@@ -1,3 +1,42 @@
+//! HTTP handler + use-case for `DELETE /api/config/nalar/profiles/:name`.
+//!
+//! Removes a single profile from `config.json` and live-reloads the
+//! in-memory `LlmConfig` so running workflows see the change.
+//! Returns 200 on success, 404 if the named profile does not exist.
+//!
+//! ## File structure
+//!
+//! This file holds BOTH the use-case (pure function over an in-memory
+//! struct) and the HTTP handler (thin orchestrator that reads the
+//! file, calls the use-case, writes the file back, and live-reloads
+//! the global LlmConfig):
+//!
+//! - `NalarConfigJsonForDelete` — the in-memory struct the use-case
+//!   mutates (mirrors the field set in `nalar_config_put.zig`'s
+//!   `ConfigJson` so JSON round-trips preserve everything).
+//! - `removeProfileFromConfig` — the **use-case** (pure function,
+//!   unit-tested without the file system in
+//!   `nalar_config_profile_delete_test.zig`).
+//! - `nalarConfigProfileDeleteHandler` — the **HTTP handler**
+//!   (orchestrator).
+//! - Sub-helpers — small focused functions used by the handler
+//!   (path resolution, file I/O, parse, write, live-reload, response
+//!   builders).
+//!
+//! ## Memory model
+//!
+//! Per the project convention (see `custom-http-server-per-request-arena`
+//! memory), this handler does NOT add `defer allocator.free(...)` for
+//! request-scoped allocations. The per-request `ArenaAllocator`
+//! reaps them when the request finishes. The two exceptions:
+//!
+//! - `*NalarConfigJsonForDelete` (the parsed JSON struct) owns its
+//!   own strings and ObjectMap — those need explicit `deinit`. The
+//!   use-case's `deinit` walks them. Failure paths call
+//!   `config_json.deinit(allocator)` before returning.
+//! - The `config_str` returned by `std.json.Stringify.valueAlloc` is
+//!   written to the file and then goes out of scope (arena reaps).
+
 const std = @import("std");
 const json = std.json;
 const http_response = @import("http_response.zig");
@@ -5,7 +44,11 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const config = nalarcore.config;
 
-/// Struct shape that the helper mutates in-place. The full LlmConfig
+// =====================================================================
+// Domain types
+// =====================================================================
+
+/// Struct shape that the use-case mutates in-place. The full LlmConfig
 /// type lives in `Config.zig` and is much heavier (it deserializes
 /// every known field). The handler only needs the *fields touched* by
 /// the delete path: the top-level scalar fields, `profiles_models` (a
@@ -32,7 +75,7 @@ pub const NalarConfigJsonForDelete = struct {
     /// path that has to abandon a partial read.
     ///
     /// Walks the OBJECT MAP ITERATOR (not the just-removed entries) so
-    /// the helper's `removeProfileFromConfig` must free any entry it
+    /// the use-case's `removeProfileFromConfig` must free any entry it
     /// removes before this runs (otherwise the strings inside the
     /// removed nested object would leak).
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -73,6 +116,50 @@ pub const NalarConfigJsonForDelete = struct {
     }
 };
 
+/// Response shape returned by `DELETE /api/config/nalar/profiles/:name`.
+///
+/// `active_profile_was_cleared` is true iff the deleted profile was
+/// the active one (the handler also cleared `active_profile` on disk).
+/// `error_message` is set when the request succeeded (HTTP 200) but a
+/// downstream concern (live reload of the in-memory LlmConfig) failed
+/// — the deletion still persisted to disk.
+pub const ProfileDeleteResponse = struct {
+    success: bool,
+    profile_name: []const u8,
+    active_profile_was_cleared: bool = false,
+    error_message: ?[]const u8 = null,
+};
+
+/// Resolved on-disk config paths. Both slices live for the lifetime
+/// of the request (per-request arena) — no explicit `free` needed.
+/// `path` is `[]const u8` because that's what `std.fs.path.join`
+/// returns in Zig 0.16; `dir` is `[]u8` because that's what
+/// `config.getDefaultConfigDir` returns.
+const ConfigPaths = struct {
+    dir: []u8,
+    path: []const u8,
+};
+
+/// Outcome of the live-reload phase. Preserves the pre-refactor
+/// distinction between:
+///   - `.ok`       — reload succeeded; respond 200 with no warning.
+///   - `.warning`  — disk write succeeded but the running LlmConfig
+///                   could not be updated; respond 200 with the warning
+///                   message so the caller knows the running workflow
+///                   is stale until restart.
+///   - `.fatal`    — disk write succeeded but the helper OOM'd; respond
+///                   500 because the running workflow is in a bad state
+///                   (matches the pre-refactor behavior).
+const LiveReloadResult = union(enum) {
+    ok,
+    warning: []const u8,
+    fatal: []const u8,
+};
+
+// =====================================================================
+// Use-case (pure)
+// =====================================================================
+
 /// Free the contents of an ObjectMap: walks its entries, freeing
 /// the string values, then frees the ObjectMap's backing storage.
 /// Does NOT free the ObjectMap's own keys (consistent with the
@@ -94,29 +181,15 @@ fn freeObjectMapContents(allocator: std.mem.Allocator, obj: *json.ObjectMap) voi
     obj.deinit(allocator);
 }
 
-/// Response shape returned by `DELETE /api/config/nalar/profiles/:name`.
-///
-/// `active_profile_was_cleared` is true iff the deleted profile was
-/// the active one (the handler also cleared `active_profile` on disk).
-/// `error_message` is set when the request succeeded (HTTP 200) but a
-/// downstream concern (live reload of the in-memory LlmConfig) failed
-/// — the deletion still persisted to disk.
-pub const ProfileDeleteResponse = struct {
-    success: bool,
-    profile_name: []const u8,
-    active_profile_was_cleared: bool = false,
-    error_message: ?[]const u8 = null,
-};
-
 /// Recursively free all owned data inside a `json.Value` reachable
 /// through a mutable pointer. Mirrors the structure of
 /// `deepCopyJsonValue` in `nalar_config_put.zig` but in reverse.
 ///
-/// NOTE: currently UNUSED (the test's `deinit` and the helper both
+/// NOTE: currently UNUSED (the test's `deinit` and the use-case both
 /// use the shallow `freeObjectMapContents`). Kept here for future
 /// production paths that want a full deep-free (e.g. when JSON
 /// parsing dupes every key, vs. the test's string-literal nested
-/// keys). To use it, swap the helper's call from
+/// keys). To use it, swap the use-case's call from
 /// `freeObjectMapContents` to `freeJsonValueDeep`.
 ///
 /// `Array.deinit` is the MANAGED form (0-arg) in this Zig version —
@@ -151,11 +224,11 @@ fn freeJsonValueDeep(allocator: std.mem.Allocator, value: *json.Value) void {
     }
 }
 
-/// Pure helper: remove the named profile from `cfg.profiles_models`
+/// Pure use-case: remove the named profile from `cfg.profiles_models`
 /// and clear `cfg.active_profile` if it matched. Returns true if the
 /// profile existed and was removed, false otherwise.
 ///
-/// Split out from the handler so it can be unit-tested without
+/// Split out from the handler logic so it can be unit-tested without
 /// touching the file system — the same pattern used in
 /// `nalar_config_put_test.zig` (see its file header for rationale).
 pub fn removeProfileFromConfig(
@@ -214,10 +287,25 @@ pub fn removeProfileFromConfig(
     return true;
 }
 
-/// DELETE /api/config/nalar/profiles/:name
+// =====================================================================
+// Handler
+// =====================================================================
+
+/// `DELETE /api/config/nalar/profiles/:name`
 /// Removes a single profile from `config.json` and live-reloads the
 /// in-memory `LlmConfig` so running workflows see the change.
 /// Returns 200 on success, 404 if the named profile does not exist.
+///
+/// This is a thin orchestrator over the sub-helpers below:
+///   1. validate `:name`            (inline)
+///   2. `resolveConfigPaths`         — dir + file
+///   3. `ensureConfigDir`            — create the dir if missing
+///   4. `readConfigFile`             — read disk → `?[]u8`
+///   5. `parseConfigJson`            — JSON → `NalarConfigJsonForDelete`
+///   6. `isActiveProfile`            + `removeProfileFromConfig` (use-case)
+///   7. `writeConfigBack`            — serialize + write to disk
+///   8. `liveReloadLlmConfig`        — best-effort reload
+///   9. `makeSuccessResponse` / `makeErrorResponse` — response builder
 pub fn nalarConfigProfileDeleteHandler(
     ctx: gserverz.HttpContext,
     req: gserverz.HttpRequest,
@@ -226,227 +314,261 @@ pub fn nalarConfigProfileDeleteHandler(
     const allocator = ctx.allocator;
     const io = ctx.io;
 
-    // Route is registered as `/api/config/nalar/profiles/:name`, so the
-    // router should always populate `name` via `matchPathWithParams`.
-    // We still handle the missing-param case defensively.
-    const name = req.params.get("name") orelse {
-        const body = try std.json.Stringify.valueAlloc(allocator, ProfileDeleteResponse{
-            .success = false,
-            .profile_name = "",
-            .error_message = "Missing :name path parameter",
-        }, .{});
-        return res.jsonResponse(.{ .status_code = 400, .data = body });
-    };
+    // 1. Validate `:name` path parameter.
+    const name = req.params.get("name") orelse
+        return makeErrorResponse(allocator, res, 400, "", "Missing :name path parameter");
+    if (name.len == 0)
+        return makeErrorResponse(allocator, res, 400, "", "Profile name cannot be empty");
 
-    if (name.len == 0) {
-        const body = try std.json.Stringify.valueAlloc(allocator, ProfileDeleteResponse{
-            .success = false,
-            .profile_name = "",
-            .error_message = "Profile name cannot be empty",
-        }, .{});
-        return res.jsonResponse(.{ .status_code = 400, .data = body });
+    // 2. Resolve on-disk config paths (dir + file). The PUT handler
+    //    (nalar_config_put.zig) uses the same pattern.
+    const paths = resolveConfigPaths(allocator, name) catch
+        return makeErrorResponse(allocator, res, 500, name, "Failed to resolve config paths");
+
+    // 3. Ensure the config directory exists (idempotent).
+    ensureConfigDir(io, paths.dir) catch
+        return makeErrorResponse(allocator, res, 500, name, "Failed to create config directory");
+
+    // 4. Read the existing config file. `null` = file does not exist.
+    const content = readConfigFile(allocator, io, paths.path) catch
+        return makeErrorResponse(allocator, res, 500, name, "Failed to read config")
+    orelse
+        return makeErrorResponse(allocator, res, 404, name, "No config file exists");
+
+    // 5. Parse the existing config. On failure, `content` is freed by
+    //    the arena (per-request reaps request-scoped allocations).
+    var config_json = parseConfigJson(allocator, content) catch
+        return makeErrorResponse(allocator, res, 500, name, "Invalid JSON in config");
+
+    // 6. Apply the use-case: remove the named profile. Capture
+    //    `was_active` BEFORE the use-case clears it (the use-case
+    //    sets `cfg.active_profile = null` on a match).
+    const was_active = isActiveProfile(&config_json, name);
+    const removed = removeProfileFromConfig(allocator, &config_json, name) catch {
+        config_json.deinit(allocator);
+        return makeErrorResponse(allocator, res, 500, name, "Failed to remove profile");
+    };
+    if (!removed) {
+        config_json.deinit(allocator);
+        return makeErrorResponse(allocator, res, 404, name, "Profile not found");
     }
 
-    const di = try nalarcore.getSingleton();
-    const environment_ptr = di.environment orelse return res.jsonResponse(.{
-        .status_code = 500,
-        .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Environment not available" }),
-    });
-    // Cast const away since getDefaultConfigDir doesn't actually modify environment
+    // 7. Write the updated config back to disk. On failure, free the
+    //    parsed struct so its owned strings don't leak.
+    writeConfigBack(allocator, io, paths.path, &config_json) catch {
+        config_json.deinit(allocator);
+        return makeErrorResponse(allocator, res, 500, name, "Failed to write config");
+    };
+
+    // 8. Live-reload the in-memory LlmConfig. On failure the disk is
+    //    already authoritative, so we still respond 200 with a warning
+    //    UNLESS the failure was a fatal allocation error (matches the
+    //    pre-refactor behavior).
+    const reload_result = liveReloadLlmConfig(io, name);
+
+    config_json.deinit(allocator);
+
+    return switch (reload_result) {
+        .ok => makeSuccessResponse(allocator, res, name, was_active, null),
+        .warning => |msg| makeSuccessResponse(allocator, res, name, was_active, msg),
+        .fatal => |msg| makeErrorResponse(allocator, res, 500, name, msg),
+    };
+}
+
+// =====================================================================
+// Sub-helpers (handler plumbing)
+// =====================================================================
+
+/// Get the singleton, then resolve the config dir + file path.
+/// Logs the error and returns the same error variant on failure so
+/// the handler can map it to HTTP 500.
+fn resolveConfigPaths(allocator: std.mem.Allocator, name: []const u8) !ConfigPaths {
+    const di = nalarcore.getSingleton() catch |err| {
+        std.log.err("DELETE /api/config/nalar/profiles/{s}: singleton unavailable: {s}", .{ name, @errorName(err) });
+        return error.SingletonUnavailable;
+    };
+    const environment_ptr = di.environment orelse {
+        std.log.err("DELETE /api/config/nalar/profiles/{s}: environment unavailable", .{name});
+        return error.EnvironmentUnavailable;
+    };
+    // `getDefaultConfigDir` does not actually modify the env, but its
+    // signature takes a mutable pointer. The same pattern is used in
+    // `nalar_config_put.zig:185-225`.
     const environment: *std.process.Environ.Map = @ptrCast(@constCast(environment_ptr));
 
-    // Build both the directory and the file path. The PUT handler
-    // (nalar_config_put.zig:22-45) uses the same pattern: get the
-    // directory for `createDirPath`, then join for the file. NOTE:
-    // the original plan used `getDefaultConfigPath` (which returns
-    // the FILE path) and then called `createDirPath` on it — that
-    // would have created a directory called "config.json"! The PUT
-    // handler pattern is the correct one.
     const config_dir = config.getDefaultConfigDir(allocator, environment) catch |err| {
         std.log.err("DELETE /api/config/nalar/profiles/{s}: failed to get config dir: {s}", .{ name, @errorName(err) });
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to get config directory" }),
-        });
+        return error.ConfigDirFailed;
     };
-    defer allocator.free(config_dir);
+    errdefer allocator.free(config_dir);
 
     const config_path = std.fs.path.join(allocator, &[_][]const u8{ config_dir, "config.json" }) catch |err| {
         std.log.err("DELETE /api/config/nalar/profiles/{s}: failed to build config path: {s}", .{ name, @errorName(err) });
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to build config path" }),
-        });
+        return error.ConfigPathFailed;
     };
-    defer allocator.free(config_path);
 
-    // Create config directory if it doesn't exist (idempotent — the
-    // success-path `openFileAbsolute` is a no-op when the dir exists).
+    return ConfigPaths{ .dir = config_dir, .path = config_path };
+}
+
+/// Create the config directory if it does not exist (idempotent).
+/// The original handler inlined this as a `catch |err|` block.
+fn ensureConfigDir(io: std.Io, config_dir: []const u8) !void {
     std.Io.Dir.cwd().createDirPath(io, config_dir) catch |err| {
-        std.log.err("DELETE /api/config/nalar/profiles/{s}: failed to create config dir: {s}", .{ name, @errorName(err) });
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create config directory" }),
-        });
+        std.log.err("DELETE /api/config/nalar/profiles: failed to create config dir: {s}", .{@errorName(err)});
+        return err;
     };
+}
 
-    // Read existing config (if any). If the file is missing we have
-    // nothing to delete from, so 404.
-    const file = std.Io.Dir.openFileAbsolute(io, config_path, .{}) catch null;
-    var existing_content: ?[]u8 = null;
-    if (file) |f| {
-        defer f.close(io);
-        var read_buffer: [4096]u8 = undefined;
-        var reader = f.reader(io, &read_buffer);
-        existing_content = reader.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch |err| {
-            std.log.err("DELETE /api/config/nalar/profiles/{s}: failed to read config: {s}", .{ name, @errorName(err) });
-            return res.jsonResponse(.{
-                .status_code = 500,
-                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to read config" }),
-            });
-        };
-    }
-
-    if (existing_content == null) {
-        const body = try std.json.Stringify.valueAlloc(allocator, ProfileDeleteResponse{
-            .success = false,
-            .profile_name = name,
-            .error_message = "No config file exists",
-        }, .{});
-        return res.jsonResponse(.{ .status_code = 404, .data = body });
-    }
-
-    // Parse the existing config. The parsed struct's strings are
-    // independent allocations; we own them and must free via
-    // `config_json.deinit(allocator)` on every exit path.
-    var config_json: NalarConfigJsonForDelete = NalarConfigJsonForDelete{};
-    {
-        const parsed = std.json.parseFromSlice(NalarConfigJsonForDelete, allocator, existing_content.?, .{
-            .ignore_unknown_fields = true,
-        }) catch |err| {
-            std.log.err("DELETE /api/config/nalar/profiles/{s}: failed to parse config: {s}", .{ name, @errorName(err) });
-            return res.jsonResponse(.{
-                .status_code = 500,
-                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON in config" }),
-            });
-        };
-        config_json = parsed.value;
-    }
-    // Capture whether this profile was the active one BEFORE the
-    // helper runs (so we can report it to the caller — the helper
-    // sets `cfg.active_profile = null` when it matches).
-    const was_active = if (config_json.active_profile) |ap| std.mem.eql(u8, ap, name) else false;
-    const removed = removeProfileFromConfig(allocator, &config_json, name) catch |err| {
-        std.log.err("DELETE /api/config/nalar/profiles/{s}: helper failed: {s}", .{ name, @errorName(err) });
-        config_json.deinit(allocator);
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to remove profile" }),
-        });
+/// Read the entire config file into a heap-allocated buffer.
+/// Returns `null` if the file does not exist (HTTP 404 path).
+/// Returns other errors on I/O failure (HTTP 500 path).
+fn readConfigFile(allocator: std.mem.Allocator, io: std.Io, config_path: []const u8) !?[]u8 {
+    const file = std.Io.Dir.openFileAbsolute(io, config_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => {
+            std.log.err("DELETE /api/config/nalar/profiles: failed to open config: {s}", .{@errorName(err)});
+            return err;
+        },
     };
+    defer file.close(io);
 
-    if (!removed) {
-        config_json.deinit(allocator);
-        const body = try std.json.Stringify.valueAlloc(allocator, ProfileDeleteResponse{
-            .success = false,
-            .profile_name = name,
-            .error_message = "Profile not found",
-        }, .{});
-        return res.jsonResponse(.{ .status_code = 404, .data = body });
-    }
+    var read_buffer: [4096]u8 = undefined;
+    var reader = file.reader(io, &read_buffer);
+    return reader.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch |err| {
+        std.log.err("DELETE /api/config/nalar/profiles: failed to read config: {s}", .{@errorName(err)});
+        return err;
+    };
+}
 
-    // Write the updated config back.
-    const config_str = std.json.Stringify.valueAlloc(allocator, config_json, .{
+/// Parse the on-disk config JSON into a `NalarConfigJsonForDelete`.
+/// The parsed struct's strings are independent allocations; ownership
+/// transfers to the caller (use `deinit` to free them).
+fn parseConfigJson(allocator: std.mem.Allocator, content: []const u8) !NalarConfigJsonForDelete {
+    const parsed = std.json.parseFromSlice(NalarConfigJsonForDelete, allocator, content, .{
+        .ignore_unknown_fields = true,
+    }) catch |err| {
+        std.log.err("DELETE /api/config/nalar/profiles: failed to parse config: {s}", .{@errorName(err)});
+        return err;
+    };
+    return parsed.value;
+}
+
+/// Was the named profile the currently-active one? The use-case
+/// clears `active_profile` if it matched, so we capture this BEFORE
+/// calling the use-case.
+fn isActiveProfile(cfg: *const NalarConfigJsonForDelete, name: []const u8) bool {
+    return if (cfg.active_profile) |ap| std.mem.eql(u8, ap, name) else false;
+}
+
+/// Serialize the updated config and write it back to disk (truncate).
+/// On success the file on disk is the new authoritative state.
+fn writeConfigBack(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    config_path: []const u8,
+    config_json: *NalarConfigJsonForDelete,
+) !void {
+    const config_str = std.json.Stringify.valueAlloc(allocator, config_json.*, .{
         .whitespace = .indent_tab,
     }) catch |err| {
-        std.log.err("DELETE /api/config/nalar/profiles/{s}: failed to serialize config: {s}", .{ name, @errorName(err) });
-        config_json.deinit(allocator);
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to serialize config" }),
-        });
+        std.log.err("DELETE /api/config/nalar/profiles: failed to serialize config: {s}", .{@errorName(err)});
+        return err;
     };
 
     const write_file = std.Io.Dir.createFileAbsolute(io, config_path, .{
         .truncate = true,
     }) catch |err| {
-        std.log.err("DELETE /api/config/nalar/profiles/{s}: failed to open config for write: {s}", .{ name, @errorName(err) });
-        config_json.deinit(allocator);
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to open config for write" }),
-        });
+        std.log.err("DELETE /api/config/nalar/profiles: failed to open config for write: {s}", .{@errorName(err)});
+        return err;
     };
-    {
-        defer write_file.close(io);
-        var write_buffer: [4096]u8 = undefined;
-        var writer = write_file.writer(io, &write_buffer);
-        writer.interface.writeAll(config_str) catch |err| {
-            std.log.err("DELETE /api/config/nalar/profiles/{s}: failed to write config: {s}", .{ name, @errorName(err) });
-            config_json.deinit(allocator);
-            return res.jsonResponse(.{
-                .status_code = 500,
-                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to write config" }),
-            });
-        };
-        writer.flush() catch |err| {
-            std.log.err("DELETE /api/config/nalar/profiles/{s}: failed to flush config: {s}", .{ name, @errorName(err) });
-            config_json.deinit(allocator);
-            return res.jsonResponse(.{
-                .status_code = 500,
-                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to write config" }),
-            });
-        };
-    }
+    defer write_file.close(io);
 
-    // === Live-reload LlmConfigHolder (same pattern as nalar_config_put.zig:185-225) ===
-    // Reload from disk so the running workflow picks up the new
-    // profiles/active_profile. On any failure we still respond 200
-    // (disk is already authoritative) but log the error and skip
-    // the swap so the running config is stable.
-    {
-        const env_for_reload: *std.process.Environ.Map = @ptrCast(@constCast(di.environment orelse environment));
-        const global_allocator = di.allocator;
-        var new_cfg = config.LlmConfig.init(global_allocator, io, null, env_for_reload) catch |err| {
-            std.log.err("DELETE /api/config/nalar/profiles/{s}: live reload parse failed: {s}", .{ name, @errorName(err) });
-            config_json.deinit(allocator);
-            const body = try std.json.Stringify.valueAlloc(allocator, ProfileDeleteResponse{
-                .success = true,
-                .profile_name = name,
-                .active_profile_was_cleared = was_active,
-                .error_message = "Profile deleted from disk but live reload parse failed",
-            }, .{});
-            return res.jsonResponse(.{ .status_code = 200, .data = body });
-        };
+    var write_buffer: [4096]u8 = undefined;
+    var writer = write_file.writer(io, &write_buffer);
+    writer.interface.writeAll(config_str) catch |err| {
+        std.log.err("DELETE /api/config/nalar/profiles: failed to write config: {s}", .{@errorName(err)});
+        return err;
+    };
+    writer.flush() catch |err| {
+        std.log.err("DELETE /api/config/nalar/profiles: failed to flush config: {s}", .{@errorName(err)});
+        return err;
+    };
+}
 
-        const new_ptr = global_allocator.create(config.LlmConfig) catch |err| {
-            std.log.err("DELETE /api/config/nalar/profiles/{s}: alloc failed: {s}", .{ name, @errorName(err) });
-            var mut: *config.LlmConfig = &new_cfg;
-            mut.deinit();
-            const body = try std.json.Stringify.valueAlloc(allocator, ProfileDeleteResponse{
-                .success = false,
-                .profile_name = name,
-                .error_message = "Out of memory",
-            }, .{});
-            return res.jsonResponse(.{ .status_code = 500, .data = body });
-        };
-        new_ptr.* = new_cfg; // atomically swap
-        //
-        // Atomically swap. Previous-pointer free happens inside setLlmConfig.
-        nalarcore.setLlmConfig(di, new_ptr);
-        std.log.info("DELETE /api/config/nalar/profiles/{s}: live-reloaded llm_config (active_was_cleared={})", .{ name, was_active });
-    }
+/// Live-reload the global `LlmConfig` from disk. Best-effort: on
+/// failure the disk is already authoritative, so we still respond
+/// 200 with a warning UNLESS the failure was a fatal allocation
+/// error (matches the pre-refactor behavior).
+///
+/// Same pattern as `nalar_config_put.zig:185-225`.
+fn liveReloadLlmConfig(io: std.Io, name: []const u8) LiveReloadResult {
+    const di = nalarcore.getSingleton() catch |err| {
+        std.log.err("DELETE /api/config/nalar/profiles/{s}: live reload singleton failed: {s}", .{ name, @errorName(err) });
+        return .{ .warning = "Profile deleted from disk but live reload failed (singleton unavailable)" };
+    };
 
-    // Free the parsed struct now that it's been serialized + written +
-    // live-reloaded. `std.json.Stringify.valueAlloc` only READS the
-    // struct's string slices (it doesn't take ownership), so the
-    // backing allocations are still ours.
-    config_json.deinit(allocator);
+    const env_for_reload: *std.process.Environ.Map = @ptrCast(@constCast(di.environment orelse {
+        std.log.err("DELETE /api/config/nalar/profiles/{s}: live reload environment unavailable", .{name});
+        return .{ .warning = "Profile deleted from disk but live reload failed (environment unavailable)" };
+    }));
 
+    const global_allocator = di.allocator;
+    var new_cfg = config.LlmConfig.init(global_allocator, io, null, env_for_reload) catch |err| {
+        std.log.err("DELETE /api/config/nalar/profiles/{s}: live reload parse failed: {s}", .{ name, @errorName(err) });
+        return .{ .warning = "Profile deleted from disk but live reload parse failed" };
+    };
+
+    const new_ptr = global_allocator.create(config.LlmConfig) catch |err| {
+        std.log.err("DELETE /api/config/nalar/profiles/{s}: live reload alloc failed: {s}", .{ name, @errorName(err) });
+        // Free the local copy we failed to heap-allocate.
+        var mut: *config.LlmConfig = &new_cfg;
+        mut.deinit();
+        return .{ .fatal = "Out of memory" };
+    };
+    new_ptr.* = new_cfg;
+
+    // Atomically swap. Previous-pointer free happens inside setLlmConfig.
+    nalarcore.setLlmConfig(di, new_ptr);
+    std.log.info("DELETE /api/config/nalar/profiles/{s}: live-reloaded llm_config", .{name});
+    return .ok;
+}
+
+// =====================================================================
+// Response builders (DRY)
+// =====================================================================
+
+/// Build a JSON error response with a `ProfileDeleteResponse` body.
+/// Used for every 4xx/5xx exit path in the handler.
+fn makeErrorResponse(
+    allocator: std.mem.Allocator,
+    res: gserverz.HttpResponse,
+    status_code: u16,
+    name: []const u8,
+    error_message: []const u8,
+) !gserverz.HttpResponse {
+    const body = try std.json.Stringify.valueAlloc(allocator, ProfileDeleteResponse{
+        .success = false,
+        .profile_name = name,
+        .error_message = error_message,
+    }, .{});
+    return res.jsonResponse(.{ .status_code = status_code, .data = body });
+}
+
+/// Build the 200 OK success response. `warning` is `null` on a clean
+/// success or a short string on a "deleted from disk but live reload
+/// had a non-fatal issue" outcome.
+fn makeSuccessResponse(
+    allocator: std.mem.Allocator,
+    res: gserverz.HttpResponse,
+    name: []const u8,
+    was_active: bool,
+    warning: ?[]const u8,
+) !gserverz.HttpResponse {
     const body = try std.json.Stringify.valueAlloc(allocator, ProfileDeleteResponse{
         .success = true,
         .profile_name = name,
         .active_profile_was_cleared = was_active,
+        .error_message = warning,
     }, .{});
     return res.jsonResponse(.{ .status_code = 200, .data = body });
 }

@@ -1,9 +1,9 @@
-//! Tests for the pure `removeProfileFromConfig` helper used by the
-//! `DELETE /api/config/nalar/profiles/:name` handler. The helper is
-//! split out from the handler so the file-system roundtrip does not
-//! need to be exercised by the unit test — the existing
-//! `nalar_config_put_test.zig` already documents the convention of
-//! NOT exercising the full HTTP handler.
+//! Tests for the pure `removeProfileFromConfig` use-case used by the
+//! `DELETE /api/config/nalar/profiles/:name` handler. The use-case is
+//! in the same file as the handler (a thin orchestrator over it) so
+//! the file-system roundtrip does not need to be exercised by the
+//! unit test — the existing `nalar_config_put_test.zig` already
+//! documents the convention of NOT exercising the full HTTP handler.
 
 const std = @import("std");
 const testing = std.testing;

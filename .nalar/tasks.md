@@ -120,3 +120,32 @@ Status: All 4 chunks shipped. v1.0 complete; runtime CWD-override deliberately d
 - [x] NALAR.md updated with the `cwd_override` dead-letter warning
 - [x] .nalar/tasks.md updated (this block)
 - [ ] Manual smoke test (cannot run — no headless browser in this env; HTTP-level path proven by the static wiring tests)
+
+## [done] 20260115_104500 — nalar_config_profile_delete sub-helper extraction
+
+Branch: `refactor/split-nalar-config-profile-delete` (worktree at `.worktrees/split-nalar-config-profile-delete`)
+Baseline: 628/631 tests pass (3 skipped)
+Plan: keep ONE file; extract named sub-helpers inside the handler.
+
+### What was done
+- [x] Extracted 9 sub-helpers (resolveConfigPaths, ensureConfigDir, readConfigFile, parseConfigJson, isActiveProfile, writeConfigBack, liveReloadLlmConfig, makeErrorResponse, makeSuccessResponse)
+- [x] Replaced 7 inline JSON-stringify response blocks with 2 reusable builders (DRY)
+- [x] Preserved all existing behavior (LiveReloadResult tagged union maps to same HTTP responses as before)
+- [x] zig build test 628/631 passes — no regression
+
+### Resulting file structure (single file, 574 lines)
+- **Public surface** (unchanged): `NalarConfigJsonForDelete` struct, `ProfileDeleteResponse` struct, `removeProfileFromConfig` use-case, `nalarConfigProfileDeleteHandler` handler
+- **Private types**: `ConfigPaths`, `LiveReloadResult`
+- **Private sub-helpers** (9): listed above
+- **Private use-case helpers** (2): `freeObjectMapContents`, `freeJsonValueDeep`
+
+### Handler shape
+The handler is now ~80 lines: 9 numbered phases, each a single named call to a sub-helper or a simple inline check (validate :name). Error responses go through the DRY builder.
+
+### Commit
+- `a21e85e` on `refactor/split-nalar-config-profile-delete`
+
+### Final verification
+- [x] zig build test 628/631 pass (no regression from baseline)
+- [x] All 5 use-case tests (removeProfileFromConfig) still pass — confirms no behavior change to the pure function
+- [x] Pre-existing `install:linux:system` failure unchanged (separate, pre-existing issue per `nalar-build-cross-compile-blocked.md`)

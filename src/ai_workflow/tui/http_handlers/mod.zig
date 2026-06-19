@@ -107,6 +107,10 @@ pub const sessionToClientIdsHandler = @import("session_to_client_ids.zig").sessi
 pub const nalarConfigGetHandler = @import("nalar_config_get.zig").nalarConfigGetHandler;
 pub const nalarConfigPutHandler = @import("nalar_config_put.zig").nalarConfigPutHandler;
 pub const nalarConfigProfileDeleteHandler = @import("nalar_config_profile_delete.zig").nalarConfigProfileDeleteHandler;
+// Use-case + domain types live in the same file as the handler. The
+// handler is a thin orchestrator over the use-case; both are scoped
+// under `nalarcore.http_handlers.*` (the convention for handler
+// internals — see `nalar_config_profile_delete_test.zig`'s header).
 pub const removeProfileFromConfig = @import("nalar_config_profile_delete.zig").removeProfileFromConfig;
 pub const NalarConfigJsonForDelete = @import("nalar_config_profile_delete.zig").NalarConfigJsonForDelete;
 
