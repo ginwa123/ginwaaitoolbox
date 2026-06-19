@@ -180,6 +180,7 @@ extern "c" fn webkit_web_view_get_settings(web_view: *GtkWidget) *WebKitSettings
 
 extern "c" fn webkit_settings_set_user_agent(settings: *WebKitSettings, user_agent: [*:0]const u8) void;
 extern "c" fn webkit_settings_set_enable_developer_extras(settings: *WebKitSettings, enabled: gboolean) void;
+extern "c" fn webkit_settings_set_javascript_can_access_clipboard(settings: *WebKitSettings, enabled: gboolean) void;
 
 // --- WebKitGTK inspector (DevTools) ---
 extern "c" fn webkit_web_view_get_inspector(web_view: *GtkWidget) *WebKitWebInspector;
@@ -284,9 +285,26 @@ pub export fn nalar_webview_create(
 
     // Web view
     const web_view = webkit_web_view_new_with_context(context);
-    if (cfg.user_agent) |ua| {
+    {
+        // Get the settings once and apply every non-user-agent setting here.
+        // Settings like enable_javascript, javascript_can_access_clipboard,
+        // and enable_developer_extras must be applied BEFORE the first
+        // webkit_web_view_load_uri() call — once a page is loaded, some
+        // settings cannot be changed until the next load.
         const settings = webkit_web_view_get_settings(web_view);
-        webkit_settings_set_user_agent(settings, ua);
+
+        // Allow the webapp's JS `paste` event handler to read image bytes
+        // from the system clipboard. WebKitGTK's default is FALSE, which
+        // silently filters file/image items out of ClipboardEvent.items
+        // — so pasting a screenshot does nothing (text pastes still work
+        // because those items bypass the filter). Chrome's default is
+        // permissive; matching that behavior so the same webapp code
+        // works in nalar-desktop without #ifdef'ing the frontend.
+        webkit_settings_set_javascript_can_access_clipboard(settings, 1);
+
+        if (cfg.user_agent) |ua| {
+            webkit_settings_set_user_agent(settings, ua);
+        }
     }
     gtk_container_add(@ptrCast(window), web_view);
 

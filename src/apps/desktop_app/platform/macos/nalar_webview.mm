@@ -125,6 +125,15 @@
     // configuration internally, so we don't need to store it.
     WKWebViewConfiguration* wkconfig = [[[WKWebViewConfiguration alloc] init] autorelease];
 
+    // Allow the webapp's JS `paste` event handler to read image bytes
+    // from the system clipboard. WKWebView's default on macOS has been
+    // tightening over recent releases — explicitly opting in matches
+    // Chrome's permissive behavior so the same webapp code works
+    // without #ifdef'ing the frontend. The webapp here is the user's
+    // own embedded assets, not arbitrary third-party content, so this
+    // is a safe enable.
+    wkconfig.preferences.javaScriptCanAccessClipboard = YES;
+
     _webView = [[WKWebView alloc] initWithFrame:frame configuration:wkconfig];
     [_webView setNavigationDelegate:self];
 
