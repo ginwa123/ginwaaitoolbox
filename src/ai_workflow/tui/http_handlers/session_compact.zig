@@ -69,12 +69,12 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     }
 
     // Manual endpoint: force compaction regardless of the auto-threshold.
-    workflow.maybeCompactMessagesNew(
+    messagesLists = workflow.maybeCompactMessagesNew(
         allocator,
         total_tokens,
         model,
         true,
-        &messagesLists,
+        messagesLists,
         api_key,
         base_url,
         cwd,

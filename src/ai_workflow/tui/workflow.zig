@@ -417,9 +417,11 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
         try messagesLists.appendSlice(allocator, initialMessages);
 
-        try maybeCompactMessagesNew(allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger);
+        messagesLists = try maybeCompactMessagesNew(allocator, total_tokens, effective_model, false, messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger);
 
-        const res_dynamic_agent = callDynamicAgentNew(allocator, io, &messagesLists, agent_temperature, current_max_tokens, isThinking, effective_api_key, effective_model, effective_base_url, effective_url_style, copy_session_id, merged_tools) catch |err| {
+        logger.debugFmt("[WORKFLOW-debug-system-prompt] system_prompt={s}", .{messagesLists.items[0].content.?});
+
+        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, effective_api_key, effective_model, effective_base_url, effective_url_style, copy_session_id, merged_tools) catch |err| {
             if (err == error.Cancelled) {
                 logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{copy_session_id});
                 break;
@@ -703,7 +705,7 @@ fn generateSessionNameNew(
 fn callDynamicAgentNew(
     allocator: std.mem.Allocator,
     io: std.Io,
-    messages_list: *std.ArrayList(agent.AgentMessage),
+    messages_list: std.ArrayList(agent.AgentMessage),
     agent_temperature: f32,
     current_max_tokens: usize,
     isThinking: bool,
@@ -744,7 +746,7 @@ pub fn maybeCompactMessagesNew(
     total_tokens: u32,
     model: []const u8,
     force: bool,
-    messages: *std.ArrayList(agent.AgentMessage),
+    messages: std.ArrayList(agent.AgentMessage),
     api_key: []const u8,
     base_url: []const u8,
     cwd: []const u8,
@@ -752,9 +754,9 @@ pub fn maybeCompactMessagesNew(
     db: *sqlite.SqliteBackend,
     io: std.Io,
     logger: *logger_mod.Logger,
-) !void {
+) !std.ArrayList(agent.AgentMessage) {
     if (!force and !agent.LLMModels.isDoCompact(total_tokens, agent.LLMModels.getModelTokenCount(model))) {
-        return;
+        return messages;
     }
 
     // Snapshot the current messages so that callCompactAgentNew's in-place mutation
@@ -765,15 +767,19 @@ pub fn maybeCompactMessagesNew(
     var copy_list = std.ArrayList(agent.AgentMessage).fromOwnedSlice(copy_messages);
     defer copy_list.deinit(allocator);
 
-    if (callCompactAgentNew(&copy_list, allocator, api_key, model, base_url, cwd, logger, io)) |compacted_xml| {
-        try compactMessageInMemoryNew(allocator, messages, compacted_xml, session_id, model, cwd, db, io, logger);
-    }
+    const compacted_xml = callCompactAgentNew(copy_list, allocator, api_key, model, base_url, cwd, logger, io) orelse {
+        // LLM call failed; caller keeps the original (uncompacted) list.
+        return messages;
+    };
+
+    // compactMessageInMemoryNew consumes the old list and returns the compacted one.
+    return try compactMessageInMemoryNew(allocator, messages, compacted_xml, session_id, model, cwd, db, io, logger);
 }
 
 /// Call CompactionAgent to compress conversation history.
 /// Returns compacted context or null on failure.
 pub fn callCompactAgentNew(
-    messages: *std.ArrayList(agent.AgentMessage),
+    messages: std.ArrayList(agent.AgentMessage),
     allocator: std.mem.Allocator,
     api_key: []const u8,
     model: []const u8,
@@ -784,7 +790,16 @@ pub fn callCompactAgentNew(
 ) ?[]const u8 {
     _ = cwd;
 
+    if (messages.items.len < 2) {
+        logger.warnFmt("[COMPACTION] Not enough messages to compact", .{});
+        return null;
+    }
+
     const last_idx = messages.items.len - 1;
+
+    // The original agent's system prompt — assumed to live at index 0.
+    // Used for context only (constraints/tools/scope), not summarized as conversation.
+    const original_system_prompt: []const u8 = messages.items[0].content orelse "";
 
     // Collect content from all messages between first and last
     var parts: std.ArrayList([]const u8) = .empty;
@@ -855,9 +870,16 @@ pub fn callCompactAgentNew(
         \\DO NOT:
         \\(Pitfalls, wrong paths, things that look right but aren't)
         \\
-        \\History:
+        \\---
+        \\ORIGINAL SYSTEM PROMPT (context only — constraints, tools, scope the
+        \\original agent operated under. Do NOT summarize this section itself;
+        \\use it only to inform DO NOT / ASSUMPTIONS MADE / FAILED ATTEMPTS above):
         \\{s}
-    , .{history_str}) catch |err| {
+        \\
+        \\---
+        \\CONVERSATION HISTORY:
+        \\{s}
+    , .{ original_system_prompt, history_str }) catch |err| {
         logger.errFmt("[COMPACTION] Failed to format compact message: {s}", .{@errorName(err)});
         return null;
     };
@@ -917,52 +939,19 @@ pub fn callCompactAgentNew(
         logger.errFmt("[COMPACTION] Failed to duplicate content: {s}", .{@errorName(err)});
         return null;
     };
-    errdefer allocator.free(duplicated);
 
-    // Get the last 20 messages (excluding system message at index 0)
-    const working_messages = messages.items[1..];
-    const tail_start = if (working_messages.len > 20) working_messages.len - 20 else 0;
-    const recent_messages = working_messages[tail_start..];
-
-    // Collect recent message content
-    var recent_parts: std.ArrayList([]const u8) = .empty;
-    defer recent_parts.deinit(allocator);
-
-    for (recent_messages) |msg| {
-        if (msg.content) |c| recent_parts.append(allocator, c) catch |err| {
-            logger.errFmt("[COMPACTION] Failed to collect recent message: {s}", .{@errorName(err)});
-            allocator.free(duplicated);
-            return null;
-        };
-    }
-
-    const recent_str = std.mem.join(allocator, "\n", recent_parts.items) catch |err| {
-        logger.errFmt("[COMPACTION] Failed to join recent messages: {s}", .{@errorName(err)});
-        allocator.free(duplicated);
-        return null;
-    };
-    defer allocator.free(recent_str);
-
-    const result = std.fmt.allocPrint(allocator,
-        \\{s}
-        \\
-        \\---RECENT MESSAGES (last 20)---
-        \\{s}
-    , .{ duplicated, recent_str }) catch |err| {
-        logger.errFmt("[COMPACTION] Failed to build final result: {s}", .{@errorName(err)});
-        allocator.free(duplicated);
-        return null;
-    };
-
-    allocator.free(duplicated);
-    return result;
+    return duplicated;
 }
 
-/// Compact messages in memory based on CompactionAgent output
-/// Also persists to database: marks old messages as not for LLM, saves new compacted message
+/// Compact messages in memory based on CompactionAgent output.
+/// Also persists to database: marks old messages as not for LLM, saves new compacted message.
+/// On success, consumes `messages` (frees its backing slice) and returns the new
+/// compacted list. On the `total <= 4` early return or any error before deinit,
+/// `messages` is left intact and returned unchanged — the caller must always use
+/// the return value.
 pub fn compactMessageInMemoryNew(
     allocator: std.mem.Allocator,
-    messages: *std.ArrayList(agent.AgentMessage),
+    messages: std.ArrayList(agent.AgentMessage),
     compacted_xml: []const u8,
     session_id: []const u8,
     model: []const u8,
@@ -970,9 +959,9 @@ pub fn compactMessageInMemoryNew(
     db: *sqlite.SqliteBackend,
     io: std.Io,
     logger: *logger_mod.Logger,
-) !void {
+) !std.ArrayList(agent.AgentMessage) {
     const total = messages.items.len;
-    if (total <= 4) return;
+    if (total <= 4) return messages;
 
     // Mark all existing messages in this session as not for LLM (soft-delete)
     try llm_history.markMessageNotForLlmRun(allocator, db, session_id);
@@ -1029,14 +1018,20 @@ pub fn compactMessageInMemoryNew(
         .content = summary_content,
     });
 
-    // Free ALL old messages (including ones we "kept" - we have copies now)
-    for (messages.items) |*msg| {
+    // Free ALL old messages (including ones we "kept" - we have copies now).
+    // The old list is consumed; the caller must use the returned list.
+    // Use a mutable local copy because the `messages` parameter is treated
+    // as `const` in Zig 0.16 when the function signature has matching
+    // parameter and return types (T → !T), and ArrayList.deinit requires
+    // `*Self` (not `*const Self`).
+    var messages_owned = messages;
+    for (messages_owned.items) |*msg| {
         msg.deinit(allocator);
     }
-    messages.deinit(allocator);
-    messages.* = new_messages;
+    messages_owned.deinit(allocator);
 
-    logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages (persisted to DB)", .{ total, messages.items.len });
+    logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages (persisted to DB)", .{ total, new_messages.items.len });
+    return new_messages;
 }
 
 fn noopStreamCallbackNew(_: ?*anyopaque, _: agent.StreamChunk) void {}
