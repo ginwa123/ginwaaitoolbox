@@ -11,34 +11,36 @@
   Distinct from the global memories (in `~/.config/nalar/memories/`)
   managed via the MemoriesSettings page — global memories apply
   to every project on the machine, while local memories are
-  scoped to the cwd of the current workspace item. This dialog
-  is the entry point for the per-project memory.
+  scoped to a specific project directory.
+
+  Two-stage modal flow (mirrors AddItemDialog.vue):
+    1. The dialog opens with a name input, a folder picker (defaults
+       to the cwd prop), and a content textarea
+    2. The user can change the folder via the file picker if the
+       default cwd isn't what they want
+    3. Clicking "Create" emits `create(name, path)` and the backend
+       writes `<picked_cwd>/.nalar/memories/<name>.md`
 
   Public API:
-    props:  show (boolean), cwd (string — required, used to scope
-                              the file to the right project dir)
+    props:  show (boolean), cwd (string — initial cwd; the user can
+                              change it via the folder picker)
     emits:  close
             create(name: string, path: string)
-
-  Validation mirrors `memories.isValidMemoryName`:
-    - non-empty after trim
-    - must end in `.md`
-    - no path separators (`/`, `\`)
-    - no `..` segments
 -->
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
-import { createLocalMemory } from '../api'
+import { createLocalMemory, getSystemFolder, listFolder, type FolderEntry } from '../api'
 import { useNotificationStore } from '../stores/notifications'
+import FilePickerDialog from './FilePickerDialog.vue'
 
 const props = defineProps<{
   show: boolean
   /**
-   * The cwd to scope the new memory to. The file is written to
-   * `<cwd>/.nalar/memories/<name>.md`. Required — the dialog
-   * shows an error if missing (e.g. the user clicked "Add
-   * Markdown" from a workspace with no folder item to derive
-   * a cwd from).
+   * The initial cwd to scope the new memory to. Used as the starting
+   * value of the local `cwd` ref; the user can change it via the
+   * folder picker before submitting. Typically passed by the parent
+   * as the workspace's first folder item's path, but any valid
+   * absolute path works.
    */
   cwd: string
 }>()
@@ -51,9 +53,14 @@ const emit = defineEmits<{
 // ─── State ─────────────────────────────────────────────────────────────────
 
 const name = ref('')
+// Local cwd — starts as the prop value but the user can change it
+// via the file picker. Decoupled from `props.cwd` so the parent
+// doesn't need to react to picker events.
+const cwd = ref(props.cwd)
 const content = ref('')
 const nameInput = ref<HTMLInputElement | null>(null)
 const isSubmitting = ref(false)
+const showPicker = ref(false)
 
 const notificationStore = useNotificationStore()
 
@@ -75,14 +82,33 @@ function isValidMemoryName(rawName: string): boolean {
   return true
 }
 
+// ─── Picker data source ────────────────────────────────────────────────────
+
+// Adapts the existing listFolder/getSystemFolder API to the picker's
+// agnostic (path: string) => Promise<T[]> contract. When path is
+// empty we return the system folder root entries. Same pattern as
+// AddItemDialog.vue:44.
+const loadItemsForPicker = async (path: string): Promise<FolderEntry[]> => {
+  const data = path ? await listFolder(path) : await getSystemFolder()
+  return (data.entries || []) as FolderEntry[]
+}
+
 // ─── Handlers ──────────────────────────────────────────────────────────────
+
+const handleFolderSelected = (path: string) => {
+  cwd.value = path
+  // Close the picker on selection — matches the AddItemDialog
+  // UX (the picker dismisses and the user is returned to the
+  // AddMemoryDialog with the chosen folder filled in).
+  showPicker.value = false
+}
 
 const handleCreate = async () => {
   const trimmedName = name.value.trim()
   if (!trimmedName || !content.value) return
-  if (!props.cwd) {
+  if (!cwd.value) {
     notificationStore.notifyError(
-      'Cannot create local memory: no project directory (cwd) is set for this workspace.',
+      'Cannot create local memory: no project directory (cwd) is selected. Please pick a folder.',
     )
     return
   }
@@ -95,10 +121,14 @@ const handleCreate = async () => {
 
   isSubmitting.value = true
   try {
-    const result = await createLocalMemory(trimmedName, content.value, props.cwd)
-    // createLocalMemory returns { memory: { name, title, path, size } } on success.
-    // The ApiError throw handles the non-2xx case (toast is auto-fired
-    // by apiFetch), so reaching this line means the memory exists.
+    // Pass the current `cwd.value` (which the user may have changed
+    // via the file picker) so the file lands in the folder the user
+    // actually picked, not just the default the parent passed in.
+    const result = await createLocalMemory(trimmedName, content.value, cwd.value)
+    // createLocalMemory returns { memory: { name, title, path, size } } on
+    // success. The ApiError throw handles the non-2xx case (toast is
+    // auto-fired by apiFetch), so reaching this line means the memory
+    // exists.
     emit('create', result.memory.name, result.memory.path)
     handleClose()
   } catch (err) {
@@ -131,8 +161,10 @@ const handleKeydown = (event: KeyboardEvent) => {
 watch(() => props.show, async (show) => {
   if (show) {
     name.value = ''
+    cwd.value = props.cwd
     content.value = '# New Memory\n\nWrite your notes here.\n'
     isSubmitting.value = false
+    showPicker.value = false
     await nextTick()
     nameInput.value?.focus()
   }
@@ -185,9 +217,53 @@ watch(() => props.show, async (show) => {
               class="text-xs mt-1"
               style="color: var(--semantic-text-dim);"
             >
-              Create a local memory at
-              <code class="font-mono break-all">{{ cwd || '(no cwd)' }}/.nalar/memories/</code>
+              The memory file is created at
+              <code class="font-mono break-all">{{ cwd || '(pick a folder below)' }}/.nalar/memories/</code>
             </p>
+          </div>
+
+          <!-- Folder picker -->
+          <div class="px-5 pb-4">
+            <label
+              class="block text-xs font-medium mb-2"
+              style="color: var(--semantic-text-dim);"
+            >
+              Folder
+            </label>
+            <button
+              type="button"
+              @click="showPicker = true"
+              data-testid="add-memory-choose-folder"
+              class="w-full px-3 py-2 rounded-lg text-sm flex items-center justify-between gap-2 transition-all duration-200 hover:opacity-80"
+              :style="{
+                backgroundColor: cwd
+                  ? 'var(--semantic-active-bg)'
+                  : 'var(--semantic-sidebar-bg)',
+                border: '1px solid var(--color-border)',
+                color: cwd
+                  ? 'var(--semantic-text)'
+                  : 'var(--semantic-text-dim)',
+              }"
+            >
+              <span
+                class="truncate flex-1 text-left font-mono"
+                :title="cwd"
+              >
+                {{ cwd || 'Choose folder...' }}
+              </span>
+              <span
+                v-if="cwd"
+                class="text-xs shrink-0"
+                style="color: var(--semantic-text-dim);"
+                aria-hidden="true"
+              >Browse</span>
+              <span
+                v-else
+                class="text-xs shrink-0"
+                style="color: var(--semantic-text-dim);"
+                aria-hidden="true"
+              >📂</span>
+            </button>
           </div>
 
           <!-- Name -->
@@ -226,13 +302,13 @@ watch(() => props.show, async (show) => {
             <textarea
               v-model="content"
               data-testid="add-memory-content"
-              rows="8"
+              rows="6"
               class="flex-1 w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200 font-mono resize-none"
               style="
                 background-color: var(--semantic-sidebar-bg);
                 border: 1px solid var(--color-border);
                 color: var(--semantic-text);
-                min-height: 160px;
+                min-height: 120px;
               "
               :disabled="isSubmitting"
             />
@@ -259,7 +335,7 @@ watch(() => props.show, async (show) => {
               @click="handleCreate"
               :disabled="
                 isSubmitting ||
-                !props.cwd ||
+                !cwd ||
                 !name.trim() ||
                 !content.trim() ||
                 !isValidMemoryName(name.trim())
@@ -282,6 +358,25 @@ watch(() => props.show, async (show) => {
       </div>
     </Transition>
   </Teleport>
+
+  <!--
+    The picker (modal 2). Same pattern as AddItemDialog.vue:270.
+    Renders only when showPicker is true. The picker's own
+    close-on-select behavior closes itself when the user picks
+    a folder — we just listen to `select` to update our state.
+  -->
+  <FilePickerDialog
+    v-model="showPicker"
+    mode="folder"
+    :load-items="loadItemsForPicker"
+    :key-for="(e: any) => e.path as string"
+    :path-for="(e: any) => e.path as string"
+    :is-expandable="(e: any) => e.is_directory as boolean"
+    :label-for="(e: any) => e.name as string"
+    :close-on-select="true"
+    title="Select Memory Folder"
+    @select="handleFolderSelected"
+  />
 </template>
 
 <style scoped>

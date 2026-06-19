@@ -2,20 +2,51 @@
  * Tests for AddMemoryDialog — the modal that creates a new LOCAL
  * memory file (at `<cwd>/.nalar/memories/<name>.md`). Mirrors
  * AddItemDialog.spec.ts's structure: covers the open/close
- * lifecycle, the name + content inputs, the validation rules
- * (mirror of `memories.isValidMemoryName`), and the create event
- * shape. Mocks the api module so no network calls happen.
+ * lifecycle, the name + content inputs, the folder picker
+ * (defaults from the cwd prop but can be changed by the user),
+ * the validation rules (mirror of `memories.isValidMemoryName`),
+ * and the create event shape. Mocks the api module so no network
+ * calls happen, and stubs FilePickerDialog (the real picker is
+ * tested separately).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import AddMemoryDialog from '../components/AddMemoryDialog.vue'
 
+// Stub the FilePickerDialog — we only care that the parent wires
+// up the picker's events. Real picker behavior is tested in
+// FilePickerDialog.spec.ts. The stub mirrors the picker's public
+// API: v-model:show (modelValue + update:modelValue) and @select(path).
+vi.mock('../components/FilePickerDialog.vue', () => ({
+  default: {
+    name: 'FilePickerDialog',
+    props: ['modelValue', 'mode', 'loadItems', 'keyFor', 'pathFor', 'isExpandable', 'labelFor', 'title'],
+    emits: ['update:modelValue', 'select'],
+    template: `
+      <div v-if="modelValue" data-testid="file-picker-dialog">
+        <h2 data-testid="file-picker-title">{{ title }}</h2>
+        <button data-testid="file-picker-select-home" @click="$emit('select', '/home')">
+          Pick /home
+        </button>
+        <button data-testid="file-picker-select-other" @click="$emit('select', '/opt/projects')">
+          Pick /opt/projects
+        </button>
+        <button data-testid="file-picker-cancel" @click="$emit('update:modelValue', false)">
+          Cancel
+        </button>
+      </div>
+    `,
+  },
+}))
+
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
   return {
     ...actual,
     createLocalMemory: vi.fn(),
+    getSystemFolder: vi.fn(),
+    listFolder: vi.fn(),
   }
 })
 
@@ -330,5 +361,154 @@ describe('AddMemoryDialog — create event', () => {
       '[data-testid="add-memory-name"]',
     )
     expect(nameAfter?.value).toBe('')
+  })
+})
+
+describe('AddMemoryDialog — folder picker', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    mockCreate.mockReset()
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    document.body.style.overflow = ''
+    vi.restoreAllMocks()
+  })
+
+  it('shows the initial cwd from the prop as the picker value', async () => {
+    wrapper = mountDialog(true, '/home/user/project')
+    await flushPromises()
+
+    const btn = findInDom<HTMLElement>(
+      '[data-testid="add-memory-choose-folder"]',
+    )
+    expect(btn?.textContent).toContain('/home/user/project')
+    // Picker should NOT be open yet.
+    expect(findInDom('[data-testid="file-picker-dialog"]')).toBeNull()
+  })
+
+  it('clicking "Folder" opens the file picker', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+
+    clickInDom('[data-testid="add-memory-choose-folder"]')
+    await flushPromises()
+
+    expect(findInDom('[data-testid="file-picker-dialog"]')).not.toBeNull()
+    // The picker shows the configured title.
+    expect(findInDom('[data-testid="file-picker-dialog"]')?.textContent).toContain(
+      'Select Memory Folder',
+    )
+  })
+
+  it('selecting a folder in the picker updates the cwd', async () => {
+    wrapper = mountDialog(true, '/initial')
+    await flushPromises()
+
+    // Open picker and pick a different folder.
+    clickInDom('[data-testid="add-memory-choose-folder"]')
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-select-other"]')
+    await flushPromises()
+
+    // Picker should close.
+    expect(findInDom('[data-testid="file-picker-dialog"]')).toBeNull()
+    // Folder button should now show the new path.
+    const btn = findInDom<HTMLElement>(
+      '[data-testid="add-memory-choose-folder"]',
+    )
+    expect(btn?.textContent).toContain('/opt/projects')
+  })
+
+  it('createLocalMemory is called with the user-picked folder (not the initial cwd)', async () => {
+    mockCreate.mockResolvedValue({
+      memory: {
+        name: 'foo.md',
+        title: 'Foo',
+        path: '/opt/projects/.nalar/memories/foo.md',
+        size: 5,
+      },
+    })
+
+    wrapper = mountDialog(true, '/initial')
+    await flushPromises()
+
+    // Pick a different folder.
+    clickInDom('[data-testid="add-memory-choose-folder"]')
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-select-other"]')
+    await flushPromises()
+
+    // Fill the name.
+    const nameInput = findInDom<HTMLInputElement>(
+      '[data-testid="add-memory-name"]',
+    )!
+    nameInput.value = 'foo.md'
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    // Click Create.
+    clickInDom('[data-testid="add-memory-submit"]')
+    await flushPromises()
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    // The cwd passed to createLocalMemory is the user-picked folder,
+    // NOT the initial prop value.
+    expect(mockCreate).toHaveBeenCalledWith(
+      'foo.md',
+      expect.any(String),
+      '/opt/projects',
+    )
+  })
+
+  it('picker cancel returns the user to the dialog with cwd unchanged', async () => {
+    wrapper = mountDialog(true, '/initial')
+    await flushPromises()
+
+    clickInDom('[data-testid="add-memory-choose-folder"]')
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-cancel"]')
+    await flushPromises()
+
+    // Picker closed, cwd unchanged.
+    expect(findInDom('[data-testid="file-picker-dialog"]')).toBeNull()
+    const btn = findInDom<HTMLElement>(
+      '[data-testid="add-memory-choose-folder"]',
+    )
+    expect(btn?.textContent).toContain('/initial')
+    expect(btn?.textContent).not.toContain('/opt/projects')
+  })
+
+  it('resets cwd to the prop value on reopen', async () => {
+    // Open with cwd A, pick folder B, close, reopen with cwd A.
+    // The local cwd should reset to A (NOT retain B).
+    wrapper = mountDialog(true, '/initial')
+    await flushPromises()
+
+    // Pick a different folder.
+    clickInDom('[data-testid="add-memory-choose-folder"]')
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-select-other"]')
+    await flushPromises()
+    expect(
+      findInDom<HTMLElement>('[data-testid="add-memory-choose-folder"]')
+        ?.textContent,
+    ).toContain('/opt/projects')
+
+    // Close + reopen.
+    await wrapper.setProps({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    // cwd should be back to the initial value.
+    const btn = findInDom<HTMLElement>(
+      '[data-testid="add-memory-choose-folder"]',
+    )
+    expect(btn?.textContent).toContain('/initial')
   })
 })
