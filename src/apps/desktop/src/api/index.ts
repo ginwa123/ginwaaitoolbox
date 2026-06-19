@@ -1073,6 +1073,87 @@ export async function deleteMemory(name: string): Promise<MemoryDeleteResponse> 
   )
 }
 
+// Local Memories API (per-cwd memories at `<cwd>/.nalar/memories/`).
+//
+// Distinct from the global memories above: local memories are scoped
+// to a specific project directory (the cwd) and are auto-injected
+// into every chat as the "Local Knowledge" section of the system
+// prompt (see `loadLocalKnowledge` in
+// `src/modules/agent/prompts.zig`). The `cwd` is passed in the body
+// (POST/PUT) or the query string (GET/DELETE) and is required for
+// the request to be useful. The backend falls back to the nalar
+// server's CWD when no cwd is provided.
+
+/**
+ * Build the `cwd` query string for a local-memory request.
+ * Returns the `?cwd=...` suffix, or `''` if `cwd` is empty.
+ */
+function cwdQuery(cwd?: string): string {
+  if (!cwd) return ''
+  const encoded = encodeURIComponent(cwd)
+  return `?cwd=${encoded}`
+}
+
+export async function listLocalMemories(cwd?: string): Promise<{ memories: Memory[] }> {
+  return await apiFetch<{ memories: Memory[] }>(`/local-memories${cwdQuery(cwd)}`)
+}
+
+export async function getLocalMemoryDetail(
+  name: string,
+  cwd?: string,
+): Promise<MemoryDetailResponse> {
+  try {
+    return await apiFetch<MemoryDetailResponse>(
+      `/local-memories/${encodeURIComponent(name)}${cwdQuery(cwd)}`,
+    )
+  } catch (err) {
+    // Preserve the "404 = not found" semantics — the caller uses
+    // the returned shape to decide whether to show a "create new
+    // memory" prompt vs. an error toast. apiFetch surfaces 404 as
+    // ApiError, so we translate it back into the original
+    // { memory: null, error_message } shape.
+    if (err instanceof ApiError && err.status === 404) {
+      return { memory: null, error_message: 'Memory not found' }
+    }
+    throw err
+  }
+}
+
+export async function createLocalMemory(
+  name: string,
+  content: string,
+  cwd: string,
+): Promise<{ memory: Memory }> {
+  return await apiFetch<{ memory: Memory }>('/local-memories', {
+    method: 'POST',
+    body: { name, content, cwd },
+  })
+}
+
+export async function updateLocalMemory(
+  name: string,
+  content: string,
+  cwd?: string,
+): Promise<{ memory: Memory }> {
+  return await apiFetch<{ memory: Memory }>(
+    `/local-memories/${encodeURIComponent(name)}${cwdQuery(cwd)}`,
+    {
+      method: 'PUT',
+      body: { content, cwd },
+    },
+  )
+}
+
+export async function deleteLocalMemory(
+  name: string,
+  cwd?: string,
+): Promise<MemoryDeleteResponse> {
+  return await apiFetch<MemoryDeleteResponse>(
+    `/local-memories/${encodeURIComponent(name)}${cwdQuery(cwd)}`,
+    { method: 'DELETE' },
+  )
+}
+
 // Git Status API
 export interface GitStatus {
   is_git_repo: boolean

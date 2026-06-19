@@ -10,6 +10,7 @@ import WorkspaceModal from './WorkspaceModal.vue'
 import RenameWorkspaceModal from './RenameWorkspaceModal.vue'
 import RenameTaskModal from './RenameTaskModal.vue'
 import AddItemDialog from './AddItemDialog.vue'
+import AddMemoryDialog from './AddMemoryDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import AddTaskDialog from './AddTaskDialog.vue'
 import AddTaskPickerDialog from './AddTaskPickerDialog.vue'
@@ -74,6 +75,8 @@ const activeChatName = computed(() => navigationStore.activeChatName)
 const showAddWorkspaceModal = ref(false)
 const showAddItemDialog = ref(false)
 const addItemTargetWorkspaceId = ref<string | null>(null)
+const showAddMemoryDialog = ref(false)
+const addMemoryTargetWorkspaceId = ref<string | null>(null)
 const showDeleteConfirm = ref(false)
 const deleteConfirmConfig = ref<{ title: string; message: string; onConfirm: () => void } | null>(null)
 const showRenameWorkspaceModal = ref(false)
@@ -308,6 +311,10 @@ const handleDeleteItem = (workspaceId: string, itemId: string) => {
 const handleAddItem = (workspaceId: string, itemType: string) => {
   addItemTargetWorkspaceId.value = workspaceId
   if (itemType === 'folder') showAddItemDialog.value = true
+  if (itemType === 'memory') {
+    addMemoryTargetWorkspaceId.value = workspaceId
+    showAddMemoryDialog.value = true
+  }
 }
 
 const handleCreateItem = async (name: string, path: string) => {
@@ -315,6 +322,48 @@ const handleCreateItem = async (name: string, path: string) => {
     const itemId = await workspacesStore.addWorkspaceItem(addItemTargetWorkspaceId.value, name, path)
     if (itemId) await workspacesStore.fetchFolderContents(addItemTargetWorkspaceId.value, itemId)
   }
+}
+
+/**
+ * Resolve the cwd to scope a new local memory to. Uses the first
+ * folder-type item in the target workspace as the project root
+ * (the most natural "cwd" for the workspace). Falls back to ''
+ * when the workspace has no folder items — the AddMemoryDialog
+ * then shows its own "no cwd" error and refuses to submit.
+ */
+const resolveCwdForMemory = (workspaceId: string): string => {
+  // workspacesStore is a Pinia store; its `workspaces` getter
+  // auto-unwraps the underlying ref (no `.value` access in the
+  // store-public surface). See src/apps/desktop/src/stores/workspaces.ts
+  // for the store definition.
+  const ws = workspacesStore.workspaces.find((w) => w.id === workspaceId)
+  if (!ws) return ''
+  // Find the first folder item (item_type === 'folder') — its `path`
+  // is the absolute path to a real project directory on disk, which
+  // is what the local-memories backend will scope the file to.
+  for (const item of ws.items) {
+    if (item.item_type === 'folder' && item.path) return item.path
+  }
+  return ''
+}
+
+const handleCloseAddMemoryDialog = () => {
+  showAddMemoryDialog.value = false
+  addMemoryTargetWorkspaceId.value = null
+}
+
+const handleCreateMemory = async (name: string, path: string) => {
+  // The local memory file is created by AddMemoryDialog (via
+  // createLocalMemory API) and lives at
+  // `<cwd>/.nalar/memories/<name>.md`. The next chat in this
+  // workspace will pick it up via `loadLocalKnowledge` (see
+  // `src/modules/agent/prompts.zig:263`). We currently just log
+  // the success — a future iteration could:
+  //   - Emit a typed toast (the notifications store currently only
+  //     has notifyError, so this would require a `notifySuccess`).
+  //   - Register a workspace-item reference so the memory shows
+  //     up in the sidebar list (mirrors Add Project's behavior).
+  console.info(`[Sidebar] local memory created: ${name} at ${path}`)
 }
 
 const handleAddWorkspace = () => showAddWorkspaceModal.value = true
@@ -797,6 +846,12 @@ const editRoutineTaskName = computed<string>(() => {
     <RenameWorkspaceModal :show="showRenameWorkspaceModal" :current-name="renameTargetName" @close="handleCloseRenameModal" @rename="handleConfirmRename" />
     <RenameTaskModal :show="showRenameTaskModal" :current-name="renameTargetTaskName" @close="handleCloseTaskRenameModal" @rename="handleConfirmTaskRename" />
     <AddItemDialog :show="showAddItemDialog" @close="handleCloseAddItemDialog" @create="handleCreateItem" />
+    <AddMemoryDialog
+      :show="showAddMemoryDialog"
+      :cwd="addMemoryTargetWorkspaceId ? resolveCwdForMemory(addMemoryTargetWorkspaceId) : ''"
+      @close="handleCloseAddMemoryDialog"
+      @create="handleCreateMemory"
+    />
     <AddTaskPickerDialog :show="showAddTaskPicker" @close="handleCloseAddTaskPicker" @pick="handleAddTaskPick" />
     <AddTaskDialog :show="showAddTaskDialog" @close="handleCloseAddTaskDialog" @create="handleAddTaskCreated" />
     <AddRoutineDialog :show="showAddRoutineDialog" @close="handleCloseAddRoutineDialog" @create="handleAddRoutineCreated" />

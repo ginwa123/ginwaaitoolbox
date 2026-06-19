@@ -74,6 +74,18 @@ pub const memoryCreateHandler = @import("memories_create.zig").memoryCreateHandl
 pub const memoryUpdateHandler = @import("memories_update.zig").memoryUpdateHandler;
 pub const memoryDeleteHandler = @import("memories_delete.zig").memoryDeleteHandler;
 
+// Local Memories API handlers — same CRUD shape as the global memories
+// handlers above but operating on `<cwd>/.nalar/memories/` instead of
+// `~/.config/nalar/memories/`. The `cwd` resolution prefers the body
+// (for POST/PUT) or the query string (for GET/DELETE), falling back
+// to the nalar server's CWD via `io.realPath` when no explicit cwd
+// is provided. See `docs/plans/2026-06-20-add-markdown-memory.md`.
+pub const localMemoriesListHandler = @import("local_memories_list.zig").localMemoriesListHandler;
+pub const localMemoryDetailHandler = @import("local_memories_detail.zig").localMemoryDetailHandler;
+pub const localMemoryCreateHandler = @import("local_memories_create.zig").localMemoryCreateHandler;
+pub const localMemoryUpdateHandler = @import("local_memories_update.zig").localMemoryUpdateHandler;
+pub const localMemoryDeleteHandler = @import("local_memories_delete.zig").localMemoryDeleteHandler;
+
 // Git API handlers
 pub const gitStatusHandler = @import("git_status.zig").gitStatusHandler;
 pub const gitChangesHandler = @import("git_changes.zig").gitChangesHandler;

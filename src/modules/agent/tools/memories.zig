@@ -530,3 +530,157 @@ pub fn memoryExists(
     _ = std.Io.Dir.cwd().statFile(io, full_path, .{}) catch return false;
     return true;
 }
+
+// -------------------------------------------------------------------------
+// LOCAL memories — scoped to a per-cwd `.nalar/memories/` directory.
+//
+// The global CRUD helpers above operate on `~/.config/nalar/memories/`
+// (resolved via env). The local helpers below operate on an explicit
+// `<cwd>/.nalar/memories/` path supplied by the caller. They share the
+// `isValidMemoryName` validation (so the same `foo.md` rules apply
+// regardless of where the file lives) and the same atomic-rename write
+// pattern.
+//
+// Mirrors the design of `get_local_skills_path_for_dir` +
+// `read_skill_file_in_dir` in `tools/skills.zig` — the same pattern
+// ("global vs local" with cwd-scoping) is used across skills and
+// memories to keep the per-project config convention consistent.
+// -------------------------------------------------------------------------
+
+/// Resolve the local memories path from the process's CWD via `io`.
+///
+/// Mirrors `get_local_skills_path_from_io` (tools/skills.zig) — used
+/// by HTTP handlers that don't have an explicit cwd from the caller
+/// and want to fall back to the nalar server's own working directory.
+///
+/// Returns `null` when:
+///   - `realPath` fails (cwd is unavailable, e.g. deleted)
+///   - the path join fails (alloc failure)
+pub fn get_local_memories_path_from_io(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+) ?[]const u8 {
+    var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch |err| {
+        std.log.debug("Could not get current working directory: {s}", .{@errorName(err)});
+        return null;
+    };
+    return get_local_memories_path_for_dir(allocator, cwd_buf[0..cwd_len]);
+}
+
+/// Resolve the local memories path for a given name. The caller passes
+/// the full directory path (e.g. `<cwd>/.nalar/memories/`) — typically
+/// obtained from `get_local_memories_path_from_io` or
+/// `get_local_memories_path_for_dir`.
+///
+/// Returns allocated full path `<dir_path>/<name>` (caller must free)
+/// or `null` on validation error, alloc failure, or `dir_path.len == 0`.
+pub fn get_local_memory_file_path(
+    allocator: std.mem.Allocator,
+    dir_path: []const u8,
+    name: []const u8,
+) ?[]const u8 {
+    if (dir_path.len == 0) return null;
+    if (!isValidMemoryName(name)) return null;
+    return std.fs.path.join(allocator, &.{ dir_path, name }) catch null;
+}
+
+/// Read a single local memory file by name. The dir is typically
+/// obtained from `get_local_memories_path_from_io` /
+/// `get_local_memories_path_for_dir`.
+///
+/// Returns allocated content the caller owns and must free, or `null`
+/// on:
+///   - validation failure
+///   - missing dir_path
+///   - file does not exist or cannot be read
+///   - alloc failure
+pub fn readLocalMemoryFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir_path: []const u8,
+    name: []const u8,
+) ?[]u8 {
+    const full_path = get_local_memory_file_path(allocator, dir_path, name) orelse return null;
+    defer allocator.free(full_path);
+
+    return std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        allocator,
+        std.Io.Limit.limited(std.math.maxInt(usize)),
+    ) catch null;
+}
+
+/// Write content to a local memory file. Creates the parent
+/// `<dir_path>` (typically `<cwd>/.nalar/memories/`) if missing.
+/// Overwrites an existing file with the same name. Uses the same
+/// atomic-rename pattern as `writeMemoryFile` (write to `.tmp` then
+/// rename).
+///
+/// Returns `true` on success, `false` on validation error, missing
+/// dir_path, IO failure, or OOM.
+pub fn writeLocalMemoryFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir_path: []const u8,
+    name: []const u8,
+    content: []const u8,
+) bool {
+    if (dir_path.len == 0) return false;
+    if (!isValidMemoryName(name)) return false;
+    const full_path = std.fs.path.join(allocator, &.{ dir_path, name }) catch return false;
+    defer allocator.free(full_path);
+
+    // Ensure the local memories directory exists. createDirPath is a
+    // no-op if the dir already exists, so it is safe on every call.
+    std.Io.Dir.cwd().createDirPath(io, dir_path) catch return false;
+
+    // Atomic-ish: write to a temp file then rename. See writeMemoryFile
+    // for why we use `@memcpy` instead of `path.join(full_path, ".tmp")`.
+    const tmp_path = allocator.alloc(u8, full_path.len + 4) catch return false;
+    defer allocator.free(tmp_path);
+    @memcpy(tmp_path[0..full_path.len], full_path);
+    @memcpy(tmp_path[full_path.len..][0..4], ".tmp");
+
+    {
+        const file = std.Io.Dir.cwd().createFile(io, tmp_path, .{}) catch return false;
+        defer std.Io.File.close(file, io);
+        std.Io.File.writeStreamingAll(file, io, content) catch return false;
+    }
+    std.Io.Dir.renameAbsolute(tmp_path, full_path, io) catch return false;
+    return true;
+}
+
+/// Delete a local memory file. Idempotent — returns `true` on success
+/// OR if the file was already missing. Returns `false` on validation
+/// error, missing dir_path, or unexpected IO failure.
+pub fn deleteLocalMemoryFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir_path: []const u8,
+    name: []const u8,
+) bool {
+    const full_path = get_local_memory_file_path(allocator, dir_path, name) orelse return false;
+    defer allocator.free(full_path);
+
+    std.Io.Dir.cwd().deleteFile(io, full_path) catch |err| {
+        if (err == error.FileNotFound) return true; // idempotent
+        return false;
+    };
+    return true;
+}
+
+/// Returns `true` if a local memory with the given name exists.
+pub fn localMemoryExists(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir_path: []const u8,
+    name: []const u8,
+) bool {
+    const full_path = get_local_memory_file_path(allocator, dir_path, name) orelse return false;
+    defer allocator.free(full_path);
+
+    _ = std.Io.Dir.cwd().statFile(io, full_path, .{}) catch return false;
+    return true;
+}

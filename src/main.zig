@@ -282,6 +282,16 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.put("/api/memories/:name", ai_mod.http_handlers.memoryUpdateHandler);
     try gs.router.delete("/api/memories/:name", ai_mod.http_handlers.memoryDeleteHandler);
 
+    // Local Memories routes — scoped to <cwd>/.nalar/memories/. The
+    // `cwd` is provided in the request body (POST/PUT) or query
+    // string (GET/DELETE); handlers fall back to the nalar server's
+    // own CWD via `io.realPath` when no explicit cwd is provided.
+    try gs.router.get("/api/local-memories", ai_mod.http_handlers.localMemoriesListHandler);
+    try gs.router.get("/api/local-memories/:name", ai_mod.http_handlers.localMemoryDetailHandler);
+    try gs.router.post("/api/local-memories", ai_mod.http_handlers.localMemoryCreateHandler);
+    try gs.router.put("/api/local-memories/:name", ai_mod.http_handlers.localMemoryUpdateHandler);
+    try gs.router.delete("/api/local-memories/:name", ai_mod.http_handlers.localMemoryDeleteHandler);
+
     // Nalar config routes (reads/writes config.json as nalar.json mapping)
     try gs.router.get("/api/config/nalar", ai_mod.http_handlers.nalarConfigGetHandler);
     try gs.router.put("/api/config/nalar", ai_mod.http_handlers.nalarConfigPutHandler);
