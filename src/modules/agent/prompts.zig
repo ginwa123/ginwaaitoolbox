@@ -1,11 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const prompts = @import("prompts/prompts.zig");
-const tool_models = @import("nalarcore").tool_models;
 const memory_prompts = @import("prompts/memory.zig");
 const browsing = @import("prompts/browsing.zig");
-const memories_mod = @import("nalarcore").memories;
-const list_skills = @import("tools/list_skills.zig");
+const tool_list_skills_mod = @import("tools/list_skills.zig");
+const tool_models = @import("Agent.zig");
+const tool_memories_mod = @import("tools/memories.zig");
 
 /// Get the current operating system as a human-readable string
 fn getCurrentOs() []const u8 {
@@ -213,8 +213,8 @@ pub fn loadGlobalKnowledge(
 ) ![]u8 {
     const env = environment orelse return allocator.dupe(u8, "");
 
-    const list = memories_mod.listAllMemories(allocator, io, env);
-    defer memories_mod.freeMemoriesList(allocator, list);
+    const list = tool_memories_mod.listAllMemories(allocator, io, env);
+    defer tool_memories_mod.freeMemoriesList(allocator, list);
 
     if (list.len == 0) return allocator.dupe(u8, "");
 
@@ -267,12 +267,12 @@ pub fn loadLocalKnowledge(
 ) ![]u8 {
     if (cwd.len == 0) return allocator.dupe(u8, "");
 
-    const dir_path = memories_mod.get_local_memories_path_for_dir(allocator, cwd)
+    const dir_path = tool_memories_mod.get_local_memories_path_for_dir(allocator, cwd)
         orelse return allocator.dupe(u8, "");
     defer allocator.free(dir_path);
 
-    const list = memories_mod.listMemoriesInDir(allocator, io, dir_path);
-    defer memories_mod.freeMemoriesList(allocator, list);
+    const list = tool_memories_mod.listMemoriesInDir(allocator, io, dir_path);
+    defer tool_memories_mod.freeMemoriesList(allocator, list);
 
     if (list.len == 0) return allocator.dupe(u8, "");
 
@@ -311,7 +311,8 @@ pub fn loadLocalKnowledge(
 /// After the static sections, the function appends dynamic session state:
 /// loaded skills, project memory, global knowledge (memories from
 /// `~/.config/nalar/memories/`), tool listing, active agent configuration,
-/// working directory, OS info, background processes, and active workers.
+/// working directory, workspace context, OS info, background processes,
+/// and active workers.
 ///
 /// **Removed parameters (vs. previous version):**
 ///   - `io: std.Io` — never used; callers no longer need to thread an `io` instance.
@@ -324,6 +325,10 @@ pub fn loadLocalKnowledge(
 ///   - `environment: ?*const std.process.Environ.Map` — required to resolve
 ///     the global memories path (XDG-aware: $XDG_CONFIG_HOME or $HOME).
 ///     When null, the Global Knowledge section is omitted.
+///   - `workspaceContext: []const u8` — pre-rendered "Workspace Context"
+///     block (built by `BuildWorkspaceContext` in `build_messages_for_agent_prompt.zig`).
+///     Empty string means "session not bound to any workspace task" (section
+///     is silently omitted). Rendered between the cwd line and the OS info.
 pub fn build_agent_prompt(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -341,6 +346,12 @@ pub fn build_agent_prompt(
     /// means "no sub-agents configured" (the section is omitted).
     /// See `appendSubAgentsListing` for the rendering format.
     sub_agents_listing: []const u8,
+    /// Pre-rendered "Workspace Context" markdown block, built by
+    /// `BuildWorkspaceContext(allocator, db, session_id)`. Empty
+    /// string means "no workspace context" (session not bound to
+    /// any task; the section is silently omitted). The block
+    /// already includes its `## Workspace Context` header.
+    workspaceContext: []const u8,
 ) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
@@ -444,6 +455,15 @@ pub fn build_agent_prompt(
         try result.appendSlice(allocator, cwd);
     }
 
+    // Workspace context (siblings in the same workspace). Rendered
+    // between the cwd line and the OS info so the "you are here"
+    // framing flows: cwd → workspace siblings → OS info. The block
+    // already includes its `## Workspace Context` header (built by
+    // `BuildWorkspaceContext`); we just append it verbatim.
+    if (workspaceContext.len > 0) {
+        try result.appendSlice(allocator, workspaceContext);
+    }
+
     // OS info.
     const os_name = getCurrentOs();
     try result.appendSlice(allocator, "\n\n**Operating System:** ");
@@ -532,8 +552,8 @@ fn appendSkillsListing(
 
     const cwd_param: ?[]const u8 = if (cwd.len > 0) cwd else null;
 
-    const data = list_skills.listAllSkills(allocator, io, cwd_param, environment) catch return;
-    defer list_skills.freeSkillsListData(allocator, data);
+    const data = tool_list_skills_mod.listAllSkills(allocator, io, cwd_param, environment) catch return;
+    defer tool_list_skills_mod.freeSkillsListData(allocator, data);
 
     if (data.global_skills.len == 0 and data.local_skills.len == 0) return;
 

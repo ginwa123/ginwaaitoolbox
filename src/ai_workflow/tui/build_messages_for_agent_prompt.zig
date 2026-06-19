@@ -88,7 +88,14 @@ pub fn buildMessages(
     const sub_agents_listing = try BuildSubAgentsListing(allocator, db, session_id);
     defer allocator.free(sub_agents_listing);
 
-    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment, sub_agents_listing);
+    // Build the "Workspace Context" section listing the workspace items
+    // and tasks in the same workspace as the current task. Returns `""`
+    // when the session is not bound to any workspace_item_task (caller
+    // omits the section silently — matches `appendSkillsListing` behavior).
+    const workspaceContext = try BuildWorkspaceContext(allocator, db, session_id);
+    defer allocator.free(workspaceContext);
+
+    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment, sub_agents_listing, workspaceContext);
 
     // Render inherited parent conversation history (if requested) and append
     // it to the system prompt as a labelled, read-only block.
