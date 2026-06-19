@@ -27,6 +27,7 @@ test {
     _ = @import("http_handlers/routines_run_test.zig");
     _ = @import("http_handlers/routines_list_test.zig");
     _ = @import("http_handlers/memories_crud_test.zig");
+    _ = @import("http_handlers/local_memories_crud_test.zig");
     _ = @import("llm_history_routines_test.zig");
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     _ = @import("http_handlers/workspace_items_reorder_test.zig");

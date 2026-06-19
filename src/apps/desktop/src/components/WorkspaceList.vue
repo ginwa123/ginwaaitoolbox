@@ -586,14 +586,15 @@ const handleItemDragEnd = () => {
                   <span>Add Project</span>
                 </button>
               </li>
-              <li class="opacity-50 pointer-events-none" title="Coming soon">
+              <li>
                 <button
-                  class="w-full px-3 py-2 text-left text-sm flex items-center gap-2 cursor-not-allowed"
-                  style="color: var(--semantic-text-dim);"
-                  disabled
+                  @click="handleAddItem(workspace.id, 'memory')"
+                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity flex items-center gap-2"
+                  style="color: var(--semantic-text);"
+                  data-testid="add-memory-button"
                 >
                   <span>Add Markdown</span>
-                  <span class="text-xs">(Dev)</span>
+                  <span class="text-xs opacity-70">(Dev)</span>
                 </button>
               </li>
             </ul>
