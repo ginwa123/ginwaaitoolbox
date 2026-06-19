@@ -1,5 +1,6 @@
 
 test {
+    _ = @import("build_messages_for_agent_prompt_test.zig");
     _ = @import("handle_tool_test.zig");
     _ = @import("inherited_context_test.zig");
     _ = @import("migration_performance_indexes_test.zig");

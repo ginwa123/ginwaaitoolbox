@@ -49,6 +49,7 @@ test "build_agent_prompt with no environment: no Global Knowledge section" {
         "",
         null,
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -102,6 +103,7 @@ test "build_agent_prompt loads memory files into Global Knowledge section" {
         "",
         &env,
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -139,6 +141,7 @@ test "build_agent_prompt: empty memories dir, no Global Knowledge section" {
         &tools,
         "",
         &env,
+        "",
         "",
     );
     defer alloc.free(prompt);
@@ -226,6 +229,7 @@ test "build_agent_prompt lists global and local skills in Available Skills secti
         "",
         &env,
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -311,6 +315,7 @@ test "build_agent_prompt Available Skills section includes absolute file path an
         "",
         &env,
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -384,6 +389,7 @@ test "build_agent_prompt omits Available Skills section when list_skills tool is
         "",
         &env,
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -411,6 +417,7 @@ test "build_agent_prompt silently skips Available Skills when env is null" {
         &tools,
         "",
         null, // ← env is null
+        "",
         "",
     );
     defer alloc.free(prompt);
@@ -460,6 +467,7 @@ test "build_agent_prompt injects Local Knowledge section from <cwd>/.nalar/memor
         &tools,
         "",
         null, // env is null — only local knowledge should be present
+        "",
         "",
     );
     defer alloc.free(prompt);
@@ -542,6 +550,7 @@ test "build_agent_prompt renders Local and Global Knowledge together when both e
         "",
         &env,
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -587,6 +596,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories does n
         "",
         null,
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -612,6 +622,7 @@ test "build_agent_prompt omits Local Knowledge when cwd is empty" {
         &tools,
         "",
         null,
+        "",
         "",
     );
     defer alloc.free(prompt);
@@ -653,6 +664,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories has no
         &tools,
         "",
         null,
+        "",
         "",
     );
     defer alloc.free(prompt);
@@ -789,6 +801,7 @@ test "build_agent_prompt with sub_agents_listing: section is rendered when non-e
         "",
         null,
         sub_agents_listing,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -813,6 +826,7 @@ test "build_agent_prompt with sub_agents_listing: section is omitted when empty"
         "",
         null,
         "", // empty sub_agents_listing
+        "",
     );
     defer alloc.free(prompt);
 
@@ -1305,4 +1319,111 @@ test "loadLocalKnowledge skips a corrupt file and loads the rest" {
     try std.testing.expect(contains(result, "### Good Memory (`working.md`)"));
     try std.testing.expect(contains(result, "This file loads fine."));
     try std.testing.expect(!contains(result, "broken.md"));
+}
+
+// ---------------------------------------------------------------------------
+// build_agent_prompt — Workspace Context section
+// ---------------------------------------------------------------------------
+//
+// The Workspace Context section is a pre-rendered markdown block built by
+// `BuildWorkspaceContext` in `build_messages_for_agent_prompt.zig`. It is
+// threaded through `buildMessages` → `build_agent_prompt` as the new last
+// parameter. These tests verify the wiring: when the block is non-empty, it
+// is appended to the prompt verbatim between the cwd line and the OS info.
+// When empty, the section is silently omitted.
+
+test "build_agent_prompt renders Workspace Context when section is non-empty" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tools = [_]AgentTool{};
+    // Realistic Workspace Context block (the same shape produced by
+    // `BuildWorkspaceContext` in `build_messages_for_agent_prompt.zig`).
+    // The block starts with "\n\n## Workspace Context" and includes the
+    // self marker, item names, paths, and per-item task lists.
+    const workspaceContext =
+        \\## Workspace Context
+        \\
+        \\This task is part of workspace `ws_smoke`. The other items in this
+        \\workspace are listed below for discovery.
+        \\
+        \\- **Frontend** (item_type: `chat`, path: `/tmp/frontend`) *(this task)*
+        \\  - task: `Setup` (type: standard, session: `sess_self`)
+        \\  - task: `Build` (type: standard)
+        \\- **Backend** (item_type: `chat`, path: `/tmp/backend`)
+        \\  - task: `API` (type: standard, session: `sess_backend`)
+        \\
+    ;
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "",
+        workspaceContext,
+    );
+    defer alloc.free(prompt);
+
+    // Section header is present.
+    try std.testing.expect(contains(prompt, "## Workspace Context"));
+    // Self marker is present.
+    try std.testing.expect(contains(prompt, "*(this task)*"));
+    // Item names are present.
+    try std.testing.expect(contains(prompt, "**Frontend**"));
+    try std.testing.expect(contains(prompt, "**Backend**"));
+    // Item paths are present.
+    try std.testing.expect(contains(prompt, "`/tmp/frontend`"));
+    try std.testing.expect(contains(prompt, "`/tmp/backend`"));
+    // Task names are present.
+    try std.testing.expect(contains(prompt, "`Setup`"));
+    try std.testing.expect(contains(prompt, "`Build`"));
+    try std.testing.expect(contains(prompt, "`API`"));
+    // Session IDs are present.
+    try std.testing.expect(contains(prompt, "session: `sess_self`"));
+    try std.testing.expect(contains(prompt, "session: `sess_backend`"));
+
+    // Workspace Context is rendered between cwd and OS info.
+    const cwd_pos = std.mem.indexOf(u8, prompt, "**Current working directory:**") orelse
+        return error.CwdLineMissing;
+    const ws_pos = std.mem.indexOf(u8, prompt, "## Workspace Context") orelse
+        return error.WorkspaceContextMissing;
+    const os_pos = std.mem.indexOf(u8, prompt, "**Operating System:**") orelse
+        return error.OsLineMissing;
+    try std.testing.expect(cwd_pos < ws_pos);
+    try std.testing.expect(ws_pos < os_pos);
+}
+
+test "build_agent_prompt omits Workspace Context when section is empty" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tools = [_]AgentTool{};
+    // workspaceContext is "" — mirrors the production behavior when
+    // the session is not bound to any workspace_item_task.
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "",
+        "", // empty workspaceContext
+    );
+    defer alloc.free(prompt);
+
+    // No Workspace Context section is rendered.
+    try std.testing.expect(!contains(prompt, "## Workspace Context"));
+    // No self-marker text either.
+    try std.testing.expect(!contains(prompt, "*(this task)*"));
 }

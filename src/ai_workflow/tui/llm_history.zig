@@ -2343,6 +2343,278 @@ pub fn listAllWorkspaceItems(
 }
 
 // =============================================================================
+// Workspace Context (used by build_messages_for_agent_prompt.zig to render
+// the `## Workspace Context` section of the system prompt — see
+// docs/plans/2026-06-19-workspace-siblings-in-prompt.md, Chunk 1)
+// =============================================================================
+
+/// Maximum number of sibling items returned per session. When a
+/// workspace has more items than this, the helper renders the
+/// first 20 (sorted with `is_self` first) and reports
+/// `truncated_items_count = total_item_count - MAX_SIBLING_ITEMS`.
+/// Centralized here as a `pub const` so the Chunk 2 renderer
+/// (`BuildWorkspaceContext` in `build_messages_for_agent_prompt.zig`)
+/// can reuse the same value to format the cap footer.
+pub const MAX_SIBLING_ITEMS: u32 = 20;
+
+/// Maximum number of tasks listed under each sibling item.
+pub const MAX_TASKS_PER_ITEM: u32 = 5;
+
+/// Context for the "Workspace Context" dynamic prompt section.
+/// Returned by `getWorkspaceContext`; the tui layer's
+/// `BuildWorkspaceContext` consumes this struct and renders
+/// the markdown block.
+pub const WorkspaceContext = struct {
+    workspace_id: []u8,
+    self_item_id: []u8, // task's own item id
+    self_task_id: []u8, // task's own id
+    self_path: ?[]u8, // task's own item path (cwd hint)
+    siblings: []SiblingItem, // all items in the same workspace, self first
+    truncated_items_count: u32, // > 0 when 20-item cap hit
+    total_item_count: u32, // for diagnostic footer
+
+    pub const SiblingItem = struct {
+        id: []u8,
+        item_type: []u8,
+        name: ?[]u8,
+        path: ?[]u8,
+        is_self: bool,
+        tasks: []SiblingTask, // ≤ MAX_TASKS_PER_ITEM
+        truncated_tasks_count: u32, // > 0 when 5-task cap hit
+
+        pub const SiblingTask = struct {
+            id: []u8,
+            name: []u8,
+            task_type: []u8,
+            session_id: ?[]u8,
+        };
+
+        /// Free the per-item allocations. Mirrors the parent's
+        /// `WorkspaceContext.deinit` shape so callers that iterate
+        /// `siblings` and free each entry don't have to inline
+        /// the cleanup at every call site (see Pitfall 3 in the
+        /// plan — Zig 0.16 requires struct methods to be declared
+        /// inside the struct body).
+        pub fn deinit(self: SiblingItem, allocator: std.mem.Allocator) void {
+            allocator.free(self.id);
+            allocator.free(self.item_type);
+            if (self.name) |n| allocator.free(n);
+            if (self.path) |p| allocator.free(p);
+            for (self.tasks) |t| {
+                allocator.free(t.id);
+                allocator.free(t.name);
+                allocator.free(t.task_type);
+                if (t.session_id) |sid| allocator.free(sid);
+            }
+            allocator.free(self.tasks);
+        }
+    };
+
+    /// Free all heap-allocated fields of this `WorkspaceContext`.
+    /// Callers MUST call `deinit` on a non-null value returned by
+    /// `getWorkspaceContext` exactly once.
+    pub fn deinit(self: WorkspaceContext, allocator: std.mem.Allocator) void {
+        allocator.free(self.workspace_id);
+        allocator.free(self.self_item_id);
+        allocator.free(self.self_task_id);
+        if (self.self_path) |p| allocator.free(p);
+        for (self.siblings) |sib| sib.deinit(allocator);
+        allocator.free(self.siblings);
+    }
+};
+
+/// Look up the workspace context for a session. Returns `null`
+/// when the session is not bound to any `workspace_item_task`
+/// (the caller omits the section silently in that case — matches
+/// `appendSkillsListing` behavior).
+///
+/// Anchor: `workspace_item_tasks.session_id = ?` → task → item → workspace.
+/// Then enumerate `workspace_items WHERE workspace_id = ?` (capped at
+/// `MAX_SIBLING_ITEMS`, ordered with self first). For each item,
+/// enumerate its tasks (capped at `MAX_TASKS_PER_ITEM`).
+///
+/// SQL convention: all tables are aliased (`wi` for workspace_items,
+/// `t` for workspace_item_tasks) per the project's
+/// `nalar-sql-alias-tables` memory rule.
+pub fn getWorkspaceContext(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !?WorkspaceContext {
+    if (session_id.len == 0) return null;
+
+    // 1. Anchor: find the task bound to this session.
+    const anchor_sql =
+        \\SELECT t.id, t.workspace_item_id, wi.workspace_id, wi.path
+        \\FROM workspace_item_tasks t
+        \\JOIN workspace_items wi ON wi.id = t.workspace_item_id
+        \\WHERE t.session_id = ?
+    ;
+    var anchor_q = try db.query(allocator, anchor_sql, &.{session_id});
+    defer anchor_q.deinit();
+    const anchor_row = (try anchor_q.next()) orelse return null;
+    const self_task_id = try allocator.dupe(u8, anchor_row.values[0]);
+    const self_item_id = try allocator.dupe(u8, anchor_row.values[1]);
+    const workspace_id = try allocator.dupe(u8, anchor_row.values[2]);
+    const self_path: ?[]u8 = if (anchor_row.values[3].len > 0)
+        try allocator.dupe(u8, anchor_row.values[3])
+    else
+        null;
+    anchor_row.deinit(allocator); // Pitfall 1: pass allocator explicitly, NOT `anchor_row.allocator`
+
+    // 2. Total item count for the "and N more" footer.
+    var count_q = try db.query(allocator,
+        "SELECT COUNT(*) FROM workspace_items wi WHERE wi.workspace_id = ?",
+        &.{workspace_id},
+    );
+    defer count_q.deinit();
+    const count_row = (try count_q.next()) orelse {
+        // Defensive: COUNT(*) should always return a row. If not,
+        // synthesize an empty siblings list so the caller still
+        // gets a usable context.
+        return WorkspaceContext{
+            .workspace_id = workspace_id,
+            .self_item_id = self_item_id,
+            .self_task_id = self_task_id,
+            .self_path = self_path,
+            .siblings = &.{},
+            .truncated_items_count = 0,
+            .total_item_count = 0,
+        };
+    };
+    const total_item_count = try std.fmt.parseInt(u32, count_row.values[0], 10);
+    count_row.deinit(allocator); // Pitfall 1 again
+
+    // 3. Enumerate items (capped at MAX_SIBLING_ITEMS).
+    //
+    // Pitfall 2: SQLite's `LIMIT ?` doesn't bind an integer via the
+    // SqliteBackend's text-binding path. Inline the limit into the
+    // SQL string at build time. Mirrors the project's existing
+    // convention in `routines/model.zig` where index hints are
+    // also inlined (no parameterized LIMIT).
+    const items_sql = try std.fmt.allocPrint(allocator,
+        \\SELECT wi.id, wi.item_type, wi.name, wi.path,
+        \\       (wi.id = ?) AS is_self
+        \\FROM workspace_items wi
+        \\WHERE wi.workspace_id = ?
+        \\ORDER BY is_self DESC, wi.position DESC, wi.id ASC
+        \\LIMIT {d}
+    , .{MAX_SIBLING_ITEMS});
+    defer allocator.free(items_sql);
+
+    var items_q = try db.query(allocator, items_sql, &.{ self_item_id, workspace_id });
+    defer items_q.deinit();
+
+    var siblings: std.ArrayList(WorkspaceContext.SiblingItem) = .empty;
+    errdefer {
+        for (siblings.items) |s| s.deinit(allocator);
+        siblings.deinit(allocator);
+    }
+
+    while (try items_q.next()) |row| {
+        const item_id_owned = try allocator.dupe(u8, row.values[0]);
+        errdefer allocator.free(item_id_owned);
+        const item_type_owned = try allocator.dupe(u8, row.values[1]);
+        const name_owned: ?[]u8 = if (row.values[2].len > 0) try allocator.dupe(u8, row.values[2]) else null;
+        const path_owned: ?[]u8 = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null;
+        const is_self_owned = std.mem.eql(u8, row.values[4], "1");
+        row.deinit(allocator);
+
+        // 4. Enumerate tasks under this item (capped at
+        // MAX_TASKS_PER_ITEM). Same inlined-LIMIT pattern as above.
+        const tasks_sql = try std.fmt.allocPrint(allocator,
+            \\SELECT t.id, t.name, t.task_type, COALESCE(t.session_id, '')
+            \\FROM workspace_item_tasks t
+            \\WHERE t.workspace_item_id = ?
+            \\ORDER BY t.updated_at DESC, t.id ASC
+            \\LIMIT {d}
+        , .{MAX_TASKS_PER_ITEM});
+        defer allocator.free(tasks_sql);
+
+        var tasks_q = try db.query(allocator, tasks_sql, &.{item_id_owned});
+        defer tasks_q.deinit();
+
+        var tasks: std.ArrayList(WorkspaceContext.SiblingItem.SiblingTask) = .empty;
+        errdefer {
+            for (tasks.items) |t| {
+                allocator.free(t.id);
+                allocator.free(t.name);
+                allocator.free(t.task_type);
+                if (t.session_id) |sid| allocator.free(sid);
+            }
+            tasks.deinit(allocator);
+        }
+
+        while (try tasks_q.next()) |trow| {
+            const t_id = try allocator.dupe(u8, trow.values[0]);
+            const t_name = try allocator.dupe(u8, trow.values[1]);
+            const t_type = try allocator.dupe(u8, trow.values[2]);
+            const t_sid: ?[]u8 = if (trow.values[3].len > 0) try allocator.dupe(u8, trow.values[3]) else null;
+            trow.deinit(allocator);
+            try tasks.append(allocator, .{
+                .id = t_id,
+                .name = t_name,
+                .task_type = t_type,
+                .session_id = t_sid,
+            });
+        }
+
+        // 4b. Truncation detection for tasks: see if there are
+        // more tasks than we loaded.
+        var task_count_q = try db.query(allocator,
+            "SELECT COUNT(*) FROM workspace_item_tasks t WHERE t.workspace_item_id = ?",
+            &.{item_id_owned},
+        );
+        defer task_count_q.deinit();
+        const task_count_row = (try task_count_q.next()) orelse {
+            // Defensive — COUNT(*) should always return a row.
+            // Use the loaded count as the truth.
+            try siblings.append(allocator, .{
+                .id = item_id_owned,
+                .item_type = item_type_owned,
+                .name = name_owned,
+                .path = path_owned,
+                .is_self = is_self_owned,
+                .tasks = try tasks.toOwnedSlice(allocator),
+                .truncated_tasks_count = 0,
+            });
+            continue;
+        };
+        const total_tasks: u32 = try std.fmt.parseInt(u32, task_count_row.values[0], 10);
+        task_count_row.deinit(allocator);
+        const truncated_tasks_count: u32 = if (total_tasks > MAX_TASKS_PER_ITEM)
+            total_tasks - MAX_TASKS_PER_ITEM
+        else
+            0;
+
+        try siblings.append(allocator, .{
+            .id = item_id_owned,
+            .item_type = item_type_owned,
+            .name = name_owned,
+            .path = path_owned,
+            .is_self = is_self_owned,
+            .tasks = try tasks.toOwnedSlice(allocator),
+            .truncated_tasks_count = truncated_tasks_count,
+        });
+    }
+
+    const truncated_items_count: u32 = if (total_item_count > MAX_SIBLING_ITEMS)
+        total_item_count - MAX_SIBLING_ITEMS
+    else
+        0;
+
+    return WorkspaceContext{
+        .workspace_id = workspace_id,
+        .self_item_id = self_item_id,
+        .self_task_id = self_task_id,
+        .self_path = self_path,
+        .siblings = try siblings.toOwnedSlice(allocator),
+        .truncated_items_count = truncated_items_count,
+        .total_item_count = total_item_count,
+    };
+}
+
+// =============================================================================
 // Workspace Item Tasks Functions (migrated from workspace_item_tasks_table.zig)
 // =============================================================================
 
