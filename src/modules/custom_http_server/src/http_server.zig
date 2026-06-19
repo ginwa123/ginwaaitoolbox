@@ -347,7 +347,44 @@ pub const GinwaServer = struct {
 
         const rc = socket.accept(self.address.sock_fd, @ptrCast(&client_addr), &addr_len);
         if (rc < 0) return error.AcceptFailed;
-        return @as(i32, @intCast(rc));
+        const fd: i32 = @intCast(rc);
+
+        // Enable TCP keepalive on the accepted client socket so a
+        // silently-dropped connection (Wi-Fi loss, NAT table expiry,
+        // half-open TCP after a peer crash) is detected by the kernel
+        // within ~25s instead of relying solely on the application-
+        // level heartbeat (every 5s in `SseManager.sendHeartbeat`).
+        //
+        // Without keepalive, the server keeps heartbeating into a dead
+        // socket until the next write fails with EPIPE / ECONNRESET,
+        // which can be hours later (Linux default `tcp_keepalive_time`
+        // is 7200s). On a long-idle page that hits a silent network
+        // drop, the eventual disconnect surfaces in the browser as
+        // `net::ERR_INCOMPLETE_CHUNKED_ENCODING 200 (OK)` because the
+        // chunked terminator is only flushed by `removeClient` once
+        // the kernel finally tells us the peer is gone.
+        //
+        // Settings mirror `Agent.apply_tcp_keepalive`
+        // (`src/modules/agent/Agent.zig:793`) so outbound LLM conns
+        // and inbound browser conns fail at the same rate:
+        //   keepidle  = 10s  (first probe after 10s of idle)
+        //   keepintvl = 5s   (probe interval)
+        //   keepcnt   = 3    (give up after 3 failed probes)
+        //   → dead-conn detection in ~10 + 5*3 = 25s.
+        //
+        // `setsockopt` failures are best-effort: the application-
+        // level heartbeat (5s) still works without OS keepalive, it
+        // just won't catch silent drops as quickly.
+        const on: c_int = 1;
+        posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.KEEPALIVE, std.mem.asBytes(&on)) catch {};
+        const keepidle: c_int = 10;
+        posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPIDLE, std.mem.asBytes(&keepidle)) catch {};
+        const keepintvl: c_int = 5;
+        posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPINTVL, std.mem.asBytes(&keepintvl)) catch {};
+        const keepcnt: c_int = 3;
+        posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPCNT, std.mem.asBytes(&keepcnt)) catch {};
+
+        return fd;
     }
 
     pub fn recvFromClient(_: *GinwaServer, fd: i32, buf: []u8) !usize {

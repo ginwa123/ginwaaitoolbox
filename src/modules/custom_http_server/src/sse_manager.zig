@@ -395,7 +395,18 @@ pub const SseManager = struct {
     fn sendHeartbeat(self: *SseManager, loop_id: usize) void {
         const ping = "data: ping\n\n";
 
-        // self.lock.lock(self.io) catch unreachable;
+        // Snapshot the client pointers under the lock. Without the lock,
+        // a concurrent `registerClient` / `removeClient` could invalidate
+        // the iterator or free a client we are about to dereference —
+        // the resulting use-after-free corrupts the heap, and a write to
+        // an already-closed fd can also produce a half-flushed chunked
+        // frame (no terminating `0\r\n\r\n`), which the browser then
+        // surfaces as `net::ERR_INCOMPLETE_CHUNKED_ENCODING 200 (OK)`
+        // after the long-idle page finally drops the connection.
+        // The probability of hitting this race grows with uptime and
+        // concurrent register/remove activity, which matches the
+        // "long period on page" symptom from the user report.
+        self.lock.lock(self.io) catch unreachable;
         var client_ptrs: std.ArrayListUnmanaged(*SseClient) = .empty;
         defer client_ptrs.deinit(self.allocator);
 
@@ -406,7 +417,7 @@ pub const SseManager = struct {
                 client_ptrs.append(self.allocator, entry.value_ptr.*) catch break;
             }
         }
-        // self.lock.unlock(self.io);
+        self.lock.unlock(self.io);
 
         var dead_ids: std.ArrayListUnmanaged([16]u8) = .empty;
         defer dead_ids.deinit(self.allocator);

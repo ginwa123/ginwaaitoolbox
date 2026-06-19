@@ -234,3 +234,171 @@ test "HTTP server: SSE response sets X-Accel-Buffering: no" {
         return error.XAccelBufferingMissing;
     }
 }
+
+// ============================================================================
+// Task 4 (long-period fix #1): sendHeartbeat must take the SseManager lock
+// when snapshotting client pointers.
+//
+// Bug history: the lock was COMMENTED OUT in sendHeartbeat, while
+// broadcast/broadcastTyped correctly take it. Under concurrent
+// registerClient/removeClient activity, the unlocked iterator could
+// be invalidated mid-iteration and the captured `entry.value_ptr.*`
+// could read freed memory (use-after-free). On a long-idle page with
+// many connections, the corruption surfaces as a half-flushed chunked
+// terminator, which the browser reports as
+// `net::ERR_INCOMPLETE_CHUNKED_ENCODING 200 (OK)` once the connection
+// finally drops.
+//
+// This is a static source-check (matching the project's established
+// pattern for "guard against revert" tests, see the 12+ tests in
+// `src/ai_workflow/tui/http_handlers/`). We assert the function body
+// contains BOTH the lock acquisition AND the matching unlock — guards
+// against someone re-commenting the lock again.
+// ============================================================================
+
+const SSE_MANAGER_PATH = "src/modules/custom_http_server/src/sse_manager.zig";
+
+fn readSseManagerSource(allocator: std.mem.Allocator) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        SSE_MANAGER_PATH,
+        allocator,
+        .limited(64 * 1024),
+    );
+}
+
+test "SseManager: sendHeartbeat takes the manager lock during the client snapshot" {
+    const source = try readSseManagerSource(std.testing.allocator);
+    defer std.testing.allocator.free(source);
+
+    // Find the `fn sendHeartbeat` declaration and look at the next ~8 KiB
+    // of body. Anything outside that window is irrelevant — we only care
+    // that the lock is held while iterating `self.clients`, not the
+    // IO loop after the snapshot. The 8 KiB window comfortably covers any
+    // function body in this codebase (the longest observed is ~2.4 KiB).
+    const decl = std.mem.indexOf(u8, source, "fn sendHeartbeat(") orelse {
+        std.debug.print("\n!! sse_manager.zig missing `fn sendHeartbeat` !!\n", .{});
+        return error.SendHeartbeatMissing;
+    };
+    const window_end = @min(decl + 8192, source.len);
+    const body = source[decl..window_end];
+
+    if (std.mem.indexOf(u8, body, "self.lock.lock(self.io)") == null) {
+        std.debug.print(
+            "\n!! sse_manager.zig: sendHeartbeat does not take `self.lock.lock(self.io)` !!\n" ++
+                "   The lock MUST be held while iterating `self.clients`; an unlocked iteration\n" ++
+                "   is a use-after-free race with concurrent registerClient/removeClient.\n",
+            .{},
+        );
+        return error.SendHeartbeatLockMissing;
+    }
+    if (std.mem.indexOf(u8, body, "self.lock.unlock(self.io)") == null) {
+        std.debug.print(
+            "\n!! sse_manager.zig: sendHeartbeat does not release `self.lock` !!\n" ++
+                "   The lock acquired during the client snapshot must be released before the\n" ++
+                "   IO loop, otherwise the manager deadlocks on the next registerClient.\n",
+            .{},
+        );
+        return error.SendHeartbeatUnlockMissing;
+    }
+    // Also guard against the lock being COMMENTED OUT — the regression
+    // that motivated this fix was exactly `// self.lock.lock(...)` with
+    // a leading `//`. A grep for the bare call is not enough; we check
+    // the prefix lines too.
+    if (std.mem.indexOf(u8, body, "// self.lock.lock(self.io)") != null or
+        std.mem.indexOf(u8, body, "// self.lock.unlock(self.io)") != null)
+    {
+        std.debug.print(
+            "\n!! sse_manager.zig: sendHeartbeat lock is commented out !!\n" ++
+                "   Uncomment the `self.lock.lock(self.io)` / `self.lock.unlock(self.io)` lines.\n",
+            .{},
+        );
+        return error.SendHeartbeatLockCommentedOut;
+    }
+}
+
+// ============================================================================
+// Task 5 (long-period fix #2): acceptClient must set SO_KEEPALIVE on every
+// accepted SSE socket.
+//
+// Bug history: the previous acceptClient returned the fd without
+// enabling TCP keepalive. On Linux, the default `tcp_keepalive_time`
+// is 7200s (2 hours), so a silently-dropped connection (Wi-Fi loss,
+// NAT table expiry, half-open TCP after a peer crash) was not detected
+// at the kernel level. The server kept heartbeating into a dead socket
+// for up to 2 hours; when the connection finally closed, the
+// application-level heartbeat races (see Task 4 test above) could
+// produce a half-flushed chunked terminator, which the browser reports
+// as `net::ERR_INCOMPLETE_CHUNKED_ENCODING 200 (OK)`.
+//
+// Settings mirror `Agent.apply_tcp_keepalive`
+// (`src/modules/agent/Agent.zig:793`) so outbound LLM conns and
+// inbound browser conns fail at the same rate:
+//   keepidle  = 10s, keepintvl = 5s, keepcnt = 3
+//   → dead-conn detection in ~25s.
+// ============================================================================
+
+test "HTTP server: acceptClient sets SO_KEEPALIVE on accepted sockets" {
+    const source = try readHttpServerSource(std.testing.allocator);
+    defer std.testing.allocator.free(source);
+
+    // Find the `fn acceptClient` declaration and check the next ~8 KiB
+    // of body — anything outside that window is irrelevant. The 8 KiB
+    // window comfortably covers any function body in this codebase (the
+    // longest observed is ~2.4 KiB for `acceptClient` itself, with
+    // verbose keepalive comment). We assert that the function body
+    // contains both the SO_KEEPALIVE setup AND the TCP keepalive timer
+    // configuration (KEEPIDLE / KEEPINTVL / KEEPCNT), so a future
+    // refactor that drops any of these is caught.
+    const decl = std.mem.indexOf(u8, source, "fn acceptClient(") orelse {
+        std.debug.print("\n!! http_server.zig missing `fn acceptClient` !!\n", .{});
+        return error.AcceptClientMissing;
+    };
+    const window_end = @min(decl + 8192, source.len);
+    const body = source[decl..window_end];
+
+    if (std.mem.indexOf(u8, body, "posix.SO.KEEPALIVE") == null and
+        std.mem.indexOf(u8, body, "SO.KEEPALIVE") == null)
+    {
+        std.debug.print(
+            "\n!! http_server.zig: acceptClient does not set SO_KEEPALIVE !!\n" ++
+                "   Without TCP keepalive, silent network drops (Wi-Fi loss, NAT timeout)\n" ++
+                "   are not detected at the kernel level for up to 2 hours (Linux default).\n" ++
+                "   Add `posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.KEEPALIVE, ...)`\n" ++
+                "   right after `socket.accept(...)` returns.\n",
+            .{},
+        );
+        return error.SoKeepaliveMissing;
+    }
+    if (std.mem.indexOf(u8, body, "posix.TCP.KEEPIDLE") == null and
+        std.mem.indexOf(u8, body, "TCP.KEEPIDLE") == null)
+    {
+        std.debug.print(
+            "\n!! http_server.zig: acceptClient missing TCP_KEEPIDLE !!\n" ++
+                "   SO_KEEPALIVE alone uses the system default (7200s on Linux). For an SSE\n" ++
+                "   server that must detect dead clients within ~25s, override TCP_KEEPIDLE.\n",
+            .{},
+        );
+        return error.TcpKeepidleMissing;
+    }
+    if (std.mem.indexOf(u8, body, "posix.TCP.KEEPINTVL") == null and
+        std.mem.indexOf(u8, body, "TCP.KEEPINTVL") == null)
+    {
+        std.debug.print(
+            "\n!! http_server.zig: acceptClient missing TCP_KEEPINTVL !!\n" ++
+                "   Without an explicit probe interval, the OS uses the system default.\n",
+            .{},
+        );
+        return error.TcpKeepintvlMissing;
+    }
+    if (std.mem.indexOf(u8, body, "posix.TCP.KEEPCNT") == null and
+        std.mem.indexOf(u8, body, "TCP.KEEPCNT") == null)
+    {
+        std.debug.print(
+            "\n!! http_server.zig: acceptClient missing TCP_KEEPCNT !!\n" ++
+                "   Without an explicit probe count, the OS uses the system default.\n",
+            .{},
+        );
+        return error.TcpKeepcntMissing;
+    }
+}
