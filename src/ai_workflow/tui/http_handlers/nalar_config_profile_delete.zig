@@ -133,10 +133,10 @@ pub const ProfileDeleteResponse = struct {
 /// Resolved on-disk config paths. Both slices live for the lifetime
 /// of the request (per-request arena) — no explicit `free` needed.
 /// `path` is `[]const u8` because that's what `std.fs.path.join`
-/// returns in Zig 0.16; `dir` is `[]u8` because that's what
+/// returns in Zig 0.16; `dir` is `[]const u8` because that's what
 /// `config.getDefaultConfigDir` returns.
 const ConfigPaths = struct {
-    dir: []u8,
+    dir: []const u8,
     path: []const u8,
 };
 
@@ -330,10 +330,11 @@ pub fn nalarConfigProfileDeleteHandler(
         return makeErrorResponse(allocator, res, 500, name, "Failed to create config directory");
 
     // 4. Read the existing config file. `null` = file does not exist.
-    const content = readConfigFile(allocator, io, paths.path) catch
-        return makeErrorResponse(allocator, res, 500, name, "Failed to read config")
-    orelse
+    const content = readConfigFile(allocator, io, paths.path) catch {
+        return makeErrorResponse(allocator, res, 500, name, "Failed to read config");
+    } orelse {
         return makeErrorResponse(allocator, res, 404, name, "No config file exists");
+    };
 
     // 5. Parse the existing config. On failure, `content` is freed by
     //    the arena (per-request reaps request-scoped allocations).
