@@ -37,7 +37,11 @@ pub const set_git_worktree_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "set_git_worktree",
-        .description = "Create a git worktree at an absolute path you provide and bind it as the session's working directory. The worktree can be in any folder (e.g. '/home/me/project/.worktrees/auth-fix', '/tmp/experiments/x', or anywhere else). While bound, bash/read_file/write_file/text_replace/glob/search operate on the worktree instead of the session's original cwd. The branch defaults to 'worktree/<basename(path)>'. Call again with a different path to switch the binding to that worktree. Pass clear=true to remove the worktree directory and clear the binding.",
+        .description =
+            \\Create a git worktree at an absolute path you provide and bind it as the session's working directory. The worktree can be in any folder (e.g. '/home/me/project/.worktrees/auth-fix', '/tmp/experiments/x', or anywhere else). While bound, bash/read_file/write_file/text_replace/glob/search operate on the worktree instead of the session's original cwd. The branch defaults to 'worktree/<basename(path)>'. Call again with a different path to switch the binding to that worktree. Pass clear=true to remove the worktree directory and clear the binding.
+            \\
+            \\On error, recover by: (1) the tool pre-checks for path collisions before invoking git, so a "path already exists" error means the path is occupied by an existing worktree — pass `branch=<existing-branch>` to auto-bind to it, or pick a different path; (2) for branch conflicts (a different worktree already has the same branch checked out), pass `branch=''` to use the auto-derived name `worktree/<basename(path)>`; (3) NEVER `rm -rf` the conflicting path — there may be uncommitted work in it. Use `bash` + `git -C <repo> worktree list --porcelain` to inspect the current state if the error is unclear.
+        ,
         .parameters = .{
             .type = "object",
             .properties = &.{
@@ -104,6 +108,348 @@ pub fn deriveBranchFromPath(
 ) ![]u8 {
     const basename = std.fs.path.basename(path);
     return try std.fmt.allocPrint(allocator, "worktree/{s}", .{basename});
+}
+
+/// Classified state of a candidate worktree path. Returned by
+/// `classifyPath`. The strings inside `plain_directory`,
+/// `orphaned_worktree`, and `registered_worktree` are owned by the
+/// returned value — the caller is responsible for freeing them
+/// (typically by `classifyPath`'s `defer allocator.free` idiom or
+/// by extracting the slices and using them before the classifyPath
+/// scope exits).
+pub const PathState = union(enum) {
+    /// Path does not exist on disk. Git worktree add will create it.
+    not_found,
+    /// Path exists but has no `.git` file — a plain leftover directory.
+    plain_directory: []const u8,
+    /// Path exists, has a `.git` file, but is NOT in
+    /// `git worktree list --porcelain`. The string is the gitdir value
+    /// (e.g. `/abs/repo/.git/worktrees/foo`).
+    orphaned_worktree: []const u8,
+    /// Path exists AND is a registered worktree. All strings are owned
+    /// by this struct.
+    registered_worktree: RegisteredWorktree,
+
+    pub const RegisteredWorktree = struct {
+        /// Branch reference as reported by git, e.g. `refs/heads/refactor/x`.
+        /// Empty string when the worktree is in detached HEAD state.
+        branch_ref: []const u8,
+        /// Short branch name (branch_ref minus the `refs/heads/` prefix),
+        /// or empty string when detached.
+        branch: []const u8,
+        /// HEAD commit SHA (40 hex chars).
+        commit: []const u8,
+        /// Absolute path as reported by git worktree list.
+        path: []const u8,
+    };
+};
+
+/// Classify the state of `target` relative to the git worktree system
+/// rooted at `repo_root`. Pure (no side effects beyond the returned
+/// allocations). Errors only on allocation failure; on any unexpected
+/// git state, returns a best-effort classification.
+///
+/// `repo_root` must be the absolute path to the git repository root
+/// (NOT a worktree path — git worktree list is run from there).
+pub fn classifyPath(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    repo_root: []const u8,
+    target: []const u8,
+) !PathState {
+    // ── 1. Does `target` exist on disk? ──────────────────────────────
+    std.Io.Dir.cwd().access(io, target, .{}) catch |err| switch (err) {
+        error.FileNotFound => return .not_found,
+        else => {
+            // Permission denied, etc. — treat as "exists but unreadable".
+            // We can't classify further without disk access.
+            return .{
+                .plain_directory = try std.fmt.allocPrint(
+                    allocator,
+                    "path exists but is unreadable: {s}",
+                    .{@errorName(err)},
+                ),
+            };
+        },
+    };
+
+    // ── 2. Is target a registered worktree? ──────────────────────────
+    const list_output = runGitWorktreeList(allocator, io, repo_root) catch |err| blk: {
+        // If git worktree list itself fails (rare — usually means
+        // repo_root is not a git repo), fall back to checking the .git file.
+        std.debug.print("classifyPath: git worktree list failed: {s}\n", .{@errorName(err)});
+        break :blk try allocator.dupe(u8, "");
+    };
+    defer allocator.free(list_output);
+
+    var line_it = std.mem.splitScalar(u8, list_output, '\n');
+    var current_block: std.ArrayList(u8) = .empty;
+    defer current_block.deinit(allocator);
+
+    while (line_it.next()) |line| {
+        if (line.len == 0) {
+            // Blank line separates blocks. Check this block.
+            if (current_block.items.len > 0) {
+                if (try parseAndMatchBlock(
+                    allocator,
+                    current_block.items,
+                    target,
+                )) |rwt| {
+                    return .{ .registered_worktree = rwt };
+                }
+                current_block.clearRetainingCapacity();
+            }
+        } else {
+            current_block.appendSlice(allocator, line) catch continue;
+            current_block.append(allocator, '\n') catch continue;
+        }
+    }
+    // Trailing block without final blank line (rare but possible).
+    if (current_block.items.len > 0) {
+        if (try parseAndMatchBlock(allocator, current_block.items, target)) |rwt| {
+            return .{ .registered_worktree = rwt };
+        }
+    }
+
+    // ── 3. Exists but not a registered worktree. .git file? ──────────
+    const git_path = std.fs.path.joinZ(allocator, &.{ target, ".git" }) catch {
+        return .{ .plain_directory = try allocator.dupe(u8, "unclassifiable") };
+    };
+    defer allocator.free(git_path);
+
+    const git_contents = std.Io.Dir.cwd().readFileAlloc(
+        io, git_path, allocator, .limited(std.Io.Dir.max_path_bytes),
+    ) catch {
+        // No .git file → plain directory.
+        const msg = try std.fmt.allocPrint(
+            allocator, "plain directory at {s}", .{target},
+        );
+        return .{ .plain_directory = msg };
+    };
+    defer allocator.free(git_contents);
+
+    // .git file points at /abs/repo/.git/worktrees/<name>
+    if (std.mem.startsWith(u8, git_contents, "gitdir: ")) {
+        return .{ .orphaned_worktree = try allocator.dupe(
+            u8,
+            git_contents["gitdir: ".len..],
+        ) };
+    }
+    // .git file is malformed (e.g. raw gitdir without "gitdir: " prefix).
+    return .{ .plain_directory = try std.fmt.allocPrint(
+        allocator, "malformed .git file at {s}: {s}", .{ target, git_contents },
+    ) };
+}
+
+/// Parse one block of `git worktree list --porcelain` output and return
+/// the registered worktree if its `path` matches `target`. Returns
+/// `null` if the block is for a different worktree.
+///
+/// One block looks like:
+/// ```
+/// worktree /abs/path
+/// HEAD 0123456789abcdef...
+/// branch refs/heads/refactor/x
+/// ```
+/// (The `branch` line is absent for detached HEAD worktrees.)
+fn parseAndMatchBlock(
+    allocator: std.mem.Allocator,
+    block: []const u8,
+    target: []const u8,
+) !?PathState.RegisteredWorktree {
+    var worktree_path: ?[]const u8 = null;
+    var commit: ?[]const u8 = null;
+    var branch_ref_raw: ?[]const u8 = null;
+
+    var line_it = std.mem.splitScalar(u8, block, '\n');
+    while (line_it.next()) |line| {
+        if (std.mem.startsWith(u8, line, "worktree ")) {
+            worktree_path = line["worktree ".len..];
+        } else if (std.mem.startsWith(u8, line, "HEAD ")) {
+            commit = line["HEAD ".len..];
+        } else if (std.mem.startsWith(u8, line, "branch ")) {
+            branch_ref_raw = line["branch ".len..];
+        }
+        // "detached" line is present for detached HEAD; we just ignore it.
+    }
+
+    const wt_path = worktree_path orelse return null;
+    if (!std.mem.eql(u8, wt_path, target)) return null;
+
+    const commit_owned = try allocator.dupe(u8, commit orelse "");
+    errdefer allocator.free(commit_owned);
+
+    const branch_ref_owned = if (branch_ref_raw) |br|
+        try allocator.dupe(u8, br)
+    else
+        try allocator.dupe(u8, "");
+    errdefer allocator.free(branch_ref_owned);
+
+    // Derive short branch name from refs/heads/X.
+    const short_branch: []u8 = if (branch_ref_raw) |br| brblk: {
+        if (std.mem.startsWith(u8, br, "refs/heads/")) {
+            break :brblk try allocator.dupe(u8, br["refs/heads/".len..]);
+        }
+        break :brblk try allocator.dupe(u8, br);
+    } else blk: {
+        break :blk try allocator.dupe(u8, "");
+    };
+    errdefer allocator.free(short_branch);
+
+    return .{
+        .branch_ref = branch_ref_owned,
+        .branch = short_branch,
+        .commit = commit_owned,
+        .path = try allocator.dupe(u8, wt_path),
+    };
+}
+
+/// Run `git -C <repo_root> worktree list --porcelain` and return the
+/// raw stdout. On non-zero exit, returns a diagnostic string suitable
+/// for surfacing in tool errors. The caller owns the returned slice.
+fn runGitWorktreeList(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    repo_root: []const u8,
+) ![]u8 {
+    var child = std.process.spawn(io, .{
+        .argv = &.{
+            "git", "worktree", "list", "--porcelain",
+        },
+        .cwd = .{ .path = repo_root },
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    }) catch |err| {
+        std.debug.print("git worktree list spawn failed: {s}\n", .{@errorName(err)});
+        return try std.fmt.allocPrint(
+            allocator,
+            "failed to spawn git worktree list: {s}",
+            .{@errorName(err)},
+        );
+    };
+
+    const stdout_pipe = child.stdout orelse {
+        const term = child.wait(io) catch {
+            return try allocator.dupe(u8, "git worktree list: wait failed (no stdout pipe)");
+        };
+        return switch (term) {
+            .exited => |code| if (code == 0)
+                try allocator.dupe(u8, "")
+            else
+                try std.fmt.allocPrint(
+                    allocator,
+                    "git worktree list exited with code {d} (no stdout captured)",
+                    .{code},
+                ),
+            .signal => try allocator.dupe(u8, "git worktree list killed by signal (no stdout)"),
+            else => try allocator.dupe(u8, "git worktree list terminated abnormally (no stdout)"),
+        };
+    };
+
+    var stdout_buf: std.ArrayList(u8) = .empty;
+    defer stdout_buf.deinit(allocator);
+
+    var read_buf: [4096]u8 = undefined;
+    while (true) {
+        const n = std.Io.File.readStreaming(stdout_pipe, io, &.{&read_buf}) catch break;
+        if (n == 0) break;
+        if (stdout_buf.items.len < 64 * 1024) {
+            const take = @min(n, 64 * 1024 - stdout_buf.items.len);
+            stdout_buf.appendSlice(allocator, read_buf[0..take]) catch break;
+        }
+    }
+
+    const term = child.wait(io) catch {
+        return try allocator.dupe(u8, "git worktree list: failed to wait for child process");
+    };
+    return switch (term) {
+        .exited => |code| {
+            if (code == 0) return try allocator.dupe(u8, stdout_buf.items);
+            std.debug.print("git worktree list failed (exit={d})\n", .{code});
+            return try std.fmt.allocPrint(
+                allocator,
+                "git worktree list exited with code {d}",
+                .{code},
+            );
+        },
+        .signal => try allocator.dupe(u8, "git worktree list was killed by a signal"),
+        else => try allocator.dupe(u8, "git worktree list terminated abnormally"),
+    };
+}
+
+/// "Are these two branches the same logical work?" Returns true if both
+/// branches share a known project-prefix family
+/// (`refactor/`, `feature/`, `fix/`, `feat/`). Empty branches are never
+/// compatible. Used by `executeSetGitWorktreeToString` to decide
+/// whether an existing worktree at the path is a reasonable auto-bind
+/// candidate for a new request.
+pub fn isCompatibleBranchFamily(a: []const u8, b: []const u8) bool {
+    if (a.len == 0 or b.len == 0) return false;
+    const families = [_][]const u8{ "refactor/", "feature/", "fix/", "feat/" };
+    for (families) |prefix| {
+        if (std.mem.startsWith(u8, a, prefix) and
+            std.mem.startsWith(u8, b, prefix)) return true;
+    }
+    return false;
+}
+
+/// Rewrite a raw git stderr string into a tool-friendly error message
+/// that points the LLM at a recovery path. The default (no match) is
+/// to return the raw stderr verbatim — we never lose information that
+/// git provided, we only ADD context for the common cases.
+///
+/// Caller owns the returned slice.
+pub fn rewriteGitStderr(
+    allocator: std.mem.Allocator,
+    raw_stderr: []const u8,
+    worktree_path: []const u8,
+    branch: []const u8,
+) ![]u8 {
+    if (raw_stderr.len == 0) return try allocator.dupe(u8, "");
+
+    // 1. "fatal: 'X' already exists" — precheck should have caught this,
+    //    but if a race or precheck failure let it through, give actionable
+    //    advice here.
+    if (std.mem.indexOf(u8, raw_stderr, "already exists") != null) {
+        return try std.fmt.allocPrint(allocator,
+            "the directory '{s}' already exists on disk and could not be auto-bound. " ++
+            "Either pick a different path, or run `git -C <repo> worktree list --porcelain` " ++
+            "to see which branch currently occupies it, then re-call set_git_worktree with " ++
+            "`branch=<existing-branch>` to bind to it.",
+            .{worktree_path});
+    }
+    // 2. "fatal: 'X' is already checked out at 'Y'" — branch conflict,
+    //    not a path conflict. The fix is to pick a different branch
+    //    name (or let it default to worktree/<basename>).
+    if (std.mem.indexOf(u8, raw_stderr, "is already checked out") != null) {
+        return try std.fmt.allocPrint(allocator,
+            "branch '{s}' is already checked out by another worktree. " ++
+            "Pass `branch=''` (empty) to use the auto-derived branch name " ++
+            "`worktree/<basename(path)>`, or pick a different branch name.",
+            .{branch});
+    }
+    // 3. "fatal: not a git repository" — the session's cwd isn't in a
+    //    git repo. This usually means the session was started outside
+    //    of one, or a parent process chdir'd away.
+    if (std.mem.indexOf(u8, raw_stderr, "not a git repository") != null) {
+        return try allocator.dupe(u8,
+            "the current working directory is not inside a git repository. " ++
+            "set_git_worktree requires being called from within a git repo " ++
+            "(or a worktree of one).",
+        );
+    }
+    // 4. "fatal: invalid reference: X" — branch name has bad characters.
+    if (std.mem.indexOf(u8, raw_stderr, "invalid reference") != null) {
+        return try std.fmt.allocPrint(allocator,
+            "the branch name '{s}' is invalid (git refused it). " ++
+            "Valid branch names must not contain spaces, '..', '~', '^', ':', " ++
+            "'?', '*', '[', '\\', and may not end with '.lock' or '/'.",
+            .{branch});
+    }
+    // 5. Default: return the raw stderr verbatim. The user (LLM) gets
+    //    exactly what git said, no more, no less.
+    return try allocator.dupe(u8, raw_stderr);
 }
 
 /// Read the session's current `git_worktree_cwd` from the DB.
@@ -334,6 +680,60 @@ pub fn executeSetGitWorktreeToString(
     defer if (branch_owned) |b| allocator.free(b);
     const branch: []const u8 = if (input.branch.len > 0) input.branch else branch_owned.?;
 
+    // ── Precheck: classify the path before invoking git ──────────────────
+    // Avoids the "fatal: '...' already exists" raw stderr the LLM has to
+    // guess about. If the path is already a worktree on a compatible
+    // branch, auto-bind (success) and let the session start working.
+    // If incompatible, surface the existing branch + recovery options.
+    {
+        const state = classifyPath(allocator, io, cwd, worktree_path) catch |err| blk: {
+            // classifyPath only fails on alloc; fall through to git and
+            // let it produce a normal error.
+            std.debug.print("set_git_worktree: classifyPath failed: {s}\n", .{@errorName(err)});
+            break :blk PathState{ .not_found = {} };
+        };
+        // Free the state when we leave this scope (any variant with owned slices).
+        defer freePathState(allocator, state);
+        switch (state) {
+            .not_found => {
+                // Normal path: fall through to git worktree add.
+            },
+            .registered_worktree => |rwt| {
+                // Path is already a worktree. Is the requested branch the same
+                // (or a compatible family member)? If so, auto-bind; if not,
+                // surface a structured error so the LLM can decide.
+                const branch_matches = std.mem.eql(u8, rwt.branch, branch) or
+                    std.mem.eql(u8, rwt.branch_ref, branch);
+                const branch_compatible = isCompatibleBranchFamily(rwt.branch, branch);
+                if (branch_matches or branch_compatible) {
+                    std.debug.print(
+                        "set_git_worktree: auto-bound session {s} to existing worktree on branch {s}\n",
+                        .{ session_id, rwt.branch },
+                    );
+                    return successSetToXml(allocator, session_id, worktree_path, rwt.branch);
+                }
+                return xmlError(allocator, session_id, try std.fmt.allocPrint(allocator,
+                    "path '{s}' is already a worktree on branch '{s}' (you requested '{s}'). " ++
+                    "Either pick a different path, or pass branch='{s}' to bind to the existing worktree, " ++
+                    "or ask the user how to resolve the conflict (merge, rename, or remove the existing branch).",
+                    .{ worktree_path, rwt.branch, branch, rwt.branch }));
+            },
+            .orphaned_worktree => |gitdir| {
+                return xmlError(allocator, session_id, try std.fmt.allocPrint(allocator,
+                    "path '{s}' is an orphaned worktree directory (has .git file pointing at {s}, " ++
+                    "but is not registered with git). Run `git worktree prune && rm -rf {s}` to clean up, " ++
+                    "then retry set_git_worktree.",
+                    .{ worktree_path, gitdir, worktree_path }));
+            },
+            .plain_directory => |desc| {
+                return xmlError(allocator, session_id, try std.fmt.allocPrint(allocator,
+                    "path '{s}' already exists but is not a worktree directory ({s}). " ++
+                    "Remove it manually (after backing up any important content) or pick a different path.",
+                    .{ worktree_path, desc }));
+            },
+        }
+    }
+
     // runGitWorktreeAdd returns the captured git stderr on failure (or a
     // descriptive fallback including the exit code). Empty string = success.
     // We surface this directly in the XML error so the user sees WHY git
@@ -346,9 +746,35 @@ pub fn executeSetGitWorktreeToString(
     };
     defer allocator.free(git_detail);
     if (git_detail.len > 0) {
-        return xmlError(allocator, session_id, git_detail);
+        // Precheck may have let git run (race or precheck failure);
+        // rewrite the raw stderr to add recovery guidance for the
+        // common cases (path collision, branch conflict, non-repo cwd,
+        // invalid branch name). Unknown stderr patterns pass through
+        // unchanged.
+        const rewritten = rewriteGitStderr(allocator, git_detail, worktree_path, branch) catch |err| blk: {
+            std.debug.print("set_git_worktree: rewriteGitStderr failed: {s}\n", .{@errorName(err)});
+            break :blk git_detail;
+        };
+        defer if (rewritten.ptr != git_detail.ptr) allocator.free(rewritten);
+        return xmlError(allocator, session_id, rewritten);
     }
     return successSetToXml(allocator, session_id, worktree_path, branch);
+}
+
+/// Free the owned slices inside a `PathState`. Safe to call on any
+/// variant (no-op for `not_found`, frees the string for the others).
+pub fn freePathState(allocator: std.mem.Allocator, state: PathState) void {
+    switch (state) {
+        .not_found => {},
+        .plain_directory => |s| allocator.free(s),
+        .orphaned_worktree => |s| allocator.free(s),
+        .registered_worktree => |rwt| {
+            allocator.free(rwt.branch_ref);
+            allocator.free(rwt.branch);
+            allocator.free(rwt.commit);
+            allocator.free(rwt.path);
+        },
+    }
 }
 
 /// Generate success XML response for the SET path case.
