@@ -23,6 +23,10 @@ pub const memory = @import("memory.zig");
 pub const special = @import("special.zig");
 pub const agentic = @import("agentic.zig");
 
+// Security section — re-exported so the outer `prompts.zig` can wire it into
+// the rendered system prompt without an extra import path.
+pub const PromptInjectionDefense = memory.PromptInjectionDefense;
+
 // Re-export for convenience
 pub const UniversalRules = core.UniversalRules;
 pub const PromptAutoFix = core.PromptAutoFix;

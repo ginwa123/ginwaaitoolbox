@@ -42,6 +42,7 @@ pub const MemoryPrompt = prompts.MemoryPrompt;
 pub const NalarMdAutoUpdate = prompts.NalarMdAutoUpdate;
 pub const GitPrompt = prompts.GitPrompt;
 pub const GlobalMemorySystem = prompts.GlobalMemorySystem;
+pub const PromptInjectionDefense = prompts.PromptInjectionDefense;
 pub const CompactionAgent = prompts.CompactionAgent;
 pub const GenerateSessionNameAgent = prompts.GenerateSessionNameAgent;
 pub const SkillsUsage = prompts.SkillsUsage;
@@ -173,6 +174,13 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
         .content = GlobalMemorySystem,
     },
     .{ .name = "git_prompt", .content = GitPrompt },
+
+    // === Security: prompt injection defense (always rendered) ===
+    // Fundamental security rule — every agent must see it regardless of
+    // which tools are available. Placed near the end of the system prompt
+    // so the agent has full context (memory, skills, workflow) before the
+    // security rules apply to its next action.
+    .{ .name = "prompt_injection_defense", .content = PromptInjectionDefense },
 
     // === Response formatting (last — applies to everything above) ===
     .{ .name = "response_formatting", .content = ResponseFormatting },

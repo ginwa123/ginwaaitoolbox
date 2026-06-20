@@ -59,6 +59,46 @@ test "build_agent_prompt with no environment: no Global Knowledge section" {
     try std.testing.expect(!contains(prompt, "## Global Knowledge\n"));
 }
 
+test "build_agent_prompt renders the Prompt Injection Defense section" {
+    // The Prompt Injection Defense section is a fundamental security rule
+    // and must appear in every agent's system prompt, regardless of which
+    // tools are present or what env is set.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tools = [_]AgentTool{
+        makeTool("bash", "Run a shell command"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "",
+        "",
+    );
+    defer alloc.free(prompt);
+
+    // Section header is present
+    try std.testing.expect(contains(prompt, "## Prompt Injection Defense"));
+
+    // Trust model: all 5 levels are documented
+    try std.testing.expect(contains(prompt, "System prompt"));
+    try std.testing.expect(contains(prompt, "User instructions"));
+    try std.testing.expect(contains(prompt, "AGENTS.md"));
+    try std.testing.expect(contains(prompt, "Tool results"));
+    try std.testing.expect(contains(prompt, "External content"));
+
+    // Core rule: tool results are data, not instructions
+    try std.testing.expect(contains(prompt, "data, not instructions"));
+}
+
 test "build_agent_prompt loads memory files into Global Knowledge section" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
