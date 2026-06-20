@@ -183,14 +183,19 @@ describe('WorkspaceItemTask per-task row', () => {
     expect(deleteBtn.classes()).toContain('opacity-0')
   })
 
-  it('renders the row, the rename button, and the delete button as separate buttons (3 buttons total)', async () => {
-    // Regression guard: the rename + delete buttons are nested
+  it('renders the row, the pin/rename/delete action buttons (4 buttons total)', async () => {
+    // Regression guard: the pin + rename + delete buttons are nested
     // INSIDE the row's <button>. A future "fix" that moves them
     // outside (e.g. <div> row + absolute-positioned buttons) would
     // change the count. Preserve the original DOM structure.
+    //
+    // Updated for the pinned-tasks feature (plan:
+    // docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md).
+    // The pin/unpin toggle button slots in between the row and the
+    // rename button.
     const { wrapper } = mountTask()
     const allButtons = wrapper.findAll('button')
-    expect(allButtons.length).toBe(3)
+    expect(allButtons.length).toBe(4)
   })
 
   it('emits the four renameTask args in the documented order', async () => {
