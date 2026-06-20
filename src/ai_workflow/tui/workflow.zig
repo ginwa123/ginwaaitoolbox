@@ -417,7 +417,10 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
         try messagesLists.appendSlice(allocator, initialMessages);
 
-        messagesLists = try maybeCompactMessagesNew(allocator, total_tokens, effective_model, false, messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger);
+        const is_do_compaction = try maybeCompactMessagesNew(allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger);
+        if (is_do_compaction) {
+            continue;
+        }
 
         logger.debugFmt("[WORKFLOW-debug-system-prompt] system_prompt={s}", .{messagesLists.items[0].content.?});
 
@@ -740,13 +743,15 @@ fn callDynamicAgentNew(
 /// pass `force=true` to bypass the threshold (e.g. for an explicit "compact now"
 /// HTTP endpoint). The compact-agent call is best-effort — if it returns null, the
 /// message list is left untouched and the caller continues with the original
-/// messages. Errors from `compactMessageInMemoryNew` propagate to the caller.
+/// messages. Returns `true` if compaction was performed (caller should re-enter
+/// the loop with the now-compacted list), `false` if no compaction was done.
+/// Errors from `compactMessageInMemoryNew` propagate to the caller.
 pub fn maybeCompactMessagesNew(
     allocator: std.mem.Allocator,
     total_tokens: u32,
     model: []const u8,
     force: bool,
-    messages: std.ArrayList(agent.AgentMessage),
+    messages: *std.ArrayList(agent.AgentMessage),
     api_key: []const u8,
     base_url: []const u8,
     cwd: []const u8,
@@ -754,9 +759,9 @@ pub fn maybeCompactMessagesNew(
     db: *sqlite.SqliteBackend,
     io: std.Io,
     logger: *logger_mod.Logger,
-) !std.ArrayList(agent.AgentMessage) {
+) !bool {
     if (!force and !agent.LLMModels.isDoCompact(total_tokens, agent.LLMModels.getModelTokenCount(model))) {
-        return messages;
+        return false;
     }
 
     // Snapshot the current messages so that callCompactAgentNew's in-place mutation
@@ -769,13 +774,18 @@ pub fn maybeCompactMessagesNew(
 
     const compacted_xml = callCompactAgentNew(copy_list, allocator, api_key, model, base_url, cwd, logger, io) orelse {
         // LLM call failed; caller keeps the original (uncompacted) list.
-        return messages;
+        return false;
     };
 
     // compactMessageInMemoryNew consumes the old list and returns the compacted one.
-    return try compactMessageInMemoryNew(allocator, messages, compacted_xml, session_id, model, cwd, db, io, logger);
+    // Replace the caller's list in place so the next loop iteration sees the
+    // compacted messages.
+     _ = try compactMessageInMemoryNew(allocator, messages.*, compacted_xml, session_id, model, cwd, db, io, logger);
+    return true;
 }
 
+/// Call CompactionAgent to compress conversation history.
+/// Returns compacted context or null on failure.
 /// Call CompactionAgent to compress conversation history.
 /// Returns compacted context or null on failure.
 pub fn callCompactAgentNew(
@@ -801,15 +811,38 @@ pub fn callCompactAgentNew(
     // Used for context only (constraints/tools/scope), not summarized as conversation.
     const original_system_prompt: []const u8 = messages.items[0].content orelse "";
 
-    // Collect content from all messages between first and last
+    // Collect content from all messages between first and last,
+    // labeled by role so the CompactionAgent can tell turns apart
+    // instead of receiving one undifferentiated blob of text.
     var parts: std.ArrayList([]const u8) = .empty;
     defer parts.deinit(allocator);
 
     for (messages.items[1..last_idx]) |msg| {
-        if (msg.content) |c| parts.append(allocator, c) catch |err| {
-            logger.errFmt("[COMPACTION] Failed to collect message content: {s}", .{@errorName(err)});
-            return null;
-        };
+        if (msg.content) |c| {
+            const role_str = msg.role.to_str();
+            const labeled = std.fmt.allocPrint(allocator, "[{s}]: {s}", .{ role_str, c }) catch |err| {
+                logger.errFmt("[COMPACTION] Failed to label message content: {s}", .{@errorName(err)});
+                return null;
+            };
+            parts.append(allocator, labeled) catch |err| {
+                logger.errFmt("[COMPACTION] Failed to collect message content: {s}", .{@errorName(err)});
+                return null;
+            };
+        }
+
+        // If the message carries structured tool calls (e.g. assistant
+        // messages with finish_reason == .tool_calls), surface those too —
+        // otherwise the compactor never sees that a tool was invoked at all
+        // when content is null or purely conversational.
+        if (msg.tool_calls) |tool_calls| {
+            for (tool_calls) |tc| {
+                const tc_str = std.fmt.allocPrint(allocator, "[tool_call]: {s}({s})", .{
+                    tc.function.name,
+                    tc.function.arguments,
+                }) catch continue;
+                parts.append(allocator, tc_str) catch continue;
+            }
+        }
     }
 
     const history_str = std.mem.join(allocator, "\n", parts.items) catch |err| {
@@ -885,7 +918,6 @@ pub fn callCompactAgentNew(
     };
     defer allocator.free(compact_message);
 
-    // Build a fresh message list — never touch the caller's messages
     var messages_convocompact: std.ArrayList(agent.AgentMessage) = .empty;
     defer messages_convocompact.deinit(allocator);
 
@@ -967,12 +999,15 @@ pub fn compactMessageInMemoryNew(
     try llm_history.markMessageNotForLlmRun(allocator, db, session_id);
 
     // Build the compacted summary content with XML wrapping
-    var summary: std.ArrayList(u8) = .empty;
-    defer summary.deinit(allocator);
-    try summary.print(allocator, "<compact_messages>\n\n", .{});
-    try summary.print(allocator, "{s}", .{compacted_xml});
-    try summary.print(allocator, "\n\n</compact_messages>", .{});
-    const summary_content = try summary.toOwnedSlice(allocator);
+    const summary_content = try buildCompactionEnvelope(
+        allocator,
+        messages.items[1..],
+        total,
+        session_id,
+        model,
+        io,
+        compacted_xml,
+    );
 
     // Save the compacted summary to the database with is_feed_to_llm = 1
     try llm_history.saveMessage(allocator, io, db, .{
@@ -1032,6 +1067,97 @@ pub fn compactMessageInMemoryNew(
 
     logger.debugFmt("[COMPACTION] Compacted: {} -> {} messages (persisted to DB)", .{ total, new_messages.items.len });
     return new_messages;
+}
+
+/// Build the structured `<compact_messages>` envelope that replaces
+/// the dropped messages after compaction. The envelope has three
+/// sections: <metadata> (compaction event facts), <message_index>
+/// (id+role+preview for every dropped message so the agent can
+/// reference them later via read_compacted_messages), and <summary>
+/// (the compactor's output, preserved verbatim).
+///
+/// `dropped_messages` is the slice of messages that will be marked
+/// `is_feed_to_llm=0` — typically `messages.items[1..]` for the
+/// compactMessageInMemoryNew caller. We capture their metadata HERE
+/// (in memory) rather than re-querying the DB, because these messages
+/// still have their content/tool_call_id fields available in the
+/// in-memory struct.
+///
+/// Caller owns the returned string and must free with `allocator.free`.
+fn buildCompactionEnvelope(
+    allocator: std.mem.Allocator,
+    dropped_messages: []const agent.AgentMessage,
+    original_count: usize,
+    session_id: []const u8,
+    model: []const u8,
+    io: std.Io,
+    compacted_xml: []const u8,
+) ![]u8 {
+    // Real RFC3339-ish timestamp from std.Io.Timestamp — same pattern
+    // the logger's Timing.timestampIso uses. Non-empty so the test
+    // can verify the tag is present without hardcoding a value.
+    const now_iso = try logger_mod.timestampIso(allocator, io);
+    defer allocator.free(now_iso);
+
+    var env: std.ArrayList(u8) = .empty;
+    defer env.deinit(allocator);
+
+    try env.appendSlice(allocator, "<compact_messages>\n");
+
+    // --- metadata header ---
+    try env.print(allocator,
+        \\  <metadata>
+        \\    <session_id>{s}</session_id>
+        \\    <model>{s}</model>
+        \\    <compacted_at>{s}</compacted_at>
+        \\    <original_count>{d}</original_count>
+        \\  </metadata>
+        \\
+    , .{ session_id, model, now_iso, original_count });
+
+    // --- message_index ---
+    try env.appendSlice(allocator, "  <message_index>\n");
+    for (dropped_messages, 0..) |msg, i| {
+        const msg_id = try std.fmt.allocPrint(allocator, "adhoc_{d}", .{i});
+        defer allocator.free(msg_id);
+
+        const role_str = msg.role.to_str();
+        const preview = msg.content orelse "";
+        const preview_trimmed = if (preview.len > 100) preview[0..100] else preview;
+        const preview_escaped = try helpers.xml_escape(allocator, preview_trimmed);
+        defer allocator.free(preview_escaped);
+
+        try env.print(allocator,
+            \\    <entry>
+            \\      <id>{s}</id>
+            \\      <role>{s}</role>
+            \\
+        , .{ msg_id, role_str });
+
+        // For tool-result messages, surface tool_call_id so the agent
+        // can match results back to calls. (tool_name is not available
+        // on the in-memory AgentMessage struct in this codebase; the
+        // read_compacted_messages tool can fetch it from the DB row.)
+        if (msg.role == .tool) {
+            const tcid = msg.tool_call_id orelse "";
+            const tcid_escaped = try helpers.xml_escape(allocator, tcid);
+            defer allocator.free(tcid_escaped);
+            try env.print(allocator, "      <tool_call_id>{s}</tool_call_id>\n", .{tcid_escaped});
+        }
+
+        try env.print(allocator,
+            \\      <preview>{s}</preview>
+            \\    </entry>
+            \\
+        , .{preview_escaped});
+    }
+    try env.appendSlice(allocator, "  </message_index>\n");
+
+    // --- summary (the compactor's output, verbatim) ---
+    try env.print(allocator, "  <summary>\n{s}\n  </summary>\n", .{compacted_xml});
+
+    try env.appendSlice(allocator, "</compact_messages>\n");
+    return try env.toOwnedSlice(allocator);
 }
 
 fn noopStreamCallbackNew(_: ?*anyopaque, _: agent.StreamChunk) void {}
