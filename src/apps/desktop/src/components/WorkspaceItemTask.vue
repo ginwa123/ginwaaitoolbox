@@ -34,6 +34,14 @@ const props = defineProps<{
   task: Task
   workspaceId: string
   itemId: string
+  // NEW (pinned-tasks feature): where to render the 2px yellow
+  // drop indicator on this row. Set by the parent <WorkspaceItem>
+  // while the user is dragging another pinned row over this one
+  // — 'above' draws the line on the top edge (insert-before),
+  // 'below' on the bottom edge (insert-after), null means no
+  // indicator. The line is a 2px box-shadow so it doesn't affect
+  // the row's layout (no margin/height shift between drag states).
+  dropIndicator?: 'above' | 'below' | null
 }>()
 
 const emit = defineEmits<{
@@ -137,15 +145,28 @@ const handlePinToggle = (event: Event) => {
   // and our local state is overwritten on the next render.
   emit('pinTask', props.workspaceId, props.itemId, props.task.id, !props.task.is_pinned)
 }
+
+// NEW (pinned-tasks feature): compute the box-shadow for the row's
+// drop indicator. Uses box-shadow (not border) so the visual cue
+// doesn't shift the row's height between drag/no-drag states.
+// 'above' -> 2px line on the top edge, 'below' -> 2px line on the
+// bottom edge, null -> none.
+const dropIndicatorBoxShadow = computed<string>(() => {
+  if (props.dropIndicator === 'above') return 'inset 0 2px 0 0 #facc15' // yellow-400
+  if (props.dropIndicator === 'below') return 'inset 0 -2px 0 0 #facc15'
+  return 'none'
+})
 </script>
 
 <template>
   <button
     class="flex items-center gap-2 px-3 py-1 rounded text-xs group/task cursor-pointer transition-all duration-200"
     :data-task-id="task.id"
+    :data-drop-indicator="dropIndicator ?? undefined"
     :style="{
       color: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : 'var(--semantic-text-dim)',
       backgroundColor: workspacesStore.activeTaskId === task.id ? 'var(--semantic-active-bg)' : 'transparent',
+      boxShadow: dropIndicatorBoxShadow,
     }"
     @click="handleSelectTask"
   >
