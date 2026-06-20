@@ -46,6 +46,10 @@ const emit = defineEmits<{
   // NEW: emitted by the Run Now button. The parent calls
   // workspacesStore.runRoutine(...) and routes to the chat view.
   runRoutine: [workspaceId: string, itemId: string, taskId: string]
+  // NEW (pinned-tasks feature): emitted by the pin/unpin button.
+  // Payload carries the new is_pinned state so the store doesn't
+  // have to re-read the task prop.
+  pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
 }>()
 
 // Convenience: is this task a routine? Defaults to false (the
@@ -121,11 +125,24 @@ const handleRunRoutine = (event: Event) => {
   event.stopPropagation()
   emit('runRoutine', props.workspaceId, props.itemId, props.task.id)
 }
+
+const handlePinToggle = (event: Event) => {
+  // Stop the click from bubbling up to the parent <button> (which
+  // would call selectTask on the same task). Same rationale as
+  // the other action handlers above.
+  event.stopPropagation()
+  // Flip the local optimistic state — the store action will echo
+  // the same flip, so the parent's `task.is_pinned` will be
+  // updated to match. If the API call fails, the store rolls back
+  // and our local state is overwritten on the next render.
+  emit('pinTask', props.workspaceId, props.itemId, props.task.id, !props.task.is_pinned)
+}
 </script>
 
 <template>
   <button
     class="flex items-center gap-2 px-3 py-1 rounded text-xs group/task cursor-pointer transition-all duration-200"
+    :data-task-id="task.id"
     :style="{
       color: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : 'var(--semantic-text-dim)',
       backgroundColor: workspacesStore.activeTaskId === task.id ? 'var(--semantic-active-bg)' : 'transparent',
@@ -163,8 +180,34 @@ const handleRunRoutine = (event: Event) => {
         :style="{ backgroundColor: statusColor }"
         data-testid="routine-status-dot"
       />
+      <!-- Pin indicator (always visible when pinned) -->
+      <span
+        v-if="task.is_pinned"
+        class="w-3 h-3 flex items-center justify-center shrink-0 text-yellow-400"
+        title="Pinned"
+        data-testid="task-pin-indicator"
+      >
+        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z" />
+        </svg>
+      </span>
       <!-- Task name -->
       <span class="flex-1 truncate">{{ task.name }}</span>
+      <!-- Pin/unpin toggle (show on hover) -->
+      <button
+        @click="handlePinToggle($event)"
+        class="w-4 h-4 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity"
+        :class="task.is_pinned ? 'text-yellow-400' : 'text-[--semantic-text-dim] hover:text-yellow-400'"
+        :title="task.is_pinned ? 'Unpin task' : 'Pin task'"
+        data-testid="task-pin-toggle"
+      >
+        <svg v-if="task.is_pinned" class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z" />
+        </svg>
+        <svg v-else class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z" />
+        </svg>
+      </button>
       <!-- Pencil — for routine tasks this opens EditRoutineDialog -->
       <button
         @click="handleEditRoutine($event)"
@@ -217,7 +260,33 @@ const handleRunRoutine = (event: Event) => {
         class="w-1.5 h-1.5 rounded-full shrink-0"
         :style="{ backgroundColor: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : 'var(--semantic-text-dim)' }"
       />
+      <!-- Pin indicator (always visible when pinned) -->
+      <span
+        v-if="task.is_pinned"
+        class="w-3 h-3 flex items-center justify-center shrink-0 text-yellow-400"
+        title="Pinned"
+        data-testid="task-pin-indicator"
+      >
+        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z" />
+        </svg>
+      </span>
       <span class="flex-1 truncate">{{ task.name }}</span>
+      <!-- Pin/unpin toggle (show on hover) -->
+      <button
+        @click="handlePinToggle($event)"
+        class="w-4 h-4 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity"
+        :class="task.is_pinned ? 'text-yellow-400' : 'text-[--semantic-text-dim] hover:text-yellow-400'"
+        :title="task.is_pinned ? 'Unpin task' : 'Pin task'"
+        data-testid="task-pin-toggle"
+      >
+        <svg v-if="task.is_pinned" class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z" />
+        </svg>
+        <svg v-else class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z" />
+        </svg>
+      </button>
       <button
         @click="handleRenameTask($event)"
         class="w-4 h-4 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:text-blue-400"

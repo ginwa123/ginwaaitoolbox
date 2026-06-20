@@ -83,6 +83,13 @@ export interface Task {
   completed?: boolean
   createdAt?: Date
   updatedAt?: Date
+  // NEW (pinned-tasks feature, plan:
+  // docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md).
+  // Both optional so legacy task literals (8+ test files construct
+  // Task without these fields) keep type-checking — see the
+  // nalar-frontend-task-literal-typing-rule memory.
+  is_pinned?: boolean
+  pinned_position?: number
 }
 
 // localStorage keys for state persistence
@@ -595,6 +602,137 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Rollback the optimistic name change on error.
       task.name = previousName
       return { success: false }
+    }
+  }
+
+  /**
+   * Pin or unpin a task and persist the change via
+   * `POST /api/.../tasks/:task_id/pin`. Optimistic: the local
+   * task's `is_pinned` flag is flipped immediately and the
+   * `pinned_position` is bumped to MAX+1 (matching the backend's
+   * behavior). On API failure, the previous pin state and
+   * position are restored and the error is logged.
+   *
+   * When the user pins a task, the row is moved to the bottom
+   * of the pinned region. The list lister's
+   * `ORDER BY is_pinned DESC, pinned_position DESC, ...` then
+   * surfaces it correctly on the next render.
+   */
+  async function pinTask(
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+    isPinned: boolean,
+  ): Promise<{ success: boolean; pinned_position: number } | undefined> {
+    const workspace = workspaces.value.find((w) => w.id === workspaceId)
+    if (!workspace) return undefined
+    const item = workspace.items.find((i) => i.id === itemId)
+    if (!item || !item.tasks) return undefined
+    const task = item.tasks.find((t) => t.id === taskId)
+    if (!task) return undefined
+
+    // Snapshot for rollback.
+    const previousIsPinned = task.is_pinned ?? false
+    const previousPinnedPosition = task.pinned_position ?? 0
+
+    // Compute the optimistic pinned_position. When pinning,
+    // bump to MAX+1 across the item's currently-pinned tasks
+    // (excluding the row being pinned — its current value
+    // would otherwise be the new MAX). When unpinning, reset
+    // to 0 (the value is irrelevant for unpinned rows).
+    let optimisticPosition = previousPinnedPosition
+    if (isPinned) {
+      const maxPinned = item.tasks.reduce<number>((acc, t) => {
+        if (t.id === taskId) return acc
+        const p = t.pinned_position ?? 0
+        return p > acc ? p : acc
+      }, -1)
+      optimisticPosition = maxPinned + 1
+    }
+
+    task.is_pinned = isPinned
+    task.pinned_position = optimisticPosition
+
+    try {
+      const result = await api.pinTask(workspaceId, itemId, taskId, isPinned)
+      // The backend may assign a different pinned_position if a
+      // concurrent pin raced with ours. Echo the backend's value.
+      if (result.pinned_position !== undefined) {
+        task.pinned_position = result.pinned_position
+      }
+      return { success: true, pinned_position: result.pinned_position }
+    } catch (err) {
+      console.error('[workspacesStore.pinTask] API call failed, rolling back:', err)
+      task.is_pinned = previousIsPinned
+      task.pinned_position = previousPinnedPosition
+      return undefined
+    }
+  }
+
+  /**
+   * Reorder the pinned subset of a single workspace item and
+   * persist the new order via
+   * `POST /api/.../tasks/reorder_pinned`. Optimistic: the
+   * item's pinned tasks are reordered in the local array
+   * immediately so the UI snaps on drop. On API failure, the
+   * snapshot is restored and the error is logged.
+   *
+   * The caller (WorkspaceItem.vue's drag handler) sends the
+   * FULL ordered list of pinned task IDs, not a delta.
+   * Unpinned tasks are not affected (they keep their
+   * position in the unpinned region below).
+   */
+  async function reorderPinnedTasks(
+    workspaceId: string,
+    itemId: string,
+    orderedIds: string[],
+  ) {
+    const workspace = workspaces.value.find((w) => w.id === workspaceId)
+    if (!workspace) return
+    const item = workspace.items.find((i) => i.id === itemId)
+    if (!item || !item.tasks) return
+
+    const currentPinned = item.tasks.filter((t) => t.is_pinned)
+    if (currentPinned.length === 0) return
+
+    if (orderedIds.length !== currentPinned.length) {
+      console.error(
+        `[workspacesStore.reorderPinnedTasks] orderedIds length ${orderedIds.length} != current pinned ${currentPinned.length}; refusing reorder`,
+      )
+      return
+    }
+
+    // Snapshot for rollback.
+    const previousOrder = item.tasks.slice()
+
+    // Optimistic local reorder: rebuild the tasks array as
+    // [ordered pinned rows in the new order, ...unpinned
+    // rows]. Unpinned rows keep their existing relative
+    // order (the unpinned-region ORDER BY is unchanged by the
+    // reorder).
+    const pinnedById = new Map(currentPinned.map((t) => [t.id, t]))
+    const reorderedPinned: Task[] = []
+    for (const id of orderedIds) {
+      const t = pinnedById.get(id)
+      if (t) reorderedPinned.push(t)
+    }
+    // Defensive: any pinned rows missed in the payload are
+    // appended at the end (should not happen given the length
+    // check).
+    for (const t of currentPinned) {
+      if (!orderedIds.includes(t.id)) reorderedPinned.push(t)
+    }
+    const unpinned = item.tasks.filter((t) => !t.is_pinned)
+    item.tasks = [...reorderedPinned, ...unpinned]
+
+    try {
+      await api.reorderPinnedTasks(workspaceId, itemId, orderedIds)
+    } catch (err) {
+      console.error(
+        '[workspacesStore.reorderPinnedTasks] API call failed, rolling back:',
+        err,
+      )
+      item.tasks = previousOrder
     }
   }
 
@@ -1161,6 +1299,8 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     renameTask,
     runRoutine,
     updateRoutine,
+    pinTask,
+    reorderPinnedTasks,
     initializeFromSystemFolder,
     subscribeToSessionEvents,
     fetchSystemFolder,

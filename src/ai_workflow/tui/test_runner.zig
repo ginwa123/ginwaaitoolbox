@@ -32,6 +32,8 @@ test {
     _ = @import("llm_history_routines_test.zig");
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     _ = @import("http_handlers/workspace_items_reorder_test.zig");
+    _ = @import("http_handlers/task_pin_test.zig");
+    _ = @import("http_handlers/tasks_reorder_pinned_test.zig");
     _ = @import("http_handlers/git_worktree_info_test.zig");
     _ = @import("http_handlers/git_pr_create_test.zig");
     // _ = @import("session_helpers_test.zig"); // DISABLED - requires std.Io which needs Init

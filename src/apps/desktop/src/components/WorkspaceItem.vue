@@ -54,6 +54,13 @@ const emit = defineEmits<{
   // a sibling of the per-task list, not a property of any individual
   // task.
   loadMoreTasks: [workspaceId: string, itemId: string]
+  // NEW (pinned-tasks feature, plan:
+  // docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md):
+  // pin/unpin and drag-reorder of the pinned subset, both forwarded
+  // up to WorkspaceList → Sidebar. See handlePinTask /
+  // handleReorderPinnedTasks below.
+  pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
+  reorderPinnedTasks: [workspaceId: string, itemId: string, orderedIds: string[]]
 }>()
 
 // Computed: check if item is expanded (tasks visible)
@@ -151,6 +158,66 @@ const handleLoadMoreTasks = (event: Event) => {
   // button.
   event.stopPropagation()
   emit('loadMoreTasks', props.workspaceId, props.item.id)
+}
+
+// NEW (pinned-tasks feature): pin/unpin forwarded from
+// <WorkspaceItemTask>. WorkspaceList re-emits these to Sidebar.
+const handlePinTask = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+  isPinned: boolean,
+) => {
+  emit('pinTask', workspaceId, itemId, taskId, isPinned)
+}
+
+// NEW (pinned-tasks feature): drag-reorder of the pinned subset.
+// The drag handler captures the dragged task's id via data-task-id
+// and the drop handler splices the row to the bottom of the
+// pinned region. v1: simple "move to bottom on drop" semantics.
+const handleReorderPinnedTasks = (orderedIds: string[]) => {
+  emit('reorderPinnedTasks', props.workspaceId, props.item.id, orderedIds)
+}
+
+// Capture the dragged task's id from the data-task-id attribute on
+// the row's root button (added in WorkspaceItemTask.vue). The
+// pinned region uses event delegation — the dragstart bubbles
+// from the row to the region, which calls closest('[data-task-id]')
+// to find the source.
+const handlePinnedDragStart = (event: DragEvent) => {
+  const target = event.target as HTMLElement | null
+  if (!target) return
+  const row = target.closest('[data-task-id]') as HTMLElement | null
+  if (!row) return
+  const taskId = row.dataset.taskId
+  if (!taskId) return
+  event.dataTransfer?.setData('text/plain', taskId)
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+  }
+}
+
+// On drop, splice the dragged row to the bottom of the pinned
+// region. The optimistic store action will reorder the local
+// array and persist via the API.
+const handlePinnedDrop = (event: DragEvent) => {
+  event.preventDefault()
+  const dataTransfer = event.dataTransfer
+  if (!dataTransfer) return
+  const draggedId = dataTransfer.getData('text/plain')
+  if (!draggedId) return
+
+  const tasks = props.item.tasks ?? []
+  const pinned = tasks.filter((t) => t.is_pinned)
+  if (pinned.length === 0) return
+
+  const fromIdx = pinned.findIndex((t) => t.id === draggedId)
+  if (fromIdx === -1) return // drag came from outside the pinned region
+
+  const reordered = pinned.slice()
+  const [moved] = reordered.splice(fromIdx, 1)
+  if (moved) reordered.push(moved)
+  handleReorderPinnedTasks(reordered.map((t) => t.id))
 }
 </script>
 
@@ -255,17 +322,49 @@ const handleLoadMoreTasks = (event: Event) => {
            events bubble up via the pass-through handlers in the
            <script setup> block. -->
       <div v-if="isExpanded && item.tasks && item.tasks.length > 0" class="ml-8 mt-1.5 space-y-0.5 pl-2 border-l border-[--color-border]/30">
+        <!-- Pinned region: drag-and-drop reorders only within this
+             list. The drop handler calls handleReorderPinnedTasks.
+             Only rendered when at least one task is pinned (so the
+             empty container doesn't show for non-pinning users). -->
+        <div
+          v-if="item.tasks.some((t) => t.is_pinned)"
+          data-testid="pinned-tasks-region"
+          class="space-y-0.5"
+          @drop.prevent="handlePinnedDrop"
+          @dragover.prevent
+          @dragstart="handlePinnedDragStart"
+        >
+          <WorkspaceItemTask
+            v-for="task in item.tasks.filter((t) => t.is_pinned)"
+            :key="task.id"
+            :task="task"
+            :workspace-id="workspaceId"
+            :item-id="item.id"
+            :data-task-id="task.id"
+            :data-pinned="true"
+            draggable="true"
+            @select-task="handleSelectTask"
+            @delete-task="handleDeleteTask"
+            @rename-task="handleRenameTask"
+            @edit-routine="handleEditRoutine"
+            @run-routine="handleRunRoutine"
+            @pin-task="handlePinTask"
+          />
+        </div>
+        <!-- Unpinned region: regular order, no drag. -->
         <WorkspaceItemTask
-          v-for="task in item.tasks"
+          v-for="task in item.tasks.filter((t) => !t.is_pinned)"
           :key="task.id"
           :task="task"
           :workspace-id="workspaceId"
           :item-id="item.id"
+          :data-task-id="task.id"
           @select-task="handleSelectTask"
           @delete-task="handleDeleteTask"
           @rename-task="handleRenameTask"
           @edit-routine="handleEditRoutine"
           @run-routine="handleRunRoutine"
+          @pin-task="handlePinTask"
         />
         <!-- Load More: shown when the backend says there are more
              tasks for this item. Hidden during the load to prevent

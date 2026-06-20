@@ -151,6 +151,12 @@ export interface Task {
   // getTasks() and used to sort/filter on the frontend. Backend stamps this
   // on every update (rename, complete, etc.).
   updatedAt?: Date
+  // NEW (pinned-tasks feature, plan: docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md).
+  // Both optional so legacy task literals (8+ test files construct Task
+  // without these fields) keep type-checking — see the
+  // nalar-frontend-task-literal-typing-rule memory.
+  is_pinned?: boolean
+  pinned_position?: number
 }
 
 // Health check
@@ -417,6 +423,54 @@ export async function deleteTask(
   return await apiFetch<{ success: boolean }>(
     `/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}`,
     { method: 'DELETE' },
+  )
+}
+
+/**
+ * Pin or unpin a task. The backend bumps the row's
+ * `pinned_position` to MAX+1 (when pinning) so a newly-pinned task
+ * lands at the BOTTOM of the pinned region; the user can drag it
+ * to a different position afterwards. Returns the new
+ * `pinned_position` so the store can confirm the row landed where
+ * the user expects.
+ *
+ * 404: task not found
+ * 500: DB write failed
+ */
+export async function pinTask(
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+  isPinned: boolean,
+): Promise<{ success: boolean; id: string; is_pinned: boolean; pinned_position: number }> {
+  return await apiFetch<{ success: boolean; id: string; is_pinned: boolean; pinned_position: number }>(
+    `/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}/pin`,
+    {
+      method: 'POST',
+      body: { is_pinned: isPinned },
+    },
+  )
+}
+
+/**
+ * Reorder the pinned subset of a single workspace item. The
+ * `orderedIds` array is the full top-to-bottom display order of
+ * the pinned rows. The backend assigns `pinned_position =
+ * count - 1 - i` so the rows render in the user's chosen order.
+ *
+ * Plan: docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md
+ */
+export async function reorderPinnedTasks(
+  workspaceId: string,
+  itemId: string,
+  orderedIds: string[],
+): Promise<{ success: boolean; count: number }> {
+  return await apiFetch<{ success: boolean; count: number }>(
+    `/workspaces/${workspaceId}/items/${itemId}/tasks/reorder_pinned`,
+    {
+      method: 'POST',
+      body: { ordered_ids: orderedIds },
+    },
   )
 }
 
