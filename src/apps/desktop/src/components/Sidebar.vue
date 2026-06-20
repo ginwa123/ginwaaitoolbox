@@ -672,6 +672,28 @@ const handleReorderWorkspaceItems = (
   workspacesStore.reorderWorkspaceItems(workspaceId, orderedItemIds)
 }
 
+// NEW (pinned-tasks feature, plan:
+// docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md):
+// pin/unpin and drag-reorder of the pinned subset, both forwarded
+// from <WorkspaceItem> via <WorkspaceList>. The store actions
+// perform the optimistic update + API call + silent rollback.
+const handlePinTask = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+  isPinned: boolean,
+) => {
+  workspacesStore.pinTask(workspaceId, itemId, taskId, isPinned)
+}
+
+const handleReorderPinnedTasks = (
+  workspaceId: string,
+  itemId: string,
+  orderedIds: string[],
+) => {
+  workspacesStore.reorderPinnedTasks(workspaceId, itemId, orderedIds)
+}
+
 // ─── Routines (Chunk 7 of task-routines plan) ────────────────────────────
 // These two handlers close the wiring loop from the routine-task
 // row in WorkspaceItemTask.vue (which emits `runRoutine` and
@@ -889,6 +911,8 @@ const editRoutineTaskName = computed<string>(() => {
           @load-more-tasks="handleLoadMoreTasks"
           @reorder-workspaces="handleReorderWorkspaces"
           @reorder-workspace-items="handleReorderWorkspaceItems"
+          @pin-task="handlePinTask"
+          @reorder-pinned-tasks="handleReorderPinnedTasks"
         />
         <!-- Collapsed workspaces -->
         <div v-else class="space-y-0.5">

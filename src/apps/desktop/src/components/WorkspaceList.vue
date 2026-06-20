@@ -56,6 +56,15 @@ const emit = defineEmits<{
   // the optimistic update + API call + rollback on error. Scoped
   // to a single workspace (cross-workspace drops are no-ops).
   reorderWorkspaceItems: [workspaceId: string, orderedItemIds: string[]]
+  // NEW (pinned-tasks feature, plan:
+  // docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md):
+  // pin/unpin and drag-reorder of the pinned subset, forwarded
+  // from <WorkspaceItem>. Sidebar handles these and calls the
+  // store. The signature is intentionally identical to the
+  // WorkspaceItem's `pinTask` / `reorderPinnedTasks` events so the
+  // pass-through is a one-liner.
+  pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
+  reorderPinnedTasks: [workspaceId: string, itemId: string, orderedIds: string[]]
 }>()
 
 const sidebarStore = useSidebarStore()
@@ -560,6 +569,8 @@ const handleItemDragEnd = () => {
             @edit-routine="handleEditRoutine"
             @run-routine="handleRunRoutine"
             @load-more-tasks="handleLoadMoreTasks"
+            @pin-task="(ws, item, task, isPinned) => emit('pinTask', ws, item, task, isPinned)"
+            @reorder-pinned-tasks="(ws, item, orderedIds) => emit('reorderPinnedTasks', ws, item, orderedIds)"
           />
           <!-- Add Item Button -->
           <li class="group/workspace relative" data-workspace-menu>
