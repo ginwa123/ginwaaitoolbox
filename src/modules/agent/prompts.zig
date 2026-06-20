@@ -180,7 +180,7 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
     // which tools are available. Placed near the end of the system prompt
     // so the agent has full context (memory, skills, workflow) before the
     // security rules apply to its next action.
-    .{ .name = "prompt_injection_defense", .content = PromptInjectionDefense },
+    // .{ .name = "prompt_injection_defense", .content = PromptInjectionDefense },
 
     // === Response formatting (last — applies to everything above) ===
     .{ .name = "response_formatting", .content = ResponseFormatting },
