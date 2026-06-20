@@ -197,9 +197,75 @@ const handlePinnedDragStart = (event: DragEvent) => {
   }
 }
 
-// On drop, splice the dragged row to the bottom of the pinned
-// region. The optimistic store action will reorder the local
-// array and persist via the API.
+// dragOver bookkeeping: which pinned row the cursor is currently
+// over, and whether the insertion point is above (cursor in the
+// row's top half) or below (cursor in the bottom half). Reset on
+// dragleave / drop. The state drives both the splice math in
+// `handlePinnedDrop` AND the yellow drop-indicator bar in the
+// template (rendered as a sibling of each row in the v-for).
+const dragOverTaskId = ref<string | null>(null)
+const dragInsertBefore = ref(false) // true = insert before the target row
+
+// Per-row drop indicator: 'above' | 'below' | null. Returned to
+// the v-for as the `drop-indicator` prop on each WorkspaceItemTask
+// so the row can render a 2px yellow border on the appropriate
+// edge. Centralizing the conditional in one place keeps the
+// template terse and makes the indicator state easy to assert on
+// in unit tests.
+type DropIndicator = 'above' | 'below' | null
+const dropIndicatorFor = (taskId: string): DropIndicator => {
+  if (dragOverTaskId.value !== taskId) return null
+  return dragInsertBefore.value ? 'above' : 'below'
+}
+
+const handlePinnedDragOver = (event: DragEvent) => {
+  // preventDefault is REQUIRED to mark this element as a valid drop
+  // target. Without it the browser's dragend fires without a drop
+  // and the drop event never reaches us. We also use it to update
+  // the cursor position for the insertion-point math.
+  event.preventDefault()
+  const target = event.target as HTMLElement | null
+  if (!target) return
+  const row = target.closest('[data-task-id]') as HTMLElement | null
+  if (!row || !row.dataset.taskId) {
+    // Cursor is in the region but not over a row (e.g. on the gap
+    // between rows or on the region's padding). Keep the previous
+    // target — better than flickering the indicator off then on.
+    return
+  }
+  // If the cursor is over the same row as before, just refresh the
+  // before/after decision based on the cursor Y. Otherwise, switch
+  // the target and reset the before/after flag.
+  if (dragOverTaskId.value !== row.dataset.taskId) {
+    dragOverTaskId.value = row.dataset.taskId
+    dragInsertBefore.value = true // default; refined below
+  }
+  const rect = row.getBoundingClientRect()
+  const midpoint = rect.top + rect.height / 2
+  // When clientY is unavailable (synthetic event from a test), keep
+  // the previous value. In normal browser drag flows clientY is
+  // always set during dragover.
+  const clientY = event.clientY
+  if (clientY != null) {
+    dragInsertBefore.value = clientY < midpoint
+  }
+}
+
+const handlePinnedDragLeave = (event: DragEvent) => {
+  // Only clear the indicator when the cursor LEAVES the region
+  // entirely. If it moves between rows inside the region, dragleave
+  // fires too but `relatedTarget` is still inside the region — keep
+  // the indicator visible in that case. The dragover handler will
+  // update `dragOverTaskId` for the new row.
+  const region = event.currentTarget as HTMLElement | null
+  const next = event.relatedTarget as Node | null
+  if (region && next && region.contains(next)) return
+  dragOverTaskId.value = null
+}
+
+// On drop, splice the dragged row to the cursor's target position
+// (not the end). The optimistic store action will reorder the
+// local array and persist via the API.
 const handlePinnedDrop = (event: DragEvent) => {
   event.preventDefault()
   const dataTransfer = event.dataTransfer
@@ -210,13 +276,47 @@ const handlePinnedDrop = (event: DragEvent) => {
   const tasks = props.item.tasks ?? []
   const pinned = tasks.filter((t) => t.is_pinned)
   if (pinned.length === 0) return
-
   const fromIdx = pinned.findIndex((t) => t.id === draggedId)
   if (fromIdx === -1) return // drag came from outside the pinned region
 
+  // Snapshot the target BEFORE we reset the visual state below.
+  // (If we reset first, the splice math falls back to "move to
+  // end" even when the user dropped on a different row.)
+  const targetId = dragOverTaskId.value
+  const insertBefore = dragInsertBefore.value
+
+  // Reset visual state regardless of outcome.
+  dragOverTaskId.value = null
+
+  // Default: move to the end (preserves the v1 fallback behavior
+  // when no target row is recorded — e.g. a fast drop without a
+  // preceding dragover, or a drop on the region's empty padding).
+  let toIdx = pinned.length - 1
+  if (targetId && targetId !== draggedId) {
+    const targetIdx = pinned.findIndex((t) => t.id === targetId)
+    if (targetIdx !== -1) {
+      // "Cursor in top half" = "I want the dragged row to be just
+      // ABOVE the target row" (insertBefore=true). "Cursor in
+      // bottom half" = "I want the dragged row to be just BELOW
+      // the target row" (insertBefore=false). Adjust the target
+      // index for the source removal: if the source is BEFORE the
+      // target in the original order, removing it shifts the target
+      // left by one. So:
+      //   insertBefore=true:  toIdx = targetIdx - (source before target ? 1 : 0)
+      //   insertBefore=false: toIdx = targetIdx + 1 - (source before target ? 1 : 0)
+      const sourceBeforeTarget = fromIdx < targetIdx
+      if (insertBefore) {
+        toIdx = sourceBeforeTarget ? targetIdx - 1 : targetIdx
+      } else {
+        toIdx = sourceBeforeTarget ? targetIdx : targetIdx + 1
+      }
+    }
+  }
+
   const reordered = pinned.slice()
   const [moved] = reordered.splice(fromIdx, 1)
-  if (moved) reordered.push(moved)
+  if (!moved) return
+  reordered.splice(toIdx, 0, moved)
   handleReorderPinnedTasks(reordered.map((t) => t.id))
 }
 </script>
@@ -325,13 +425,17 @@ const handlePinnedDrop = (event: DragEvent) => {
         <!-- Pinned region: drag-and-drop reorders only within this
              list. The drop handler calls handleReorderPinnedTasks.
              Only rendered when at least one task is pinned (so the
-             empty container doesn't show for non-pinning users). -->
+             empty container doesn't show for non-pinning users). The
+             dragover / dragleave handlers track the cursor's target
+             row + position so the drop can splice the dragged row at
+             the user's intended index (NOT always the end). -->
         <div
           v-if="item.tasks.some((t) => t.is_pinned)"
           data-testid="pinned-tasks-region"
           class="space-y-0.5"
           @drop.prevent="handlePinnedDrop"
-          @dragover.prevent
+          @dragover="handlePinnedDragOver"
+          @dragleave="handlePinnedDragLeave"
           @dragstart="handlePinnedDragStart"
         >
           <WorkspaceItemTask
@@ -342,6 +446,7 @@ const handlePinnedDrop = (event: DragEvent) => {
             :item-id="item.id"
             :data-task-id="task.id"
             :data-pinned="true"
+            :drop-indicator="dropIndicatorFor(task.id)"
             draggable="true"
             @select-task="handleSelectTask"
             @delete-task="handleDeleteTask"
