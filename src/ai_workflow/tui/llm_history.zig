@@ -2644,6 +2644,15 @@ pub const WorkspaceItemTaskInfo = struct {
     routine: ?RoutineMeta = null,
     created_at: ?[]u8 = null,
     updated_at: ?[]u8 = null,
+    /// Pin flag. `true` when the user has pinned this task; the lister
+    /// surfaces pinned tasks first (in `pinned_position` order, DESC),
+    /// then unpinned tasks in the existing sort order.
+    is_pinned: bool = false,
+    /// Position within the pinned subset of a single workspace item.
+    /// Higher = higher in the pinned region. Only meaningful when
+    /// `is_pinned == true`. Mirrors the `position` columns on
+    /// `workspaces` and `workspace_items` (Migrations043/045).
+    pinned_position: i64 = 0,
 
     pub fn deinit(self: WorkspaceItemTaskInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -2781,9 +2790,11 @@ pub fn listWorkspaceItemTasks(
 ) ![]WorkspaceItemTaskInfo {
     const sql =
         \\SELECT t.id, t.name, t.workspace_item_id, t.session_id, t.created_at, t.updated_at, t.task_type,
+        \\       COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0),
         \\       r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error
         \\FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id
-        \\WHERE t.workspace_item_id = ? ORDER BY t.created_at DESC
+        \\WHERE t.workspace_item_id = ?
+        \\ORDER BY t.is_pinned DESC, t.pinned_position DESC, t.updated_at DESC, t.id DESC
     ;
 
     var rows = try db.query(allocator, sql, &.{workspace_item_id});
@@ -2796,16 +2807,19 @@ pub fn listWorkspaceItemTasks(
     }
 
     while (try rows.next()) |row| {
-        // Row indices 0-5: task core; 6: task_type; 7-13: routine fields.
-        // routine.schedule is NOT NULL, so its presence discriminates
-        // joined routine rows from standard tasks.
+        // Row indices 0-5: task core; 6: task_type; 7: is_pinned;
+        // 8: pinned_position; 9-15: routine fields. routine.schedule is
+        // NOT NULL, so its presence discriminates joined routine rows
+        // from standard tasks.
         const task_type = if (row.values[6].len > 0)
             try allocator.dupe(u8, row.values[6])
         else
             try allocator.dupe(u8, "standard");
-        const has_routine = row.values[7].len > 0;
+        const is_pinned_int = row.values[7];
+        const pinned_position_str = row.values[8];
+        const has_routine = row.values[9].len > 0;
         const routine_meta: ?RoutineMeta = if (has_routine) blk: {
-            const v = row.values[12];
+            const v = row.values[14];
             const last_status: routines_model.RoutineRunStatus =
                 if (v.len == 0) .idle
                 else if (std.mem.eql(u8, v, "success")) .success
@@ -2813,13 +2827,13 @@ pub fn listWorkspaceItemTasks(
                 else if (std.mem.eql(u8, v, "running")) .running
                 else .idle;
             break :blk RoutineMeta{
-                .schedule = try allocator.dupe(u8, row.values[7]),
-                .initial_prompt = try allocator.dupe(u8, row.values[8]),
-                .enabled = std.mem.eql(u8, row.values[9], "1"),
-                .last_run_at = if (row.values[10].len > 0) try allocator.dupe(u8, row.values[10]) else null,
-                .next_run_at = try allocator.dupe(u8, row.values[11]),
+                .schedule = try allocator.dupe(u8, row.values[9]),
+                .initial_prompt = try allocator.dupe(u8, row.values[10]),
+                .enabled = std.mem.eql(u8, row.values[11], "1"),
+                .last_run_at = if (row.values[12].len > 0) try allocator.dupe(u8, row.values[12]) else null,
+                .next_run_at = try allocator.dupe(u8, row.values[13]),
                 .last_status = last_status,
-                .last_error = if (row.values[13].len > 0) try allocator.dupe(u8, row.values[13]) else null,
+                .last_error = if (row.values[15].len > 0) try allocator.dupe(u8, row.values[15]) else null,
             };
         } else null;
 
@@ -2831,6 +2845,8 @@ pub fn listWorkspaceItemTasks(
             .created_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
             .updated_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
             .task_type = task_type,
+            .is_pinned = std.mem.eql(u8, is_pinned_int, "1"),
+            .pinned_position = std.fmt.parseInt(i64, pinned_position_str, 10) catch 0,
             .routine = routine_meta,
         };
         try tasks.append(allocator, task);
@@ -2895,7 +2911,7 @@ pub fn listWorkspaceItemTasksWithCursor(
     };
     const order_by = try std.fmt.allocPrint(
         allocator,
-        "ORDER BY {s} {s}, t.id {s}",
+        "ORDER BY t.is_pinned DESC, t.pinned_position DESC, {s} {s}, t.id {s}",
         .{ sort_col, sort_dir_str, sort_dir_str },
     );
     defer allocator.free(order_by);
@@ -2903,29 +2919,25 @@ pub fn listWorkspaceItemTasksWithCursor(
     // Cursor: encoded as "<sort_value>|<id>" by the handler. Split it
     // into the sort-field value (compared first) and the id (tiebreaker).
     // When cursor is null, no WHERE clause is added.
+    //
+    // v1 limitation: the cursor applies only to the unpinned region.
+    // Pinned rows are always returned on page 1 (when cursor is null).
+    // Subsequent pages (cursor != null) restrict to is_pinned = 0 so
+    // pinned rows don't re-appear after the cursor boundary.
     const cursor_clause: []u8 = blk: {
         const c = cursor orelse break :blk try allocator.dupe(u8, "");
-        // The cursor format is "<sort_value>|<id>". For DATETIME columns
-        // (created_at, updated_at) the value contains no '|' so the
-        // split is unambiguous. For `name` a '|' in the name would
-        // corrupt the split, but task names are user-typed and
-        // unlikely to contain '|' — add a sanitizer in the handler if
-        // that becomes a real problem.
         const pipe_idx = std.mem.indexOfScalar(u8, c, '|') orelse
             return error.MalformedCursor;
         const sort_value = c[0..pipe_idx];
         const id_value = c[pipe_idx + 1 ..];
 
-        // For DESC: row should come AFTER the cursor pair in sort order,
-        // which means sort_value < cursor.sort_value, OR sort_value
-        // equals and id < cursor.id. For ASC: >. Build the clause.
         const cmp = switch (sort_direction) {
             .desc => "<",
             .asc => ">",
         };
         break :blk try std.fmt.allocPrint(
             allocator,
-            " AND ({s} {s} '{s}' OR ({s} = '{s}' AND t.id {s} '{s}'))",
+            " AND t.is_pinned = 0 AND ({s} {s} '{s}' OR ({s} = '{s}' AND t.id {s} '{s}'))",
             .{ sort_col, cmp, sort_value, sort_col, sort_value, cmp, id_value },
         );
     };
@@ -2933,7 +2945,7 @@ pub fn listWorkspaceItemTasksWithCursor(
 
     const sql = try std.fmt.allocPrint(
         allocator,
-        "SELECT t.id, t.name, t.workspace_item_id, t.session_id, t.created_at, t.updated_at, t.task_type, r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id WHERE t.workspace_item_id = ?{s} {s} LIMIT {s}",
+        "SELECT t.id, t.name, t.workspace_item_id, t.session_id, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id WHERE t.workspace_item_id = ?{s} {s} LIMIT {s}",
         .{ cursor_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -2948,16 +2960,17 @@ pub fn listWorkspaceItemTasksWithCursor(
     }
 
     while (try rows.next()) |row| {
-        // Row indices 0-5: task core; 6: task_type; 7-13: routine fields.
-        // routine.schedule is NOT NULL, so its presence discriminates
-        // joined routine rows from standard tasks.
+        // Row indices 0-5: task core; 6: task_type; 7: is_pinned;
+        // 8: pinned_position; 9-15: routine fields.
         const task_type = if (row.values[6].len > 0)
             try allocator.dupe(u8, row.values[6])
         else
             try allocator.dupe(u8, "standard");
-        const has_routine = row.values[7].len > 0;
+        const is_pinned_int = row.values[7];
+        const pinned_position_str = row.values[8];
+        const has_routine = row.values[9].len > 0;
         const routine_meta: ?RoutineMeta = if (has_routine) blk: {
-            const v = row.values[12];
+            const v = row.values[14];
             const last_status: routines_model.RoutineRunStatus =
                 if (v.len == 0) .idle
                 else if (std.mem.eql(u8, v, "success")) .success
@@ -2965,13 +2978,13 @@ pub fn listWorkspaceItemTasksWithCursor(
                 else if (std.mem.eql(u8, v, "running")) .running
                 else .idle;
             break :blk RoutineMeta{
-                .schedule = try allocator.dupe(u8, row.values[7]),
-                .initial_prompt = try allocator.dupe(u8, row.values[8]),
-                .enabled = std.mem.eql(u8, row.values[9], "1"),
-                .last_run_at = if (row.values[10].len > 0) try allocator.dupe(u8, row.values[10]) else null,
-                .next_run_at = try allocator.dupe(u8, row.values[11]),
+                .schedule = try allocator.dupe(u8, row.values[9]),
+                .initial_prompt = try allocator.dupe(u8, row.values[10]),
+                .enabled = std.mem.eql(u8, row.values[11], "1"),
+                .last_run_at = if (row.values[12].len > 0) try allocator.dupe(u8, row.values[12]) else null,
+                .next_run_at = try allocator.dupe(u8, row.values[13]),
                 .last_status = last_status,
-                .last_error = if (row.values[13].len > 0) try allocator.dupe(u8, row.values[13]) else null,
+                .last_error = if (row.values[15].len > 0) try allocator.dupe(u8, row.values[15]) else null,
             };
         } else null;
 
@@ -2983,6 +2996,8 @@ pub fn listWorkspaceItemTasksWithCursor(
             .created_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
             .updated_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
             .task_type = task_type,
+            .is_pinned = std.mem.eql(u8, is_pinned_int, "1"),
+            .pinned_position = std.fmt.parseInt(i64, pinned_position_str, 10) catch 0,
             .routine = routine_meta,
         };
         try tasks.append(allocator, task);
