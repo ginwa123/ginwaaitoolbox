@@ -389,3 +389,56 @@ test "migration declares idx_workspace_item_tasks_item_updated" {
         return error.UpdatedAtIndexMissing;
     }
 }
+
+// ─── Contract 15: list SELECT includes is_pinned and pinned_position ────
+//
+// Added for the pinned-tasks feature. The list must surface both
+// columns so the frontend can render pinned rows first and apply the
+// pin indicator on `WorkspaceItemTask.vue`.
+
+test "tasks_list llm_history SELECT includes is_pinned and pinned_position" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, LLM_HISTORY_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "t.is_pinned") == null) {
+        std.debug.print(
+            "\n!! {s} does not include `t.is_pinned` in any SELECT !!\n" ++
+                "   The pinned-tasks feature won't work — the frontend won't\n" ++
+                "   know which rows are pinned.\n" ++
+                "   See docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md.\n",
+            .{LLM_HISTORY_PATH},
+        );
+        return error.IsPinnedColumnNotInSelect;
+    }
+    if (std.mem.indexOf(u8, source, "t.pinned_position") == null) {
+        std.debug.print(
+            "\n!! {s} does not include `t.pinned_position` in any SELECT !!\n" ++
+                "   The frontend won't know the pinned-row order.\n" ++
+                "   See docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md.\n",
+            .{LLM_HISTORY_PATH},
+        );
+        return error.PinnedPositionColumnNotInSelect;
+    }
+}
+
+test "tasks_list llm_history ORDER BY puts pinned rows first" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, LLM_HISTORY_PATH);
+    defer allocator.free(source);
+
+    // The list ORDER BY must start with is_pinned DESC so pinned
+    // rows surface at the top of the per-item task list. Look for
+    // the substring "is_pinned DESC" (not "ORDER BY is_pinned DESC"
+    // — same rationale as the position-DESC test above).
+    if (std.mem.indexOf(u8, source, "is_pinned DESC") == null) {
+        std.debug.print(
+            "\n!! {s} does not ORDER BY is_pinned DESC !!\n" ++
+                "   Pinned tasks will not surface first in the task list.\n" ++
+                "   Add: ORDER BY t.is_pinned DESC, t.pinned_position DESC, ...\n" ++
+                "   See docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md.\n",
+            .{LLM_HISTORY_PATH},
+        );
+        return error.OrderByIsPinnedMissing;
+    }
+}
