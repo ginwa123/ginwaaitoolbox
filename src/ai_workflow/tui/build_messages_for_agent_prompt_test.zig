@@ -458,3 +458,64 @@ test "BuildWorkspaceContext returns empty string for empty workspace" {
 
     try testing.expectEqualStrings("", md);
 }
+
+// ─── BuildMemoryForAgent tests ───────────────────────────────────────────
+
+test "BuildMemoryForAgent loads AGENTS.md when present (no deprecation log)" {
+    const alloc = testing.allocator;
+    const io = testing.io;
+    const tmp_dir = "/tmp/nalar-memory-test-agents";
+    const file_path = "/tmp/nalar-memory-test-agents/AGENTS.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, tmp_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Test AGENTS.md
+            \\Project memory here.
+        );
+    }
+
+    const result = try build_messages.BuildMemoryForAgent(alloc, io, tmp_dir);
+    defer alloc.free(result);
+
+    // Content from AGENTS.md is included
+    try testing.expect(std.mem.indexOf(u8, result, "Test AGENTS.md") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "Project memory here.") != null);
+    // No deprecation log when AGENTS.md is the loaded file
+    try testing.expect(std.mem.indexOf(u8, result, "deprecated") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "WARN") == null);
+}
+
+test "BuildMemoryForAgent falls back to NALAR.md with deprecation log when AGENTS.md is absent" {
+    const alloc = testing.allocator;
+    const io = testing.io;
+    const tmp_dir = "/tmp/nalar-memory-test-nalar-fallback";
+    const file_path = "/tmp/nalar-memory-test-nalar-fallback/NALAR.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, tmp_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Legacy NALAR.md
+            \\Old project memory.
+        );
+    }
+
+    const result = try build_messages.BuildMemoryForAgent(alloc, io, tmp_dir);
+    defer alloc.free(result);
+
+    // Content from NALAR.md is still loaded (backward compat)
+    try testing.expect(std.mem.indexOf(u8, result, "Legacy NALAR.md") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "Old project memory.") != null);
+    // Deprecation log surfaces the rename to the agent
+    try testing.expect(std.mem.indexOf(u8, result, "WARN: NALAR.md is deprecated, rename to AGENTS.md") != null);
+}

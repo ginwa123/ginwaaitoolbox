@@ -556,7 +556,7 @@ pub fn parseProperties(
     return try properties.toOwnedSlice(allocator);
 }
 
-const memory_files = [_][]const u8{ "NALAR.md", "CLAUDE.md" };
+const memory_files = [_][]const u8{ "AGENTS.md", "NALAR.md", "CLAUDE.md" };
 
 pub fn BuildMemoryForAgent(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
@@ -568,6 +568,12 @@ pub fn BuildMemoryForAgent(allocator: std.mem.Allocator, io: std.Io, cwd: []cons
     else
         try std.Io.Dir.cwd().realPathFileAlloc(io, effective_cwd, allocator);
     defer allocator.free(absolute_cwd);
+
+    // Track which file actually provided content, so we can emit a
+    // deprecation log if the legacy NALAR.md name is what got loaded.
+    // CLAUDE.md is the last entry in `memory_files` (a fallback for
+    // projects that use Claude-Code's naming) — no deprecation needed.
+    var loaded_filename: ?[]const u8 = null;
 
     for (memory_files) |filename| {
         const file_path = try std.fs.path.join(allocator, &[_][]const u8{ absolute_cwd, filename });
@@ -592,6 +598,25 @@ pub fn BuildMemoryForAgent(allocator: std.mem.Allocator, io: std.Io, cwd: []cons
 
         if (content.len > 0 and content[content.len - 1] != '\n') {
             try result.append(allocator, '\n');
+        }
+
+        // First match wins — only the first loaded file is reported in
+        // the deprecation log. (If both AGENTS.md and NALAR.md exist,
+        // AGENTS.md is loaded and NALAR.md is ignored — this is the
+        // expected behavior since AGENTS.md is primary.)
+        if (loaded_filename == null and content.len > 0) {
+            loaded_filename = filename;
+        }
+    }
+
+    // If NALAR.md is what got loaded (no AGENTS.md in the cwd), emit a
+    // one-time deprecation reminder in the LLM context. The agent sees
+    // this and can offer to rename the file for the user.
+    if (loaded_filename) |fname| {
+        if (std.mem.eql(u8, fname, "NALAR.md")) {
+            try result.appendSlice(allocator,
+                "\n<system-reminder>WARN: NALAR.md is deprecated, rename to AGENTS.md</system-reminder>\n",
+            );
         }
     }
 
