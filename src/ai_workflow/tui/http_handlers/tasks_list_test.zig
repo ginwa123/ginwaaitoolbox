@@ -366,6 +366,30 @@ test "tasks_list handler threads task_type + routine into the response" {
     if (std.mem.indexOf(u8, source, ".routine") == null) return error.RoutineNotThreaded;
 }
 
+// ─── Contract: pin fields propagate from DB to wire response ──────────
+//
+// Regression: the `WorkspaceItemTaskResponse` shape originally lacked
+// `is_pinned` + `pinned_position`, so the frontend could never render
+// the pin icon even after `pinTask` updated the DB. Both fields must
+// be present on the wire type AND threaded into the handler's
+// response struct.
+
+test "WorkspaceItemTaskResponse has is_pinned + pinned_position fields" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HTTP_RESPONSE_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "is_pinned") == null) return error.IsPinnedFieldMissing;
+    if (std.mem.indexOf(u8, source, "pinned_position") == null) return error.PinnedPositionFieldMissing;
+}
+
+test "tasks_list handler threads is_pinned + pinned_position into the response" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, ".is_pinned") == null) return error.IsPinnedNotThreaded;
+    if (std.mem.indexOf(u8, source, ".pinned_position") == null) return error.PinnedPositionNotThreaded;
+}
+
 // ─── Contract 12: migration declares idx_workspace_item_tasks_item_updated ─
 
 test "migration declares idx_workspace_item_tasks_item_updated" {

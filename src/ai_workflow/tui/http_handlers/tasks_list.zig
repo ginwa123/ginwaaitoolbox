@@ -115,6 +115,8 @@ pub fn tasksListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
             .routine = routine_meta,
             .created_at = task.created_at,
             .updated_at = task.updated_at,
+            .is_pinned = task.is_pinned,
+            .pinned_position = task.pinned_position,
         });
     }
 

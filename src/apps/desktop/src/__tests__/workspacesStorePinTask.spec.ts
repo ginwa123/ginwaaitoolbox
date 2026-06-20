@@ -88,7 +88,9 @@ describe('useWorkspacesStore.pinTask()', () => {
     expect(result?.pinned_position).toBe(1)
 
     // Optimistic state was applied.
-    const tasks = store.workspaces[0].items[0].tasks
+    const ws1 = store.workspaces.find((w) => w.id === 'ws_1')!
+    const item1 = ws1.items.find((i) => i.id === 'item_1')!
+    const tasks = item1.tasks!
     const updated = tasks.find((t) => t.id === 'task_2')!
     expect(updated.is_pinned).toBe(true)
     expect(updated.pinned_position).toBe(1)
@@ -112,7 +114,9 @@ describe('useWorkspacesStore.pinTask()', () => {
 
     const result = await store.pinTask('ws_1', 'item_1', 'task_1', false)
     expect(result?.success).toBe(true)
-    const tasks = store.workspaces[0].items[0].tasks
+    const ws1 = store.workspaces.find((w) => w.id === 'ws_1')!
+    const item1 = ws1.items.find((i) => i.id === 'item_1')!
+    const tasks = item1.tasks!
     const updated = tasks.find((t) => t.id === 'task_1')!
     expect(updated.is_pinned).toBe(false)
     expect(updated.pinned_position).toBe(0)
@@ -130,7 +134,9 @@ describe('useWorkspacesStore.pinTask()', () => {
     expect(result).toBeUndefined()
 
     // State was rolled back: task_2 is back to unpinned.
-    const tasks = store.workspaces[0].items[0].tasks
+    const ws1 = store.workspaces.find((w) => w.id === 'ws_1')!
+    const item1 = ws1.items.find((i) => i.id === 'item_1')!
+    const tasks = item1.tasks!
     const updated = tasks.find((t) => t.id === 'task_2')!
     expect(updated.is_pinned).toBe(false)
     expect(updated.pinned_position).toBe(0)

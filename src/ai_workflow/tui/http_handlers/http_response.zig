@@ -306,6 +306,14 @@ pub const WorkspaceItemTaskResponse = struct {
     routine: ?RoutineMetaResponse = null,
     created_at: ?[]const u8 = null,
     updated_at: ?[]const u8 = null,
+    /// Pin flag. `true` when the user has pinned this task. Default
+    /// `false` so older call sites that don't supply it still compile.
+    /// Mirrors `WorkspaceItemTaskInfo.is_pinned` in `llm_history.zig`.
+    is_pinned: bool = false,
+    /// Position within the pinned subset of a single workspace item.
+    /// Only meaningful when `is_pinned == true`. Mirrors
+    /// `WorkspaceItemTaskInfo.pinned_position`.
+    pinned_position: i64 = 0,
 };
 
 pub const WorkspaceItemTaskListResponse = struct {
