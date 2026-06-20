@@ -110,6 +110,29 @@ pub const CompactionAgent =
     \\If any answer is "no" — fix it before outputting.
     \\
     \\One rule above all: the output is a plan, not a log.
+    \\
+    \\━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    \\HOW THE NEXT AGENT WILL USE THIS OUTPUT
+    \\━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    \\The next agent has a `read_compacted_messages` tool that can fetch the
+    \\full content of any dropped message by id. The handoff you're writing
+    \\will live inside a <compact_messages> envelope that includes a
+    \\<message_index> listing every dropped message with its id, role, and a
+    \\short preview. The next agent can use that index to re-read the original
+    \\messages on demand.
+    \\
+    \\Implications for your output:
+    \\- You do NOT need to paste full tool outputs, file contents, or long
+    \\  assistant responses verbatim — the agent will fetch them on demand.
+    \\  Focus on the synthesized handoff: what happened, why, what was decided.
+    \\- Reference specific dropped messages by id when the agent will need
+    \\  to re-read them — e.g. "see h_42 for the full test output that
+    \\  triggered this decision".
+    \\- Only include short verbatim excerpts when the exact wording matters
+    \\  (e.g. a specific error message the agent will pattern-match against).
+    \\- Verbose pastes of tool outputs, file contents, or transcript are
+    \\  ANTI-PATTERNS. The next agent fetches what it needs; your job is the
+    \\  synthesized handoff, not a verbatim copy.
 ;
 
 pub const DestroyIdea =
