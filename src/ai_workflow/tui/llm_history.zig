@@ -2782,6 +2782,93 @@ pub fn deleteWorkspaceItemTask(
     try db.exec(allocator, sql, &.{id});
 }
 
+/// Set or clear the `is_pinned` flag for a single task. When
+/// `is_pinned` is true, the row's `pinned_position` is bumped to
+/// (MAX(pinned_position WHERE is_pinned=1) + 1) so a newly-pinned
+/// task appears at the bottom of the pinned region (the user can
+/// drag it to a different position afterwards). When `is_pinned`
+/// is false, the row's `pinned_position` is reset to 0 (the
+/// default; the value is irrelevant for unpinned rows).
+///
+/// Returns the new `pinned_position` so the caller can echo it
+/// back to the client.
+pub fn setTaskPinned(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    is_pinned: bool,
+) !i64 {
+    if (is_pinned) {
+        // Bump pinned_position to MAX+1 for the relevant
+        // workspace_item. The MAX subquery is correlated on
+        // workspace_item_id (derived from the row being pinned)
+        // so the position is scoped per item, not globally.
+        var max_q = try db.query(
+            allocator,
+            "SELECT COALESCE(MAX(t.pinned_position), -1) FROM workspace_item_tasks t WHERE t.is_pinned = 1 AND t.workspace_item_id = (SELECT workspace_item_id FROM workspace_item_tasks WHERE id = ?)",
+            &.{id},
+        );
+        defer max_q.deinit();
+        const max_row = (try max_q.next()) orelse {
+            return error.TaskNotFound;
+        };
+        defer max_row.deinit(allocator);
+        const max_pos = std.fmt.parseInt(i64, max_row.values[0], 10) catch 0;
+        const new_pos = max_pos + 1;
+        const new_pos_str = try std.fmt.allocPrint(allocator, "{d}", .{new_pos});
+        defer allocator.free(new_pos_str);
+        try db.exec(allocator,
+            "UPDATE workspace_item_tasks SET is_pinned = 1, pinned_position = ?, updated_at = datetime('now') WHERE id = ?",
+            &.{ new_pos_str, id },
+        );
+        return new_pos;
+    } else {
+        try db.exec(allocator,
+            "UPDATE workspace_item_tasks SET is_pinned = 0, pinned_position = 0, updated_at = datetime('now') WHERE id = ?",
+            &.{id},
+        );
+        return 0;
+    }
+}
+
+/// Reorder the pinned subset of a single workspace item. The
+/// `ordered_ids` array is the full ordered list of pinned task
+/// IDs for that workspace item (top-to-bottom display order, the
+/// same convention as `workspaces_reorder` and
+/// `workspace_items_reorder`). Each row's `pinned_position` is
+/// set to `count - 1 - i` so the first id gets the highest
+/// position (sorted to the top with `ORDER BY pinned_position
+/// DESC`).
+///
+/// Defense in depth: the use case scopes every UPDATE by
+/// `workspace_item_id` (derived from the URL) AND `is_pinned = 1`,
+/// so a stale or out-of-range id is a silent no-op. A row that
+/// isn't currently pinned (e.g. accidentally included in the
+/// payload) is silently skipped too — the WHERE clause filters it.
+pub fn reorderPinnedTasks(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    workspace_item_id: []const u8,
+    ordered_ids: []const []const u8,
+) !void {
+    if (ordered_ids.len == 0) return;
+
+    const count: i64 = @intCast(ordered_ids.len);
+    var buf: [32]u8 = undefined;
+
+    for (ordered_ids, 0..) |id_str, i| {
+        const new_pos: i64 = count - 1 - @as(i64, @intCast(i));
+        const pos_str = std.fmt.bufPrint(&buf, "{d}", .{new_pos}) catch {
+            return error.IntegerTooLarge;
+        };
+        try db.exec(allocator,
+            "UPDATE workspace_item_tasks SET pinned_position = ?, updated_at = datetime('now') " ++
+                "WHERE id = ? AND workspace_item_id = ? AND is_pinned = 1",
+            &.{ pos_str, id_str, workspace_item_id },
+        );
+    }
+}
+
 /// List all workspace item tasks by workspace_item_id
 pub fn listWorkspaceItemTasks(
     allocator: std.mem.Allocator,

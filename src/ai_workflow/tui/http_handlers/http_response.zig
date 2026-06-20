@@ -495,3 +495,49 @@ pub const WorkspaceItemReorderResponse = struct {
 pub fn makeWorkspaceItemReorderResponse(allocator: std.mem.Allocator, count: usize) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, WorkspaceItemReorderResponse{ .count = count }, .{});
 }
+
+/// Typed response for `POST /api/.../tasks/:task_id/pin`. Returns the
+/// new `pinned_position` so the client can confirm the row landed at
+/// the bottom of the pinned region. `is_pinned` echoes the requested
+/// state.
+pub const TaskPinResponse = struct {
+    success: bool = true,
+    id: []const u8,
+    is_pinned: bool,
+    pinned_position: i64,
+};
+
+pub fn makeTaskPinResponse(
+    allocator: std.mem.Allocator,
+    id: []const u8,
+    is_pinned: bool,
+    pinned_position: i64,
+) ![]u8 {
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        TaskPinResponse{
+            .id = id,
+            .is_pinned = is_pinned,
+            .pinned_position = pinned_position,
+        },
+        .{},
+    );
+}
+
+/// Typed response for `POST /api/.../tasks/reorder_pinned`. Returns
+/// the number of rows in the payload (a row that isn't currently
+/// pinned is silently skipped by the WHERE clause, but the count
+/// still reflects the input list size so the client can verify the
+/// request reached the server).
+pub const TasksReorderPinnedResponse = struct {
+    success: bool = true,
+    count: usize,
+};
+
+pub fn makeTasksReorderPinnedResponse(allocator: std.mem.Allocator, count: usize) ![]u8 {
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        TasksReorderPinnedResponse{ .count = count },
+        .{},
+    );
+}
