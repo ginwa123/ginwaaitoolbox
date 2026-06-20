@@ -888,6 +888,25 @@ pub const Migration049AddDefensiveIndexes = struct {
     }
 };
 
+pub const Migration050AddPinnedToWorkspaceItemTasks = struct {
+    pub const version: u32 = 50;
+    pub const name = "add_pinned_to_workspace_item_tasks";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            "ALTER TABLE workspace_item_tasks ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "ALTER TABLE workspace_item_tasks ADD COLUMN pinned_position INTEGER NOT NULL DEFAULT 0",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_workspace_item_tasks_pinned " ++
+            "ON workspace_item_tasks(workspace_item_id, is_pinned DESC, pinned_position DESC)",
+            &[_][]const u8{});
+        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -988,6 +1007,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration046AddGitWorktreeCwdToSessions.version, .name = Migration046AddGitWorktreeCwdToSessions.name, .up = Migration046AddGitWorktreeCwdToSessions.up },
     .{ .version = Migration048AddChatListIndex.version, .name = Migration048AddChatListIndex.name, .up = Migration048AddChatListIndex.up },
     .{ .version = Migration049AddDefensiveIndexes.version, .name = Migration049AddDefensiveIndexes.name, .up = Migration049AddDefensiveIndexes.up },
+    .{ .version = Migration050AddPinnedToWorkspaceItemTasks.version, .name = Migration050AddPinnedToWorkspaceItemTasks.name, .up = Migration050AddPinnedToWorkspaceItemTasks.up },
 };
 
 /// Register all migrations with a MigrationManager
