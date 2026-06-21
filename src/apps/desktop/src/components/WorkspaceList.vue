@@ -610,13 +610,11 @@ const handleItemDragEnd = () => {
               </li>
               <li>
                 <button
-                  @click="handleAddItem(workspace.id, 'memory')"
+                  @click="handleAddItem(workspace.id, 'kanban')"
                   class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity flex items-center gap-2"
                   style="color: var(--semantic-text);"
-                  data-testid="add-memory-button"
                 >
-                  <span>Add Markdown</span>
-                  <span class="text-xs opacity-70">(Dev)</span>
+                  <span>Add Project Kanban</span>
                 </button>
               </li>
             </ul>
