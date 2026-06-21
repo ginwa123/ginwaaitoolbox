@@ -64,3 +64,65 @@ test "listColumns returns columns ordered by position" {
     try testing.expectEqualStrings("c2", cols[1].id);
     try testing.expectEqualStrings("c3", cols[2].id);
 }
+
+// ─── Test: addColumn appends at MAX(position) + 1 when position=null ─────
+
+test "addColumn inserts at end of position sequence" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try s.db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)", &.{});
+    try s.db.exec(alloc,
+        \\CREATE TABLE kanban_columns (
+        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT,
+        \\    position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)
+    , &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('item_1', 'ws_1', 'kanban')", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO kanban_columns (id, workspace_item_id, name, position) VALUES ('c1', 'item_1', 'todo', 0)", &.{});
+
+    const new_id = try kanban.addColumn(alloc, &s.db, "item_1", "review", null);
+    defer alloc.free(new_id);
+    // Generated id is `col_<unix_nanoseconds>` — just sanity-check the prefix.
+    try testing.expect(std.mem.startsWith(u8, new_id, "col_"));
+
+    const cols = try kanban.listColumns(alloc, &s.db, "item_1");
+    defer kanban.freeColumns(alloc, cols);
+
+    try testing.expectEqual(@as(usize, 2), cols.len);
+    try testing.expectEqualStrings("review", cols[1].name);
+    try testing.expectEqual(@as(i64, 1), cols[1].position);
+}
+
+// ─── Test: seedDefaultColumns produces the 3-column canonical flow ───────
+
+test "seedDefaultColumns creates todo, in progress, done" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try s.db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)", &.{});
+    try s.db.exec(alloc,
+        \\CREATE TABLE kanban_columns (
+        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT,
+        \\    position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)
+    , &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('item_1', 'ws_1', 'kanban')", &.{});
+
+    try kanban.seedDefaultColumns(alloc, &s.db, "item_1");
+
+    const cols = try kanban.listColumns(alloc, &s.db, "item_1");
+    defer kanban.freeColumns(alloc, cols);
+
+    try testing.expectEqual(@as(usize, 3), cols.len);
+    try testing.expectEqualStrings("todo", cols[0].name);
+    try testing.expectEqualStrings("in progress", cols[1].name);
+    try testing.expectEqualStrings("done", cols[2].name);
+}

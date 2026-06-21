@@ -88,3 +88,88 @@ pub fn listColumns(
     }
     return rows.toOwnedSlice(allocator);
 }
+
+/// Generate a unique column id of the form `col_<unix_nanoseconds>`.
+///
+/// Uses libc `clock_gettime` for nanosecond precision so that 3
+/// `addColumn` calls inside `seedDefaultColumns` (which all run in
+/// the same millisecond during tests) get distinct IDs. The
+/// project-wide convention for ID generation is the same nanosecond
+/// timestamp — see `workspace_items_create.zig:generateItemId`
+/// which uses `std.Io.Clock.now(.real, io)`.
+///
+/// `std.time.timestamp()` was removed in Zig 0.16 — see the project
+/// memory `zig-0.16-crypto-time-stdlib-removals.md`.
+fn generateColumnId(allocator: std.mem.Allocator) ![]u8 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const ns: i128 = @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
+    return std.fmt.allocPrint(allocator, "col_{d}", .{ns});
+}
+
+/// Append a new column to the end of the kanban's column sequence.
+///
+/// `position` may be `null` (default) to place the column at
+/// `MAX(kanban_columns.position) + 1` for this item, or a concrete
+/// integer to insert at a specific position (the renumbering
+/// behavior of an explicit position is the caller's responsibility
+/// — see `reorderColumn`).
+///
+/// Returns a freshly-allocated id of the form `col_<unix_seconds>`.
+/// Caller owns the returned slice.
+pub fn addColumn(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    workspace_item_id: []const u8,
+    name: []const u8,
+    position: ?i64,
+) ![]u8 {
+    const id = try generateColumnId(allocator);
+    defer allocator.free(id);
+
+    const pos = position orelse blk: {
+        var q = try db.query(allocator,
+            \\SELECT COALESCE(MAX(kc.position), -1) + 1
+            \\FROM kanban_columns kc
+            \\WHERE kc.workspace_item_id = ?
+        , &.{workspace_item_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.NoMaxPosition;
+        defer row.deinit(allocator);
+        break :blk try std.fmt.parseInt(i64, row.values[0], 10);
+    };
+
+    const pos_str = try std.fmt.allocPrint(allocator, "{d}", .{pos});
+    defer allocator.free(pos_str);
+
+    try db.exec(allocator,
+        "INSERT INTO kanban_columns (id, workspace_item_id, name, position) VALUES (?, ?, ?, ?)",
+        &.{ id, workspace_item_id, name, pos_str });
+    return allocator.dupe(u8, id);
+}
+
+/// Seed the canonical 3-column default flow `todo / in progress /
+/// done` for a freshly-created kanban item. Idempotent only at the
+/// "called once at item-creation time" granularity — re-calling on a
+/// board that already has columns appends a second set.
+pub fn seedDefaultColumns(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    workspace_item_id: []const u8,
+) !void {
+    // Each `addColumn` returns an owned id slice that the caller MUST
+    // free. `seedDefaultColumns` doesn't surface the ids (the caller
+    // doesn't need them), so we free each one immediately after.
+    {
+        const id = try addColumn(allocator, db, workspace_item_id, "todo", 0);
+        defer allocator.free(id);
+    }
+    {
+        const id = try addColumn(allocator, db, workspace_item_id, "in progress", 1);
+        defer allocator.free(id);
+    }
+    {
+        const id = try addColumn(allocator, db, workspace_item_id, "done", 2);
+        defer allocator.free(id);
+    }
+}
