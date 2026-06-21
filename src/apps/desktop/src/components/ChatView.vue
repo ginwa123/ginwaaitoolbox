@@ -34,6 +34,7 @@ import RemoveFile from './tool_outputs/RemoveFile.vue'
 import SpawnSubAgent from './tool_outputs/SpawnSubAgent.vue'
 import NalarBrowser from './tool_outputs/NalarBrowser.vue'
 import SetGitWorktree from './tool_outputs/SetGitWorktree.vue'
+import CompactionCard from './CompactionCard.vue'
 import SkillsPopup from './SkillsPopup.vue'
 import ImagePreview from './ImagePreview.vue'
 import WorktreeMenu from './WorktreeMenu.vue'
@@ -298,6 +299,23 @@ const renderResponse = (
   } catch {
     return escapeHtml(content)
   }
+}
+
+// Detect a compaction summary message — a user-role message whose
+// content is the `<compact_messages>` envelope written by
+// `compactMessageInMemoryNew` (workflow.zig). Used by the user bubble
+// to render the envelope as a structured `CompactionCard` instead of
+// a wall of escaped XML.
+//
+// Detection is content-prefix based (rather than a dedicated DB field)
+// because the existing API doesn't carry a `is_compaction` flag. A user
+// who literally types "<compact_messages>" into chat would also match,
+// but that's vanishingly unlikely; the compactor writes this exact
+// prefix and no other message does.
+const isCompactionMessage = (msg: { role: string; content: string } | undefined): boolean => {
+  if (!msg) return false
+  if (msg.role !== 'user') return false
+  return msg.content.trimStart().startsWith('<compact_messages>')
 }
 
 // Session ID extracted from props on mount
@@ -1986,24 +2004,32 @@ const compactSession = async () => {
                   >
                     <!-- ── User ── -->
                     <template v-if="group.role === 'user'">
-                      <div
-                        v-if="
-                          group.messages[0]?.image_urls && group.messages[0]!.image_urls!.length > 0
-                        "
-                        class="mb-2"
-                      >
-                        <div class="flex flex-wrap gap-2">
-                          <img
-                            v-for="(imgUrl, imgIdx) in group.messages[0]!.image_urls"
-                            :key="imgIdx"
-                            :src="imgUrl"
-                            alt="Attached image"
-                            class="max-w-full rounded-lg max-h-64 cursor-pointer hover:opacity-90"
-                            @click="openImagePreview(imgUrl)"
-                          />
+                      <!-- Compaction envelope: render as a structured card
+                           instead of a wall of escaped XML. -->
+                      <CompactionCard
+                        v-if="isCompactionMessage(group.messages[0])"
+                        :content="group.messages[0]!.content"
+                      />
+                      <template v-else>
+                        <div
+                          v-if="
+                            group.messages[0]?.image_urls && group.messages[0]!.image_urls!.length > 0
+                          "
+                          class="mb-2"
+                        >
+                          <div class="flex flex-wrap gap-2">
+                            <img
+                              v-for="(imgUrl, imgIdx) in group.messages[0]!.image_urls"
+                              :key="imgIdx"
+                              :src="imgUrl"
+                              alt="Attached image"
+                              class="max-w-full rounded-lg max-h-64 cursor-pointer hover:opacity-90"
+                              @click="openImagePreview(imgUrl)"
+                            />
+                          </div>
                         </div>
-                      </div>
-                      {{ group.messages[0]!.content }}
+                        {{ group.messages[0]!.content }}
+                      </template>
                     </template>
 
                     <!-- ── Tool ── -->

@@ -17,6 +17,7 @@ test {
     _ = @import("save_agent_test.zig");
     _ = @import("save_skill_test.zig");
     _ = @import("tool_registry_test.zig"); // NEW
+    _ = @import("workflow_compaction_envelope_test.zig");
     _ = @import("http_handlers/nalar_config_put_test.zig");
     _ = @import("http_handlers/nalar_config_profile_delete_test.zig");
     _ = @import("http_handlers/sse_handshake_test.zig");
@@ -30,6 +31,8 @@ test {
     _ = @import("http_handlers/memories_crud_test.zig");
     _ = @import("http_handlers/local_memories_crud_test.zig");
     _ = @import("llm_history_routines_test.zig");
+    _ = @import("llm_history_compacted_messages_test.zig");
+    _ = @import("compaction_long_context_test.zig");
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     _ = @import("http_handlers/workspace_items_reorder_test.zig");
     _ = @import("http_handlers/task_pin_test.zig");

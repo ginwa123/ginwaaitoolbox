@@ -1165,6 +1165,165 @@ pub fn getMessages(
     return results.toOwnedSlice(allocator);
 }
 
+// =============================================================================
+// Compacted Messages Query (is_feed_to_llm = 0)
+// =============================================================================
+
+/// Options for filtering `getCompactedMessages`.
+pub const CompactedMessagesOptions = struct {
+    /// When non-null, only return messages whose id is in this list.
+    /// Used by `read_compacted_messages(message_ids=[...])`.
+    message_ids: ?[]const []const u8 = null,
+    /// When non-null, only return messages with `role` matching this value
+    /// (e.g. "user", "assistant", "tool").
+    role: ?[]const u8 = null,
+    /// When non-null, only return messages with `created_at >= since`.
+    since: ?[]const u8 = null,
+    /// When non-null, only return messages with `created_at <= until`.
+    until: ?[]const u8 = null,
+    /// Max number of rows to return. Defaults to 100 for safety — the
+    /// caller can request up to 1000 explicitly. The read_compacted_messages
+    /// tool wraps this in its own user-facing limit parameter.
+    limit: ?u32 = 100,
+};
+
+/// Lighter-weight return struct than `TUIHistory` — only the fields the
+/// `read_compacted_messages` tool actually surfaces. Avoids the
+/// ~30-field TUIHistory struct, which has columns that don't exist
+/// in a minimal test schema (e.g. `diffview_before`) and would force
+/// every test to seed them.
+pub const CompactedMessage = struct {
+    id: []const u8,
+    session_id: []const u8,
+    role: []const u8,
+    content: []const u8,
+    tool_call_id: ?[]const u8,
+    tool_name: ?[]const u8,
+    model: []const u8,
+    agent: []const u8,
+    created_at: []const u8,
+
+    pub fn deinit(self: *const CompactedMessage, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.session_id);
+        allocator.free(self.role);
+        allocator.free(self.content);
+        allocator.free(self.model);
+        allocator.free(self.agent);
+        allocator.free(self.created_at);
+        if (self.tool_call_id) |t| allocator.free(t);
+        if (self.tool_name) |t| allocator.free(t);
+    }
+};
+
+/// Return messages marked `is_feed_to_llm = 0` for the given session.
+/// This is the inverse of `getMessages` (line 1076): where `getMessages`
+/// returns the messages the LLM sees, `getCompactedMessages` returns
+/// the messages the LLM does NOT see (the ones dropped by compaction).
+///
+/// Filter semantics:
+/// - `message_ids`: when non-null, IN-clause filter (skipped if empty).
+/// - `role`: exact match on `llm_history.role`.
+/// - `since` / `until`: lexicographic comparison on the
+///   `created_at` string (which is in `YYYY-MM-DD HH:MM:SS` format from
+///   `datetime('now')`, so lex-sort = chrono-sort). Matches the
+///   existing cursor convention in `getSessionListWithCursor`.
+/// - `limit`: clamps the row count (defaults to 100).
+///
+/// Returned slice's elements are heap-allocated via `allocator.dupe`;
+/// caller must call `result[i].deinit(allocator)` for each and
+/// `allocator.free(results)` to free the outer slice.
+pub fn getCompactedMessages(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    opts: CompactedMessagesOptions,
+) ![]CompactedMessage {
+    const effective_limit = opts.limit orelse 100;
+
+    // Build the WHERE clause incrementally. Each filter appends
+    // AND <clause> to the base `h.session_id = ? AND h.is_feed_to_llm = 0`.
+    var sql: std.ArrayList(u8) = .empty;
+    defer sql.deinit(allocator);
+    try sql.appendSlice(allocator,
+        \\SELECT
+        \\    h.id, h.session_id, COALESCE(h.role, 'assistant'),
+        \\    COALESCE(h.response_content, ''),
+        \\    h.tool_call_id, h.tool_name,
+        \\    COALESCE(h.model, ''), COALESCE(h.agent, ''),
+        \\    COALESCE(h.created_at, '')
+        \\FROM llm_history h
+        \\WHERE h.session_id = ?
+        \\  AND h.is_feed_to_llm = 0
+    );
+
+    var bind_values: std.ArrayList([]const u8) = .empty;
+    defer bind_values.deinit(allocator);
+    try bind_values.append(allocator, session_id);
+
+    if (opts.message_ids) |ids| {
+        if (ids.len > 0) {
+            try sql.appendSlice(allocator, " AND h.id IN (");
+            for (ids, 0..) |id, i| {
+                if (i > 0) try sql.append(allocator, ',');
+                try sql.append(allocator, '?');
+                try bind_values.append(allocator, id);
+            }
+            try sql.append(allocator, ')');
+        }
+    }
+
+    if (opts.role) |r| {
+        try sql.appendSlice(allocator, " AND h.role = ?");
+        try bind_values.append(allocator, r);
+    }
+
+    if (opts.since) |s| {
+        try sql.appendSlice(allocator, " AND h.created_at >= ?");
+        try bind_values.append(allocator, s);
+    }
+
+    if (opts.until) |u| {
+        try sql.appendSlice(allocator, " AND h.created_at <= ?");
+        try bind_values.append(allocator, u);
+    }
+
+    try sql.appendSlice(allocator, " ORDER BY h.created_at ASC");
+
+    // Bind the limit at the end. Format inline since we know it's u32.
+    try sql.print(allocator, " LIMIT {d}", .{effective_limit});
+
+    var rows = try db.query(allocator, sql.items, bind_values.items);
+    defer rows.deinit();
+
+    var results: std.ArrayList(CompactedMessage) = .empty;
+    errdefer {
+        for (results.items) |m| {
+            var copy = m;
+            copy.deinit(allocator);
+        }
+        results.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        defer row.deinit(allocator);
+        const msg = CompactedMessage{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .session_id = try allocator.dupe(u8, row.values[1]),
+            .role = try allocator.dupe(u8, row.values[2]),
+            .content = try allocator.dupe(u8, row.values[3]),
+            .tool_call_id = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .tool_name = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .model = try allocator.dupe(u8, row.values[6]),
+            .agent = try allocator.dupe(u8, row.values[7]),
+            .created_at = try allocator.dupe(u8, row.values[8]),
+        };
+        try results.append(allocator, msg);
+    }
+
+    return try results.toOwnedSlice(allocator);
+}
+
 pub fn getLatestMessage(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,

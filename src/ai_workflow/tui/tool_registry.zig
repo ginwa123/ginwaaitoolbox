@@ -19,6 +19,7 @@ const write_file_mod = nalar_mod.write_file;
 const list_skills_mod = nalar_mod.list_skills_tool;
 const memories_mod = nalar_mod.memories;
 const list_memory_mod = nalar_mod.list_memory_tool;
+const read_compacted_messages_mod = nalar_mod.read_compacted_messages_tool;
 const get_skill_mod = nalar_mod.get_skill_tool;
 const view_skill_mod = nalar_mod.view_skill_tool;
 const remove_skill_mod = nalar_mod.remove_skill_tool;
@@ -319,6 +320,35 @@ pub fn execListMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
     const output = try wrapToolOutput(ctx.allocator, "list_memory", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+pub fn execReadCompactedMessages(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        read_compacted_messages_mod.ReadCompactedMessagesInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "read_compacted_messages failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "read_compacted_messages", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    const inner = read_compacted_messages_mod.execute_read_compacted_messages(
+        ctx.allocator,
+        ctx.io,
+        ctx.db,
+        ctx.session_id,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "read_compacted_messages failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "read_compacted_messages", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+
+    const output = try wrapToolOutput(ctx.allocator, "read_compacted_messages", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
@@ -1494,6 +1524,7 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
 
     // === MEMORY TOOLS ===
     .{ .name = "list_memory", .exec = execListMemory, .tool_def = list_memory_mod.list_memory_tool },
+    .{ .name = "read_compacted_messages", .exec = execReadCompactedMessages, .tool_def = read_compacted_messages_mod.read_compacted_messages_tool },
 
     // === FILE OPERATIONS ===
     .{ .name = "bash", .exec = execBash, .tool_def = bash_tool_mod.bash_tool },
@@ -1539,6 +1570,7 @@ pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool
         update_activity_mod.update_activity_tool,
         list_skills_mod.list_skills_tool,
         list_memory_mod.list_memory_tool,
+        read_compacted_messages_mod.read_compacted_messages_tool,
         view_skill_mod.view_skill_tool,
         get_skill_mod.get_skill_tool,
         remove_skill_mod.remove_skill_tool,

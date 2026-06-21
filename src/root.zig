@@ -341,6 +341,7 @@ pub const remove_skill_tool = @import("modules/agent/tools/remove_skill.zig");
 pub const list_skills_tool = @import("modules/agent/tools/list_skills.zig");
 pub const memories = @import("modules/agent/tools/memories.zig");
 pub const list_memory_tool = @import("modules/agent/tools/list_memory.zig");
+pub const read_compacted_messages_tool = @import("modules/agent/tools/read_compacted_messages.zig");
 pub const view_skill_tool = @import("modules/agent/tools/view_skill.zig");
 pub const agents = @import("modules/agent/tools/agents.zig");
 pub const list_agents = @import("modules/agent/tools/list_agents.zig");
