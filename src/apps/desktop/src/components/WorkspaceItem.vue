@@ -191,7 +191,17 @@ const handlePinnedDragStart = (event: DragEvent) => {
   if (!row) return
   const taskId = row.dataset.taskId
   if (!taskId) return
-  event.dataTransfer?.setData('text/plain', taskId)
+  // Use a custom MIME type instead of `text/plain`. The pinned
+  // region lives inside a workspace-item `<li>`, and the parent's
+  // <WorkspaceList> attaches its own `@dragstart` handler on the
+  // outer `<ul>` for item reorder. Both handlers fire on the same
+  // dragstart (this one first, then the parent after bubbling),
+  // and `setData('text/plain', ...)` is destructive — whichever
+  // runs second overwrites the first. Using a dedicated MIME type
+  // (`application/x-pinned-task-id`) keeps the payload intact for
+  // the drop handler without colliding with the parent's
+  // `text/plain` payload.
+  event.dataTransfer?.setData('application/x-pinned-task-id', taskId)
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move'
   }
@@ -270,7 +280,12 @@ const handlePinnedDrop = (event: DragEvent) => {
   event.preventDefault()
   const dataTransfer = event.dataTransfer
   if (!dataTransfer) return
-  const draggedId = dataTransfer.getData('text/plain')
+  // Read from the custom MIME type written by handlePinnedDragStart.
+  // Using `text/plain` here would also work in isolation, but
+  // colliding with the parent <WorkspaceList>'s `text/plain`
+  // payload (item id) means whichever handler ran last on the
+  // dragstart wins. See the long comment in handlePinnedDragStart.
+  const draggedId = dataTransfer.getData('application/x-pinned-task-id')
   if (!draggedId) return
 
   const tasks = props.item.tasks ?? []

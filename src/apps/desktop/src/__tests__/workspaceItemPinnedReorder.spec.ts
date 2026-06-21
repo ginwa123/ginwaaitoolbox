@@ -169,7 +169,7 @@ describe('WorkspaceItem pinned-task drag reorder', () => {
     const dragstart = makeDragEvent('dragstart')
     t3Row.dispatchEvent(dragstart)
     const dt3 = (dragstart as unknown as { dataTransfer: DataTransferShim }).dataTransfer
-    expect(dt3.getData('text/plain')).toBe('t3')
+    expect(dt3.getData('application/x-pinned-task-id')).toBe('t3')
 
     // dragover on t1 with clientY=5 (top half; midpoint=20) → indicator 'above'.
     const dragover = new Event('dragover', { bubbles: true, cancelable: true })
@@ -208,7 +208,7 @@ describe('WorkspaceItem pinned-task drag reorder', () => {
     const dragstart = makeDragEvent('dragstart')
     t3Row.dispatchEvent(dragstart)
     const dt3 = (dragstart as unknown as { dataTransfer: DataTransferShim }).dataTransfer
-    expect(dt3.getData('text/plain')).toBe('t3')
+    expect(dt3.getData('application/x-pinned-task-id')).toBe('t3')
 
     // dragover: cursor on t1, clientY=30 (in t1's bottom half; midpoint=20).
     const dragover = new Event('dragover', { bubbles: true, cancelable: true })

@@ -150,7 +150,7 @@ describe('WorkspaceList item drag-and-drop', () => {
     // dragstart on source: sets dataTransfer to 'item2'
     const startEvent = makeDragEvent('dragstart', dt)
     sourceItem.element.dispatchEvent(startEvent)
-    expect(dt.getData('text/plain')).toBe('item2')
+    expect(dt.getData('application/x-item-id')).toBe('item2')
 
     // dragover on target: enables the drop
     const overEvent = makeDragEvent('dragover', dt)

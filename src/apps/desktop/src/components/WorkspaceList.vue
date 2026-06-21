@@ -236,11 +236,14 @@ const handleDragStart = (workspaceId: string, event: DragEvent) => {
   if (event.dataTransfer) {
     // 'move' is the cursor hint; the actual data payload is the
     // workspace id (string), which we read in handleDrop to
-    // identify the source. 'text/plain' is the universal MIME type
-    // that works in all browsers and is what HTML5 DnD spec
-    // recommends for non-rich-text drags.
+    // identify the source. We use a dedicated MIME type so the
+    // payload doesn't collide with the item-reorder payload
+    // (set by handleItemDragStart via bubbling from inside the
+    // item rows) — both handlers fire on the same dragstart in
+    // that case, and `setData('text/plain', ...)` is destructive
+    // across handlers.
     event.dataTransfer.effectAllowed = 'move'
-    event.dataTransfer.setData('text/plain', workspaceId)
+    event.dataTransfer.setData('application/x-workspace-id', workspaceId)
   }
 }
 
@@ -271,7 +274,7 @@ const handleDragLeave = (workspaceId: string, event: DragEvent) => {
 
 const handleDrop = (workspaceId: string, event: DragEvent) => {
   event.preventDefault()
-  const sourceId = event.dataTransfer?.getData('text/plain')
+  const sourceId = event.dataTransfer?.getData('application/x-workspace-id')
   if (!sourceId || sourceId === workspaceId) {
     // Drop on self or no source id — no-op.
     return
@@ -322,8 +325,16 @@ const handleItemDragStart = (event: DragEvent) => {
   draggingItemId.value = itemId
   draggingItemWorkspaceId.value = workspaceId
   if (event.dataTransfer) {
+    // Dedicated MIME type so the item payload doesn't collide with
+    // workspace or pinned-task payloads. Without this, the
+    // WorkspaceItem's pinned-task handler (which fires before us
+    // on a pinned-row dragstart via bubbling) would set
+    // `text/plain` first, then we'd overwrite it here with the
+    // item id, causing the pinned reorder drop to read the item
+    // id and silently fail (the task isn't in the item's pinned
+    // list — the store rejects the reorder).
     event.dataTransfer.effectAllowed = 'move'
-    event.dataTransfer.setData('text/plain', itemId)
+    event.dataTransfer.setData('application/x-item-id', itemId)
   }
 }
 
