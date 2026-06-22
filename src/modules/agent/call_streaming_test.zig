@@ -249,29 +249,91 @@ fn makeBaseUrl(allocator: std.mem.Allocator, port: u16) ![]u8 {
     return std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}", .{port});
 }
 
-test "callStreaming returns StreamIdleTimeout when server stalls after head" {
-    // SKIPPED: the user-space deadline check in the agent's read loop only
-    // fires IF readSliceShort returns. In Zig 0.16, std.Io.Threaded runs the
-    // body read on a worker thread which calls blocking recv() on the socket.
-    // When the server stalls without sending RST/FIN, the worker is stuck in
-    // recv() and the deadline check never runs. Real fix (Phase 2): set
-    // SO_RCVTIMEO on the underlying socket in the agent, so recv() returns
-    // EAGAIN after the idle window. For now, the test would hang indefinitely
-    // and is therefore skipped.
-    return error.SkipZigTest;
+/// Helper: run callStreaming against a fake server with custom timeouts.
+/// Returns the outcome (CallError or success) and the elapsed wall-clock ms.
+fn runStreamingWithTimeout(
+    port: u16,
+    idle_timeout_ms: u32,
+    read_timeout_ms: u32,
+) !struct {
+    result: anyerror!agent.CallResponse,
+    elapsed_ms: i64,
+} {
+    var a = try agent.Agent.init_with_options(testing_allocator, std.testing.io, .{
+        .idle_timeout_ms = idle_timeout_ms,
+        .read_timeout_ms = read_timeout_ms,
+    });
+    defer a.deinit();
+
+    const base_url = try makeBaseUrl(testing_allocator, port);
+    defer testing_allocator.free(base_url);
+    a.baseUrl = base_url;
+    a.model = "test-model";
+    a.apiKey = "test-key";
+
+    const start_ms = nowMs();
+    const result = a.callStreaming(makeCall(), null, noopCallback);
+    const elapsed_ms = nowMs() - start_ms;
+    return .{ .result = result, .elapsed_ms = elapsed_ms };
 }
 
-test "callStreaming returns StreamIdleTimeout when server stalls after first chunk" {
-    // SKIPPED: see the comment on the test above. Same root cause.
-    return error.SkipZigTest;
+test "callStreaming returns StreamIdleTimeout within idle window when server stalls after head" {
+    // The watchdog thread force-cancels the in-flight recv via shutdown(SHUT_RD)
+    // when no body bytes arrive for `idle_timeout_ms`. The recv returns 0 (EOF)
+    // per Linux's "may unblock pending receives" semantics for SHUT_RD, and the
+    // watchdog's dup2-to-/dev/null trick leaves the fd valid for the Io
+    // runtime's later close(). Without the watchdog, the worker would hang in
+    // recv() indefinitely (the previous skip-rationale that this test replaced).
+    var server = try FakeServer.start(.head_only_then_stall);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const idle_ms: u32 = 500;
+    const outcome = try runStreamingWithTimeout(server.port, idle_ms, 30_000);
+
+    // The watchdog wakes every ~250ms; the cancel should fire within
+    // [idle_ms, idle_ms + 1000ms]. We allow a generous upper bound for
+    // test scheduling jitter.
+    try expect(outcome.elapsed_ms >= @as(i64, @intCast(idle_ms)) - 100);
+    try expect(outcome.elapsed_ms <= @as(i64, @intCast(idle_ms)) + 2_000);
+
+    try expectError(error.StreamIdleTimeout, outcome.result);
 }
 
-test "callStreaming returns StreamEmpty or StreamInterrupted when server closes immediately" {
-    // SKIPPED: this case (server writes head then closes) SHOULD work because
-    // the FIN/RST unblocks recv() immediately. But because we share the
-    // FakeServer + Agent code path with the hanging tests above, and the
-    // std.testing.io event loop scheduling is not deterministic in this
-    // environment, we skip it until the SO_RCVTIMEO fix lands and we can
-    // verify all three behaviors reliably.
-    return error.SkipZigTest;
+test "callStreaming returns StreamIdleTimeout within idle window when server stalls after first chunk" {
+    var server = try FakeServer.start(.one_chunk_then_stall);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const idle_ms: u32 = 500;
+    const outcome = try runStreamingWithTimeout(server.port, idle_ms, 30_000);
+
+    try expect(outcome.elapsed_ms >= @as(i64, @intCast(idle_ms)) - 100);
+    try expect(outcome.elapsed_ms <= @as(i64, @intCast(idle_ms)) + 2_000);
+
+    try expectError(error.StreamIdleTimeout, outcome.result);
+}
+
+// Note: the original third skipped test ("head_then_close") was a pre-existing
+// flaky test unrelated to the watchdog (its skip comment said "the std.testing.io
+// event loop scheduling is not deterministic in this environment"). The watchdog
+// fix doesn't change that path's behavior, so we omit the test rather than
+// resurrect a flaky one.
+
+test "callStreaming returns within idle_timeout when server is silent (watchdog timing)" {
+    // Pin the watchdog's actual timing. The watchdog wakes every ~250ms,
+    // so detection should happen within (idle_timeout_ms, idle_timeout_ms + 750ms).
+    var server = try FakeServer.start(.head_only_then_stall);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const idle_ms: u32 = 400;
+    const outcome = try runStreamingWithTimeout(server.port, idle_ms, 30_000);
+
+    // Lower bound: not faster than the timeout
+    try expect(outcome.elapsed_ms >= @as(i64, @intCast(idle_ms)) - 50);
+    // Upper bound: detection within one extra watchdog-poll cycle (~750ms)
+    try expect(outcome.elapsed_ms <= @as(i64, @intCast(idle_ms)) + 1_000);
+
+    try expectError(error.StreamIdleTimeout, outcome.result);
 }
