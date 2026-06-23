@@ -114,6 +114,14 @@ export interface Workspace {
   expanded: boolean
 }
 
+export interface KanbanColumn {
+  id: string
+  workspace_item_id: string
+  name: string
+  position: number
+  created_at: string
+}
+
 export interface WorkspaceItem {
   id: string
   name: string
@@ -124,6 +132,12 @@ export interface WorkspaceItem {
   isLoading?: boolean
   expanded?: boolean
   tasks?: Task[]
+  // NEW (Chunk 4 of workspace-item-kanban plan). Populated for
+  // `item_type === 'kanban'`; omitted for folder/chat/memory items.
+  // Optional so legacy workspace-item literals (5+ test files
+  // construct WorkspaceItem without this field) keep type-checking —
+  // see the nalar-frontend-task-literal-typing-rule memory.
+  kanban_columns?: KanbanColumn[]
 }
 
 export interface RoutineMeta {
@@ -157,6 +171,13 @@ export interface Task {
   // nalar-frontend-task-literal-typing-rule memory.
   is_pinned?: boolean
   pinned_position?: number
+  // NEW (Chunk 4 of workspace-item-kanban plan). Populated for
+  // tasks under `item_type === 'kanban'` parents. `kanban_column_id`
+  // is `null` (not undefined) when the task is unassigned (e.g. its
+  // column was deleted). Both optional so legacy task literals keep
+  // type-checking.
+  kanban_column_id?: string | null
+  kanban_position?: number
 }
 
 // Health check

@@ -2,6 +2,14 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useNavigationStore } from './navigation'
 
+export interface KanbanColumn {
+  id: string
+  workspace_item_id: string
+  name: string
+  position: number
+  created_at: string
+}
+
 export interface WorkspaceItem {
   id: string
   name: string
@@ -21,6 +29,12 @@ export interface WorkspaceItem {
   hasMoreTasks?: boolean
   tasksNextCursor?: string | null
   isLoadingMoreTasks?: boolean
+  // NEW (Chunk 4 of workspace-item-kanban plan). Populated for
+  // `item_type === 'kanban'` items. Optional so legacy literals
+  // (5+ test files construct WorkspaceItem without this field) keep
+  // type-checking — see the nalar-frontend-task-literal-typing-rule
+  // memory.
+  kanban_columns?: KanbanColumn[]
 }
 
 export interface Workspace {
@@ -90,6 +104,12 @@ export interface Task {
   // nalar-frontend-task-literal-typing-rule memory.
   is_pinned?: boolean
   pinned_position?: number
+  // NEW (Chunk 4 of workspace-item-kanban plan). Populated for
+  // tasks under `item_type === 'kanban'` parents. `kanban_column_id`
+  // is `null` (not undefined) when the task is unassigned. Both
+  // optional so legacy task literals keep type-checking.
+  kanban_column_id?: string | null
+  kanban_position?: number
 }
 
 // localStorage keys for state persistence
