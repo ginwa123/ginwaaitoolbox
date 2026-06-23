@@ -10,6 +10,8 @@ import Chats from './Chats.vue'
 import SettingsView from './SettingsView.vue'
 import CodeEditor from './CodeEditor.vue'
 import NotificationContainer from './NotificationContainer.vue'
+import KanbanView from './KanbanView.vue'
+import KanbanColumnEditor from './KanbanColumnEditor.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
@@ -73,6 +75,7 @@ const handleRightSidebarResize = (newWidth: number) => {
 }
 
 const activeWorkspaceItem = computed(() => workspacesStore.activeWorkspaceItem)
+const activeWorkspace = computed(() => workspacesStore.activeWorkspace)
 
 // Computed refs from store
 const activeChatId = computed(() => navigationStore.activeChatId)
@@ -398,6 +401,221 @@ const currentView = computed(() => {
 
 const activeTask = computed(() => workspacesStore.activeTask)
 
+// ─── Kanban main-content view (was inline in WorkspaceItem.vue;
+// now mounted here so the board lives in the main content area, not
+// in the sidebar). The KanbanView emits its own CRUD events; we
+// forward them to the workspaces store directly. The one event
+// that can't be handled by the store alone is `addTask` (it opens
+// the AddTaskPickerDialog, which is owned by Sidebar) — that one
+// delegates to `sidebarRef.value?.openTaskPicker(...)`. ──────────────
+
+// KanbanColumnEditor modal state. Three modes (add / rename / delete)
+// share the same component; we track the mode + the target column
+// id + the initial name. Lives at the AppLayout scope so the editor
+// is mounted exactly once (any kanban view emits request-rename-
+// column / request-delete-column; we point them at this state).
+type KanbanEditorMode = 'add' | 'rename' | 'delete'
+const showKanbanColumnEditor = ref(false)
+const kanbanColumnEditorMode = ref<KanbanEditorMode>('add')
+const kanbanColumnEditorTargetId = ref<string | null>(null)
+const kanbanColumnEditorInitialName = ref<string>('')
+
+// Look up the column by id in the active kanban item. Returns
+// undefined if the active item is missing or has no columns — the
+// caller treats that as a no-op.
+const findKanbanColumn = (columnId: string) => {
+  return activeWorkspaceItem.value?.kanban_columns?.find((c) => c.id === columnId)
+}
+
+// + Column on the kanban header: open the editor in 'add' mode.
+const handleKanbanAddColumn = () => {
+  kanbanColumnEditorMode.value = 'add'
+  kanbanColumnEditorTargetId.value = null
+  kanbanColumnEditorInitialName.value = ''
+  showKanbanColumnEditor.value = true
+}
+
+// ⋮ menu "Rename" on a column: open the editor in 'rename' mode,
+// pre-filled with the column's current name.
+const handleKanbanRequestRenameColumn = (columnId: string) => {
+  const col = findKanbanColumn(columnId)
+  if (!col) return
+  kanbanColumnEditorMode.value = 'rename'
+  kanbanColumnEditorTargetId.value = columnId
+  kanbanColumnEditorInitialName.value = col.name
+  showKanbanColumnEditor.value = true
+}
+
+// ⋮ menu "Delete" on a column: open the editor in 'delete' mode
+// (the editor renders the confirmation copy itself).
+const handleKanbanRequestDeleteColumn = (columnId: string) => {
+  const col = findKanbanColumn(columnId)
+  if (!col) return
+  kanbanColumnEditorMode.value = 'delete'
+  kanbanColumnEditorTargetId.value = columnId
+  kanbanColumnEditorInitialName.value = col.name
+  showKanbanColumnEditor.value = true
+}
+
+const handleKanbanColumnEditorClose = () => {
+  showKanbanColumnEditor.value = false
+}
+
+const handleKanbanColumnEditorAdd = (name: string) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.addKanbanColumn(ws.id, activeWorkspaceItem.value.id, name)
+  showKanbanColumnEditor.value = false
+}
+
+const handleKanbanColumnEditorRename = (name: string) => {
+  if (!activeWorkspaceItem.value || !kanbanColumnEditorTargetId.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.updateKanbanColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    kanbanColumnEditorTargetId.value,
+    { name },
+  )
+  showKanbanColumnEditor.value = false
+}
+
+const handleKanbanColumnEditorDelete = () => {
+  if (!activeWorkspaceItem.value || !kanbanColumnEditorTargetId.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.deleteKanbanColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    kanbanColumnEditorTargetId.value,
+  )
+  showKanbanColumnEditor.value = false
+}
+
+// + Add on a column: open the AddTaskPickerDialog (owned by Sidebar).
+// We can't render the picker from here — its state lives in Sidebar
+// — so we call the exposed `openTaskPicker` method.
+const handleKanbanAddTask = (payload: { columnId: string }) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  sidebarRef.value?.openTaskPicker(ws.id, activeWorkspaceItem.value.id)
+  // The `columnId` is part of the payload but the picker doesn't
+  // gate the column — it just creates a task in this item. The
+  // backend auto-assigns the new task to the first column; the
+  // user can drag it to the intended column afterward. A future
+  // iteration will route the columnId through to the create-task
+  // API so the task lands in the right column on creation.
+  void payload.columnId
+}
+
+// Drag-and-drop task move between columns. Direct store call.
+const handleKanbanMoveTask = (payload: {
+  taskId: string
+  columnId: string
+  position: number
+}) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.moveTaskToColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    payload.taskId,
+    payload.columnId,
+    payload.position,
+  )
+}
+
+// "Rename column" emitted from the inline rename input inside
+// <KanbanColumn>. The column lets the user type a new name
+// directly (no modal) and emits this on blur / Enter. Direct store
+// call.
+const handleKanbanRenameColumn = (payload: { columnId: string; name: string }) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.updateKanbanColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    payload.columnId,
+    { name: payload.name },
+  )
+}
+
+// "Delete column" emitted from the column's quick-delete path (the
+// ⋮ menu's "Delete" goes through the editor flow above, but the
+// column may also expose a faster path in a future iteration).
+// Direct store call.
+const handleKanbanDeleteColumn = (columnId: string) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.deleteKanbanColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    columnId,
+  )
+}
+
+// Task-level events (select-task, delete-task, rename-task,
+// edit-routine, run-routine, pin-task) re-emitted by <KanbanColumn>.
+// These all live in Sidebar (because they need access to
+// chatsListRef and the modal state for rename / edit-routine), so
+// we forward them via the exposed methods. The sidebar ref is
+// non-null at runtime (AppLayout always renders a Sidebar); the
+// optional-chaining + noop-on-miss is defensive for the
+// initial-render / unmount edge case.
+
+// select-task: click a card → open the task's chat view.
+const handleKanbanSelectTask = (taskId: string) => {
+  sidebarRef.value?.selectTask(taskId)
+}
+
+const handleKanbanDeleteTask = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  sidebarRef.value?.deleteTask(workspaceId, itemId, taskId)
+}
+
+const handleKanbanRenameTask = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+  currentName: string,
+) => {
+  sidebarRef.value?.renameTask(workspaceId, itemId, taskId, currentName)
+}
+
+const handleKanbanEditRoutine = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  sidebarRef.value?.editRoutine(workspaceId, itemId, taskId)
+}
+
+const handleKanbanRunRoutine = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  void sidebarRef.value?.runRoutine(workspaceId, itemId, taskId)
+}
+
+const handleKanbanPinTask = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+  isPinned: boolean,
+) => {
+  sidebarRef.value?.pinTask(workspaceId, itemId, taskId, isPinned)
+}
+
 // Right sidebar cwd - show when chat is open OR task is active
 const rightSidebarCwd = computed(() => {
   if (activeTask.value && activeWorkspaceItem.value?.path) {
@@ -507,11 +725,18 @@ watch(
       } else if (view === 'task' && taskId) {
         // Task is handled by workspacesStore.setActiveTask already called in onMounted
       } else if (!view || view === 'workspace') {
-        // Clear chat session cwd when not in chat view
+        // Clear chat session cwd when not in chat view. We
+        // intentionally do NOT clear activeWorkspaceItemId here:
+        // Sidebar's handleSelectItem navigates to this exact URL
+        // after setting the active workspace item (folder or
+        // kanban). Clearing it here would clobber the user's
+        // selection and force them to click the item again.
+        // The empty-state placeholder in the v-else-if chain
+        // below renders when activeWorkspaceItem is null, so
+        // users still see a "select a project" message when
+        // there's no active item — clearing in the watcher is
+        // unnecessary.
         chatSessionCwd.value = ''
-        // Clear any workspace-item active state — "no view" or "workspace"
-        // means "no chat selected".
-        workspacesStore.setActiveWorkspaceItem(null)
       }
     }
   },
@@ -666,6 +891,34 @@ watch(chatSessionCwd, (newCwd) => {
         :task-name="activeTask.name"
         :project-name="activeWorkspaceItem?.name || ''"
       />
+      <!-- Kanban view (was inline in WorkspaceItem.vue; now mounted
+           in the main content area so the board is no longer cramped
+           in the sidebar). Renders only when an active kanban item
+           is selected and no task is currently being viewed (the
+           task branch above already handles task-with-kanban-parent).
+           The :key forces a fresh mount when the user navigates
+           from one kanban to another (KanbanView fetches columns
+           on mount). -->
+      <KanbanView
+        v-else-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'kanban'"
+        :key="'kanban-' + activeWorkspaceItem.id"
+        :item="activeWorkspaceItem"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
+        @add-task="handleKanbanAddTask"
+        @move-task="handleKanbanMoveTask"
+        @add-column="handleKanbanAddColumn"
+        @rename-column="handleKanbanRenameColumn"
+        @delete-column="handleKanbanDeleteColumn"
+        @request-rename-column="handleKanbanRequestRenameColumn"
+        @request-delete-column="handleKanbanRequestDeleteColumn"
+        @select-task="handleKanbanSelectTask"
+        @delete-task="handleKanbanDeleteTask"
+        @rename-task="handleKanbanRenameTask"
+        @edit-routine="handleKanbanEditRoutine"
+        @run-routine="handleKanbanRunRoutine"
+        @pin-task="handleKanbanPinTask"
+      />
       <ChatView
         v-else-if="activeChatId.startsWith('chat-')"
         :key="activeChatId"
@@ -775,5 +1028,25 @@ watch(chatSessionCwd, (newCwd) => {
 
     <!-- Global error notification stack -->
     <NotificationContainer />
+
+    <!-- Kanban column editor: add / rename / delete a column on the
+         currently-active kanban item. Mounted at the AppLayout root
+         (not inside the KanbanView's scoped tree) so the modal's
+         internal Teleport/animation lifecycle works cleanly even if
+         the KanbanView branch unmounts mid-edit (e.g. the user
+         clicks a task card and the view switches to ChatView while
+         the modal is open). The modal's `show` prop is bound to
+         showKanbanColumnEditor; mode/targetId/initialName are set
+         by the request-add-column / request-rename-column /
+         request-delete-column handlers. -->
+    <KanbanColumnEditor
+      :show="showKanbanColumnEditor"
+      :mode="kanbanColumnEditorMode"
+      :initial-name="kanbanColumnEditorInitialName"
+      @close="handleKanbanColumnEditorClose"
+      @add="handleKanbanColumnEditorAdd"
+      @rename="handleKanbanColumnEditorRename"
+      @delete="handleKanbanColumnEditorDelete"
+    />
   </div>
 </template>
