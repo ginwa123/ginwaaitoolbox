@@ -618,6 +618,35 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Fetch the columns for a kanban from the backend and populate
+  // `item.kanban_columns`. Called when a kanban item is expanded
+  // (mirrors the folder-item `fetchFolderContents` pattern). The
+  // workspaces/items endpoint intentionally does NOT embed columns
+  // — kanbans can have arbitrarily many columns and we want a
+  // lazy load. The seeded 3 default columns (todo / in progress /
+  // done) live in the DB; without this call, the kanban board
+  // renders empty after every page reload.
+  async function fetchKanbanColumns(
+    workspaceId: string,
+    itemId: string,
+  ): Promise<void> {
+    const item = findItem(workspaceId, itemId)
+    if (!item) return
+    try {
+      const { columns } = await api.listKanbanColumns(workspaceId, itemId)
+      // Sort defensively (the backend already orders by position, but
+      // a stale local snapshot from before a backend reorder would
+      // otherwise keep the old ordering).
+      item.kanban_columns = [...columns].sort(
+        (a, b) => a.position - b.position,
+      )
+    } catch (err) {
+      console.error('[workspacesStore.fetchKanbanColumns] API call failed:', err)
+      // Leave whatever columns we have (or undefined) so the UI can
+      // show an empty-state rather than a hard error.
+    }
+  }
+
   // Add a column to a kanban and append it to the local item's
   // `kanban_columns` array, sorted by position. The backend
   // returns the column with its server-assigned id and position.
@@ -1461,6 +1490,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     updateKanbanColumn,
     deleteKanbanColumn,
     moveTaskToColumn,
+    fetchKanbanColumns,
     initializeFromSystemFolder,
     subscribeToSessionEvents,
     fetchSystemFolder,
