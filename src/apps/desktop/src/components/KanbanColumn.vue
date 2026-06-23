@@ -1,0 +1,414 @@
+<!--
+  KanbanColumn — a single column in a kanban board.
+
+  Layout (top → bottom):
+    1. Header  — column name + count badge + "⋮" menu.
+                Single-clicking the name starts an inline rename
+                (small input, Enter saves, Escape/blur cancels). The
+                "⋮" menu offers Rename (re-opens via KanbanColumnEditor)
+                and Delete (opens KanbanColumnEditor in delete mode).
+    2. Cards   — scrollable list of <KanbanCard>, filtered by the
+                column id from the `tasks` prop and sorted by
+                kanban_position.
+    3. Footer  — "+ Add" button → emits `add-task` with the column id.
+    4. Drop    — the cards area is a drop zone. dragover.preventDefault
+                (required by the HTML5 DnD spec to mark this as a
+                valid drop target), drop reads the task id from
+                `application/x-kanban-task-id` and emits `move-task`
+                with the column id and the drop position.
+
+  Public API:
+    props:
+      column       KanbanColumn
+      tasks        Task[] (the full task list for the parent kanban)
+      workspaceId  string (passed through to KanbanCard)
+      itemId       string (passed through to KanbanCard)
+    emits:
+      add-task           [columnId: string]
+      move-task          [{ taskId: string, columnId: string, position: number }]
+      rename-column      [{ columnId: string, name: string }]
+      delete-column      [columnId: string]
+      select-task        [taskId: string]
+      delete-task        [workspaceId, itemId, taskId]
+      rename-task        [workspaceId, itemId, taskId, currentName]
+      edit-routine       [workspaceId, itemId, taskId]
+      run-routine        [workspaceId, itemId, taskId]
+      pin-task           [workspaceId, itemId, taskId, isPinned]
+-->
+<script setup lang="ts">
+import { computed, ref, nextTick, onMounted, onUnmounted } from 'vue'
+import KanbanCard from './KanbanCard.vue'
+import type { KanbanColumn, Task } from '../stores/workspaces'
+
+const props = defineProps<{
+  column: KanbanColumn
+  tasks: Task[]
+  workspaceId: string
+  itemId: string
+}>()
+
+const emit = defineEmits<{
+  addTask: [columnId: string]
+  moveTask: [{ taskId: string; columnId: string; position: number }]
+  renameColumn: [{ columnId: string; name: string }]
+  deleteColumn: [columnId: string]
+  // The "⋮" menu's rename option should open KanbanColumnEditor in
+  // 'rename' mode (the modal UX). The host listens for this and
+  // wires it up. Different from the inline rename UX (single-click
+  // the name → edit-in-place) — the menu is the modal-based path.
+  requestRenameColumn: [columnId: string]
+  // The "⋮" menu's delete option opens KanbanColumnEditor in
+  // 'delete' mode (confirmation modal). The host listens for this.
+  requestDeleteColumn: [columnId: string]
+  // Pass-through from KanbanCard (which re-emits from WorkspaceItemTask).
+  selectTask: [taskId: string]
+  deleteTask: [workspaceId: string, itemId: string, taskId: string]
+  renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
+  editRoutine: [workspaceId: string, itemId: string, taskId: string]
+  runRoutine: [workspaceId: string, itemId: string, taskId: string]
+  pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
+}>()
+
+// ─── Derived data ──────────────────────────────────────────────────────────
+
+// Cards in this column, sorted by kanban_position ascending. Tasks
+// without a kanban_column_id (unassigned) are excluded — they live
+// in their own region (out of scope for v1).
+const cardsInColumn = computed<Task[]>(() => {
+  return props.tasks
+    .filter((t) => t.kanban_column_id === props.column.id)
+    .slice()
+    .sort((a, b) => {
+      // Tasks without a kanban_position sort to the end (defensive
+      // — the backend always assigns one, but the local store can
+      // have a brief moment before the optimistic update lands).
+      const ap = a.kanban_position ?? Number.MAX_SAFE_INTEGER
+      const bp = b.kanban_position ?? Number.MAX_SAFE_INTEGER
+      return ap - bp
+    })
+})
+
+// ─── Inline rename state ───────────────────────────────────────────────────
+
+const isRenaming = ref(false)
+const renameValue = ref('')
+const renameInput = ref<HTMLInputElement | null>(null)
+
+const startInlineRename = async () => {
+  renameValue.value = props.column.name
+  isRenaming.value = true
+  await nextTick()
+  renameInput.value?.focus()
+  renameInput.value?.select()
+}
+
+const cancelInlineRename = () => {
+  isRenaming.value = false
+  renameValue.value = ''
+}
+
+const commitInlineRename = () => {
+  const trimmed = renameValue.value.trim()
+  isRenaming.value = false
+  if (!trimmed || trimmed === props.column.name) {
+    // No-op: empty or unchanged.
+    renameValue.value = ''
+    return
+  }
+  emit('renameColumn', { columnId: props.column.id, name: trimmed })
+  renameValue.value = ''
+}
+
+// ─── "⋮" menu state ────────────────────────────────────────────────────────
+
+const menuOpen = ref(false)
+const menuRef = ref<HTMLElement | null>(null)
+
+const toggleMenu = () => {
+  menuOpen.value = !menuOpen.value
+}
+
+const closeMenu = () => {
+  menuOpen.value = false
+}
+
+// The header "⋮" menu offers Rename + Delete. Both delegate to the
+// host (KanbanView / WorkspaceItem), which opens KanbanColumnEditor
+// in the right mode. We close the menu on click; the host is
+// responsible for showing the editor.
+const handleMenuRename = () => {
+  menuOpen.value = false
+  emit('requestRenameColumn', props.column.id)
+}
+
+const handleMenuDelete = () => {
+  menuOpen.value = false
+  emit('requestDeleteColumn', props.column.id)
+}
+
+// Close the menu when clicking outside. Mirror the pattern in
+// WorkspaceList.vue's `handleClickOutside`.
+const handleDocumentClick = (event: MouseEvent) => {
+  if (!menuOpen.value) return
+  const target = event.target as Node | null
+  if (menuRef.value && target && !menuRef.value.contains(target)) {
+    closeMenu()
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleDocumentClick)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', handleDocumentClick)
+})
+
+// ─── Drag-and-drop state (drop zone) ───────────────────────────────────────
+//
+// Same pattern as WorkspaceItemTask's pinned-region drop handler:
+// track which card the cursor is over (so we can compute the drop
+// position) and update visual feedback in real-time. For v1 we
+// compute the position as the END of the receiving column on drop
+// (matches the plan's "append to end" semantics — the user can
+// always reorder within a column in a future iteration).
+
+const isDragOver = ref(false)
+const isDragging = ref(false)
+
+const handleDragOver = (event: DragEvent) => {
+  // preventDefault is REQUIRED for HTML5 DnD — without it the
+  // browser cancels the drop with a "not allowed" cursor. We also
+  // check that the drag is a kanban card drag (has the MIME type
+  // we set in KanbanCard.handleDragStart), and if not, return early
+  // so the cursor shows "no entry" — preventing accidental drops
+  // from the pinned-tasks region or the item-reorder handler.
+  if (!event.dataTransfer) return
+  if (
+    !event.dataTransfer.types.includes('application/x-kanban-task-id')
+  ) {
+    return
+  }
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  isDragOver.value = true
+}
+
+const handleDragLeave = (event: DragEvent) => {
+  // Only clear when the cursor LEAVES the drop zone entirely (not
+  // when crossing between cards inside the zone). `currentTarget` is
+  // the zone; if `relatedTarget` is still inside, do nothing.
+  const zone = event.currentTarget as HTMLElement | null
+  const next = event.relatedTarget as Node | null
+  if (zone && next && zone.contains(next)) return
+  isDragOver.value = false
+}
+
+const handleDrop = (event: DragEvent) => {
+  event.preventDefault()
+  isDragOver.value = false
+  const dataTransfer = event.dataTransfer
+  if (!dataTransfer) return
+  const taskId = dataTransfer.getData('application/x-kanban-task-id')
+  if (!taskId) return
+  // v1: append to the end of the receiving column. The position is
+  // the current card count — the backend re-numbers siblings after
+  // the insert, so "append" maps to "position = current length".
+  const position = cardsInColumn.value.length
+  emit('moveTask', {
+    taskId,
+    columnId: props.column.id,
+    position,
+  })
+}
+
+// Mirror KanbanCard's dragstart so the source card can dim while
+// dragging (visual cue). We listen on the cards container with
+// event delegation, the same pattern as WorkspaceList's item DnD.
+const handleDragStartCapture = () => {
+  isDragging.value = true
+}
+const handleDragEndCapture = () => {
+  isDragging.value = false
+  isDragOver.value = false
+}
+
+// ─── Footer add ────────────────────────────────────────────────────────────
+
+const handleAddClick = () => {
+  emit('addTask', props.column.id)
+}
+</script>
+
+<template>
+  <section
+    class="kanban-column flex flex-col rounded-lg shrink-0"
+    :data-column-id="column.id"
+    :data-kanban-column="column.id"
+    style="
+      width: 280px;
+      background-color: var(--semantic-sidebar-bg);
+      border: 1px solid var(--color-border);
+    "
+  >
+    <!-- ─── Header ───────────────────────────────────────────────────── -->
+    <header
+      class="px-3 py-2 flex items-center gap-2 shrink-0"
+      style="border-bottom: 1px solid var(--color-border);"
+    >
+      <!-- Inline-rename input (visible while isRenaming) OR plain name (otherwise) -->
+      <input
+        v-if="isRenaming"
+        ref="renameInput"
+        v-model="renameValue"
+        type="text"
+        :data-testid="`kanban-column-${column.id}-rename-input`"
+        class="flex-1 px-2 py-0.5 rounded text-sm outline-none"
+        style="
+          background-color: var(--semantic-card-bg);
+          border: 1px solid var(--color-border);
+          color: var(--semantic-text);
+        "
+        @keyup.enter="commitInlineRename"
+        @keyup.escape="cancelInlineRename"
+        @blur="commitInlineRename"
+      />
+      <button
+        v-else
+        type="button"
+        class="flex-1 text-left text-sm font-medium truncate hover:opacity-80"
+        style="color: var(--semantic-text);"
+        :data-testid="`kanban-column-${column.id}-name`"
+        @click="startInlineRename"
+      >
+        {{ column.name }}
+      </button>
+      <!-- Count badge -->
+      <span
+        class="text-xs px-1.5 py-0.5 rounded-full shrink-0"
+        style="background-color: var(--color-bg-p1); color: var(--semantic-text-dim);"
+        :data-testid="`kanban-column-${column.id}-count`"
+      >
+        {{ cardsInColumn.length }}
+      </span>
+      <!-- "⋮" menu trigger + dropdown -->
+      <div ref="menuRef" class="relative shrink-0">
+        <button
+          type="button"
+          class="w-6 h-6 flex items-center justify-center rounded hover:opacity-80"
+          style="color: var(--semantic-text-dim);"
+          :data-testid="`kanban-column-${column.id}-menu-trigger`"
+          @click.stop="toggleMenu"
+        >
+          <span class="text-base leading-none">⋮</span>
+        </button>
+        <ul
+          v-if="menuOpen"
+          class="absolute right-0 top-full mt-1 py-1 rounded-md shadow-lg z-10 min-w-[120px]"
+          style="
+            background-color: var(--semantic-card-bg);
+            border: 1px solid var(--color-border);
+          "
+          :data-testid="`kanban-column-${column.id}-menu`"
+        >
+          <li>
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
+              style="color: var(--semantic-text);"
+              :data-testid="`kanban-column-${column.id}-menu-rename`"
+              @click="handleMenuRename"
+            >
+              Rename
+            </button>
+          </li>
+          <li>
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
+              style="color: #ef4444;"
+              :data-testid="`kanban-column-${column.id}-menu-delete`"
+              @click="handleMenuDelete"
+            >
+              Delete
+            </button>
+          </li>
+        </ul>
+      </div>
+    </header>
+
+    <!-- ─── Cards (drop zone) ────────────────────────────────────────── -->
+    <div
+      class="flex-1 min-h-0 overflow-y-auto p-2 space-y-1"
+      :style="isDragOver
+        ? 'background-color: var(--semantic-active-bg); outline: 2px dashed var(--color-violet); outline-offset: -4px;'
+        : ''"
+      :data-kanban-drop-zone="column.id"
+      :data-testid="`kanban-column-${column.id}-cards`"
+      @dragover="handleDragOver"
+      @dragleave="handleDragLeave"
+      @drop="handleDrop"
+      @dragstart.capture="handleDragStartCapture"
+      @dragend.capture="handleDragEndCapture"
+    >
+      <KanbanCard
+        v-for="task in cardsInColumn"
+        :key="task.id"
+        :task="task"
+        :workspace-id="workspaceId"
+        :item-id="itemId"
+        :style="isDragging ? 'opacity: 0.4;' : ''"
+        @select-task="(id) => emit('selectTask', id)"
+        @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
+        @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
+        @edit-routine="(ws, item, id) => emit('editRoutine', ws, item, id)"
+        @run-routine="(ws, item, id) => emit('runRoutine', ws, item, id)"
+        @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
+      />
+      <!-- Empty placeholder — shown only when there are no cards. Gives
+           the drop zone a clear "drop here" affordance. -->
+      <div
+        v-if="cardsInColumn.length === 0"
+        class="text-xs text-center py-6"
+        style="color: var(--semantic-text-dim);"
+        :data-testid="`kanban-column-${column.id}-empty`"
+      >
+        No tasks yet
+      </div>
+    </div>
+
+    <!-- ─── Footer "+ Add" button ────────────────────────────────────── -->
+    <footer
+      class="px-3 py-2 shrink-0"
+      style="border-top: 1px solid var(--color-border);"
+    >
+      <button
+        type="button"
+        class="w-full flex items-center justify-center gap-1 px-2 py-1.5 rounded text-xs font-medium hover:opacity-80 transition-opacity"
+        style="
+          background-color: var(--semantic-card-bg);
+          border: 1px dashed var(--color-border);
+          color: var(--semantic-text-dim);
+        "
+        :data-testid="`kanban-column-${column.id}-add-task`"
+        @click="handleAddClick"
+      >
+        <span aria-hidden="true">+</span>
+        <span>Add</span>
+      </button>
+    </footer>
+  </section>
+</template>
+
+<style scoped>
+/* Column hover affordance — make the ⋮ menu visible without hover
+   on the column itself (the menu trigger is always visible, but
+   the column gets a subtle border highlight when hovered to hint
+   "interactive".) */
+.kanban-column {
+  transition: border-color 0.15s ease;
+}
+
+.kanban-column:hover {
+  border-color: var(--color-violet) !important;
+}
+</style>
