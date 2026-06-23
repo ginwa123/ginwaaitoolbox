@@ -1,0 +1,239 @@
+/**
+ * Tests for KanbanColumnEditor — the modal that handles add / rename
+ * / delete of a kanban column. One component, three modes (mode prop).
+ *
+ * Mounts with attachTo: document.body + inspects the teleported content
+ * via document.querySelector (same pattern as AddKanbanDialog.spec.ts
+ * and AddTaskPickerDialog.spec.ts).
+ *
+ * Plan: docs/superpowers/plans/2026-06-21-workspace-item-kanban.md
+ *   Chunk 6 / Task 6.2
+ */
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
+import KanbanColumnEditor from '../components/KanbanColumnEditor.vue'
+
+type Mode = 'add' | 'rename' | 'delete'
+
+function findInDom<T extends Element = Element>(selector: string): T | null {
+  return document.querySelector<T>(selector)
+}
+
+function clickInDom(selector: string) {
+  const el = findInDom<HTMLElement>(selector)
+  if (!el) throw new Error(`No element found: ${selector}`)
+  el.click()
+}
+
+function mountEditor(
+  mode: Mode,
+  initialShow = true,
+  initialName?: string,
+) {
+  document.body.innerHTML = ''
+  return mount(KanbanColumnEditor, {
+    attachTo: document.body,
+    props: {
+      show: initialShow,
+      mode,
+      initialName,
+    },
+  })
+}
+
+describe('KanbanColumnEditor', () => {
+  let wrapper: VueWrapper | null = null
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    document.body.style.overflow = ''
+    vi.restoreAllMocks()
+  })
+
+  // ─── mode='add' ──────────────────────────────────────────────────────────
+
+  describe("mode='add'", () => {
+    it('shows the "Add Column" header and a name input', async () => {
+      wrapper = mountEditor('add')
+      await flushPromises()
+      const dialog = findInDom('[data-testid="kanban-column-editor-add"]')
+      expect(dialog).not.toBeNull()
+      expect(dialog?.textContent).toContain('Add Column')
+      expect(dialog?.textContent).toContain('Add a new column to this kanban board')
+      const nameInput = findInDom<HTMLInputElement>(
+        '[data-testid="kanban-column-editor-add-name"]',
+      )
+      expect(nameInput).not.toBeNull()
+      expect(nameInput?.value).toBe('')
+    })
+
+    it('Add button is disabled when name is empty', async () => {
+      wrapper = mountEditor('add')
+      await flushPromises()
+      const btn = findInDom<HTMLButtonElement>(
+        '[data-testid="kanban-column-editor-add-submit"]',
+      )
+      expect(btn?.disabled).toBe(true)
+    })
+
+    it('Add button is enabled when a non-empty name is typed', async () => {
+      wrapper = mountEditor('add')
+      await flushPromises()
+      const nameInput = findInDom<HTMLInputElement>(
+        '[data-testid="kanban-column-editor-add-name"]',
+      )!
+      nameInput.value = 'In review'
+      nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+      await flushPromises()
+      const btn = findInDom<HTMLButtonElement>(
+        '[data-testid="kanban-column-editor-add-submit"]',
+      )
+      expect(btn?.disabled).toBe(false)
+    })
+
+    it('emits add(name) and close when Add is clicked with a valid name', async () => {
+      wrapper = mountEditor('add')
+      await flushPromises()
+      const nameInput = findInDom<HTMLInputElement>(
+        '[data-testid="kanban-column-editor-add-name"]',
+      )!
+      nameInput.value = 'In review'
+      nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+      await flushPromises()
+      clickInDom('[data-testid="kanban-column-editor-add-submit"]')
+      expect(wrapper.emitted('add')?.[0]).toEqual(['In review'])
+      expect(wrapper.emitted('close')).toBeTruthy()
+    })
+
+    it('trims whitespace before emitting add(name)', async () => {
+      wrapper = mountEditor('add')
+      await flushPromises()
+      const nameInput = findInDom<HTMLInputElement>(
+        '[data-testid="kanban-column-editor-add-name"]',
+      )!
+      nameInput.value = '  In review  '
+      nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+      await flushPromises()
+      clickInDom('[data-testid="kanban-column-editor-add-submit"]')
+      expect(wrapper.emitted('add')?.[0]).toEqual(['In review'])
+    })
+
+    it('emits close when Cancel is clicked (no add)', async () => {
+      wrapper = mountEditor('add')
+      await flushPromises()
+      clickInDom('[data-testid="kanban-column-editor-add-cancel"]')
+      expect(wrapper.emitted('close')).toBeTruthy()
+      expect(wrapper.emitted('add')).toBeUndefined()
+    })
+
+    it('emits close on Escape', async () => {
+      wrapper = mountEditor('add')
+      await flushPromises()
+      const dialog = findInDom<HTMLElement>('[data-testid="kanban-column-editor-add"]')
+      dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      expect(wrapper.emitted('close')).toBeTruthy()
+    })
+  })
+
+  // ─── mode='rename' ───────────────────────────────────────────────────────
+
+  describe("mode='rename'", () => {
+    it('pre-fills the name input with the initial column name', async () => {
+      wrapper = mountEditor('rename', true, 'todo')
+      await flushPromises()
+      const dialog = findInDom('[data-testid="kanban-column-editor-rename"]')
+      expect(dialog).not.toBeNull()
+      expect(dialog?.textContent).toContain('Rename Column')
+      const nameInput = findInDom<HTMLInputElement>(
+        '[data-testid="kanban-column-editor-rename-name"]',
+      )
+      expect(nameInput?.value).toBe('todo')
+    })
+
+    it('emits rename(name) and close when Save is clicked', async () => {
+      wrapper = mountEditor('rename', true, 'todo')
+      await flushPromises()
+      const nameInput = findInDom<HTMLInputElement>(
+        '[data-testid="kanban-column-editor-rename-name"]',
+      )!
+      nameInput.value = 'Backlog'
+      nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+      await flushPromises()
+      clickInDom('[data-testid="kanban-column-editor-rename-submit"]')
+      expect(wrapper.emitted('rename')?.[0]).toEqual(['Backlog'])
+      expect(wrapper.emitted('close')).toBeTruthy()
+    })
+
+    it('Save button is disabled when name is whitespace-only', async () => {
+      wrapper = mountEditor('rename', true, 'todo')
+      await flushPromises()
+      const nameInput = findInDom<HTMLInputElement>(
+        '[data-testid="kanban-column-editor-rename-name"]',
+      )!
+      nameInput.value = '   '
+      nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+      await flushPromises()
+      const btn = findInDom<HTMLButtonElement>(
+        '[data-testid="kanban-column-editor-rename-submit"]',
+      )
+      expect(btn?.disabled).toBe(true)
+    })
+  })
+
+  // ─── mode='delete' ───────────────────────────────────────────────────────
+
+  describe("mode='delete'", () => {
+    it('shows confirmation message with the column name', async () => {
+      wrapper = mountEditor('delete', true, 'todo')
+      await flushPromises()
+      const dialog = findInDom('[data-testid="kanban-column-editor-delete"]')
+      expect(dialog).not.toBeNull()
+      expect(dialog?.textContent).toContain('Delete Column')
+      expect(dialog?.textContent).toContain('Tasks in this column will become unassigned')
+      // The column name is rendered in the confirmation message.
+      const message = findInDom('[data-testid="kanban-column-editor-delete-message"]')
+      expect(message?.textContent).toContain('todo')
+    })
+
+    it('does NOT render a name input in delete mode', async () => {
+      wrapper = mountEditor('delete', true, 'todo')
+      await flushPromises()
+      const nameInput = findInDom<HTMLInputElement>(
+        '[data-testid="kanban-column-editor-delete-name"]',
+      )
+      expect(nameInput).toBeNull()
+    })
+
+    it('emits delete() and close when Delete is clicked', async () => {
+      wrapper = mountEditor('delete', true, 'todo')
+      await flushPromises()
+      clickInDom('[data-testid="kanban-column-editor-delete-submit"]')
+      expect(wrapper.emitted('delete')).toBeTruthy()
+      expect(wrapper.emitted('close')).toBeTruthy()
+    })
+
+    it('emits close when Cancel is clicked (no delete)', async () => {
+      wrapper = mountEditor('delete', true, 'todo')
+      await flushPromises()
+      clickInDom('[data-testid="kanban-column-editor-delete-cancel"]')
+      expect(wrapper.emitted('close')).toBeTruthy()
+      expect(wrapper.emitted('delete')).toBeUndefined()
+    })
+  })
+
+  // ─── show=false (any mode) ───────────────────────────────────────────────
+
+  describe('show=false', () => {
+    it('renders nothing in any mode', () => {
+      wrapper = mountEditor('add', false)
+      expect(findInDom('[data-testid="kanban-column-editor-add"]')).toBeNull()
+
+      wrapper = mountEditor('rename', false)
+      expect(findInDom('[data-testid="kanban-column-editor-rename"]')).toBeNull()
+
+      wrapper = mountEditor('delete', false)
+      expect(findInDom('[data-testid="kanban-column-editor-delete"]')).toBeNull()
+    })
+  })
+})

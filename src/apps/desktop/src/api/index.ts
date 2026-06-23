@@ -114,6 +114,14 @@ export interface Workspace {
   expanded: boolean
 }
 
+export interface KanbanColumn {
+  id: string
+  workspace_item_id: string
+  name: string
+  position: number
+  created_at: string
+}
+
 export interface WorkspaceItem {
   id: string
   name: string
@@ -124,6 +132,12 @@ export interface WorkspaceItem {
   isLoading?: boolean
   expanded?: boolean
   tasks?: Task[]
+  // NEW (Chunk 4 of workspace-item-kanban plan). Populated for
+  // `item_type === 'kanban'`; omitted for folder/chat/memory items.
+  // Optional so legacy workspace-item literals (5+ test files
+  // construct WorkspaceItem without this field) keep type-checking —
+  // see the nalar-frontend-task-literal-typing-rule memory.
+  kanban_columns?: KanbanColumn[]
 }
 
 export interface RoutineMeta {
@@ -157,6 +171,13 @@ export interface Task {
   // nalar-frontend-task-literal-typing-rule memory.
   is_pinned?: boolean
   pinned_position?: number
+  // NEW (Chunk 4 of workspace-item-kanban plan). Populated for
+  // tasks under `item_type === 'kanban'` parents. `kanban_column_id`
+  // is `null` (not undefined) when the task is unassigned (e.g. its
+  // column was deleted). Both optional so legacy task literals keep
+  // type-checking.
+  kanban_column_id?: string | null
+  kanban_position?: number
 }
 
 // Health check
@@ -1006,6 +1027,146 @@ export async function deleteWorkspaceItem(
   return await apiFetch<{ success: boolean }>(
     `/workspaces/${workspaceId}/items/${itemId}`,
     { method: 'DELETE' },
+  )
+}
+
+// Kanban API
+//
+// Backend endpoints (Chunk 3 of the workspace-item-kanban plan):
+//   POST   /api/workspaces/:wsId/items/kanban                 → 201
+//   GET    /api/workspaces/:wsId/items/:itemId/kanban/columns → 200
+//   POST   /api/workspaces/:wsId/items/:itemId/kanban/columns → 201
+//   PATCH  /api/workspaces/:wsId/items/:itemId/kanban/columns/:columnId → 200
+//   DELETE /api/workspaces/:wsId/items/:itemId/kanban/columns/:columnId → 200
+//   PATCH  /api/workspaces/:wsId/items/:itemId/tasks/:taskId/move        → 200
+//
+// All wrappers route through `apiFetch` (NOT raw `fetch`) so the
+// error-toast-on-non-2xx contract is consistent with the rest of the
+// app. On 4xx/5xx the call throws `ApiError`; the toast is fired
+// before the throw so the user sees the message inline.
+
+/**
+ * Create a new kanban workspace item. The backend seeds three default
+ * columns (todo / in progress / done) and returns the item plus the
+ * freshly-created columns so the caller can render the board without
+ * a second round-trip.
+ *
+ * POST /api/workspaces/:workspaceId/items/kanban
+ */
+export async function createKanban(
+  workspaceId: string,
+  name: string,
+): Promise<{ item: WorkspaceItem; columns: KanbanColumn[] }> {
+  return await apiFetch<{ item: WorkspaceItem; columns: KanbanColumn[] }>(
+    `/workspaces/${workspaceId}/items/kanban`,
+    {
+      method: 'POST',
+      body: { name },
+    },
+  )
+}
+
+/**
+ * List the kanban columns for a single workspace item, ordered by
+ * `position` ASC.
+ *
+ * GET /api/workspaces/:workspaceId/items/:itemId/kanban/columns
+ */
+export async function listKanbanColumns(
+  workspaceId: string,
+  itemId: string,
+): Promise<{ columns: KanbanColumn[]; count: number }> {
+  return await apiFetch<{ columns: KanbanColumn[]; count: number }>(
+    `/workspaces/${workspaceId}/items/${itemId}/kanban/columns`,
+  )
+}
+
+/**
+ * Add a new column to a kanban. `position` is optional — when omitted
+ * the backend appends at the end of the existing sequence
+ * (max(position)+1). Returns the newly-created column (with its
+ * server-assigned `id` and `position`).
+ *
+ * POST /api/workspaces/:workspaceId/items/:itemId/kanban/columns
+ */
+export async function addKanbanColumn(
+  workspaceId: string,
+  itemId: string,
+  name: string,
+  position?: number,
+): Promise<KanbanColumn> {
+  return await apiFetch<KanbanColumn>(
+    `/workspaces/${workspaceId}/items/${itemId}/kanban/columns`,
+    {
+      method: 'POST',
+      body: { name, position },
+    },
+  )
+}
+
+/**
+ * Patch a kanban column. Both `name` and `position` are optional;
+ * pass only the fields you want to change. The backend applies the
+ * patch and re-numbers sibling positions when `position` changes.
+ *
+ * PATCH /api/workspaces/:workspaceId/items/:itemId/kanban/columns/:columnId
+ */
+export async function updateKanbanColumn(
+  workspaceId: string,
+  itemId: string,
+  columnId: string,
+  patch: { name?: string; position?: number },
+): Promise<KanbanColumn> {
+  return await apiFetch<KanbanColumn>(
+    `/workspaces/${workspaceId}/items/${itemId}/kanban/columns/${columnId}`,
+    {
+      method: 'PATCH',
+      body: patch,
+    },
+  )
+}
+
+/**
+ * Delete a kanban column. Tasks in the column are unassigned
+ * (kanban_column_id set to NULL) — they remain visible in the
+ * folder-list view as "Unassigned". Idempotent: a 200 is returned
+ * whether the column existed or not (handled by the backend).
+ *
+ * DELETE /api/workspaces/:workspaceId/items/:itemId/kanban/columns/:columnId
+ */
+export async function deleteKanbanColumn(
+  workspaceId: string,
+  itemId: string,
+  columnId: string,
+): Promise<{ success: boolean }> {
+  return await apiFetch<{ success: boolean }>(
+    `/workspaces/${workspaceId}/items/${itemId}/kanban/columns/${columnId}`,
+    { method: 'DELETE' },
+  )
+}
+
+/**
+ * Move a task to a new column and position within that column. The
+ * backend's `moveTask` does the move + sibling re-numbering in a
+ * single transaction. Returns the updated task with the new
+ * `kanban_column_id` and `kanban_position` so the caller can confirm
+ * the move landed where expected.
+ *
+ * PATCH /api/workspaces/:workspaceId/items/:itemId/tasks/:taskId/move
+ */
+export async function moveTask(
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+  columnId: string,
+  position: number,
+): Promise<Task> {
+  return await apiFetch<Task>(
+    `/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}/move`,
+    {
+      method: 'PATCH',
+      body: { column_id: columnId, position },
+    },
   )
 }
 
