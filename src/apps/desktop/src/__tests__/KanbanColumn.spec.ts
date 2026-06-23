@@ -242,3 +242,105 @@ describe('KanbanColumn — footer add', () => {
     expect(wrapper.emitted('addTask')?.[0]).toEqual([COL_TODO])
   })
 })
+
+describe('KanbanColumn — column header drag-and-drop reorder', () => {
+  // The header is draggable: dragstart sets the kanban-column-id
+  // MIME, dragover/drop on a header emit reorder-column. This is the
+  // Trello/Jira UX (column reorder via header drag).
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    vi.restoreAllMocks()
+  })
+
+  it('marks the header as draggable=true', () => {
+    wrapper = mountColumn(makeColumn())
+    const header = wrapper.find(`[data-testid="kanban-column-${COL_TODO}-header"]`)
+    expect(header.exists()).toBe(true)
+    expect(header.attributes('draggable')).toBe('true')
+  })
+
+  it('dragstart on the header sets the kanban-column-id MIME with effectAllowed=move', async () => {
+    wrapper = mountColumn(makeColumn())
+    const header = wrapper.find(`[data-testid="kanban-column-${COL_TODO}-header"]`)
+
+    const setData = vi.fn()
+    const dataTransfer = {
+      effectAllowed: '',
+      setData,
+      getData: vi.fn(),
+    } as unknown as DataTransfer
+    await header.trigger('dragstart', { dataTransfer })
+
+    expect(setData).toHaveBeenCalledWith(
+      'application/x-kanban-column-id',
+      COL_TODO,
+    )
+    expect((dataTransfer as { effectAllowed: string }).effectAllowed).toBe('move')
+  })
+
+  it('drop on the header (from a column drag) emits reorder-column with both ids', async () => {
+    wrapper = mountColumn(makeColumn({ id: COL_DONE }))
+    const header = wrapper.find(`[data-testid="kanban-column-${COL_DONE}-header"]`)
+
+    // Simulate the source: this header is the DROP target;
+    // COL_TODO is being dragged onto it. The drop handler should
+    // emit reorder-column with { columnId: COL_TODO, targetColumnId: COL_DONE }.
+    const setData = vi.fn()
+    const dataTransfer = {
+      effectAllowed: '',
+      dropEffect: '',
+      setData,
+      getData: vi.fn((mime: string) =>
+        mime === 'application/x-kanban-column-id' ? COL_TODO : '',
+      ),
+    } as unknown as DataTransfer
+    await header.trigger('drop', { dataTransfer })
+
+    expect(wrapper.emitted('reorderColumn')?.[0]).toEqual([
+      { columnId: COL_TODO, targetColumnId: COL_DONE },
+    ])
+  })
+
+  it('drop on the header is a no-op when the dragged payload is NOT a column (e.g. a card)', async () => {
+    wrapper = mountColumn(makeColumn({ id: COL_DONE }))
+    const header = wrapper.find(`[data-testid="kanban-column-${COL_DONE}-header"]`)
+
+    const dataTransfer = {
+      effectAllowed: '',
+      dropEffect: '',
+      setData: vi.fn(),
+      // Card payload — empty for column-id MIME.
+      getData: vi.fn((mime: string) =>
+        mime === 'application/x-kanban-column-id' ? '' : 'task_1',
+      ),
+    } as unknown as DataTransfer
+    await header.trigger('drop', { dataTransfer })
+
+    expect(wrapper.emitted('reorderColumn')).toBeUndefined()
+  })
+
+  it('drop on the header is a no-op when the dragged column id equals the target column id', async () => {
+    wrapper = mountColumn(makeColumn())
+    const header = wrapper.find(`[data-testid="kanban-column-${COL_TODO}-header"]`)
+
+    const dataTransfer = {
+      effectAllowed: '',
+      dropEffect: '',
+      setData: vi.fn(),
+      // User dropped the same column onto itself.
+      getData: vi.fn((mime: string) =>
+        mime === 'application/x-kanban-column-id' ? COL_TODO : '',
+      ),
+    } as unknown as DataTransfer
+    await header.trigger('drop', { dataTransfer })
+
+    expect(wrapper.emitted('reorderColumn')).toBeUndefined()
+  })
+})

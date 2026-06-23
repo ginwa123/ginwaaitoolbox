@@ -7,6 +7,12 @@
                 (small input, Enter saves, Escape/blur cancels). The
                 "⋮" menu offers Rename (re-opens via KanbanColumnEditor)
                 and Delete (opens KanbanColumnEditor in delete mode).
+                The header is DRAGGABLE — dragging it onto another
+                column's header reorders the columns (Trello/Jira
+                UX). Uses a dedicated MIME type
+                `application/x-kanban-column-id` so it doesn't
+                collide with the per-card MIME
+                (`application/x-kanban-task-id`).
     2. Cards   — scrollable list of <KanbanCard>, filtered by the
                 column id from the `tasks` prop and sorted by
                 kanban_position.
@@ -28,6 +34,7 @@
       move-task          [{ taskId: string, columnId: string, position: number }]
       rename-column      [{ columnId: string, name: string }]
       delete-column      [columnId: string]
+      reorder-column     [{ columnId: string, targetColumnId: string }]
       select-task        [taskId: string]
       delete-task        [workspaceId, itemId, taskId]
       rename-task        [workspaceId, itemId, taskId, currentName]
@@ -60,6 +67,11 @@ const emit = defineEmits<{
   // The "⋮" menu's delete option opens KanbanColumnEditor in
   // 'delete' mode (confirmation modal). The host listens for this.
   requestDeleteColumn: [columnId: string]
+  // Column drag-and-drop reorder. Emitted when a column's header
+  // is dragged onto another column's header (the dropped-on column
+  // becomes the new "slot" for the dragged column; the host's
+  // store action resolves the target position and calls the API).
+  reorderColumn: [{ columnId: string; targetColumnId: string }]
   // Pass-through from KanbanCard (which re-emits from WorkspaceItemTask).
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
@@ -232,6 +244,64 @@ const handleDragEndCapture = () => {
   isDragOver.value = false
 }
 
+// ─── Drag-and-drop state (column reorder) ──────────────────────────────────
+//
+// Column header drag-and-drop (separate from the per-card DnD above).
+// Uses a dedicated MIME type `application/x-kanban-column-id` so the
+// payload can't collide with `application/x-kanban-task-id` (cards).
+// The dragover/drop handlers on the header only react when the drag
+// carries the column MIME — card drags are ignored here, so a card
+// drag onto a header doesn't trigger a column reorder.
+
+const isColumnDragOver = ref(false)
+
+const handleColumnDragStart = (event: DragEvent) => {
+  // Set the column-specific MIME. Effect is set to 'move' so the
+  // cursor shows the move arrow (matches the per-card DnD).
+  if (!event.dataTransfer) return
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('application/x-kanban-column-id', props.column.id)
+}
+
+const handleColumnDragOver = (event: DragEvent) => {
+  // Only accept column drags; ignore card drags (those target the
+  // cards container, not the header).
+  if (!event.dataTransfer) return
+  if (!event.dataTransfer.types.includes('application/x-kanban-column-id')) {
+    return
+  }
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  isColumnDragOver.value = true
+}
+
+const handleColumnDragLeave = (event: DragEvent) => {
+  // Only clear when the cursor leaves the header entirely (not when
+  // crossing between the header's children). Same pattern as
+  // handleDragLeave for the cards drop zone.
+  const header = event.currentTarget as HTMLElement | null
+  const next = event.relatedTarget as Node | null
+  if (header && next && header.contains(next)) return
+  isColumnDragOver.value = false
+}
+
+const handleColumnDrop = (event: DragEvent) => {
+  event.preventDefault()
+  isColumnDragOver.value = false
+  const dataTransfer = event.dataTransfer
+  if (!dataTransfer) return
+  const draggedColumnId = dataTransfer.getData('application/x-kanban-column-id')
+  if (!draggedColumnId) return
+  // No-op if the user dropped a column onto itself — emitting
+  // reorder would be a wasted API call (and the backend would
+  // still renumber, but to the same positions).
+  if (draggedColumnId === props.column.id) return
+  emit('reorderColumn', {
+    columnId: draggedColumnId,
+    targetColumnId: props.column.id,
+  })
+}
+
 // ─── Footer add ────────────────────────────────────────────────────────────
 
 const handleAddClick = () => {
@@ -251,9 +321,25 @@ const handleAddClick = () => {
     "
   >
     <!-- ─── Header ───────────────────────────────────────────────────── -->
+    <!-- The header is DRAGGABLE: drag it onto another column's
+         header to reorder columns. dragover.preventDefault is
+         required for HTML5 DnD to mark this as a valid drop
+         target; drop reads `application/x-kanban-column-id` and
+         emits `reorderColumn`. The visual feedback is a violet
+         outline when another column is being dragged over. -->
     <header
       class="px-3 py-2 flex items-center gap-2 shrink-0"
-      style="border-bottom: 1px solid var(--color-border);"
+      :style="
+        isColumnDragOver
+          ? 'border-bottom: 1px solid var(--color-border); outline: 2px solid var(--color-violet); outline-offset: -2px;'
+          : 'border-bottom: 1px solid var(--color-border);'
+      "
+      :data-testid="`kanban-column-${column.id}-header`"
+      draggable="true"
+      @dragstart="handleColumnDragStart"
+      @dragover="handleColumnDragOver"
+      @dragleave="handleColumnDragLeave"
+      @drop="handleColumnDrop"
     >
       <!-- Inline-rename input (visible while isRenaming) OR plain name (otherwise) -->
       <input

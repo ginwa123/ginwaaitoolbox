@@ -28,6 +28,7 @@
       move-task     [{ taskId, columnId, position }]
       rename-column [{ columnId, name }]
       delete-column [columnId]
+      reorder-column [{ columnId, targetColumnId }]
       // Pass-through from KanbanColumn:
       select-task, delete-task, rename-task, edit-routine,
       run-routine, pin-task
@@ -78,6 +79,10 @@ const emit = defineEmits<{
   moveTask: [{ taskId: string; columnId: string; position: number }]
   renameColumn: [{ columnId: string; name: string }]
   deleteColumn: [columnId: string]
+  // Column drag-and-drop reorder (Trello/Jira UX). Bubbled up
+  // from <KanbanColumn> headers to AppLayout, which calls the
+  // workspacesStore.reorderKanbanColumn action.
+  reorderColumn: [{ columnId: string; targetColumnId: string }]
   // Pass-through from KanbanColumn.
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
@@ -166,6 +171,7 @@ const handleAddColumn = () => {
           @move-task="(payload) => emit('moveTask', payload)"
           @rename-column="(payload) => emit('renameColumn', payload)"
           @delete-column="(columnId) => emit('deleteColumn', columnId)"
+          @reorder-column="(payload) => emit('reorderColumn', payload)"
           @request-rename-column="(columnId) => emit('requestRenameColumn', columnId)"
           @request-delete-column="(columnId) => emit('requestDeleteColumn', columnId)"
           @select-task="(id) => emit('selectTask', id)"

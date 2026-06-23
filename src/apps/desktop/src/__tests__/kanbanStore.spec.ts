@@ -234,6 +234,113 @@ describe('useWorkspacesStore — kanban actions', () => {
     })
   })
 
+  // ─── reorderKanbanColumn ────────────────────────────────────────────────
+  //
+  // The column header drag-and-drop reorder action. The DnD handler
+  // in <KanbanColumn> only knows the dragged column's id and the
+  // target column's id (the dropped-on column); this action resolves
+  // the target's position and calls the API, then re-fetches the
+  // full column list (siblings may have been renumbered by the
+  // backend, and the PATCH response only includes the moved column).
+  //
+  // Tests cover:
+  //   1. happy path: PATCH with the target's position + re-fetch
+  //   2. no-op when the target column doesn't exist locally
+  //      (defensive — the action shouldn't blow up if the local
+  //      store is stale)
+  //   3. no-op when the item has no kanban_columns yet
+  //      (defensive — same reason)
+
+  describe('reorderKanbanColumn', () => {
+    it('calls api.updateKanbanColumn with the target column\'s position and re-fetches via listKanbanColumns', async () => {
+      const store = seedStore([
+        ws('ws_1', 'W1', [
+          item('item_1', 'Sprint', 'kanban', {
+            kanban_columns: [
+              column('c1', 'todo', 0, 'item_1'),
+              column('c2', 'in progress', 1, 'item_1'),
+              column('c3', 'done', 2, 'item_1'),
+            ],
+          }),
+        ]),
+      ])
+      const updateMock = vi
+        .spyOn(api, 'updateKanbanColumn')
+        .mockResolvedValue(column('c3', 'done', 0, 'item_1'))
+      // Re-fetch returns the post-renumber ordering (c3 is now at 0;
+      // c1 and c2 shifted to 1 and 2).
+      const listMock = vi.spyOn(api, 'listKanbanColumns').mockResolvedValue({
+        columns: [
+          column('c3', 'done', 0, 'item_1'),
+          column('c1', 'todo', 1, 'item_1'),
+          column('c2', 'in progress', 2, 'item_1'),
+        ],
+        count: 3,
+      })
+
+      // Drag c3 onto c1 (which is at position 0) → c3 should land at 0.
+      await store.reorderKanbanColumn('ws_1', 'item_1', 'c3', 'c1')
+
+      // PATCH must use c1's position (0), not c3's.
+      expect(updateMock).toHaveBeenCalledWith('ws_1', 'item_1', 'c3', {
+        position: 0,
+      })
+      // The re-fetch must follow the PATCH (so the local state
+      // mirrors the backend's full renumber result).
+      expect(listMock).toHaveBeenCalledWith('ws_1', 'item_1')
+
+      // The two API calls must happen in the right order:
+      // PATCH first (so the backend can renumber), then list.
+      const updateOrder = updateMock.mock.invocationCallOrder[0]!
+      const listOrder = listMock.mock.invocationCallOrder[0]!
+      expect(updateOrder).toBeLessThan(listOrder)
+
+      // Local state reflects the post-renumber columns.
+      const wsRow = store.workspaces.find((w) => w.id === 'ws_1')!
+      const updatedItem = wsRow.items.find((i) => i.id === 'item_1')!
+      expect(updatedItem.kanban_columns?.map((c) => c.id)).toEqual([
+        'c3',
+        'c1',
+        'c2',
+      ])
+    })
+
+    it('is a no-op when the target column does not exist locally', async () => {
+      const store = seedStore([
+        ws('ws_1', 'W1', [
+          item('item_1', 'Sprint', 'kanban', {
+            kanban_columns: [
+              column('c1', 'todo', 0, 'item_1'),
+              // No 'c2' here — that's the "target" we'll pass.
+            ],
+          }),
+        ]),
+      ])
+      const updateMock = vi.spyOn(api, 'updateKanbanColumn')
+      const listMock = vi.spyOn(api, 'listKanbanColumns')
+
+      await store.reorderKanbanColumn('ws_1', 'item_1', 'c1', 'c_missing')
+
+      // Neither API call should happen — the action bails out before
+      // touching the network.
+      expect(updateMock).not.toHaveBeenCalled()
+      expect(listMock).not.toHaveBeenCalled()
+    })
+
+    it('is a no-op when the item has no kanban_columns array', async () => {
+      const store = seedStore([
+        ws('ws_1', 'W1', [item('item_1', 'Sprint', 'kanban')]),
+      ])
+      const updateMock = vi.spyOn(api, 'updateKanbanColumn')
+      const listMock = vi.spyOn(api, 'listKanbanColumns')
+
+      await store.reorderKanbanColumn('ws_1', 'item_1', 'c1', 'c2')
+
+      expect(updateMock).not.toHaveBeenCalled()
+      expect(listMock).not.toHaveBeenCalled()
+    })
+  })
+
   // ─── deleteKanbanColumn ─────────────────────────────────────────────────
 
   describe('deleteKanbanColumn', () => {
