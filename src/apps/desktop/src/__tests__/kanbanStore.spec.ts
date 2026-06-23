@@ -1,6 +1,8 @@
 /**
  * Unit tests for the kanban store actions (Chunk 5 of the
- * workspace-item-kanban plan): addKanbanItem, addKanbanColumn,
+ * workspace-item-kanban plan + the follow-up fetchKanbanColumns
+ * action that fixes the "board renders empty after page reload"
+ * bug). Covers: addKanbanItem, fetchKanbanColumns, addKanbanColumn,
  * updateKanbanColumn, deleteKanbanColumn, moveTaskToColumn.
  *
  * Each action is mocked at the api.* boundary (the apiFetch
@@ -305,6 +307,111 @@ describe('useWorkspacesStore — kanban actions', () => {
       const t1 = updatedItem.tasks?.find((t) => t.id === 't1')
       expect(t1?.kanban_column_id).toBe('c2')
       expect(t1?.kanban_position).toBe(1)
+    })
+  })
+
+  // ─── fetchKanbanColumns ─────────────────────────────────────────────────
+  // The "board renders empty after page reload" fix. Without this
+  // action, item.kanban_columns stays undefined (the workspaces/items
+  // endpoint does not embed columns) and the user sees an empty
+  // board even though the seeded 3 default columns live in the DB.
+
+  describe('fetchKanbanColumns', () => {
+    it('calls api.listKanbanColumns and populates item.kanban_columns', async () => {
+      const store = seedStore([
+        ws('ws_1', 'W1', [
+          // Start with NO columns (simulates the initial page-load
+          // state where the workspaces/items endpoint didn't embed
+          // columns).
+          item('item_1', 'Sprint', 'kanban'),
+        ]),
+      ])
+      const listKanbanColumnsMock = vi
+        .spyOn(api, 'listKanbanColumns')
+        .mockResolvedValue({
+          columns: [
+            {
+              id: 'c1',
+              workspace_item_id: 'item_1',
+              name: 'todo',
+              position: 0,
+              created_at: '2026-06-21 00:00:00',
+            },
+            {
+              id: 'c2',
+              workspace_item_id: 'item_1',
+              name: 'in progress',
+              position: 1,
+              created_at: '2026-06-21 00:00:00',
+            },
+            {
+              id: 'c3',
+              workspace_item_id: 'item_1',
+              name: 'done',
+              position: 2,
+              created_at: '2026-06-21 00:00:00',
+            },
+          ],
+          count: 3,
+        })
+
+      await store.fetchKanbanColumns('ws_1', 'item_1')
+
+      expect(listKanbanColumnsMock).toHaveBeenCalledWith('ws_1', 'item_1')
+      const wsRow = store.workspaces.find((w) => w.id === 'ws_1')!
+      const updatedItem = wsRow.items.find((i) => i.id === 'item_1')!
+      expect(updatedItem.kanban_columns).toHaveLength(3)
+      expect(updatedItem.kanban_columns?.map((c) => c.name)).toEqual([
+        'todo',
+        'in progress',
+        'done',
+      ])
+    })
+
+    it('sorts columns by position defensively (backend already orders, but a stale local snapshot is healed)', async () => {
+      const store = seedStore([
+        ws('ws_1', 'W1', [
+          // Pre-existing (wrong-order) local snapshot.
+          item('item_1', 'Sprint', 'kanban', {
+            kanban_columns: [column('c3', 'done', 2, 'item_1')],
+          }),
+        ]),
+      ])
+      vi.spyOn(api, 'listKanbanColumns').mockResolvedValue({
+        columns: [
+          column('c2', 'in progress', 1, 'item_1'),
+          column('c1', 'todo', 0, 'item_1'),
+        ],
+        count: 2,
+      })
+
+      await store.fetchKanbanColumns('ws_1', 'item_1')
+
+      const wsRow = store.workspaces.find((w) => w.id === 'ws_1')!
+      const updatedItem = wsRow.items.find((i) => i.id === 'item_1')!
+      expect(updatedItem.kanban_columns?.map((c) => c.id)).toEqual(['c1', 'c2'])
+    })
+
+    it('leaves existing columns untouched if the API call fails (graceful degradation)', async () => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const store = seedStore([
+        ws('ws_1', 'W1', [
+          // Pre-existing snapshot (stale but not empty).
+          item('item_1', 'Sprint', 'kanban', {
+            kanban_columns: [column('c1', 'todo', 0, 'item_1')],
+          }),
+        ]),
+      ])
+      vi.spyOn(api, 'listKanbanColumns').mockRejectedValue(new Error('network'))
+
+      await store.fetchKanbanColumns('ws_1', 'item_1')
+
+      const wsRow = store.workspaces.find((w) => w.id === 'ws_1')!
+      const updatedItem = wsRow.items.find((i) => i.id === 'item_1')!
+      // Existing columns preserved on failure (not cleared).
+      expect(updatedItem.kanban_columns?.map((c) => c.id)).toEqual(['c1'])
+      expect(consoleErrorSpy).toHaveBeenCalled()
+      consoleErrorSpy.mockRestore()
     })
   })
 })

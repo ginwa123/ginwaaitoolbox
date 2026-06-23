@@ -35,8 +35,9 @@
       KanbanColumnEditor on these)
 -->
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import KanbanColumn from './KanbanColumn.vue'
+import { useWorkspacesStore } from '../stores/workspaces'
 import type { WorkspaceItem, Task } from '../stores/workspaces'
 
 const props = withDefaults(
@@ -50,6 +51,26 @@ const props = withDefaults(
     itemId: '',
   },
 )
+
+const workspacesStore = useWorkspacesStore()
+
+// Lazy-load the kanban's columns on mount + whenever the item id
+// changes (e.g. user navigates from one kanban to another without
+// unmounting the component). The workspaces/items endpoint does NOT
+// embed columns — kanbans can have arbitrarily many and we want a
+// lazy load (mirrors the folder-item `fetchFolderContents` pattern).
+// Without this, the board renders empty on every page reload even
+// though the seeded 3 default columns exist in the DB.
+const effectiveItemId = computed(() => props.itemId || props.item.id)
+
+const loadColumns = () => {
+  if (props.workspaceId && effectiveItemId.value) {
+    void workspacesStore.fetchKanbanColumns(props.workspaceId, effectiveItemId.value)
+  }
+}
+
+onMounted(loadColumns)
+watch(() => [props.workspaceId, effectiveItemId.value], loadColumns)
 
 const emit = defineEmits<{
   addColumn: []
