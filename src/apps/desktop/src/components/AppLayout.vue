@@ -564,6 +564,26 @@ const handleKanbanDeleteColumn = (columnId: string) => {
   )
 }
 
+// Column header drag-and-drop reorder (Trello/Jira UX). Direct store
+// call — the store action resolves the target column's current
+// position, PATCHes the moved column, and re-fetches the full
+// column list (because the backend's PATCH response only includes
+// the moved column, but siblings were renumbered too).
+const handleKanbanReorderColumn = (payload: {
+  columnId: string
+  targetColumnId: string
+}) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.reorderKanbanColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    payload.columnId,
+    payload.targetColumnId,
+  )
+}
+
 // Task-level events (select-task, delete-task, rename-task,
 // edit-routine, run-routine, pin-task) re-emitted by <KanbanColumn>.
 // These all live in Sidebar (because they need access to
@@ -914,6 +934,7 @@ watch(chatSessionCwd, (newCwd) => {
         @add-column="handleKanbanAddColumn"
         @rename-column="handleKanbanRenameColumn"
         @delete-column="handleKanbanDeleteColumn"
+        @reorder-column="handleKanbanReorderColumn"
         @request-rename-column="handleKanbanRequestRenameColumn"
         @request-delete-column="handleKanbanRequestDeleteColumn"
         @select-task="handleKanbanSelectTask"

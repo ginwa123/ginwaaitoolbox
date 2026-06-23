@@ -682,6 +682,41 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Reorder a kanban column via drag-and-drop. The DnD handler in
+  // <KanbanColumn> only knows the dragged column's id and the target
+  // column's id (the column the user dropped onto); this action
+  // resolves the target's current position and calls the API, then
+  // re-fetches the full column list because the backend's PATCH
+  // response only includes the moved column — sibling positions
+  // changed too (dense renumber), so we need the backend's full
+  // post-renumber ordering to mirror into the local store.
+  //
+  // No-op (silently) if the workspace / item / target column can't
+  // be found locally. This matches the pattern in `updateKanbanColumn`
+  // (the action assumes the column exists; the UI should only emit
+  // reorder events with valid ids).
+  async function reorderKanbanColumn(
+    workspaceId: string,
+    itemId: string,
+    columnId: string,
+    targetColumnId: string,
+  ): Promise<void> {
+    const item = findItem(workspaceId, itemId)
+    if (!item?.kanban_columns) return
+    const target = item.kanban_columns.find((c) => c.id === targetColumnId)
+    if (!target) return
+    // PATCH the moved column to the target's position. The backend's
+    // reorderColumn shifts the siblings (dense renumber) and returns
+    // the moved column's NEW position; we ignore the return value
+    // because we'll re-fetch the whole list next.
+    await api.updateKanbanColumn(workspaceId, itemId, columnId, {
+      position: target.position,
+    })
+    // Re-fetch so local state matches the backend's renumbered
+    // sibling positions.
+    await fetchKanbanColumns(workspaceId, itemId)
+  }
+
   // Delete a kanban column. The backend unassigns tasks in the
   // column (sets kanban_column_id to NULL) — we mirror that by
   // clearing `kanban_column_id` on any matching tasks in the
@@ -1489,6 +1524,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     addKanbanColumn,
     updateKanbanColumn,
     deleteKanbanColumn,
+    reorderKanbanColumn,
     moveTaskToColumn,
     fetchKanbanColumns,
     initializeFromSystemFolder,
