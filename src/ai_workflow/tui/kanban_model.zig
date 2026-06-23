@@ -209,10 +209,47 @@ pub fn deleteColumn(
         &.{column_id});
 }
 
-/// Reorder a column to a new position. The actual gap-closing of
-/// sibling columns is the caller's responsibility — see the stub
-/// `renumberColumns` below. For v1, the smoke test in Chunk 7
-/// exercises the full renumber flow.
+/// Reorder a column to a new position with list-insertion
+/// semantics: the column is removed from its current slot and
+/// re-inserted at `new_position`, shifting the OTHER columns
+/// around it. The result is a dense 0..N-1 sequence that reflects
+/// the user's intended visual order.
+///
+/// Algorithm (4 SQL statements; the simplest correct implementation
+/// that handles both forward and backward moves symmetrically):
+///
+///   1. Temporarily park the moved column at a sentinel position
+///      (well above any realistic column count) so it's sorted to
+///      the end and won't disturb the renumber in step 2.
+///   2. Compact the OTHER columns into a dense 0..N-2 sequence
+///      ranked by their current position (with ties broken by id
+///      for determinism).
+///   3. Shift every OTHER column at position >= new_position up by
+///      1, opening a slot for the moved column.
+///   4. Place the moved column at new_position.
+///
+/// Worked examples (initial state dense 0..N-1):
+///
+///   start [todo=0, ip=1, rev=2, done=3], reorder("done", 0)
+///     step 1 → [todo=0, ip=1, rev=2, done=∞]
+///     step 2 → [todo=0, ip=1, rev=2, done=∞]
+///     step 3 → [todo=1, ip=2, rev=3, done=∞]  (everyone else shifts up)
+///     step 4 → [done=0, todo=1, ip=2, rev=3]   ✓
+///
+///   start [done=0, todo=1, ip=2, rev=3], reorder("todo", 2)
+///     step 1 → [done=0, todo=∞, ip=2, rev=3]
+///     step 2 → [done=0, ip=1, rev=2, todo=∞]
+///     step 3 → [done=0, ip=1, rev=3, todo=∞]  (only rev at >=2 shifts)
+///     step 4 → [done=0, ip=1, todo=2, rev=3]   ✓
+///
+/// The sentinel value 1_000_000 is well above any realistic
+/// per-item column count (the product spec caps custom columns at
+/// a handful; typical N ≤ 10).
+///
+/// SQL convention: every inner-table reference is aliased (`kc2`)
+/// per the project memory `nalar-sql-alias-tables.md`. The outer
+/// UPDATE target is NOT aliased — SQLite disallows aliases on the
+/// UPDATE target.
 pub fn reorderColumn(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -220,27 +257,50 @@ pub fn reorderColumn(
     column_id: []const u8,
     new_position: i64,
 ) !void {
-    const pos_str = try std.fmt.allocPrint(allocator, "{d}", .{new_position});
-    defer allocator.free(pos_str);
+    // Sentinel: large enough to park the moved column past every
+    // realistic position without overflow concerns (SQLite stores
+    // INTEGER as i64).
+    const SENTINEL: i64 = 1_000_000;
+    const sentinel_str = try std.fmt.allocPrint(allocator, "{d}", .{SENTINEL});
+    defer allocator.free(sentinel_str);
+    const new_pos_str = try std.fmt.allocPrint(allocator, "{d}", .{new_position});
+    defer allocator.free(new_pos_str);
+
+    // Step 1: park the moved column at the sentinel.
     try db.exec(allocator,
         "UPDATE kanban_columns SET position = ? WHERE id = ?",
-        &.{ pos_str, column_id });
-    // NOTE: caller is responsible for re-numbering siblings; for v1 we
-    // do a full renumber pass here for simplicity.
-    renumberColumns(allocator, db, workspace_item_id) catch {};
-}
+        &.{ sentinel_str, column_id });
 
-/// Stub: re-number column positions to be 0..N-1 dense. The full
-/// implementation is deferred to a later iteration; the smoke test
-/// in Chunk 7 will exercise the full renumber flow.
-fn renumberColumns(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    workspace_item_id: []const u8,
-) !void {
-    _ = allocator;
-    _ = db;
-    _ = workspace_item_id;
+    // Step 2: compact the OTHER columns (everyone except the
+    // parked one) into 0..N-2 by current position order. The
+    // subquery counts siblings at position < this column's
+    // position, with id-tiebreak for deterministic ordering of
+    // siblings that share a position (which can happen if a prior
+    // renumber was skipped).
+    try db.exec(allocator,
+        \\UPDATE kanban_columns
+        \\SET position = (
+        \\    SELECT COUNT(*) FROM kanban_columns kc2
+        \\    WHERE kc2.workspace_item_id = kanban_columns.workspace_item_id
+        \\      AND kc2.id != ?
+        \\      AND (kc2.position < kanban_columns.position
+        \\          OR (kc2.position = kanban_columns.position AND kc2.id < kanban_columns.id))
+        \\)
+        \\WHERE workspace_item_id = ? AND id != ?
+    , &.{ column_id, workspace_item_id, column_id });
+
+    // Step 3: shift every OTHER column at position >= new_position
+    // up by 1, opening a slot for the moved column.
+    try db.exec(allocator,
+        \\UPDATE kanban_columns
+        \\SET position = position + 1
+        \\WHERE workspace_item_id = ? AND id != ? AND position >= ?
+    , &.{ workspace_item_id, column_id, new_pos_str });
+
+    // Step 4: place the moved column at new_position.
+    try db.exec(allocator,
+        "UPDATE kanban_columns SET position = ? WHERE id = ?",
+        &.{ new_pos_str, column_id });
 }
 
 /// Move a task from its current column to `target_column_id` at
