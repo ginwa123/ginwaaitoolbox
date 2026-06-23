@@ -65,6 +65,15 @@ const emit = defineEmits<{
   // pass-through is a one-liner.
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
   reorderPinnedTasks: [workspaceId: string, itemId: string, orderedIds: string[]]
+  // NEW (Chunk 6 of workspace-item-kanban plan): pass-through
+  // kanban events from <WorkspaceItem> for kanban items. Sidebar
+  // handles these by opening the column editor and calling the
+  // store actions.
+  addKanbanTask: [workspaceId: string, itemId: string, columnId: string]
+  moveKanbanTask: [workspaceId: string, itemId: string, taskId: string, columnId: string, position: number]
+  addKanbanColumn: [workspaceId: string, itemId: string, name: string]
+  renameKanbanColumn: [workspaceId: string, itemId: string, columnId: string, name: string]
+  deleteKanbanColumn: [workspaceId: string, itemId: string, columnId: string]
 }>()
 
 const sidebarStore = useSidebarStore()
@@ -582,6 +591,11 @@ const handleItemDragEnd = () => {
             @load-more-tasks="handleLoadMoreTasks"
             @pin-task="(ws, item, task, isPinned) => emit('pinTask', ws, item, task, isPinned)"
             @reorder-pinned-tasks="(ws, item, orderedIds) => emit('reorderPinnedTasks', ws, item, orderedIds)"
+            @add-kanban-task="(ws, item, columnId) => emit('addKanbanTask', ws, item, columnId)"
+            @move-kanban-task="(ws, item, task, columnId, position) => emit('moveKanbanTask', ws, item, task, columnId, position)"
+            @add-kanban-column="(ws, item, name) => emit('addKanbanColumn', ws, item, name)"
+            @rename-kanban-column="(ws, item, columnId, name) => emit('renameKanbanColumn', ws, item, columnId, name)"
+            @delete-kanban-column="(ws, item, columnId) => emit('deleteKanbanColumn', ws, item, columnId)"
           />
           <!-- Add Item Button -->
           <li class="group/workspace relative" data-workspace-menu>

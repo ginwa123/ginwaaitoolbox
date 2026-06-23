@@ -3,6 +3,9 @@ import { computed, inject, ref, type Ref } from 'vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import type { WorkspaceItem } from '../stores/workspaces'
 import WorkspaceItemTask from './WorkspaceItemTask.vue'
+import KanbanView from './KanbanView.vue'
+import KanbanColumnEditor from './KanbanColumnEditor.vue'
+import type { KanbanColumn } from '../stores/workspaces'
 
 const workspacesStore = useWorkspacesStore()
 
@@ -61,6 +64,15 @@ const emit = defineEmits<{
   // handleReorderPinnedTasks below.
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
   reorderPinnedTasks: [workspaceId: string, itemId: string, orderedIds: string[]]
+  // NEW (Chunk 6 of workspace-item-kanban plan): Kanban events.
+  // Emitted by the inner <KanbanView> (for kanban items) and
+  // forwarded up to <WorkspaceList> → Sidebar unchanged. The
+  // v-else branch (folder items) does not emit these.
+  addKanbanTask: [workspaceId: string, itemId: string, columnId: string]
+  moveKanbanTask: [workspaceId: string, itemId: string, taskId: string, columnId: string, position: number]
+  addKanbanColumn: [workspaceId: string, itemId: string, name: string]
+  renameKanbanColumn: [workspaceId: string, itemId: string, columnId: string, name: string]
+  deleteKanbanColumn: [workspaceId: string, itemId: string, columnId: string]
 }>()
 
 // Computed: check if item is expanded (tasks visible)
@@ -177,6 +189,123 @@ const handlePinTask = (
 // pinned region. v1: simple "move to bottom on drop" semantics.
 const handleReorderPinnedTasks = (orderedIds: string[]) => {
   emit('reorderPinnedTasks', props.workspaceId, props.item.id, orderedIds)
+}
+
+// ─── Kanban handlers (Chunk 6 of workspace-item-kanban plan) ───────────────
+//
+// For item_type === 'kanban' items, the inner <KanbanView> emits
+// kanban-specific events. We forward them up to the parent
+// (WorkspaceList → Sidebar) verbatim. Sidebar handles them: opens
+// the column editor where appropriate, calls the store actions.
+//
+// We also host the KanbanColumnEditor modal state (mode + target
+// column id + initial name). The modal lives in this component
+// because the column editor's state is scoped to a single
+// workspace-item, and re-using the same editor for add/rename/delete
+// keeps the UX consistent across the kanban.
+//
+// KanbanColumnEditor state — only meaningful for kanban items,
+// but lives at this scope so the template can render it
+// unconditionally (the v-if in the template gates it on item_type).
+const showColumnEditor = ref(false)
+const columnEditorMode = ref<'add' | 'rename' | 'delete'>('add')
+const columnEditorTargetId = ref<string | null>(null)
+const columnEditorInitialName = ref<string>('')
+
+// Find the target column by id, or return undefined (defensive —
+// the item may have been mutated between the menu click and the
+// editor open).
+const findColumn = (columnId: string): KanbanColumn | undefined => {
+  return props.item.kanban_columns?.find((c) => c.id === columnId)
+}
+
+// Forwarding handlers — pure pass-through, same pattern as the
+// existing task events above.
+const handleKanbanAddTask = (payload: { columnId: string }) => {
+  // v1: route through the existing AddTaskPickerDialog flow
+  // (handled by Sidebar via handleAddTask which is wired to this
+  // component's `addTask` event). The created task is auto-assigned
+  // to the first column by the backend; the user can drag it to
+  // the desired column afterward. Future iteration: open a
+  // column-specific create dialog that POSTs with kanban_column_id.
+  emit('addTask', props.item)
+}
+
+const handleKanbanMoveTask = (payload: {
+  taskId: string
+  columnId: string
+  position: number
+}) => {
+  emit(
+    'moveKanbanTask',
+    props.workspaceId,
+    props.item.id,
+    payload.taskId,
+    payload.columnId,
+    payload.position,
+  )
+}
+
+const handleKanbanAddColumn = () => {
+  columnEditorMode.value = 'add'
+  columnEditorTargetId.value = null
+  columnEditorInitialName.value = ''
+  showColumnEditor.value = true
+}
+
+const handleKanbanRenameColumn = (columnId: string) => {
+  const col = findColumn(columnId)
+  if (!col) return
+  columnEditorMode.value = 'rename'
+  columnEditorTargetId.value = columnId
+  columnEditorInitialName.value = col.name
+  showColumnEditor.value = true
+}
+
+const handleKanbanDeleteColumn = (columnId: string) => {
+  const col = findColumn(columnId)
+  if (!col) return
+  columnEditorMode.value = 'delete'
+  columnEditorTargetId.value = columnId
+  columnEditorInitialName.value = col.name
+  showColumnEditor.value = true
+}
+
+// Editor callbacks. The modal emits `add(name)`, `rename(name)`, or
+// `delete()`. We forward each to the host (Sidebar) and close the
+// modal. Sidebar calls the store action.
+const handleColumnEditorAdd = (name: string) => {
+  emit('addKanbanColumn', props.workspaceId, props.item.id, name)
+  showColumnEditor.value = false
+}
+
+const handleColumnEditorRename = (name: string) => {
+  if (columnEditorTargetId.value) {
+    emit(
+      'renameKanbanColumn',
+      props.workspaceId,
+      props.item.id,
+      columnEditorTargetId.value,
+      name,
+    )
+  }
+  showColumnEditor.value = false
+}
+
+const handleColumnEditorDelete = () => {
+  if (columnEditorTargetId.value) {
+    emit(
+      'deleteKanbanColumn',
+      props.workspaceId,
+      props.item.id,
+      columnEditorTargetId.value,
+    )
+  }
+  showColumnEditor.value = false
+}
+
+const handleColumnEditorClose = () => {
+  showColumnEditor.value = false
 }
 
 // Capture the dragged task's id from the data-task-id attribute on
@@ -432,11 +561,36 @@ const handlePinnedDrop = (event: DragEvent) => {
         </button>
       </div>
 
+      <!-- Kanban branch (NEW, Chunk 6 of workspace-item-kanban plan):
+           Renders the <KanbanView> board layout for item_type === 'kanban'
+           items. The v-else below preserves the existing folder-item
+           behavior unchanged (pinned + unpinned task list with the
+           existing reorder handlers). -->
+      <KanbanView
+        v-if="isExpanded && item.item_type === 'kanban'"
+        :item="item"
+        :workspace-id="workspaceId"
+        :item-id="item.id"
+        @add-task="handleKanbanAddTask"
+        @move-task="handleKanbanMoveTask"
+        @add-column="handleKanbanAddColumn"
+        @rename-column="(payload) => emit('renameKanbanColumn', workspaceId, item.id, payload.columnId, payload.name)"
+        @delete-column="(columnId) => emit('deleteKanbanColumn', workspaceId, item.id, columnId)"
+        @request-rename-column="handleKanbanRenameColumn"
+        @request-delete-column="handleKanbanDeleteColumn"
+        @select-task="handleSelectTask"
+        @delete-task="handleDeleteTask"
+        @rename-task="handleRenameTask"
+        @edit-routine="handleEditRoutine"
+        @run-routine="handleRunRoutine"
+        @pin-task="handlePinTask"
+      />
+
       <!-- Tasks List (shown when expanded - allows multiple). Per-task
            row lives in <WorkspaceItemTask> (extracted 2026-06-10);
            events bubble up via the pass-through handlers in the
            <script setup> block. -->
-      <div v-if="isExpanded && item.tasks && item.tasks.length > 0" class="ml-8 mt-1.5 space-y-0.5 pl-2 border-l border-[--color-border]/30">
+      <div v-else-if="isExpanded && item.tasks && item.tasks.length > 0" class="ml-8 mt-1.5 space-y-0.5 pl-2 border-l border-[--color-border]/30">
         <!-- Pinned region: drag-and-drop reorders only within this
              list. The drop handler calls handleReorderPinnedTasks.
              Only rendered when at least one task is pinned (so the
@@ -508,6 +662,21 @@ const handlePinnedDrop = (event: DragEvent) => {
           <span>{{ item.isLoadingMoreTasks ? 'Loading…' : 'Load more' }}</span>
         </button>
       </div>
+
+      <!-- KanbanColumnEditor: only used by kanban items. Lives at this
+           scope (not inside the v-if branch above) so the modal's
+           internal Teleport/animation lifecycle works cleanly even if
+           the KanbanView branch unmounts mid-edit. -->
+      <KanbanColumnEditor
+        v-if="item.item_type === 'kanban'"
+        :show="showColumnEditor"
+        :mode="columnEditorMode"
+        :initial-name="columnEditorInitialName"
+        @close="handleColumnEditorClose"
+        @add="handleColumnEditorAdd"
+        @rename="handleColumnEditorRename"
+        @delete="handleColumnEditorDelete"
+      />
     </div>
   </li>
 </template>

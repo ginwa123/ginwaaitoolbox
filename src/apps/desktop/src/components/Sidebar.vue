@@ -841,6 +841,73 @@ const editRoutineTaskName = computed<string>(() => {
   }
   return ''
 })
+
+// ─── Kanban handlers (Chunk 6 of workspace-item-kanban plan) ───────────────
+//
+// These wire the kanban board's emitted events to the store
+// actions added in Chunk 5. The handlers are intentionally
+// thin (one-liners that call the store); the dialogs that collect
+// user input live inside WorkspaceItem (KanbanColumnEditor) and
+// Sidebar (the existing AddTaskPickerDialog for the + Add button).
+
+// + Add on a column: v1 routes through the existing
+// AddTaskPickerDialog (the user picks Standard / Routine / Memory,
+// the task is created, the backend auto-assigns it to the first
+// column). Future iteration: column-specific create dialog.
+const handleAddKanbanTask = (
+  workspaceId: string,
+  itemId: string,
+  _columnId: string,
+) => {
+  const ws = workspacesStore.workspaces.find((w) => w.id === workspaceId)
+  const item = ws?.items.find((i) => i.id === itemId)
+  if (!item) return
+  handleAddTask(workspaceId, item)
+}
+
+// Drag-and-drop task move between columns. Pass-through to the
+// store's optimistic-then-persist pattern.
+const handleMoveKanbanTask = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+  columnId: string,
+  position: number,
+) => {
+  workspacesStore.moveTaskToColumn(workspaceId, itemId, taskId, columnId, position)
+}
+
+// + Column: add a new column to the kanban. The modal collect the
+// name was already shown by WorkspaceItem; this just calls the
+// store action with the captured name.
+const handleAddKanbanColumn = (
+  workspaceId: string,
+  itemId: string,
+  name: string,
+) => {
+  workspacesStore.addKanbanColumn(workspaceId, itemId, name)
+}
+
+// Rename column (from inline rename inside KanbanColumn).
+const handleRenameKanbanColumn = (
+  workspaceId: string,
+  itemId: string,
+  columnId: string,
+  name: string,
+) => {
+  workspacesStore.updateKanbanColumn(workspaceId, itemId, columnId, { name })
+}
+
+// Delete column. v1 does NOT show a confirm dialog here — the
+// KanbanColumnEditor in 'delete' mode already showed the
+// confirmation. The store action handles unassigning tasks.
+const handleDeleteKanbanColumn = (
+  workspaceId: string,
+  itemId: string,
+  columnId: string,
+) => {
+  workspacesStore.deleteKanbanColumn(workspaceId, itemId, columnId)
+}
 </script>
 
 <template>
@@ -938,6 +1005,11 @@ const editRoutineTaskName = computed<string>(() => {
           @reorder-workspace-items="handleReorderWorkspaceItems"
           @pin-task="handlePinTask"
           @reorder-pinned-tasks="handleReorderPinnedTasks"
+          @add-kanban-task="handleAddKanbanTask"
+          @move-kanban-task="handleMoveKanbanTask"
+          @add-kanban-column="handleAddKanbanColumn"
+          @rename-kanban-column="handleRenameKanbanColumn"
+          @delete-kanban-column="handleDeleteKanbanColumn"
         />
         <!-- Collapsed workspaces -->
         <div v-else class="space-y-0.5">
