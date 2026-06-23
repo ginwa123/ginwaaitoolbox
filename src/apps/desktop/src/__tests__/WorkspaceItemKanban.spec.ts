@@ -1,14 +1,21 @@
 /**
- * Tests for the kanban branch of WorkspaceItem.vue — verifies:
- *   - item_type='kanban' renders <KanbanView> (not the list)
- *   - item_type='folder' (or other) renders the existing list
- *   - board renders N columns from item.kanban_columns
- *   - board renders N cards per column based on task kanban_column_id
- *   - the kanban events (add-task, move-task, add-column, etc.)
- *     are emitted with the right payloads
+ * Tests for the kanban branch of WorkspaceItem.vue after the
+ * inline-board → main-content migration (2026-06-21). The kanban
+ * board NO LONGER renders inside WorkspaceItem (it lives in
+ * AppLayout's main content area). These tests verify:
+ *   - item_type='kanban' does NOT render <KanbanView> inline
+ *   - item_type='kanban' does NOT render <KanbanColumnEditor>
+ *   - item_type='kanban' does NOT emit the kanban-* events
+ *     (those now fire from <AppLayout>'s <KanbanView>)
+ *   - item_type='folder' (or other) renders the existing task list
+ *   - clicking a kanban item emits 'click' but does NOT toggle
+ *     expansion (folder items still toggle)
+ *
+ * The actual <KanbanView> rendering in the main content area is
+ * tested in AppLayout.kanban.spec.ts.
  *
  * Plan: docs/superpowers/plans/2026-06-21-workspace-item-kanban.md
- *   Chunk 6 / Task 6.7
+ *   Migration chunk / step "Move kanban board to AppLayout"
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -56,12 +63,12 @@ const makeFolderItem = (overrides: Partial<WorkspaceItemType> = {}): WorkspaceIt
   ...overrides,
 })
 
-function mountItem(item: WorkspaceItemType) {
+function mountItem(item: WorkspaceItemType, isActive = false) {
   const processingState: Ref<Record<string, boolean>> = ref({})
   return mount(WorkspaceItem, {
     props: {
       item,
-      isActive: false,
+      isActive,
       workspaceId: WS_ID,
     },
     global: {
@@ -71,15 +78,15 @@ function mountItem(item: WorkspaceItemType) {
 }
 
 function expandItem(): void {
-  // Tasks/KanbanView are only rendered when the parent item is
-  // expanded. Mutate `expandedItemIds` and reassign to trigger
-  // reactivity, matching the production toggle.
+  // Tasks are only rendered when the parent item is expanded.
+  // Mutate `expandedItemIds` and reassign to trigger reactivity,
+  // matching the production toggle.
   const ws = useWorkspacesStore()
   ws.expandedItemIds[ITEM_ID] = true
   ws.expandedItemIds = { ...ws.expandedItemIds }
 }
 
-describe('WorkspaceItem — item_type branching', () => {
+describe('WorkspaceItem — item_type branching (post-kanban-migration)', () => {
   let wrapper: VueWrapper | null = null
 
   beforeEach(() => {
@@ -97,28 +104,48 @@ describe('WorkspaceItem — item_type branching', () => {
     vi.restoreAllMocks()
   })
 
-  it("renders KanbanView (not the task list) when item_type='kanban'", async () => {
+  it("does NOT render KanbanView inline when item_type='kanban' (board lives in AppLayout)", async () => {
+    // Pre-migration, this test verified that KanbanView rendered
+    // inline in the sidebar. Post-migration, the kanban board lives
+    // in <AppLayout> (rendered in the main content area when
+    // activeWorkspaceItem.item_type === 'kanban'). WorkspaceItem
+    // should NOT render any board-related DOM — just the item row
+    // and the task list (for folder items).
     wrapper = mountItem(makeKanbanItem())
     expandItem()
     await nextTick()
-    // KanbanView renders with data-kanban-view="<item_id>"
+    // data-kanban-view="<id>" was the KanbanView root marker.
+    // After the migration, WorkspaceItem should not emit it.
     const kanban = wrapper.find(`[data-kanban-view="${ITEM_ID}"]`)
-    expect(kanban.exists()).toBe(true)
-    // The task list container (ml-8 mt-1.5 space-y-0.5 pl-2) should
-    // NOT be rendered (KanbanView replaces it).
-    // Sanity check: no WorkspaceItemTask buttons are rendered.
-    expect(wrapper.findAll('button[data-task-id]')).toHaveLength(0)
+    expect(kanban.exists()).toBe(false)
+    // No columns / cards should be visible.
+    expect(wrapper.findAll('[data-kanban-column]')).toHaveLength(0)
+    expect(wrapper.findAll('[data-kanban-card]')).toHaveLength(0)
+  })
+
+  it("does NOT render KanbanColumnEditor for kanban items (modal moved to AppLayout)", async () => {
+    // The KanbanColumnEditor used to live inside WorkspaceItem
+    // (gated by `v-if="item.item_type === 'kanban'"`). After the
+    // migration it lives in AppLayout's template. WorkspaceItem
+    // should not render it.
+    wrapper = mountItem(makeKanbanItem())
+    expandItem()
+    await nextTick()
+    // The editor uses a Teleport to body, so even if it tried to
+    // mount, we'd find the modal root by class. Easier check:
+    // there is no "Add Column" / "+Column" button in the sidebar
+    // (those live in <KanbanView>'s header in the main content).
+    expect(wrapper.findAll(`[data-testid="kanban-view-${ITEM_ID}-add-column"]`)).toHaveLength(0)
   })
 
   it("renders the existing task list when item_type='folder'", async () => {
     wrapper = mountItem(makeFolderItem({ tasks: [makeTask()] }))
     expandItem()
     await nextTick()
-    // The kanban branch should NOT be rendered.
+    // No kanban DOM should appear.
     const kanban = wrapper.find(`[data-kanban-view="${ITEM_ID}"]`)
     expect(kanban.exists()).toBe(false)
-    // The folder-item task row (WorkspaceItemTask with data-task-id)
-    // IS rendered.
+    // The folder-item task row IS rendered.
     expect(wrapper.find('button[data-task-id="task_1"]').exists()).toBe(true)
   })
 
@@ -133,7 +160,7 @@ describe('WorkspaceItem — item_type branching', () => {
   })
 })
 
-describe('WorkspaceItem — kanban board rendering', () => {
+describe('WorkspaceItem — kanban click behavior', () => {
   let wrapper: VueWrapper | null = null
 
   beforeEach(() => {
@@ -151,91 +178,39 @@ describe('WorkspaceItem — kanban board rendering', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders N columns from item.kanban_columns', async () => {
-    wrapper = mountItem(
-      makeKanbanItem({
-        kanban_columns: [
-          makeColumn({ id: 'col_1', name: 'todo', position: 0 }),
-          makeColumn({ id: 'col_2', name: 'in progress', position: 1 }),
-          makeColumn({ id: 'col_3', name: 'done', position: 2 }),
-        ],
-      }),
-    )
-    expandItem()
-    await nextTick()
-    const columns = wrapper.findAll('[data-kanban-column]')
-    expect(columns).toHaveLength(3)
+  it("clicking a kanban item does NOT toggle expansion (board is in main content)", async () => {
+    // Folder items expand inline; kanban items don't (the board
+    // is elsewhere). The selectItem event still fires for both
+    // types — Sidebar uses it to set activeWorkspaceItemId.
+    wrapper = mountItem(makeKanbanItem())
+    // Find the main item row button (the one with @click="handleClick").
+    const button = wrapper.find('button.flex-1')
+    expect(button.exists()).toBe(true)
+    await button.trigger('click')
+    const ws = useWorkspacesStore()
+    expect(ws.expandedItemIds[ITEM_ID]).toBeUndefined()
+    // The selectItem event MUST still fire (AppLayout relies on it
+    // to set activeWorkspaceItemId and route to the kanban view).
+    expect(wrapper.emitted('click')).toBeTruthy()
+    expect(wrapper.emitted('click')?.length).toBe(1)
   })
 
-  it('renders N cards per column based on kanban_column_id', async () => {
-    wrapper = mountItem(
-      makeKanbanItem({
-        kanban_columns: [
-          makeColumn({ id: 'col_a', name: 'todo', position: 0 }),
-          makeColumn({ id: 'col_b', name: 'done', position: 1 }),
-        ],
-        tasks: [
-          makeTask({ id: 't1', kanban_column_id: 'col_a', kanban_position: 0 }),
-          makeTask({ id: 't2', kanban_column_id: 'col_a', kanban_position: 1 }),
-          makeTask({ id: 't3', kanban_column_id: 'col_b', kanban_position: 0 }),
-        ],
-      }),
-    )
-    expandItem()
-    await nextTick()
-    const cards = wrapper.findAll('[data-kanban-card]')
-    expect(cards).toHaveLength(3)
-    const ids = cards.map((c) => c.attributes('data-kanban-card'))
-    expect(ids).toEqual(expect.arrayContaining(['t1', 't2', 't3']))
-  })
-})
-
-describe('WorkspaceItem — kanban event forwarding', () => {
-  let wrapper: VueWrapper | null = null
-
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    Object.defineProperty(globalThis, 'localStorage', {
-      value: makeLocalStorageStub(),
-      writable: true,
-      configurable: true,
-    })
+  it("clicking a folder item DOES toggle expansion (existing behavior preserved)", async () => {
+    wrapper = mountItem(makeFolderItem())
+    const button = wrapper.find('button.flex-1')
+    expect(button.exists()).toBe(true)
+    await button.trigger('click')
+    const ws = useWorkspacesStore()
+    expect(ws.expandedItemIds[ITEM_ID]).toBe(true)
+    expect(wrapper.emitted('click')).toBeTruthy()
   })
 
-  afterEach(() => {
-    wrapper?.unmount()
-    wrapper = null
-    vi.restoreAllMocks()
-  })
-
-  it('move-kanban-task event is emitted from a drop on a kanban column', async () => {
-    wrapper = mountItem(
-      makeKanbanItem({
-        kanban_columns: [makeColumn({ id: 'col_x', position: 0 })],
-        tasks: [
-          makeTask({ id: 't1', kanban_column_id: 'col_x', kanban_position: 0 }),
-        ],
-      }),
-    )
-    expandItem()
-    await nextTick()
-    const dropZone = wrapper.find('[data-kanban-drop-zone="col_x"]')
-    const dataTransfer = {
-      getData: vi.fn((mime: string) => (mime === 'application/x-kanban-task-id' ? 't1' : '')),
-      types: ['application/x-kanban-task-id'],
-    } as unknown as DataTransfer
-    await dropZone.trigger('drop', { dataTransfer })
-
-    expect(wrapper.emitted('moveKanbanTask')?.[0]).toEqual([
-      WS_ID,
-      ITEM_ID,
-      't1',
-      'col_x',
-      1, // append to end (current length)
-    ])
-  })
-
-  it('add-kanban-task event is emitted when + Add is clicked', async () => {
+  it("does NOT emit kanban-* events for any item type (the events come from KanbanView in AppLayout now)", async () => {
+    // Pre-migration, WorkspaceItem re-emitted kanban-* events
+    // bubbled up from its inline <KanbanView>. Post-migration,
+    // WorkspaceItem has no <KanbanView>, so it cannot bubble any
+    // kanban events. The new flow: <KanbanView> in AppLayout
+    // emits directly to AppLayout's handlers.
     wrapper = mountItem(
       makeKanbanItem({
         kanban_columns: [makeColumn({ id: 'col_x', position: 0 })],
@@ -243,26 +218,10 @@ describe('WorkspaceItem — kanban event forwarding', () => {
     )
     expandItem()
     await nextTick()
-    await wrapper.find('[data-testid="kanban-column-col_x-add-task"]').trigger('click')
-    // + Add on a kanban column re-emits the existing addTask event
-    // (Sidebar routes it through AddTaskPickerDialog). The kanban-
-    // specific addKanbanTask event is also emitted with the columnId.
-    expect(wrapper.emitted('addTask')).toBeTruthy()
-    // addTask emit is [item: WorkspaceItem], so [0][0] is the item.
-    const emitted = wrapper.emitted('addTask')
-    expect(emitted).toBeDefined()
-    expect(emitted?.length).toBeGreaterThan(0)
-    const firstPayload = emitted?.[0]?.[0] as { id?: string } | undefined
-    expect(firstPayload?.id).toBe(ITEM_ID)
-  })
-
-  it('does NOT emit kanban events for folder items', async () => {
-    wrapper = mountItem(
-      makeFolderItem({ tasks: [makeTask()] }),
-    )
-    expandItem()
-    await nextTick()
-    // The kanban events should not appear, even after interaction.
+    // Even after the click + expand (no-op for kanban), no kanban
+    // events should appear. (Folder items never emitted them
+    // either, so this guard ensures the migration didn't leave any
+    // stragglers.)
     expect(wrapper.emitted('addKanbanTask')).toBeUndefined()
     expect(wrapper.emitted('moveKanbanTask')).toBeUndefined()
     expect(wrapper.emitted('addKanbanColumn')).toBeUndefined()
