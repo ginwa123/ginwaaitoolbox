@@ -7,6 +7,64 @@ pub const WorkspaceItemResponse = struct { id: []const u8, success: bool = true 
 
 pub const WorkspaceItemFullResponse = struct { id: []const u8, workspace_id: []const u8, item_type: []const u8, name: ?[]const u8 = null, path: ?[]const u8 = null, created_at: ?[]const u8 = null, updated_at: ?[]const u8 = null };
 
+// ─── Kanban column types ───────────────────────────────────────────────────
+// Wire shape for `GET /api/workspaces/:wsId/items/:itemId/kanban/columns`
+// (and the PATCH/POST variants). Mirrors the `KanbanColumn` struct in
+// `src/ai_workflow/tui/kanban_model.zig` field-for-field so a future
+// contract change is one struct definition to update.
+//
+// `id` is generated server-side (e.g. `col_<unix_nanoseconds>`).
+// `position` is an `i64` because SQLite INTEGER can be 64-bit and the
+// kanban model layer stores positions as i64. The frontend reads it as
+// a JS number (up to 2^53 is safe; the kanban flow renumbers densely
+// so positions never approach that ceiling in practice).
+pub const KanbanColumnResponse = struct {
+    id: []const u8,
+    workspace_item_id: []const u8,
+    name: []const u8,
+    position: i64,
+    created_at: []const u8,
+};
+
+/// Map a `kanban_model.KanbanColumn` (or any struct with the same
+/// fields) into a `KanbanColumnResponse`. The `anytype` parameter keeps
+/// this helper decoupled from the data-layer struct so the two can
+/// evolve independently without touching the response shape.
+pub fn makeKanbanColumnResponse(col: anytype) KanbanColumnResponse {
+    return .{
+        .id = col.id,
+        .workspace_item_id = col.workspace_item_id,
+        .name = col.name,
+        .position = col.position,
+        .created_at = col.created_at,
+    };
+}
+
+/// Build the `{"columns":[...], "count": N}` envelope used by
+/// `GET /kanban/columns` (and the success-path of PATCH/DELETE that
+/// returns the full updated board). The inner slice is allocated from
+/// the per-request arena and freed before this function returns; the
+/// outer envelope JSON is what the caller receives.
+pub fn makeKanbanColumnListResponse(allocator: std.mem.Allocator, cols: anytype) ![]u8 {
+    const KanbanColumnListResponse = struct {
+        columns: []const KanbanColumnResponse,
+        count: u32,
+    };
+
+    const mapped = try allocator.alloc(KanbanColumnResponse, cols.len);
+    defer allocator.free(mapped);
+    for (cols, 0..) |c, i| mapped[i] = makeKanbanColumnResponse(c);
+
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        KanbanColumnListResponse{
+            .columns = mapped,
+            .count = @intCast(cols.len),
+        },
+        .{},
+    );
+}
+
 pub const LlmRunResponse = struct { status: []const u8, session_id: []const u8 };
 
 pub const WorkspaceItemUpdateResponse = struct { id: []const u8, workspace_id: []const u8, item_type: []const u8, success: bool = true };
