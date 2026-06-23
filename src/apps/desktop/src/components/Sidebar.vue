@@ -10,6 +10,7 @@ import WorkspaceModal from './WorkspaceModal.vue'
 import RenameWorkspaceModal from './RenameWorkspaceModal.vue'
 import RenameTaskModal from './RenameTaskModal.vue'
 import AddItemDialog from './AddItemDialog.vue'
+import AddKanbanDialog from './AddKanbanDialog.vue'
 import AddMemoryDialog from './AddMemoryDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import AddTaskDialog from './AddTaskDialog.vue'
@@ -75,6 +76,10 @@ const activeChatName = computed(() => navigationStore.activeChatName)
 const showAddWorkspaceModal = ref(false)
 const showAddItemDialog = ref(false)
 const addItemTargetWorkspaceId = ref<string | null>(null)
+// Kanban dialog state (Chunk 6 of workspace-item-kanban plan).
+// Reuses `addItemTargetWorkspaceId` as the target workspace (the
+// kanban item is created in that workspace, same as folder/memory).
+const showAddKanbanDialog = ref(false)
 const showAddMemoryDialog = ref(false)
 const addMemoryTargetWorkspaceId = ref<string | null>(null)
 const showDeleteConfirm = ref(false)
@@ -317,6 +322,7 @@ const handleDeleteItem = (workspaceId: string, itemId: string) => {
 const handleAddItem = (workspaceId: string, itemType: string) => {
   addItemTargetWorkspaceId.value = workspaceId
   if (itemType === 'folder') showAddItemDialog.value = true
+  if (itemType === 'kanban') showAddKanbanDialog.value = true
   if (itemType === 'memory') {
     addMemoryTargetWorkspaceId.value = workspaceId
     showAddMemoryDialog.value = true
@@ -328,6 +334,25 @@ const handleCreateItem = async (name: string, path: string) => {
     const itemId = await workspacesStore.addWorkspaceItem(addItemTargetWorkspaceId.value, name, path)
     if (itemId) await workspacesStore.fetchFolderContents(addItemTargetWorkspaceId.value, itemId)
   }
+}
+
+// Kanban item creation (Chunk 6 of workspace-item-kanban plan):
+// user fills in the name, AddKanbanDialog emits `create(name)`,
+// we call workspacesStore.addKanbanItem (the store action from
+// Chunk 5) which POSTs to /api/workspaces/:wsId/items/kanban and
+// pushes the new item + its 3 default columns into the local
+// store. Then close the dialog. The new item appears in the
+// sidebar immediately (the workspace is auto-expanded by the
+// store action, same UX as addWorkspaceItem).
+const handleCreateKanban = async (name: string) => {
+  if (addItemTargetWorkspaceId.value) {
+    await workspacesStore.addKanbanItem(addItemTargetWorkspaceId.value, name)
+  }
+  showAddKanbanDialog.value = false
+}
+
+const handleCloseAddKanbanDialog = () => {
+  showAddKanbanDialog.value = false
 }
 
 /**
@@ -944,6 +969,7 @@ const editRoutineTaskName = computed<string>(() => {
     <RenameWorkspaceModal :show="showRenameWorkspaceModal" :current-name="renameTargetName" @close="handleCloseRenameModal" @rename="handleConfirmRename" />
     <RenameTaskModal :show="showRenameTaskModal" :current-name="renameTargetTaskName" @close="handleCloseTaskRenameModal" @rename="handleConfirmTaskRename" />
     <AddItemDialog :show="showAddItemDialog" @close="handleCloseAddItemDialog" @create="handleCreateItem" />
+    <AddKanbanDialog :show="showAddKanbanDialog" @close="handleCloseAddKanbanDialog" @create="handleCreateKanban" />
     <AddMemoryDialog
       :show="showAddMemoryDialog"
       :cwd="addMemoryTargetWorkspaceId ? resolveCwdForMemory(addMemoryTargetWorkspaceId) : ''"

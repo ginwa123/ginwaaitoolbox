@@ -155,10 +155,12 @@ describe('KanbanView — column rendering', () => {
 
   it('handles kanban_columns being undefined (defensive)', () => {
     const item = makeItem()
-    // @ts-expect-error — explicit defensive test for the kanban_columns
-    // being undefined (legacy items in tests, or a fresh item before
-    // the columns have been populated).
-    delete item.kanban_columns
+    // Explicit defensive test for kanban_columns being undefined
+    // (legacy items in tests, or a fresh item before the columns
+    // have been populated). The `kanban_columns?` in KanbanView's
+    // computed already handles `undefined`, so we just verify the
+    // component doesn't crash and renders no columns.
+    item.kanban_columns = undefined
     wrapper = mountView(item)
     const columns = wrapper.findAll('[data-kanban-column]')
     expect(columns).toHaveLength(0)
