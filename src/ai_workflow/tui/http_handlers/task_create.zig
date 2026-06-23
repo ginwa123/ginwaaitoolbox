@@ -198,6 +198,56 @@ pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     };
     defer task.deinit(allocator);
 
+    // ─── Kanban auto-assign ────────────────────────────────────────────────
+    // If the parent item is a kanban (`item_type='kanban'`), auto-assign
+    // this task to the first column (by `position` ASC) at
+    // `MAX(kanban_position) + 1` so the card lands at the bottom of the
+    // "todo" (or first) column without the frontend having to send a
+    // separate `PATCH /tasks/:id/move` call.
+    //
+    // For non-kanban items (folder / chat / memory), `kanban_column_id`
+    // stays NULL (the column is `NULL` per Migration 051). The
+    // frontend's folder-list view shows these as "Unassigned".
+    //
+    // Errors here are non-fatal — the task row is already created and
+    // the response can succeed. Log and move on.
+    {
+        // Query the parent item's type via SQL. Using `WHERE id = ? AND
+        // item_type = 'kanban'` keeps the kanban-check co-located with
+        // the lookup; if the SELECT returns no row, the parent is
+        // either missing or not a kanban, and we skip the auto-assign.
+        const parent_is_kanban = blk: {
+            var q = try sqlite_db.query(allocator,
+                "SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'kanban'",
+                &.{item_id});
+            defer q.deinit();
+            const row = (try q.next()) orelse break :blk false;
+            defer row.deinit(allocator);
+            break :blk true;
+        };
+
+        if (parent_is_kanban) {
+            const first_col_id = blk: {
+                var q = try sqlite_db.query(allocator,
+                    "SELECT id FROM kanban_columns WHERE workspace_item_id = ? ORDER BY position ASC LIMIT 1",
+                    &.{item_id});
+                defer q.deinit();
+                const row = (try q.next()) orelse break :blk null;
+                defer row.deinit(allocator);
+                break :blk try allocator.dupe(u8, row.values[0]);
+            };
+            if (first_col_id) |col_id| {
+                defer allocator.free(col_id);
+                sqlite_db.exec(allocator,
+                    "UPDATE workspace_item_tasks SET kanban_column_id = ?, kanban_position = (SELECT COALESCE(MAX(kanban_position), -1) + 1 FROM workspace_item_tasks WHERE kanban_column_id = ?) WHERE id = ?",
+                    &.{ col_id, col_id, task_id },
+                ) catch |err| {
+                    std.log.warn("task_create: kanban auto-assign failed (non-fatal): {s}", .{@errorName(err)});
+                };
+            }
+        }
+    }
+
     const session_id_json: []const u8 = if (json_body.session_id) |sid|
         try std.fmt.allocPrint(allocator, "\"{s}\"", .{sid})
     else
