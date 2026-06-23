@@ -494,20 +494,24 @@ const handleKanbanColumnEditorDelete = () => {
   showKanbanColumnEditor.value = false
 }
 
-// + Add on a column: open the AddTaskPickerDialog (owned by Sidebar).
-// We can't render the picker from here — its state lives in Sidebar
-// — so we call the exposed `openTaskPicker` method.
+// + Add on a column: open the standard chat dialog directly
+// (skipping the AddTaskPickerDialog). Kanban cards are always
+// standard chats — the column is a workflow stage, not a task-type
+// discriminator — so the Routine / Memory options would be noise.
+// Calls Sidebar's exposed `openStandardTaskDialog` (the picker →
+// standard dialog transition that `handleAddTaskPick('standard')`
+// performs internally). The new task is auto-assigned to the
+// first kanban column by the backend's tasks_create.zig (the
+// `columnId` payload is logged for future routing once the
+// create-task API accepts a column param).
 const handleKanbanAddTask = (payload: { columnId: string }) => {
   if (!activeWorkspaceItem.value) return
   const ws = activeWorkspace.value
   if (!ws) return
-  sidebarRef.value?.openTaskPicker(ws.id, activeWorkspaceItem.value.id)
-  // The `columnId` is part of the payload but the picker doesn't
-  // gate the column — it just creates a task in this item. The
-  // backend auto-assigns the new task to the first column; the
-  // user can drag it to the intended column afterward. A future
-  // iteration will route the columnId through to the create-task
-  // API so the task lands in the right column on creation.
+  sidebarRef.value?.openStandardTaskDialog(ws.id, activeWorkspaceItem.value.id)
+  // TODO (v2): route payload.columnId through to the create-task
+  // API so the task lands in the user's chosen column on creation,
+  // not the default first column.
   void payload.columnId
 }
 

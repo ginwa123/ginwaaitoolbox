@@ -65,6 +65,18 @@ const openTaskPicker = (workspaceId: string, itemId: string) => {
   showAddTaskPicker.value = true
 }
 
+// Skip the picker and go straight to the standard chat dialog.
+// Used by the kanban's "+ Add on column" path — kanban cards are
+// always standard chats (the column is a workflow stage, not a
+// task-type discriminator), so the Routine / Memory options would
+// be noise. Mirrors the picker → standard dialog transition that
+// `handleAddTaskPick('standard')` performs internally.
+const openStandardTaskDialog = (workspaceId: string, itemId: string) => {
+  addTaskDialogWorkspaceId.value = workspaceId
+  addTaskDialogItemId.value = itemId
+  showAddTaskDialog.value = true
+}
+
 // Handle session events from SSE
 const handleSessionEvent = (event: api.SessionEvent) => {
   console.log('[Sidebar] handleSessionEvent:', event)
@@ -893,6 +905,10 @@ const editRoutineTaskName = computed<string>(() => {
 defineExpose({
   updateChatId,
   openTaskPicker,
+  // Skip the picker → open the standard chat dialog directly. Used
+  // by the kanban's "+ Add" button (kanban cards are always standard
+  // chats — column is a workflow stage, not a task-type discriminator).
+  openStandardTaskDialog,
   // Pass-throughs for the kanban's task events. The signature
   // matches the existing handlers exactly; AppLayout's KanbanView
   // forwards its emitted events to these.
