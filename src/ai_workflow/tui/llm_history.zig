@@ -2089,13 +2089,12 @@ pub fn updateSessionName(
     }
 }
 
-/// Rename a workspace item task. If the task has a `session_id`,
-/// the rename cascades to the linked session via `updateSessionName`,
-/// which itself emits a `session.updated` SSE event so subscribers
-/// (e.g. the ChatsList sidebar) see the new name in real time. Tasks
-/// without a `session_id` (e.g. freshly created, not yet bound) are
-/// renamed in the task table only — there is no session to cascade to,
-/// and no SSE event is emitted.
+/// Rename a workspace item task. The rename cascades to the linked
+/// session via `updateSessionName`, which itself emits a
+/// `session.updated` SSE event so subscribers (e.g. the ChatsList
+/// sidebar) see the new name in real time. The cascade target is
+/// the task's own id (per the `task.id == session_id` convention;
+/// the redundant `session_id` column was dropped in Migration 052).
 ///
 /// This is the rename path used by `PUT /api/workspaces/tasks/:task_id`
 /// and `PUT /api/workspaces/:workspace_id/items/:item_id/tasks/:task_id`.
@@ -2109,15 +2108,14 @@ pub fn updateTaskName(
     const task_sql = "UPDATE workspace_item_tasks SET name = ?, updated_at = datetime('now') WHERE id = ?";
     try db.exec(allocator, task_sql, &.{ new_name, id });
 
-    // 2) Look up the task to find its session_id. If the task doesn't
-    // exist (rare — e.g. the caller's id is wrong) there's nothing to
-    // cascade. Return early; the UPDATE above is a no-op in that case.
+    // 2) Verify the task exists. If not (rare — e.g. the caller's
+    // id is wrong) there's nothing to cascade. Return early; the
+    // UPDATE above is a no-op in that case.
     const task = (getWorkspaceItemTask(allocator, db, id) catch null) orelse return;
     defer task.deinit(allocator);
 
-    // 3) If the task is not bound to a session yet, we are done.
-    // The task row already has the new name. Nothing to broadcast.
-    const session_id = task.session_id orelse return;
+    // 3) The task IS the session id. Always cascade.
+    const session_id = id;
 
     // 4) Cascade the rename to the linked session. `updateSessionName`
     // also re-reads the session row and broadcasts a `session.updated`
@@ -2567,7 +2565,6 @@ pub const WorkspaceContext = struct {
             id: []u8,
             name: []u8,
             task_type: []u8,
-            session_id: ?[]u8,
         };
 
         /// Free the per-item allocations. Mirrors the parent's
@@ -2585,7 +2582,6 @@ pub const WorkspaceContext = struct {
                 allocator.free(t.id);
                 allocator.free(t.name);
                 allocator.free(t.task_type);
-                if (t.session_id) |sid| allocator.free(sid);
             }
             allocator.free(self.tasks);
         }
@@ -2609,7 +2605,10 @@ pub const WorkspaceContext = struct {
 /// (the caller omits the section silently in that case — matches
 /// `appendSkillsListing` behavior).
 ///
-/// Anchor: `workspace_item_tasks.session_id = ?` → task → item → workspace.
+/// Anchor: `workspace_item_tasks.id = ?` → task → item → workspace.
+/// (The `session_id` column was dropped in Migration 052; `id` IS
+/// the session id for kanban / routine tasks per the
+/// `task.id == session_id` convention.)
 /// Then enumerate `workspace_items WHERE workspace_id = ?` (capped at
 /// `MAX_SIBLING_ITEMS`, ordered with self first). For each item,
 /// enumerate its tasks (capped at `MAX_TASKS_PER_ITEM`).
@@ -2625,11 +2624,23 @@ pub fn getWorkspaceContext(
     if (session_id.len == 0) return null;
 
     // 1. Anchor: find the task bound to this session.
+    //
+    // The `task.id == session_id` convention (see AppLayout.vue
+    // `:chat-id="activeTask.id"` and
+    // workspacesStore.subscribeToSessionEvents comment in
+    // workspaces.ts:1412) means the session_id we receive from the
+    // frontend IS the task's own id. We anchor on `t.id` directly.
+    // (Historically this query used `WHERE t.session_id = ?`, but
+    // that column was redundant with `t.id` and was being populated
+    // inconsistently — the frontend's createTask does not set it, so
+    // freshly-created kanban tasks had `session_id = NULL` and the
+    // `## Workspace Context` section was silently omitted from the
+    // system prompt. Migration 052 dropped the column.)
     const anchor_sql =
         \\SELECT t.id, t.workspace_item_id, wi.workspace_id, wi.path
         \\FROM workspace_item_tasks t
         \\JOIN workspace_items wi ON wi.id = t.workspace_item_id
-        \\WHERE t.session_id = ?
+        \\WHERE t.id = ?
     ;
     var anchor_q = try db.query(allocator, anchor_sql, &.{session_id});
     defer anchor_q.deinit();
@@ -2704,7 +2715,7 @@ pub fn getWorkspaceContext(
         // 4. Enumerate tasks under this item (capped at
         // MAX_TASKS_PER_ITEM). Same inlined-LIMIT pattern as above.
         const tasks_sql = try std.fmt.allocPrint(allocator,
-            \\SELECT t.id, t.name, t.task_type, COALESCE(t.session_id, '')
+            \\SELECT t.id, t.name, t.task_type
             \\FROM workspace_item_tasks t
             \\WHERE t.workspace_item_id = ?
             \\ORDER BY t.updated_at DESC, t.id ASC
@@ -2721,7 +2732,6 @@ pub fn getWorkspaceContext(
                 allocator.free(t.id);
                 allocator.free(t.name);
                 allocator.free(t.task_type);
-                if (t.session_id) |sid| allocator.free(sid);
             }
             tasks.deinit(allocator);
         }
@@ -2730,13 +2740,11 @@ pub fn getWorkspaceContext(
             const t_id = try allocator.dupe(u8, trow.values[0]);
             const t_name = try allocator.dupe(u8, trow.values[1]);
             const t_type = try allocator.dupe(u8, trow.values[2]);
-            const t_sid: ?[]u8 = if (trow.values[3].len > 0) try allocator.dupe(u8, trow.values[3]) else null;
             trow.deinit(allocator);
             try tasks.append(allocator, .{
                 .id = t_id,
                 .name = t_name,
                 .task_type = t_type,
-                .session_id = t_sid,
             });
         }
 
@@ -2817,7 +2825,6 @@ pub const WorkspaceItemTaskInfo = struct {
     id: []u8,
     name: []u8,
     workspace_item_id: []u8,
-    session_id: ?[]u8 = null,
     /// Task type. 'standard' for legacy rows; 'routine' for routine tasks.
     /// Every constructor explicitly allocates this so deinit can free it.
     task_type: []u8 = &.{},
@@ -2848,7 +2855,6 @@ pub const WorkspaceItemTaskInfo = struct {
         allocator.free(self.id);
         allocator.free(self.name);
         allocator.free(self.workspace_item_id);
-        if (self.session_id) |s| allocator.free(s);
         if (self.task_type.len > 0) allocator.free(self.task_type);
         if (self.routine) |r| {
             allocator.free(r.schedule);
@@ -2870,26 +2876,23 @@ pub fn createWorkspaceItemTask(
     id: []const u8,
     name: []const u8,
     workspace_item_id: []const u8,
-    session_id: ?[]const u8,
     task_type: []const u8,
 ) !WorkspaceItemTaskInfo {
     if (!std.mem.eql(u8, task_type, "standard") and !std.mem.eql(u8, task_type, "routine")) {
         return error.InvalidTaskType;
     }
 
-    if (session_id) |sid| {
-        const sql = "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id, task_type) VALUES (?, ?, ?, ?, ?)";
-        try db.exec(allocator, sql, &.{ id, name, workspace_item_id, sid, task_type });
-    } else {
-        const sql = "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES (?, ?, ?, ?)";
-        try db.exec(allocator, sql, &.{ id, name, workspace_item_id, task_type });
-    }
+    // Note: this used to take a separate `session_id` parameter. The
+    // `task.id == session_id` convention made the column redundant
+    // (Migration 052 dropped it). Callers that need the session_id
+    // should use the task's own `id`.
+    const sql = "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES (?, ?, ?, ?)";
+    try db.exec(allocator, sql, &.{ id, name, workspace_item_id, task_type });
 
     return WorkspaceItemTaskInfo{
         .id = try allocator.dupe(u8, id),
         .name = try allocator.dupe(u8, name),
         .workspace_item_id = try allocator.dupe(u8, workspace_item_id),
-        .session_id = if (session_id) |s| try allocator.dupe(u8, s) else null,
         .task_type = try allocator.dupe(u8, task_type),
         .routine = null,
     };
@@ -2901,7 +2904,7 @@ pub fn getWorkspaceItemTask(
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?WorkspaceItemTaskInfo {
-    const sql = "SELECT id, name, workspace_item_id, session_id, created_at, updated_at, task_type FROM workspace_item_tasks t WHERE t.id = ?";
+    const sql = "SELECT id, name, workspace_item_id, created_at, updated_at, task_type FROM workspace_item_tasks t WHERE t.id = ?";
 
     var rows = try db.query(allocator, sql, &.{id});
     defer rows.deinit();
@@ -2911,10 +2914,9 @@ pub fn getWorkspaceItemTask(
             .id = try allocator.dupe(u8, row.values[0]),
             .name = try allocator.dupe(u8, row.values[1]),
             .workspace_item_id = try allocator.dupe(u8, row.values[2]),
-            .session_id = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
-            .created_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
-            .updated_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
-            .task_type = if (row.values[6].len > 0) try allocator.dupe(u8, row.values[6]) else try allocator.dupe(u8, "standard"),
+            .created_at = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
+            .updated_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .task_type = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else try allocator.dupe(u8, "standard"),
             .routine = null, // single-row fetch path; routine loaded on demand
         };
         row.deinit(allocator);
@@ -2930,9 +2932,8 @@ pub fn updateWorkspaceItemTask(
     db: *sqlite.SqliteBackend,
     id: []const u8,
     name: ?[]const u8,
-    session_id: ?[]const u8,
 ) !void {
-    if (name == null and session_id == null) {
+    if (name == null) {
         // Nothing to update
         return;
     }
@@ -2943,11 +2944,6 @@ pub fn updateWorkspaceItemTask(
     if (name) |n| {
         try set_clauses.append(allocator, "name = ?");
         try values.append(allocator, n);
-    }
-
-    if (session_id) |s| {
-        try set_clauses.append(allocator, "session_id = ?");
-        try values.append(allocator, s);
     }
 
     try values.append(allocator, id);
@@ -3067,7 +3063,7 @@ pub fn listWorkspaceItemTasks(
     workspace_item_id: []const u8,
 ) ![]WorkspaceItemTaskInfo {
     const sql =
-        \\SELECT t.id, t.name, t.workspace_item_id, t.session_id, t.created_at, t.updated_at, t.task_type,
+        \\SELECT t.id, t.name, t.workspace_item_id, t.created_at, t.updated_at, t.task_type,
         \\       COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0),
         \\       t.kanban_column_id, COALESCE(t.kanban_position, 0),
         \\       r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error
@@ -3086,19 +3082,19 @@ pub fn listWorkspaceItemTasks(
     }
 
     while (try rows.next()) |row| {
-        // Row indices 0-5: task core; 6: task_type; 7: is_pinned;
-        // 8: pinned_position; 9: kanban_column_id; 10: kanban_position;
-        // 11-17: routine fields. routine.schedule is NOT NULL, so its
+        // Row indices 0-4: task core; 5: task_type; 6: is_pinned;
+        // 7: pinned_position; 8: kanban_column_id; 9: kanban_position;
+        // 10-16: routine fields. routine.schedule is NOT NULL, so its
         // presence discriminates joined routine rows from standard tasks.
-        const task_type = if (row.values[6].len > 0)
-            try allocator.dupe(u8, row.values[6])
+        const task_type = if (row.values[5].len > 0)
+            try allocator.dupe(u8, row.values[5])
         else
             try allocator.dupe(u8, "standard");
-        const is_pinned_int = row.values[7];
-        const pinned_position_str = row.values[8];
-        const has_routine = row.values[11].len > 0;
+        const is_pinned_int = row.values[6];
+        const pinned_position_str = row.values[7];
+        const has_routine = row.values[10].len > 0;
         const routine_meta: ?RoutineMeta = if (has_routine) blk: {
-            const v = row.values[16];
+            const v = row.values[15];
             const last_status: routines_model.RoutineRunStatus =
                 if (v.len == 0) .idle
                 else if (std.mem.eql(u8, v, "success")) .success
@@ -3106,13 +3102,13 @@ pub fn listWorkspaceItemTasks(
                 else if (std.mem.eql(u8, v, "running")) .running
                 else .idle;
             break :blk RoutineMeta{
-                .schedule = try allocator.dupe(u8, row.values[11]),
-                .initial_prompt = try allocator.dupe(u8, row.values[12]),
-                .enabled = std.mem.eql(u8, row.values[13], "1"),
-                .last_run_at = if (row.values[14].len > 0) try allocator.dupe(u8, row.values[14]) else null,
-                .next_run_at = try allocator.dupe(u8, row.values[15]),
+                .schedule = try allocator.dupe(u8, row.values[10]),
+                .initial_prompt = try allocator.dupe(u8, row.values[11]),
+                .enabled = std.mem.eql(u8, row.values[12], "1"),
+                .last_run_at = if (row.values[13].len > 0) try allocator.dupe(u8, row.values[13]) else null,
+                .next_run_at = try allocator.dupe(u8, row.values[14]),
                 .last_status = last_status,
-                .last_error = if (row.values[17].len > 0) try allocator.dupe(u8, row.values[17]) else null,
+                .last_error = if (row.values[16].len > 0) try allocator.dupe(u8, row.values[16]) else null,
             };
         } else null;
 
@@ -3120,14 +3116,13 @@ pub fn listWorkspaceItemTasks(
             .id = try allocator.dupe(u8, row.values[0]),
             .name = try allocator.dupe(u8, row.values[1]),
             .workspace_item_id = try allocator.dupe(u8, row.values[2]),
-            .session_id = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
-            .created_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
-            .updated_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .created_at = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
+            .updated_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
             .task_type = task_type,
             .is_pinned = std.mem.eql(u8, is_pinned_int, "1"),
             .pinned_position = std.fmt.parseInt(i64, pinned_position_str, 10) catch 0,
-            .kanban_column_id = if (row.values[9].len > 0) try allocator.dupe(u8, row.values[9]) else null,
-            .kanban_position = std.fmt.parseInt(i64, row.values[10], 10) catch 0,
+            .kanban_column_id = if (row.values[8].len > 0) try allocator.dupe(u8, row.values[8]) else null,
+            .kanban_position = std.fmt.parseInt(i64, row.values[9], 10) catch 0,
             .routine = routine_meta,
         };
         try tasks.append(allocator, task);
@@ -3226,7 +3221,7 @@ pub fn listWorkspaceItemTasksWithCursor(
 
     const sql = try std.fmt.allocPrint(
         allocator,
-        "SELECT t.id, t.name, t.workspace_item_id, t.session_id, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id WHERE t.workspace_item_id = ?{s} {s} LIMIT {s}",
+        "SELECT t.id, t.name, t.workspace_item_id, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id WHERE t.workspace_item_id = ?{s} {s} LIMIT {s}",
         .{ cursor_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -3241,18 +3236,18 @@ pub fn listWorkspaceItemTasksWithCursor(
     }
 
     while (try rows.next()) |row| {
-        // Row indices 0-5: task core; 6: task_type; 7: is_pinned;
-        // 8: pinned_position; 9: kanban_column_id; 10: kanban_position;
-        // 11-17: routine fields.
-        const task_type = if (row.values[6].len > 0)
-            try allocator.dupe(u8, row.values[6])
+        // Row indices 0-4: task core; 5: task_type; 6: is_pinned;
+        // 7: pinned_position; 8: kanban_column_id; 9: kanban_position;
+        // 10-16: routine fields.
+        const task_type = if (row.values[5].len > 0)
+            try allocator.dupe(u8, row.values[5])
         else
             try allocator.dupe(u8, "standard");
-        const is_pinned_int = row.values[7];
-        const pinned_position_str = row.values[8];
-        const has_routine = row.values[11].len > 0;
+        const is_pinned_int = row.values[6];
+        const pinned_position_str = row.values[7];
+        const has_routine = row.values[10].len > 0;
         const routine_meta: ?RoutineMeta = if (has_routine) blk: {
-            const v = row.values[16];
+            const v = row.values[15];
             const last_status: routines_model.RoutineRunStatus =
                 if (v.len == 0) .idle
                 else if (std.mem.eql(u8, v, "success")) .success
@@ -3260,13 +3255,13 @@ pub fn listWorkspaceItemTasksWithCursor(
                 else if (std.mem.eql(u8, v, "running")) .running
                 else .idle;
             break :blk RoutineMeta{
-                .schedule = try allocator.dupe(u8, row.values[11]),
-                .initial_prompt = try allocator.dupe(u8, row.values[12]),
-                .enabled = std.mem.eql(u8, row.values[13], "1"),
-                .last_run_at = if (row.values[14].len > 0) try allocator.dupe(u8, row.values[14]) else null,
-                .next_run_at = try allocator.dupe(u8, row.values[15]),
+                .schedule = try allocator.dupe(u8, row.values[10]),
+                .initial_prompt = try allocator.dupe(u8, row.values[11]),
+                .enabled = std.mem.eql(u8, row.values[12], "1"),
+                .last_run_at = if (row.values[13].len > 0) try allocator.dupe(u8, row.values[13]) else null,
+                .next_run_at = try allocator.dupe(u8, row.values[14]),
                 .last_status = last_status,
-                .last_error = if (row.values[17].len > 0) try allocator.dupe(u8, row.values[17]) else null,
+                .last_error = if (row.values[16].len > 0) try allocator.dupe(u8, row.values[16]) else null,
             };
         } else null;
 
@@ -3274,14 +3269,13 @@ pub fn listWorkspaceItemTasksWithCursor(
             .id = try allocator.dupe(u8, row.values[0]),
             .name = try allocator.dupe(u8, row.values[1]),
             .workspace_item_id = try allocator.dupe(u8, row.values[2]),
-            .session_id = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
-            .created_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
-            .updated_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .created_at = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null,
+            .updated_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
             .task_type = task_type,
             .is_pinned = std.mem.eql(u8, is_pinned_int, "1"),
             .pinned_position = std.fmt.parseInt(i64, pinned_position_str, 10) catch 0,
-            .kanban_column_id = if (row.values[9].len > 0) try allocator.dupe(u8, row.values[9]) else null,
-            .kanban_position = std.fmt.parseInt(i64, row.values[10], 10) catch 0,
+            .kanban_column_id = if (row.values[8].len > 0) try allocator.dupe(u8, row.values[8]) else null,
+            .kanban_position = std.fmt.parseInt(i64, row.values[9], 10) catch 0,
             .routine = routine_meta,
         };
         try tasks.append(allocator, task);

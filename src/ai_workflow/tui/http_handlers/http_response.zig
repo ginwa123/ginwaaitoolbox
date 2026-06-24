@@ -357,7 +357,6 @@ pub const WorkspaceItemTaskResponse = struct {
     id: []const u8,
     name: []const u8,
     workspace_item_id: []const u8,
-    session_id: ?[]const u8 = null,
     /// Task type. Always present; 'standard' for legacy rows.
     task_type: []const u8 = "standard",
     /// Inline routine metadata. Present iff task_type === 'routine'.
