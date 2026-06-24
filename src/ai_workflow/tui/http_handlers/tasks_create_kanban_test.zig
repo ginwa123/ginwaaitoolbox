@@ -70,3 +70,55 @@ test "tasks_create sets kanban_column_id when parent is kanban" {
         return error.KanbanTypeCheckMissing;
     }
 }
+
+// Regression for "task created in kanban doesn't appear in column" bug
+// (user-reported 2026-06-24). The handler must include
+// `kanban_column_id` + `kanban_position` in the 201 JSON response. Without
+// them, the frontend's `workspacesStore.addTask` pushes a Task object with
+// `kanban_column_id = undefined` into `item.tasks`, and
+// `KanbanColumn.vue`'s `.filter((t) => t.kanban_column_id === column.id)`
+// drops the card (visible on the kanban sidebar but invisible inside the
+// column until a full page reload triggers `getTasks`).
+//
+// The fix: after the auto-assign UPDATE, re-SELECT the assigned values
+// from the DB and include them in the JSON response alongside the
+// existing `id`/`name`/`workspace_item_id`/`task_type`/`session_id` fields.
+test "tasks_create 201 response includes kanban_column_id and kanban_position" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The handler must reference the field name `kanban_column_id` in
+    // the JSON-building section (not just the UPDATE — we already test
+    // the UPDATE above). Look for the substring AFTER the SELECT to
+    // distinguish the response emission from the auto-assign SQL.
+    //
+    // The source file uses Zig `\"` escapes inside the format string.
+    // After reading the file as bytes, the literal characters on disk
+    // are `\"kanban_column_id\"` (the backslash-quote is the source
+    // representation of `"` inside a Zig string literal). Searching
+    // for the literal backslash matches what the file actually
+    // contains.
+    if (std.mem.indexOf(u8, source, "\\\"kanban_column_id\\\":\\\"") == null) {
+        std.debug.print(
+            "\n!! {s} does not include kanban_column_id in the 201 response !!\n" ++
+                "   The 201 JSON must carry the assigned column so the frontend's\n" ++
+                "   workspacesStore.addTask pushes a Task with kanban_column_id set.\n" ++
+                "   Without this, KanbanColumn.vue's filter drops the card and the\n" ++
+                "   user sees the task in the sidebar but not in any column.\n" ++
+                "   Add a SELECT kanban_column_id, kanban_position FROM workspace_item_tasks\n" ++
+                "   after the auto-assign UPDATE, and include the values in the JSON.\n",
+            .{HANDLER_PATH},
+        );
+        return error.KanbanColumnIdInResponseMissing;
+    }
+    if (std.mem.indexOf(u8, source, "\\\"kanban_position\\\":") == null) {
+        std.debug.print(
+            "\n!! {s} does not include kanban_position in the 201 response !!\n" ++
+                "   The 201 JSON must carry the assigned position so the new card\n" ++
+                "   sorts correctly within the column.\n",
+            .{HANDLER_PATH},
+        );
+        return error.KanbanPositionInResponseMissing;
+    }
+}
