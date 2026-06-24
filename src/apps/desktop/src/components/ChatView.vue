@@ -48,10 +48,35 @@ const props = defineProps<{
   chatName: string
   type?: 'chat' | 'task'
   cwd?: string
+  /**
+   * When true, render the compact header bar (chat name + ✕ close
+   * button) above the messages. The host (AppLayout) sets this to
+   * true in the 3-column layout (sidebar | kanban | chatview) so
+   * the user can identify + close the chat without leaving the
+   * kanban. In the full-width standalone chat layout (the
+   * `/app?view=chat` route) the prop is left false, preserving the
+   * original "no header" experience where the chat fills the
+   * viewport edge-to-edge.
+   *
+   * Defaults to `false` so older call sites that don't supply it
+   * still compile — see the nalar-frontend-task-literal-typing-rule
+   * memory for the broader pattern.
+   */
+  showHeader?: boolean
 }>()
 
 const emit = defineEmits<{
   'update-chat-id': [oldId: string, newId: string]
+  /**
+   * Emitted when the user clicks the ✕ close button in the chat
+   * header. The host (AppLayout) handles this by clearing the
+   * active task and (optionally) navigating back to the kanban /
+   * workspace view. The ChatView itself does NOT call router
+   * directly — it just announces "user wants me gone" — so the
+   * layout composition (e.g. sidebar | kanban | chatview) stays
+   * the host's concern.
+   */
+  close: []
 }>()
 
 // Check if session is pending (needs creation on first message)
@@ -1866,6 +1891,46 @@ const compactSession = async () => {
   <div class="flex h-full w-full">
     <!-- Main Chat Content -->
     <div class="flex flex-col h-full flex-1 min-w-0">
+      <!--
+        Chat header. Rendered only when the parent passed the
+        `showHeader` prop (the kanban 3-column layout sets it; the
+        full-width standalone chat layout leaves it false so the
+        existing "no header" experience is preserved). When shown,
+        it includes the chat name (so the user can see which task
+        they're chatting with when the kanban + chat are side by
+        side) and a ✕ button that emits `close` to the host. The
+        host (AppLayout) handles the actual navigation / state
+        cleanup so the ChatView stays decoupled from router + store
+        concerns.
+      -->
+      <header
+        v-if="showHeader"
+        class="h-11 flex items-center gap-2 px-3 shrink-0"
+        style="
+          background-color: var(--semantic-sidebar-bg);
+          border-bottom: 1px solid var(--color-border);
+        "
+        :data-chat-header="chatId"
+      >
+        <span
+          class="text-sm font-semibold truncate flex-1"
+          style="color: var(--semantic-text);"
+          :data-testid="`chat-header-name-${chatId}`"
+        >
+          {{ chatName }}
+        </span>
+        <button
+          type="button"
+          class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-lg hover:opacity-70 transition-opacity"
+          style="color: var(--semantic-text-dim);"
+          title="Close chat (return to kanban)"
+          aria-label="Close chat"
+          :data-testid="`chat-header-close-${chatId}`"
+          @click="emit('close')"
+        >
+          ✕
+        </button>
+      </header>
       <!-- Messages (Virtual Scroll) -->
       <!--
         The wrapper MUST be a flex container (`flex flex-col`) so the
