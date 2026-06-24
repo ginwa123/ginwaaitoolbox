@@ -820,7 +820,24 @@ pub fn callCompactAgentNew(
     for (messages.items[1..last_idx]) |msg| {
         if (msg.content) |c| {
             const role_str = msg.role.to_str();
-            const labeled = std.fmt.allocPrint(allocator, "[{s}]: {s}", .{ role_str, c }) catch |err| {
+
+            // Bound the compactor's input. The full content of every message
+            // can be megabytes (e.g. 1.1 MB for a 359-message session), which
+            // overflows the LLM context window and produces garbage output
+            // (the LLM loses the structured prompt and regurgitates raw
+            // conversation fragments). Truncate per message:
+            // - non-tool roles: 500 chars (matches the envelope's preview cap)
+            // - tool roles: 1000 chars (tool results are information-dense;
+            //   the compactor needs enough to extract command/result patterns)
+            //
+            // Worst case: 358 × 1000 = ~360 KB (vs 1.1 MB today) — fits in
+            // typical 8K-32K-token context windows. The full content is still
+            // preserved in the envelope's previews and recoverable via
+            // read_compacted_messages.
+            const max_chars: usize = if (msg.role == .tool) 1000 else 500;
+            const content_slice: []const u8 = if (c.len > max_chars) c[0..max_chars] else c;
+            const suffix = if (c.len > max_chars) " [TRUNCATED]" else "";
+            const labeled = std.fmt.allocPrint(allocator, "[{s}]: {s}{s}", .{ role_str, content_slice, suffix }) catch |err| {
                 logger.errFmt("[COMPACTION] Failed to label message content: {s}", .{@errorName(err)});
                 return null;
             };
@@ -834,6 +851,8 @@ pub fn callCompactAgentNew(
         // messages with finish_reason == .tool_calls), surface those too —
         // otherwise the compactor never sees that a tool was invoked at all
         // when content is null or purely conversational.
+        // (Tool-call arguments are usually short JSON snippets; no
+        // truncation needed.)
         if (msg.tool_calls) |tool_calls| {
             for (tool_calls) |tc| {
                 const tc_str = std.fmt.allocPrint(allocator, "[tool_call]: {s}({s})", .{
@@ -946,6 +965,14 @@ pub fn callCompactAgentNew(
     compaction_agent.apiKey = api_key;
     compaction_agent.model = model;
     compaction_agent.baseUrl = base_url;
+
+    // Compaction produces a long structured summary (GOAL / CURRENT STATE /
+    // TECH STACK / FILES MODIFIED / KEY DISCOVERIES / FAILED ATTEMPTS /
+    // OPEN ISSUES / ASSUMPTIONS / NEXT ACTION / AFTER THAT / DO NOT —
+    // easily 2K-4K tokens for a busy session). The Agent default of 4096
+    // caps this and clips the NEXT ACTION / AFTER THAT sections mid-word
+    // on busy sessions. Bump to 16384 to leave headroom.
+    compaction_agent.maxTokens = 16384;
 
     const response = compaction_agent.callStreaming(.{
         .tools = &.{},

@@ -118,7 +118,12 @@ interface CompactionEntry {
   tool_name?: string
 }
 
-const MAX_ENTRIES_VISIBLE = 10
+// Show more entries by default; the .compaction-entries style adds
+// max-height + overflow-y so a 359-message compaction renders as a
+// scrollable list rather than a 359-row wall. The "Show all" toggle
+// remains for accessibility (keyboard-only users can expand without
+// scrolling).
+const MAX_ENTRIES_VISIBLE = 50
 
 const metadata = ref<CompactionMetadata>({})
 const entries = ref<CompactionEntry[]>([])
@@ -349,7 +354,14 @@ parse(props.content)
   margin: 0;
   border: 1px solid var(--color-border-soft);
   border-radius: 4px;
-  overflow: hidden;
+  /* `overflow: hidden` clipped the inner border-radius corners; switch
+     to `overflow-y: auto` so a long entry list scrolls inside the card
+     instead of pushing the chat viewport down by hundreds of pixels.
+     `max-height` caps the visual size — combined with MAX_ENTRIES_VISIBLE
+     = 50, the common case (≤50 entries) shows everything inline, and
+     larger compactions scroll within the card. */
+  max-height: 400px;
+  overflow-y: auto;
 }
 
 .compaction-entry {
