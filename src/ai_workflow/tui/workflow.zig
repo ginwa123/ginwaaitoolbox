@@ -1007,6 +1007,7 @@ pub fn compactMessageInMemoryNew(
         model,
         io,
         compacted_xml,
+        logger,
     );
 
     // Save the compacted summary to the database with is_feed_to_llm = 1
@@ -1084,6 +1085,9 @@ pub fn compactMessageInMemoryNew(
 /// in-memory struct.
 ///
 /// Caller owns the returned string and must free with `allocator.free`.
+const MAX_INDEX_ENTRIES: usize = 50;
+const MAX_SUMMARY_BYTES: usize = 20_000;
+
 fn buildCompactionEnvelope(
     allocator: std.mem.Allocator,
     dropped_messages: []const agent.AgentMessage,
@@ -1092,6 +1096,7 @@ fn buildCompactionEnvelope(
     model: []const u8,
     io: std.Io,
     compacted_xml: []const u8,
+    logger: *logger_mod.Logger,
 ) ![]u8 {
     // Real RFC3339-ish timestamp from std.Io.Timestamp — same pattern
     // the logger's Timing.timestampIso uses. Non-empty so the test
@@ -1116,13 +1121,34 @@ fn buildCompactionEnvelope(
     , .{ session_id, model, now_iso, original_count });
 
     // --- message_index ---
+    // Capped to MAX_INDEX_ENTRIES so a very long session (e.g. 360+
+    // dropped messages) can't blow up the envelope size on its own;
+    // we keep the most RECENT dropped messages since those are most
+    // likely to be relevant to what the agent does next, and note how
+    // many older entries were omitted (full content still recoverable
+    // from the DB via read_compacted_messages / session_id).
     try env.appendSlice(allocator, "  <message_index>\n");
-    for (dropped_messages, 0..) |msg, i| {
+
+    const show_count = @min(dropped_messages.len, MAX_INDEX_ENTRIES);
+    const start_idx = dropped_messages.len - show_count;
+    const omitted_count = dropped_messages.len - show_count;
+
+    if (omitted_count > 0) {
+        try env.print(allocator,
+            "    <truncated_entries count=\"{d}\" note=\"older entries omitted from index; use read_compacted_messages with session_id to fetch full history from DB\"/>\n",
+            .{omitted_count},
+        );
+    }
+
+    for (dropped_messages[start_idx..], start_idx..) |msg, i| {
         const msg_id = try std.fmt.allocPrint(allocator, "adhoc_{d}", .{i});
         defer allocator.free(msg_id);
 
         const role_str = msg.role.to_str();
         const preview = msg.content orelse "";
+        // Byte-slice cap; fine for ASCII previews. If non-English content
+        // is common, swap for a UTF-8-aware trim so we don't cut a
+        // multi-byte codepoint in half.
         const preview_trimmed = if (preview.len > 100) preview[0..100] else preview;
         const preview_escaped = try helpers.xml_escape(allocator, preview_trimmed);
         defer allocator.free(preview_escaped);
@@ -1151,13 +1177,45 @@ fn buildCompactionEnvelope(
             \\
         , .{preview_escaped});
     }
+
     try env.appendSlice(allocator, "  </message_index>\n");
 
-    // --- summary (the compactor's output, verbatim) ---
-    try env.print(allocator, "  <summary>\n{s}\n  </summary>\n", .{compacted_xml});
+    // --- summary (the compactor's output) ---
+    // Hard cap as a safety net — the real budget should be enforced via
+    // the compactor prompt itself, but we never want a misbehaving model
+    // response to produce an unbounded envelope.
+    const summary_to_embed = if (compacted_xml.len > MAX_SUMMARY_BYTES)
+        compacted_xml[0..MAX_SUMMARY_BYTES]
+    else
+        compacted_xml;
+
+    // Wrapped in CDATA so embedded <, >, & in the summary (quoted file
+    // contents, shell output, diffs, etc.) can never break the envelope.
+    // If the summary itself contains the CDATA close sequence "]]>", we
+    // split it into adjacent CDATA sections rather than escaping, so the
+    // model still sees natural punctuation everywhere else.
+    try env.appendSlice(allocator, "  <summary><![CDATA[\n");
+    if (std.mem.indexOf(u8, summary_to_embed, "]]>") == null) {
+        try env.appendSlice(allocator, summary_to_embed);
+    } else {
+        var rest = summary_to_embed;
+        while (std.mem.indexOf(u8, rest, "]]>")) |idx| {
+            try env.appendSlice(allocator, rest[0 .. idx + 2]); // up to and incl "]]"
+            try env.appendSlice(allocator, "]]><![CDATA[>"); // close, literal '>', reopen
+            rest = rest[idx + 3 ..];
+        }
+        try env.appendSlice(allocator, rest);
+    }
+    try env.appendSlice(allocator, "\n]]></summary>\n");
 
     try env.appendSlice(allocator, "</compact_messages>\n");
-    return try env.toOwnedSlice(allocator);
+
+    const result = try env.toOwnedSlice(allocator);
+    logger.debugFmt(
+        "[COMPACTION] envelope size: {d} bytes, {d}/{d} index entries shown, summary {d}/{d} bytes",
+        .{ result.len, show_count, dropped_messages.len, summary_to_embed.len, compacted_xml.len },
+    );
+    return result;
 }
 
 fn noopStreamCallbackNew(_: ?*anyopaque, _: agent.StreamChunk) void {}
