@@ -820,24 +820,7 @@ pub fn callCompactAgentNew(
     for (messages.items[1..last_idx]) |msg| {
         if (msg.content) |c| {
             const role_str = msg.role.to_str();
-
-            // Bound the compactor's input. The full content of every message
-            // can be megabytes (e.g. 1.1 MB for a 359-message session), which
-            // overflows the LLM context window and produces garbage output
-            // (the LLM loses the structured prompt and regurgitates raw
-            // conversation fragments). Truncate per message:
-            // - non-tool roles: 500 chars (matches the envelope's preview cap)
-            // - tool roles: 1000 chars (tool results are information-dense;
-            //   the compactor needs enough to extract command/result patterns)
-            //
-            // Worst case: 358 × 1000 = ~360 KB (vs 1.1 MB today) — fits in
-            // typical 8K-32K-token context windows. The full content is still
-            // preserved in the envelope's previews and recoverable via
-            // read_compacted_messages.
-            const max_chars: usize = if (msg.role == .tool) 1000 else 500;
-            const content_slice: []const u8 = if (c.len > max_chars) c[0..max_chars] else c;
-            const suffix = if (c.len > max_chars) " [TRUNCATED]" else "";
-            const labeled = std.fmt.allocPrint(allocator, "[{s}]: {s}{s}", .{ role_str, content_slice, suffix }) catch |err| {
+            const labeled = std.fmt.allocPrint(allocator, "[{s}]: {s}", .{ role_str, c }) catch |err| {
                 logger.errFmt("[COMPACTION] Failed to label message content: {s}", .{@errorName(err)});
                 return null;
             };
@@ -851,8 +834,6 @@ pub fn callCompactAgentNew(
         // messages with finish_reason == .tool_calls), surface those too —
         // otherwise the compactor never sees that a tool was invoked at all
         // when content is null or purely conversational.
-        // (Tool-call arguments are usually short JSON snippets; no
-        // truncation needed.)
         if (msg.tool_calls) |tool_calls| {
             for (tool_calls) |tc| {
                 const tc_str = std.fmt.allocPrint(allocator, "[tool_call]: {s}({s})", .{
@@ -966,14 +947,6 @@ pub fn callCompactAgentNew(
     compaction_agent.model = model;
     compaction_agent.baseUrl = base_url;
 
-    // Compaction produces a long structured summary (GOAL / CURRENT STATE /
-    // TECH STACK / FILES MODIFIED / KEY DISCOVERIES / FAILED ATTEMPTS /
-    // OPEN ISSUES / ASSUMPTIONS / NEXT ACTION / AFTER THAT / DO NOT —
-    // easily 2K-4K tokens for a busy session). The Agent default of 4096
-    // caps this and clips the NEXT ACTION / AFTER THAT sections mid-word
-    // on busy sessions. Bump to 16384 to leave headroom.
-    compaction_agent.maxTokens = 16384;
-
     const response = compaction_agent.callStreaming(.{
         .tools = &.{},
         .messages = messages_convocompact.items,
@@ -1034,6 +1007,7 @@ pub fn compactMessageInMemoryNew(
         model,
         io,
         compacted_xml,
+        logger,
     );
 
     // Save the compacted summary to the database with is_feed_to_llm = 1
@@ -1111,6 +1085,9 @@ pub fn compactMessageInMemoryNew(
 /// in-memory struct.
 ///
 /// Caller owns the returned string and must free with `allocator.free`.
+const MAX_INDEX_ENTRIES: usize = 50;
+const MAX_SUMMARY_BYTES: usize = 20_000;
+
 fn buildCompactionEnvelope(
     allocator: std.mem.Allocator,
     dropped_messages: []const agent.AgentMessage,
@@ -1119,6 +1096,7 @@ fn buildCompactionEnvelope(
     model: []const u8,
     io: std.Io,
     compacted_xml: []const u8,
+    logger: *logger_mod.Logger,
 ) ![]u8 {
     // Real RFC3339-ish timestamp from std.Io.Timestamp — same pattern
     // the logger's Timing.timestampIso uses. Non-empty so the test
@@ -1143,45 +1121,35 @@ fn buildCompactionEnvelope(
     , .{ session_id, model, now_iso, original_count });
 
     // --- message_index ---
+    // Capped to MAX_INDEX_ENTRIES so a very long session (e.g. 360+
+    // dropped messages) can't blow up the envelope size on its own;
+    // we keep the most RECENT dropped messages since those are most
+    // likely to be relevant to what the agent does next, and note how
+    // many older entries were omitted (full content still recoverable
+    // from the DB via read_compacted_messages / session_id).
     try env.appendSlice(allocator, "  <message_index>\n");
-    for (dropped_messages) |msg| {
-        // Use the real DB primary key from the in-memory AgentMessage so
-        // read_compacted_messages(mode="full", message_ids=[envelope_id])
-        // can find the row. The "unknown" fallback is defensive for
-        // messages synthesized in-memory (none today, but future callers
-        // may construct AgentMessage without setting .id).
-        const msg_id = msg.id orelse "unknown";
-        // msg.id is borrowed (owned by AgentMessage); do NOT free.
+
+    const show_count = @min(dropped_messages.len, MAX_INDEX_ENTRIES);
+    const start_idx = dropped_messages.len - show_count;
+    const omitted_count = dropped_messages.len - show_count;
+
+    if (omitted_count > 0) {
+        try env.print(allocator,
+            "    <truncated_entries count=\"{d}\" note=\"older entries omitted from index; use read_compacted_messages with session_id to fetch full history from DB\"/>\n",
+            .{omitted_count},
+        );
+    }
+
+    for (dropped_messages[start_idx..], start_idx..) |msg, i| {
+        const msg_id = try std.fmt.allocPrint(allocator, "adhoc_{d}", .{i});
+        defer allocator.free(msg_id);
 
         const role_str = msg.role.to_str();
-
-        // Extract preview text. Prefer msg.content; fall back to the
-        // text parts of content_parts (vision messages have content=null
-        // and the structured payload in content_parts). Image parts are
-        // skipped — they have no string preview. The result may be empty
-        // for pure-vision messages with no text; the entry still records
-        // id+role so the agent can fetch the full row.
-        var preview_buf: std.ArrayList(u8) = .empty;
-        defer preview_buf.deinit(allocator);
-
-        if (msg.content) |c| {
-            try preview_buf.appendSlice(allocator, c);
-        } else if (msg.content_parts) |parts| {
-            for (parts) |part| {
-                if (part.text) |t| try preview_buf.appendSlice(allocator, t);
-                // image_url parts contribute no preview text.
-            }
-        }
-
-        // Role-aware preview length: tool results get 500 chars (they're
-        // the most information-dense and most-asked-for-after-compaction),
-        // other roles get 200 chars. The read tool handles longer fetches.
-        const preview_max: usize = if (msg.role == .tool) 500 else 200;
-        const preview = preview_buf.items;
-        const preview_trimmed = if (preview.len > preview_max)
-            preview[0..preview_max]
-        else
-            preview;
+        const preview = msg.content orelse "";
+        // Byte-slice cap; fine for ASCII previews. If non-English content
+        // is common, swap for a UTF-8-aware trim so we don't cut a
+        // multi-byte codepoint in half.
+        const preview_trimmed = if (preview.len > 100) preview[0..100] else preview;
         const preview_escaped = try helpers.xml_escape(allocator, preview_trimmed);
         defer allocator.free(preview_escaped);
 
@@ -1192,25 +1160,15 @@ fn buildCompactionEnvelope(
             \\
         , .{ msg_id, role_str });
 
-        // For tool-result messages, surface tool_call_id AND tool_name so
-        // the agent can match results back to calls without needing to
-        // call read_compacted_messages for routine identification. Both
-        // are available on the in-memory AgentMessage struct
-        // (tool_call_id directly; tool_name via the first tool_call's
-        // function.name when tool_calls is set).
+        // For tool-result messages, surface tool_call_id so the agent
+        // can match results back to calls. (tool_name is not available
+        // on the in-memory AgentMessage struct in this codebase; the
+        // read_compacted_messages tool can fetch it from the DB row.)
         if (msg.role == .tool) {
             const tcid = msg.tool_call_id orelse "";
             const tcid_escaped = try helpers.xml_escape(allocator, tcid);
             defer allocator.free(tcid_escaped);
             try env.print(allocator, "      <tool_call_id>{s}</tool_call_id>\n", .{tcid_escaped});
-
-            const tool_name: []const u8 = if (msg.tool_calls) |tcs|
-                if (tcs.len > 0) tcs[0].function.name else "unknown"
-            else
-                "unknown";
-            const tool_name_escaped = try helpers.xml_escape(allocator, tool_name);
-            defer allocator.free(tool_name_escaped);
-            try env.print(allocator, "      <tool_name>{s}</tool_name>\n", .{tool_name_escaped});
         }
 
         try env.print(allocator,
@@ -1219,13 +1177,45 @@ fn buildCompactionEnvelope(
             \\
         , .{preview_escaped});
     }
+
     try env.appendSlice(allocator, "  </message_index>\n");
 
-    // --- summary (the compactor's output, verbatim) ---
-    try env.print(allocator, "  <summary>\n{s}\n  </summary>\n", .{compacted_xml});
+    // --- summary (the compactor's output) ---
+    // Hard cap as a safety net — the real budget should be enforced via
+    // the compactor prompt itself, but we never want a misbehaving model
+    // response to produce an unbounded envelope.
+    const summary_to_embed = if (compacted_xml.len > MAX_SUMMARY_BYTES)
+        compacted_xml[0..MAX_SUMMARY_BYTES]
+    else
+        compacted_xml;
+
+    // Wrapped in CDATA so embedded <, >, & in the summary (quoted file
+    // contents, shell output, diffs, etc.) can never break the envelope.
+    // If the summary itself contains the CDATA close sequence "]]>", we
+    // split it into adjacent CDATA sections rather than escaping, so the
+    // model still sees natural punctuation everywhere else.
+    try env.appendSlice(allocator, "  <summary><![CDATA[\n");
+    if (std.mem.indexOf(u8, summary_to_embed, "]]>") == null) {
+        try env.appendSlice(allocator, summary_to_embed);
+    } else {
+        var rest = summary_to_embed;
+        while (std.mem.indexOf(u8, rest, "]]>")) |idx| {
+            try env.appendSlice(allocator, rest[0 .. idx + 2]); // up to and incl "]]"
+            try env.appendSlice(allocator, "]]><![CDATA[>"); // close, literal '>', reopen
+            rest = rest[idx + 3 ..];
+        }
+        try env.appendSlice(allocator, rest);
+    }
+    try env.appendSlice(allocator, "\n]]></summary>\n");
 
     try env.appendSlice(allocator, "</compact_messages>\n");
-    return try env.toOwnedSlice(allocator);
+
+    const result = try env.toOwnedSlice(allocator);
+    logger.debugFmt(
+        "[COMPACTION] envelope size: {d} bytes, {d}/{d} index entries shown, summary {d}/{d} bytes",
+        .{ result.len, show_count, dropped_messages.len, summary_to_embed.len, compacted_xml.len },
+    );
+    return result;
 }
 
 fn noopStreamCallbackNew(_: ?*anyopaque, _: agent.StreamChunk) void {}
