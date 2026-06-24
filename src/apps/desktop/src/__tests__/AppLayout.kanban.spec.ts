@@ -7,9 +7,14 @@
  *   - <KanbanView> renders in the main content area when
  *     activeWorkspaceItem.item_type === 'kanban' and no task is
  *     active
- *   - ChatView (task) takes priority over <KanbanView> when an
- *     active task is set (clicking a kanban card switches the
- *     view to the task's chat)
+ *   - When an active task is set AND the task's parent is the
+ *     active kanban, BOTH <KanbanView> and <ChatView> render
+ *     simultaneously in the 3-column layout (sidebar | kanban |
+ *     chatview). The ChatView's ✕ close button clears the active
+ *     task and returns to the kanban-only view.
+ *   - When the active task's parent is NOT the active kanban
+ *     (e.g. a folder task), only <ChatView> renders (the original
+ *     single-column behavior is preserved).
  *   - Folder items still render the empty-state placeholder
  *     (no <KanbanView>)
  *   - The kanban events (addColumn, moveTask, etc.) wire through
@@ -187,7 +192,7 @@ describe('AppLayout — kanban main-content rendering', () => {
   })
 })
 
-describe('AppLayout — kanban view priority', () => {
+describe('AppLayout — kanban task view (3-column layout)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
@@ -216,16 +221,23 @@ describe('AppLayout — kanban view priority', () => {
     vi.restoreAllMocks()
   })
 
-  it('does NOT render <KanbanView> when an active task is set (ChatView takes priority)', async () => {
-    // The whole point of "click a kanban card" is to open the
-    // task's chat view. The kanban's @select-task handler calls
-    // workspaceStore.setActiveTask(taskId), which makes activeTask
-    // truthy. AppLayout's v-else-if chain puts the task ChatView
-    // before the kanban branch, so the kanban unmounts.
+  it('renders BOTH <KanbanView> and <ChatView> when the active task\'s parent is the active kanban (3-column layout)', async () => {
+    // The "click a kanban card" flow now opens the task's chat
+    // view alongside the kanban (not in place of it). The user's
+    // kanban context is preserved while they chat, and a ✕ button
+    // in the chat header collapses the chat column back to the
+    // kanban-only view.
     //
-    // The ChatView (task) only renders when `currentView === 'task'`
-    // AND `activeTask` is set. We have to set BOTH: the URL via the
-    // reactive route mock and the store's activeTaskId.
+    // Pre-2026-06-24, this test asserted the kanban unmounted
+    // (`expect(view.exists()).toBe(false)`) because ChatView
+    // took priority over KanbanView. Post-3-column, both render
+    // in a flex row container. The 3-column branch's v-else-if
+    // condition requires:
+    //   activeTask && activeWorkspaceItem.item_type === 'kanban'
+    //   && activeTaskWorkspaceItemId === activeWorkspaceItem.id
+    // The last clause is what distinguishes this case from a
+    // task whose parent is a folder (those still use the
+    // single-column ChatView branch).
     const kanban = makeKanbanItem({
       tasks: [makeTask({ kanban_column_id: 'col_todo' })],
     })
@@ -242,11 +254,58 @@ describe('AppLayout — kanban view priority', () => {
     ws.setActiveWorkspaceItem(KANBAN_ID)
     ws.setActiveTask(TASK_ID)
     await nextTick()
-    // The kanban is no longer in the v-else-if chain. The ChatView
-    // is the task one (also stubbed to true, so it's invisible in
-    // the wrapper's DOM, but the kanban definitely isn't there).
+    // Both columns render side-by-side in a flex container
+    // marked with data-kanban-three-column (added in the
+    // 2026-06-24 migration as a test selector).
+    const view = wrapper.find('[data-kanban-view="stub"]')
+    expect(view.exists()).toBe(true)
+    expect(view.attributes('data-item-id')).toBe(KANBAN_ID)
+    const threeCol = wrapper.find('[data-kanban-three-column]')
+    expect(threeCol.exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('does NOT render <KanbanView> when the active task\'s parent is a different workspace item (single-column ChatView)', async () => {
+    // When the user has a folder task selected AND a kanban is
+    // the active workspace item (an edge case — the user
+    // selected the kanban first, then somehow ended up with a
+    // task from a different parent), the 3-column branch's last
+    // condition (`activeTaskWorkspaceItemId === activeWorkspaceItem.id`)
+    // is false. We fall through to the single-column ChatView
+    // branch, so the kanban does NOT render alongside the chat.
+    // This guards against the visual mess of showing a chat
+    // for one task alongside an unrelated kanban.
+    const folder = makeFolderItem({
+      id: FOLDER_ID,
+      tasks: [makeTask({ id: 'task_in_folder', kanban_column_id: null })],
+    })
+    const kanban = makeKanbanItem({ id: KANBAN_ID }) // no tasks in this kanban
+    const routeObj = reactive({
+      query: { view: 'task', task: 'task_in_folder' } as Record<string, string>,
+      path: '/app',
+      fullPath: `/app?view=task&task=task_in_folder`,
+    })
+    useRouteMock.mockReturnValue(routeObj as any)
+    const wrapper = mountAppLayout([
+      {
+        id: WS_ID,
+        name: 'WS',
+        icon: '📁',
+        expanded: true,
+        items: [kanban, folder],
+      } as Workspace,
+    ])
+    const ws = useWorkspacesStore()
+    ws.setActiveWorkspaceItem(KANBAN_ID) // kanban is the active WS item
+    ws.setActiveTask('task_in_folder') // ...but the active task lives in the folder
+    await nextTick()
+    // activeTaskWorkspaceItemId === FOLDER_ID, not KANBAN_ID — so
+    // the 3-column branch doesn't match. The standalone ChatView
+    // (task) branch renders, and the kanban stays out.
     const view = wrapper.find('[data-kanban-view="stub"]')
     expect(view.exists()).toBe(false)
+    const threeCol = wrapper.find('[data-kanban-three-column]')
+    expect(threeCol.exists()).toBe(false)
     wrapper.unmount()
   })
 })

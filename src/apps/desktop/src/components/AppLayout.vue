@@ -401,6 +401,45 @@ const currentView = computed(() => {
 
 const activeTask = computed(() => workspacesStore.activeTask)
 
+// Workspace-item id of the currently-active task. Used by the
+// 3-column kanban|chatview template branch to make sure the
+// chatview and the kanban belong to the same parent — otherwise
+// we'd render a chatview of a non-kanban task alongside an
+// unrelated kanban (visual mess). The lookup walks every
+// workspace's tasks looking for `activeTaskId`; returns the
+// containing item's id or null. Cheap O(W) where W = number of
+// tasks across all workspaces.
+const activeTaskWorkspaceItemId = computed(() => {
+  const taskId = workspacesStore.activeTaskId
+  if (!taskId) return null
+  for (const ws of workspacesStore.workspaces) {
+    for (const item of ws.items) {
+      if (item.tasks?.some((t) => t.id === taskId)) {
+        return item.id
+      }
+    }
+  }
+  return null
+})
+
+// Close the chatview column (the 3-column layout's right pane).
+// Triggered by the ChatView's ✕ header button. Clears the active
+// task and navigates to `view=workspace` so the URL remains the
+// source of truth — a refresh of `/app?view=workspace` re-renders
+// the kanban alone, with no leftover activeTask. Without the
+// `router.replace`, the URL would still say `view=task&task=…`
+// after the close, which would force a re-mount of the standalone
+// task branch and the kanban would vanish.
+//
+// The chat list (ChatsList) is intentionally NOT touched here:
+// closing the kanban task's chatview is independent of the chat
+// list's active row (a kanban task has its own session, not a
+// chat-row session). Clearing activeTask is sufficient.
+const handleCloseTaskView = () => {
+  workspacesStore.setActiveTask(null)
+  router.replace({ path: '/app', query: { view: 'workspace' } })
+}
+
 // ─── Kanban main-content view (was inline in WorkspaceItem.vue;
 // now mounted here so the board lives in the main content area, not
 // in the sidebar). The KanbanView emits its own CRUD events; we
@@ -903,7 +942,75 @@ watch(chatSessionCwd, (newCwd) => {
         />
       </div>
 
-      <!-- Task view takes priority -->
+      <!-- 3-column kanban layout: sidebar | kanban | chatview.
+           Rendered when (a) the active workspace item is a kanban
+           AND (b) a task is currently selected under that kanban.
+           Both columns are mounted simultaneously so the user
+           can see the kanban context while chatting. The kanban
+           column is flexed to ~40% of the remaining width (after
+           the sidebar) and the chat takes the rest. The :key on
+           KanbanView forces a fresh mount when the user navigates
+           from one kanban to another; the ChatView :key uses
+           'task-<id>' so switching to a different task in the
+           SAME kanban remounts the chat (clean state, no stale
+           scroll position from the previous task). -->
+      <div
+        v-else-if="
+          activeTask &&
+          activeWorkspaceItem &&
+          activeWorkspaceItem.item_type === 'kanban' &&
+          activeTaskWorkspaceItemId === activeWorkspaceItem.id
+        "
+        class="flex-1 flex min-h-0"
+        data-kanban-three-column
+      >
+        <div
+          class="flex flex-col h-full min-h-0 shrink-0"
+          style="
+            flex: 0 1 40%;
+            min-width: 280px;
+            max-width: 720px;
+            border-right: 1px solid var(--color-border);
+          "
+        >
+          <KanbanView
+            :key="'kanban-' + activeWorkspaceItem.id"
+            :item="activeWorkspaceItem"
+            :workspace-id="activeWorkspace?.id ?? ''"
+            :item-id="activeWorkspaceItem.id"
+            @add-task="handleKanbanAddTask"
+            @move-task="handleKanbanMoveTask"
+            @add-column="handleKanbanAddColumn"
+            @rename-column="handleKanbanRenameColumn"
+            @delete-column="handleKanbanDeleteColumn"
+            @reorder-column="handleKanbanReorderColumn"
+            @request-rename-column="handleKanbanRequestRenameColumn"
+            @request-delete-column="handleKanbanRequestDeleteColumn"
+            @select-task="handleKanbanSelectTask"
+            @delete-task="handleKanbanDeleteTask"
+            @rename-task="handleKanbanRenameTask"
+            @edit-routine="handleKanbanEditRoutine"
+            @run-routine="handleKanbanRunRoutine"
+            @pin-task="handleKanbanPinTask"
+          />
+        </div>
+        <div class="flex-1 flex flex-col h-full min-w-0 min-h-0">
+          <ChatView
+            :key="'task-' + activeTask.id"
+            :chat-id="activeTask.id"
+            :chat-name="activeTask.name"
+            :type="'task'"
+            :cwd="activeWorkspaceItem.path || ''"
+            :task-id="activeTask.id"
+            :task-name="activeTask.name"
+            :project-name="activeWorkspaceItem.name || ''"
+            :show-header="true"
+            @close="handleCloseTaskView"
+          />
+        </div>
+      </div>
+      <!-- Task view (non-kanban parents, e.g. chat tasks): single
+           column, no header. Preserved for backward compatibility. -->
       <ChatView
         v-else-if="currentView === 'task' && activeTask"
         :key="'task-' + activeTask.id"
@@ -918,8 +1025,8 @@ watch(chatSessionCwd, (newCwd) => {
       <!-- Kanban view (was inline in WorkspaceItem.vue; now mounted
            in the main content area so the board is no longer cramped
            in the sidebar). Renders only when an active kanban item
-           is selected and no task is currently being viewed (the
-           task branch above already handles task-with-kanban-parent).
+           is selected AND no task is currently being viewed (the
+           3-column branch above already handles task-with-kanban-parent).
            The :key forces a fresh mount when the user navigates
            from one kanban to another (KanbanView fetches columns
            on mount). -->
