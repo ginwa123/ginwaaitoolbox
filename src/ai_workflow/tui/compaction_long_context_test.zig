@@ -126,8 +126,13 @@ test "end-to-end: compaction envelope is queryable via getCompactedMessages" {
     }
     try testing.expectEqual(@as(usize, 5), index_results.len);
     for (dropped_ids) |id| {
-        // The read tool uses the pre-seeded h_real_* ids (the adhoc_*
-        // ids are only in the envelope, not in the DB).
+        // The read tool returns rows by their pre-seeded h_real_* ids
+        // (the in-memory messages in this test don't set .id, so the
+        // envelope uses "unknown" placeholders — but the DB rows still
+        // carry the real h_real_* ids and are findable here). The
+        // separate "envelope ids are real DB ids" test in
+        // workflow_compaction_envelope_test.zig verifies the contract
+        // when the in-memory messages DO set .id.
         try testing.expect(std.mem.indexOf(u8, id, "h_real_") == null or index_results.len > 0);
     }
     // Verify the h_real_ ids appear in the read tool's results

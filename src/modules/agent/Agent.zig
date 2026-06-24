@@ -464,6 +464,14 @@ pub const Role = enum {
 };
 
 pub const AgentMessage = struct {
+    /// DB primary key from `llm_history.id` (19-digit timestamp string).
+    /// NULL for messages synthesized in-memory (e.g. system prompts at
+    /// workflow.zig:1046-1064). Populated by
+    /// `transform_llm_history_to_agent_message` for messages loaded from
+    /// the DB. Used by `buildCompactionEnvelope` to embed real ids in
+    /// the `<compact_messages>` envelope so `read_compacted_messages`
+    /// can find them.
+    id: ?[]const u8 = null,
     role: Role,
     content: ?[]const u8,
     content_parts: ?[]const ContentPart = null,
@@ -472,6 +480,7 @@ pub const AgentMessage = struct {
     reasoning_content: ?[]const u8 = null,
 
     pub fn deinit(self: *const AgentMessage, allocator: std.mem.Allocator) void {
+        if (self.id) |i| allocator.free(i);
         if (self.content) |c| allocator.free(c);
         if (self.content_parts) |parts| {
             for (parts) |part| {
