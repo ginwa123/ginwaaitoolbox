@@ -1,23 +1,32 @@
 <!--
   AddKanbanDialog — modal for creating a new project kanban board.
 
-  Single-input modal flow:
-    1. This dialog opens with a name input + an "Add" button
-    2. User enters a name and clicks Add → emits `create(name)`
-    3. The parent (Sidebar) calls `workspacesStore.addKanbanItem(...)`
-       which POSTs to /api/workspaces/:wsId/items/kanban and seeds
-       three default columns (todo / in progress / done).
+  Two-input modal flow:
+    1. User types a name in the name input
+    2. User clicks the "Choose folder..." button to open the
+       FilePickerDialog (modal 2, on top) and selects a project
+       root on disk
+    3. User clicks Add → emits `create(name, path)`
+    4. Parent (Sidebar) calls workspacesStore.addKanbanItem(...)
+       which POSTs to /api/workspaces/:wsId/items/kanban with the
+       chosen path as `workspace_items.path` (the cwd for every
+       chat session created under this kanban's tasks)
 
-  Mirrors AddItemDialog.vue's structure (Teleport / backdrop / dialog
-  card / header / body / actions), minus the folder picker — kanban
-  items have no on-disk path, only a name.
+  The path is REQUIRED. Without it, every chat session in this
+  kanban's tasks is cwd-less — git/file tools fail with "no such
+  directory". Existing kanbans created before this field existed
+  have `path = NULL` in the DB; they can backfill via the
+  KanbanView "Set project root" banner (which uses the same
+  FilePickerDialog to pick a folder).
 
   Public API:
     props:  show (boolean)
-    emits:  close, create(name: string)
+    emits:  close, create(name: string, path: string)
 -->
 <script setup lang="ts">
 import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import { getSystemFolder, listFolder, type FolderEntry } from '../api'
+import FilePickerDialog from './FilePickerDialog.vue'
 
 const props = defineProps<{
   show: boolean
@@ -25,20 +34,38 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
-  create: [name: string]
+  create: [name: string, path: string]
 }>()
 
 // ─── State ─────────────────────────────────────────────────────────────────
 
 const name = ref('')
+const selectedPath = ref('')
+const showPicker = ref(false)
 const nameInput = ref<HTMLInputElement | null>(null)
+
+// ─── Picker data source ────────────────────────────────────────────────────
+
+// Adapts the existing listFolder/getSystemFolder API to the picker's
+// agnostic (path: string) => Promise<T[]> contract. Same helper as
+// AddItemDialog — duplicated here (not extracted) to keep the two
+// dialogs independently editable.
+const loadItemsForPicker = async (path: string): Promise<FolderEntry[]> => {
+  const data = path ? await listFolder(path) : await getSystemFolder()
+  return (data.entries || []) as FolderEntry[]
+}
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
 
+const handleFolderSelected = (path: string) => {
+  selectedPath.value = path
+  showPicker.value = false
+}
+
 const handleCreate = () => {
   const trimmedName = name.value.trim()
-  if (trimmedName) {
-    emit('create', trimmedName)
+  if (trimmedName && selectedPath.value) {
+    emit('create', trimmedName, selectedPath.value)
     handleClose()
   }
 }
@@ -55,12 +82,14 @@ const handleKeydown = (event: KeyboardEvent) => {
 
 // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
-// Reset state when the dialog opens. Mirrors AddItemDialog — we
-// deliberately do NOT preserve the typed name across open/close so
-// the dialog is predictable for users.
+// Reset state when the dialog opens. We deliberately do NOT preserve
+// either the name or the selected path across open/close so the
+// dialog is predictable for users.
 watch(() => props.show, async (show) => {
   if (show) {
     name.value = ''
+    selectedPath.value = ''
+    showPicker.value = false
     await nextTick()
     nameInput.value?.focus()
   }
@@ -145,6 +174,54 @@ onBeforeUnmount(() => {
             />
           </div>
 
+          <!-- Project Root (folder picker) -->
+          <div class="px-5 pb-4">
+            <label
+              class="block text-xs font-medium mb-2"
+              style="color: var(--semantic-text-dim);"
+            >
+              Project Root
+              <span
+                class="ml-1 text-[10px]"
+                style="color: var(--semantic-text-dim);"
+              >(used as cwd for chat sessions)</span>
+            </label>
+            <button
+              type="button"
+              @click="showPicker = true"
+              data-testid="add-kanban-choose-folder"
+              class="w-full px-3 py-2 rounded-lg text-sm flex items-center justify-between gap-2 transition-all duration-200 hover:opacity-80"
+              :style="{
+                backgroundColor: selectedPath
+                  ? 'var(--semantic-active-bg)'
+                  : 'var(--semantic-sidebar-bg)',
+                border: '1px solid var(--color-border)',
+                color: selectedPath
+                  ? 'var(--semantic-text)'
+                  : 'var(--semantic-text-dim)',
+              }"
+            >
+              <span
+                class="truncate flex-1 text-left font-mono"
+                :title="selectedPath"
+              >
+                {{ selectedPath || 'Choose folder...' }}
+              </span>
+              <span
+                v-if="selectedPath"
+                class="text-xs shrink-0"
+                style="color: var(--semantic-text-dim);"
+                aria-hidden="true"
+              >Browse</span>
+              <span
+                v-else
+                class="text-xs shrink-0"
+                style="color: var(--semantic-text-dim);"
+                aria-hidden="true"
+              >📂</span>
+            </button>
+          </div>
+
           <!-- Actions -->
           <div class="px-5 pb-5 flex justify-end gap-2">
             <button
@@ -163,7 +240,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               @click="handleCreate"
-              :disabled="!name.trim()"
+              :disabled="!name.trim() || !selectedPath"
               data-testid="add-kanban-submit"
               class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               style="
@@ -182,6 +259,26 @@ onBeforeUnmount(() => {
       </div>
     </Transition>
   </Teleport>
+<!--
+    FilePickerDialog (modal 2). Same data source functions as
+    AddItemDialog — the picker is data-source agnostic, so we just
+    hand it our `loadItemsForPicker` (which adapts listFolder /
+    getSystemFolder to the picker's generic contract). The picker
+    closes on select so the user returns here with the chosen path
+    filled in.
+  -->
+  <FilePickerDialog
+    v-model="showPicker"
+    mode="folder"
+    :load-items="loadItemsForPicker"
+    :key-for="(e: any) => e.path as string"
+    :path-for="(e: any) => e.path as string"
+    :is-expandable="(e: any) => e.is_directory as boolean"
+    :label-for="(e: any) => e.name as string"
+    :close-on-select="true"
+    title="Select Kanban Project Root"
+    @select="handleFolderSelected"
+  />
 </template>
 
 <style scoped>

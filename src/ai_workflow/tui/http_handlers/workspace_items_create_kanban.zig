@@ -29,6 +29,13 @@ const kanban_model = @import("../kanban_model.zig");
 /// Request body for the kanban-item create endpoint.
 const CreateKanbanBody = struct {
     name: []const u8,
+    /// Optional absolute path on disk that will become the `cwd` for
+    /// every chat session created under this kanban's tasks. Strongly
+    /// recommended — without it, the LLM has no project root and
+    /// git/file tools fail with "no such directory". Existing kanbans
+    /// created before this field existed have `path = NULL` in the DB
+    /// and can backfill via PUT /api/workspaces/:wsId/items/:itemId.
+    path: ?[]const u8 = null,
 };
 
 /// Response body for the kanban-item create endpoint.
@@ -41,6 +48,10 @@ const CreateKanbanResponse = struct {
     workspace_id: []const u8,
     item_type: []const u8,
     name: []const u8,
+    /// Mirrors the request body's path. `null` when the caller did not
+    /// supply one (the kanban is created cwd-less; the user can
+    /// set it later via the PUT endpoint).
+    path: ?[]const u8 = null,
     position: i64,
 };
 
@@ -88,6 +99,12 @@ pub fn workspaceItemsCreateKanbanHandler(
         });
     }
     const name = parsed.name;
+    // Path is optional — when omitted, NULL is stored (cwd-less kanban,
+    // same as pre-fix behavior). The frontend should always pass it; we
+    // don't enforce it here so existing tests / API clients that don't
+    // know about the field keep working.
+    const path_opt: ?[]const u8 = parsed.path;
+    const path_for_insert: []const u8 = path_opt orelse "";
 
     // Generate item id. Same nanosecond-timestamp scheme as
     // `workspace_items_create.zig:generateItemId`. Uses `std.Io.Clock`
@@ -103,9 +120,12 @@ pub fn workspaceItemsCreateKanbanHandler(
     // COALESCE handles the empty-workspace case (no rows → MAX is
     // NULL → -1 → position 0). `workspace_id` is bound twice in the
     // args tuple: once for the column, once for the correlated subquery.
+    // The path column is included so the kanban can act as a cwd
+    // root for its child task sessions; NULL is stored when the
+    // caller didn't pass a path.
     sqlite_db.exec(allocator,
-        "INSERT INTO workspace_items (id, workspace_id, item_type, name, position, created_at, updated_at) VALUES (?, ?, 'kanban', ?, COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1, datetime('now'), datetime('now'))",
-        &.{ item_id, workspace_id, name, workspace_id },
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position, created_at, updated_at) VALUES (?, ?, 'kanban', ?, NULLIF(?, ''), COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1, datetime('now'), datetime('now'))",
+        &.{ item_id, workspace_id, name, path_for_insert, workspace_id },
     ) catch {
         return res.jsonResponse(.{
             .status_code = 500,
@@ -132,6 +152,7 @@ pub fn workspaceItemsCreateKanbanHandler(
                 .workspace_id = workspace_id,
                 .item_type = "kanban",
                 .name = name,
+                .path = path_opt,
                 .position = 0, // placeholder — see notes below
             },
             .{},

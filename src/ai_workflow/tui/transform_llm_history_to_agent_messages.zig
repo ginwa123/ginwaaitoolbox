@@ -13,6 +13,7 @@ pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, mess
     // For tool messages, the tools column contains the tool_call_id string directly
     if (role == .tool) {
         const agentMessage = agent.AgentMessage{
+            .id = try allocator.dupe(u8, message.id),
             .role = .tool,
             .content = try allocator.dupe(u8, message.response_content),
             .tool_call_id = try allocator.dupe(u8, message.tool_call_id orelse ""),
@@ -112,6 +113,7 @@ pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, mess
         } else {}
 
         const agentMessage = agent.AgentMessage{
+            .id = try allocator.dupe(u8, message.id),
             .role = role,
             .content = if (content_parts != null) null else content,
             .content_parts = content_parts,

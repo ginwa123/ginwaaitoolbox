@@ -158,4 +158,49 @@ describe('CompactionCard', () => {
     expect(wrapper.text()).toContain('1 message compacted')
     expect(wrapper.text()).not.toContain('1 messages compacted')
   })
+
+  it('renders all entries inline when total ≤ MAX_ENTRIES_VISIBLE (50)', () => {
+    // Regression for the truncation perception bug: previously
+    // MAX_ENTRIES_VISIBLE was 10, so a 12-entry envelope hid 2 entries
+    // behind a "Show all" button. With MAX_ENTRIES_VISIBLE = 50, a
+    // 12-entry envelope renders everything inline (no toggle needed).
+    const entries = Array.from({ length: 12 }, (_, i) => `    <entry>
+      <id>h_${i + 1}</id>
+      <role>user</role>
+      <preview>message ${i + 1}</preview>
+    </entry>`).join('\n')
+    const envelope = `<compact_messages>
+      <metadata><original_count>12</original_count></metadata>
+      <message_index>
+${entries}
+      </message_index>
+    </compact_messages>`
+    wrapper = mount(CompactionCard, { props: { content: envelope } })
+    const renderedEntries = wrapper.findAll('[data-testid="compaction-entry"]')
+    expect(renderedEntries).toHaveLength(12)
+    // No "Show all" button when entries ≤ limit
+    expect(wrapper.find('[data-testid="compaction-show-more"]').exists()).toBe(false)
+  })
+
+  it('still hides entries beyond MAX_ENTRIES_VISIBLE behind a toggle', () => {
+    // Regression: a 60-entry envelope should still show 50 by default
+    // and expose a "Show all 60" button for the remaining 10. The
+    // scrollable list (max-height 400px; overflow-y auto) handles the
+    // visual cap; the toggle handles keyboard-only accessibility.
+    const entries = Array.from({ length: 60 }, (_, i) => `    <entry>
+      <id>h_${i + 1}</id>
+      <role>user</role>
+      <preview>message ${i + 1}</preview>
+    </entry>`).join('\n')
+    const envelope = `<compact_messages>
+      <message_index>
+${entries}
+      </message_index>
+    </compact_messages>`
+    wrapper = mount(CompactionCard, { props: { content: envelope } })
+    expect(wrapper.findAll('[data-testid="compaction-entry"]')).toHaveLength(50)
+    const showMore = wrapper.find('[data-testid="compaction-show-more"]')
+    expect(showMore.exists()).toBe(true)
+    expect(showMore.text()).toContain('Show all 60')
+  })
 })

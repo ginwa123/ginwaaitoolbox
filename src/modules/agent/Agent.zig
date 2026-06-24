@@ -464,6 +464,14 @@ pub const Role = enum {
 };
 
 pub const AgentMessage = struct {
+    /// DB primary key from `llm_history.id` (19-digit timestamp string).
+    /// NULL for messages synthesized in-memory (e.g. system prompts at
+    /// workflow.zig:1046-1064). Populated by
+    /// `transform_llm_history_to_agent_message` for messages loaded from
+    /// the DB. Used by `buildCompactionEnvelope` to embed real ids in
+    /// the `<compact_messages>` envelope so `read_compacted_messages`
+    /// can find them.
+    id: ?[]const u8 = null,
     role: Role,
     content: ?[]const u8,
     content_parts: ?[]const ContentPart = null,
@@ -472,6 +480,7 @@ pub const AgentMessage = struct {
     reasoning_content: ?[]const u8 = null,
 
     pub fn deinit(self: *const AgentMessage, allocator: std.mem.Allocator) void {
+        if (self.id) |i| allocator.free(i);
         if (self.content) |c| allocator.free(c);
         if (self.content_parts) |parts| {
             for (parts) |part| {
@@ -790,10 +799,10 @@ pub const Agent = struct {
     /// NOTE: Do NOT use SO_RCVTIMEO with Zig 0.16's std.Io Threaded backend.
     /// The backend treats EAGAIN as a programmer bug and panics. TCP keepalive
     /// is the correct mechanism here.
-    fn apply_tcp_keepalive(self: Agent, req: anytype) void {
+    fn apply_tcp_keepalive(self: Agent, req: anytype) ?i32 {
         const conn = req.connection orelse {
             self.log_msg(.warn, "[STREAM] cannot set TCP keepalive: no connection");
-            return;
+            return null;
         };
         const sock = conn.stream_reader.stream.socket.handle;
 
@@ -801,7 +810,7 @@ pub const Agent = struct {
         std.posix.setsockopt(sock, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE,
             std.mem.asBytes(&on)) catch |err| {
             self.log_fmt(.warn, "[STREAM] SO_KEEPALIVE failed: {s}", .{@errorName(err)});
-            return;
+            return sock;
         };
 
         // First keepalive probe after 10s of idle
@@ -820,7 +829,112 @@ pub const Agent = struct {
             std.mem.asBytes(&keepcnt)) catch {};
 
         self.log_fmt(.debug, "[STREAM] TCP keepalive set: idle=10s, intvl=5s, cnt=3 (detects dead conn in ~25s)", .{});
+        return sock;
     }
+
+    /// Background thread that force-closes the stream socket when the read
+    /// loop stalls. Works around the std.Io.Threaded "parked in recv()" problem:
+    /// the user-space deadline checks in the read loop never fire while the
+    /// worker is blocked in the kernel. The watchdog calls shutdown(SHUT_RD)
+    /// on the socket from outside the Io runtime, which (per Linux shutdown(2)
+    /// man page) "may" unblock a pending recv; the watchdog then also dup2's
+    /// the socket fd to /dev/null so the Io runtime's later close() succeeds
+    /// (no EBADF / no panic).
+    ///
+    /// close() alone would also unblock the recv but causes a "use after free"
+    /// panic in std.Io.Threaded.closeFd when the Io runtime later closes the
+    /// already-closed fd. The dup2 trick leaves the fd NUMBER valid (pointing
+    /// to /dev/null) so the later close() succeeds.
+    ///
+    /// This watchdog is purely additive — keepalive (above) remains as a slower
+    /// secondary defense for cases where the watchdog itself is delayed.
+    const StreamWatchdog = struct {
+        /// shutdown(2) "how" constants on Linux.
+        ///   SHUT_RD   = 0  (further receives disallowed; may unblock recv)
+        ///   SHUT_WR   = 1
+        ///   SHUT_RDWR = 2
+        const SHUT_RD: i32 = 0;
+        fd: std.atomic.Value(i32), // -1 when cancelled; the live socket fd otherwise
+        last_byte_ms: std.atomic.Value(i64), // wall-clock ms of last received byte
+        cancel: std.atomic.Value(bool), // set by main thread on exit
+        fired_for: std.atomic.Value(u8), // 0=none, 1=idle, 2=max_total
+        thread: std.Thread,
+        start_ms: i64,
+        idle_timeout_ms: i64,
+        max_total_ms: i64,
+
+        const Reason = enum(u8) { none = 0, idle = 1, max_total = 2 };
+
+        fn threadMain(wd: *StreamWatchdog) void {
+            while (true) {
+                _ = std.c.nanosleep(&.{ .sec = 0, .nsec = 250 * std.time.ns_per_ms }, null);
+                if (wd.cancel.load(.acquire)) return;
+                const fd_now = wd.fd.load(.acquire);
+                if (fd_now < 0) return; // main thread reset fd
+                const now = wallClockMs();
+                if (now - wd.start_ms >= wd.max_total_ms) {
+                    wd.fired_for.store(@intFromEnum(Reason.max_total), .release);
+                    forceCancel(fd_now);
+                    return;
+                }
+                if (now - wd.last_byte_ms.load(.acquire) >= wd.idle_timeout_ms) {
+                    wd.fired_for.store(@intFromEnum(Reason.idle), .release);
+                    forceCancel(fd_now);
+                    return;
+                }
+            }
+        }
+
+        /// Cancel the in-flight recv by atomically replacing the socket fd
+        /// with /dev/null via dup2(2). This:
+        ///   1. Closes the underlying TCP socket (kernel sends FIN, recv returns).
+        ///   2. Leaves the fd NUMBER valid in the process (now pointing to /dev/null).
+        ///   3. The Io runtime's later close() on this fd closes the /dev/null
+        ///      reference harmlessly — no "use after free" / EBADF panic.
+        ///
+        /// Why not just close()? The Io runtime stores the original socket fd
+        /// in its Connection struct and calls close() on it during deinit.
+        /// If we close() it first, the runtime's close returns EBADF which
+        /// std.Io.Threaded's closeFd treats as a programmer bug and panics
+        /// (recoverableOsBugDetected → unreachable in debug).
+        ///
+        /// Why not just shutdown(SHUT_RDWR)? The shutdown() syscall sends FIN
+        /// to the peer but does NOT unblock a recv() that's already in
+        /// progress on the local side (the kernel is waiting for data, not
+        /// for the peer's FIN). The local recv would remain stuck.
+        fn forceCancel(fd_now: i32) void {
+            // Two-pronged approach: shutdown(SHUT_RD) "may" unblock the pending
+            // recv on Linux (per shutdown(2) man page). If it doesn't, the
+            // dup2-to-/dev/null trick replaces the socket fd with /dev/null so
+            // the Io runtime's later close() succeeds (no EBADF / no panic).
+            // Together, they cover both:
+            //   - The recv that may return when the socket's read side is shut down.
+            //   - The Io's later close() that must not see a closed fd.
+            //
+            // Why we can't just close() the socket:
+            //   std.Io.Threaded treats close() on a bad fd as a programmer bug
+            //   and panics in debug. The dup2 leaves the fd NUMBER valid
+            //   (now pointing to /dev/null) so the later close() succeeds.
+            _ = std.os.linux.shutdown(fd_now, SHUT_RD);
+
+            const devnull_rc = std.os.linux.open("/dev/null", .{}, 0);
+            if (devnull_rc > std.math.maxInt(i32)) return;
+            const devnull_fd: i32 = @intCast(devnull_rc);
+            const dup2_rc = std.os.linux.dup2(devnull_fd, fd_now);
+            if (dup2_rc > std.math.maxInt(i32)) {
+                _ = std.os.linux.close(devnull_fd);
+                return;
+            }
+            _ = std.os.linux.close(devnull_fd);
+        }
+
+        fn wallClockMs() i64 {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+            const sec: i64 = @intCast(ts.sec);
+            return sec * 1000 + @divFloor(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
+        }
+    };
 
     pub fn buildJsonAnthropicRequest(self: Agent, params: AgentCall, stream: bool) ![]u8 {
         const allocator = self.allocator;
@@ -1234,9 +1348,59 @@ pub const Agent = struct {
         // This detects dead connections (~25s) via ConnectionResetByPeer
         // without triggering the EAGAIN panic that SO_RCVTIMEO causes in
         // Zig 0.16's std.Io Threaded backend.
-        self.apply_tcp_keepalive(&req);
+        const stream_fd_opt = self.apply_tcp_keepalive(&req);
 
         const stream_start = timestampMs(self.httpClient.io);
+
+        // Spawn the watchdog thread if we got a live socket fd. The watchdog
+        // force-closes the fd when idle/max timeouts expire, which forces the
+        // Io worker's recv() to return an error and the read loop to exit.
+        //
+        // IMPORTANT: `watchdog` MUST be in function scope (not inside the
+        // if block) so its address stays valid for the spawned thread. The
+        // thread runs concurrently with the rest of callStreaming and reads
+        // `wd.fd` / `wd.fired_for` etc. via the pointer it received. If `wd`
+        // were scoped to the if block, the thread would access a dangling
+        // pointer the moment the block exits — the exact bug that caused the
+        // watchdog to silently never fire in earlier iterations.
+        var watchdog: ?StreamWatchdog = null;
+        if (stream_fd_opt) |fd| {
+            const now_ms = StreamWatchdog.wallClockMs();
+            watchdog = .{
+                .fd = std.atomic.Value(i32).init(fd),
+                .last_byte_ms = std.atomic.Value(i64).init(now_ms),
+                .cancel = std.atomic.Value(bool).init(false),
+                .fired_for = std.atomic.Value(u8).init(@intFromEnum(StreamWatchdog.Reason.none)),
+                .thread = undefined,
+                .start_ms = now_ms,
+                .idle_timeout_ms = @intCast(self.httpOptions.idle_timeout_ms),
+                .max_total_ms = @intCast(self.httpOptions.read_timeout_ms),
+            };
+            if (std.Thread.spawn(.{}, StreamWatchdog.threadMain, .{&watchdog.?})) |t| {
+                watchdog.?.thread = t;
+                self.log_fmt(.debug, "[STREAM] watchdog spawned: fd={d} idle_ms={d} max_ms={d}", .{
+                    fd, watchdog.?.idle_timeout_ms, watchdog.?.max_total_ms,
+                });
+            } else |err| {
+                self.log_fmt(.warn, "[STREAM] watchdog thread spawn failed: {s}", .{@errorName(err)});
+                watchdog = null;
+            }
+        }
+        // Defer watchdog cleanup. Fires on every exit path (normal and error).
+        // Order matters: this fires BEFORE req.deinit() because defer is LIFO.
+        // We reset fd to -1 first so the watchdog stops trying to close it,
+        // then set cancel, then join.
+        defer if (watchdog) |*wd| {
+            wd.fd.store(-1, .release);
+            wd.cancel.store(true, .release);
+            wd.thread.join();
+            // Note: we deliberately do NOT translate fired_for back to a
+            // CallError variant. If the watchdog fired, the existing read loop
+            // error path already returned error.StreamInterrupted (which is
+            // semantically correct: the connection died). The exact variant
+            // (Idle vs Total) is observable only via the watchdog's atomic
+            // fired_for field, which is preserved for debugging.
+        };
         var redirect_buffer: [8192]u8 = undefined;
         var response = req.receiveHead(&redirect_buffer) catch |err| {
             self.log_fmt(.err, "[TIMEOUT] No response after {}ms: {s}", .{
@@ -1376,6 +1540,17 @@ pub const Agent = struct {
                             chunk_count, total_bytes_read,
                         });
                     }
+                    // If the watchdog triggered the close, translate the
+                    // StreamInterrupted to the more specific timeout variant.
+                    // Without this, the caller can't distinguish "kernel
+                    // detected dead connection" from "watchdog killed a stall".
+                    if (watchdog) |*wd| {
+                        switch (wd.fired_for.load(.acquire)) {
+                            @intFromEnum(StreamWatchdog.Reason.idle) => return error.StreamIdleTimeout,
+                            @intFromEnum(StreamWatchdog.Reason.max_total) => return error.StreamTimeout,
+                            else => {},
+                        }
+                    }
                     return error.StreamInterrupted;
                 }
                 // EndOfStream: clean close from peer.
@@ -1436,6 +1611,7 @@ pub const Agent = struct {
 
             // Got real data - reset idle timer and accumulate bytes.
             last_byte_at_ms = now_ms;
+            if (watchdog) |*wd| wd.last_byte_ms.store(now_ms, .release);
             total_bytes_read += n;
             self.log_fmt(.debug, "[STREAM] read {} bytes (total={})", .{ n, total_bytes_read });
 
@@ -1481,6 +1657,29 @@ pub const Agent = struct {
                     callback(ctx, chunk);
                     aggregator.process_chunk(chunk) catch {};
                 }
+            }
+        }
+
+        // If the watchdog fired (force-closed the socket), translate to the
+        // appropriate timeout variant. The dup2-to-/dev/null trick produces
+        // an EOF on the read loop, which would otherwise fall through to
+        // StreamEmpty / StreamInterrupted. The user wants to know whether
+        // the LLM call was killed by a deadline vs an actual clean end.
+        if (watchdog) |*wd| {
+            switch (wd.fired_for.load(.acquire)) {
+                @intFromEnum(StreamWatchdog.Reason.idle) => {
+                    self.log_fmt(.err, "[STREAM] watchdog fired (idle timeout, {d}ms)", .{
+                        elapsedMs(self.httpClient.io, stream_start),
+                    });
+                    return error.StreamIdleTimeout;
+                },
+                @intFromEnum(StreamWatchdog.Reason.max_total) => {
+                    self.log_fmt(.err, "[STREAM] watchdog fired (max total timeout, {d}ms)", .{
+                        elapsedMs(self.httpClient.io, stream_start),
+                    });
+                    return error.StreamTimeout;
+                },
+                else => {},
             }
         }
 
