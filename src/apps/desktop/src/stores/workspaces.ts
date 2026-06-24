@@ -14,7 +14,12 @@ export interface WorkspaceItem {
   id: string
   name: string
   item_type: string
-  path?: string
+  // The on-disk cwd for kanban items. Optional (matches the API
+  // interface in api/index.ts): legacy kanbans have no path (the
+  // API returns `null` for unset rows), folder items never set it,
+  // test fixtures may omit it. The KanbanView template treats null
+  // AND undefined AND "" the same way via `v-if="!item.path"`.
+  path?: string | null
   lastAccessed?: Date
   entries?: FolderEntry[]  // Nested folder contents
   isLoaded?: boolean       // Whether contents have been fetched
@@ -589,12 +594,19 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // alongside the item. We push the item into the workspace's
   // items array and pre-populate `kanban_columns` + `tasks` so
   // the board renders immediately. Returns the new item's id.
+  // The optional `path` is persisted as `workspace_items.path` and
+  // used as the cwd for every chat session created under this
+  // kanban's tasks. Strongly recommended — without it, git/file
+  // tools fail with "no such directory" because the chat session
+  // has no cwd. The AddKanbanDialog requires the user to pick a
+  // folder before the Add button enables.
   async function addKanbanItem(
     workspaceId: string,
     name: string,
+    path: string,
   ): Promise<string | undefined> {
     try {
-      const { item, columns } = await api.createKanban(workspaceId, name)
+      const { item, columns } = await api.createKanban(workspaceId, name, path)
       const ws = workspaces.value.find((w) => w.id === workspaceId)
       if (ws) {
         ws.items.push({
@@ -615,6 +627,28 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     } catch (err) {
       console.error('[workspacesStore.addKanbanItem] API call failed:', err)
       return undefined
+    }
+  }
+
+  // Backfill (or change) the `path` of a kanban workspace item. Used
+  // by the KanbanView "Set project root" banner that surfaces when a
+  // kanban was created before the path field existed (the user's
+  // existing kanbans all have `path = NULL`). Sets the new path on
+  // the local store so the UI updates immediately; the backend
+  // persists the change.
+  async function updateKanbanItemPath(
+    workspaceId: string,
+    itemId: string,
+    path: string,
+  ): Promise<void> {
+    const ws = workspaces.value.find((w) => w.id === workspaceId)
+    const item = ws?.items.find((i) => i.id === itemId)
+    try {
+      await api.updateWorkspaceItem(workspaceId, itemId, { path })
+      if (item) item.path = path
+    } catch (err) {
+      console.error('[workspacesStore.updateKanbanItemPath] API call failed:', err)
+      throw err
     }
   }
 
@@ -1526,6 +1560,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     deleteKanbanColumn,
     reorderKanbanColumn,
     moveTaskToColumn,
+    updateKanbanItemPath,
     fetchKanbanColumns,
     initializeFromSystemFolder,
     subscribeToSessionEvents,

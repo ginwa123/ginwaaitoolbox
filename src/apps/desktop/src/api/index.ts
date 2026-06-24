@@ -126,7 +126,16 @@ export interface WorkspaceItem {
   id: string
   name: string
   item_type: string
-  path?: string
+  // The on-disk cwd for kanban items. Optional because:
+  //   (a) legacy kanbans created before this field existed have no path
+  //       (the API returns `null` from the DB, not `undefined`);
+  //   (b) folder items (item_type = 'folder') never have a path here
+  //       (their `path` lives on each FolderEntry child, not the item);
+  //   (c) test fixtures in 5+ test files omit the field entirely.
+  // Allow `null` so API responses with `path: null` (the SQLite NULL →
+  // JSON null round-trip) type-check; the runtime `v-if="!item.path"`
+  // already treats null AND undefined AND "" the same way.
+  path?: string | null
   entries?: FolderEntry[]
   isLoaded?: boolean
   isLoading?: boolean
@@ -1056,12 +1065,35 @@ export async function deleteWorkspaceItem(
 export async function createKanban(
   workspaceId: string,
   name: string,
+  path?: string,
 ): Promise<{ item: WorkspaceItem; columns: KanbanColumn[] }> {
   return await apiFetch<{ item: WorkspaceItem; columns: KanbanColumn[] }>(
     `/workspaces/${workspaceId}/items/kanban`,
     {
       method: 'POST',
-      body: { name },
+      body: { name, path: path ?? '' },
+    },
+  )
+}
+
+/**
+ * Update a workspace item. Supports partial updates — pass only
+ * the fields you want to change. Currently used by the kanban
+ * "Set project root" banner to backfill `path` on kanbans that
+ * were created before the field existed.
+ *
+ * PUT /api/workspaces/:workspaceId/items/:itemId
+ */
+export async function updateWorkspaceItem(
+  workspaceId: string,
+  itemId: string,
+  data: { item_type?: string; path?: string | null },
+): Promise<WorkspaceItem> {
+  return await apiFetch<WorkspaceItem>(
+    `/workspaces/${workspaceId}/items/${itemId}`,
+    {
+      method: 'PUT',
+      body: data,
     },
   )
 }

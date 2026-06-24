@@ -36,7 +36,7 @@
       KanbanColumnEditor on these)
 -->
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import KanbanColumn from './KanbanColumn.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import type { WorkspaceItem, Task } from '../stores/workspaces'
@@ -116,6 +116,49 @@ const tasks = computed<Task[]>(() => props.item.tasks ?? [])
 const handleAddColumn = () => {
   emit('addColumn')
 }
+
+// ─── "Set project root" banner (backfill UX) ─────────────────────────────
+//
+// When a kanban has `path = null` (the user created it before the path
+// field existed on the create endpoint), every chat session in this
+// kanban's tasks is cwd-less — git/file tools fail with "no such
+// directory". Surface a warning banner with a single click that
+// opens the folder picker and persists the chosen path via
+// workspacesStore.updateKanbanItemPath.
+//
+// The banner is purely informational (yellow tint, no destructive
+// action). It hides once a path is set. The picker reuses the
+// AddKanbanDialog's picker to keep the UX consistent — same data
+// source, same select-pick-cancel flow.
+import { getSystemFolder, listFolder, type FolderEntry } from '../api'
+import FilePickerDialog from './FilePickerDialog.vue'
+
+const showPathPicker = ref(false)
+const pathPickerBusy = ref(false)
+const pathPickerError = ref<string | null>(null)
+
+const loadItemsForPathPicker = async (path: string): Promise<FolderEntry[]> => {
+  const data = path ? await listFolder(path) : await getSystemFolder()
+  return (data.entries || []) as FolderEntry[]
+}
+
+const handleProjectRootSelected = async (path: string) => {
+  showPathPicker.value = false
+  if (!path) return
+  pathPickerBusy.value = true
+  pathPickerError.value = null
+  try {
+    await workspacesStore.updateKanbanItemPath(
+      props.workspaceId,
+      props.item.id,
+      path,
+    )
+  } catch (err) {
+    pathPickerError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    pathPickerBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -136,6 +179,37 @@ const handleAddColumn = () => {
       >
         {{ item.name }}
       </h3>
+
+      <!--
+        "Set project root" banner — surfaces only when the kanban
+        has `path = null` (i.e. it was created before the path field
+        existed on the create endpoint). Without a path, every chat
+        session in this kanban's tasks is cwd-less and git/file
+        tools fail with "no such directory". The button opens the
+        same FilePickerDialog used by AddKanbanDialog / AddItemDialog.
+
+        Hidden once a path is set. The CSS uses `path ? null`-
+        equivalent check via the explicit v-if (the API returns
+        `path: null` for unset kanbans; we treat null AND undefined
+        AND empty-string as "needs backfill" defensively).
+      -->
+      <button
+        v-if="!item.path"
+        type="button"
+        @click="showPathPicker = true"
+        :disabled="pathPickerBusy"
+        class="shrink-0 px-2 py-1 rounded text-xs font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+        style="
+          background-color: rgba(234, 179, 8, 0.18);
+          color: rgb(202, 138, 4);
+          border: 1px solid rgba(234, 179, 8, 0.4);
+        "
+        :data-testid="`kanban-view-${item.id}-set-project-root`"
+        title="Set a project root so chat sessions have a working directory"
+      >
+        <span aria-hidden="true">⚠️</span>
+        <span class="ml-1">{{ pathPickerBusy ? 'Setting…' : 'Set project root' }}</span>
+      </button>
       <button
         type="button"
         class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
@@ -184,6 +258,25 @@ const handleAddColumn = () => {
       </div>
     </div>
   </section>
+<!--
+    FilePickerDialog for the "Set project root" banner. Mounted at the
+    bottom of the template so it sits in the same Teleport target as
+    the rest of the kanban's modals. Same data source wiring as
+    AddKanbanDialog's picker — kept duplicated (not extracted) to
+    avoid coupling the two pickers.
+  -->
+  <FilePickerDialog
+    v-model="showPathPicker"
+    mode="folder"
+    :load-items="loadItemsForPathPicker"
+    :key-for="(e: any) => e.path as string"
+    :path-for="(e: any) => e.path as string"
+    :is-expandable="(e: any) => e.is_directory as boolean"
+    :label-for="(e: any) => e.name as string"
+    :close-on-select="false"
+    title="Select Project Root for this Kanban"
+    @select="handleProjectRootSelected"
+  />
 </template>
 
 <style scoped>

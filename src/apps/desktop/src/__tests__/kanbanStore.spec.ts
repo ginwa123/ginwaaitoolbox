@@ -124,10 +124,10 @@ describe('useWorkspacesStore — kanban actions', () => {
           ],
         })
 
-      const id = await store.addKanbanItem('ws_1', 'My Sprint')
+      const id = await store.addKanbanItem('ws_1', 'My Sprint', '/abs/project')
 
       expect(id).toBe('kanban_1')
-      expect(createKanbanMock).toHaveBeenCalledWith('ws_1', 'My Sprint')
+      expect(createKanbanMock).toHaveBeenCalledWith('ws_1', 'My Sprint', '/abs/project')
 
       const wsRow = store.workspaces.find((w) => w.id === 'ws_1')!
       expect(wsRow.items).toHaveLength(1)
@@ -150,7 +150,7 @@ describe('useWorkspacesStore — kanban actions', () => {
       // Spy on console.error to silence the expected error log.
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-      const id = await store.addKanbanItem('ws_1', 'My Sprint')
+      const id = await store.addKanbanItem('ws_1', 'My Sprint', '/abs/project')
 
       expect(id).toBeUndefined()
       const wsRow = store.workspaces.find((w) => w.id === 'ws_1')!

@@ -1,10 +1,14 @@
 /**
  * Tests for AddKanbanDialog — the modal that creates a new project
- * kanban board (only a name is needed; the backend seeds the default
- * columns). Mirrors AddItemDialog.spec.ts: same
- * `attachTo: document.body` + `document.querySelector` pattern (the
- * dialog uses <Teleport to="body">, so wrapper.find(...) returns
- * empty — we must inspect the document directly).
+ * kanban board. The user enters a name + picks a folder (the cwd for
+ * the kanban's tasks); the backend seeds the default columns. After
+ * the migration to FilePickerDialog (2026-06-24), the picker is mocked
+ * with a stub (real picker behavior is in FilePickerDialog.spec.ts).
+ *
+ * Mirrors AddItemDialog.spec.ts: same `attachTo: document.body` +
+ * `document.querySelector` pattern (the dialog uses <Teleport to="body">,
+ * so wrapper.find(...) returns empty — we must inspect the document
+ * directly).
  *
  * Plan: docs/superpowers/plans/2026-06-21-workspace-item-kanban.md
  *   Chunk 6 / Task 6.1
@@ -12,6 +16,31 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import AddKanbanDialog from '../components/AddKanbanDialog.vue'
+
+// Stub the FilePickerDialog — we only care that the parent wires up the
+// picker's events. Real picker behavior is tested in FilePickerDialog.spec.ts.
+// The stub mirrors the picker's public API:
+//   - v-model:show (modelValue + update:modelValue)
+//   - @select(path)
+//   - title prop (displayed in stub header)
+vi.mock('../components/FilePickerDialog.vue', () => ({
+  default: {
+    name: 'FilePickerDialog',
+    props: ['modelValue', 'mode', 'loadItems', 'keyFor', 'pathFor', 'isExpandable', 'labelFor', 'title'],
+    emits: ['update:modelValue', 'select'],
+    template: `
+      <div v-if="modelValue" data-testid="file-picker-dialog">
+        <h2 data-testid="file-picker-title">{{ title }}</h2>
+        <button data-testid="file-picker-select-home" @click="$emit('select', '/home')">
+          Pick /home
+        </button>
+        <button data-testid="file-picker-cancel" @click="$emit('update:modelValue', false)">
+          Cancel
+        </button>
+      </div>
+    `,
+  },
+}))
 
 function findInDom<T extends Element = Element>(selector: string): T | null {
   return document.querySelector<T>(selector)
@@ -88,26 +117,49 @@ describe('AddKanbanDialog', () => {
     expect(btn?.disabled).toBe(true)
   })
 
-  it('typing a name enables the Add button', async () => {
+  it('Add button is disabled when no folder is picked (even with a valid name)', async () => {
     wrapper = mountDialog(true)
     await flushPromises()
     const nameInput = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')!
     nameInput.value = 'Sprint 12'
     nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    // No folder picked → button still disabled (path is required).
+    const btn = findInDom<HTMLButtonElement>('[data-testid="add-kanban-submit"]')
+    expect(btn?.disabled).toBe(true)
+  })
+
+  it('typing a name + picking a folder enables the Add button', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    const nameInput = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')!
+    nameInput.value = 'Sprint 12'
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    // Open the picker (stubbed) and pick /home. The picker's @select
+    // bubbles up through the parent and sets selectedPath.
+    clickInDom('[data-testid="add-kanban-choose-folder"]')
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-select-home"]')
     await flushPromises()
     const btn = findInDom<HTMLButtonElement>('[data-testid="add-kanban-submit"]')
     expect(btn?.disabled).toBe(false)
   })
 
-  it('emits create(name) and close when Add is clicked with a valid name', async () => {
+  it('emits create(name, path) and close when Add is clicked with valid name + folder', async () => {
     wrapper = mountDialog(true)
     await flushPromises()
     const nameInput = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')!
     nameInput.value = 'Sprint 12'
     nameInput.dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
+    clickInDom('[data-testid="add-kanban-choose-folder"]')
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-select-home"]')
+    await flushPromises()
     clickInDom('[data-testid="add-kanban-submit"]')
-    expect(wrapper.emitted('create')?.[0]).toEqual(['Sprint 12'])
+    // create event carries both name (1st arg) and path (2nd arg).
+    expect(wrapper.emitted('create')?.[0]).toEqual(['Sprint 12', '/home'])
     expect(wrapper.emitted('close')).toBeTruthy()
   })
 
@@ -118,8 +170,12 @@ describe('AddKanbanDialog', () => {
     nameInput.value = '  Sprint 12  '
     nameInput.dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
+    clickInDom('[data-testid="add-kanban-choose-folder"]')
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-select-home"]')
+    await flushPromises()
     clickInDom('[data-testid="add-kanban-submit"]')
-    expect(wrapper.emitted('create')?.[0]).toEqual(['Sprint 12'])
+    expect(wrapper.emitted('create')?.[0]).toEqual(['Sprint 12', '/home'])
   })
 
   it('Add button is a no-op when name is empty (no emit)', async () => {

@@ -2410,6 +2410,28 @@ pub fn updateWorkspaceItem(
     try db.exec(allocator, sql, &.{ workspace_id, item_type, id });
 }
 
+/// Update only the `path` column of a workspace item. Used by
+/// the kanban "Set project root" banner to backfill the path on
+/// existing kanbans that were created before the path field
+/// existed on the create endpoint. Pass `null` to clear the
+/// path; pass a non-empty slice to set it. The empty-string
+/// coercion is handled at the caller (handlers map `""` → `null`
+/// to match the column's nullable contract).
+pub fn updateWorkspaceItemPath(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    path: ?[]const u8,
+) !void {
+    if (path) |p| {
+        const sql = "UPDATE workspace_items SET path = ?, updated_at = datetime('now') WHERE id = ?";
+        try db.exec(allocator, sql, &.{ p, id });
+    } else {
+        const sql = "UPDATE workspace_items SET path = NULL, updated_at = datetime('now') WHERE id = ?";
+        try db.exec(allocator, sql, &.{id});
+    }
+}
+
 /// Delete a workspace item by id
 pub fn deleteWorkspaceItem(
     allocator: std.mem.Allocator,

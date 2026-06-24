@@ -76,7 +76,11 @@ describe('api.kanban', () => {
       expect(url).toContain('/api/workspaces/ws_1/items/kanban')
       expect(init.method).toBe('POST')
       const body = JSON.parse(init.body as string)
-      expect(body).toEqual({ name: 'My Sprint' })
+      // path defaults to '' when omitted (matches the API: NULLIF(?, '')
+      // turns '' into NULL on the backend). The frontend always passes
+      // a non-empty path via the AddKanbanDialog picker; the ''
+      // fallback is just for direct API callers / tests.
+      expect(body).toEqual({ name: 'My Sprint', path: '' })
       expect(result.item.id).toBe('kanban_1')
       expect(result.item.name).toBe('My Sprint')
       expect(result.columns).toHaveLength(3)
@@ -90,6 +94,22 @@ describe('api.kanban', () => {
         status: 409,
         body: expect.stringContaining('workspace not found'),
       })
+    })
+
+    it('forwards the optional path in the request body when supplied', async () => {
+      mockFetchOnce(201, {
+        item: { id: 'kanban_2', workspace_id: 'ws_1', item_type: 'kanban', name: 'My Sprint' },
+        columns: [],
+      })
+
+      await createKanban('ws_1', 'My Sprint', '/abs/projects/sprint')
+
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+      const body = JSON.parse(init.body as string)
+      // The cwd path round-trips through the API unchanged. The
+      // backend's NULLIF guards against the empty-string-to-NULL
+      // conversion, but a real path passes through verbatim.
+      expect(body).toEqual({ name: 'My Sprint', path: '/abs/projects/sprint' })
     })
   })
 
