@@ -1117,13 +1117,44 @@ fn buildCompactionEnvelope(
 
     // --- message_index ---
     try env.appendSlice(allocator, "  <message_index>\n");
-    for (dropped_messages, 0..) |msg, i| {
-        const msg_id = try std.fmt.allocPrint(allocator, "adhoc_{d}", .{i});
-        defer allocator.free(msg_id);
+    for (dropped_messages) |msg| {
+        // Use the real DB primary key from the in-memory AgentMessage so
+        // read_compacted_messages(mode="full", message_ids=[envelope_id])
+        // can find the row. The "unknown" fallback is defensive for
+        // messages synthesized in-memory (none today, but future callers
+        // may construct AgentMessage without setting .id).
+        const msg_id = msg.id orelse "unknown";
+        // msg.id is borrowed (owned by AgentMessage); do NOT free.
 
         const role_str = msg.role.to_str();
-        const preview = msg.content orelse "";
-        const preview_trimmed = if (preview.len > 100) preview[0..100] else preview;
+
+        // Extract preview text. Prefer msg.content; fall back to the
+        // text parts of content_parts (vision messages have content=null
+        // and the structured payload in content_parts). Image parts are
+        // skipped — they have no string preview. The result may be empty
+        // for pure-vision messages with no text; the entry still records
+        // id+role so the agent can fetch the full row.
+        var preview_buf: std.ArrayList(u8) = .empty;
+        defer preview_buf.deinit(allocator);
+
+        if (msg.content) |c| {
+            try preview_buf.appendSlice(allocator, c);
+        } else if (msg.content_parts) |parts| {
+            for (parts) |part| {
+                if (part.text) |t| try preview_buf.appendSlice(allocator, t);
+                // image_url parts contribute no preview text.
+            }
+        }
+
+        // Role-aware preview length: tool results get 500 chars (they're
+        // the most information-dense and most-asked-for-after-compaction),
+        // other roles get 200 chars. The read tool handles longer fetches.
+        const preview_max: usize = if (msg.role == .tool) 500 else 200;
+        const preview = preview_buf.items;
+        const preview_trimmed = if (preview.len > preview_max)
+            preview[0..preview_max]
+        else
+            preview;
         const preview_escaped = try helpers.xml_escape(allocator, preview_trimmed);
         defer allocator.free(preview_escaped);
 
@@ -1134,15 +1165,25 @@ fn buildCompactionEnvelope(
             \\
         , .{ msg_id, role_str });
 
-        // For tool-result messages, surface tool_call_id so the agent
-        // can match results back to calls. (tool_name is not available
-        // on the in-memory AgentMessage struct in this codebase; the
-        // read_compacted_messages tool can fetch it from the DB row.)
+        // For tool-result messages, surface tool_call_id AND tool_name so
+        // the agent can match results back to calls without needing to
+        // call read_compacted_messages for routine identification. Both
+        // are available on the in-memory AgentMessage struct
+        // (tool_call_id directly; tool_name via the first tool_call's
+        // function.name when tool_calls is set).
         if (msg.role == .tool) {
             const tcid = msg.tool_call_id orelse "";
             const tcid_escaped = try helpers.xml_escape(allocator, tcid);
             defer allocator.free(tcid_escaped);
             try env.print(allocator, "      <tool_call_id>{s}</tool_call_id>\n", .{tcid_escaped});
+
+            const tool_name: []const u8 = if (msg.tool_calls) |tcs|
+                if (tcs.len > 0) tcs[0].function.name else "unknown"
+            else
+                "unknown";
+            const tool_name_escaped = try helpers.xml_escape(allocator, tool_name);
+            defer allocator.free(tool_name_escaped);
+            try env.print(allocator, "      <tool_name>{s}</tool_name>\n", .{tool_name_escaped});
         }
 
         try env.print(allocator,
