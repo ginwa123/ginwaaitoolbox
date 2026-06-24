@@ -117,6 +117,8 @@ pub fn tasksListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
             .updated_at = task.updated_at,
             .is_pinned = task.is_pinned,
             .pinned_position = task.pinned_position,
+            .kanban_column_id = task.kanban_column_id,
+            .kanban_position = task.kanban_position,
         });
     }
 

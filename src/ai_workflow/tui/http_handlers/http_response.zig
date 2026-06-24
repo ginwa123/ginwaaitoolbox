@@ -372,6 +372,13 @@ pub const WorkspaceItemTaskResponse = struct {
     /// Only meaningful when `is_pinned == true`. Mirrors
     /// `WorkspaceItemTaskInfo.pinned_position`.
     pinned_position: i64 = 0,
+    /// Kanban column this task belongs to (when the parent workspace
+    /// item is a kanban). `null` for tasks under non-kanban parents.
+    /// Mirrors `WorkspaceItemTaskInfo.kanban_column_id` (Migration 048).
+    kanban_column_id: ?[]const u8 = null,
+    /// Position within the kanban column. `0` for non-kanban tasks.
+    /// Mirrors `WorkspaceItemTaskInfo.kanban_position` (Migration 048).
+    kanban_position: i64 = 0,
 };
 
 pub const WorkspaceItemTaskListResponse = struct {
