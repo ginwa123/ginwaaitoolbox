@@ -85,9 +85,19 @@ const hasProcessingTask = computed(() => {
 })
 
 const handleClick = () => {
-  // Toggle expanded state for collapse/expand
-  workspacesStore.toggleExpandedItem(props.item.id)
-  // Also emit click for external handling (e.g., navigation)
+  // Kanban items render the board in the main content area (see
+  // AppLayout.vue's KanbanView branch) — there's no inline list to
+  // expand, so skip the toggle. Folders and other non-kanban types
+  // keep the existing expand/collapse behavior. The selectItem event
+  // still fires for ALL types (handled in WorkspaceList → Sidebar →
+  // workspacesStore.setActiveWorkspaceItem), so clicking a kanban
+  // still activates it; AppLayout just routes the active item to the
+  // kanban board instead of a list.
+  if (props.item.item_type !== 'kanban') {
+    workspacesStore.toggleExpandedItem(props.item.id)
+  }
+  // Always emit click for external handling (e.g., navigation to
+  // the kanban board via activeWorkspaceItemId).
   emit('click', props.item)
 }
 

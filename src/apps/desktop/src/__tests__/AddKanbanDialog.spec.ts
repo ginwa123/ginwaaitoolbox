@@ -1,0 +1,178 @@
+/**
+ * Tests for AddKanbanDialog — the modal that creates a new project
+ * kanban board (only a name is needed; the backend seeds the default
+ * columns). Mirrors AddItemDialog.spec.ts: same
+ * `attachTo: document.body` + `document.querySelector` pattern (the
+ * dialog uses <Teleport to="body">, so wrapper.find(...) returns
+ * empty — we must inspect the document directly).
+ *
+ * Plan: docs/superpowers/plans/2026-06-21-workspace-item-kanban.md
+ *   Chunk 6 / Task 6.1
+ */
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
+import AddKanbanDialog from '../components/AddKanbanDialog.vue'
+
+function findInDom<T extends Element = Element>(selector: string): T | null {
+  return document.querySelector<T>(selector)
+}
+
+function clickInDom(selector: string) {
+  const el = findInDom<HTMLElement>(selector)
+  if (!el) throw new Error(`No element found: ${selector}`)
+  el.click()
+}
+
+function mountDialog(initialShow = true) {
+  // Wipe the body before each mount — see the rationale in
+  // AddItemDialog.spec.ts (Teleport to body + jsdom div accumulation).
+  document.body.innerHTML = ''
+  return mount(AddKanbanDialog, {
+    attachTo: document.body,
+    props: { show: initialShow },
+  })
+}
+
+describe('AddKanbanDialog', () => {
+  let wrapper: VueWrapper | null = null
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    document.body.style.overflow = ''
+    vi.restoreAllMocks()
+  })
+
+  it('renders nothing when show=false', () => {
+    wrapper = mountDialog(false)
+    expect(findInDom('[data-testid="add-kanban-dialog"]')).toBeNull()
+  })
+
+  it('shows the "Add Project Kanban" title and a name input when show=true', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    const dialog = findInDom('[data-testid="add-kanban-dialog"]')
+    expect(dialog).not.toBeNull()
+    // Title text is in the dialog body
+    expect(dialog?.textContent).toContain('Add Project Kanban')
+    // Description also present
+    expect(dialog?.textContent).toContain('Create a new kanban board')
+    // Name input is rendered with the expected data-testid
+    const nameInput = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')
+    expect(nameInput).not.toBeNull()
+    expect(nameInput?.tagName).toBe('INPUT')
+  })
+
+  it('opens with an empty name field', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    const input = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')
+    expect(input?.value).toBe('')
+  })
+
+  it('Add button is disabled when name is empty', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    const btn = findInDom<HTMLButtonElement>('[data-testid="add-kanban-submit"]')
+    expect(btn?.disabled).toBe(true)
+  })
+
+  it('Add button is disabled when name is whitespace only', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    const nameInput = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')!
+    nameInput.value = '   '
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    const btn = findInDom<HTMLButtonElement>('[data-testid="add-kanban-submit"]')
+    expect(btn?.disabled).toBe(true)
+  })
+
+  it('typing a name enables the Add button', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    const nameInput = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')!
+    nameInput.value = 'Sprint 12'
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    const btn = findInDom<HTMLButtonElement>('[data-testid="add-kanban-submit"]')
+    expect(btn?.disabled).toBe(false)
+  })
+
+  it('emits create(name) and close when Add is clicked with a valid name', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    const nameInput = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')!
+    nameInput.value = 'Sprint 12'
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    clickInDom('[data-testid="add-kanban-submit"]')
+    expect(wrapper.emitted('create')?.[0]).toEqual(['Sprint 12'])
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('trims whitespace from the name before emitting', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    const nameInput = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')!
+    nameInput.value = '  Sprint 12  '
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    clickInDom('[data-testid="add-kanban-submit"]')
+    expect(wrapper.emitted('create')?.[0]).toEqual(['Sprint 12'])
+  })
+
+  it('Add button is a no-op when name is empty (no emit)', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    // Force-click the disabled button to verify it is a no-op
+    const btn = findInDom<HTMLButtonElement>('[data-testid="add-kanban-submit"]')
+    btn?.click()
+    expect(wrapper.emitted('create')).toBeUndefined()
+    expect(wrapper.emitted('close')).toBeUndefined()
+  })
+
+  it('emits close when Cancel is clicked', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    clickInDom('[data-testid="add-kanban-cancel"]')
+    expect(wrapper.emitted('close')).toBeTruthy()
+    expect(wrapper.emitted('create')).toBeUndefined()
+  })
+
+  it('emits close when backdrop is clicked', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    const backdrop = document.querySelector(
+      '[data-testid="add-kanban-dialog"] .absolute.inset-0',
+    ) as HTMLElement | null
+    expect(backdrop).not.toBeNull()
+    backdrop?.click()
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('emits close on Escape key', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    const dialog = findInDom<HTMLElement>('[data-testid="add-kanban-dialog"]')
+    dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('resets name field on every open (no leakage across opens)', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    const nameInput = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')!
+    nameInput.value = 'Old Name'
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    // Close
+    await wrapper.setProps({ show: false })
+    await flushPromises()
+    // Reopen → state should be reset
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    const nameAfter = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')
+    expect(nameAfter?.value).toBe('')
+  })
+})

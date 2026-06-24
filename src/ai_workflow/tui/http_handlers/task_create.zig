@@ -198,14 +198,108 @@ pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     };
     defer task.deinit(allocator);
 
+    // ─── Kanban auto-assign ────────────────────────────────────────────────
+    // If the parent item is a kanban (`item_type='kanban'`), auto-assign
+    // this task to the first column (by `position` ASC) at
+    // `MAX(kanban_position) + 1` so the card lands at the bottom of the
+    // "todo" (or first) column without the frontend having to send a
+    // separate `PATCH /tasks/:id/move` call.
+    //
+    // For non-kanban items (folder / chat / memory), `kanban_column_id`
+    // stays NULL (the column is `NULL` per Migration 051). The
+    // frontend's folder-list view shows these as "Unassigned".
+    //
+    // Errors here are non-fatal — the task row is already created and
+    // the response can succeed. Log and move on.
+    {
+        // Query the parent item's type via SQL. Using `WHERE id = ? AND
+        // item_type = 'kanban'` keeps the kanban-check co-located with
+        // the lookup; if the SELECT returns no row, the parent is
+        // either missing or not a kanban, and we skip the auto-assign.
+        const parent_is_kanban = blk: {
+            var q = try sqlite_db.query(allocator,
+                "SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'kanban'",
+                &.{item_id});
+            defer q.deinit();
+            const row = (try q.next()) orelse break :blk false;
+            defer row.deinit(allocator);
+            break :blk true;
+        };
+
+        if (parent_is_kanban) {
+            const first_col_id = blk: {
+                var q = try sqlite_db.query(allocator,
+                    "SELECT id FROM kanban_columns WHERE workspace_item_id = ? ORDER BY position ASC LIMIT 1",
+                    &.{item_id});
+                defer q.deinit();
+                const row = (try q.next()) orelse break :blk null;
+                defer row.deinit(allocator);
+                break :blk try allocator.dupe(u8, row.values[0]);
+            };
+            if (first_col_id) |col_id| {
+                defer allocator.free(col_id);
+                sqlite_db.exec(allocator,
+                    "UPDATE workspace_item_tasks SET kanban_column_id = ?, kanban_position = (SELECT COALESCE(MAX(kanban_position), -1) + 1 FROM workspace_item_tasks WHERE kanban_column_id = ?) WHERE id = ?",
+                    &.{ col_id, col_id, task_id },
+                ) catch |err| {
+                    std.log.warn("task_create: kanban auto-assign failed (non-fatal): {s}", .{@errorName(err)});
+                };
+            }
+        }
+    }
+
+    // Re-read the kanban fields after the auto-assign UPDATE above so
+    // the 201 response carries `kanban_column_id` + `kanban_position`.
+    // Without this, the frontend's `workspacesStore.addTask` would
+    // push a task with `kanban_column_id = undefined` into
+    // `item.tasks`, and `KanbanColumn.vue`'s `.filter((t) =>
+    // t.kanban_column_id === props.column.id)` would drop the card
+    // (it appears on the kanban sidebar but is invisible inside the
+    // column until a full page reload triggers `getTasks`). SELECT
+    // returns "" (empty string) for NULL per the SqliteBackend
+    // convention — convert to `null` for JSON. The owned dupe keeps
+    // the slice alive past `row.deinit` so we can use it in
+    // `kanban_json` below.
+    var kanban_column_id: ?[]u8 = null;
+    var kanban_position: i64 = 0;
+    {
+        var q = try sqlite_db.query(allocator,
+            "SELECT kanban_column_id, COALESCE(kanban_position, 0) FROM workspace_item_tasks WHERE id = ?",
+            &.{task_id});
+        defer q.deinit();
+        if (try q.next()) |row| {
+            defer row.deinit(allocator);
+            if (row.values[0].len > 0) {
+                kanban_column_id = try allocator.dupe(u8, row.values[0]);
+            }
+            kanban_position = std.fmt.parseInt(i64, row.values[1], 10) catch 0;
+        }
+    }
+    defer if (kanban_column_id) |cid| allocator.free(cid);
+
     const session_id_json: []const u8 = if (json_body.session_id) |sid|
         try std.fmt.allocPrint(allocator, "\"{s}\"", .{sid})
     else
         "null";
-    return res.jsonResponse(.{ .status_code = 201, .data = try std.fmt.allocPrint(allocator, "{{\"id\":\"{s}\",\"name\":\"{s}\",\"workspace_item_id\":\"{s}\",\"task_type\":\"standard\",\"session_id\":{s}}}", .{
-        task.id,
-        task.name,
-        task.workspace_item_id,
-        session_id_json,
-    }) });
+    // Build the kanban fields JSON. `null` (not the string "null")
+    // for column when unassigned; number for position. Defaults match
+    // `WorkspaceItemTaskResponse.kanban_column_id: ?[]const u8` and
+    // `kanban_position: i64 = 0` in http_response.zig.
+    const kanban_json: []const u8 = blk: {
+        if (kanban_column_id) |cid| {
+            break :blk try std.fmt.allocPrint(allocator,
+                "\"kanban_column_id\":\"{s}\",\"kanban_position\":{d}",
+                .{ cid, kanban_position });
+        }
+        break :blk "\"kanban_column_id\":null,\"kanban_position\":0";
+    };
+    return res.jsonResponse(.{ .status_code = 201, .data = try std.fmt.allocPrint(allocator,
+        "{{\"id\":\"{s}\",\"name\":\"{s}\",\"workspace_item_id\":\"{s}\",\"task_type\":\"standard\",\"session_id\":{s},{s}}}",
+        .{
+            task.id,
+            task.name,
+            task.workspace_item_id,
+            session_id_json,
+            kanban_json,
+        }) });
 }

@@ -2,6 +2,14 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useNavigationStore } from './navigation'
 
+export interface KanbanColumn {
+  id: string
+  workspace_item_id: string
+  name: string
+  position: number
+  created_at: string
+}
+
 export interface WorkspaceItem {
   id: string
   name: string
@@ -21,6 +29,12 @@ export interface WorkspaceItem {
   hasMoreTasks?: boolean
   tasksNextCursor?: string | null
   isLoadingMoreTasks?: boolean
+  // NEW (Chunk 4 of workspace-item-kanban plan). Populated for
+  // `item_type === 'kanban'` items. Optional so legacy literals
+  // (5+ test files construct WorkspaceItem without this field) keep
+  // type-checking — see the nalar-frontend-task-literal-typing-rule
+  // memory.
+  kanban_columns?: KanbanColumn[]
 }
 
 export interface Workspace {
@@ -90,6 +104,12 @@ export interface Task {
   // nalar-frontend-task-literal-typing-rule memory.
   is_pinned?: boolean
   pinned_position?: number
+  // NEW (Chunk 4 of workspace-item-kanban plan). Populated for
+  // tasks under `item_type === 'kanban'` parents. `kanban_column_id`
+  // is `null` (not undefined) when the task is unassigned. Both
+  // optional so legacy task literals keep type-checking.
+  kanban_column_id?: string | null
+  kanban_position?: number
 }
 
 // localStorage keys for state persistence
@@ -539,6 +559,205 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         updatedAt: new Date(),
       })
       return taskId
+    }
+  }
+
+  // ─── Kanban actions (Chunk 5 of workspace-item-kanban plan) ─────────────
+  //
+  // These five actions back the kanban board UI. The API wrappers
+  // (api.createKanban, api.addKanbanColumn, etc.) were added in
+  // Chunk 4; these store actions are thin wrappers that call the
+  // API and mirror the response into the local store state.
+  //
+  // The plan (docs/superpowers/plans/2026-06-21-workspace-item-kanban.md
+  // Task 5.1) deliberately does NOT include offline fallbacks for
+  // kanban actions — kanban is a multi-column feature where stale
+  // local state would be worse than no state. A failed API call
+  // leaves the local store untouched; the caller's UI is expected
+  // to handle the rejection.
+
+  // Private helper: locate a single workspace item by id. Returns
+  // the live reference (Vue 3 reactivity is preserved) or undefined.
+  function findItem(workspaceId: string, itemId: string): WorkspaceItem | undefined {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return undefined
+    return workspace.items.find((i) => i.id === itemId)
+  }
+
+  // Create a new kanban workspace item. The backend seeds three
+  // default columns (todo / in progress / done) and returns them
+  // alongside the item. We push the item into the workspace's
+  // items array and pre-populate `kanban_columns` + `tasks` so
+  // the board renders immediately. Returns the new item's id.
+  async function addKanbanItem(
+    workspaceId: string,
+    name: string,
+  ): Promise<string | undefined> {
+    try {
+      const { item, columns } = await api.createKanban(workspaceId, name)
+      const ws = workspaces.value.find((w) => w.id === workspaceId)
+      if (ws) {
+        ws.items.push({
+          ...item,
+          kanban_columns: columns,
+          tasks: [],
+        })
+        // Auto-expand the workspace to surface the new kanban and
+        // persist the expansion (same UX as addWorkspaceItem).
+        if (!ws.expanded) {
+          ws.expanded = true
+          const expandedWorkspaces = loadExpandedWorkspaces()
+          expandedWorkspaces.add(ws.id)
+          saveExpandedWorkspaces(expandedWorkspaces)
+        }
+      }
+      return item.id
+    } catch (err) {
+      console.error('[workspacesStore.addKanbanItem] API call failed:', err)
+      return undefined
+    }
+  }
+
+  // Fetch the columns for a kanban from the backend and populate
+  // `item.kanban_columns`. Called when a kanban item is expanded
+  // (mirrors the folder-item `fetchFolderContents` pattern). The
+  // workspaces/items endpoint intentionally does NOT embed columns
+  // — kanbans can have arbitrarily many columns and we want a
+  // lazy load. The seeded 3 default columns (todo / in progress /
+  // done) live in the DB; without this call, the kanban board
+  // renders empty after every page reload.
+  async function fetchKanbanColumns(
+    workspaceId: string,
+    itemId: string,
+  ): Promise<void> {
+    const item = findItem(workspaceId, itemId)
+    if (!item) return
+    try {
+      const { columns } = await api.listKanbanColumns(workspaceId, itemId)
+      // Sort defensively (the backend already orders by position, but
+      // a stale local snapshot from before a backend reorder would
+      // otherwise keep the old ordering).
+      item.kanban_columns = [...columns].sort(
+        (a, b) => a.position - b.position,
+      )
+    } catch (err) {
+      console.error('[workspacesStore.fetchKanbanColumns] API call failed:', err)
+      // Leave whatever columns we have (or undefined) so the UI can
+      // show an empty-state rather than a hard error.
+    }
+  }
+
+  // Add a column to a kanban and append it to the local item's
+  // `kanban_columns` array, sorted by position. The backend
+  // returns the column with its server-assigned id and position.
+  async function addKanbanColumn(
+    workspaceId: string,
+    itemId: string,
+    name: string,
+  ): Promise<void> {
+    const col = await api.addKanbanColumn(workspaceId, itemId, name)
+    const item = findItem(workspaceId, itemId)
+    if (item) {
+      item.kanban_columns = [...(item.kanban_columns ?? []), col].sort(
+        (a, b) => a.position - b.position,
+      )
+    }
+  }
+
+  // Patch a kanban column's name and/or position. The backend
+  // re-numbers sibling positions when `position` changes; we
+  // replace the local column with the backend's returned object
+  // (the source of truth for the new position).
+  async function updateKanbanColumn(
+    workspaceId: string,
+    itemId: string,
+    columnId: string,
+    patch: { name?: string; position?: number },
+  ): Promise<void> {
+    const col = await api.updateKanbanColumn(workspaceId, itemId, columnId, patch)
+    const item = findItem(workspaceId, itemId)
+    if (item && item.kanban_columns) {
+      const i = item.kanban_columns.findIndex((c) => c.id === columnId)
+      if (i !== -1) item.kanban_columns[i] = col
+    }
+  }
+
+  // Reorder a kanban column via drag-and-drop. The DnD handler in
+  // <KanbanColumn> only knows the dragged column's id and the target
+  // column's id (the column the user dropped onto); this action
+  // resolves the target's current position and calls the API, then
+  // re-fetches the full column list because the backend's PATCH
+  // response only includes the moved column — sibling positions
+  // changed too (dense renumber), so we need the backend's full
+  // post-renumber ordering to mirror into the local store.
+  //
+  // No-op (silently) if the workspace / item / target column can't
+  // be found locally. This matches the pattern in `updateKanbanColumn`
+  // (the action assumes the column exists; the UI should only emit
+  // reorder events with valid ids).
+  async function reorderKanbanColumn(
+    workspaceId: string,
+    itemId: string,
+    columnId: string,
+    targetColumnId: string,
+  ): Promise<void> {
+    const item = findItem(workspaceId, itemId)
+    if (!item?.kanban_columns) return
+    const target = item.kanban_columns.find((c) => c.id === targetColumnId)
+    if (!target) return
+    // PATCH the moved column to the target's position. The backend's
+    // reorderColumn shifts the siblings (dense renumber) and returns
+    // the moved column's NEW position; we ignore the return value
+    // because we'll re-fetch the whole list next.
+    await api.updateKanbanColumn(workspaceId, itemId, columnId, {
+      position: target.position,
+    })
+    // Re-fetch so local state matches the backend's renumbered
+    // sibling positions.
+    await fetchKanbanColumns(workspaceId, itemId)
+  }
+
+  // Delete a kanban column. The backend unassigns tasks in the
+  // column (sets kanban_column_id to NULL) — we mirror that by
+  // clearing `kanban_column_id` on any matching tasks in the
+  // local store so the "Unassigned" view is consistent.
+  async function deleteKanbanColumn(
+    workspaceId: string,
+    itemId: string,
+    columnId: string,
+  ): Promise<void> {
+    await api.deleteKanbanColumn(workspaceId, itemId, columnId)
+    const item = findItem(workspaceId, itemId)
+    if (item) {
+      item.kanban_columns = (item.kanban_columns ?? []).filter((c) => c.id !== columnId)
+      // Mirror the backend's NULL-unassign for tasks in the column.
+      if (item.tasks) {
+        for (const t of item.tasks) {
+          if (t.kanban_column_id === columnId) t.kanban_column_id = null
+        }
+      }
+    }
+  }
+
+  // Move a task to a different column and/or position. The
+  // backend does the move + sibling re-numbering in a single
+  // transaction; we update the local task's `kanban_column_id`
+  // + `kanban_position` so the UI snaps to the new position.
+  async function moveTaskToColumn(
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+    columnId: string,
+    position: number,
+  ): Promise<void> {
+    await api.moveTask(workspaceId, itemId, taskId, columnId, position)
+    const item = findItem(workspaceId, itemId)
+    if (item && item.tasks) {
+      const task = item.tasks.find((t) => t.id === taskId)
+      if (task) {
+        task.kanban_column_id = columnId
+        task.kanban_position = position
+      }
     }
   }
 
@@ -1301,6 +1520,13 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     updateRoutine,
     pinTask,
     reorderPinnedTasks,
+    addKanbanItem,
+    addKanbanColumn,
+    updateKanbanColumn,
+    deleteKanbanColumn,
+    reorderKanbanColumn,
+    moveTaskToColumn,
+    fetchKanbanColumns,
     initializeFromSystemFolder,
     subscribeToSessionEvents,
     fetchSystemFolder,

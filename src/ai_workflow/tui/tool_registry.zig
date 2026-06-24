@@ -27,6 +27,8 @@ const list_agents_mod = nalar_mod.list_agents;
 const add_skill_mod = nalar_mod.add_skill;
 const edit_skill_mod = nalar_mod.edit_skill;
 const set_git_worktree_mod = nalar_mod.set_git_worktree;
+const kanban_list_mod = nalar_mod.kanban_list;
+const kanban_move_task_mod = nalar_mod.kanban_move_task;
 const add_agent_mod = nalar_mod.add_agent;
 const remove_agent_mod = nalar_mod.remove_agent;
 const remove_file_mod = nalar_mod.remove_file;
@@ -557,6 +559,88 @@ pub fn execSetGitWorktree(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     };
 
     const output = try wrapToolOutput(ctx.allocator, "set_git_worktree", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+pub fn execKanbanList(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        kanban_list_mod.KanbanListInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "kanban_list failed to parse input: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "kanban_list", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    // executeKanbanListToString returns an XML string. Errors (missing
+    // input, DB failure) are encoded as <kanban><error>...</error></kanban>
+    // so the LLM sees a structured failure rather than a tool crash.
+    const inner = kanban_list_mod.executeKanbanListToString(
+        ctx.allocator,
+        ctx.db,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "kanban_list failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "kanban_list", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer ctx.allocator.free(inner);
+
+    // Detect the <kanban><error>...</error></kanban> shape and surface
+    // it as a tool failure (so the LLM sees `success=false` rather
+    // than a successful wrapper around an error body).
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "kanban_list", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "kanban_list", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+pub fn execKanbanMoveTask(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        kanban_move_task_mod.KanbanMoveTaskInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "kanban_move_task failed to parse input: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "kanban_move_task", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    const inner = kanban_move_task_mod.executeKanbanMoveTaskToString(
+        ctx.allocator,
+        ctx.db,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "kanban_move_task failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "kanban_move_task", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer ctx.allocator.free(inner);
+
+    // Detect <kanban_move><success>false</success><error>...</error>...
+    // We can either parse the success flag or look for <error>.
+    // Detecting <error> is the same pattern set_git_worktree uses
+    // for its own <worktree><error>...</error></worktree> shape.
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "kanban_move_task", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "kanban_move_task", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
@@ -1536,6 +1620,17 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     // === GIT WORKTREE BINDING ===
     .{ .name = "set_git_worktree", .exec = execSetGitWorktree, .tool_def = set_git_worktree_mod.set_git_worktree_tool },
 
+    // === KANBAN TOOLS ===
+    // Both tools read directly from the DB (kanban_model.listColumns
+    // + a new SELECT on workspace_item_tasks) instead of going
+    // through the HTTP layer. This avoids the round-trip cost AND
+    // works around the GET /tasks endpoint not returning
+    // kanban_column_id / kanban_position (see project memory
+    // nalar-image-urls-vs-image-url for the parallel image_url
+    // situation).
+    .{ .name = "kanban_list", .exec = execKanbanList, .tool_def = kanban_list_mod.kanban_list_tool },
+    .{ .name = "kanban_move_task", .exec = execKanbanMoveTask, .tool_def = kanban_move_task_mod.kanban_move_task_tool },
+
     // === LSP TOOLS ===
     .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool },
     .{ .name = "lsp_references", .exec = execLspReferences, .tool_def = lsp_references_mod.lsp_references_tool },
@@ -1585,6 +1680,8 @@ pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool
         search_tool_mod.search_tool,
         nalar_browser_mod.nalar_browser_tool,
         set_git_worktree_mod.set_git_worktree_tool,
+        kanban_list_mod.kanban_list_tool,
+        kanban_move_task_mod.kanban_move_task_tool,
     };
     return allocator.dupe(tool_models.AgentTool, tools_list) catch return &.{};
 }

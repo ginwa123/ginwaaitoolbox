@@ -322,6 +322,21 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id", ai_mod.http_handlers.workspaceItemsGetHandler);
     try gs.router.put("/api/workspaces/:workspace_id/items/:item_id", ai_mod.http_handlers.workspaceItemsUpdateHandler);
     try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id", ai_mod.http_handlers.workspaceItemsDeleteHandler);
+
+    // Kanban workspace-item endpoints (item_type='kanban').
+    //   POST   /items/kanban                       — create a kanban + seed 3 default columns
+    //   GET    /items/:item_id/kanban/columns      — list columns
+    //   POST   /items/:item_id/kanban/columns      — add a column
+    //   PATCH  /items/:item_id/kanban/columns/:cid — rename and/or reorder a column
+    //   DELETE /items/:item_id/kanban/columns/:cid — delete a column
+    //   PATCH  /items/:item_id/tasks/:task_id/move — move a task across columns
+    // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).
+    try gs.router.post("/api/workspaces/:workspace_id/items/kanban", ai_mod.http_handlers.workspaceItemsCreateKanbanHandler);
+    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsListHandler);
+    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsCreateHandler);
+    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id", ai_mod.http_handlers.kanbanColumnsUpdateHandler);
+    try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id", ai_mod.http_handlers.kanbanColumnsDeleteHandler);
+    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/move", ai_mod.http_handlers.tasksMoveHandler);
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksListHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksCreateHandler);
     try gs.router.put("/api/workspaces/tasks/:task_id", ai_mod.http_handlers.tasksUpdateByIdHandler);

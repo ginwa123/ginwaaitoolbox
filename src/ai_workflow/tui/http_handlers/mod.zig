@@ -49,6 +49,15 @@ pub const workspaceItemsGetHandler = @import("workspace_items_get.zig").workspac
 pub const workspaceItemsUpdateHandler = @import("workspace_items_update.zig").workspaceItemsUpdateHandler;
 pub const workspaceItemsReorderHandler = @import("workspace_items_reorder.zig").workspaceItemsReorderHandler;
 pub const workspaceItemsDeleteHandler = @import("workspace_items_delete.zig").workspaceItemsDeleteHandler;
+pub const workspaceItemsCreateKanbanHandler = @import("workspace_items_create_kanban.zig").workspaceItemsCreateKanbanHandler;
+
+// Kanban column CRUD handlers (item_type='kanban' sub-resources).
+// See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).
+pub const kanbanColumnsListHandler = @import("kanban_columns_list.zig").kanbanColumnsListHandler;
+pub const kanbanColumnsCreateHandler = @import("kanban_columns_create.zig").kanbanColumnsCreateHandler;
+pub const kanbanColumnsUpdateHandler = @import("kanban_columns_update.zig").kanbanColumnsUpdateHandler;
+pub const kanbanColumnsDeleteHandler = @import("kanban_columns_delete.zig").kanbanColumnsDeleteHandler;
+pub const tasksMoveHandler = @import("tasks_move.zig").tasksMoveHandler;
 pub const tasksListHandler = @import("tasks_list.zig").tasksListHandler;
 pub const tasksCreateHandler = @import("task_create.zig").tasksCreateHandler;
 pub const tasksUpdateHandler = @import("task_update.zig").tasksUpdateHandler;

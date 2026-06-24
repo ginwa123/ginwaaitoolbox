@@ -10,6 +10,7 @@ import WorkspaceModal from './WorkspaceModal.vue'
 import RenameWorkspaceModal from './RenameWorkspaceModal.vue'
 import RenameTaskModal from './RenameTaskModal.vue'
 import AddItemDialog from './AddItemDialog.vue'
+import AddKanbanDialog from './AddKanbanDialog.vue'
 import AddMemoryDialog from './AddMemoryDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import AddTaskDialog from './AddTaskDialog.vue'
@@ -52,6 +53,30 @@ const updateChatId = (oldId: string, newId: string) => {
   }
 }
 
+// Expose method to open the Add Task picker dialog. Called by
+// AppLayout's <KanbanView> when the user clicks "+" on a kanban
+// column (the kanban now lives in the main content area, not in the
+// sidebar, so the picker needs to be opened from outside). Uses the
+// same flow as handleAddTask below — picker → standard/routine/memory
+// → store action. Returns nothing; the picker takes over from there.
+const openTaskPicker = (workspaceId: string, itemId: string) => {
+  pickerWorkspaceId.value = workspaceId
+  pickerItemId.value = itemId
+  showAddTaskPicker.value = true
+}
+
+// Skip the picker and go straight to the standard chat dialog.
+// Used by the kanban's "+ Add on column" path — kanban cards are
+// always standard chats (the column is a workflow stage, not a
+// task-type discriminator), so the Routine / Memory options would
+// be noise. Mirrors the picker → standard dialog transition that
+// `handleAddTaskPick('standard')` performs internally.
+const openStandardTaskDialog = (workspaceId: string, itemId: string) => {
+  addTaskDialogWorkspaceId.value = workspaceId
+  addTaskDialogItemId.value = itemId
+  showAddTaskDialog.value = true
+}
+
 // Handle session events from SSE
 const handleSessionEvent = (event: api.SessionEvent) => {
   console.log('[Sidebar] handleSessionEvent:', event)
@@ -60,8 +85,6 @@ const handleSessionEvent = (event: api.SessionEvent) => {
     chatsListRef.value.loadChats()
   }
 }
-
-defineExpose({ updateChatId })
 
 const workspacesStore = useWorkspacesStore()
 const sidebarStore = useSidebarStore()
@@ -75,6 +98,10 @@ const activeChatName = computed(() => navigationStore.activeChatName)
 const showAddWorkspaceModal = ref(false)
 const showAddItemDialog = ref(false)
 const addItemTargetWorkspaceId = ref<string | null>(null)
+// Kanban dialog state (Chunk 6 of workspace-item-kanban plan).
+// Reuses `addItemTargetWorkspaceId` as the target workspace (the
+// kanban item is created in that workspace, same as folder/memory).
+const showAddKanbanDialog = ref(false)
 const showAddMemoryDialog = ref(false)
 const addMemoryTargetWorkspaceId = ref<string | null>(null)
 const showDeleteConfirm = ref(false)
@@ -317,6 +344,7 @@ const handleDeleteItem = (workspaceId: string, itemId: string) => {
 const handleAddItem = (workspaceId: string, itemType: string) => {
   addItemTargetWorkspaceId.value = workspaceId
   if (itemType === 'folder') showAddItemDialog.value = true
+  if (itemType === 'kanban') showAddKanbanDialog.value = true
   if (itemType === 'memory') {
     addMemoryTargetWorkspaceId.value = workspaceId
     showAddMemoryDialog.value = true
@@ -328,6 +356,25 @@ const handleCreateItem = async (name: string, path: string) => {
     const itemId = await workspacesStore.addWorkspaceItem(addItemTargetWorkspaceId.value, name, path)
     if (itemId) await workspacesStore.fetchFolderContents(addItemTargetWorkspaceId.value, itemId)
   }
+}
+
+// Kanban item creation (Chunk 6 of workspace-item-kanban plan):
+// user fills in the name, AddKanbanDialog emits `create(name)`,
+// we call workspacesStore.addKanbanItem (the store action from
+// Chunk 5) which POSTs to /api/workspaces/:wsId/items/kanban and
+// pushes the new item + its 3 default columns into the local
+// store. Then close the dialog. The new item appears in the
+// sidebar immediately (the workspace is auto-expanded by the
+// store action, same UX as addWorkspaceItem).
+const handleCreateKanban = async (name: string) => {
+  if (addItemTargetWorkspaceId.value) {
+    await workspacesStore.addKanbanItem(addItemTargetWorkspaceId.value, name)
+  }
+  showAddKanbanDialog.value = false
+}
+
+const handleCloseAddKanbanDialog = () => {
+  showAddKanbanDialog.value = false
 }
 
 /**
@@ -816,6 +863,75 @@ const editRoutineTaskName = computed<string>(() => {
   }
   return ''
 })
+
+// ─── Kanban handlers ────────────────────────────────────────────────────────
+//
+// The kanban board lives in the main content area (rendered by
+// <AppLayout> when activeWorkspaceItem.item_type === 'kanban'), not
+// inline in the sidebar anymore. AppLayout's <KanbanView> wires its
+// events directly to the workspaces store (moveTaskToColumn,
+// addKanbanColumn, updateKanbanColumn, deleteKanbanColumn) — see
+// AppLayout.vue's handle*Kanban* functions. The only Sidebar-side
+// concern is the "+ Add" button on a column, which opens the
+// AddTaskPickerDialog; that flow is exposed via `openTaskPicker`
+// (see defineExpose below) and called by AppLayout.
+//
+// Kept here for reference (deleted in this commit):
+//   - handleAddKanbanTask    (replaced by AppLayout's call to
+//                             sidebarRef.openTaskPicker)
+//   - handleMoveKanbanTask   (moved to AppLayout's
+//                             handleKanbanMoveTask)
+//   - handleAddKanbanColumn  (moved to AppLayout's
+//                             handleKanbanAddColumn)
+//   - handleRenameKanbanColumn (moved to AppLayout's
+//                               handleKanbanRenameColumn)
+//   - handleDeleteKanbanColumn (moved to AppLayout's
+//                               handleKanbanDeleteColumn)
+
+// Expose the task event handlers for AppLayout to call when the
+// kanban board (now mounted in the main content area, not the
+// sidebar) emits select-task / delete-task / rename-task /
+// edit-routine / run-routine / pin-task. AppLayout holds the
+// kanban view; the handlers themselves still live here because
+// they need access to the modal state (rename, edit-routine) and
+// the chatsList ref (select-task resets the chat row's active
+// state). Re-exporting via defineExpose keeps the kanban events
+// in the same place the original WorkspaceItem path was using.
+//
+// Placed at the end of the script (rather than with the other
+// state) so the handler references are not in the temporal dead
+// zone — the arrow functions are only invoked from AppLayout at
+// runtime, by which point all `handle*` consts are initialized.
+defineExpose({
+  updateChatId,
+  openTaskPicker,
+  // Skip the picker → open the standard chat dialog directly. Used
+  // by the kanban's "+ Add" button (kanban cards are always standard
+  // chats — column is a workflow stage, not a task-type discriminator).
+  openStandardTaskDialog,
+  // Pass-throughs for the kanban's task events. The signature
+  // matches the existing handlers exactly; AppLayout's KanbanView
+  // forwards its emitted events to these.
+  selectTask: (taskId: string) => handleSelectTask(taskId),
+  deleteTask: (workspaceId: string, itemId: string, taskId: string) =>
+    handleDeleteTask(workspaceId, itemId, taskId),
+  renameTask: (
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+    currentName: string,
+  ) => handleRenameTask(workspaceId, itemId, taskId, currentName),
+  editRoutine: (workspaceId: string, itemId: string, taskId: string) =>
+    handleEditRoutine(workspaceId, itemId, taskId),
+  runRoutine: (workspaceId: string, itemId: string, taskId: string) =>
+    handleRunRoutine(workspaceId, itemId, taskId),
+  pinTask: (
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+    isPinned: boolean,
+  ) => handlePinTask(workspaceId, itemId, taskId, isPinned),
+})
 </script>
 
 <template>
@@ -944,6 +1060,7 @@ const editRoutineTaskName = computed<string>(() => {
     <RenameWorkspaceModal :show="showRenameWorkspaceModal" :current-name="renameTargetName" @close="handleCloseRenameModal" @rename="handleConfirmRename" />
     <RenameTaskModal :show="showRenameTaskModal" :current-name="renameTargetTaskName" @close="handleCloseTaskRenameModal" @rename="handleConfirmTaskRename" />
     <AddItemDialog :show="showAddItemDialog" @close="handleCloseAddItemDialog" @create="handleCreateItem" />
+    <AddKanbanDialog :show="showAddKanbanDialog" @close="handleCloseAddKanbanDialog" @create="handleCreateKanban" />
     <AddMemoryDialog
       :show="showAddMemoryDialog"
       :cwd="addMemoryTargetWorkspaceId ? resolveCwdForMemory(addMemoryTargetWorkspaceId) : ''"

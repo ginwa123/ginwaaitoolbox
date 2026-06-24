@@ -10,6 +10,8 @@ import Chats from './Chats.vue'
 import SettingsView from './SettingsView.vue'
 import CodeEditor from './CodeEditor.vue'
 import NotificationContainer from './NotificationContainer.vue'
+import KanbanView from './KanbanView.vue'
+import KanbanColumnEditor from './KanbanColumnEditor.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
@@ -73,6 +75,7 @@ const handleRightSidebarResize = (newWidth: number) => {
 }
 
 const activeWorkspaceItem = computed(() => workspacesStore.activeWorkspaceItem)
+const activeWorkspace = computed(() => workspacesStore.activeWorkspace)
 
 // Computed refs from store
 const activeChatId = computed(() => navigationStore.activeChatId)
@@ -398,6 +401,409 @@ const currentView = computed(() => {
 
 const activeTask = computed(() => workspacesStore.activeTask)
 
+// Workspace-item id of the currently-active task. Used by the
+// 3-column kanban|chatview template branch to make sure the
+// chatview and the kanban belong to the same parent — otherwise
+// we'd render a chatview of a non-kanban task alongside an
+// unrelated kanban (visual mess). The lookup walks every
+// workspace's tasks looking for `activeTaskId`; returns the
+// containing item's id or null. Cheap O(W) where W = number of
+// tasks across all workspaces.
+const activeTaskWorkspaceItemId = computed(() => {
+  const taskId = workspacesStore.activeTaskId
+  if (!taskId) return null
+  for (const ws of workspacesStore.workspaces) {
+    for (const item of ws.items) {
+      if (item.tasks?.some((t) => t.id === taskId)) {
+        return item.id
+      }
+    }
+  }
+  return null
+})
+
+// Close the chatview column (the 3-column layout's right pane).
+// Triggered by the ChatView's ✕ header button. Clears the active
+// task and navigates to `view=workspace` so the URL remains the
+// source of truth — a refresh of `/app?view=workspace` re-renders
+// the kanban alone, with no leftover activeTask. Without the
+// `router.replace`, the URL would still say `view=task&task=…`
+// after the close, which would force a re-mount of the standalone
+// task branch and the kanban would vanish.
+//
+// The chat list (ChatsList) is intentionally NOT touched here:
+// closing the kanban task's chatview is independent of the chat
+// list's active row (a kanban task has its own session, not a
+// chat-row session). Clearing activeTask is sufficient.
+const handleCloseTaskView = () => {
+  workspacesStore.setActiveTask(null)
+  router.replace({ path: '/app', query: { view: 'workspace' } })
+}
+
+// ─── Kanban column resize (3-column layout: sidebar | kanban | chatview) ──
+//
+// The 3-column layout's kanban column is drag-resizable. The user grabs
+// the 1px handle between the kanban and the chatview, drags left/right,
+// and the kanban grows/shrinks within a clamped range. The chatview
+// column absorbs the leftover space (it has `flex: 1 1 0`). The width
+// persists to localStorage so a refresh keeps the user's preferred
+// layout.
+//
+// Pattern mirrors Sidebar.vue's resize handling
+// (lines 162-194: startResize / handleResize / stopResize), which
+// uses raw `mousemove` listeners on `document` (not on the handle
+// itself — the cursor can outrun the handle during a fast drag,
+// and listening on `document` is the only way to catch every move).
+//
+// Bounds rationale:
+//   - MIN 280px: kanban columns become unreadable below this (the
+//     column card itself is ~240px wide plus padding, and the
+//     "+ Add" footer needs another ~40px).
+//   - MAX 720px: beyond this the chatview shrinks to <30% of the
+//     main area on typical 1080p+ displays, making the chat feel
+//     cramped. The chat needs at least 480px to be usable.
+const KANBAN_MIN_WIDTH = 280
+const KANBAN_MAX_WIDTH = 720
+const KANBAN_DEFAULT_WIDTH = 40 // % of main area, used when no localStorage value exists
+const KANBAN_WIDTH_STORAGE_KEY = 'kanban-column-width'
+
+// Load the persisted kanban width. Returns a px value (int) or
+// null when no value exists. The caller falls back to a percentage
+// layout in that case (see kanbanColumnStyle below). We deliberately
+// do NOT clamp here — clamping belongs in the resize handler, so
+// that an out-of-range value from a future bug doesn't silently
+// shrink the kanban on load.
+const loadKanbanColumnWidth = (): number | null => {
+  if (typeof localStorage === 'undefined') return null
+  const saved = localStorage.getItem(KANBAN_WIDTH_STORAGE_KEY)
+  if (saved === null) return null
+  const parsed = parseInt(saved, 10)
+  if (isNaN(parsed) || parsed <= 0) return null
+  return parsed
+}
+
+const kanbanColumnWidth = ref<number | null>(loadKanbanColumnWidth())
+const isKanbanResizing = ref(false)
+const kanbanResizeStartX = ref(0)
+const kanbanResizeStartWidth = ref(0)
+
+const startKanbanResize = (e: MouseEvent | TouchEvent) => {
+  isKanbanResizing.value = true
+  const clientX = 'touches' in e && e.touches[0]
+    ? e.touches[0].clientX
+    : (e as MouseEvent).clientX
+  kanbanResizeStartX.value = clientX
+  // If the kanban is currently percentage-sized (no persisted
+  // width yet), measure the rendered column width as the drag
+  // start point. Otherwise use the persisted px value. Without
+  // this, dragging from a 40% layout would snap to a 280px start.
+  const rendered = kanbanResizeStartWidth.value
+  if (rendered <= 0) {
+    const el = document.querySelector('[data-kanban-three-column] > :first-child') as HTMLElement | null
+    kanbanResizeStartWidth.value = el?.getBoundingClientRect().width ?? 400
+  }
+  document.addEventListener('mousemove', handleKanbanResize)
+  document.addEventListener('mouseup', stopKanbanResize)
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'col-resize'
+  e.preventDefault()
+}
+
+const handleKanbanResize = (e: MouseEvent | TouchEvent) => {
+  if (!isKanbanResizing.value) return
+  const clientX = 'touches' in e && e.touches[0]
+    ? e.touches[0].clientX
+    : (e as MouseEvent).clientX
+  const deltaX = clientX - kanbanResizeStartX.value
+  const newWidth = Math.max(
+    KANBAN_MIN_WIDTH,
+    Math.min(KANBAN_MAX_WIDTH, kanbanResizeStartWidth.value + deltaX),
+  )
+  kanbanColumnWidth.value = newWidth
+}
+
+const stopKanbanResize = () => {
+  if (!isKanbanResizing.value) return
+  isKanbanResizing.value = false
+  document.removeEventListener('mousemove', handleKanbanResize)
+  document.removeEventListener('mouseup', stopKanbanResize)
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+  // Persist on release (not during drag — dragging fires 60+
+  // mousemove events per second, and localStorage.setItem is
+  // synchronous + slow enough to noticeably drag the resize
+  // interaction). One write per gesture is enough.
+  if (kanbanColumnWidth.value !== null) {
+    try {
+      localStorage.setItem(KANBAN_WIDTH_STORAGE_KEY, String(kanbanColumnWidth.value))
+    } catch {
+      // localStorage may throw in private-mode or quota-exceeded
+      // scenarios; silently ignore so the in-memory drag still
+      // works for the current session.
+    }
+  }
+}
+
+// Inline style for the kanban column. When a width is persisted
+// (in px), use it directly (the user resized the column). When
+// no width is persisted yet, fall back to the default 40% flex
+// so first-time users see a balanced layout. Returns a CSSStyleDeclaration-compatible
+// object — Vue handles kebab-case keys natively in `:style`.
+const kanbanColumnStyle = computed(() => {
+  if (kanbanColumnWidth.value !== null) {
+    return {
+      width: `${kanbanColumnWidth.value}px`,
+      'min-width': `${KANBAN_MIN_WIDTH}px`,
+      'max-width': `${KANBAN_MAX_WIDTH}px`,
+      'flex-shrink': '0',
+    }
+  }
+  return {
+    flex: `0 1 ${KANBAN_DEFAULT_WIDTH}%`,
+    'min-width': `${KANBAN_MIN_WIDTH}px`,
+    'max-width': `${KANBAN_MAX_WIDTH}px`,
+  }
+})
+
+// ─── Kanban main-content view (was inline in WorkspaceItem.vue;
+// now mounted here so the board lives in the main content area, not
+// in the sidebar). The KanbanView emits its own CRUD events; we
+// forward them to the workspaces store directly. The one event
+// that can't be handled by the store alone is `addTask` (it opens
+// the AddTaskPickerDialog, which is owned by Sidebar) — that one
+// delegates to `sidebarRef.value?.openTaskPicker(...)`. ──────────────
+
+// KanbanColumnEditor modal state. Three modes (add / rename / delete)
+// share the same component; we track the mode + the target column
+// id + the initial name. Lives at the AppLayout scope so the editor
+// is mounted exactly once (any kanban view emits request-rename-
+// column / request-delete-column; we point them at this state).
+type KanbanEditorMode = 'add' | 'rename' | 'delete'
+const showKanbanColumnEditor = ref(false)
+const kanbanColumnEditorMode = ref<KanbanEditorMode>('add')
+const kanbanColumnEditorTargetId = ref<string | null>(null)
+const kanbanColumnEditorInitialName = ref<string>('')
+
+// Look up the column by id in the active kanban item. Returns
+// undefined if the active item is missing or has no columns — the
+// caller treats that as a no-op.
+const findKanbanColumn = (columnId: string) => {
+  return activeWorkspaceItem.value?.kanban_columns?.find((c) => c.id === columnId)
+}
+
+// + Column on the kanban header: open the editor in 'add' mode.
+const handleKanbanAddColumn = () => {
+  kanbanColumnEditorMode.value = 'add'
+  kanbanColumnEditorTargetId.value = null
+  kanbanColumnEditorInitialName.value = ''
+  showKanbanColumnEditor.value = true
+}
+
+// ⋮ menu "Rename" on a column: open the editor in 'rename' mode,
+// pre-filled with the column's current name.
+const handleKanbanRequestRenameColumn = (columnId: string) => {
+  const col = findKanbanColumn(columnId)
+  if (!col) return
+  kanbanColumnEditorMode.value = 'rename'
+  kanbanColumnEditorTargetId.value = columnId
+  kanbanColumnEditorInitialName.value = col.name
+  showKanbanColumnEditor.value = true
+}
+
+// ⋮ menu "Delete" on a column: open the editor in 'delete' mode
+// (the editor renders the confirmation copy itself).
+const handleKanbanRequestDeleteColumn = (columnId: string) => {
+  const col = findKanbanColumn(columnId)
+  if (!col) return
+  kanbanColumnEditorMode.value = 'delete'
+  kanbanColumnEditorTargetId.value = columnId
+  kanbanColumnEditorInitialName.value = col.name
+  showKanbanColumnEditor.value = true
+}
+
+const handleKanbanColumnEditorClose = () => {
+  showKanbanColumnEditor.value = false
+}
+
+const handleKanbanColumnEditorAdd = (name: string) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.addKanbanColumn(ws.id, activeWorkspaceItem.value.id, name)
+  showKanbanColumnEditor.value = false
+}
+
+const handleKanbanColumnEditorRename = (name: string) => {
+  if (!activeWorkspaceItem.value || !kanbanColumnEditorTargetId.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.updateKanbanColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    kanbanColumnEditorTargetId.value,
+    { name },
+  )
+  showKanbanColumnEditor.value = false
+}
+
+const handleKanbanColumnEditorDelete = () => {
+  if (!activeWorkspaceItem.value || !kanbanColumnEditorTargetId.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.deleteKanbanColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    kanbanColumnEditorTargetId.value,
+  )
+  showKanbanColumnEditor.value = false
+}
+
+// + Add on a column: open the standard chat dialog directly
+// (skipping the AddTaskPickerDialog). Kanban cards are always
+// standard chats — the column is a workflow stage, not a task-type
+// discriminator — so the Routine / Memory options would be noise.
+// Calls Sidebar's exposed `openStandardTaskDialog` (the picker →
+// standard dialog transition that `handleAddTaskPick('standard')`
+// performs internally). The new task is auto-assigned to the
+// first kanban column by the backend's tasks_create.zig (the
+// `columnId` payload is logged for future routing once the
+// create-task API accepts a column param).
+const handleKanbanAddTask = (payload: { columnId: string }) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  sidebarRef.value?.openStandardTaskDialog(ws.id, activeWorkspaceItem.value.id)
+  // TODO (v2): route payload.columnId through to the create-task
+  // API so the task lands in the user's chosen column on creation,
+  // not the default first column.
+  void payload.columnId
+}
+
+// Drag-and-drop task move between columns. Direct store call.
+const handleKanbanMoveTask = (payload: {
+  taskId: string
+  columnId: string
+  position: number
+}) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.moveTaskToColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    payload.taskId,
+    payload.columnId,
+    payload.position,
+  )
+}
+
+// "Rename column" emitted from the inline rename input inside
+// <KanbanColumn>. The column lets the user type a new name
+// directly (no modal) and emits this on blur / Enter. Direct store
+// call.
+const handleKanbanRenameColumn = (payload: { columnId: string; name: string }) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.updateKanbanColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    payload.columnId,
+    { name: payload.name },
+  )
+}
+
+// "Delete column" emitted from the column's quick-delete path (the
+// ⋮ menu's "Delete" goes through the editor flow above, but the
+// column may also expose a faster path in a future iteration).
+// Direct store call.
+const handleKanbanDeleteColumn = (columnId: string) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.deleteKanbanColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    columnId,
+  )
+}
+
+// Column header drag-and-drop reorder (Trello/Jira UX). Direct store
+// call — the store action resolves the target column's current
+// position, PATCHes the moved column, and re-fetches the full
+// column list (because the backend's PATCH response only includes
+// the moved column, but siblings were renumbered too).
+const handleKanbanReorderColumn = (payload: {
+  columnId: string
+  targetColumnId: string
+}) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.reorderKanbanColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    payload.columnId,
+    payload.targetColumnId,
+  )
+}
+
+// Task-level events (select-task, delete-task, rename-task,
+// edit-routine, run-routine, pin-task) re-emitted by <KanbanColumn>.
+// These all live in Sidebar (because they need access to
+// chatsListRef and the modal state for rename / edit-routine), so
+// we forward them via the exposed methods. The sidebar ref is
+// non-null at runtime (AppLayout always renders a Sidebar); the
+// optional-chaining + noop-on-miss is defensive for the
+// initial-render / unmount edge case.
+
+// select-task: click a card → open the task's chat view.
+const handleKanbanSelectTask = (taskId: string) => {
+  sidebarRef.value?.selectTask(taskId)
+}
+
+const handleKanbanDeleteTask = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  sidebarRef.value?.deleteTask(workspaceId, itemId, taskId)
+}
+
+const handleKanbanRenameTask = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+  currentName: string,
+) => {
+  sidebarRef.value?.renameTask(workspaceId, itemId, taskId, currentName)
+}
+
+const handleKanbanEditRoutine = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  sidebarRef.value?.editRoutine(workspaceId, itemId, taskId)
+}
+
+const handleKanbanRunRoutine = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+) => {
+  void sidebarRef.value?.runRoutine(workspaceId, itemId, taskId)
+}
+
+const handleKanbanPinTask = (
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+  isPinned: boolean,
+) => {
+  sidebarRef.value?.pinTask(workspaceId, itemId, taskId, isPinned)
+}
+
 // Right sidebar cwd - show when chat is open OR task is active
 const rightSidebarCwd = computed(() => {
   if (activeTask.value && activeWorkspaceItem.value?.path) {
@@ -507,11 +913,18 @@ watch(
       } else if (view === 'task' && taskId) {
         // Task is handled by workspacesStore.setActiveTask already called in onMounted
       } else if (!view || view === 'workspace') {
-        // Clear chat session cwd when not in chat view
+        // Clear chat session cwd when not in chat view. We
+        // intentionally do NOT clear activeWorkspaceItemId here:
+        // Sidebar's handleSelectItem navigates to this exact URL
+        // after setting the active workspace item (folder or
+        // kanban). Clearing it here would clobber the user's
+        // selection and force them to click the item again.
+        // The empty-state placeholder in the v-else-if chain
+        // below renders when activeWorkspaceItem is null, so
+        // users still see a "select a project" message when
+        // there's no active item — clearing in the watcher is
+        // unnecessary.
         chatSessionCwd.value = ''
-        // Clear any workspace-item active state — "no view" or "workspace"
-        // means "no chat selected".
-        workspacesStore.setActiveWorkspaceItem(null)
       }
     }
   },
@@ -654,7 +1067,97 @@ watch(chatSessionCwd, (newCwd) => {
         />
       </div>
 
-      <!-- Task view takes priority -->
+      <!-- 3-column kanban layout: sidebar | kanban | chatview.
+           Rendered when (a) the active workspace item is a kanban
+           AND (b) a task is currently selected under that kanban.
+           Both columns are mounted simultaneously so the user
+           can see the kanban context while chatting. The kanban
+           column is flexed to ~40% of the remaining width (after
+           the sidebar) and the chat takes the rest. The :key on
+           KanbanView forces a fresh mount when the user navigates
+           from one kanban to another; the ChatView :key uses
+           'task-<id>' so switching to a different task in the
+           SAME kanban remounts the chat (clean state, no stale
+           scroll position from the previous task). -->
+      <div
+        v-else-if="
+          activeTask &&
+          activeWorkspaceItem &&
+          activeWorkspaceItem.item_type === 'kanban' &&
+          activeTaskWorkspaceItemId === activeWorkspaceItem.id
+        "
+        class="flex-1 flex min-h-0"
+        data-kanban-three-column
+      >
+        <div
+          class="flex flex-col h-full min-h-0"
+          :style="kanbanColumnStyle"
+          style="border-right: 1px solid var(--color-border);"
+        >
+          <KanbanView
+            :key="'kanban-' + activeWorkspaceItem.id"
+            :item="activeWorkspaceItem"
+            :workspace-id="activeWorkspace?.id ?? ''"
+            :item-id="activeWorkspaceItem.id"
+            @add-task="handleKanbanAddTask"
+            @move-task="handleKanbanMoveTask"
+            @add-column="handleKanbanAddColumn"
+            @rename-column="handleKanbanRenameColumn"
+            @delete-column="handleKanbanDeleteColumn"
+            @reorder-column="handleKanbanReorderColumn"
+            @request-rename-column="handleKanbanRequestRenameColumn"
+            @request-delete-column="handleKanbanRequestDeleteColumn"
+            @select-task="handleKanbanSelectTask"
+            @delete-task="handleKanbanDeleteTask"
+            @rename-task="handleKanbanRenameTask"
+            @edit-routine="handleKanbanEditRoutine"
+            @run-routine="handleKanbanRunRoutine"
+            @pin-task="handleKanbanPinTask"
+          />
+        </div>
+        <!--
+          Resize handle between the kanban column and the chatview
+          column. A 4px-wide hit area (w-1 in Tailwind = 4px) with
+          a 1px visual bar centered in it; the bar turns violet on
+          hover and during an active drag so the user knows the
+          handle is grabbable. Mirrors Sidebar.vue's resize handle
+          (line 949): same cursor, same opacity-on-hover pattern,
+          same data-kanban-resize-handle test selector.
+
+          The drag is owned by startKanbanResize (mousedown handler
+          below) which adds document-level mousemove/mouseup
+          listeners so a fast drag that outruns the handle still
+          tracks correctly.
+        -->
+        <div
+          class="shrink-0 w-1 cursor-col-resize relative"
+          :class="{ 'opacity-100': isKanbanResizing }"
+          :style="{
+            backgroundColor: isKanbanResizing ? 'var(--color-violet)' : 'var(--color-border)',
+          }"
+          data-kanban-resize-handle
+          data-testid="kanban-resize-handle"
+          @mousedown="startKanbanResize"
+          @mouseenter="(e) => ((e.currentTarget as HTMLElement).style.backgroundColor = 'var(--color-violet)')"
+          @mouseleave="(e) => { if (!isKanbanResizing) (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--color-border)' }"
+        ></div>
+        <div class="flex-1 flex flex-col h-full min-w-0 min-h-0">
+          <ChatView
+            :key="'task-' + activeTask.id"
+            :chat-id="activeTask.id"
+            :chat-name="activeTask.name"
+            :type="'task'"
+            :cwd="activeWorkspaceItem.path || ''"
+            :task-id="activeTask.id"
+            :task-name="activeTask.name"
+            :project-name="activeWorkspaceItem.name || ''"
+            :show-header="true"
+            @close="handleCloseTaskView"
+          />
+        </div>
+      </div>
+      <!-- Task view (non-kanban parents, e.g. chat tasks): single
+           column, no header. Preserved for backward compatibility. -->
       <ChatView
         v-else-if="currentView === 'task' && activeTask"
         :key="'task-' + activeTask.id"
@@ -665,6 +1168,35 @@ watch(chatSessionCwd, (newCwd) => {
         :task-id="activeTask.id"
         :task-name="activeTask.name"
         :project-name="activeWorkspaceItem?.name || ''"
+      />
+      <!-- Kanban view (was inline in WorkspaceItem.vue; now mounted
+           in the main content area so the board is no longer cramped
+           in the sidebar). Renders only when an active kanban item
+           is selected AND no task is currently being viewed (the
+           3-column branch above already handles task-with-kanban-parent).
+           The :key forces a fresh mount when the user navigates
+           from one kanban to another (KanbanView fetches columns
+           on mount). -->
+      <KanbanView
+        v-else-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'kanban'"
+        :key="'kanban-' + activeWorkspaceItem.id"
+        :item="activeWorkspaceItem"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
+        @add-task="handleKanbanAddTask"
+        @move-task="handleKanbanMoveTask"
+        @add-column="handleKanbanAddColumn"
+        @rename-column="handleKanbanRenameColumn"
+        @delete-column="handleKanbanDeleteColumn"
+        @reorder-column="handleKanbanReorderColumn"
+        @request-rename-column="handleKanbanRequestRenameColumn"
+        @request-delete-column="handleKanbanRequestDeleteColumn"
+        @select-task="handleKanbanSelectTask"
+        @delete-task="handleKanbanDeleteTask"
+        @rename-task="handleKanbanRenameTask"
+        @edit-routine="handleKanbanEditRoutine"
+        @run-routine="handleKanbanRunRoutine"
+        @pin-task="handleKanbanPinTask"
       />
       <ChatView
         v-else-if="activeChatId.startsWith('chat-')"
@@ -775,5 +1307,25 @@ watch(chatSessionCwd, (newCwd) => {
 
     <!-- Global error notification stack -->
     <NotificationContainer />
+
+    <!-- Kanban column editor: add / rename / delete a column on the
+         currently-active kanban item. Mounted at the AppLayout root
+         (not inside the KanbanView's scoped tree) so the modal's
+         internal Teleport/animation lifecycle works cleanly even if
+         the KanbanView branch unmounts mid-edit (e.g. the user
+         clicks a task card and the view switches to ChatView while
+         the modal is open). The modal's `show` prop is bound to
+         showKanbanColumnEditor; mode/targetId/initialName are set
+         by the request-add-column / request-rename-column /
+         request-delete-column handlers. -->
+    <KanbanColumnEditor
+      :show="showKanbanColumnEditor"
+      :mode="kanbanColumnEditorMode"
+      :initial-name="kanbanColumnEditorInitialName"
+      @close="handleKanbanColumnEditorClose"
+      @add="handleKanbanColumnEditorAdd"
+      @rename="handleKanbanColumnEditorRename"
+      @delete="handleKanbanColumnEditorDelete"
+    />
   </div>
 </template>
