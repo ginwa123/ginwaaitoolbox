@@ -110,7 +110,6 @@ pub fn tasksListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
             .id = task.id,
             .name = task.name,
             .workspace_item_id = task.workspace_item_id,
-            .session_id = task.session_id,
             .task_type = task.task_type,
             .routine = routine_meta,
             .created_at = task.created_at,

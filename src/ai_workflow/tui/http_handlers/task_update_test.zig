@@ -127,31 +127,27 @@ test "llm_history.updateTaskName cascades to updateSessionName" {
     }
 }
 
-// ─── Contract 3: handler preserves the session_id-only rebind path ─────────
+// ─── Contract 3: handler no longer references the dropped session_id rebind ─
 
-test "task_update handler still routes session_id-only updates through updateWorkspaceItemTask" {
+test "task_update handler no longer references the dropped session_id rebind" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);
 
-    // The handler must still call updateWorkspaceItemTask for the
-    // session_id-only rebind case (so a session rebind doesn't
-    // accidentally trigger a cascade with an empty new name). This
-    // guards against an over-zealous refactor that removes the
-    // rebind path entirely.
-    if (std.mem.indexOf(u8, source, "updateWorkspaceItemTask") == null) {
+    // Migration 052 dropped the redundant `session_id` column from
+    // `workspace_item_tasks` (the column equaled the task's own id
+    // per the `task.id == session_id` convention). The rebind path
+    // (`updateWorkspaceItemTask(... , null, sid)`) was removed in
+    // the same change. This test guards against accidentally
+    // re-introducing it.
+    if (std.mem.indexOf(u8, source, "updateWorkspaceItemTask") != null) {
         std.debug.print(
-            "\n!! {s} no longer calls updateWorkspaceItemTask !!\n" ++
-                "   The session_id rebind path may have been removed. A\n" ++
-                "   `PUT {{ session_id: 'X' }}` request would no-op even though\n" ++
-                "   it should rebind the task to a different session.\n" ++
-                "   Restore the rebind:\n" ++
-                "     if (json_body.session_id) |sid| {{\n" ++
-                "         ai_mod.workspace_item_tasks.updateWorkspaceItemTask(..., null, sid) ...\n" ++
-                "     }}\n" ++
-                "   See docs/plans/2026-06-06-workspace-item-task-rename.md.\n",
+            "\n!! {s} still calls updateWorkspaceItemTask !!\n" ++
+                "   Migration 052 dropped the session_id column; the rebind\n" ++
+                "   path is no longer needed (task.id IS the session id).\n" ++
+                "   Remove the call from the handler.\n",
             .{HANDLER_PATH},
         );
-        return error.RebindPathMissing;
+        return error.RebindPathStillPresent;
     }
 }

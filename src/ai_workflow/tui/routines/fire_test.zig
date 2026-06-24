@@ -62,16 +62,15 @@ fn setupDb() !struct {
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
-    // Mirror the state left by Migration 034 (workspace_item_tasks).
-    // The `session_id` column is nullable and Migration 044 doesn't
-    // add it — but include it for symmetry with the other test
-    // helpers in the project.
+    // Mirror the state left by Migration 034 + Migration 052
+    // (workspace_item_tasks). The `session_id` column was dropped
+    // in Migration 052 — `task.id` IS the session id per the
+    // `task.id == session_id` convention.
     try db.exec(alloc,
         \\CREATE TABLE workspace_item_tasks (
         \\    id TEXT PRIMARY KEY,
         \\    name TEXT NOT NULL,
         \\    workspace_item_id TEXT NOT NULL,
-        \\    session_id TEXT,
         \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         \\)
@@ -100,7 +99,7 @@ test "fireRoutine rejects a second concurrent fire (atomic claim)" {
     defer ctx.threaded.deinit();
 
     try ctx.db.exec(alloc,
-        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id) VALUES ('t1', 'A', 'wi1', 't1')",
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES ('t1', 'A', 'wi1')",
         &.{});
     try model.insertRoutine(alloc, &ctx.db, .{
         .id = "r1",
@@ -156,7 +155,7 @@ test "fireRoutine on a non-routine task returns NotARoutine" {
 
     // Parent task exists, but no `routines` row references it.
     try ctx.db.exec(alloc,
-        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id) VALUES ('t1', 'A', 'wi1', 't1')",
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES ('t1', 'A', 'wi1')",
         &.{});
 
     // `di` is not read on the `NotARoutine` path (the load fails
@@ -174,7 +173,7 @@ test "fireRoutine on a disabled routine returns Disabled" {
     defer ctx.threaded.deinit();
 
     try ctx.db.exec(alloc,
-        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id) VALUES ('t1', 'A', 'wi1', 't1')",
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES ('t1', 'A', 'wi1')",
         &.{});
     try model.insertRoutine(alloc, &ctx.db, .{
         .id = "r1",

@@ -80,21 +80,18 @@ pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         const next_run_at = try fire.formatSqliteDatetime(allocator, next_ns);
         defer allocator.free(next_run_at);
 
-        if (json_body.session_id) |sid| {
-            sqlite_db.exec(allocator,
-                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, session_id, task_type) VALUES (?, ?, ?, ?, 'routine')",
-                &[_][]const u8{ task_id, json_body.name, item_id, sid },
-            ) catch {
-                return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create task" }) });
-            };
-        } else {
-            sqlite_db.exec(allocator,
-                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES (?, ?, ?, 'routine')",
-                &[_][]const u8{ task_id, json_body.name, item_id },
-            ) catch {
-                return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create task" }) });
-            };
-        }
+        // Routine task — task.id == session_id, so we never
+        // need to store a separate session_id column. The
+        // session_id field in the request body is accepted for
+        // backward compatibility (callers may still send it
+        // from older client builds) but is intentionally
+        // ignored.
+        sqlite_db.exec(allocator,
+            "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES (?, ?, ?, 'routine')",
+            &[_][]const u8{ task_id, json_body.name, item_id },
+        ) catch {
+            return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create task" }) });
+        };
 
         const routine_id = try std.fmt.allocPrint(allocator, "routine_{s}", .{task_id});
         defer allocator.free(routine_id);
@@ -106,10 +103,11 @@ pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
             return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create routine row" }) });
         };
 
-        const session_id_json: []const u8 = if (json_body.session_id) |sid|
-            try std.fmt.allocPrint(allocator, "\"{s}\"", .{sid})
-        else
-            "null";
+        // The response still echoes session_id for backward
+        // compatibility with the v1 wire format — it's just
+        // always equal to the task id now.
+        const session_id_json: []const u8 = try std.fmt.allocPrint(allocator, "\"{s}\"", .{task_id});
+        defer allocator.free(session_id_json);
         return res.jsonResponse(.{ .status_code = 201, .data = try std.fmt.allocPrint(allocator,
             \\{{"id":"{s}","name":"{s}","workspace_item_id":"{s}","task_type":"routine","session_id":{s},"created_at":null,"updated_at":null}}
         , .{
@@ -193,7 +191,12 @@ pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     }
 
     // Standard task path — unchanged from the pre-routines code.
-    const task = ai_mod.workspace_item_tasks.createWorkspaceItemTask(allocator, sqlite_db, task_id, json_body.name, item_id, json_body.session_id, "standard") catch {
+    //
+    // Note: the `task.id == session_id` convention means we no
+    // longer accept a `session_id` field on the request body. The
+    // task's own id is the session id (the LLM session is created
+    // by `session_create.zig` using the same id).
+    const task = ai_mod.workspace_item_tasks.createWorkspaceItemTask(allocator, sqlite_db, task_id, json_body.name, item_id, "standard") catch {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create task" }) });
     };
     defer task.deinit(allocator);
