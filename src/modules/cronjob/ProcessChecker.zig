@@ -1,4 +1,6 @@
 const std = @import("std");
+const nalarcore = @import("nalarcore");
+const process_status = nalarcore.helpers.process_status;
 
 /// Process status enumeration
 pub const ProcessStatus = enum {
@@ -19,30 +21,15 @@ pub const ProcessInfo = struct {
 /// Check if a process is still running by its PID
 /// Returns the current status of the process
 pub fn checkProcessStatus(pid: i32) ProcessStatus {
-    // Use kill with signal 0 to check if process exists
-    // Signal 0 is a special signal that performs error checking without sending any signal
-    const result = std.posix.kill(@intCast(pid), @enumFromInt(0));
-
-    if (result) |_| {
-        // Process exists and is running
+    // Uses the cross-platform process_status.isProcessRunning helper
+    // (kill(pid, 0) on POSIX, OpenProcess(QUERY_LIMITED) on Windows).
+    // On Windows, `std.posix.kill` is `@compileError`'d because
+    // `std.c.pid_t` is `*anyopaque` there.
+    if (pid <= 0) return .unknown;
+    if (process_status.isProcessRunning(pid)) {
         return .running;
-    } else |err| {
-        switch (err) {
-            error.PermissionDenied => {
-                // Process exists but we don't have permission to signal it
-                // This means it's running but owned by another user
-                return .running;
-            },
-            error.ProcessNotFound => {
-                // Process does not exist - it has completed or been killed
-                return .completed;
-            },
-            else => {
-                // Other errors (including InvalidArgument if PID is invalid)
-                return .unknown;
-            },
-        }
     }
+    return .completed;
 }
 
 /// Check process status and get exit code if available

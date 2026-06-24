@@ -4,14 +4,19 @@ const process = @import("nalarcore").helpers.process;
 /// Self-kill detection result: null = safe, error message = dangerous
 pub const SelfKillResult = ?[]const u8;
 
-/// Get the current process ID (cross-platform)
-pub fn get_self_pid() std.c.pid_t {
+/// Get the current process ID (cross-platform).
+///
+/// Returns `i32` directly (not `std.c.pid_t`) so the value is comparable
+/// to `i32` parsed from shell command arguments. On Windows,
+/// `std.c.pid_t` is `*anyopaque` (no real PID concept in Windows libc),
+/// so using `i32` is the cross-platform correct choice.
+pub fn get_self_pid() i32 {
     return process.getCurrentProcessId();
 }
 
 /// Detect if a command attempts to kill the current process
 /// Returns an error message if self-kill is detected, null otherwise
-pub fn detect_self_kill(allocator: std.mem.Allocator, command: []const u8, self_pid: std.c.pid_t) !SelfKillResult {
+pub fn detect_self_kill(allocator: std.mem.Allocator, command: []const u8, self_pid: i32) !SelfKillResult {
     _ = allocator; // Reserved for future use
     const trimmed = std.mem.trim(u8, command, " \t\n\r");
 
