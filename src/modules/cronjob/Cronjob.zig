@@ -234,7 +234,11 @@ pub fn cleanupOldProcesses(allocator: std.mem.Allocator, io: std.Io, db_path: []
     try db.init(io, db_path_z);
     defer db.deinit();
 
-    const cutoff_time = std.time.timestamp() - older_than_seconds;
+    // `std.time.timestamp` was removed in Zig 0.16. Use the Io runtime
+    // (we have `io: std.Io` in this function's signature) for the
+    // portable replacement.
+    const now = std.Io.Clock.now(.real, io).toSeconds();
+    const cutoff_time = now - older_than_seconds;
     const cutoff_str = try std.fmt.allocPrint(allocator, "{d}", .{cutoff_time});
     defer allocator.free(cutoff_str);
 

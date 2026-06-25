@@ -1,4 +1,6 @@
 const std = @import("std");
+const nalarcore = @import("nalarcore");
+const helpers = nalarcore.helpers;
 const json = std.json;
 const schemas = @import("schemas.zig");
 const lsp_types = @import("lsp_types.zig");
@@ -26,6 +28,7 @@ pub const LspHoverOutput = lsp_types.LspHoverOutput;
 // Unified LSP error set
 pub const LspError = error{
     FileNotFound,
+    ReadFileFailed,
     BinaryNotFound,
     ProcessSpawnFailed,
     InvalidResponse,
@@ -39,7 +42,9 @@ pub const LspError = error{
 pub fn find_lsp(allocator: std.mem.Allocator, lsp_name: []const u8) ![]u8 {
     // If already an absolute path, check if it exists
     if (lsp_name.len > 0 and lsp_name[0] == '/') {
-        std.fs.accessAbsolute(lsp_name, .{}) catch return LspError.BinaryNotFound;
+        // `std.fs.accessAbsolute` was removed in Zig 0.16; use the
+        // cross-platform `helpers.fileExists` wrapper (libc `access`).
+        if (!helpers.fileExists(lsp_name)) return LspError.BinaryNotFound;
         return try allocator.dupe(u8, lsp_name);
     }
 
@@ -163,11 +168,12 @@ const LspSession = struct {
         const lsp_binary = try find_lsp(arena_allocator, lsp_name);
         errdefer arena_allocator.free(lsp_binary);
 
-        std.fs.accessAbsolute(file_path, .{}) catch return LspError.FileNotFound;
-
-        const file = try std.fs.cwd().openFile(file_path, .{});
-        defer file.close();
-        const content = try file.readToEndAlloc(arena_allocator, 1024 * 1024);
+        // `std.fs.accessAbsolute` / `std.fs.cwd().openFile` were removed
+        // in Zig 0.16; use the cross-platform `helpers.fileExists` /
+        // `helpers.readFile` wrappers (libc fopen/fread, no `io: std.Io`
+        // required).
+        if (!helpers.fileExists(file_path)) return LspError.FileNotFound;
+        const content = try helpers.readFile(arena_allocator, file_path) catch return LspError.ReadFileFailed;
 
         var child = std.process.Child.init(&.{lsp_binary}, arena_allocator);
         child.stdin_behavior = .Pipe;

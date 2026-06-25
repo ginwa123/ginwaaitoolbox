@@ -1,4 +1,6 @@
 const std = @import("std");
+const nalarcore = @import("nalarcore");
+const helpers = nalarcore.helpers;
 const json = std.json;
 const schemas = @import("schemas.zig");
 const lsp_types = @import("lsp_types.zig");
@@ -9,6 +11,7 @@ const LspHoverOutput = lsp_types.LspHoverOutput;
 // LSP error set
 pub const LspError = error{
     FileNotFound,
+    ReadFileFailed,
     BinaryNotFound,
     ProcessSpawnFailed,
     InvalidResponse,
@@ -200,13 +203,14 @@ pub fn execute_lsp_hover(allocator: std.mem.Allocator, input: LspHoverInput) !Ls
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    // Verify file exists
-    std.fs.accessAbsolute(input.file_path, .{}) catch return LspError.FileNotFound;
+    // Verify file exists. `std.fs.accessAbsolute` was removed in Zig 0.16;
+    // use the cross-platform `helpers.fileExists` wrapper (libc `access`).
+    if (!helpers.fileExists(input.file_path)) return LspError.FileNotFound;
 
-    // Read file content (temporary - goes in arena)
-    const file = try std.fs.cwd().openFile(input.file_path, .{});
-    defer file.close();
-    const content = try file.readToEndAlloc(arena_allocator, 1024 * 1024);
+    // Read file content (temporary - goes in arena). `std.fs.cwd().openFile`
+    // was removed in Zig 0.16; use the cross-platform `helpers.readFile`
+    // wrapper (libc `fopen`/`fread`, no `io: std.Io` required).
+    const content = try helpers.readFile(arena_allocator, input.file_path) catch return LspError.ReadFileFailed;
 
     // Use provided LSP binary directly (arena for process setup)
     var child = std.process.Child.init(&.{input.lsp}, arena_allocator);
