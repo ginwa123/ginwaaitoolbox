@@ -78,12 +78,16 @@ fn setupDb() !struct {
     // workspace_item_tasks — mirrors Migration 044's schema (with
     // task_type added). updated_at is required by the SQL in
     // getWorkspaceContext (`ORDER BY t.updated_at DESC`).
+    //
+    // Note: this schema is intentionally post-Migration 052 —
+    // the `session_id` column was dropped. Tasks use `id` as the
+    // session id directly (the `task.id == session_id`
+    // convention).
     try db.exec(alloc,
         \\CREATE TABLE workspace_item_tasks (
         \\    id TEXT PRIMARY KEY,
         \\    name TEXT NOT NULL,
         \\    workspace_item_id TEXT NOT NULL,
-        \\    session_id TEXT,
         \\    task_type TEXT NOT NULL DEFAULT 'standard',
         \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -106,11 +110,12 @@ const ItemSeed = struct {
     name: []const u8 = "",
 };
 
-/// One row in `workspace_item_tasks`.
+/// One row in `workspace_item_tasks`. The `id` field is also the
+/// session id — tests use it as the lookup key in
+/// `getWorkspaceContext`'s `WHERE t.id = ?` anchor.
 const TaskSeed = struct {
     id: []const u8,
     workspace_item_id: []const u8,
-    session_id: []const u8,
     name: []const u8 = "t",
 };
 
@@ -144,9 +149,9 @@ fn seedWorkspace(db: *sqlite.SqliteBackend, alloc: std.mem.Allocator, seed: Work
     for (seed.tasks) |task| {
         try db.exec(alloc,
             \\INSERT INTO workspace_item_tasks
-            \\    (id, name, workspace_item_id, session_id, task_type)
-            \\VALUES (?, ?, ?, ?, 'standard')
-        , &.{ task.id, task.name, task.workspace_item_id, task.session_id });
+            \\    (id, name, workspace_item_id, task_type)
+            \\VALUES (?, ?, ?, 'standard')
+        , &.{ task.id, task.name, task.workspace_item_id });
     }
 }
 
@@ -165,11 +170,14 @@ test "BuildWorkspaceContext returns empty string for session not bound to any ta
             .{ .id = "wi_b", .path = "/abs/b" },
         },
         .tasks = &.{
-            .{ .id = "task_a1", .workspace_item_id = "wi_a", .session_id = "sess_other" },
-            .{ .id = "task_b1", .workspace_item_id = "wi_b", .session_id = "sess_other" },
+            .{ .id = "task_a1", .workspace_item_id = "wi_a" },
+            .{ .id = "task_b1", .workspace_item_id = "wi_b" },
         },
     });
 
+    // Per the `task.id == session_id` convention, we look up by
+    // a session_id that doesn't match any task id. The helper
+    // returns null (the session is unbound to any task).
     const maybe_ctx = try llm_history.getWorkspaceContext(alloc, &ctx.db, "sess_lone");
     try testing.expect(maybe_ctx == null);
 }
@@ -190,13 +198,15 @@ test "BuildWorkspaceContext lists self item first with is_self flag" {
             .{ .id = "wi_c", .path = "/abs/c", .name = "Gamma" },
         },
         .tasks = &.{
-            .{ .id = "task_a1", .workspace_item_id = "wi_a", .session_id = "sess_self", .name = "a1" },
-            .{ .id = "task_b1", .workspace_item_id = "wi_b", .session_id = "sess_other_b", .name = "b1" },
-            .{ .id = "task_c1", .workspace_item_id = "wi_c", .session_id = "sess_other_c", .name = "c1" },
+            .{ .id = "task_a1", .workspace_item_id = "wi_a", .name = "a1" },
+            .{ .id = "task_b1", .workspace_item_id = "wi_b", .name = "b1" },
+            .{ .id = "task_c1", .workspace_item_id = "wi_c", .name = "c1" },
         },
     });
 
-    const maybe_ctx = try llm_history.getWorkspaceContext(alloc, &ctx.db, "sess_self");
+    // Per the `task.id == session_id` convention, we look up
+    // by the task's own id (not a separate session_id column).
+    const maybe_ctx = try llm_history.getWorkspaceContext(alloc, &ctx.db, "task_a1");
     const wc = maybe_ctx orelse return error.UnexpectedNullContext;
 
     defer wc.deinit(alloc);
@@ -233,14 +243,16 @@ test "BuildWorkspaceContext includes tasks under each item" {
             .{ .id = "wi_b", .path = "/abs/b" },
         },
         .tasks = &.{
-            .{ .id = "task_a1", .workspace_item_id = "wi_a", .session_id = "sess_self", .name = "a1" },
-            .{ .id = "task_a2", .workspace_item_id = "wi_a", .session_id = "sess_a2", .name = "a2" },
-            .{ .id = "task_a3", .workspace_item_id = "wi_a", .session_id = "sess_a3", .name = "a3" },
-            .{ .id = "task_b1", .workspace_item_id = "wi_b", .session_id = "sess_b1", .name = "b1" },
+            .{ .id = "task_a1", .workspace_item_id = "wi_a", .name = "a1" },
+            .{ .id = "task_a2", .workspace_item_id = "wi_a", .name = "a2" },
+            .{ .id = "task_a3", .workspace_item_id = "wi_a", .name = "a3" },
+            .{ .id = "task_b1", .workspace_item_id = "wi_b", .name = "b1" },
         },
     });
 
-    const maybe_ctx = try llm_history.getWorkspaceContext(alloc, &ctx.db, "sess_self");
+    // Per the `task.id == session_id` convention, look up by
+    // the task's own id.
+    const maybe_ctx = try llm_history.getWorkspaceContext(alloc, &ctx.db, "task_a1");
     const wc = maybe_ctx orelse return error.UnexpectedNullContext;
     defer wc.deinit(alloc);
 
@@ -253,7 +265,11 @@ test "BuildWorkspaceContext includes tasks under each item" {
     try testing.expectEqualStrings("wi_b", wc.siblings[1].id);
     try testing.expectEqual(@as(usize, 1), wc.siblings[1].tasks.len);
     try testing.expectEqualStrings("b1", wc.siblings[1].tasks[0].name);
-    try testing.expectEqualStrings("sess_b1", wc.siblings[1].tasks[0].session_id orelse "");
+    // Note: the `session_id` field was dropped from SiblingTask
+    // in Migration 052 (the task id IS the session id). The
+    // task_type field carries the routine-vs-standard info
+    // instead.
+    try testing.expectEqualStrings("standard", wc.siblings[1].tasks[0].task_type);
 }
 
 // ─── Test 4: items cap at 20 with truncation flag ────────────────────────
@@ -286,11 +302,13 @@ test "BuildWorkspaceContext caps at 20 items and reports truncation" {
         .workspace_id = "ws_big",
         .items = items[0..],
         .tasks = &.{
-            .{ .id = "task_a1", .workspace_item_id = "wi_0", .session_id = "sess_self" },
+            .{ .id = "task_a1", .workspace_item_id = "wi_0" },
         },
     });
 
-    const maybe_ctx = try llm_history.getWorkspaceContext(alloc, &ctx.db, "sess_self");
+    // Per the `task.id == session_id` convention, look up by
+    // the task's own id.
+    const maybe_ctx = try llm_history.getWorkspaceContext(alloc, &ctx.db, "task_a1");
     const wc = maybe_ctx orelse return error.UnexpectedNullContext;
     defer wc.deinit(alloc);
 
@@ -310,19 +328,16 @@ test "BuildWorkspaceContext caps tasks at 5 per item" {
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
-    // 1 item, 8 tasks; session bound to the first task. Each
-    // task's id/name/session_id is independently allocated (a
-    // shared buffer would alias and produce double-frees).
+    // 1 item, 8 tasks. Each task's id/name is independently
+    // allocated (a shared buffer would alias and produce
+    // double-frees). Per the `task.id == session_id` convention,
+    // each task's id IS its session id.
     var tasks: [8]TaskSeed = undefined;
     for (tasks[0..], 0..) |*t, i| {
         const id_owned = try std.fmt.allocPrint(alloc, "task_{d}", .{i});
         errdefer alloc.free(id_owned);
         t.id = id_owned;
         t.workspace_item_id = "wi_a";
-        // task[0] is bound to "sess_self" (the helper's anchor).
-        // Other tasks get unique session_ids matching their name
-        // (real-world semantics: one session per task).
-        t.session_id = if (i == 0) "sess_self" else id_owned;
         t.name = id_owned;
     }
     defer for (tasks[0..]) |t| alloc.free(t.id);
@@ -333,7 +348,8 @@ test "BuildWorkspaceContext caps tasks at 5 per item" {
         .tasks = tasks[0..],
     });
 
-    const maybe_ctx = try llm_history.getWorkspaceContext(alloc, &ctx.db, "sess_self");
+    // Look up by the first task's id (its session id).
+    const maybe_ctx = try llm_history.getWorkspaceContext(alloc, &ctx.db, "task_0");
     const wc = maybe_ctx orelse return error.UnexpectedNullContext;
     defer wc.deinit(alloc);
 
@@ -352,8 +368,9 @@ test "BuildWorkspaceContext renders markdown with self marker and tasks" {
 
     // Same seed as Test 2 ("self item first") plus a task under
     // each item so the task-rendering branch is exercised. The
-    // self task's session_id is "sess_self" — the renderer must
-    // include that exact id in the "session: `<sid>`" fragment.
+    // self task is "task-a1" (its id IS its session id per the
+    // `task.id == session_id` convention; Migration 052 dropped
+    // the redundant session_id column).
     try seedWorkspace(&ctx.db, alloc, .{
         .workspace_id = "ws_md",
         .items = &.{
@@ -361,12 +378,12 @@ test "BuildWorkspaceContext renders markdown with self marker and tasks" {
             .{ .id = "wi_b", .path = "/abs/b", .name = "Beta" },
         },
         .tasks = &.{
-            .{ .id = "task_a1", .workspace_item_id = "wi_a", .session_id = "sess_self", .name = "task-a1" },
-            .{ .id = "task_b1", .workspace_item_id = "wi_b", .session_id = "sess_b1", .name = "task-b1" },
+            .{ .id = "task_a1", .workspace_item_id = "wi_a", .name = "task-a1" },
+            .{ .id = "task_b1", .workspace_item_id = "wi_b", .name = "task-b1" },
         },
     });
 
-    const md = try build_messages.BuildWorkspaceContext(alloc, &ctx.db, "sess_self");
+    const md = try build_messages.BuildWorkspaceContext(alloc, &ctx.db, "task_a1");
     defer alloc.free(md);
 
     // Section header is required.
@@ -381,10 +398,9 @@ test "BuildWorkspaceContext renders markdown with self marker and tasks" {
     // item_type rendering.
     try testing.expect(std.mem.indexOf(u8, md, "item_type: `chat`") != null);
 
-    // Task name and session id rendering (the self task is "task-a1"
-    // and its session is "sess_self" — both must appear).
+    // Task name rendering (the self task is "task-a1" — its name
+    // appears in the task list under its parent item).
     try testing.expect(std.mem.indexOf(u8, md, "`task-a1`") != null);
-    try testing.expect(std.mem.indexOf(u8, md, "session: `sess_self`") != null);
 
     // The other item's task is also rendered.
     try testing.expect(std.mem.indexOf(u8, md, "`task-b1`") != null);
@@ -420,11 +436,13 @@ test "BuildWorkspaceContext renders truncation footer when over 20 items" {
         .workspace_id = "ws_trunc",
         .items = items[0..],
         .tasks = &.{
-            .{ .id = "task_a1", .workspace_item_id = "wi_0", .session_id = "sess_self" },
+            .{ .id = "task_a1", .workspace_item_id = "wi_0" },
         },
     });
 
-    const md = try build_messages.BuildWorkspaceContext(alloc, &ctx.db, "sess_self");
+    // Per the `task.id == session_id` convention, look up by
+    // the task's own id.
+    const md = try build_messages.BuildWorkspaceContext(alloc, &ctx.db, "task_a1");
     defer alloc.free(md);
 
     // Section header is still present.

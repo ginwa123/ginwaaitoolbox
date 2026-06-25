@@ -767,11 +767,17 @@ const handleRunRoutine = async (
   taskId: string,
 ) => {
   const result = await workspacesStore.runRoutine(workspaceId, itemId, taskId)
-  if (result?.session_id) {
+  // Per the `task.id == session_id` convention (Migration 052
+  // dropped the redundant `workspace_item_tasks.session_id`
+  // column), `taskId` IS the session id. We no longer need to
+  // read `result.session_id` — the routine fire returns the
+  // task_id as the session id, and the URL query is just for
+  // downstream cache hydration.
+  if (result) {
     workspacesStore.setActiveTask(taskId)
     router.replace({
       path: '/app',
-      query: { view: 'task', task: taskId, session: result.session_id },
+      query: { view: 'task', task: taskId, session: taskId },
     })
   }
 }

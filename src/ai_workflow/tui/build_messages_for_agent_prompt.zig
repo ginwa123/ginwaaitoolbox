@@ -886,11 +886,11 @@ pub fn BuildWorkspaceContext(
             try out.appendSlice(allocator, t.name);
             try out.appendSlice(allocator, "` (type: ");
             try out.appendSlice(allocator, t.task_type);
-            if (t.session_id) |sid| {
-                try out.appendSlice(allocator, ", session: `");
-                try out.appendSlice(allocator, sid);
-                try out.appendSlice(allocator, "`");
-            }
+            // The `session_id` field was dropped in Migration 052 —
+            // a task's own `id` IS the session id per the
+            // `task.id == session_id` convention. The Workspace
+            // Context section's anchor uses `t.id = ?` so the
+            // sibling listing naturally finds the chat session.
             try out.appendSlice(allocator, ")\n");
         }
 
