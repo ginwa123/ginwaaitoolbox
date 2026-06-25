@@ -81,31 +81,37 @@ fn teardownDb(s: *@TypeOf(setupDb() catch unreachable)) void {
 /// them safely after compaction.
 fn buildMessages(allocator: std.mem.Allocator) !std.ArrayList(agent.AgentMessage) {
     var list: std.ArrayList(agent.AgentMessage) = .empty;
+    // All non-system messages get a real DB-style id so the envelope
+    // embeds real ids (regression for the adhoc_N synthesis bug). The
+    // system prompt at index 0 has no DB row, so it stays id=null —
+    // and it's also excluded from the envelope (dropped_messages[1..]).
     try list.append(allocator, .{
         .role = .system,
         .content = try allocator.dupe(u8, "You are a coding agent."),
     });
     try list.append(allocator, .{
+        .id = try allocator.dupe(u8, "1782027251703514461"),
         .role = .user,
         .content = try allocator.dupe(u8, "Fix the login bug"),
     });
     try list.append(allocator, .{
+        .id = try allocator.dupe(u8, "1782027292873814871"),
         .role = .assistant,
         .content = try allocator.dupe(u8, "I'll investigate"),
     });
     try list.append(allocator, .{
+        .id = try allocator.dupe(u8, "1782027292879102675"),
         .role = .tool,
         .content = try allocator.dupe(u8, "tests pass: 42/42"),
         .tool_call_id = try allocator.dupe(u8, "tc_1"),
-        // Set a real DB-style id so the envelope-test can assert
-        // real-id embedding (regression for the adhoc_N synthesis bug).
-        .id = try allocator.dupe(u8, "1782027292879102675"),
     });
     try list.append(allocator, .{
+        .id = try allocator.dupe(u8, "1782027299200000001"),
         .role = .user,
         .content = try allocator.dupe(u8, "Now ship it"),
     });
     try list.append(allocator, .{
+        .id = try allocator.dupe(u8, "1782027306945614038"),
         .role = .assistant,
         .content = try allocator.dupe(u8, "Shipping."),
     });

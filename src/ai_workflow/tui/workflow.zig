@@ -1141,15 +1141,57 @@ fn buildCompactionEnvelope(
     }
 
     for (dropped_messages[start_idx..], start_idx..) |msg, i| {
-        const msg_id = try std.fmt.allocPrint(allocator, "adhoc_{d}", .{i});
-        defer allocator.free(msg_id);
+        // Use the real DB primary key when present so the agent's
+        // read_compacted_messages(mode="full", message_ids=[envelope_id])
+        // can retrieve the original row. Synthetic adhoc_<n> ids don't
+        // exist in llm_history.id, which previously caused every
+        // post-compaction lookup to return 0 rows.
+        //
+        // Ownership: when msg.id is non-null, the slice is owned by the
+        // caller (via AgentMessage.deinit → allocator.free(self.id)) —
+        // DO NOT free it here. When msg.id is null, we synthesize an
+        // adhoc_<n> fallback that we DO own and must free with `owned_id`.
+        const owned_id = if (msg.id == null)
+            try std.fmt.allocPrint(allocator, "adhoc_{d}", .{i})
+        else
+            null;
+        defer if (owned_id) |o| allocator.free(o);
+        const msg_id: []const u8 = msg.id orelse owned_id.?;
 
         const role_str = msg.role.to_str();
-        const preview = msg.content orelse "";
+
+        // Build the preview text. Three sources, in priority order:
+        // 1. msg.content (the normal path)
+        // 2. msg.content_parts[i].text (vision messages with content=null
+        //    but multimodal parts containing a text prompt — e.g.
+        //    "What is in this image?")
+        // 3. "" (fallback)
+        var preview_buf: std.ArrayList(u8) = .empty;
+        defer preview_buf.deinit(allocator);
+        if (msg.content) |c| {
+            try preview_buf.appendSlice(allocator, c);
+        } else if (msg.content_parts) |parts| {
+            for (parts) |part| {
+                if (part.text) |t| {
+                    if (preview_buf.items.len > 0) try preview_buf.append(allocator, ' ');
+                    try preview_buf.appendSlice(allocator, t);
+                }
+            }
+        }
+        const preview = preview_buf.items;
+
+        // Role-aware preview length: tool results are information-dense
+        // (write_file outputs, search results) and need more than 100
+        // chars to be useful; user/assistant messages are usually short
+        // and stay at 200.
+        const preview_limit: usize = if (msg.role == .tool) 500 else 200;
         // Byte-slice cap; fine for ASCII previews. If non-English content
         // is common, swap for a UTF-8-aware trim so we don't cut a
         // multi-byte codepoint in half.
-        const preview_trimmed = if (preview.len > 100) preview[0..100] else preview;
+        const preview_trimmed = if (preview.len > preview_limit)
+            preview[0..preview_limit]
+        else
+            preview;
         const preview_escaped = try helpers.xml_escape(allocator, preview_trimmed);
         defer allocator.free(preview_escaped);
 
@@ -1160,15 +1202,28 @@ fn buildCompactionEnvelope(
             \\
         , .{ msg_id, role_str });
 
-        // For tool-result messages, surface tool_call_id so the agent
-        // can match results back to calls. (tool_name is not available
-        // on the in-memory AgentMessage struct in this codebase; the
-        // read_compacted_messages tool can fetch it from the DB row.)
+        // For tool-result messages, surface tool_call_id AND tool_name so
+        // the agent can match results back to the originating call without
+        // a separate DB round-trip. tool_call_id always comes from the
+        // in-memory AgentMessage; tool_name falls back to "unknown" when
+        // the message has no tool_calls array (synthetic test fixtures)
+        // or when the first tool_call has no function.name set.
         if (msg.role == .tool) {
             const tcid = msg.tool_call_id orelse "";
             const tcid_escaped = try helpers.xml_escape(allocator, tcid);
             defer allocator.free(tcid_escaped);
-            try env.print(allocator, "      <tool_call_id>{s}</tool_call_id>\n", .{tcid_escaped});
+            const tool_name_str: []const u8 = blk: {
+                if (msg.tool_calls) |tcs| {
+                    if (tcs.len > 0) break :blk tcs[0].function.name;
+                }
+                break :blk "unknown";
+            };
+            const tool_name_escaped = try helpers.xml_escape(allocator, tool_name_str);
+            defer allocator.free(tool_name_escaped);
+            try env.print(allocator,
+                "      <tool_call_id>{s}</tool_call_id>\n      <tool_name>{s}</tool_name>\n",
+                .{ tcid_escaped, tool_name_escaped },
+            );
         }
 
         try env.print(allocator,
