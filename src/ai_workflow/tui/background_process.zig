@@ -1,6 +1,7 @@
 const std = @import("std");
 const root_mod = @import("nalarcore");
 const sqlite = root_mod.sqlite;
+const process_status = root_mod.helpers.process_status;
 
 pub const ProcessInfo = struct {
     session_id: []const u8,
@@ -126,21 +127,22 @@ pub fn getRunning(db: *SqliteBackend, allocator: std.mem.Allocator) ![]ProcessIn
 /// Check if a process with the given PID is still running
 /// Returns true if process exists, false otherwise
 pub fn isProcessRunning(pid: u32) bool {
-    // kill(pid, 0) returns error if process doesn't exist
-    std.posix.kill(@intCast(pid), 0) catch return false;
-    return true;
+    // Cross-platform: kill(pid, 0) on POSIX, OpenProcess(QUERY_LIMITED) on
+    // Windows. See src/helpers/process_status.zig for the platform switch.
+    // `std.posix.kill` is `@compileError`'d on Windows because `std.c.pid_t`
+    // is `*anyopaque` there.
+    return process_status.isProcessRunning(@intCast(pid));
 }
 
 /// Kill a background process by PID
 /// Returns true if killed successfully, false if process doesn't exist or error
 pub fn killProcess(pid: u32) bool {
-    // Try SIGTERM first (15)
-    std.posix.kill(@intCast(pid), 15) catch {
-        // If SIGTERM fails, try SIGKILL (9)
-        std.posix.kill(@intCast(pid), 9) catch return false;
-        return true;
-    };
-    return true;
+    // The previous implementation tried SIGTERM (15) first and fell back to
+    // SIGKILL (9). We send SIGKILL directly via the cross-platform helper
+    // (TerminateProcess on Windows is the equivalent of "force kill" — no
+    // graceful shutdown path). For graceful shutdown on POSIX, the caller
+    // can use std.c.kill(pid, SIGTERM) directly.
+    return process_status.killProcess(@intCast(pid));
 }
 
 /// Kill all background processes for a session

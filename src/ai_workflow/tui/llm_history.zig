@@ -3,6 +3,7 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const agent = nalarcore.agent;
 const logger_mod = nalarcore.logger;
+const helpers = nalarcore.helpers;
 const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("nalarcore").llm_models;
 const ai_mod = @import("mod.zig");
@@ -915,7 +916,11 @@ pub fn createSession(
 ) ![]const u8 {
     // Generate session ID
     var session_id_buf: [64]u8 = undefined;
-    const session_id = try std.fmt.bufPrint(&session_id_buf, "kerjabot_{}", .{std.time.timestamp()});
+    // `std.time.timestamp` was removed in Zig 0.16. Use the cross-platform
+    // `helpers.unixTimestamp()` helper (POSIX gettimeofday / Win32
+    // GetSystemTimeAsFileTime, no `io: std.Io` required — this function
+    // doesn't take an io parameter).
+    const session_id = try std.fmt.bufPrint(&session_id_buf, "kerjabot_{}", .{helpers.unixTimestamp()});
 
     // Insert into sessions table first (for JOIN queries)
     const session_sql = "INSERT INTO sessions (id, name, status) VALUES (?, ?, 'active')";

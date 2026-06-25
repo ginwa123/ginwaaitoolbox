@@ -1,5 +1,7 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
+const nalarcore = @import("nalarcore");
+const helpers = nalarcore.helpers;
 const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
@@ -59,7 +61,10 @@ pub fn executeAddAgentToString(allocator: std.mem.Allocator, input: AddAgentInpu
 
     // Get current working directory
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd = std.posix.getcwd(&cwd_buf) catch {
+    // `std.posix.getcwd` was removed in Zig 0.16. Use the cross-platform
+    // `helpers.getcwd` wrapper (libc-backed; works on Linux/macOS/Windows
+    // without an `io: std.Io` runtime).
+    const cwd = helpers.getcwd(&cwd_buf) orelse {
         return errorToXml(allocator, input.name, "Failed to get current working directory");
     };
 

@@ -1,5 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const nalarcore = @import("nalarcore");
+const helpers = nalarcore.helpers;
 
 /// Maximum size for skills.md file (100KB)
 const MAX_SKILLS_SIZE: usize = 100 * 1024;
@@ -188,7 +190,10 @@ pub fn free_skill_files(allocator: std.mem.Allocator, files: [][]const u8) void 
 pub fn get_local_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
     // Get current working directory
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd = std.posix.getcwd(&cwd_buf) catch {
+    // `std.posix.getcwd` was removed in Zig 0.16. Use the cross-platform
+    // libc-backed `helpers.getcwd` wrapper (works on Linux/macOS/Windows
+    // without requiring an `io: std.Io` runtime).
+    const cwd = helpers.getcwd(&cwd_buf) orelse {
         std.log.debug("Could not get current working directory", .{});
         return null;
     };

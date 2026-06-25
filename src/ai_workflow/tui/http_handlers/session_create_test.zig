@@ -6,9 +6,12 @@ const fs = std.fs;
 
 /// Helper function being tested (copied from session_create.zig for testing)
 fn getDataAppsDir(allocator: std.mem.Allocator) ![]u8 {
-    const home = std.posix.getenv("HOME") orelse {
+    // `std.posix.getenv` was removed in Zig 0.16. Use `std.c.getenv` (libc)
+    // which is cross-platform.
+    const home_ptr = std.c.getenv("HOME") orelse {
         return error.HomeNotFound;
     };
+    const home: []const u8 = std.mem.sliceTo(home_ptr, 0);
     return std.fs.path.join(allocator, &[_][]const u8{
         home,
         ".local",
@@ -49,9 +52,11 @@ fn createSandbox(allocator: std.mem.Allocator, session_id: []const u8) ![]u8 {
 
 test "getDataAppsDir returns correct path" {
     const allocator = std.testing.allocator;
-    const home = std.posix.getenv("HOME") orelse {
+    // `std.posix.getenv` was removed in Zig 0.16; use libc `std.c.getenv`.
+    const home_ptr = std.c.getenv("HOME") orelse {
         return error.SkipZigTest;
     };
+    const home: []const u8 = std.mem.sliceTo(home_ptr, 0);
 
     const expected_path = try std.fs.path.join(allocator, &[_][]const u8{
         home,
@@ -70,8 +75,9 @@ test "getDataAppsDir returns correct path" {
 }
 
 test "getDataAppsDir fails when HOME is not set" {
-    // If HOME is not set, getDataAppsDir should fail with HomeNotFound
-    if (std.posix.getenv("HOME") == null) {
+    // If HOME is not set, getDataAppsDir should fail with HomeNotFound.
+    // `std.posix.getenv` removed in Zig 0.16; use `std.c.getenv`.
+    if (std.c.getenv("HOME") == null) {
         const result = getDataAppsDir(std.testing.allocator);
         try std.testing.expectError(error.HomeNotFound, result);
     }
