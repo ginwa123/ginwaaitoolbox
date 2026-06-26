@@ -66,7 +66,7 @@ pub const kanban_move_task_tool = AgentTool{
             \\
             \\Workflow: (1) call kanban_list first to discover the task id and the target column's id, (2) call kanban_move_task with those ids. If you only have a human-readable column name (no id), pass `target_column_name` instead of `target_column_id` — the tool resolves the name against the board's columns via a case-insensitive trimmed match.
             \\
-            \\The `workspace_id` and `item_id` should come from the chat context — see the `## Workspace Context` section of the system prompt. The `task_id` comes from kanban_list's `<id>` field.
+            \\The workspace_id and item_id must come from the chat context — see the "## Workspace Context" section of the system prompt. Each sibling item is rendered as `- **<name>** (id: <id>, ...)` where the id is a backtick-quoted id (e.g. item_1782313125507292140). The id is the **canonical** lookup key — do NOT pass the human-readable name. The task_id comes from kanban_list's `<id>` field, not the task name.
             \\
             \\On error, recover by: (1) re-call kanban_list to get fresh ids (the user may have just renamed a column or moved the task); (2) if `target_column_name` matched multiple columns (case-insensitive), the move fails with a list of candidates — pass `target_column_id` to disambiguate; (3) if the task isn't on this kanban, the move fails with "TaskNotFound" — verify the task_id is correct.
             ,
@@ -76,17 +76,17 @@ pub const kanban_move_task_tool = AgentTool{
                 .{
                     .name = "workspace_id",
                     .type = "string",
-                    .description = "The workspace that owns the kanban. From chat context.",
+                    .description = "The workspace that owns the kanban. From the system prompt's `## Workspace Context` section.",
                 },
                 .{
                     .name = "item_id",
                     .type = "string",
-                    .description = "The kanban workspace item id. From chat context.",
+                    .description = "The kanban workspace item id (NOT the name). Find it next to the literal text `id: ` followed by a backtick-quoted id (e.g. item_1782313125507292140) in the Workspace Context listing — pass the value between the backticks, not the human-readable item name.",
                 },
                 .{
                     .name = "task_id",
                     .type = "string",
-                    .description = "The task to move. Found via kanban_list's `<id>` field.",
+                    .description = "The task to move (id, NOT name). Found via kanban_list's `<id>` field.",
                 },
                 .{
                     .name = "target_column_id",

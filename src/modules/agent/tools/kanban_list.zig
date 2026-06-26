@@ -81,9 +81,9 @@ pub const kanban_list_tool = AgentTool{
         .description =
             \\List the structure of a kanban board: all columns (with their task counts) and all tasks (with their column assignment + position). Use this tool when the user asks about the state of a kanban board, asks "what's in the done column?", or wants to discover a task's id before calling kanban_move_task.
             \\
-            \\The `workspace_id` and `item_id` parameters should come from the chat context — see the `## Workspace Context` section of the system prompt, which lists the active workspace_id and the workspace_item_id bound to this session. When the user is viewing a kanban board, the kanban item is the one labeled with `item_type: kanban` (or the "this task" item in the listing).
+            \\The workspace_id and item_id parameters must come from the chat context — see the "## Workspace Context" section of the system prompt. Each sibling item is rendered as `- **<name>** (id: <id>, item_type: <type>, path: <path>)` where the id is a backtick-quoted id (e.g. item_1782313125507292140). The id is the **canonical** lookup key — do NOT pass the human-readable name (e.g. "kanban feature"); the DB columns are indexed by id and a name lookup returns zero rows. The kanban item the user is currently viewing is the one marked with `*(this task)*` (it is the parent of the active chat's task).
             \\
-            \\If you don't know the active kanban item_id, ask the user — the tool can't infer it from the chat alone. The optional `column_id` parameter narrows the task list to one column (use kanban_list first to discover column ids, or call without it to get all tasks).
+            \\If the system prompt does not include a "## Workspace Context" section, ask the user for the kanban's id (the one they want to list). The optional `column_id` parameter narrows the task list to one column (use kanban_list first to discover column ids, or call without it to get all tasks).
             ,
         .parameters = .{
             .type = "object",
@@ -96,7 +96,7 @@ pub const kanban_list_tool = AgentTool{
                 .{
                     .name = "item_id",
                     .type = "string",
-                    .description = "The kanban workspace item id. When the user is viewing a kanban, this is the item with `item_type: kanban` in the workspace context.",
+                    .description = "The kanban workspace item id (NOT the name). Find it next to the literal text `id: ` followed by a backtick-quoted id (e.g. item_1782313125507292140) in the Workspace Context listing — pass the value between the backticks, not the human-readable item name.",
                 },
                 .{
                     .name = "column_id",

@@ -862,14 +862,25 @@ pub fn BuildWorkspaceContext(
     }
 
     for (ctx.siblings) |sib| {
-        // "- **<name>** (item_type: `<type>`, path: `<path>`)"
+        // "- **<name>** (id: `<id>`, item_type: `<type>`, path: `<path>`)"
+        //
+        // The id is the **canonical** lookup key for workspace-scoped
+        // tools (`kanban_list`, `kanban_move_task`, etc.). The name is
+        // for human display; the LLM cannot call the tools with the
+        // name and get correct results (the DB columns are indexed by
+        // id, not name). Exposing both makes it unambiguous which
+        // value to pass where — see the comment on `kanban_list` and
+        // the user-reported bug "I called kanban_list with the name
+        // and got an empty board".
         try out.appendSlice(allocator, "- **");
         if (sib.name) |n| {
             try out.appendSlice(allocator, n);
         } else {
             try out.appendSlice(allocator, sib.id);
         }
-        try out.appendSlice(allocator, "** (item_type: `");
+        try out.appendSlice(allocator, "** (id: `");
+        try out.appendSlice(allocator, sib.id);
+        try out.appendSlice(allocator, "`, item_type: `");
         try out.appendSlice(allocator, sib.item_type);
         try out.appendSlice(allocator, "`, path: `");
         if (sib.path) |p| {
@@ -884,7 +895,9 @@ pub fn BuildWorkspaceContext(
         for (sib.tasks) |t| {
             try out.appendSlice(allocator, "  - task: `");
             try out.appendSlice(allocator, t.name);
-            try out.appendSlice(allocator, "` (type: ");
+            try out.appendSlice(allocator, "` (id: `");
+            try out.appendSlice(allocator, t.id);
+            try out.appendSlice(allocator, "`, type: ");
             try out.appendSlice(allocator, t.task_type);
             // The `session_id` field was dropped in Migration 052 —
             // a task's own `id` IS the session id per the

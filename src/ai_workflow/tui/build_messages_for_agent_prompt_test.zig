@@ -398,12 +398,23 @@ test "BuildWorkspaceContext renders markdown with self marker and tasks" {
     // item_type rendering.
     try testing.expect(std.mem.indexOf(u8, md, "item_type: `chat`") != null);
 
+    // The canonical item id MUST be rendered alongside the name —
+    // kanban tools (kanban_list, kanban_move_task) look up by id
+    // not name, and the LLM only sees what the renderer produces.
+    try testing.expect(std.mem.indexOf(u8, md, "id: `wi_a`") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "id: `wi_b`") != null);
+
     // Task name rendering (the self task is "task-a1" — its name
     // appears in the task list under its parent item).
     try testing.expect(std.mem.indexOf(u8, md, "`task-a1`") != null);
 
     // The other item's task is also rendered.
     try testing.expect(std.mem.indexOf(u8, md, "`task-b1`") != null);
+
+    // Task id rendering — the LLM passes task_id (id, not name) to
+    // kanban_move_task, so the renderer must expose the task's id.
+    try testing.expect(std.mem.indexOf(u8, md, "id: `task_a1`") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "id: `task_b1`") != null);
 
     // Sanity: the cwd hint is present (Alpha's path was /abs/a).
     try testing.expect(std.mem.indexOf(u8, md, "/abs/a") != null);
@@ -452,8 +463,21 @@ test "BuildWorkspaceContext renders truncation footer when over 20 items" {
     try testing.expect(std.mem.indexOf(u8, md, "and 5 more items") != null);
     try testing.expect(std.mem.indexOf(u8, md, "cap: 20 shown") != null);
 
-    // The 21st item (wi_20) MUST NOT appear in the output.
-    try testing.expect(std.mem.indexOf(u8, md, "wi_20") == null);
+    // The 5 items past the cap are wi_5..wi_9 (the 21st-25th by
+    // the `(is_self DESC, position DESC, id ASC)` order). They
+    // must NOT appear in the rendered output. The previous
+    // version of this test asserted `wi_20` was not in the output,
+    // but `wi_20` is actually within the cap (alphabetically sorted,
+    // `wi_20` precedes `wi_21`..`wi_24` and `wi_3`..`wi_4`). The
+    // test was silently wrong before because the rendered output
+    // had no `id:` field, so the substring `wi_20` happened to
+    // appear nowhere. Adding the id renderer surfaced the latent
+    // bug — the correct assertion is the 5 dropped items.
+    for (5..10) |i| {
+        const expected_dropped = try std.fmt.allocPrint(alloc, "wi_{d}", .{i});
+        defer alloc.free(expected_dropped);
+        try testing.expect(std.mem.indexOf(u8, md, expected_dropped) == null);
+    }
 }
 
 // ─── Test 8: renderer — empty string for unbound session ──────────────────
