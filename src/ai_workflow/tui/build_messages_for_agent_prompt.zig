@@ -862,23 +862,23 @@ pub fn BuildWorkspaceContext(
     }
 
     for (ctx.siblings) |sib| {
-        // "- **<name>** (id: `<id>`, item_type: `<type>`, path: `<path>`)"
+        // "- **<name>** (item_id: `<id>`, item_type: `<type>`, path: `<path>`)"
         //
-        // The id is the **canonical** lookup key for workspace-scoped
+        // The item_id is the **canonical** lookup key for workspace-scoped
         // tools (`kanban_list`, `kanban_move_task`, etc.). The name is
         // for human display; the LLM cannot call the tools with the
         // name and get correct results (the DB columns are indexed by
-        // id, not name). Exposing both makes it unambiguous which
-        // value to pass where — see the comment on `kanban_list` and
-        // the user-reported bug "I called kanban_list with the name
-        // and got an empty board".
+        // id, not name). The label is `item_id:` (not `id:`) so it cannot
+        // be confused with the `task_id:` label on the tasks listed
+        // below — see Chunk 1 of the 2026-06-26 plan for the validation
+        // that depends on this distinction.
         try out.appendSlice(allocator, "- **");
         if (sib.name) |n| {
             try out.appendSlice(allocator, n);
         } else {
             try out.appendSlice(allocator, sib.id);
         }
-        try out.appendSlice(allocator, "** (id: `");
+        try out.appendSlice(allocator, "** (item_id: `");
         try out.appendSlice(allocator, sib.id);
         try out.appendSlice(allocator, "`, item_type: `");
         try out.appendSlice(allocator, sib.item_type);
@@ -895,7 +895,7 @@ pub fn BuildWorkspaceContext(
         for (sib.tasks) |t| {
             try out.appendSlice(allocator, "  - task: `");
             try out.appendSlice(allocator, t.name);
-            try out.appendSlice(allocator, "` (id: `");
+            try out.appendSlice(allocator, "` (task_id: `");
             try out.appendSlice(allocator, t.id);
             try out.appendSlice(allocator, "`, type: ");
             try out.appendSlice(allocator, t.task_type);
