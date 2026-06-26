@@ -24,6 +24,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
 const kanban_model = @import("../kanban_model.zig");
+const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 
 /// Request body for column-update.
 ///
@@ -53,6 +54,10 @@ pub fn kanbanColumnsUpdateHandler(
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }),
         });
     }
+    // workspace_id is required for the SSE payload (the frontend
+    // filters events for the active workspace). Empty is fine —
+    // the SSE event will still be emitted with workspace_id="".
+    const ws_id = req.params.get("workspace_id") orelse "";
     const column_id = req.params.get("column_id") orelse "";
     if (column_id.len == 0) {
         return res.jsonResponse(.{
@@ -109,6 +114,27 @@ pub fn kanbanColumnsUpdateHandler(
         });
     };
     defer kanban_model.freeColumns(allocator, cols);
+
+    // Emit SSE event so other connected clients refresh their kanban
+    // view. `reordered` takes precedence over `updated` when the body
+    // sets `position` — reordering changes the column order even if
+    // the name is also being changed, so the frontend re-fetches
+    // either way. Both fields are included in the payload so the
+    // frontend can dispatch on action without re-parsing the body.
+    const action: []const u8 = if (parsed.position != null) "reordered" else "updated";
+    on_event_sent_kanban.onEventSendKanbanColumn(allocator, .{
+        .action = action,
+        .workspace_id = ws_id,
+        .item_id = item_id,
+        .column_id = column_id,
+        .new_name = parsed.name,
+        .new_position = parsed.position,
+    }) catch |err| {
+        std.log.warn(
+            "kanban_columns_update: SSE emit failed (non-fatal): {s}",
+            .{@errorName(err)},
+        );
+    };
 
     return res.jsonResponse(.{
         .status_code = 200,
