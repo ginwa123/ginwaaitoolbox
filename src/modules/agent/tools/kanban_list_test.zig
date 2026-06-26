@@ -409,3 +409,101 @@ test "executeKanbanListToString returns error XML when item_id is empty" {
     try testing.expect(contains(xml, "<error>"));
     try testing.expect(contains(xml, "workspace_id and item_id are required"));
 }
+
+// ─── Input validation tests (4 mistake shapes + empty-board hint) ──────
+
+test "executeKanbanListToString returns error XML when item_id looks like a task_id" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    // AI confused task_id (from kanban_move_task input) with item_id.
+    // listColumns will silently return 0 rows; we want validation to
+    // catch this BEFORE the query runs.
+    const input = kanban_list.KanbanListInput{
+        .workspace_id = "ws_1",
+        .item_id = "task_1782442569739",
+    };
+    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
+    defer alloc.free(xml);
+    try testing.expect(contains(xml, "<error>"));
+    try testing.expect(contains(xml, "item_id"));
+    try testing.expect(contains(xml, "task_"));
+    // Should mention the correct id source so the LLM self-corrects.
+    try testing.expect(contains(xml, "item_"));
+}
+
+test "executeKanbanListToString returns error XML when item_id looks like a column_id" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const input = kanban_list.KanbanListInput{
+        .workspace_id = "ws_1",
+        .item_id = "col_1782442554112968570",
+    };
+    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
+    defer alloc.free(xml);
+    try testing.expect(contains(xml, "<error>"));
+    try testing.expect(contains(xml, "col_"));
+}
+
+test "executeKanbanListToString returns error XML when item_id looks like a workspace_id" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const input = kanban_list.KanbanListInput{
+        .workspace_id = "ws_1",
+        .item_id = "ws_1",
+    };
+    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
+    defer alloc.free(xml);
+    try testing.expect(contains(xml, "<error>"));
+}
+
+test "executeKanbanListToString returns error XML when item_id matches no workspace_item" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    // Valid shape (starts with item_) but the row doesn't exist.
+    const input = kanban_list.KanbanListInput{
+        .workspace_id = "ws_1",
+        .item_id = "item_does_not_exist",
+    };
+    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
+    defer alloc.free(xml);
+    try testing.expect(contains(xml, "<error>"));
+    try testing.expect(contains(xml, "no workspace_item"));
+}
+
+test "executeKanbanListToString returns empty-board hint (not error) when item_id is valid but has no columns" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    // Insert a kanban item with NO columns (degenerate case — user
+    // deleted all of them).
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name) VALUES ('item_empty', 'ws_1', 'kanban', 'Empty board')",
+        &.{});
+
+    const input = kanban_list.KanbanListInput{
+        .workspace_id = "ws_1",
+        .item_id = "item_empty",
+    };
+    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
+    defer alloc.free(xml);
+    // NOT an error — the kanban genuinely has no columns. Just an
+    // empty <columns> block + a friendly hint.
+    try testing.expect(!contains(xml, "<error>"));
+    try testing.expect(contains(xml, "<columns></columns>"));
+    // Hint: "no columns" so the LLM can distinguish from a wrong-id case.
+    try testing.expect(contains(xml, "no columns"));
+}
