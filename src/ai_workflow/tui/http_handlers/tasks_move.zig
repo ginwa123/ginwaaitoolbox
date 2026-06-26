@@ -23,6 +23,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
 const kanban_model = @import("../kanban_model.zig");
+const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 
 /// Request body for task-move.
 const MoveTaskBody = struct {
@@ -55,6 +56,10 @@ pub fn tasksMoveHandler(
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }),
         });
     }
+    // workspace_id is required for the SSE payload (the frontend
+    // filters events for the active workspace). Empty is fine —
+    // the SSE event will still be emitted with workspace_id="".
+    const ws_id = req.params.get("workspace_id") orelse "";
     const task_id = req.params.get("task_id") orelse "";
     if (task_id.len == 0) {
         return res.jsonResponse(.{
@@ -89,6 +94,26 @@ pub fn tasksMoveHandler(
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to move task" }),
         });
+    };
+
+    // Emit SSE event so other connected clients refresh their kanban
+    // view. action="moved" matches the frontend's `KanbanTaskEvent`
+    // union variant. `moveTask` renumbers sibling positions in both
+    // source and destination columns — the frontend re-fetches the
+    // full column+task layout on every move, so a simple re-fetch
+    // keeps all boards in sync without patching in-place.
+    on_event_sent_kanban.onEventSendKanbanTask(allocator, .{
+        .action = "moved",
+        .workspace_id = ws_id,
+        .item_id = item_id,
+        .task_id = task_id,
+        .new_column_id = parsed.column_id,
+        .new_position = parsed.position,
+    }) catch |err| {
+        std.log.warn(
+            "tasks_move: SSE emit failed (non-fatal): {s}",
+            .{@errorName(err)},
+        );
     };
 
     return res.jsonResponse(.{
