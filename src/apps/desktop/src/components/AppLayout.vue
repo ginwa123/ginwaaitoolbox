@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick, provide } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick, provide } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import Sidebar from './Sidebar.vue'
 import RightSidebar from './RightSidebar.vue'
@@ -15,6 +15,7 @@ import KanbanColumnEditor from './KanbanColumnEditor.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
+import { useKanbanSseStore } from '../stores/kanbanSse'
 import * as api from '../api'
 import {
   OPEN_IN_CODE_EDITOR_KEY,
@@ -76,6 +77,41 @@ const handleRightSidebarResize = (newWidth: number) => {
 
 const activeWorkspaceItem = computed(() => workspacesStore.activeWorkspaceItem)
 const activeWorkspace = computed(() => workspacesStore.activeWorkspace)
+
+// Subscribe to /api/kanban/events so live kanban mutations (column
+// create / update / delete / reorder, task move / assign / unassign)
+// refresh the visible board in real time without a manual reload.
+// The store is ref-counted per workspace, so opening a kanban from
+// two different views doesn't open two SSE connections.
+// Empty string when no workspace is active (the ref-counted store
+// treats "" as a valid workspaceId, but the activeWorkspace.value?.id
+// falls through to "" so no kanban event is ever dispatched to a
+// non-existent workspace — the workspacesStore.fetchKanbanColumns
+// helper no-ops if the (workspaceId, itemId) pair doesn't resolve to
+// a local item).
+const kanbanSseStore = useKanbanSseStore()
+const activeWorkspaceId = computed(() => activeWorkspace.value?.id ?? '')
+
+onMounted(() => {
+  if (activeWorkspaceId.value) {
+    kanbanSseStore.subscribeKanbanSse(activeWorkspaceId.value)
+  }
+})
+
+// Switch workspaces → unsubscribe from the old, subscribe to the new.
+// onMounted only fires once, so the watcher covers subsequent
+// workspace switches (e.g. user clicks a different workspace in the
+// sidebar).
+watch(activeWorkspaceId, (newId, oldId) => {
+  if (oldId) kanbanSseStore.unsubscribeKanbanSse(oldId)
+  if (newId) kanbanSseStore.subscribeKanbanSse(newId)
+})
+
+onUnmounted(() => {
+  if (activeWorkspaceId.value) {
+    kanbanSseStore.unsubscribeKanbanSse(activeWorkspaceId.value)
+  }
+})
 
 // Computed refs from store
 const activeChatId = computed(() => navigationStore.activeChatId)
