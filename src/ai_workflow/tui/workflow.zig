@@ -42,9 +42,18 @@ pub const CallbackAiWorkerFlow = struct {
                 logger.errFmt("Failed to delete worker: {s}", .{@errorName(error_sqlite)});
             };
 
-            llm_history.deleteQueuedMessagesBySessionId(allocator, db, session_id) catch |error_sqlite| {
+            _ = llm_history.deleteQueuedMessagesBySessionId(allocator, db, session_id) catch |error_sqlite| {
                 logger.errFmt("Failed to delete all queued messages: {s}", .{@errorName(error_sqlite)});
             };
+
+            // For TooManyRetries, the inner bail already saved a rich diagnostic
+            // to chat history (with the retry reason, count, and source). Skip the
+            // generic user-message save here so the AI agent sees ONE clear message
+            // instead of two — one rich (from the inner bail) and one redundant
+            // "TooManyRetries" generic message that would just confuse it again.
+            if (err == error.TooManyRetries) {
+                return;
+            }
 
             const initial_agent_state = llm_history.get_current_agent_by_session_id(
                 allocator,
@@ -56,7 +65,7 @@ pub const CallbackAiWorkerFlow = struct {
             };
             const initial_agent = initial_agent_state.agent;
 
-            const error_message = std.fmt.allocPrint(allocator, "{s} {s} {s}\n", .{ "Theres a error ", @errorName(err), "ignore this instruction" }) catch |err_fmt| {
+            const error_message = std.fmt.allocPrint(allocator, "Agent Nalar System error, the actual error is ->>>> {s}\n", .{@errorName(err)}) catch |err_fmt| {
                 logger.errFmt("Failed to format error message: {s}", .{@errorName(err_fmt)});
                 return;
             };
@@ -89,7 +98,7 @@ pub const CallbackAiWorkerFlow = struct {
                 allocator.free(skill.content);
             };
 
-            on_event_sent.onEventSendLLMHistory(allocator, .{
+            _ = on_event_sent.onEventSendLLMHistory(allocator, .{
                 .session_id = session_id,
                 .model = config.model,
                 .cwd = cwd,
@@ -213,6 +222,14 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     try llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_message, copy_image_urls);
 
     var retry_count: usize = 0;
+    // Track the most recent retry error so the AI agent can understand WHY
+    // retries were happening when the budget is exhausted. Without this,
+    // "TooManyRetries" is ambiguous — the AI doesn't know if the cause was
+    // network, rate-limit, auth, etc. These are read by the bail block below
+    // (when retry_count exceeds 10) and embedded into a user-facing diagnostic
+    // message that the AI sees on its next turn.
+    var last_retry_error: anyerror = error.Unknown;
+    var last_retry_source: []const u8 = "unknown";
     var current_max_tokens: usize = 20000;
     var loop_counter: u32 = 0;
 
@@ -333,8 +350,6 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         // Update worker activity in DB to show we're actively processing
         try llm_history.updateWorkerActivity(allocator, db, copy_session_id);
 
-        if (retry_count > 10) return error.TooManyRetries;
-
         // Fetch current agent fresh from DB each iteration
         const currentAgentState = try llm_history.get_current_agent_by_session_id(
             allocator,
@@ -381,6 +396,84 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
             ov.system_prompt
         else
             "";
+
+        // Bail on retry budget exhaustion. Placed here (after effective_agent_name
+        // is computed) so the diagnostic saved to chat history has the correct
+        // agent context for the AI to read on its next turn. Without this rich
+        // diagnostic, the AI only sees the generic "TooManyRetries" error name
+        // in the outer catch and has no idea WHY retries were happening or what
+        // the underlying cause was (network, rate-limit, auth, etc.).
+        if (retry_count > 10) {
+            const reason_error = @errorName(last_retry_error);
+            const reason_source = last_retry_source;
+            const diagnostic = std.fmt.allocPrint(parent_allocator,
+                \\[Agent Nalar System error] workflow halted after {} consecutive retries.
+                \\Reason for last retry: {s} (source: {s}).
+                \\This typically indicates a network connectivity issue to the LLM API endpoint,
+                \\API rate limit exceeded, authentication/authorization failure, or upstream
+                \\service unavailability. Review the session logs for the full chain of
+                \\errors at each retry attempt before retrying.
+            , .{ retry_count, reason_error, reason_source }) catch "workflow halted after too many retries";
+
+            logger.errFmt("TooManyRetries exhausted: {} consecutive failures for session_id={s} — last_error={s} source={s}", .{ retry_count, copy_session_id, reason_error, reason_source });
+
+            // Save the diagnostic as a user message so the AI agent sees it on
+            // its next turn. Mirror the pattern the outer catch uses for generic
+            // errors so the message shape is consistent.
+            const session_skills_bail = llm_history.getSessionSkills(allocator, db, copy_session_id) catch null;
+            defer if (session_skills_bail) |s| for (s) |*skill| {
+                allocator.free(skill.skill_name);
+                allocator.free(skill.content);
+            };
+
+            _ = llm_history.saveMessage(allocator, io, db, .{
+                .session_id = copy_session_id,
+                .model = effective_model,
+                .cwd = copy_cwd,
+                .content = diagnostic,
+                .reasoning_content = null,
+                .role = agent.Role.user.to_str(),
+                .finish_reason = "null",
+                .tool_calls = null,
+                .tool_call_id = null,
+                .agent_name = effective_agent_name,
+                .loop_index = loop_counter,
+                .temperature = agent_temperature,
+                .is_thinking = isThinking,
+                .prompt_tokens = 0,
+                .completion_tokens = 0,
+                .total_tokens = 0,
+                .parent_id = copy_parent_session_id,
+                .parent_session_id = copy_parent_session_id,
+                .is_input = true,
+                .is_output = false,
+            }) catch {};
+
+            _ = on_event_sent.onEventSendLLMHistory(allocator, .{
+                .session_id = copy_session_id,
+                .model = effective_model,
+                .cwd = copy_cwd,
+                .content = diagnostic,
+                .reasoning_content = null,
+                .role = agent.Role.user.to_str(),
+                .finish_reason = "null",
+                .tool_calls_json = null,
+                .tool_call_id = null,
+                .tool_name = null,
+                .agent_name = effective_agent_name,
+                .loop_index = loop_counter,
+                .temperature = agent_temperature,
+                .is_thinking = isThinking,
+                .is_input = true,
+                .is_output = false,
+                .parent_session_id = copy_parent_session_id,
+                .parent_id = copy_parent_session_id,
+                .image_url = null,
+                .session_skills = session_skills_bail,
+            }) catch {};
+
+            return error.TooManyRetries;
+        }
 
         var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
 
@@ -430,6 +523,10 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
                 break;
             }
             retry_count += 1;
+            // Capture WHY this retry fired so the AI agent can understand
+            // the cause when the retry budget is eventually exhausted.
+            last_retry_error = err;
+            last_retry_source = "callDynamicAgentNew";
             logger.errFmt("Error calling dynamic agent: {s} now retrying", .{@errorName(err)});
             continue;
         };
