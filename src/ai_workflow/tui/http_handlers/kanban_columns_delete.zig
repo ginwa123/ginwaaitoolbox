@@ -21,6 +21,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
 const kanban_model = @import("../kanban_model.zig");
+const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 
 /// Response shape for column-delete.
 const DeleteColumnResponse = struct {
@@ -45,6 +46,10 @@ pub fn kanbanColumnsDeleteHandler(
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }),
         });
     }
+    // workspace_id is required for the SSE payload (the frontend
+    // filters events for the active workspace). Empty is fine —
+    // the SSE event will still be emitted with workspace_id="".
+    const ws_id = req.params.get("workspace_id") orelse "";
     const column_id = req.params.get("column_id") orelse "";
     if (column_id.len == 0) {
         return res.jsonResponse(.{
@@ -58,6 +63,24 @@ pub fn kanbanColumnsDeleteHandler(
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to delete column" }),
         });
+    };
+
+    // Emit SSE event so other connected clients refresh their kanban
+    // view. action="deleted" matches the frontend's `KanbanColumnEvent`
+    // union variant. The frontend's SSE handler is responsible for
+    // re-fetching the column list AND the unassigned tasks (tasks
+    // that were on this column get their `kanban_column_id` set to
+    // NULL by `deleteColumn`).
+    on_event_sent_kanban.onEventSendKanbanColumn(allocator, .{
+        .action = "deleted",
+        .workspace_id = ws_id,
+        .item_id = item_id,
+        .column_id = column_id,
+    }) catch |err| {
+        std.log.warn(
+            "kanban_columns_delete: SSE emit failed (non-fatal): {s}",
+            .{@errorName(err)},
+        );
     };
 
     return res.jsonResponse(.{

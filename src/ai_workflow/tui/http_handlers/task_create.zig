@@ -6,6 +6,7 @@ const ai_mod = nalarcore.ai_mod;
 const memories_mod = nalarcore.memories;
 const cron = @import("../routines/cron.zig");
 const fire = @import("../routines/fire.zig");
+const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 
 /// POST /api/workspaces/:workspace_id/items/:item_id/tasks
 ///
@@ -45,6 +46,10 @@ pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     if (item_id.len == 0) {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }) });
     }
+    // workspace_id is required for the SSE payload (the frontend
+    // filters events for the active workspace). Empty is fine —
+    // the SSE event will still be emitted with workspace_id="".
+    const ws_id = req.params.get("workspace_id") orelse "";
 
     // Parse request body
     const body = req.body;
@@ -246,6 +251,35 @@ pub fn tasksCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
                     &.{ col_id, col_id, task_id },
                 ) catch |err| {
                     std.log.warn("task_create: kanban auto-assign failed (non-fatal): {s}", .{@errorName(err)});
+                };
+                // Emit SSE event so other connected clients refresh
+                // their kanban view. action="assigned" matches the
+                // frontend's `KanbanTaskEvent` union variant. The new
+                // task is appended to the bottom of the first column,
+                // so position is `MAX(kanban_position) + 1` from the
+                // sibling set; we read it back from the DB after the
+                // UPDATE so the event payload matches reality. The
+                // emit is fire-and-forget (failures logged) so the
+                // task_create response can still succeed even when
+                // no SSE subscriber is connected.
+                const assigned_pos: i64 = blk: {
+                    var q = sqlite_db.query(allocator,
+                        "SELECT COALESCE(kanban_position, 0) FROM workspace_item_tasks WHERE id = ?",
+                        &.{task_id}) catch break :blk 0;
+                    defer q.deinit();
+                    const row = (q.next() catch break :blk 0) orelse break :blk 0;
+                    defer row.deinit(allocator);
+                    break :blk std.fmt.parseInt(i64, row.values[0], 10) catch 0;
+                };
+                on_event_sent_kanban.onEventSendKanbanTask(allocator, .{
+                    .action = "assigned",
+                    .workspace_id = ws_id,
+                    .item_id = item_id,
+                    .task_id = task_id,
+                    .new_column_id = col_id,
+                    .new_position = assigned_pos,
+                }) catch |err| {
+                    std.log.warn("task_create: SSE emit failed (non-fatal): {s}", .{@errorName(err)});
                 };
             }
         }

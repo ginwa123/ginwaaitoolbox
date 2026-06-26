@@ -401,8 +401,10 @@ test "BuildWorkspaceContext renders markdown with self marker and tasks" {
     // The canonical item id MUST be rendered alongside the name —
     // kanban tools (kanban_list, kanban_move_task) look up by id
     // not name, and the LLM only sees what the renderer produces.
-    try testing.expect(std.mem.indexOf(u8, md, "id: `wi_a`") != null);
-    try testing.expect(std.mem.indexOf(u8, md, "id: `wi_b`") != null);
+    // The label is `item_id:` (NOT bare `id:`) so it can't be
+    // confused with `task_id:` on the tasks listed below.
+    try testing.expect(std.mem.indexOf(u8, md, "item_id: `wi_a`") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "item_id: `wi_b`") != null);
 
     // Task name rendering (the self task is "task-a1" — its name
     // appears in the task list under its parent item).
@@ -413,8 +415,10 @@ test "BuildWorkspaceContext renders markdown with self marker and tasks" {
 
     // Task id rendering — the LLM passes task_id (id, not name) to
     // kanban_move_task, so the renderer must expose the task's id.
-    try testing.expect(std.mem.indexOf(u8, md, "id: `task_a1`") != null);
-    try testing.expect(std.mem.indexOf(u8, md, "id: `task_b1`") != null);
+    // The label is `task_id:` (NOT bare `id:`) so it can't be
+    // confused with `item_id:` on the parent sibling line.
+    try testing.expect(std.mem.indexOf(u8, md, "task_id: `task_a1`") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "task_id: `task_b1`") != null);
 
     // Sanity: the cwd hint is present (Alpha's path was /abs/a).
     try testing.expect(std.mem.indexOf(u8, md, "/abs/a") != null);
@@ -499,4 +503,50 @@ test "BuildWorkspaceContext returns empty string for empty workspace" {
     defer alloc.free(md);
 
     try testing.expectEqualStrings("", md);
+}
+
+// ─── Test 9: regression — item_id: / task_id: labels are visually distinct ──
+
+test "BuildWorkspaceContext uses item_id: and task_id: labels (visually distinct)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Same seed as Test 6 (the markdown-shape test) — gives us a
+    // self item + a sibling item, each with one task. The renderer
+    // should produce both `item_id:` and `task_id:` labels and
+    // crucially should NOT use the bare `id:` label (it was the
+    // source of the LLM confusion that Chunk 1 validates against).
+    try seedWorkspace(&ctx.db, alloc, .{
+        .workspace_id = "ws_disambig",
+        .items = &.{
+            .{ .id = "wi_a", .path = "/abs/a", .name = "Alpha" },
+            .{ .id = "wi_b", .path = "/abs/b", .name = "Beta" },
+        },
+        .tasks = &.{
+            .{ .id = "task_a1", .workspace_item_id = "wi_a", .name = "task-a1" },
+            .{ .id = "task_b1", .workspace_item_id = "wi_b", .name = "task-b1" },
+        },
+    });
+
+    const md = try build_messages.BuildWorkspaceContext(alloc, &ctx.db, "task_a1");
+    defer alloc.free(md);
+
+    // The two labels must be visually distinct so the LLM doesn't
+    // confuse them (see kanban_list input validation in Chunk 1).
+    try testing.expect(std.mem.indexOf(u8, md, "item_id: ") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "task_id: ") != null);
+
+    // And the bare `id: ` label (without a prefix) must NOT appear
+    // anywhere — it's ambiguous and was the source of the original
+    // bug. Match against the markdown rendering prefix `(id: `
+    // (item lines start with `- **Name** (`) and task lines with
+    // `  - task: \`name\` (`, so the only way an ambiguous `id: `
+    // could appear is inside one of those parenthesized groups.
+    // We use `((id: \`` and ` (id: \`` as the search needles — both
+    // are impossible substrings of the disambiguated `item_id:` and
+    // `task_id:` labels.
+    try testing.expect(std.mem.indexOf(u8, md, " (id: `") == null);
+    try testing.expect(std.mem.indexOf(u8, md, "(id: `") == null);
 }

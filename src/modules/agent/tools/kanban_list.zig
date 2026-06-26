@@ -227,29 +227,64 @@ fn resolveColumnIdToName(
 ///
 /// Error cases (encoded as XML so the LLM sees a structured failure):
 ///   - workspace_id or item_id is empty: <kanban><error>...</error></kanban>
+///   - item_id has a known-wrong prefix (task_/col_/ws_): <kanban><error>...</error></kanban>
+///     with a self-correcting hint pointing at the Workspace Context listing
+///   - item_id is well-formed (starts with "item_") but no matching
+///     workspace_item of type 'kanban' exists: <kanban><error>...</error></kanban>
+///   - The kanban exists but has 0 columns: a friendly hint (NOT an error)
+///     so the LLM can distinguish "wrong item_id" from "empty board"
 ///   - DB read failure: <kanban><error>DB: ...</error></kanban>
 pub fn executeKanbanListToString(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     input: KanbanListInput,
 ) ![]u8 {
-    if (input.workspace_id.len == 0 or input.item_id.len == 0) {
-        return errorXml(allocator, "workspace_id and item_id are required");
+    // 1. Validate shape (catches task_id/col_id/ws_id passed as item_id).
+    //    Returns either null (shape OK) or an owned error XML slice.
+    if (try validateItemIdShape(allocator, input.item_id, input.workspace_id)) |err_xml| {
+        return err_xml;
     }
 
-    // 1. Read columns (sorted by position).
+    // 2. Validate the item exists in the DB AND is a kanban. The shape
+    //    check above only inspects the prefix; this catches typos and
+    //    cross-item-type confusion (e.g., passing a folder's item_id
+    //    to kanban_list). When the item doesn't exist, return a clear
+    //    error so the LLM can re-fetch the workspace context.
+    const exists = itemExists(allocator, db, input.item_id) catch |err| {
+        return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: itemExists failed: {s}", .{@errorName(err)}));
+    };
+    if (!exists) {
+        return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+            \\item_id '{s}' matches no workspace_item (or the item isn't a kanban). Verify the id from the Workspace Context listing — the active kanban (if any) is the one marked `*(this task)*`.
+        , .{input.item_id}));
+    }
+
+    // 3. Read columns (sorted by position).
     const cols = nalarcore.ai_mod.kanban_model.listColumns(allocator, db, input.item_id) catch |err| {
         return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: listColumns failed: {s}", .{@errorName(err)}));
     };
     defer nalarcore.ai_mod.kanban_model.freeColumns(allocator, cols);
 
-    // 2. Read tasks (sorted by (column_id, position)).
+    // 4. If the kanban is well-formed but legitimately has no columns
+    //    (user deleted them all), surface that as a structured hint so
+    //    the LLM can distinguish from "wrong item_id". Empty XML
+    //    without this hint looks identical to the bug we're fixing.
+    //    Note: NOT wrapped in <error> — the kanban is valid, just empty.
+    const empty_board_hint: ?[]u8 = if (cols.len == 0) blk: {
+        const h = try std.fmt.allocPrint(allocator,
+            \\This kanban item has no columns (0 columns). The user may have deleted all columns, or the kanban was just created and columns haven't been seeded yet. Ask the user, or call kanban_list with a different item_id.
+        , .{});
+        break :blk h;
+    } else null;
+    defer if (empty_board_hint) |h| allocator.free(h);
+
+    // 5. Read tasks (sorted by (column_id, position)).
     const task_rows = listKanbanTasks(allocator, db, input.item_id) catch |err| {
         return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: listTasks failed: {s}", .{@errorName(err)}));
     };
     defer freeKanbanTaskRows(allocator, task_rows);
 
-    // 3. Build column summary array (with task_count computed from
+    // 6. Build column summary array (with task_count computed from
     //    the task rows we just read — no second DB roundtrip).
     var column_summaries = std.ArrayList(ColumnSummary).empty;
     defer column_summaries.deinit(allocator);
@@ -268,7 +303,7 @@ pub fn executeKanbanListToString(
         });
     }
 
-    // 4. Build task summary array. Filter to the requested column_id
+    // 7. Build task summary array. Filter to the requested column_id
     //    when input.column_id is non-null. Each task gets
     //    column_id + column_name (or both null when unassigned).
     //
@@ -311,8 +346,29 @@ pub fn executeKanbanListToString(
         });
     }
 
-    // 5. Render the XML.
-    return toXml(allocator, input.workspace_id, input.item_id, column_summaries.items, task_summaries.items);
+    // 8. Render the XML. When the kanban has no columns, append the
+    //    friendly hint inside the root <kanban>...</kanban> wrapper
+    //    (NOT as <error>) so the LLM can distinguish "wrong item_id"
+    //    from "empty board".
+    const xml = try toXml(allocator, input.workspace_id, input.item_id, column_summaries.items, task_summaries.items);
+    if (empty_board_hint) |h| {
+        // Splice the hint into the closing </kanban>: insert before
+        // the final tag so it lives alongside <columns> and <tasks>.
+        const close_tag = "</kanban>";
+        const idx = std.mem.indexOf(u8, xml, close_tag) orelse xml.len;
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(allocator);
+        try out.appendSlice(allocator, xml[0..idx]);
+        try out.appendSlice(allocator, "<hint>");
+        const escaped_hint = try xmlEscape(allocator, h);
+        defer allocator.free(escaped_hint);
+        try out.appendSlice(allocator, escaped_hint);
+        try out.appendSlice(allocator, "</hint>");
+        try out.appendSlice(allocator, xml[idx..]);
+        allocator.free(xml);
+        return try out.toOwnedSlice(allocator);
+    }
+    return xml;
 }
 
 /// Serialize the kanban structure to an XML string for the LLM.
@@ -451,4 +507,79 @@ pub fn errorXmlOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
     try xml.appendSlice(allocator, escaped);
     try xml.appendSlice(allocator, "</error></kanban>");
     return try xml.toOwnedSlice(allocator);
+}
+
+/// Detect the three known LLM id-confusion mistakes (task_id,
+/// column_id, workspace_id passed where item_id was expected). Returns
+/// null when the shape looks correct, or a structured error XML
+/// describing the exact mistake + the canonical id source.
+///
+/// This runs BEFORE the DB query so the LLM gets a fast, typed
+/// error instead of a silent empty board. Empty input is also
+/// caught here (mirrors the existing "workspace_id and item_id are
+/// required" guard) so the LLM gets one consistent error path.
+///
+/// The mistake hints deliberately show the canonical id source
+/// ("see Workspace Context", "item_id: `item_...`") so the LLM can
+/// self-correct on the next call.
+pub fn validateItemIdShape(
+    allocator: std.mem.Allocator,
+    item_id: []const u8,
+    workspace_id: []const u8,
+) !?[]u8 {
+    if (item_id.len == 0 or workspace_id.len == 0) {
+        return try errorXml(allocator, "workspace_id and item_id are required");
+    }
+    // The DB-generated ids use these prefixes (see workspace_items_create.zig's
+    // generateItemId, workspace_item_tasks_create.zig, kanban_model.generateColumnId,
+    // workspaces_create.zig). Anything with the wrong prefix is a shape mistake.
+    if (std.mem.startsWith(u8, item_id, "task_")) {
+        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+            \\item_id '{s}' looks like a TASK id (starts with 'task_'). Pass the KANBAN's item_id instead — find it next to the literal text `item_id: ` (note: NOT `id:`) in the Workspace Context listing. The item_id always starts with 'item_'.
+        , .{item_id}));
+    }
+    if (std.mem.startsWith(u8, item_id, "col_")) {
+        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+            \\item_id '{s}' looks like a COLUMN id (starts with 'col_'). Pass the KANBAN's item_id instead — find it next to the literal text `item_id: ` (note: NOT `id:`) in the Workspace Context listing. The item_id always starts with 'item_'.
+        , .{item_id}));
+    }
+    if (std.mem.startsWith(u8, item_id, "ws_")) {
+        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+            \\item_id '{s}' looks like a WORKSPACE id (starts with 'ws_'). You probably swapped workspace_id and item_id. The KANBAN's item_id starts with 'item_' — find it next to the literal text `item_id: ` in the Workspace Context listing.
+        , .{item_id}));
+    }
+    if (!std.mem.startsWith(u8, item_id, "item_")) {
+        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+            \\item_id '{s}' has an unrecognized prefix (expected 'item_'). Workspace-scoped tools expect a kanban item_id from the Workspace Context listing, not a free-form string.
+        , .{item_id}));
+    }
+    return null;
+}
+
+/// Verify the item_id corresponds to a real `workspace_items` row of
+/// type 'kanban'. Returns true if the row exists AND is a kanban,
+/// false if it doesn't exist OR is a different item_type. Used to
+/// distinguish "item_id is well-formed but doesn't exist" from
+/// "item_id is well-formed, exists, but has no columns (degenerate
+/// empty board)" so the LLM gets a different error message in each
+/// case.
+///
+/// Cheap query (indexed PK lookup). Called only AFTER
+/// `validateItemIdShape` passes, so we know the input has the
+/// correct `item_` prefix.
+fn itemExists(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    item_id: []const u8,
+) !bool {
+    var q = try db.query(allocator,
+        "SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'kanban' LIMIT 1",
+        &.{item_id});
+    defer q.deinit();
+    const row = try q.next();
+    if (row) |r| {
+        defer r.deinit(allocator);
+        return true;
+    }
+    return false;
 }

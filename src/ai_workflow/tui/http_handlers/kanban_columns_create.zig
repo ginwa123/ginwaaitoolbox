@@ -23,6 +23,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
 const kanban_model = @import("../kanban_model.zig");
+const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 
 /// Request body for column-create.
 ///
@@ -49,6 +50,10 @@ pub fn kanbanColumnsCreateHandler(
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }),
         });
     }
+    // workspace_id is required for the SSE payload (the frontend uses
+    // it to filter events for the active workspace). Empty is fine —
+    // the SSE event will still be emitted with workspace_id="".
+    const ws_id = req.params.get("workspace_id") orelse "";
 
     if (req.body.len == 0) {
         return res.jsonResponse(.{
@@ -94,6 +99,24 @@ pub fn kanbanColumnsCreateHandler(
     // Find the column with the freshly-generated id.
     for (cols) |c| {
         if (std.mem.eql(u8, c.id, new_id)) {
+            // Emit SSE event so other connected clients refresh
+            // their kanban view. action="created" matches the
+            // frontend's `KanbanColumnEvent` union variant. The
+            // emit is fire-and-forget: `event_bus.emit` returns
+            // void and silently no-ops when no SSE client is
+            // subscribed, so tests that don't stand up an SSE
+            // server still pass.
+            on_event_sent_kanban.onEventSendKanbanColumn(allocator, .{
+                .action = "created",
+                .workspace_id = ws_id,
+                .item_id = item_id,
+                .column_id = c.id,
+            }) catch |err| {
+                std.log.warn(
+                    "kanban_columns_create: SSE emit failed (non-fatal): {s}",
+                    .{@errorName(err)},
+                );
+            };
             return res.jsonResponse(.{
                 .status_code = 201,
                 .data = try std.json.Stringify.valueAlloc(

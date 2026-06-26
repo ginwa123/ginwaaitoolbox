@@ -73,6 +73,10 @@ pub const workerGetHandler = @import("worker_get.zig").workerGetHandler;
 pub const workerListHandler = @import("worker_list.zig").workerListHandler;
 pub const workersStreamHandler = @import("worker_sse.zig").workersStreamHandler;
 
+// Kanban SSE handler - fans out kanban_column + kanban_task events
+// onto one EventSource stream opened by the frontend.
+pub const kanbanEventsStreamHandler = @import("kanban_events_sse.zig").kanbanEventsStreamHandler;
+
 // Skills API handlers
 pub const skillsListHandler = @import("skills_list.zig").skillsListHandler;
 pub const skillDetailHandler = @import("skill_detail.zig").skillDetailHandler;

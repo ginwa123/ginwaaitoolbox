@@ -25,6 +25,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
 const kanban_model = @import("../kanban_model.zig");
+const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 
 /// Request body for the kanban-item create endpoint.
 const CreateKanbanBody = struct {
@@ -142,6 +143,54 @@ pub fn workspaceItemsCreateKanbanHandler(
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to seed default columns" }),
         });
     };
+
+    // Emit SSE events for each seeded column so other connected
+    // clients refresh their kanban view. We re-read `listColumns`
+    // after the seed (the seed itself doesn't return the generated
+    // column ids) and emit one event per row. action="created" for
+    // all three. The emit is fire-and-forget; failures are logged
+    // and swallowed so the HTTP 201 still succeeds.
+    {
+        const seeded_cols = kanban_model.listColumns(allocator, sqlite_db, item_id) catch {
+            // Listing the freshly-seeded columns shouldn't fail (the
+            // seed just succeeded), but if it does, log and move on
+            // — the HTTP response must still be 201.
+            std.log.warn(
+                "workspace_items_create_kanban: SSE seed-listColumns failed (non-fatal)",
+                .{},
+            );
+            return res.jsonResponse(.{
+                .status_code = 201,
+                .data = try std.json.Stringify.valueAlloc(
+                    allocator,
+                    CreateKanbanResponse{
+                        .id = item_id,
+                        .workspace_id = workspace_id,
+                        .item_type = "kanban",
+                        .name = name,
+                        .path = path_opt,
+                        .position = 0,
+                    },
+                    .{},
+                ),
+            });
+        };
+        defer kanban_model.freeColumns(allocator, seeded_cols);
+
+        for (seeded_cols) |col| {
+            on_event_sent_kanban.onEventSendKanbanColumn(allocator, .{
+                .action = "created",
+                .workspace_id = workspace_id,
+                .item_id = item_id,
+                .column_id = col.id,
+            }) catch |err| {
+                std.log.warn(
+                    "workspace_items_create_kanban: SSE emit failed (non-fatal): {s}",
+                    .{@errorName(err)},
+                );
+            };
+        }
+    }
 
     return res.jsonResponse(.{
         .status_code = 201,
