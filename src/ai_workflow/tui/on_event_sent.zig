@@ -6,6 +6,7 @@ const logger = @import("nalarcore").logger;
 const models = @import("models.zig");
 const gserverz = tree1_mod.gserverz;
 const llm_history = @import("llm_history.zig");
+const helpers = tree1_mod.helpers;
 
 // ============================================================================
 // Session-to-Client ID mapping for SSE event bus integration
@@ -201,6 +202,29 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         log.?.warnFmt("on_event_send_new[{s}]: NO CONTENT!", .{session_id});
     }
 
+    // Sanitize content + reasoning_content to valid UTF-8 before JSON
+    // serialization. Without this, Zig 0.16's std.json.fmt emits
+    // invalid-UTF-8 strings as ARRAYS of bytes (because
+    // emit_strings_as_arrays defaults to false but only applies when the
+    // slice is valid UTF-8 — see /usr/local/lib/zig/std/json/Stringify.zig:506).
+    // The bash tool's stdout can contain binary bytes (e.g. 0x89, 0x93
+    // from test programs printing raw bytes) that are invalid UTF-8 and
+    // would otherwise corrupt the SSE payload — the frontend would
+    // receive content as [60, 116, 111, ...] instead of "...". This is
+    // the same fix used by `sessionMessagesHandler` for the REST path
+    // (see http_handlers/session_messages_get.zig).
+    const sanitized_content: ?[]u8 = blk: {
+        const c = input.content orelse break :blk null;
+        break :blk try helpers.sanitize.sanitizeUtf8(allocator, c);
+    };
+    defer if (sanitized_content) |s| allocator.free(s);
+
+    const sanitized_reasoning: ?[]u8 = blk: {
+        const r = input.reasoning_content orelse break :blk null;
+        break :blk try helpers.sanitize.sanitizeUtf8(allocator, r);
+    };
+    defer if (sanitized_reasoning) |s| allocator.free(s);
+
     // Build tool_calls JSON array if present
     var tool_calls_json: ?[]const ToolCallJson = null;
     var tool_calls_owned: std.ArrayList(ToolCallJson) = .empty;
@@ -235,11 +259,11 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
 
     const payload = SseEventLLMHistory{
         .index = input.index,
-        .content = input.content orelse "",
+        .content = if (sanitized_content) |s| s else (input.content orelse ""),
         .session_id = input.session_id,
         .model = input.model,
         .cwd = input.cwd,
-        .reasoning_content = input.reasoning_content,
+        .reasoning_content = if (sanitized_reasoning) |s| s else input.reasoning_content,
         .role = input.role orelse "assistant",
         .finish_reason = input.finish_reason,
         .tool_calls_json = tool_calls_json,
