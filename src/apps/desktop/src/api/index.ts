@@ -1859,6 +1859,60 @@ export function createWorkersSseConnection(
   })
 }
 
+// Kanban SSE event types
+// (see src/ai_workflow/tui/on_event_sent_kanban.zig on the backend).
+export interface KanbanColumnEvent {
+  action: 'created' | 'updated' | 'deleted' | 'reordered'
+  workspace_id: string
+  item_id: string
+  column_id: string
+  new_name?: string | null
+  new_position?: number | null
+}
+
+export interface KanbanTaskEvent {
+  action: 'assigned' | 'moved' | 'unassigned'
+  workspace_id: string
+  item_id: string
+  task_id: string
+  new_column_id?: string | null
+  new_position?: number | null
+}
+
+/**
+ * Open a kanban-event SSE stream. Events are JSON-encoded
+ * `KanbanColumnEvent` or `KanbanTaskEvent` payloads. The server's SSE
+ * `event:` line carries `kanban_column` / `kanban_task`, so the
+ * `additionalEventTypes` list MUST include both names — the browser's
+ * `EventSource` only dispatches each named event to listeners
+ * registered for that exact name. Without `additionalEventTypes`, the
+ * events arrive in the network panel but never reach `onEvent`.
+ *
+ * Heartbeats (`data: ping\n\n`) are filtered out by the SseClient
+ * default — see `heartbeatData: 'ping'` in the option below, matching
+ * the backend's `sse_manager.sendHeartbeat`.
+ */
+export function createKanbanSseConnection(opts: {
+  onEvent: (raw: string, eventType: string) => void
+  onError?: (err: Event) => void
+}): SseClient {
+  return createSseClient({
+    url: `${API_BASE}/kanban/events`,
+    onEvent: opts.onEvent,
+    heartbeatData: 'ping',
+    additionalEventTypes: ['kanban_column', 'kanban_task'],
+    onStateChange: (state, info) => {
+      // 'failed' is the SseClient's terminal error state — fired once
+      // when maxAttempts is exhausted OR on a first-attempt non-recoverable
+      // 4xx/5xx. Transient errors during a reconnect cycle don't surface
+      // here; the SseClient handles backoff internally.
+      if (state === 'failed') {
+        opts.onError?.(info.lastError ?? new Event('error'))
+      }
+    },
+  })
+}
+
 // Nalar Config API
 export interface NalarProfile {
   model?: string
