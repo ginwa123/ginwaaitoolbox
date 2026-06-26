@@ -13,6 +13,14 @@
  * in the target column. A future optimization could patch in-place
  * using the SSE payload's `new_column_id` + `new_position`.)
  *
+ * The backend's SSE routing keys ("kanban_column", "kanban_task") are
+ * GLOBAL — every connected client receives every event. We filter
+ * client-side by `event.workspace_id == this subscription's
+ * workspaceId` before dispatching; events for other workspaces are
+ * ignored (the workspacesStore.fetchKanbanColumns helper would no-op
+ * anyway via `findItem`, but skipping the call entirely is cheaper
+ * and keeps the test contract — see kanbanSse.spec.ts test #5).
+ *
  * Plan: docs/superpowers/plans/2026-06-26-fix-kanban-list-empty-add-sse.md
  *   Chunk 4 / Task 4.2
  */
@@ -64,9 +72,9 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
         try {
           const data = JSON.parse(raw)
           if (eventType === 'kanban_column') {
-            handleColumnEvent(data as KanbanColumnEvent)
+            handleColumnEvent(workspaceId, data as KanbanColumnEvent)
           } else if (eventType === 'kanban_task') {
-            handleTaskEvent(data as KanbanTaskEvent)
+            handleTaskEvent(workspaceId, data as KanbanTaskEvent)
           }
         } catch (err) {
           // Malformed event payload — don't crash the connection.
@@ -96,14 +104,20 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
     }
   }
 
-  function handleColumnEvent(event: KanbanColumnEvent): void {
+  function handleColumnEvent(subscribedWorkspaceId: string, event: KanbanColumnEvent): void {
+    // Drop events for other workspaces — the backend fans out
+    // kanban_column events globally, so any connected client receives
+    // them all. Skipping the no-op fetch keeps the local store's
+    // re-fetch rate at 1 per actual mutation.
+    if (event.workspace_id !== subscribedWorkspaceId) return
     const ws = useWorkspacesStore()
     // action: created/updated/deleted/reordered — all of them change
     // the column list shape, so just re-fetch.
     void ws.fetchKanbanColumns(event.workspace_id, event.item_id)
   }
 
-  function handleTaskEvent(event: KanbanTaskEvent): void {
+  function handleTaskEvent(subscribedWorkspaceId: string, event: KanbanTaskEvent): void {
+    if (event.workspace_id !== subscribedWorkspaceId) return
     const ws = useWorkspacesStore()
     // kanban_task.moved renumbers sibling positions in the target
     // column (kanban_model.moveTask step 3). Re-fetching is the
