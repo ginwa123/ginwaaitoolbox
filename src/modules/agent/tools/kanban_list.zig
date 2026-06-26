@@ -330,13 +330,33 @@ pub fn executeKanbanListToString(
 
     var task_summaries = std.ArrayList(TaskSummary).empty;
     defer task_summaries.deinit(allocator);
+    // Track every allocated col_name so we can free them all AFTER
+    // toXml() reads the task_summaries. The earlier version of this
+    // code used `defer if (col_name) |n| allocator.free(n);` INSIDE
+    // the for-loop, but Zig's `defer` fires at the end of the
+    // iteration block — so the slice was freed BEFORE toXml was
+    // called, leaving `task_summaries` with dangling pointers. The
+    // AI then read freed memory (Zig debug allocator's 0xAA free-fill
+    // pattern shows up in the column_name) and interpreted the
+    // garbled output as "empty board". See project memory
+    // `zig-slice-headers-across-defer-lifetimes.md`.
+    var col_names_owned = std.ArrayList([]u8).empty;
+    defer {
+        for (col_names_owned.items) |n| allocator.free(n);
+        col_names_owned.deinit(allocator);
+    }
     for (filtered) |t| {
         const col_id: ?[]const u8 = if (t.kanban_column_id.len > 0) t.kanban_column_id else null;
         const col_name: ?[]const u8 = if (col_id) |cid| blk: {
             const name = resolveColumnIdToName(allocator, db, input.item_id, cid) catch null;
+            if (name) |n| {
+                col_names_owned.append(allocator, n) catch {
+                    allocator.free(n);
+                    break :blk @as(?[]const u8, null);
+                };
+            }
             break :blk if (name) |n| n else null;
         } else null;
-        defer if (col_name) |n| allocator.free(n);
         try task_summaries.append(allocator, .{
             .id = t.id,
             .name = t.name,

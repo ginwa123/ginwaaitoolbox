@@ -410,6 +410,48 @@ test "executeKanbanListToString returns error XML when item_id is empty" {
     try testing.expect(contains(xml, "workspace_id and item_id are required"));
 }
 
+// Regression test for the use-after-free bug fixed in this branch.
+// Before the fix, `defer if (col_name) |n| allocator.free(n);` inside
+// the for-loop fired at the end of EACH iteration — so the col_name
+// slice was freed BEFORE toXml() was called, leaving task_summaries
+// with dangling pointers. The AI then read the freed memory (Zig's
+// 0xAA debug-allocator free-fill pattern) and interpreted the garbled
+// output as "empty board".
+//
+// This test inserts a task assigned to a column and asserts the
+// rendered XML contains the real column_name, not 0xAA bytes.
+test "executeKanbanListToString column_name is real bytes (use-after-free regression)" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    // setupDb() inserts 3 default columns (todo/in progress/done).
+    // Add one task assigned to the "in progress" column.
+    try s.db.exec(alloc,
+        \\INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type, kanban_column_id, kanban_position)
+        \\VALUES ('t_uaf', 'item_1', 'Task Under Test', 'standard', 'col_ip', 0)
+    , &.{});
+
+    const input = kanban_list.KanbanListInput{
+        .workspace_id = "ws_1",
+        .item_id = "item_1",
+    };
+    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
+    defer alloc.free(xml);
+
+    // The task's column_name must be the literal string "in progress",
+    // not freed/garbled memory. If the use-after-free bug recurs, the
+    // slice would point at Zig's 0xAA free-fill pattern.
+    try testing.expect(contains(xml, "<column_name>in progress</column_name>"));
+    try testing.expect(contains(xml, "<id>col_ip</id>"));
+
+    // Defensive: assert the rendered XML does NOT contain the 0xAA
+    // free-fill byte (octal 252 = 0xAA). If it does, the slice
+    // header is pointing at freed memory.
+    try testing.expect(std.mem.indexOfScalar(u8, xml, 0xAA) == null);
+}
+
 // ─── Input validation tests (4 mistake shapes + empty-board hint) ──────
 
 test "executeKanbanListToString returns error XML when item_id looks like a task_id" {
