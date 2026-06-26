@@ -34,6 +34,7 @@ import RemoveFile from './tool_outputs/RemoveFile.vue'
 import SpawnSubAgent from './tool_outputs/SpawnSubAgent.vue'
 import NalarBrowser from './tool_outputs/NalarBrowser.vue'
 import SetGitWorktree from './tool_outputs/SetGitWorktree.vue'
+import ReadCompactedMessages from './tool_outputs/ReadCompactedMessages.vue'
 import CompactionCard from './CompactionCard.vue'
 import SkillsPopup from './SkillsPopup.vue'
 import ImagePreview from './ImagePreview.vue'
@@ -238,6 +239,24 @@ const renderResponse = (
         // Error: <created>false</created><error>...</error>
         const errMatch = content.match(/<error>([\s\S]*?)<\/error>/)
         return `<span class="tool-inline">${tool_name} → ${escapeHtml(errMatch?.[1]?.trim() || 'error')}</span>`
+      }
+
+      if (tool_name === 'read_compacted_messages') {
+        // Collapsed-bubble summary for the inline tool pill in ChatView.
+        // Mirrors the structured ReadCompactedMessages.vue card so users
+        // see the same info (mode + count + session) whether they look
+        // at the collapsed bubble or the expanded body.
+        const errorMatch = content.match(/<error>([\s\S]*?)<\/error>/)
+        if (errorMatch) {
+          return `<span class="tool-inline">${tool_name} → ${escapeHtml(errorMatch[1]?.trim() || 'error')}</span>`
+        }
+        const modeMatch = content.match(/<read_compacted_messages\s+mode="([^"]+)"/)
+        const countMatch = content.match(/<count>(\d+)<\/count>/)
+        const sessionMatch = content.match(/<session_id>([\s\S]*?)<\/session_id>/)
+        const mode = modeMatch?.[1] ?? 'index'
+        const count = countMatch?.[1] ?? '?'
+        const session = sessionMatch?.[1]?.trim() ?? ''
+        return `<span class="tool-inline">${tool_name} → ${escapeHtml(mode)} mode · ${count} ${count === '1' ? 'message' : 'messages'}${session ? ' · ' + escapeHtml(session) : ''}</span>`
       }
 
       if (tool_name === 'nalar_browser') {
@@ -2197,6 +2216,11 @@ const compactSession = async () => {
                           />
                           <SetGitWorktree
                             v-else-if="msg.tool_name === 'set_git_worktree'"
+                            :content="innerToolData(msg)"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <ReadCompactedMessages
+                            v-else-if="msg.tool_name === 'read_compacted_messages'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />

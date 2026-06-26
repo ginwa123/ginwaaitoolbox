@@ -2,20 +2,21 @@
  * Unit tests for the kanbanSse Pinia store (Chunk 4 of
  * docs/superpowers/plans/2026-06-26-fix-kanban-list-empty-add-sse.md).
  *
- * The store owns ONE SSE connection per workspace, ref-counted across
- * subscribers. On `kanban_column` and `kanban_task` events, it
- * dispatches `workspacesStore.fetchKanbanColumns(event.workspace_id,
- * event.item_id)` so the local kanban state stays in sync without a
- * manual reload.
+ * The store owns ONE kanban SSE connection for the app's lifetime,
+ * mirroring the workersSse pattern in App.vue. Tests verify:
+ *   - initKanbanSse opens a connection via createKanbanSseConnection
+ *   - subsequent initKanbanSse calls tear down + reopen (no stacking)
+ *   - closeKanbanSse tears down the connection
+ *   - workspace filter: events for other workspaces are dropped
+ *   - kanban_column / kanban_task events both trigger
+ *     workspacesStore.fetchKanbanColumns
  *
  * Mock pattern: vi.spyOn(api, 'createKanbanSseConnection') captures
  * the onEvent callback so tests can simulate SSE events by invoking
- * it directly. This mirrors `workspacesStoreSessionEvents.spec.ts`
- * (the canonical ref-count / dispatch test for the sessions SSE
- * stream) and avoids needing a real EventSource.
- *
+ * it directly. The factory now uses the 3-callback positional API
+ * (onEvent, onError, onConnected) — matching createWorkersSseConnection.
  * Each test runs in isolation: beforeEach installs a fresh Pinia
- * instance and resets the mock capture array, so subscriptions from
+ * instance and resets the mock capture arrays, so connections from
  * prior tests don't leak.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -28,11 +29,11 @@ import { useWorkspacesStore } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
 describe('useKanbanSseStore', () => {
-  // The SseClient factory returns this stub. We capture the
-  // onEvent callback so tests can simulate SSE events by invoking
-  // it directly. The sseClientStub.close is a vi.fn so tests can
-  // assert it was called when the last unsubscribe fires.
-  let onEventCallback: ((raw: string, eventType: string) => void) | null = null
+  // Captured by the mock below. Tests invoke `dispatch(...)` to
+  // simulate an SSE event arriving on the connection.
+  let onEventCallback:
+    | ((event: KanbanColumnEvent | KanbanTaskEvent) => void)
+    | null = null
   let sseClientStub: Partial<api.SseClient>
 
   beforeEach(() => {
@@ -43,16 +44,18 @@ describe('useKanbanSseStore', () => {
       configurable: true,
     })
     // Fresh stub per test — `close` is a fresh vi.fn so call counts
-    // don't leak across tests (the prior test's last unsubscribe would
-    // otherwise be reflected in the next test's assertion).
+    // don't leak across tests (the prior test's close would otherwise
+    // be reflected in the next test's assertion).
     sseClientStub = { close: vi.fn() }
+    onEventCallback = null
 
-    // Replace the SSE factory with a stub that records the
-    // onEvent callback. onError is ignored because the store
-    // only logs on it — no test asserts the error path.
+    // Replace the SSE factory with a stub that records the onEvent
+    // callback. The factory now uses the 3-callback positional API
+    // (matching createWorkersSseConnection), so the spy signature is
+    // (onEvent, onError, onConnected).
     vi.spyOn(api, 'createKanbanSseConnection').mockImplementation(
-      (opts): api.SseClient => {
-        onEventCallback = opts.onEvent
+      (onEvent): api.SseClient => {
+        onEventCallback = onEvent
         return sseClientStub as api.SseClient
       },
     )
@@ -63,43 +66,46 @@ describe('useKanbanSseStore', () => {
     onEventCallback = null
   })
 
-  function dispatch(raw: string, eventType: string): void {
+  function dispatch(event: KanbanColumnEvent | KanbanTaskEvent): void {
     expect(onEventCallback).not.toBeNull()
-    onEventCallback!(raw, eventType)
+    onEventCallback!(event)
   }
 
-  it('subscribes once per workspace (ref-counts)', () => {
+  it('initKanbanSse opens one connection for a workspace', () => {
     const store = useKanbanSseStore()
-    store.subscribeKanbanSse('ws_1')
-    store.subscribeKanbanSse('ws_1')
-    store.subscribeKanbanSse('ws_1')
-    // 3 subscriptions to the same workspace → 1 SSE connection.
+    store.initKanbanSse('ws_1')
     expect(api.createKanbanSseConnection).toHaveBeenCalledTimes(1)
+  })
 
-    // First two unsubscribes don't close the connection (still
-    // ref-counted at 1).
-    store.unsubscribeKanbanSse('ws_1')
-    store.unsubscribeKanbanSse('ws_1')
-    expect(sseClientStub.close).not.toHaveBeenCalled()
-
-    // Last unsubscribe drops ref-count to 0 → close.
-    store.unsubscribeKanbanSse('ws_1')
+  it('initKanbanSse tears down + reopens when called twice (no stacking)', () => {
+    const store = useKanbanSseStore()
+    store.initKanbanSse('ws_1')
+    store.initKanbanSse('ws_2')
+    // Two init calls → two connection opens; the first was closed
+    // before the second opened (no stacking).
+    expect(api.createKanbanSseConnection).toHaveBeenCalledTimes(2)
     expect(sseClientStub.close).toHaveBeenCalledTimes(1)
   })
 
-  it('opens separate connections for different workspaces', () => {
+  it('closeKanbanSse tears down the connection', () => {
     const store = useKanbanSseStore()
-    store.subscribeKanbanSse('ws_1')
-    store.subscribeKanbanSse('ws_2')
-    expect(api.createKanbanSseConnection).toHaveBeenCalledTimes(2)
+    store.initKanbanSse('ws_1')
+    store.closeKanbanSse()
+    expect(sseClientStub.close).toHaveBeenCalledTimes(1)
   })
 
-  it('triggers fetchKanbanColumns on kanban_column.* events', async () => {
+  it('closeKanbanSse is a no-op when no connection is open', () => {
+    const store = useKanbanSseStore()
+    store.closeKanbanSse()
+    expect(sseClientStub.close).not.toHaveBeenCalled()
+  })
+
+  it('triggers fetchKanbanColumns on kanban_column events', async () => {
     const ws = useWorkspacesStore()
     const fetchSpy = vi.spyOn(ws, 'fetchKanbanColumns').mockResolvedValue()
 
     const store = useKanbanSseStore()
-    store.subscribeKanbanSse('ws_1')
+    store.initKanbanSse('ws_1')
 
     const event: KanbanColumnEvent = {
       action: 'updated',
@@ -107,17 +113,17 @@ describe('useKanbanSseStore', () => {
       item_id: 'item_1',
       column_id: 'col_1',
     }
-    dispatch(JSON.stringify(event), 'kanban_column')
+    dispatch(event)
 
     expect(fetchSpy).toHaveBeenCalledWith('ws_1', 'item_1')
   })
 
-  it('triggers fetchKanbanColumns on kanban_task.* events', async () => {
+  it('triggers fetchKanbanColumns on kanban_task events', async () => {
     const ws = useWorkspacesStore()
     const fetchSpy = vi.spyOn(ws, 'fetchKanbanColumns').mockResolvedValue()
 
     const store = useKanbanSseStore()
-    store.subscribeKanbanSse('ws_1')
+    store.initKanbanSse('ws_1')
 
     const event: KanbanTaskEvent = {
       action: 'moved',
@@ -127,34 +133,41 @@ describe('useKanbanSseStore', () => {
       new_column_id: 'col_done',
       new_position: 0,
     }
-    dispatch(JSON.stringify(event), 'kanban_task')
+    dispatch(event)
 
     expect(fetchSpy).toHaveBeenCalledWith('ws_1', 'item_1')
   })
 
-  it('ignores events for other workspaces (refcount still owns the connection)', () => {
+  it('ignores events for other workspaces (filter is per-connection)', () => {
     const ws = useWorkspacesStore()
     const fetchSpy = vi.spyOn(ws, 'fetchKanbanColumns').mockResolvedValue()
 
     const store = useKanbanSseStore()
-    store.subscribeKanbanSse('ws_1')
+    store.initKanbanSse('ws_1')
 
-    // Event for a DIFFERENT workspace — must be dropped before
-    // reaching the workspacesStore fetch call. The backend's
-    // kanban_column routing key is global, so any connected client
-    // receives every kanban event; the client-side filter is
-    // what keeps each workspace's kanban state scoped.
+    // Event for a DIFFERENT workspace — must be dropped before reaching
+    // the workspacesStore fetch call. The backend's kanban_column
+    // routing key is global, so any connected client receives every
+    // kanban event; the client-side filter (set at init time) is what
+    // keeps each workspace's kanban state scoped.
     const event: KanbanColumnEvent = {
       action: 'updated',
       workspace_id: 'ws_OTHER',
       item_id: 'item_1',
       column_id: 'col_1',
     }
-    dispatch(JSON.stringify(event), 'kanban_column')
+    dispatch(event)
 
     expect(fetchSpy).not.toHaveBeenCalled()
-    // Sanity: the connection is still owned by the ref-counted
-    // subscription to ws_1, so close() was not called either.
+  })
+
+  it('setActiveWorkspaceId updates the filter without reopening the connection', () => {
+    const store = useKanbanSseStore()
+    store.initKanbanSse('ws_1')
+    store.setActiveWorkspaceId('ws_2')
+
+    // No reopen — setActiveWorkspaceId just updates the filter.
+    expect(api.createKanbanSseConnection).toHaveBeenCalledTimes(1)
     expect(sseClientStub.close).not.toHaveBeenCalled()
   })
 })

@@ -41,6 +41,7 @@ test {
     _ = @import("http_handlers/tasks_reorder_pinned_test.zig");
     _ = @import("http_handlers/git_worktree_info_test.zig");
     _ = @import("http_handlers/git_pr_create_test.zig");
+    _ = @import("http_handlers/git_status_test.zig");
     _ = @import("http_handlers/workspace_items_create_kanban_test.zig");
     _ = @import("http_handlers/kanban_columns_list_test.zig");
     _ = @import("http_handlers/kanban_columns_create_test.zig");
