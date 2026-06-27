@@ -96,7 +96,15 @@ pub fn buildMessages(
     const workspaceContext = try BuildWorkspaceContext(allocator, db, session_id);
     defer allocator.free(workspaceContext);
 
-    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment, sub_agents_listing, workspaceContext);
+    // Build the "Kanban Status Tracking" section. Only rendered when
+    // the session's parent item has item_type === 'kanban' (the
+    // helper silently returns "" otherwise). Rendered right after
+    // the Workspace Context section so the agent sees the workflow
+    // expectations before the tool listing.
+    const kanbanStatusContent = try BuildKanbanStatusPrompt(allocator, db, session_id);
+    defer allocator.free(kanbanStatusContent);
+
+    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment, sub_agents_listing, workspaceContext, kanbanStatusContent);
 
     // Render inherited parent conversation history (if requested) and append
     // it to the system prompt as a labelled, read-only block.

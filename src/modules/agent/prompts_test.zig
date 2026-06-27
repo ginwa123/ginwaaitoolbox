@@ -50,6 +50,7 @@ test "build_agent_prompt with no environment: no Global Knowledge section" {
         null,
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -104,6 +105,7 @@ test "build_agent_prompt loads memory files into Global Knowledge section" {
         &env,
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -141,6 +143,7 @@ test "build_agent_prompt: empty memories dir, no Global Knowledge section" {
         &tools,
         "",
         &env,
+        "",
         "",
         "",
     );
@@ -230,6 +233,7 @@ test "build_agent_prompt lists global and local skills in Available Skills secti
         &env,
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -316,6 +320,7 @@ test "build_agent_prompt Available Skills section includes absolute file path an
         &env,
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -390,6 +395,7 @@ test "build_agent_prompt omits Available Skills section when list_skills tool is
         &env,
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -417,6 +423,7 @@ test "build_agent_prompt silently skips Available Skills when env is null" {
         &tools,
         "",
         null, // ← env is null
+        "",
         "",
         "",
     );
@@ -467,6 +474,7 @@ test "build_agent_prompt injects Local Knowledge section from <cwd>/.nalar/memor
         &tools,
         "",
         null, // env is null — only local knowledge should be present
+        "",
         "",
         "",
     );
@@ -551,6 +559,7 @@ test "build_agent_prompt renders Local and Global Knowledge together when both e
         &env,
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -597,6 +606,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories does n
         null,
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -622,6 +632,7 @@ test "build_agent_prompt omits Local Knowledge when cwd is empty" {
         &tools,
         "",
         null,
+        "",
         "",
         "",
     );
@@ -664,6 +675,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories has no
         &tools,
         "",
         null,
+        "",
         "",
         "",
     );
@@ -802,6 +814,7 @@ test "build_agent_prompt with sub_agents_listing: section is rendered when non-e
         null,
         sub_agents_listing,
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -827,10 +840,100 @@ test "build_agent_prompt with sub_agents_listing: section is omitted when empty"
         null,
         "", // empty sub_agents_listing
         "",
+        "",
     );
     defer alloc.free(prompt);
 
     try std.testing.expect(!contains(prompt, "## Available Sub-Agents"));
+}
+
+// ---------------------------------------------------------------------------
+// build_agent_prompt with kanbanStatusContent — tests for the
+// `## Kanban Status Tracking` section (added by the 2026-06-27
+// kanban-status-prompt plan, Chunk 3).
+//
+// The section is rendered verbatim from the `kanbanStatusContent`
+// parameter; an empty string omits the section entirely. The
+// renderer (`BuildKanbanStatusPrompt`) is tested separately in
+// `build_messages_for_agent_prompt_test.zig` — these tests cover
+// the build_agent_prompt integration only (param threading +
+// conditional rendering).
+// ---------------------------------------------------------------------------
+
+test "build_agent_prompt renders Kanban Status Tracking when section is non-empty" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tools = [_]AgentTool{};
+    const kanban_block =
+        \\## Kanban Status Tracking
+        \\
+        \\This task is on a kanban board (parent item_type: `kanban`).
+        \\**You MUST call the `kanban_move_task` tool at every meaningful
+        \\workflow checkpoint** below.
+        \\
+        \\**Current column:** `todo` (`col_a`)
+        \\
+        \\**Columns on this board** (in flow order):
+        \\- `todo` (`col_a`, position 0)
+        \\- `in progress` (`col_b`, position 1)
+        \\- `done` (`col_c`, position 2)
+        \\
+        \\**Status transitions** (call `kanban_move_task`):
+        \\- **start** — move from `todo` → `in progress`
+        \\- **complete** — move to `done` before your final reply
+        \\- **blocked** — do NOT move
+    ;
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "",
+        "",
+        kanban_block,
+    );
+    defer alloc.free(prompt);
+
+    try std.testing.expect(contains(prompt, "## Kanban Status Tracking"));
+    try std.testing.expect(contains(prompt, "MUST call the `kanban_move_task` tool"));
+    try std.testing.expect(contains(prompt, "Current column:** `todo` (`col_a`)"));
+    try std.testing.expect(contains(prompt, "- `todo` (`col_a`, position 0)"));
+    try std.testing.expect(contains(prompt, "**start**"));
+    try std.testing.expect(contains(prompt, "**complete**"));
+    try std.testing.expect(contains(prompt, "**blocked**"));
+}
+
+test "build_agent_prompt omits Kanban Status Tracking when section is empty" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tools = [_]AgentTool{};
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "",
+        "",
+        "", // empty kanbanStatusContent
+    );
+    defer alloc.free(prompt);
+
+    try std.testing.expect(!contains(prompt, "## Kanban Status Tracking"));
+    try std.testing.expect(!contains(prompt, "MUST call the `kanban_move_task`"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1367,6 +1470,7 @@ test "build_agent_prompt renders Workspace Context when section is non-empty" {
         null,
         "",
         workspaceContext,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -1419,6 +1523,7 @@ test "build_agent_prompt omits Workspace Context when section is empty" {
         null,
         "",
         "", // empty workspaceContext
+        "",
     );
     defer alloc.free(prompt);
 
