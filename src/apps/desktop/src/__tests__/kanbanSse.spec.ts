@@ -118,9 +118,10 @@ describe('useKanbanSseStore', () => {
     expect(fetchSpy).toHaveBeenCalledWith('ws_1', 'item_1')
   })
 
-  it('triggers fetchKanbanColumns on kanban_task events', async () => {
+  it('triggers fetchKanbanTasks on kanban_task events (moved action)', async () => {
     const ws = useWorkspacesStore()
-    const fetchSpy = vi.spyOn(ws, 'fetchKanbanColumns').mockResolvedValue()
+    const fetchColumnsSpy = vi.spyOn(ws, 'fetchKanbanColumns').mockResolvedValue()
+    const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
 
     const store = useKanbanSseStore()
     store.initKanbanSse('ws_1')
@@ -135,7 +136,75 @@ describe('useKanbanSseStore', () => {
     }
     dispatch(event)
 
-    expect(fetchSpy).toHaveBeenCalledWith('ws_1', 'item_1')
+    // Task events refresh TASKS, not columns. fetchKanbanColumns must
+    // NOT be called — that would be wasted HTTP traffic (and would mask
+    // a future bug where the column handler accidentally picks up task
+    // events).
+    expect(fetchColumnsSpy).not.toHaveBeenCalled()
+    expect(fetchTasksSpy).toHaveBeenCalledWith('ws_1', 'item_1')
+  })
+
+  it('triggers fetchKanbanTasks on kanban_task events (assigned action)', async () => {
+    const ws = useWorkspacesStore()
+    const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
+
+    const store = useKanbanSseStore()
+    store.initKanbanSse('ws_1')
+
+    const event: KanbanTaskEvent = {
+      action: 'assigned',
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      task_id: 'task_new',
+      new_column_id: 'col_1',
+      new_position: 0,
+    }
+    dispatch(event)
+
+    expect(fetchTasksSpy).toHaveBeenCalledWith('ws_1', 'item_1')
+  })
+
+  it('triggers fetchKanbanTasks on kanban_task events (unassigned action)', async () => {
+    const ws = useWorkspacesStore()
+    const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
+
+    const store = useKanbanSseStore()
+    store.initKanbanSse('ws_1')
+
+    const event: KanbanTaskEvent = {
+      action: 'unassigned',
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      task_id: 'task_1',
+      new_column_id: null,
+      new_position: null,
+    }
+    dispatch(event)
+
+    expect(fetchTasksSpy).toHaveBeenCalledWith('ws_1', 'item_1')
+  })
+
+  it('triggers fetchKanbanColumns (NOT fetchKanbanTasks) on kanban_column events', async () => {
+    const ws = useWorkspacesStore()
+    const fetchColumnsSpy = vi.spyOn(ws, 'fetchKanbanColumns').mockResolvedValue()
+    const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
+
+    const store = useKanbanSseStore()
+    store.initKanbanSse('ws_1')
+
+    const event: KanbanColumnEvent = {
+      action: 'updated',
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      column_id: 'col_1',
+    }
+    dispatch(event)
+
+    expect(fetchColumnsSpy).toHaveBeenCalledWith('ws_1', 'item_1')
+    // Column events must NOT trigger task fetches — they're a
+    // different shape of mutation (rename / reorder / add / delete
+    // columns don't change task positions).
+    expect(fetchTasksSpy).not.toHaveBeenCalled()
   })
 
   it('ignores events for other workspaces (filter is per-connection)', () => {
