@@ -118,6 +118,10 @@ pub const queueMessagesGetHandler = @import("queue_messages_get.zig").queueMessa
 // Session to client IDs monitoring
 pub const sessionToClientIdsHandler = @import("session_to_client_ids.zig").sessionToClientIdsHandler;
 
+// Debug/inspection endpoint — returns the rendered system prompt for a
+// session. See `system_prompt_get.zig` for the full contract.
+pub const systemPromptGetHandler = @import("system_prompt_get.zig").systemPromptGetHandler;
+
 // Nalar config handlers
 pub const nalarConfigGetHandler = @import("nalar_config_get.zig").nalarConfigGetHandler;
 pub const nalarConfigPutHandler = @import("nalar_config_put.zig").nalarConfigPutHandler;
