@@ -15,7 +15,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 
 import * as api from '../api'
-import type { Task, WorkspaceItem } from '../stores/workspaces'
+import type { Task as ApiTask } from '../api'
+import type { WorkspaceItem } from '../stores/workspaces'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
@@ -31,7 +32,7 @@ const makeItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
   ...overrides,
 })
 
-const makeTask = (overrides: Partial<Task> = {}): Task => ({
+const makeTask = (overrides: Partial<ApiTask> = {}): ApiTask => ({
   id: 'task_1',
   name: 'Task 1',
   ...overrides,
