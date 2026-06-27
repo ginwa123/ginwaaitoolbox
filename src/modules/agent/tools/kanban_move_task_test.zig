@@ -260,6 +260,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\  id TEXT PRIMARY KEY,
         \\  workspace_item_id TEXT,
         \\  name TEXT,
+        \\  description TEXT NOT NULL DEFAULT '',
         \\  position INTEGER,
         \\  created_at TEXT NOT NULL DEFAULT ''
         \\)

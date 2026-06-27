@@ -43,7 +43,7 @@ test "listColumns returns columns ordered by position" {
         "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)", &.{});
     try s.db.exec(alloc,
         \\CREATE TABLE kanban_columns (
-        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT,
+        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT, description TEXT NOT NULL DEFAULT '',
         \\    position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)
     , &.{});
     try s.db.exec(alloc,
@@ -77,7 +77,7 @@ test "addColumn inserts at end of position sequence" {
         "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)", &.{});
     try s.db.exec(alloc,
         \\CREATE TABLE kanban_columns (
-        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT,
+        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT, description TEXT NOT NULL DEFAULT '',
         \\    position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)
     , &.{});
     try s.db.exec(alloc,
@@ -85,7 +85,7 @@ test "addColumn inserts at end of position sequence" {
     try s.db.exec(alloc,
         "INSERT INTO kanban_columns (id, workspace_item_id, name, position) VALUES ('c1', 'item_1', 'todo', 0)", &.{});
 
-    const new_id = try kanban.addColumn(alloc, &s.db, "item_1", "review", null);
+    const new_id = try kanban.addColumn(alloc, &s.db, "item_1", "review", "", null);
     defer alloc.free(new_id);
     // Generated id is `col_<unix_nanoseconds>` — just sanity-check the prefix.
     try testing.expect(std.mem.startsWith(u8, new_id, "col_"));
@@ -110,7 +110,7 @@ test "seedDefaultColumns creates todo, in progress, done" {
         "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)", &.{});
     try s.db.exec(alloc,
         \\CREATE TABLE kanban_columns (
-        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT,
+        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT, description TEXT NOT NULL DEFAULT '',
         \\    position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)
     , &.{});
     try s.db.exec(alloc,
@@ -139,7 +139,7 @@ test "renameColumn updates name" {
         "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)", &.{});
     try s.db.exec(alloc,
         \\CREATE TABLE kanban_columns (
-        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT,
+        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT, description TEXT NOT NULL DEFAULT '',
         \\    position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)
     , &.{});
     try s.db.exec(alloc,
@@ -147,7 +147,7 @@ test "renameColumn updates name" {
     try s.db.exec(alloc,
         "INSERT INTO kanban_columns (id, workspace_item_id, name, position) VALUES ('c1', 'item_1', 'todo', 0)", &.{});
 
-    try kanban.renameColumn(alloc, &s.db, "item_1", "c1", "backlog");
+    try kanban.updateColumn(alloc, &s.db, "item_1", "c1", "backlog", null);
 
     const cols = try kanban.listColumns(alloc, &s.db, "item_1");
     defer kanban.freeColumns(alloc, cols);
@@ -167,7 +167,7 @@ test "deleteColumn nulls out task kanban_column_id" {
         "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)", &.{});
     try s.db.exec(alloc,
         \\CREATE TABLE kanban_columns (
-        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT,
+        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT, description TEXT NOT NULL DEFAULT '',
         \\    position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)
     , &.{});
     try s.db.exec(alloc,
@@ -210,7 +210,7 @@ test "moveTask changes column and renumbers positions" {
         "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)", &.{});
     try s.db.exec(alloc,
         \\CREATE TABLE kanban_columns (
-        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT,
+        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT, description TEXT NOT NULL DEFAULT '',
         \\    position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)
     , &.{});
     try s.db.exec(alloc,
@@ -279,7 +279,7 @@ test "reorderColumn shifts siblings to a dense sequence matching the user's inte
         "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)", &.{});
     try s.db.exec(alloc,
         \\CREATE TABLE kanban_columns (
-        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT,
+        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT, description TEXT NOT NULL DEFAULT '',
         \\    position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)
     , &.{});
     try s.db.exec(alloc,

@@ -32,6 +32,7 @@ pub const KanbanColumn = struct {
     id: []u8,
     workspace_item_id: []u8,
     name: []u8,
+    description: []u8,
     position: i64,
     created_at: []u8,
 };
@@ -42,6 +43,7 @@ pub fn freeColumns(allocator: std.mem.Allocator, cols: []KanbanColumn) void {
         allocator.free(c.id);
         allocator.free(c.workspace_item_id);
         allocator.free(c.name);
+        allocator.free(c.description);
         allocator.free(c.created_at);
     }
     allocator.free(cols);
@@ -58,7 +60,7 @@ pub fn listColumns(
     workspace_item_id: []const u8,
 ) ![]KanbanColumn {
     var q = try db.query(allocator,
-        \\SELECT kc.id, kc.workspace_item_id, kc.name, kc.position, COALESCE(kc.created_at, '')
+        \\SELECT kc.id, kc.workspace_item_id, kc.name, kc.description, kc.position, COALESCE(kc.created_at, '')
         \\FROM kanban_columns kc
         \\WHERE kc.workspace_item_id = ?
         \\ORDER BY kc.position ASC
@@ -71,6 +73,7 @@ pub fn listColumns(
             allocator.free(c.id);
             allocator.free(c.workspace_item_id);
             allocator.free(c.name);
+            allocator.free(c.description);
             allocator.free(c.created_at);
         }
         rows.deinit(allocator);
@@ -82,8 +85,9 @@ pub fn listColumns(
             .id = try allocator.dupe(u8, row.values[0]),
             .workspace_item_id = try allocator.dupe(u8, row.values[1]),
             .name = try allocator.dupe(u8, row.values[2]),
-            .position = std.fmt.parseInt(i64, row.values[3], 10) catch 0,
-            .created_at = try allocator.dupe(u8, row.values[4]),
+            .description = try allocator.dupe(u8, row.values[3]),
+            .position = std.fmt.parseInt(i64, row.values[4], 10) catch 0,
+            .created_at = try allocator.dupe(u8, row.values[5]),
         });
     }
     return rows.toOwnedSlice(allocator);
@@ -115,6 +119,10 @@ fn generateColumnId(allocator: std.mem.Allocator) ![]u8 {
 /// behavior of an explicit position is the caller's responsibility
 /// — see `reorderColumn`).
 ///
+/// `description` is the free-text "meaning" of the column (Migration
+/// 053); pass `""` for "no description" (the column will render with
+/// the "Add a description…" placeholder in the frontend).
+///
 /// Returns a freshly-allocated id of the form `col_<unix_seconds>`.
 /// Caller owns the returned slice.
 pub fn addColumn(
@@ -122,6 +130,7 @@ pub fn addColumn(
     db: *sqlite.SqliteBackend,
     workspace_item_id: []const u8,
     name: []const u8,
+    description: []const u8,
     position: ?i64,
 ) ![]u8 {
     const id = try generateColumnId(allocator);
@@ -142,9 +151,22 @@ pub fn addColumn(
     const pos_str = try std.fmt.allocPrint(allocator, "{d}", .{pos});
     defer allocator.free(pos_str);
 
-    try db.exec(allocator,
-        "INSERT INTO kanban_columns (id, workspace_item_id, name, position) VALUES (?, ?, ?, ?)",
-        &.{ id, workspace_item_id, name, pos_str });
+    // SQLiteBackend.exec binds `arg.len == 0` as SQL NULL (see
+    // `src/modules/databases/sqlite/Sqlite.zig:73-74`). The
+    // `description` column is `NOT NULL DEFAULT ''`, so binding
+    // NULL would violate the constraint. Omit the column from the
+    // INSERT when description is empty so the DEFAULT '' applies.
+    if (description.len == 0) {
+        try db.exec(allocator,
+            "INSERT INTO kanban_columns (id, workspace_item_id, name, position) " ++
+            "VALUES (?, ?, ?, ?)",
+            &.{ id, workspace_item_id, name, pos_str });
+    } else {
+        try db.exec(allocator,
+            "INSERT INTO kanban_columns (id, workspace_item_id, name, description, position) " ++
+            "VALUES (?, ?, ?, ?, ?)",
+            &.{ id, workspace_item_id, name, description, pos_str });
+    }
     return allocator.dupe(u8, id);
 }
 
@@ -152,6 +174,10 @@ pub fn addColumn(
 /// done` for a freshly-created kanban item. Idempotent only at the
 /// "called once at item-creation time" granularity — re-calling on a
 /// board that already has columns appends a second set.
+///
+/// All seeded columns get `description = ""` (the "no description"
+/// sentinel). Users can set per-column descriptions via the Kanban
+/// Settings dialog (Chunk 3).
 pub fn seedDefaultColumns(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -161,33 +187,56 @@ pub fn seedDefaultColumns(
     // free. `seedDefaultColumns` doesn't surface the ids (the caller
     // doesn't need them), so we free each one immediately after.
     {
-        const id = try addColumn(allocator, db, workspace_item_id, "todo", 0);
+        const id = try addColumn(allocator, db, workspace_item_id, "todo", "", 0);
         defer allocator.free(id);
     }
     {
-        const id = try addColumn(allocator, db, workspace_item_id, "in progress", 1);
+        const id = try addColumn(allocator, db, workspace_item_id, "in progress", "", 1);
         defer allocator.free(id);
     }
     {
-        const id = try addColumn(allocator, db, workspace_item_id, "done", 2);
+        const id = try addColumn(allocator, db, workspace_item_id, "done", "", 2);
         defer allocator.free(id);
     }
 }
 
-/// Rename a column. `workspace_item_id` is accepted for symmetry
-/// with the other column-mutators but the WHERE clause matches only
-/// on `id` (column ids are globally unique within the schema).
-pub fn renameColumn(
+/// Update an existing column. `name` and `description` are both
+/// optional; at least one must be non-null (validated at the HTTP
+/// handler layer). Only non-null fields are written — a null
+/// `name` leaves the existing name unchanged, a null
+/// `description` leaves the existing description unchanged.
+///
+/// `workspace_item_id` is accepted for symmetry with the other
+/// column-mutators but the WHERE clause matches only on `id`
+/// (column ids are globally unique within the schema).
+pub fn updateColumn(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     workspace_item_id: []const u8,
     column_id: []const u8,
-    new_name: []const u8,
+    name: ?[]const u8,
+    description: ?[]const u8,
 ) !void {
     _ = workspace_item_id;
-    try db.exec(allocator,
-        "UPDATE kanban_columns SET name = ? WHERE id = ?",
-        &.{ new_name, column_id });
+    if (name) |n| {
+        try db.exec(allocator,
+            "UPDATE kanban_columns SET name = ? WHERE id = ?",
+            &.{ n, column_id });
+    }
+    // Skip the UPDATE when description is `null` OR an empty slice
+    // — `null` means "don't change", and an empty slice would be
+    // bound as NULL by SQLiteBackend.exec, overwriting the existing
+    // description with NULL and violating the NOT NULL constraint.
+    // Callers wanting to "clear" a description should use a
+    // different mechanism (out of scope for v1; the frontend treats
+    // `""` and `null` identically).
+    if (description) |d| {
+        if (d.len > 0) {
+            try db.exec(allocator,
+                "UPDATE kanban_columns SET description = ? WHERE id = ?",
+                &.{ d, column_id });
+        }
+    }
 }
 
 /// Delete a column. Tasks that were assigned to this column have

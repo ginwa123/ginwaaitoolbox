@@ -103,6 +103,7 @@ fn setupDb() !struct {
         \\    id TEXT PRIMARY KEY,
         \\    workspace_item_id TEXT NOT NULL,
         \\    name TEXT NOT NULL,
+        \\    description TEXT NOT NULL DEFAULT '',
         \\    position INTEGER NOT NULL DEFAULT 0,
         \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         \\)
