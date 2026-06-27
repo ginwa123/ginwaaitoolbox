@@ -88,9 +88,23 @@ fn setupDb() !struct {
         \\    id TEXT PRIMARY KEY,
         \\    name TEXT NOT NULL,
         \\    workspace_item_id TEXT NOT NULL,
+        \\    kanban_column_id TEXT,
         \\    task_type TEXT NOT NULL DEFAULT 'standard',
         \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &.{});
+
+    // kanban_columns — mirrors Migration 051's schema (used by
+    // `BuildKanbanStatusPrompt` in `build_messages_for_agent_prompt.zig`,
+    // added in the 2026-06-27 kanban-status-prompt plan).
+    try db.exec(alloc,
+        \\CREATE TABLE kanban_columns (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         \\)
     , &.{});
 
@@ -549,4 +563,161 @@ test "BuildWorkspaceContext uses item_id: and task_id: labels (visually distinct
     // `task_id:` labels.
     try testing.expect(std.mem.indexOf(u8, md, " (id: `") == null);
     try testing.expect(std.mem.indexOf(u8, md, "(id: `") == null);
+}
+
+// ─── Tests for BuildKanbanStatusPrompt ────────────────────────────────────
+//
+// These tests cover the renderer added by Chunk 2 of the
+// 2026-06-27-kanban-status-prompt plan. The renderer:
+//
+//   1. Returns "" when the parent item's item_type !== 'kanban'.
+//   2. Returns "" when the session is not bound to any task (the
+//      getWorkspaceContext anchor returns null).
+//   3. Renders the "## Kanban Status Tracking" block with the
+//      mandatory rule + column listing + 4 status transitions
+//      when the parent is a kanban with columns.
+//   4. Renders an unassigned note when the task has NULL kanban_column_id.
+//   5. Renders an empty-board hint when the kanban has no columns.
+//
+// Plan: docs/plans/2026-06-27-kanban-status-prompt.md (Chunk 2)
+
+test "BuildKanbanStatusPrompt returns empty string for non-kanban parent" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Seed: a chat item (not kanban) with a task.
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_chat', 'ws_x', 'chat')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES ('sess_chat', 'chat task', 'wi_chat', 'standard')",
+        &.{});
+
+    const result = try build_messages.BuildKanbanStatusPrompt(alloc, &ctx.db, "sess_chat");
+    defer alloc.free(result);
+
+    try testing.expectEqualStrings("", result);
+}
+
+test "BuildKanbanStatusPrompt returns empty string for unbound session" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // No tasks seeded — getWorkspaceContext returns null.
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_kanban', 'ws_x', 'kanban')",
+        &.{});
+
+    const result = try build_messages.BuildKanbanStatusPrompt(alloc, &ctx.db, "sess_unbound");
+    defer alloc.free(result);
+
+    try testing.expectEqualStrings("", result);
+}
+
+test "BuildKanbanStatusPrompt renders mandatory rule + columns for kanban parent" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Seed: a kanban item with 3 columns, task in column 0.
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_kanban', 'ws_x', 'kanban')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO kanban_columns (id, workspace_item_id, name, position) VALUES " ++
+            "('col_a', 'wi_kanban', 'todo', 0), " ++
+            "('col_b', 'wi_kanban', 'in progress', 1), " ++
+            "('col_c', 'wi_kanban', 'done', 2)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, kanban_column_id, task_type) " ++
+            "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'col_a', 'standard')",
+        &.{});
+
+    const result = try build_messages.BuildKanbanStatusPrompt(alloc, &ctx.db, "sess_kanban");
+    defer alloc.free(result);
+
+    // Mandatory rule is present (imperative wording — matches the
+    // exact substring so a future "soften the wording" PR breaks this test).
+    try testing.expect(std.mem.indexOf(u8, result, "## Kanban Status Tracking") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "MUST call the `kanban_move_task` tool") != null);
+
+    // Current column line shows the resolved column name + id.
+    try testing.expect(std.mem.indexOf(u8, result, "Current column:** `todo` (`col_a`)") != null);
+
+    // All three columns listed with ids + positions.
+    try testing.expect(std.mem.indexOf(u8, result, "- `todo` (`col_a`, position 0)") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "- `in progress` (`col_b`, position 1)") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "- `done` (`col_c`, position 2)") != null);
+
+    // All four status transitions present (each as a **bold** word at
+    // the start of a bullet).
+    try testing.expect(std.mem.indexOf(u8, result, "**start**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**milestone**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**complete**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**blocked**") != null);
+}
+
+test "BuildKanbanStatusPrompt renders unassigned note when task has no column" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Seed: kanban item with columns, but task has NULL kanban_column_id.
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_kanban', 'ws_x', 'kanban')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO kanban_columns (id, workspace_item_id, name, position) VALUES ('col_a', 'wi_kanban', 'todo', 0)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) " ++
+            "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'standard')",
+        &.{});
+
+    const result = try build_messages.BuildKanbanStatusPrompt(alloc, &ctx.db, "sess_kanban");
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "Current column:** _unassigned_") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "Your first move will assign it") != null);
+}
+
+test "BuildKanbanStatusPrompt renders empty-board hint when kanban has no columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Seed: kanban item, NO columns, 1 task.
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_kanban', 'ws_x', 'kanban')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) " ++
+            "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'standard')",
+        &.{});
+
+    const result = try build_messages.BuildKanbanStatusPrompt(alloc, &ctx.db, "sess_kanban");
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "_No columns configured yet._") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "Ask the user to add columns") != null);
+}
+
+test "BuildKanbanStatusPrompt returns empty string for empty session_id" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    const result = try build_messages.BuildKanbanStatusPrompt(alloc, &ctx.db, "");
+    defer alloc.free(result);
+
+    try testing.expectEqualStrings("", result);
 }
