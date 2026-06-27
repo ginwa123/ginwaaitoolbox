@@ -145,32 +145,45 @@ describe('api.kanban', () => {
   })
 
   describe('addKanbanColumn', () => {
-    it('POSTs {name, position?} to the columns endpoint and returns the new column', async () => {
+    it('POSTs {name, description, position?} to the columns endpoint and returns the new column', async () => {
       mockFetchOnce(201, {
         id: 'c_new',
         workspace_item_id: 'item_1',
         name: 'review',
+        description: 'Awaiting code review',
         position: 3,
         created_at: '2026-06-21 12:00:00',
       })
 
-      const result = await addKanbanColumn('ws_1', 'item_1', 'review', 3)
+      const result = await addKanbanColumn(
+        'ws_1',
+        'item_1',
+        'review',
+        'Awaiting code review',
+        3,
+      )
 
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
       expect(url).toContain('/api/workspaces/ws_1/items/item_1/kanban/columns')
       expect(init.method).toBe('POST')
       const body = JSON.parse(init.body as string)
-      expect(body).toEqual({ name: 'review', position: 3 })
+      expect(body).toEqual({
+        name: 'review',
+        description: 'Awaiting code review',
+        position: 3,
+      })
       expect(result.id).toBe('c_new')
       expect(result.name).toBe('review')
+      expect(result.description).toBe('Awaiting code review')
       expect(result.position).toBe(3)
     })
 
-    it('omits position from the body when not provided (backend appends)', async () => {
+    it('omits position from the body when not provided (backend appends) and defaults description to ""', async () => {
       mockFetchOnce(201, {
         id: 'c_new',
         workspace_item_id: 'item_1',
         name: 'review',
+        description: '',
         position: 0,
         created_at: '2026-06-21 12:00:00',
       })
@@ -182,10 +195,13 @@ describe('api.kanban', () => {
       // apiFetch wraps via JSON.stringify(body), and JSON.stringify
       // strips `undefined` values from objects — so the optional
       // `position` is omitted from the wire payload when the caller
-      // didn't supply it. The backend's parseFromSliceLeaky treats
-      // the absent field as `null` for `?i64` / `?[]const u8` types
-      // (matches how addColumn / addTask do it elsewhere).
-      expect(body).toEqual({ name: 'review' })
+      // didn't supply it. `description` defaults to the empty
+      // string ("no description" sentinel) so the backend's
+      // parseFromSliceLeaky sees a string (not null) for the
+      // NOT NULL DEFAULT '' column. The backend's parseFromSliceLeaky
+      // treats the absent field as `null` for `?i64` / `?[]const u8`
+      // types (matches how addColumn / addTask do it elsewhere).
+      expect(body).toEqual({ name: 'review', description: '' })
     })
   })
 
@@ -214,15 +230,43 @@ describe('api.kanban', () => {
         id: 'c1',
         workspace_item_id: 'item_1',
         name: 'urgent',
+        description: 'Top priority',
         position: 0,
         created_at: '2026-06-21 12:00:00',
       })
 
-      await updateKanbanColumn('ws_1', 'item_1', 'c1', { name: 'urgent', position: 0 })
+      await updateKanbanColumn('ws_1', 'item_1', 'c1', {
+        name: 'urgent',
+        description: 'Top priority',
+        position: 0,
+      })
 
       const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
       const body = JSON.parse(init.body as string)
-      expect(body).toEqual({ name: 'urgent', position: 0 })
+      expect(body).toEqual({
+        name: 'urgent',
+        description: 'Top priority',
+        position: 0,
+      })
+    })
+
+    it('forwards description-only patch without name or position', async () => {
+      mockFetchOnce(200, {
+        id: 'c1',
+        workspace_item_id: 'item_1',
+        name: 'review',
+        description: 'Updated meaning',
+        position: 0,
+        created_at: '2026-06-21 12:00:00',
+      })
+
+      await updateKanbanColumn('ws_1', 'item_1', 'c1', {
+        description: 'Updated meaning',
+      })
+
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+      const body = JSON.parse(init.body as string)
+      expect(body).toEqual({ description: 'Updated meaning' })
     })
   })
 
