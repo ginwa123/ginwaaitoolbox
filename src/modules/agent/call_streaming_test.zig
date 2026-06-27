@@ -64,6 +64,20 @@ test "CallError has the four new streaming variants" {
     try expectEqualStrings("StreamEmpty", @errorName(d));
 }
 
+// Pinned 2026-06-28 when idle_timeout_ms was raised from 60_000 to 180_000
+// to support reasoning models. The hard floor is 30_000ms (1.2× the ~25s
+// TCP keepalive window) — below that, the idle deadline fires before
+// keepalive can return ECONNRESET, and we conflate StreamInterrupted
+// (dead conn) with StreamIdleTimeout (hung stream). Don't drop below this.
+test "HttpOptions.idle_timeout_ms default stays above TCP keepalive window" {
+    const defaults = agent.HttpOptions{};
+    try expect(defaults.idle_timeout_ms >= 30_000);
+    // Also pin the actual current value so a future bump (or accidental
+    // revert to 60_000) shows up as a clear test failure, not a silent
+    // behavioral change.
+    try expectEqual(@as(u32, 180_000), defaults.idle_timeout_ms);
+}
+
 // ============================================================================
 // Real network test — spins up a fake HTTP server, points the agent at it,
 // and verifies the idle-timeout fix actually fires on a stalled connection.
