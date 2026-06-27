@@ -66,20 +66,20 @@ test "kanban_columns_update handler extracts both name and position" {
     }
 }
 
-test "kanban_columns_update handler calls renameColumn + reorderColumn" {
+test "kanban_columns_update handler calls updateColumn + reorderColumn" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);
 
-    // The handler must call BOTH the rename and the reorder functions
+    // The handler must call BOTH the update and the reorder functions
     // (based on which body fields are present). If either is missing,
     // the PATCH is partially broken.
-    if (std.mem.indexOf(u8, source, "kanban_model.renameColumn") == null) {
+    if (std.mem.indexOf(u8, source, "kanban_model.updateColumn") == null) {
         std.debug.print(
-            "\n!! {s} does not call kanban_model.renameColumn !!\n",
+            "\n!! {s} does not call kanban_model.updateColumn !!\n",
             .{HANDLER_PATH},
         );
-        return error.RenameColumnCallMissing;
+        return error.UpdateColumnCallMissing;
     }
     if (std.mem.indexOf(u8, source, "kanban_model.reorderColumn") == null) {
         std.debug.print(
@@ -103,5 +103,20 @@ test "kanban_columns_update handler returns 200 on success" {
             .{HANDLER_PATH},
         );
         return error.Status200Missing;
+    }
+}
+
+test "kanban_columns_update handler forwards description to kanban_model.updateColumn" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "parsed.description") == null) {
+        std.debug.print(
+            "\n!! {s} does not extract .description from the parsed body !!\n" ++
+                "   The PATCH endpoint must accept `description` so the Settings UI can edit meanings.\n",
+            .{HANDLER_PATH},
+        );
+        return error.DescriptionExtractionMissing;
     }
 }

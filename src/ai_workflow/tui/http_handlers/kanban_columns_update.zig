@@ -28,12 +28,16 @@ const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 
 /// Request body for column-update.
 ///
-/// Both fields are optional. At least one must be present (validated
+/// All fields are optional. At least one must be present (validated
 /// in the handler body). The model functions are called only for
 /// fields that are non-null, so an absent `name` keeps the existing
-/// name and an absent `position` keeps the existing position.
+/// name, an absent `description` keeps the existing description,
+/// and an absent `position` keeps the existing position.
 const UpdateColumnBody = struct {
     name: ?[]const u8 = null,
+    /// New description (only set when the caller wants to change it;
+    /// null leaves the existing description unchanged).
+    description: ?[]const u8 = null,
     position: ?i64 = null,
 };
 
@@ -80,18 +84,18 @@ pub fn kanbanColumnsUpdateHandler(
         });
     };
 
-    if (parsed.name == null and parsed.position == null) {
+    if (parsed.name == null and parsed.description == null and parsed.position == null) {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "At least one of name or position is required" }),
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "At least one of name, description, or position is required" }),
         });
     }
 
-    if (parsed.name) |new_name| {
-        kanban_model.renameColumn(allocator, sqlite_db, item_id, column_id, new_name) catch {
+    if (parsed.name != null or parsed.description != null) {
+        kanban_model.updateColumn(allocator, sqlite_db, item_id, column_id, parsed.name, parsed.description) catch {
             return res.jsonResponse(.{
                 .status_code = 500,
-                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to rename column" }),
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to update column" }),
             });
         };
     }
@@ -128,6 +132,7 @@ pub fn kanbanColumnsUpdateHandler(
         .item_id = item_id,
         .column_id = column_id,
         .new_name = parsed.name,
+        .new_description = parsed.description,
         .new_position = parsed.position,
     }) catch |err| {
         std.log.warn(
