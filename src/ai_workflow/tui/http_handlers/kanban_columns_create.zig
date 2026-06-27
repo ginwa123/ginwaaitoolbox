@@ -118,6 +118,7 @@ pub fn kanbanColumnsCreateHandler(
                 .workspace_id = ws_id,
                 .item_id = item_id,
                 .column_id = c.id,
+                .new_description = c.description,
             }) catch |err| {
                 std.log.warn(
                     "kanban_columns_create: SSE emit failed (non-fatal): {s}",
