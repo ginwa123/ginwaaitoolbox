@@ -28,8 +28,11 @@ const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 /// Request body for column-create.
 ///
 /// `position` is optional; `null` → place at `MAX(position) + 1`.
+/// `description` is optional; `null` → stored as the empty string
+/// (the "no description" sentinel).
 const CreateColumnBody = struct {
     name: []const u8,
+    description: ?[]const u8 = null,
     position: ?i64 = null,
 };
 
@@ -76,7 +79,11 @@ pub fn kanbanColumnsCreateHandler(
         });
     }
 
-    const new_id = kanban_model.addColumn(allocator, sqlite_db, item_id, parsed.name, parsed.position) catch {
+    // Empty string is the "no description" sentinel (the DB column is
+    // NOT NULL DEFAULT '', and the frontend renders "" as the
+    // "Add a description..." placeholder).
+    const description = parsed.description orelse "";
+    const new_id = kanban_model.addColumn(allocator, sqlite_db, item_id, parsed.name, description, parsed.position) catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to add column" }),
@@ -125,6 +132,7 @@ pub fn kanbanColumnsCreateHandler(
                         .id = c.id,
                         .workspace_item_id = c.workspace_item_id,
                         .name = c.name,
+                        .description = c.description,
                         .position = c.position,
                         .created_at = c.created_at,
                     },
