@@ -35,6 +35,8 @@ import SpawnSubAgent from './tool_outputs/SpawnSubAgent.vue'
 import NalarBrowser from './tool_outputs/NalarBrowser.vue'
 import SetGitWorktree from './tool_outputs/SetGitWorktree.vue'
 import ReadCompactedMessages from './tool_outputs/ReadCompactedMessages.vue'
+import KanbanMove from './tool_outputs/KanbanMove.vue'
+import KanbanList from './tool_outputs/KanbanList.vue'
 import CompactionCard from './CompactionCard.vue'
 import SkillsPopup from './SkillsPopup.vue'
 import ImagePreview from './ImagePreview.vue'
@@ -2221,6 +2223,16 @@ const compactSession = async () => {
                           />
                           <ReadCompactedMessages
                             v-else-if="msg.tool_name === 'read_compacted_messages'"
+                            :content="innerToolData(msg)"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <KanbanMove
+                            v-else-if="msg.tool_name === 'kanban_move_task'"
+                            :content="innerToolData(msg)"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <KanbanList
+                            v-else-if="msg.tool_name === 'kanban_list'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />

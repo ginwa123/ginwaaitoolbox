@@ -681,6 +681,43 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Refresh an item's tasks from the backend and replace the local
+  // `item.tasks` array. Used by the kanbanSse store to react to
+  // `kanban_task.*` SSE events (moved / assigned / unassigned) so the
+  // KanbanView.vue card visibly moves to the new column without a
+  // manual reload.
+  //
+  // Mirrors `fetchKanbanColumns` in shape and error semantics:
+  //   - Silently no-ops if the item isn't in the local store (defensive
+  //     against stale SSE events after a workspace switch).
+  //   - Silently preserves the existing tasks array on API failure
+  //     (matches `fetchKanbanColumns`'s best-effort semantics — the
+  //     next SSE event will trigger another fetch).
+  //   - Sets `hasMoreTasks` + `tasksNextCursor` on the item for
+  //     pagination-state consistency (matches `loadMoreTasks`'s
+  //     pattern at workspaces.ts:1051-1083).
+  //
+  // Does NOT call `api.getTasks` if the item is missing — short-circuit
+  // before the HTTP request to avoid a needless 404 roundtrip.
+  async function fetchKanbanTasks(
+    workspaceId: string,
+    itemId: string,
+  ): Promise<void> {
+    const item = findItem(workspaceId, itemId)
+    if (!item) return
+    try {
+      const { tasks, has_more, next_cursor } = await api.getTasks(workspaceId, itemId)
+      item.tasks = tasks ?? []
+      item.hasMoreTasks = has_more
+      item.tasksNextCursor = next_cursor
+    } catch (err) {
+      console.error('[workspacesStore.fetchKanbanTasks] API call failed:', err)
+      // Leave the existing tasks array untouched so the UI doesn't
+      // flash to empty on a transient network blip. The next SSE
+      // event will trigger another fetch.
+    }
+  }
+
   // Add a column to a kanban and append it to the local item's
   // `kanban_columns` array, sorted by position. The backend
   // returns the column with its server-assigned id and position.
@@ -1562,6 +1599,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     moveTaskToColumn,
     updateKanbanItemPath,
     fetchKanbanColumns,
+    fetchKanbanTasks,
     initializeFromSystemFolder,
     subscribeToSessionEvents,
     fetchSystemFolder,

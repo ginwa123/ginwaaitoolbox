@@ -690,9 +690,17 @@ pub const HttpOptions = struct {
     read_timeout_ms: u32 = 300_000,
     /// Idle window: if no new bytes arrive for this long after readSliceShort
     /// returns, the stream is considered hung. With TCP keepalive set to ~25s,
-    /// set this to at least 60s so keepalive probes have time to fire and
-    /// return an error before this deadline triggers.
-    idle_timeout_ms: u32 = 60_000,
+    /// keep this comfortably above the keepalive window so keepalive probes
+    /// have time to fire and return an error (StreamInterrupted) before this
+    /// deadline (StreamIdleTimeout) triggers. Hard floor: 30_000 (1.2× the
+    /// ~25s keepalive window).
+    ///
+    /// Raised from 60_000 (2026-06-28) to 180_000 to accommodate reasoning
+    /// models (Claude with extended thinking, OpenAI o1/o3, DeepSeek R1,
+    /// Qwen QwQ) that routinely pause for tens of seconds to minutes
+    /// between SSE chunks while reasoning internally. The previous 60s
+    /// default fired StreamIdleTimeout on perfectly healthy streams.
+    idle_timeout_ms: u32 = 180_000,
     /// Buffer size for reading HTTP response body
     response_buffer_size: usize = 256 * 1024,
     /// Buffer size for HTTP headers
