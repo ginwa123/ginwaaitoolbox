@@ -2552,6 +2552,7 @@ pub const WorkspaceContext = struct {
     workspace_id: []u8,
     self_item_id: []u8, // task's own item id
     self_task_id: []u8, // task's own id
+    self_item_type: []u8, // parent's workspace_items.item_type ('kanban', 'chat', 'folder', ...)
     self_path: ?[]u8, // task's own item path (cwd hint)
     siblings: []SiblingItem, // all items in the same workspace, self first
     truncated_items_count: u32, // > 0 when 20-item cap hit
@@ -2599,6 +2600,7 @@ pub const WorkspaceContext = struct {
         allocator.free(self.workspace_id);
         allocator.free(self.self_item_id);
         allocator.free(self.self_task_id);
+        allocator.free(self.self_item_type);
         if (self.self_path) |p| allocator.free(p);
         for (self.siblings) |sib| sib.deinit(allocator);
         allocator.free(self.siblings);
@@ -2642,7 +2644,7 @@ pub fn getWorkspaceContext(
     // `## Workspace Context` section was silently omitted from the
     // system prompt. Migration 052 dropped the column.)
     const anchor_sql =
-        \\SELECT t.id, t.workspace_item_id, wi.workspace_id, wi.path
+        \\SELECT t.id, t.workspace_item_id, wi.workspace_id, wi.path, wi.item_type
         \\FROM workspace_item_tasks t
         \\JOIN workspace_items wi ON wi.id = t.workspace_item_id
         \\WHERE t.id = ?
@@ -2657,6 +2659,7 @@ pub fn getWorkspaceContext(
         try allocator.dupe(u8, anchor_row.values[3])
     else
         null;
+    const self_item_type = try allocator.dupe(u8, anchor_row.values[4]);
     anchor_row.deinit(allocator); // Pitfall 1: pass allocator explicitly, NOT `anchor_row.allocator`
 
     // 2. Total item count for the "and N more" footer.
@@ -2673,6 +2676,7 @@ pub fn getWorkspaceContext(
             .workspace_id = workspace_id,
             .self_item_id = self_item_id,
             .self_task_id = self_task_id,
+            .self_item_type = self_item_type,
             .self_path = self_path,
             .siblings = &.{},
             .truncated_items_count = 0,
@@ -2801,6 +2805,7 @@ pub fn getWorkspaceContext(
         .workspace_id = workspace_id,
         .self_item_id = self_item_id,
         .self_task_id = self_task_id,
+        .self_item_type = self_item_type,
         .self_path = self_path,
         .siblings = try siblings.toOwnedSlice(allocator),
         .truncated_items_count = truncated_items_count,

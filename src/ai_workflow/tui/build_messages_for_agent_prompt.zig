@@ -14,6 +14,7 @@ const http_client = tree1_mod.http_client;
 const background_process = @import("background_process.zig");
 const ProcessInfo = background_process.ProcessInfo;
 const inherited_context = @import("inherited_context.zig");
+const kanban_model = @import("kanban_model.zig");
 
 const AgentTool = tool_models.AgentTool;
 const AgentToolFunction = tool_models.AgentToolFunction;
@@ -95,7 +96,15 @@ pub fn buildMessages(
     const workspaceContext = try BuildWorkspaceContext(allocator, db, session_id);
     defer allocator.free(workspaceContext);
 
-    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment, sub_agents_listing, workspaceContext);
+    // Build the "Kanban Status Tracking" section. Only rendered when
+    // the session's parent item has item_type === 'kanban' (the
+    // helper silently returns "" otherwise). Rendered right after
+    // the Workspace Context section so the agent sees the workflow
+    // expectations before the tool listing.
+    const kanbanStatusContent = try BuildKanbanStatusPrompt(allocator, db, session_id);
+    defer allocator.free(kanbanStatusContent);
+
+    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment, sub_agents_listing, workspaceContext, kanbanStatusContent);
 
     // Render inherited parent conversation history (if requested) and append
     // it to the system prompt as a labelled, read-only block.
@@ -696,6 +705,12 @@ pub fn BuildDynamicAgentContent(
 /// decide which sub-agent to dispatch to.
 const SUB_AGENT_DESCRIPTION_MAX: usize = 80;
 
+/// Maximum number of kanban columns rendered in the `## Kanban Status
+/// Tracking` section. Boards with more columns truncate to the first
+/// N by `position ASC` and add an `… and M more` footer. 10 is well
+/// above any realistic kanban (typical N ≤ 7).
+const MAX_KANBAN_COLUMNS: u32 = 10;
+
 /// Build the "Available Sub-Agents" listing for the current
 /// session. Reads `selected_profile_model` from the `sessions`
 /// table, then resolves the sub-agents list with the per-profile
@@ -925,6 +940,186 @@ pub fn BuildWorkspaceContext(
         defer allocator.free(footer);
         try out.appendSlice(allocator, footer);
     }
+
+    return out.toOwnedSlice(allocator);
+}
+
+/// Build a "## Kanban Status Tracking" section that instructs the
+/// agent to call `kanban_move_task` at every meaningful workflow
+/// checkpoint (start, milestone, complete, blocked). The section is
+/// rendered only when the session's parent item has
+/// `item_type === 'kanban'`; otherwise returns `""` (silently
+/// omitted, matching `BuildWorkspaceContext`'s empty-case behavior).
+///
+/// Re-uses the `getWorkspaceContext` anchor to avoid a second
+/// round-trip — the parent item_type is already read there. The
+/// helper:
+///   1. Resolves the anchor (task → item → workspace) via
+///      `getWorkspaceContext` and reads `ctx.self_item_type`.
+///   2. Bails out if the parent is not a kanban.
+///   3. Reads the columns via `kanban_model.listColumns` (cap: 10).
+///   4. Reads the task's current `kanban_column_id` via a single
+///      `SELECT` (the column id may be NULL when unassigned).
+///   5. Renders the section.
+///
+/// Block shape (omitted when parent is not a kanban, or session is
+/// not bound to any task):
+///
+/// ```markdown
+/// ## Kanban Status Tracking
+///
+/// This task is on a kanban board (parent item_type: `kanban`). **You MUST
+/// call `kanban_move_task` at every meaningful workflow checkpoint.**
+/// The tool description (in the tool listing) shows the exact argument shape.
+///
+/// **Current column:** `<col_name>` (`<col_id>`)
+///
+/// **Columns on this board** (in flow order):
+/// - `<name>` (`<id>`) — position 0
+/// - `<name>` (`<id>`) — position 1
+/// - ...
+///
+/// **Status transitions:**
+/// - **start**: move from `<first_column>` → `<second_column>` (or
+///   whatever the user-defined "in progress" column is) at the
+///   first user-visible action in this session.
+/// - **milestone**: stay in the current column; mention the milestone
+///   in your reply so the user sees progress.
+/// - **complete**: move to `<last_column>` (typically `done`) before
+///   your final reply. This is the most-skipped transition.
+/// - **blocked**: do NOT move; explain the blocker in your reply and
+///   let the user decide. The card stays where it is.
+/// ```
+pub fn BuildKanbanStatusPrompt(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]const u8 {
+    if (session_id.len == 0) return allocator.dupe(u8, "");
+
+    // 1. Re-use the workspace-context anchor to read the parent's
+    //    item_type without a second JOIN. Bail out when the parent
+    //    isn't a kanban.
+    const ctx = (llm_history.getWorkspaceContext(allocator, db, session_id) catch |err| {
+        std.log.warn("BuildKanbanStatusPrompt: getWorkspaceContext failed: {}", .{err});
+        return allocator.dupe(u8, "");
+    }) orelse return allocator.dupe(u8, "");
+    defer ctx.deinit(allocator);
+
+    if (!std.mem.eql(u8, ctx.self_item_type, "kanban")) {
+        return allocator.dupe(u8, "");
+    }
+
+    // 2. Read the columns. Same graceful-skip pattern as
+    //    BuildWorkspaceContext — any DB failure returns "".
+    const cols = kanban_model.listColumns(allocator, db, ctx.self_item_id) catch |err| {
+        std.log.warn("BuildKanbanStatusPrompt: listColumns failed: {}", .{err});
+        return allocator.dupe(u8, "");
+    };
+    defer kanban_model.freeColumns(allocator, cols);
+
+    // 3. Read the task's current kanban_column_id (may be NULL when
+    //    unassigned). One-row query — task.id == session_id per the
+    //    workspace-context convention.
+    const current_column_id: ?[]const u8 = blk: {
+        var q = try db.query(allocator,
+            \\SELECT COALESCE(kanban_column_id, '')
+            \\FROM workspace_item_tasks t
+            \\WHERE t.id = ?
+        , &.{session_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse break :blk null;
+        defer row.deinit(allocator);
+        const cid = row.values[0];
+        if (cid.len == 0) break :blk null;
+        break :blk try allocator.dupe(u8, cid);
+    };
+    defer if (current_column_id) |c| allocator.free(c);
+
+    // 4. Render the markdown block.
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "\n\n## Kanban Status Tracking\n\n");
+    try out.appendSlice(allocator,
+        \\This task is on a kanban board (parent item_type: `kanban`).
+        \\**You MUST call the `kanban_move_task` tool at every meaningful
+        \\workflow checkpoint** below. The tool's argument shape is
+        \\documented in the tool listing — pass `workspace_id` + `item_id`
+        \\from the `## Workspace Context` section above, and `task_id` is
+        \\your own session_id (per the `task.id == session_id` convention).
+        \\
+    );
+
+    // 4a. Current column line.
+    if (current_column_id) |cid| {
+        const col_name = blk: {
+            for (cols) |c| {
+                if (std.mem.eql(u8, c.id, cid)) break :blk c.name;
+            }
+            break :blk "<unknown>";
+        };
+        try out.appendSlice(allocator, "**Current column:** `");
+        try out.appendSlice(allocator, col_name);
+        try out.appendSlice(allocator, "` (`");
+        try out.appendSlice(allocator, cid);
+        try out.appendSlice(allocator, "`)\n\n");
+    } else {
+        try out.appendSlice(allocator,
+            \\**Current column:** _unassigned_ — the task has no column yet.
+            \\Your first move will assign it.
+            \\
+        );
+    }
+
+    // 4b. Column listing (cap: 10, with footer).
+    try out.appendSlice(allocator, "**Columns on this board** (in flow order):\n");
+    if (cols.len == 0) {
+        try out.appendSlice(allocator,
+            \\_No columns configured yet._ Ask the user to add columns before
+            \\moving the task.
+            \\
+        );
+    } else {
+        const shown = @min(cols.len, MAX_KANBAN_COLUMNS);
+        for (cols[0..shown]) |c| {
+            try out.appendSlice(allocator, "- `");
+            try out.appendSlice(allocator, c.name);
+            try out.appendSlice(allocator, "` (`");
+            try out.appendSlice(allocator, c.id);
+            const pos_str = try std.fmt.allocPrint(allocator, "`, position {d})\n", .{c.position});
+            defer allocator.free(pos_str);
+            try out.appendSlice(allocator, pos_str);
+        }
+        if (cols.len > MAX_KANBAN_COLUMNS) {
+            const footer = try std.fmt.allocPrint(allocator,
+                "… and {d} more columns (cap: {d} shown).\n",
+                .{ cols.len - MAX_KANBAN_COLUMNS, MAX_KANBAN_COLUMNS },
+            );
+            defer allocator.free(footer);
+            try out.appendSlice(allocator, footer);
+        }
+    }
+
+    // 4c. Status transitions.
+    try out.appendSlice(allocator, "\n**Status transitions** (call `kanban_move_task`):\n");
+    try out.appendSlice(allocator,
+        \\
+        \\- **start** — at the first user-visible action of this session, move the
+        \\  task from the first column (`todo`) to the next column (`in progress`,
+        \\  or whatever the user-defined "in progress" column is). Pass the
+        \\  `target_column_id` from the listing above.
+        \\- **milestone** — when you reach a meaningful progress milestone but are
+        \\  not done, do NOT move; instead, mention the milestone in your reply
+        \\  so the user sees progress without you skipping the "done" transition.
+        \\- **complete** — before your final reply, move the task to the last
+        \\  column (`done`, or whatever the user-defined "done" column is). This
+        \\  is the most-skipped transition; do not skip it.
+        \\- **blocked** — if you cannot make progress, do NOT move; explain the
+        \\  blocker in your reply. The card stays where it is until the user
+        \\  resolves the blocker or you find a way forward.
+        \\
+    );
 
     return out.toOwnedSlice(allocator);
 }

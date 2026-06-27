@@ -81,11 +81,12 @@ const activeWorkspace = computed(() => workspacesStore.activeWorkspace)
 // Subscribe to /api/kanban/events so live kanban mutations (column
 // create / update / delete / reorder, task move / assign / unassign)
 // refresh the visible board in real time without a manual reload.
-// The store is ref-counted per workspace, so opening a kanban from
-// two different views doesn't open two SSE connections.
-// Empty string when no workspace is active (the ref-counted store
-// treats "" as a valid workspaceId, but the activeWorkspace.value?.id
-// falls through to "" so no kanban event is ever dispatched to a
+// The store owns ONE global SSE connection for the app's lifetime
+// (mirrors the workersSse pattern in App.vue) — workspace switches
+// just update the client-side filter, no connection churn.
+// Empty string when no workspace is active (the store treats "" as
+// a valid workspaceId, but the activeWorkspace.value?.id falls
+// through to "" so no kanban event is ever dispatched to a
 // non-existent workspace — the workspacesStore.fetchKanbanColumns
 // helper no-ops if the (workspaceId, itemId) pair doesn't resolve to
 // a local item).
@@ -94,23 +95,21 @@ const activeWorkspaceId = computed(() => activeWorkspace.value?.id ?? '')
 
 onMounted(() => {
   if (activeWorkspaceId.value) {
-    kanbanSseStore.subscribeKanbanSse(activeWorkspaceId.value)
+    kanbanSseStore.initKanbanSse(activeWorkspaceId.value)
   }
 })
 
-// Switch workspaces → unsubscribe from the old, subscribe to the new.
+// Switch workspaces → update the kanban SSE's client-side filter.
 // onMounted only fires once, so the watcher covers subsequent
 // workspace switches (e.g. user clicks a different workspace in the
-// sidebar).
-watch(activeWorkspaceId, (newId, oldId) => {
-  if (oldId) kanbanSseStore.unsubscribeKanbanSse(oldId)
-  if (newId) kanbanSseStore.subscribeKanbanSse(newId)
+// sidebar). The connection itself stays open because the backend's
+// routing key is global — only the filter changes.
+watch(activeWorkspaceId, (newId) => {
+  if (newId) kanbanSseStore.setActiveWorkspaceId(newId)
 })
 
 onUnmounted(() => {
-  if (activeWorkspaceId.value) {
-    kanbanSseStore.unsubscribeKanbanSse(activeWorkspaceId.value)
-  }
+  kanbanSseStore.closeKanbanSse()
 })
 
 // Computed refs from store

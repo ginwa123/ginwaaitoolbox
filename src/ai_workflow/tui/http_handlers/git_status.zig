@@ -24,12 +24,19 @@ pub fn gitStatusHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
     // Determine if it's a git repo based on rev-parse exit code
     const is_git_repo = git_check.term.exited == 0;
 
-    // If not a git repo, return early
+    // If not a git repo, return early with a 200 + is_git_repo=false body.
+    // This is NOT a server error — it's a perfectly valid answer to "what's
+    // the git status of <path>?" (answer: not a git repo). The frontend
+    // (GitChanges.vue / RightSidebar.vue) reads `data.is_git_repo` and
+    // gracefully hides the git panel when false; returning 500 here would
+    // trigger the apiFetch error-toast for every non-repo path the user
+    // navigates to. Sibling endpoint `git_changes.zig` does the same thing
+    // correctly with status_code=200 — keep them in sync.
     if (!is_git_repo) {
         const response = http_response.GitStatusResponse{
             .is_git_repo = false,
         };
-        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeGitStatusResponse(allocator, response) });
+        return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeGitStatusResponse(allocator, response) });
     }
 
     // Get current branch using: git -C <path> branch --show-current

@@ -352,6 +352,7 @@ pub fn main(init: std.process.Init) !void {
     // testing debug
     try gs.router.post("/test/shutdown", ai_mod.http_handlers.shutdownHandler);
     try gs.router.get("/test/sessions/client_ids", ai_mod.http_handlers.sessionToClientIdsHandler);
+    try gs.router.get("/test/system-prompt/:session_id", ai_mod.http_handlers.systemPromptGetHandler);
 
     _ = try event_bus.subscribe(ai_mod.ai_workflow.RunParamsNew, "ai_worker_flow", ai_mod.ai_workflow.CallbackAiWorkerFlow.callback);
     ctxParent.server.sse_manager.on_disconnect = ai_mod.handleClientDisconnect;

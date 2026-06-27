@@ -352,6 +352,15 @@ pub fn build_agent_prompt(
     /// any task; the section is silently omitted). The block
     /// already includes its `## Workspace Context` header.
     workspaceContext: []const u8,
+    /// Pre-rendered "Kanban Status Tracking" markdown block, built by
+    /// `BuildKanbanStatusPrompt(allocator, db, session_id)` in
+    /// `build_messages_for_agent_prompt.zig`. Empty string means "the
+    /// session is not on a kanban board" (the section is silently
+    /// omitted). The block already includes its `## Kanban Status
+    /// Tracking` header. Rendered right after the Workspace Context
+    /// section so the agent sees "you are on a kanban" framing
+    /// before the tool listing.
+    kanbanStatusContent: []const u8,
 ) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
@@ -462,6 +471,17 @@ pub fn build_agent_prompt(
     // `BuildWorkspaceContext`); we just append it verbatim.
     if (workspaceContext.len > 0) {
         try result.appendSlice(allocator, workspaceContext);
+    }
+
+    // Kanban status tracking — instructs the agent to call
+    // `kanban_move_task` at status transitions. Rendered right after
+    // the Workspace Context section so the agent sees the workflow
+    // expectations before the tool listing (where kanban_move_task's
+    // argument shape is documented). Block already includes its
+    // `## Kanban Status Tracking` header (built by
+    // `BuildKanbanStatusPrompt`); we just append it verbatim.
+    if (kanbanStatusContent.len > 0) {
+        try result.appendSlice(allocator, kanbanStatusContent);
     }
 
     // OS info.

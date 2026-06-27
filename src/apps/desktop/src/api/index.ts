@@ -1891,23 +1891,44 @@ export interface KanbanTaskEvent {
  * Heartbeats (`data: ping\n\n`) are filtered out by the SseClient
  * default — see `heartbeatData: 'ping'` in the option below, matching
  * the backend's `sse_manager.sendHeartbeat`.
+ *
+ * Follows the same 3-callback positional API as `createWorkersSseConnection`:
+ * `(onEvent, onError, onConnected)`. The factory parses the JSON payload
+ * internally and dispatches a typed `KanbanColumnEvent | KanbanTaskEvent`
+ * to `onEvent` — callers don't deal with raw strings or event-type names.
  */
-export function createKanbanSseConnection(opts: {
-  onEvent: (raw: string, eventType: string) => void
-  onError?: (err: Event) => void
-}): SseClient {
+export function createKanbanSseConnection(
+  onEvent: (event: KanbanColumnEvent | KanbanTaskEvent) => void,
+  onError?: (error: Event) => void,
+  onConnected?: () => void,
+): SseClient {
   return createSseClient({
     url: `${API_BASE}/kanban/events`,
-    onEvent: opts.onEvent,
+    onConnected,
     heartbeatData: 'ping',
     additionalEventTypes: ['kanban_column', 'kanban_task'],
+    onEvent: (raw, eventType) => {
+      // 'connected' is consumed by the SseClient (it fires onConnected);
+      // 'message' is the heartbeat path (filtered by heartbeatData).
+      // KanbanColumnEvent / KanbanTaskEvent have neither of these
+      // variants, so we don't dispatch them to the caller.
+      if (eventType === 'connected' || eventType === 'message') {
+        return
+      }
+      try {
+        const data = JSON.parse(raw)
+        onEvent(data as KanbanColumnEvent | KanbanTaskEvent)
+      } catch (err) {
+        console.error('[createKanbanSseConnection] failed to parse event:', err, raw)
+      }
+    },
     onStateChange: (state, info) => {
       // 'failed' is the SseClient's terminal error state — fired once
       // when maxAttempts is exhausted OR on a first-attempt non-recoverable
       // 4xx/5xx. Transient errors during a reconnect cycle don't surface
       // here; the SseClient handles backoff internally.
       if (state === 'failed') {
-        opts.onError?.(info.lastError ?? new Event('error'))
+        onError?.(info.lastError ?? new Event('error'))
       }
     },
   })

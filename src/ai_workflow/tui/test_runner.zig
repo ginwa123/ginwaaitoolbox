@@ -41,6 +41,7 @@ test {
     _ = @import("http_handlers/tasks_reorder_pinned_test.zig");
     _ = @import("http_handlers/git_worktree_info_test.zig");
     _ = @import("http_handlers/git_pr_create_test.zig");
+    _ = @import("http_handlers/git_status_test.zig");
     _ = @import("http_handlers/workspace_items_create_kanban_test.zig");
     _ = @import("http_handlers/kanban_columns_list_test.zig");
     _ = @import("http_handlers/kanban_columns_create_test.zig");
@@ -49,6 +50,7 @@ test {
     _ = @import("http_handlers/tasks_move_test.zig");
     _ = @import("http_handlers/tasks_create_kanban_test.zig");
     _ = @import("http_handlers/kanban_events_sse_test.zig");
+    _ = @import("http_handlers/system_prompt_get_test.zig");
     // _ = @import("session_helpers_test.zig"); // DISABLED - requires std.Io which needs Init
     // _ = @import("session_table_test.zig"); // DISABLED - requires std.Io which needs Init
     _ = @import("get_session_list_test.zig");
