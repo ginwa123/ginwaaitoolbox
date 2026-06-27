@@ -34,6 +34,24 @@
       run-routine, pin-task
       request-rename-column, request-delete-column (host opens
       KanbanColumnEditor on these)
+
+  Live updates:
+    The component reacts to backend SSE events on `/api/kanban/events`
+    through the workspacesStore. Two event families drive auto-refresh:
+      - kanban_column.* (created / updated / deleted / reordered)
+        → workspacesStore.fetchKanbanColumns refreshes
+          item.kanban_columns. The columns row re-renders.
+      - kanban_task.* (assigned / moved / unassigned)
+        → workspacesStore.fetchKanbanTasks refreshes item.tasks.
+          The cards re-filter by kanban_column_id and re-sort by
+          kanban_position, so the affected card visibly moves
+          between columns without a manual reload.
+
+    Both refresh paths are owned by useKanbanSseStore (one global
+    connection, AppLayout-managed). KanbanView.vue does NOT open
+    its own SSE connection — the store-level subscription covers
+    the lifetime of the AppLayout (one connection, even if the
+    user navigates between kanbans).
 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
