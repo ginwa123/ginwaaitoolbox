@@ -98,12 +98,10 @@ pub fn queueMessagesStreamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpR
             std.debug.print("SSE_QUEUE_DEBUG: failed to register client\n", .{});
         };
 
-        // Send "connected" event so the SseClient transitions out of
-        // 'connecting'. Mirrors worker_sse.zig and sessions_sse.zig.
-        // Without this handshake, the frontend SseStatusBadge stays
-        // stuck on "Connecting…" even though the stream is live.
+        // Deferred to keep the handler task non-blocking — see
+        // SseManager.sendDeferred (docs/plans/2026-06-30-fix-sse-blocking-api.md).
         const connected_event = "event: connected\ndata: {\"connected\": true}\n\n";
-        server.sse_manager.sendToClient(client_id_copy, connected_event) catch {};
+        server.sse_manager.sendDeferred(client_id_copy, connected_event);
     } // subscribe dupes the key internally, so defer-free is correct here
 
     event_bus.subscribe(ai_mod.on_event_sent.SseEvent, copy_key_for_event_bus, CallbackQueueMessagesStream.callback) catch {

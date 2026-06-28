@@ -73,12 +73,10 @@ pub fn llmHistorySSE(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
         const client_id_copy: [16]u8 = client_id;
         ai_mod.registerSessionClient(session_id_copy, client_id_copy, true) catch {};
 
-        // Send "connected" event so the SseClient transitions out of
-        // 'connecting'. Mirrors worker_sse.zig and sessions_sse.zig.
-        // Without this handshake, the frontend SseStatusBadge stays
-        // stuck on "Connecting…" even though the stream is live.
+        // Deferred to keep the handler task non-blocking — see
+        // SseManager.sendDeferred (docs/plans/2026-06-30-fix-sse-blocking-api.md).
         const connected_event = "event: connected\ndata: {\"connected\": true}\n\n";
-        server.sse_manager.sendToClient(client_id_copy, connected_event) catch {};
+        server.sse_manager.sendDeferred(client_id_copy, connected_event);
     }
 
     const event_bus = di.event_bus;

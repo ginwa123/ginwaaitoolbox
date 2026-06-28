@@ -73,9 +73,10 @@ pub fn sessionsStreamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         const client_id_copy: [16]u8 = client_id;
         ai_mod.registerSessionClient("sessions", client_id_copy, true) catch {};
 
-        // Send "connected" event to the newly connected client
+        // Deferred to keep the handler task non-blocking — see
+        // SseManager.sendDeferred (docs/plans/2026-06-30-fix-sse-blocking-api.md).
         const connected_event = "event: connected\ndata: {\"connected\": true}\n\n";
-        server.sse_manager.sendToClient(client_id_copy, connected_event) catch {};
+        server.sse_manager.sendDeferred(client_id_copy, connected_event);
     }
 
     // Subscribe to session events with callback
