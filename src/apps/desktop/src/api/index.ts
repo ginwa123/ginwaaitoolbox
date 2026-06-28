@@ -764,12 +764,12 @@ export interface SseEvent {
 // The shape of the public API is unchanged — callers still get a
 // `.close()`-able object — so call sites need only a type
 // annotation update.
-export function createSseConnection(
+export async function createSseConnection(
   sessionId: string,
   onMessage: (event: SseEvent) => void,
   onError?: (error: Event) => void,
   onConnected?: () => void,
-): SseClient {
+): Promise<SseClient> {
   console.log('[createSseConnection] Creating SSE connection for session:', sessionId)
 
   // Buffer to accumulate multi-line JSON. Closure-scoped, so each
@@ -1612,11 +1612,11 @@ export interface SessionEvent {
 // `createSseConnection` above for the full rationale. The previous
 // version had no reconnect logic at all, so a single network blip
 // would freeze the sidebar's chat list until a manual reload.
-export function createSessionsSseConnection(
+export async function createSessionsSseConnection(
   onEvent: (event: SessionEvent) => void,
   onError?: (error: Event) => void,
   onConnected?: () => void,
-): SseClient {
+): Promise<SseClient> {
   console.log('[createSessionsSseConnection] Creating SSE connection for session events')
 
   // Per-client JSON buffer; cleared on every 'connected' event so a
@@ -1690,12 +1690,12 @@ export interface QueueMessageEvent {
   session_id: string
 }
 
-export function createQueueMessagesSseConnection(
+export async function createQueueMessagesSseConnection(
   sessionId: string,
   onEvent: (event: QueueMessageEvent) => void,
   onError?: (error: Event) => void,
   onConnected?: () => void,
-): SseClient {
+): Promise<SseClient> {
   // Per-client JSON buffer; cleared on 'connected' (see
   // createSseConnection for the rationale).
   let jsonBuffer = ''
@@ -1810,11 +1810,11 @@ export interface WorkerEvent {
 // leak on unmount, and a stale timer closing a working
 // connection). See `docs/sse-reconnect-plan.md` §1.1 and
 // `helpers/sseClient.ts` for the full history.
-export function createWorkersSseConnection(
+export async function createWorkersSseConnection(
   onEvent: (event: WorkerEvent) => void,
   onError?: (error: Event) => void,
   onConnected?: () => void,
-): SseClient {
+): Promise<SseClient> {
   console.log('[createWorkersSseConnection] Creating SSE connection for worker events')
 
   // Per-client JSON buffer; cleared on 'connected' (see
@@ -1917,11 +1917,11 @@ export interface KanbanTaskEvent {
  * internally and dispatches a typed `KanbanColumnEvent | KanbanTaskEvent`
  * to `onEvent` — callers don't deal with raw strings or event-type names.
  */
-export function createKanbanSseConnection(
+export async function createKanbanSseConnection(
   onEvent: (event: KanbanColumnEvent | KanbanTaskEvent) => void,
   onError?: (error: Event) => void,
   onConnected?: () => void,
-): SseClient {
+): Promise<SseClient> {
   return createSseClient({
     url: `${API_BASE}/kanban/events`,
     onConnected,
