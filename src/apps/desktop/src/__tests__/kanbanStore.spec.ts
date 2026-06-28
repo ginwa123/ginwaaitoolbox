@@ -247,20 +247,29 @@ describe('useWorkspacesStore — kanban actions', () => {
   // ─── updateKanbanColumn ────────────────────────────────────────────────
 
   describe('updateKanbanColumn', () => {
-    it('calls api.updateKanbanColumn and replaces the column in the local array', async () => {
+    it('calls api.updateKanbanColumn and replaces the local board with the backend\'s full response', async () => {
       const store = seedStore([
         ws('ws_1', 'W1', [
           item('item_1', 'Sprint', 'kanban', {
             kanban_columns: [
-              column('c1', 'todo', 0, 'item_1'),
-              column('c2', 'in progress', 1, 'item_1'),
+              column('c1', 'todo', 0, 'item_1', 'Not started'),
+              column('c2', 'in progress', 1, 'item_1', 'In flight'),
             ],
           }),
         ]),
       ])
+      // Backend returns the full board (same {columns, count}
+      // envelope as listKanbanColumns). Mirror that shape so the
+      // store code under test exercises the real wire format.
       const updateKanbanColumnMock = vi
         .spyOn(api, 'updateKanbanColumn')
-        .mockResolvedValue(column('c1', 'backlog', 0, 'item_1'))
+        .mockResolvedValue({
+          columns: [
+            column('c1', 'backlog', 0, 'item_1', 'Not started'),
+            column('c2', 'in progress', 1, 'item_1', 'In flight'),
+          ],
+          count: 2,
+        })
 
       await store.updateKanbanColumn('ws_1', 'item_1', 'c1', { name: 'backlog' })
 
@@ -271,9 +280,90 @@ describe('useWorkspacesStore — kanban actions', () => {
       const updatedItem = wsRow.items.find((i) => i.id === 'item_1')!
       const c1 = updatedItem.kanban_columns?.find((c) => c.id === 'c1')
       expect(c1?.name).toBe('backlog')
+      // Description survives the PATCH — this is the regression
+      // assertion for the "No description shown after save" bug.
+      expect(c1?.description).toBe('Not started')
       // Sibling column is untouched.
       const c2 = updatedItem.kanban_columns?.find((c) => c.id === 'c2')
       expect(c2?.name).toBe('in progress')
+      expect(c2?.description).toBe('In flight')
+    })
+
+    it('mirrors sibling renumbering from the PATCH response (no follow-up GET needed)', async () => {
+      const store = seedStore([
+        ws('ws_1', 'W1', [
+          item('item_1', 'Sprint', 'kanban', {
+            kanban_columns: [
+              column('c1', 'todo', 0, 'item_1'),
+              column('c2', 'in progress', 1, 'item_1'),
+              column('c3', 'done', 2, 'item_1'),
+            ],
+          }),
+        ]),
+      ])
+      // Simulate the backend's dense renumber when c3 moves to
+      // position 0: c2 → 1, c1 → 2, c3 → 0 (the actual algorithm
+      // is irrelevant here — what matters is the response shape).
+      const updateKanbanColumnMock = vi
+        .spyOn(api, 'updateKanbanColumn')
+        .mockResolvedValue({
+          columns: [
+            column('c3', 'done', 0, 'item_1'),
+            column('c2', 'in progress', 1, 'item_1'),
+            column('c1', 'todo', 2, 'item_1'),
+          ],
+          count: 3,
+        })
+
+      await store.updateKanbanColumn('ws_1', 'item_1', 'c3', { position: 0 })
+
+      expect(updateKanbanColumnMock).toHaveBeenCalledWith('ws_1', 'item_1', 'c3', {
+        position: 0,
+      })
+      const wsRow = store.workspaces.find((w) => w.id === 'ws_1')!
+      const updatedItem = wsRow.items.find((i) => i.id === 'item_1')!
+      // Local positions match the backend's renumbered order.
+      expect(updatedItem.kanban_columns?.[0]?.id).toBe('c3')
+      expect(updatedItem.kanban_columns?.[0]?.position).toBe(0)
+      expect(updatedItem.kanban_columns?.[1]?.id).toBe('c2')
+      expect(updatedItem.kanban_columns?.[1]?.position).toBe(1)
+      expect(updatedItem.kanban_columns?.[2]?.id).toBe('c1')
+      expect(updatedItem.kanban_columns?.[2]?.position).toBe(2)
+    })
+
+    it('preserves the description of the patched column across the round-trip (regression for "empty after save" bug)', async () => {
+      // The original bug: the store assigned the PATCH response
+      // (which is the full board, NOT a single column) to the
+      // single-column slot, so col.description read as undefined and
+      // the settings dialog rendered "No description" until the
+      // user refreshed the page.
+      const store = seedStore([
+        ws('ws_1', 'W1', [
+          item('item_1', 'Sprint', 'kanban', {
+            kanban_columns: [
+              column('c1', 'todo', 0, 'item_1', 'Old description'),
+            ],
+          }),
+        ]),
+      ])
+      vi.spyOn(api, 'updateKanbanColumn').mockResolvedValue({
+        columns: [
+          column('c1', 'todo', 0, 'item_1', 'New description'),
+        ],
+        count: 1,
+      })
+
+      await store.updateKanbanColumn('ws_1', 'item_1', 'c1', {
+        description: 'New description',
+      })
+
+      const wsRow = store.workspaces.find((w) => w.id === 'ws_1')!
+      const updatedItem = wsRow.items.find((i) => i.id === 'item_1')!
+      const c1 = updatedItem.kanban_columns?.find((c) => c.id === 'c1')
+      // The bug would fail this assertion (description was undefined).
+      expect(c1?.description).toBe('New description')
+      expect(c1?.name).toBe('todo')
+      expect(c1?.position).toBe(0)
     })
   })
 
@@ -309,7 +399,17 @@ describe('useWorkspacesStore — kanban actions', () => {
       ])
       const updateMock = vi
         .spyOn(api, 'updateKanbanColumn')
-        .mockResolvedValue(column('c3', 'done', 0, 'item_1'))
+        // Backend returns the full board on PATCH; the store
+        // discards it and uses the follow-up listKanbanColumns
+        // response to mirror sibling renumbering.
+        .mockResolvedValue({
+          columns: [
+            column('c3', 'done', 0, 'item_1'),
+            column('c1', 'todo', 1, 'item_1'),
+            column('c2', 'in progress', 2, 'item_1'),
+          ],
+          count: 3,
+        })
       // Re-fetch returns the post-renumber ordering (c3 is now at 0;
       // c1 and c2 shifted to 1 and 2).
       const listMock = vi.spyOn(api, 'listKanbanColumns').mockResolvedValue({

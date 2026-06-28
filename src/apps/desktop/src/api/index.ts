@@ -1151,6 +1151,15 @@ export async function addKanbanColumn(
  * pass only the fields you want to change. The backend applies the
  * patch and re-numbers sibling positions when `position` changes.
  *
+ * Returns the FULL updated board (`{columns, count}`) — same envelope
+ * as `listKanbanColumns`. The backend emits the full board on every
+ * successful PATCH so the frontend never needs a follow-up GET to see
+ * the post-rename ordering or sibling positions. The store replaces
+ * its local `kanban_columns` array with the backend's returned list
+ * (defensively re-sorted by position), so sibling columns (which the
+ * backend may have renumbered when `position` changed) are mirrored
+ * in the same round-trip.
+ *
  * PATCH /api/workspaces/:workspaceId/items/:itemId/kanban/columns/:columnId
  */
 export async function updateKanbanColumn(
@@ -1158,8 +1167,8 @@ export async function updateKanbanColumn(
   itemId: string,
   columnId: string,
   patch: { name?: string; description?: string; position?: number },
-): Promise<KanbanColumn> {
-  return await apiFetch<KanbanColumn>(
+): Promise<{ columns: KanbanColumn[]; count: number }> {
+  return await apiFetch<{ columns: KanbanColumn[]; count: number }>(
     `/workspaces/${workspaceId}/items/${itemId}/kanban/columns/${columnId}`,
     {
       method: 'PATCH',
