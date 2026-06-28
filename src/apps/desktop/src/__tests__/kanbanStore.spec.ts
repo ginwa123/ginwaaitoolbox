@@ -53,10 +53,12 @@ const column = (
   name: string,
   position: number,
   workspaceItemId: string = 'item_1',
+  description: string = '',
 ): KanbanColumn => ({
   id,
   workspace_item_id: workspaceItemId,
   name,
+  description,
   position,
   created_at: '2026-06-21 12:00:00',
 })
@@ -180,10 +182,51 @@ describe('useWorkspacesStore — kanban actions', () => {
 
       await store.addKanbanColumn('ws_1', 'item_1', 'in progress')
 
-      expect(addKanbanColumnMock).toHaveBeenCalledWith('ws_1', 'item_1', 'in progress')
+      // The store defaults description to '' when not provided so
+      // existing callers (e.g. AppLayout's addColumn handler) keep
+      // working unchanged.
+      expect(addKanbanColumnMock).toHaveBeenCalledWith(
+        'ws_1',
+        'item_1',
+        'in progress',
+        '',
+      )
       const wsRow = store.workspaces.find((w) => w.id === 'ws_1')!
       const updatedItem = wsRow.items.find((i) => i.id === 'item_1')!
       expect(updatedItem.kanban_columns?.map((c) => c.id)).toEqual(['c1', 'c2', 'c3'])
+    })
+
+    it('forwards description to api.addKanbanColumn when provided', async () => {
+      const store = seedStore([
+        ws('ws_1', 'W1', [
+          item('item_1', 'Sprint', 'kanban', {
+            kanban_columns: [column('c1', 'todo', 0, 'item_1')],
+          }),
+        ]),
+      ])
+      const addKanbanColumnMock = vi
+        .spyOn(api, 'addKanbanColumn')
+        .mockResolvedValue(
+          column('c2', 'review', 1, 'item_1', 'Awaiting code review'),
+        )
+
+      await store.addKanbanColumn(
+        'ws_1',
+        'item_1',
+        'review',
+        'Awaiting code review',
+      )
+
+      expect(addKanbanColumnMock).toHaveBeenCalledWith(
+        'ws_1',
+        'item_1',
+        'review',
+        'Awaiting code review',
+      )
+      const wsRow = store.workspaces.find((w) => w.id === 'ws_1')!
+      const updatedItem = wsRow.items.find((i) => i.id === 'item_1')!
+      const c2 = updatedItem.kanban_columns?.find((c) => c.id === 'c2')
+      expect(c2?.description).toBe('Awaiting code review')
     })
 
     it('creates kanban_columns array when the item did not have one (defensive)', async () => {

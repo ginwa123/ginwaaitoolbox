@@ -56,6 +56,11 @@ pub const KanbanColumnEventPayload = struct {
     column_id: []const u8,
     /// New column name (only set for "updated"; null otherwise).
     new_name: ?[]const u8 = null,
+    /// New column description (only set for "updated"; null
+    /// otherwise). The frontend ignores nulls and re-fetches the
+    /// full column list anyway, but carrying the value lets future
+    /// in-place patch optimisations skip the GET.
+    new_description: ?[]const u8 = null,
     /// New position (only set for "updated" / "reordered"; null otherwise).
     new_position: ?i64 = null,
 };

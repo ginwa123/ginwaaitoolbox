@@ -6,6 +6,15 @@ export interface KanbanColumn {
   id: string
   workspace_item_id: string
   name: string
+  /**
+   * Free-text description of the column's meaning. Empty string
+   * when no description has been set. Mirrors the
+   * `KanbanColumn` interface in `api/index.ts` so test fixtures
+   * that import this type see the same shape. Optional for
+   * backwards compat with legacy column literals in test files
+   * (see nalar-frontend-task-literal-typing-rule).
+   */
+  description?: string | null
   position: number
   created_at: string
 }
@@ -721,12 +730,16 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Add a column to a kanban and append it to the local item's
   // `kanban_columns` array, sorted by position. The backend
   // returns the column with its server-assigned id and position.
+  // `description` defaults to '' (the backend's "no description"
+  // sentinel) so callers like AppLayout that only pass `name` keep
+  // working unchanged.
   async function addKanbanColumn(
     workspaceId: string,
     itemId: string,
     name: string,
+    description: string = '',
   ): Promise<void> {
-    const col = await api.addKanbanColumn(workspaceId, itemId, name)
+    const col = await api.addKanbanColumn(workspaceId, itemId, name, description)
     const item = findItem(workspaceId, itemId)
     if (item) {
       item.kanban_columns = [...(item.kanban_columns ?? []), col].sort(
@@ -738,12 +751,14 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Patch a kanban column's name and/or position. The backend
   // re-numbers sibling positions when `position` changes; we
   // replace the local column with the backend's returned object
-  // (the source of truth for the new position).
+  // (the source of truth for the new position). `description` is
+  // part of the patch — the backend applies it independently of
+  // name/position (any combination is valid).
   async function updateKanbanColumn(
     workspaceId: string,
     itemId: string,
     columnId: string,
-    patch: { name?: string; position?: number },
+    patch: { name?: string; description?: string; position?: number },
   ): Promise<void> {
     const col = await api.updateKanbanColumn(workspaceId, itemId, columnId, patch)
     const item = findItem(workspaceId, itemId)

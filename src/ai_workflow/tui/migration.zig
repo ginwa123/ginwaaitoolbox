@@ -1018,6 +1018,37 @@ pub const Migration052DropSessionIdFromWorkspaceItemTasks = struct {
     }
 };
 
+pub const Migration053AddKanbanColumnDescription = struct {
+    pub const version: u32 = 53;
+    pub const name = "add_kanban_column_description";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Kanban column description — Chunk 1 of the
+        // kanban-column-description-settings plan. Each kanban
+        // column gains a free-text "meaning" field that the
+        // Settings UI displays and edits. NOT NULL with DEFAULT ''
+        // so existing rows (which have no description) survive the
+        // ALTER TABLE without backfill. The frontend uses the
+        // empty string as the "no description" sentinel — the
+        // Settings UI shows "Add a description…" placeholder for
+        // empty descriptions.
+        //
+        // Why NOT NULL (vs nullable):
+        //   1. The application always reads description as
+        //      []const u8 (never ?[]const u8) — a nullable column
+        //      would force every SELECT to COALESCE and every
+        //      INSERT to handle NULL explicitly.
+        //   2. The DB-level NOT NULL is a defensive check; the
+        //      application layer never writes NULL.
+        //   3. Mirrors the project's convention for short text
+        //      fields with a sentinel "absent" value.
+        try db.exec(allocator,
+            "ALTER TABLE kanban_columns ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+            &[_][]const u8{},
+        );
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -1121,6 +1152,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration050AddPinnedToWorkspaceItemTasks.version, .name = Migration050AddPinnedToWorkspaceItemTasks.name, .up = Migration050AddPinnedToWorkspaceItemTasks.up },
     .{ .version = Migration051AddKanban.version, .name = Migration051AddKanban.name, .up = Migration051AddKanban.up },
     .{ .version = Migration052DropSessionIdFromWorkspaceItemTasks.version, .name = Migration052DropSessionIdFromWorkspaceItemTasks.name, .up = Migration052DropSessionIdFromWorkspaceItemTasks.up },
+    .{ .version = Migration053AddKanbanColumnDescription.version, .name = Migration053AddKanbanColumnDescription.name, .up = Migration053AddKanbanColumnDescription.up },
 };
 
 /// Register all migrations with a MigrationManager

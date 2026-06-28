@@ -101,6 +101,9 @@ const emit = defineEmits<{
   // from <KanbanColumn> headers to AppLayout, which calls the
   // workspacesStore.reorderKanbanColumn action.
   reorderColumn: [{ columnId: string; targetColumnId: string }]
+  // Open the per-board KanbanSettingsDialog (host owns it). No
+  // payload — the host derives the active item from its own state.
+  openSettings: []
   // Pass-through from KanbanColumn.
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
@@ -133,6 +136,10 @@ const tasks = computed<Task[]>(() => props.item.tasks ?? [])
 
 const handleAddColumn = () => {
   emit('addColumn')
+}
+
+const handleOpenSettings = () => {
+  emit('openSettings')
 }
 
 // ─── "Set project root" banner (backfill UX) ─────────────────────────────
@@ -227,6 +234,21 @@ const handleProjectRootSelected = async (path: string) => {
       >
         <span aria-hidden="true">⚠️</span>
         <span class="ml-1">{{ pathPickerBusy ? 'Setting…' : 'Set project root' }}</span>
+      </button>
+      <button
+        type="button"
+        class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
+        style="
+          background-color: var(--semantic-sidebar-bg);
+          border: 1px solid var(--color-border);
+          color: var(--semantic-text-muted);
+        "
+        :data-testid="`kanban-view-${item.id}-open-settings`"
+        @click="handleOpenSettings"
+        title="Open board settings (add columns, edit descriptions)"
+      >
+        <span aria-hidden="true">⚙️</span>
+        <span class="ml-1">Settings</span>
       </button>
       <button
         type="button"

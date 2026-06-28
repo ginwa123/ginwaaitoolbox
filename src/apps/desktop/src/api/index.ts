@@ -118,6 +118,15 @@ export interface KanbanColumn {
   id: string
   workspace_item_id: string
   name: string
+  /**
+   * Free-text description of the column's meaning (e.g. "Awaiting
+   * code review — tasks here must pass CI before merge"). Empty
+   * string when no description has been set. The Settings UI
+   * renders an "Add a description..." placeholder for empty
+   * values. Optional for backwards compat with legacy column
+   * literals in test files (see nalar-frontend-task-literal-typing-rule).
+   */
+  description?: string | null
   position: number
   created_at: string
 }
@@ -1125,13 +1134,14 @@ export async function addKanbanColumn(
   workspaceId: string,
   itemId: string,
   name: string,
+  description?: string,
   position?: number,
 ): Promise<KanbanColumn> {
   return await apiFetch<KanbanColumn>(
     `/workspaces/${workspaceId}/items/${itemId}/kanban/columns`,
     {
       method: 'POST',
-      body: { name, position },
+      body: { name, description: description ?? '', position },
     },
   )
 }
@@ -1147,7 +1157,7 @@ export async function updateKanbanColumn(
   workspaceId: string,
   itemId: string,
   columnId: string,
-  patch: { name?: string; position?: number },
+  patch: { name?: string; description?: string; position?: number },
 ): Promise<KanbanColumn> {
   return await apiFetch<KanbanColumn>(
     `/workspaces/${workspaceId}/items/${itemId}/kanban/columns/${columnId}`,
@@ -1867,6 +1877,7 @@ export interface KanbanColumnEvent {
   item_id: string
   column_id: string
   new_name?: string | null
+  new_description?: string | null
   new_position?: number | null
 }
 

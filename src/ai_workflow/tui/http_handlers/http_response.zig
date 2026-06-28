@@ -22,6 +22,10 @@ pub const KanbanColumnResponse = struct {
     id: []const u8,
     workspace_item_id: []const u8,
     name: []const u8,
+    /// Free-text description of what the column means. Empty
+    /// string when the column has no description set. The frontend
+    /// renders "" as the "Add a description..." placeholder.
+    description: []const u8,
     position: i64,
     created_at: []const u8,
 };
@@ -35,6 +39,7 @@ pub fn makeKanbanColumnResponse(col: anytype) KanbanColumnResponse {
         .id = col.id,
         .workspace_item_id = col.workspace_item_id,
         .name = col.name,
+        .description = col.description,
         .position = col.position,
         .created_at = col.created_at,
     };

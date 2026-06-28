@@ -89,3 +89,21 @@ test "kanban_columns_create handler returns 201 on success" {
         return error.Status201Missing;
     }
 }
+
+test "kanban_columns_create handler extracts description from parsed body" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The handler must extract `description` from the parsed body
+    // (defaulting to empty string when null) and pass it to
+    // kanban_model.addColumn.
+    if (std.mem.indexOf(u8, source, "parsed.description") == null) {
+        std.debug.print(
+            "\n!! {s} does not extract .description from the parsed body !!\n" ++
+                "   The handler must reference `parsed.description` (or default to \"\") for the new column.\n",
+            .{HANDLER_PATH},
+        );
+        return error.DescriptionExtractionMissing;
+    }
+}

@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Git Worktree CWD + Dropdown Wireframe</title>
+  <style>
+    :root {
+      /* Mirrors the desktop app's semantic CSS vars */
+      --semantic-card-bg: #1f1f23;
+      --semantic-sidebar-bg: #18181b;
+      --semantic-text: #f4f4f5;
+      --semantic-text-dim: #a1a1aa;
+      --semantic-text-muted: #71717a;
+      --color-border: #3f3f46;
+      --color-emerald: #10b981;
+      --color-green: #22c55e;
+      --color-orange: #f59e0b;
+      --color-red: #ef4444;
+      --color-violet: #8b5cf6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: #0a0a0a;
+      color: var(--semantic-text);
+      margin: 0;
+      padding: 32px 24px;
+      line-height: 1.5;
+    }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    h2 { font-size: 16px; margin: 32px 0 12px; color: var(--semantic-text-dim); font-weight: 600; }
+    h3 { font-size: 13px; margin: 16px 0 8px; color: var(--semantic-text-dim); font-weight: 500; }
+    .meta { color: var(--semantic-text-muted); font-size: 13px; margin-bottom: 32px; }
+
+    /* The "scene" mimics the chat input area + status bar */
+    .scene {
+      position: relative;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 24px;
+      background: var(--semantic-sidebar-bg);
+      border: 1px solid var(--color-border);
+      border-radius: 12px;
+    }
+
+    /* Mock chat history area */
+    .chat-area {
+      height: 180px;
+      background: var(--semantic-card-bg);
+      border: 1px dashed var(--color-border);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--semantic-text-muted);
+      font-size: 13px;
+      margin-bottom: 20px;
+    }
+
+    /* Mock input box */
+    .input-box {
+      background: var(--semantic-card-bg);
+      border: 1px solid var(--color-border);
+      border-radius: 12px;
+      padding: 12px 16px;
+      min-height: 56px;
+      color: var(--semantic-text-muted);
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+    }
+
+    /* Status bar - exact same layout as ChatView.vue */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    /* Status chip (matches the app's pill style) */
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 500;
+      background: var(--semantic-card-bg);
+      border: 1px solid var(--color-border);
+      color: var(--semantic-text);
+    }
+    .chip.clickable { cursor: pointer; transition: transform 0.2s; }
+    .chip.clickable:hover { transform: scale(1.05); }
+    .chip.disabled { opacity: 1; cursor: default; }
+    .chip.compact { font-family: monospace; }
+    .chip.dropdown-open { box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.4); }
+
+    .chip .branch { font-family: ui-monospace, monospace; }
+    .chip .sep { color: var(--semantic-text-dim); }
+    .chip .worktree-name { color: var(--color-emerald); font-family: ui-monospace, monospace; }
+    .chip .caret { font-size: 10px; color: var(--semantic-text-dim); }
+    .chip .status-clean { color: var(--color-green); }
+    .chip .status-dirty { color: var(--color-orange); }
+
+    /* Token progress chip (just visual context, not the feature focus) */
+    .tokens {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      background: var(--semantic-card-bg);
+      border: 1px solid var(--color-border);
+    }
+    .tokens .bar {
+      width: 64px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--color-border);
+      overflow: hidden;
+    }
+    .tokens .bar > div {
+      width: 0%;
+      height: 100%;
+      background: var(--color-violet);
+      transition: width 0.3s;
+    }
+    .tokens .bar > div.mid { width: 65%; }
+    .tokens .label { color: var(--semantic-text-dim); }
+    .tokens .value { color: var(--semantic-text); }
+
+    /* Dropdown panel */
+    .dropdown {
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 0;
+      min-width: 200px;
+      background: var(--semantic-card-bg);
+      border: 1px solid var(--color-border);
+      border-radius: 8px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+      z-index: 20;
+      overflow: hidden;
+    }
+    .dropdown button {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 8px 12px;
+      font-size: 12px;
+      text-align: left;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      color: var(--semantic-text);
+    }
+    .dropdown button:hover { background: rgba(255, 255, 255, 0.05); }
+    .dropdown button + button { border-top: 1px solid var(--color-border); }
+    .dropdown button.danger { color: var(--color-red); }
+
+    /* Wrapper for chip + dropdown (so they share positioning context) */
+    .dropdown-wrapper { position: relative; }
+
+    /* Tooltip simulation */
+    .tooltip-note {
+      display: inline-block;
+      font-size: 11px;
+      color: var(--semantic-text-muted);
+      font-family: ui-monospace, monospace;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+
+    /* Modal dialog */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      padding: 16px;
+    }
+    .modal {
+      width: 100%;
+      max-width: 600px;
+      background: var(--semantic-card-bg);
+      border: 1px solid var(--color-border);
+      border-radius: 12px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+      overflow: hidden;
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--color-border);
+    }
+    .modal-header h3 { font-size: 13px; font-weight: 600; color: var(--semantic-text); margin: 0; }
+    .modal-header button.close {
+      background: transparent;
+      border: none;
+      color: var(--semantic-text);
+      opacity: 0.6;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .modal-header button.close:hover { opacity: 1; }
+    .modal-body {
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+    .modal-body label {
+      display: block;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--semantic-text-dim);
+      margin-bottom: 4px;
+    }
+    .modal-body input,
+    .modal-body textarea {
+      width: 100%;
+      padding: 6px 8px;
+      font-size: 12px;
+      background: var(--semantic-sidebar-bg);
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      color: var(--semantic-text);
+      font-family: inherit;
+    }
+    .modal-body input.mono,
+    .modal-body textarea { font-family: ui-monospace, monospace; }
+    .modal-body textarea { resize: vertical; min-height: 140px; }
+    .modal-footer {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 12px 16px;
+      border-top: 1px solid var(--color-border);
+    }
+    .btn {
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 6px;
+      cursor: pointer;
+      background: var(--semantic-card-bg);
+      border: 1px solid var(--color-border);
+      color: var(--semantic-text);
+    }
+    .btn.primary {
+      background: var(--color-violet);
+      border-color: var(--color-violet);
+      color: white;
+    }
+    .btn.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Small Auto-fill button in modal header (NEW) */
+    .btn.small {
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 500;
+      border-radius: 6px;
+      cursor: pointer;
+      background: var(--semantic-card-bg);
+      border: 1px solid var(--color-border);
+      color: var(--semantic-text-dim);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: opacity 0.15s;
+    }
+    .btn.small:hover { opacity: 0.8; }
+    .btn.small:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn.small.spinning { color: var(--color-violet); }
+    .header-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Annotation arrows + labels */
+    .annot {
+      position: relative;
+      padding: 12px 16px;
+      background: rgba(139, 92, 246, 0.08);
+      border: 1px solid rgba(139, 92, 246, 0.3);
+      border-radius: 8px;
+      margin-top: 12px;
+      font-size: 12px;
+      color: var(--semantic-text-dim);
+    }
+    .annot .label {
+      display: inline-block;
+      background: var(--color-violet);
+      color: white;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-right: 8px;
+      font-weight: 600;
+      vertical-align: middle;
+    }
+
+    /* Code-style snippets */
+    code.inline {
+      background: var(--semantic-sidebar-bg);
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 11px;
+      font-family: ui-monospace, monospace;
+      color: var(--color-emerald);
+    }
+  </style>
+</head>
+<body>
+
+<h1>Git Worktree CWD + Clickable Dropdown — Wireframe</h1>
+<p class="meta">Visual mockup of each state in the chat status bar. Match the dark theme used by the desktop app.</p>
+
+<!-- ============================================================== -->
+<h2>State 1: No worktree bound (current behavior — unchanged)</h2>
+<!-- ============================================================== -->
+
+<div class="scene">
+  <div class="chat-area">[ chat history area ]</div>
+  <div class="input-box">Ask the LLM anything…</div>
+  <div class="status-bar">
+    <span class="chip compact disabled">
+      <span>🗜️</span><span>Compact</span>
+    </span>
+    <span class="chip compact disabled">
+      <span>🤖</span><span>Default</span><span class="caret">▾</span>
+    </span>
+    <span class="chip compact">
+      <span class="label">🌿</span>
+      <span class="branch">main</span>
+      <span class="status-clean">✓</span>
+    </span>
+    <span class="tokens">
+      <span class="label">Tokens:</span>
+      <span class="value">0</span>
+      <span class="label">/ 500,000</span>
+      <span class="bar"><div></div></span>
+    </span>
+  </div>
+
+  <div class="annot">
+    <span class="label">SAME</span>
+    The git branch chip is <strong>not</strong> clickable when no worktree is bound (no worktree to manage). Hovering shows the same tooltip as today: <code class="inline">"Working tree clean"</code> or <code class="inline">"Working tree has changes"</code>.
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2>State 2: Worktree bound (NEW — clickable chip)</h2>
+<!-- ============================================================== -->
+
+<div class="scene">
+  <div class="chat-area">[ chat history area ]</div>
+  <div class="input-box">Ask the LLM anything…</div>
+  <div class="status-bar">
+    <span class="chip compact disabled">
+      <span>🗜️</span><span>Compact</span>
+    </span>
+    <span class="chip compact disabled">
+      <span>🤖</span><span>Default</span><span class="caret">▾</span>
+    </span>
+
+    <!-- The NEW clickable chip -->
+    <div class="dropdown-wrapper">
+      <span class="chip compact clickable dropdown-open" title="Worktree: /home/me/projects/myapp/.worktrees/feature-x
+Working tree has changes">
+        <span>🌿</span>
+        <span class="branch">worktree/feature-x</span>
+        <span class="sep">·</span>
+        <span class="worktree-name">🌳 feature-x</span>
+        <span class="status-dirty">●</span>
+        <span class="caret">▾</span>
+      </span>
+    </div>
+
+    <span class="tokens">
+      <span class="label">Tokens:</span>
+      <span class="value">124,532</span>
+      <span class="label">/ 500,000</span>
+      <span class="bar"><div class="mid"></div></span>
+    </span>
+  </div>
+
+  <div class="annot">
+    <span class="label">NEW</span>
+    The chip now has <strong>three</strong> new visual elements when a worktree is bound:
+    <ol style="margin: 8px 0 0; padding-left: 24px;">
+      <li><strong>Branch name shows the worktree's branch</strong> (<code class="inline">worktree/feature-x</code>) — not the session's original <code class="inline">main</code>. The git status was queried against the worktree path, so the ●/✓ also reflects the worktree's state.</li>
+      <li><strong>🌳 &lt;basename&gt;</strong> shows the worktree directory's name in emerald green, beside the branch.</li>
+      <li><strong>▾ caret</strong> indicates the chip is clickable (mirrors the "Default" profile picker).</li>
+    </ol>
+    <br>
+    <strong>Tooltip</strong> (on hover) shows the <em>full</em> worktree path + the working-tree state on two lines.
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2>State 3: Dropdown open (NEW — 3 menu items)</h2>
+<!-- ============================================================== -->
+
+<div class="scene">
+  <div class="chat-area">[ chat history area ]</div>
+  <div class="input-box">Ask the LLM anything…</div>
+  <div class="status-bar">
+    <span class="chip compact disabled">
+      <span>🗜️</span><span>Compact</span>
+    </span>
+    <span class="chip compact disabled">
+      <span>🤖</span><span>Default</span><span class="caret">▾</span>
+    </span>
+
+    <div class="dropdown-wrapper">
+      <span class="chip compact clickable dropdown-open">
+        <span>🌿</span>
+        <span class="branch">worktree/feature-x</span>
+        <span class="sep">·</span>
+        <span class="worktree-name">🌳 feature-x</span>
+        <span class="status-dirty">●</span>
+        <span class="caret">▾</span>
+      </span>
+
+      <!-- The dropdown panel -->
+      <div class="dropdown">
+        <button>🔀 Create a PR</button>
+        <button>📁 View in folder</button>
+        <button class="danger">🗑️ Clear worktree</button>
+      </div>
+    </div>
+
+    <span class="tokens">
+      <span class="label">Tokens:</span>
+      <span class="value">124,532</span>
+      <span class="label">/ 500,000</span>
+      <span class="bar"><div class="mid"></div></span>
+    </span>
+  </div>
+
+  <div class="annot">
+    <span class="label">NEW</span>
+    Clicking the chip opens a dropdown with <strong>three actions</strong>. The dropdown mirrors the existing "Default" profile-picker pattern (<code class="inline">absolute bottom-full mb-2 left-0</code>). Closing happens via:
+    <ul style="margin: 8px 0 0; padding-left: 24px;">
+      <li>Click outside the dropdown</li>
+      <li>Selecting any action (the parent closes the menu via <code class="inline">v-if</code>)</li>
+    </ul>
+    <br>
+    <strong>Action behaviors:</strong>
+    <ul style="margin: 8px 0 0; padding-left: 24px;">
+      <li><strong>🔀 Create a PR</strong> — direct API call (<code class="inline">POST /api/git/pr</code>); opens the CreatePrDialog (State 4).</li>
+      <li><strong>📁 View in folder</strong> — copies the worktree path to the clipboard (v1); future plan will open a folder-explorer modal.</li>
+      <li><strong>🗑️ Clear worktree</strong> — shows a <code class="inline">confirm()</code> dialog; on accept, sends a system message to the LLM asking it to call <code class="inline">set_git_worktree(clear=true)</code>. The LLM does the cleanup; the SSE event updates the chip.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2>State 4: "Create a PR" dialog (NEW — pre-filled form)</h2>
+<!-- ============================================================== -->
+
+<div class="modal-backdrop">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🔀 Create a pull request</h3>
+      <div class="header-actions">
+        <!-- NEW: Auto-fill button. Re-fetches worktree info against
+             the current base branch and overwrites title + body. -->
+        <button class="btn small" title="Re-fill title and body from the latest commit and diff against the current base branch">
+          <span>↻</span><span>Auto-fill</span>
+        </button>
+        <button class="close">✕</button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div>
+        <label>Base branch</label>
+        <input class="mono" value="main" />
+      </div>
+      <div>
+        <label>Title</label>
+        <input value="feat: add OAuth2 PKCE flow to /auth/callback" />
+      </div>
+      <div>
+        <label>Body</label>
+        <textarea>## Summary
+
+ 3 files changed, 142 insertions(+), 23 deletions(-)
+
+Commits ahead: 4
+
+## Changes
+- Add PKCE code-verifier generation in /auth/login
+- Add S256 challenge derivation (RFC 7636)
+- Update /auth/callback to verify the challenge
+- Add 12 new test cases covering happy + error paths</textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn">Cancel</button>
+      <button class="btn primary">Create PR</button>
+    </div>
+  </div>
+</div>
+
+<div class="annot">
+  <span class="label">NEW</span>
+  The dialog <strong>pre-fills on mount</strong> from <code class="inline">GET /api/git/worktree/info</code>:
+  <ul style="margin: 8px 0 0; padding-left: 24px;">
+    <li><strong>Base branch</strong> — auto-detected by trying <code class="inline">origin/main</code> → <code class="inline">origin/master</code> → <code class="inline">origin/develop</code>. User can override.</li>
+    <li><strong>Title</strong> — the worktree's last commit subject (the user just typed this in the chat — it should match what they're submitting as a PR).</li>
+    <li><strong>Body</strong> — a markdown summary with the diff shortstat (<code class="inline">3 files changed, 142 insertions(+), 23 deletions(-)</code>) and commit count.</li>
+  </ul>
+  <br>
+  <strong>Auto-fill button</strong> (NEW, top-right of the dialog header):
+  <code class="inline">↻ Auto-fill</code> re-fetches <code class="inline">GET /api/git/worktree/info?path=...&amp;base=&lt;current_base&gt;</code>
+  and overwrites BOTH the title (from the latest commit subject) and the body (from the diff against the
+  <em>current</em> base branch value in the input). Useful for:
+  <ul style="margin: 8px 0 0; padding-left: 24px;">
+    <li>(a) The user changed the base branch — body now shows the diff against the new base.</li>
+    <li>(b) The worktree has new commits since the dialog was opened (e.g. LLM kept working).</li>
+    <li>(c) The user manually edited the title/body and wants to revert to the auto-generated version.</li>
+  </ul>
+  The button shows a small spinner during the request and is disabled while submitting (no race with the Create PR button).
+  <br><br>
+  <strong>Submit:</strong> calls <code class="inline">POST /api/git/pr</code> with the form values. The backend runs <code class="inline">gh pr create --base &lt;base&gt; --title &lt;title&gt; --body &lt;body&gt;</code> in the worktree path. On success, the dialog emits <code class="inline">pr-created</code> with the PR URL → the parent closes the dialog and <code class="inline">window.open(url, '_blank')</code> opens the PR.
+  <br><br>
+  <strong>Error cases</strong> (all surface inline in the dialog):
+  <ul style="margin: 8px 0 0; padding-left: 24px;">
+    <li><code class="inline">gh</code> not installed → <code class="inline">500 with hint "is the gh CLI installed and on PATH?"</code></li>
+    <li><code class="inline">gh</code> not authenticated → verbatim gh stderr</li>
+    <li>Branch not pushed to origin → verbatim gh stderr ("no commits between origin/main and worktree/feature-x")</li>
+  </ul>
+</div>
+
+<!-- ============================================================== -->
+<h2>State 4b: User changed base branch + clicked "↻ Auto-fill"</h2>
+<!-- ============================================================== -->
+
+<div class="modal-backdrop">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🔀 Create a pull request</h3>
+      <div class="header-actions">
+        <button class="btn small" disabled style="opacity: 0.5; cursor: not-allowed;">
+          <span style="display: inline-block; width: 10px; height: 10px; border: 2px solid var(--color-violet); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite;"></span>
+          <span style="color: var(--color-violet);">Auto-fill</span>
+        </button>
+        <button class="close">✕</button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div>
+        <label>Base branch</label>
+        <input class="mono" value="develop" style="border-color: var(--color-violet);" />
+      </div>
+      <div>
+        <label>Title</label>
+        <input value="feat: add OAuth2 PKCE flow to /auth/callback" />
+      </div>
+      <div>
+        <label>Body</label>
+        <textarea>## Summary
+
+ 5 files changed, 187 insertions(+), 41 deletions(-)
+
+Commits ahead: 7
+
+## Changes
+- Add PKCE code-verifier generation in /auth/login
+- Add S256 challenge derivation (RFC 7636)
+- Update /auth/callback to verify the challenge
+- Add 12 new test cases covering happy + error paths
+- (re-fetched against origin/develop)</textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn">Cancel</button>
+      <button class="btn primary">Create PR</button>
+    </div>
+  </div>
+</div>
+
+<style>
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+</style>
+
+<div class="annot">
+  <span class="label">NEW</span>
+  <strong>Scenario:</strong> The user changed the base branch from <code class="inline">main</code> to <code class="inline">develop</code>
+  and clicked the <code class="inline">↻ Auto-fill</code> button. Here's what happened:
+  <ol style="margin: 8px 0 0; padding-left: 24px;">
+    <li>The button shows a spinner (violet color to indicate in-flight request).</li>
+    <li>The frontend calls <code class="inline">GET /api/git/worktree/info?path=/abs/.worktrees/feature-x&amp;base=develop</code>.</li>
+    <li>The backend re-computes <code class="inline">commits_ahead</code> and <code class="inline">diff_summary</code> against <code class="inline">origin/develop</code> instead of the auto-detected default.</li>
+    <li>The frontend overwrites <code class="inline">title.value</code> with the latest commit subject (unchanged in this example) and <code class="inline">body.value</code> with the new diff summary (now shows <code class="inline">5 files changed, 187 insertions(+), 41 deletions(-)</code> instead of <code class="inline">3 files, 142</code>).</li>
+    <li>The base branch input keeps the violet border briefly to show "this is what was just refreshed against" (vanishes after 1s).</li>
+  </ol>
+  <br>
+  <strong>Why use the CURRENT base (not the auto-detected default)?</strong> Because the user
+  explicitly typed a different base, and they want the body to reflect the diff against that
+  base — not the original auto-detected one. This is the key value-add of the Auto-fill
+  button: it respects the user's input rather than reverting to the default.
+</div>
+
+<!-- ============================================================== -->
+<h2>State 5: PR created (post-submit)</h2>
+<!-- ============================================================== -->
+
+<div style="max-width: 900px; margin: 0 auto; padding: 16px 24px;">
+  <div style="padding: 12px 16px; background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.4); border-radius: 8px; color: var(--color-green); font-size: 13px;">
+    ✓ Pull request created: <a href="#" style="color: var(--color-green);">https://github.com/me/myapp/pull/142</a> (opened in a new tab)
+  </div>
+</div>
+
+<div class="annot">
+  <span class="label">NOTE</span>
+  v1 simply opens the PR URL in a new browser tab. A toast notification system can be added later — the project already has the SSE-based event infrastructure to do this cleanly.
+</div>
+
+<!-- ============================================================== -->
+<h2>State 6: After "Clear worktree" (back to State 1)</h2>
+<!-- ============================================================== -->
+
+<div class="scene">
+  <div class="chat-area">[ chat history area ]</div>
+  <div class="input-box">Ask the LLM anything…</div>
+  <div class="status-bar">
+    <span class="chip compact disabled">
+      <span>🗜️</span><span>Compact</span>
+    </span>
+    <span class="chip compact disabled">
+      <span>🤖</span><span>Default</span><span class="caret">▾</span>
+    </span>
+
+    <!-- Back to the non-worktree state -->
+    <span class="chip compact disabled">
+      <span>🌿</span>
+      <span class="branch">main</span>
+      <span class="status-clean">✓</span>
+    </span>
+
+    <span class="tokens">
+      <span class="label">Tokens:</span>
+      <span class="value">124,532</span>
+      <span class="label">/ 500,000</span>
+      <span class="bar"><div class="mid"></div></span>
+    </span>
+  </div>
+
+  <div class="annot">
+    <span class="label">REVERT</span>
+    After "Clear worktree" the LLM calls <code class="inline">set_git_worktree(clear=true)</code>:
+    <ol style="margin: 8px 0 0; padding-left: 24px;">
+      <li>The worktree directory is removed (via <code class="inline">git worktree remove --force</code>)</li>
+      <li>The DB row's <code class="inline">git_worktree_cwd</code> is set to NULL</li>
+      <li>An SSE event fires on <code class="inline">/sessions/stream</code> with <code class="inline">git_worktree_cwd: ""</code></li>
+      <li>The chip reverts to the original branch (<code class="inline">main</code>), no 🌳 suffix, no caret — matches State 1 exactly.</li>
+    </ol>
+    <br>
+    <strong>Caveat (documented in the plan):</strong> the active ChatView doesn't currently subscribe to <code class="inline">/sessions/stream</code>, so the user may need to refresh the page (or trigger a <code class="inline">loadChatHistory</code>) to see the revert. This is a v1 limitation; the follow-up plan wires real-time updates.
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2>What stays the same</h2>
+<!-- ============================================================== -->
+
+<div style="max-width: 900px; margin: 0 auto; padding: 0 24px;">
+  <ul style="font-size: 13px; color: var(--semantic-text-dim); padding-left: 20px;">
+    <li><strong>The chip position</strong> in the status bar (between "Default" profile picker and "Tokens" indicator).</li>
+    <li><strong>The chip's overall look</strong> (same colors, border, padding, font size).</li>
+    <li><strong>The ●/✓ status indicator</strong> (orange for dirty, green for clean) — but now reflects the <em>worktree's</em> working tree, not the session's.</li>
+    <li><strong>The 30-second polling interval</strong> for git status updates.</li>
+    <li><strong>Behavior when no worktree is bound</strong> — chip stays non-clickable, identical to today.</li>
+  </ul>
+</div>
+
+</body>
+</html>
+</content>
+</invoke>
