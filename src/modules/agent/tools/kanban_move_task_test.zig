@@ -115,6 +115,64 @@ test "kanban_move_task description explains recovery on error" {
     }
 }
 
+test "kanban_move_task.zig emits a kanban_task SSE event on success" {
+    // Regression guard (2026-06-29): the LLM tool used to call
+    // kanban_model.moveTask without emitting the SSE event, so the
+    // /api/kanban/events stream never saw a kanban_task event when
+    // the AI agent moved a task. This test fails if anyone removes
+    // the emit call (e.g., a future refactor that bypasses
+    // executeKanbanMoveTaskToString and inlines moveTask directly).
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+
+    // 1. Must reference the on_event_sent_kanban module via nalarcore.
+    if (!contains(source, "nalarcore.ai_mod.on_event_sent_kanban")) {
+        std.debug.print(
+            "!! kanban_move_task.zig does not reference nalarcore.ai_mod.on_event_sent_kanban !!\n" ++
+                "   The SSE emit on the LLM tool path is missing.\n" ++
+                "   See docs/superpowers/plans/2026-06-29-kanban-move-task-sse-emit.md\n",
+            .{},
+        );
+        return error.OnEventSentKanbanImportMissing;
+    }
+
+    // 2. Must call onEventSendKanbanTask (the actual emit function).
+    if (!contains(source, "onEventSendKanbanTask")) {
+        std.debug.print(
+            "!! kanban_move_task.zig does not call onEventSendKanbanTask !!\n" ++
+                "   Add the emit call after the successful kanban_model.moveTask call.\n",
+            .{},
+        );
+        return error.OnEventSendKanbanTaskCallMissing;
+    }
+
+    // 3. Must use the "moved" action string (matches the frontend's
+    //    KanbanTaskEvent union and the HTTP handler at tasks_move.zig:106).
+    if (!contains(source, ".action = \"moved\"")) {
+        std.debug.print(
+            "!! kanban_move_task.zig SSE emit is missing the '.action = \"moved\"' literal !!\n" ++
+                "   The frontend's KanbanTaskEvent union expects action: 'moved'.\n",
+            .{},
+        );
+        return error.MovedActionMissing;
+    }
+
+    // 4. Must call moveTask BEFORE the emit (defensive: catches the
+    //    case where someone reorders the two calls, which would emit
+    //    a phantom event for a move that subsequently failed).
+    const moveTask_offset = std.mem.indexOf(u8, source, "kanban_model.moveTask") orelse return error.MoveTaskCallMissing;
+    const emit_offset = std.mem.indexOf(u8, source, "onEventSendKanbanTask") orelse return error.OnEventSendKanbanTaskCallMissing;
+    if (moveTask_offset >= emit_offset) {
+        std.debug.print(
+            "!! kanban_move_task.zig calls onEventSendKanbanTask BEFORE kanban_model.moveTask !!\n" ++
+                "   The emit must happen AFTER a successful move, not before.\n",
+            .{},
+        );
+        return error.EmitBeforeMove;
+    }
+}
+
 // ─── Static wiring tests ────────────────────────────────────────────────
 
 test "tool_registry.zig imports kanban_move_task module" {

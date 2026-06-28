@@ -326,6 +326,35 @@ pub fn executeKanbanMoveTaskToString(
         return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: moveTask failed: {s}", .{@errorName(err)}));
     };
 
+    // 3a. Emit the `kanban_task` SSE event so connected KanbanView
+    //     clients refresh their board. Mirrors the emit in
+    //     `tasks_move.zig:105-117` (the HTTP drag-and-drop path) —
+    //     same payload shape, same non-fatal failure semantics.
+    //     The `target_column_id` and `position` here are the
+    //     resolved values (after the target_column_name → id
+    //     fallback at line 248 and the position-null → MAX+1
+    //     fallback at line 303). The frontend's SSE handler
+    //     (kanban_events_sse.zig) fans this out to every connected
+    //     client; the workspacesStore filters by workspace_id.
+    //
+    //     Bug history (2026-06-29): this emit was missing on the
+    //     LLM tool path. Drag-and-drop worked (HTTP handler
+    //     emits), AI-agent moves did not. Adding this single call
+    //     closes the gap.
+    nalarcore.ai_mod.on_event_sent_kanban.onEventSendKanbanTask(allocator, .{
+        .action = "moved",
+        .workspace_id = input.workspace_id,
+        .item_id = input.item_id,
+        .task_id = input.task_id,
+        .new_column_id = target_column_id,
+        .new_position = position,
+    }) catch |err| {
+        // Non-fatal: the LLM still gets the success XML; the
+        // card auto-refresh just won't fire on sibling tabs.
+        // The next kanban mutation will re-emit and catch up.
+        std.log.warn("kanban_move_task: SSE emit failed (non-fatal): {s}", .{@errorName(err)});
+    };
+
     // 4. Read the post-move state (column name) for the success
     //    response. The task was just moved to target_column_id, so
     //    we know its new column id — just look up the name.
