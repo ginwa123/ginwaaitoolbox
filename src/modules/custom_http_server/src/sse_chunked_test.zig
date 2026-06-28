@@ -318,6 +318,70 @@ test "SseManager: sendHeartbeat takes the manager lock during the client snapsho
 }
 
 // ============================================================================
+// Task 1.4 (this plan): SseManager must define `sendDeferred` that spawns a
+// group.concurrent task — guards against someone removing the helper in
+// a future refactor and silently regressing the kanban-SSE handler
+// blocking fix.
+//
+// Bug history (pre-fix): every SSE handler called `sendToClient` for
+// the connected-event handshake synchronously, blocking the
+// `group.concurrent` worker thread until the kernel TCP send
+// completed. With 4 SSE event loops parked in `socket.poll`
+// (`LOOP_COUNT=4`), the worker pool could starve under a burst of
+// SSE connections, blocking every other HTTP API call.
+//
+// Fix: `sendDeferred` spawns the send on `send_group` (a long-lived
+// internal Io Group), freeing the caller's worker thread immediately.
+// The connected-event handshake (38 bytes of static-literal data)
+// is safe to defer — the worker reads the literal's static memory.
+// ============================================================================
+
+test "SseManager: defines sendDeferred that uses send_group.concurrent (NOT synchronous sendToClient)" {
+    const source = try readSseManagerSource(std.testing.allocator);
+    defer std.testing.allocator.free(source);
+
+    // 1. The helper must exist.
+    const decl = std.mem.indexOf(u8, source, "fn sendDeferred(") orelse {
+        std.debug.print(
+            "\n!! sse_manager.zig missing `fn sendDeferred` !!\n" ++
+                "   The SSE handler blocking fix requires a fire-and-forget helper that\n" ++
+                "   spawns the connected-event send on a separate worker thread. Without\n" ++
+                "   this, every SSE handshake parks the calling `group.concurrent` worker\n" ++
+                "   thread on `socket.write`, starving the Io worker pool.\n",
+            .{},
+        );
+        return error.SendDeferredMissing;
+    };
+    const window_end = @min(decl + 4096, source.len);
+    const body = source[decl..window_end];
+
+    // 2. The helper must spawn via `send_group.concurrent` (NOT call
+    //    `sendToClient` directly — that would re-introduce the
+    //    synchronous-block bug we just fixed).
+    if (std.mem.indexOf(u8, body, "send_group.concurrent") == null) {
+        std.debug.print(
+            "\n!! sse_manager.zig: sendDeferred does not use `send_group.concurrent` !!\n" ++
+                "   The helper must spawn the send on the internal `send_group` Io Group\n" ++
+                "   so the calling worker thread is freed immediately.\n",
+            .{},
+        );
+        return error.SendDeferredNotConcurrent;
+    }
+
+    // NOTE: we deliberately do NOT also assert "sendDeferred must not
+    // call sendToClient". The spawned task body inside the
+    // `send_group.concurrent(...)` call MUST call `sendToClient` to
+    // actually send data — that is the entire point of the helper
+    // (delegate to the worker, not the caller). A `sendToClient`
+    // call inside the spawned `run` function is correct and required.
+    // The wrong pattern would be a `sendToClient` call OUTSIDE the
+    // `send_group.concurrent(...)` invocation, but that would
+    // necessarily mean `send_group.concurrent` is missing from the
+    // helper body — which check #2 already catches. Asserting the
+    // negative here would be a false-positive tripwire.
+}
+
+// ============================================================================
 // Task 5 (long-period fix #2): acceptClient must set SO_KEEPALIVE on every
 // accepted SSE socket.
 //
