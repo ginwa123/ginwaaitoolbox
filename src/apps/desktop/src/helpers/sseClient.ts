@@ -783,7 +783,11 @@ export function createSseClient(opts: SseClientOptions): SseClient {
       clearRetry()
       attempt = 0
       hasBeenOpen = false
-      start()
+      // Deferred so user-driven reconnects (e.g., a "Retry" button
+      // click) don't fire `new EventSource(url)` synchronously —
+      // see constructor comment for the HTTP/1.1 connection-pool
+      // rationale.
+      setTimeout(start, 0)
     },
 
     getState(): SseState {
