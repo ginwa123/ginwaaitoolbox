@@ -12,6 +12,7 @@ import CodeEditor from './CodeEditor.vue'
 import NotificationContainer from './NotificationContainer.vue'
 import KanbanView from './KanbanView.vue'
 import KanbanColumnEditor from './KanbanColumnEditor.vue'
+import KanbanSettingsDialog from './KanbanSettingsDialog.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
@@ -701,6 +702,65 @@ const handleKanbanColumnEditorDelete = () => {
   showKanbanColumnEditor.value = false
 }
 
+// ─── KanbanSettingsDialog — per-board column management ─────────────────
+//
+// A single modal that shows the kanban name, an inline "Add Column"
+// form, and the list of existing columns with per-row Edit / Delete
+// actions. The dialog reuses the KanbanColumnEditor in 'rename' /
+// 'delete' modes for per-row edits, so the per-board and per-⋮-menu
+// flows share the same UX. The dialog itself stays open across
+// add/edit/delete so the user can manage several columns in
+// succession without reopening it.
+const showKanbanSettingsDialog = ref(false)
+
+const handleOpenKanbanSettings = () => {
+  showKanbanSettingsDialog.value = true
+}
+
+const handleCloseKanbanSettings = () => {
+  showKanbanSettingsDialog.value = false
+}
+
+const handleKanbanSettingsAddColumn = (name: string, description: string) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.addKanbanColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    name,
+    description,
+  )
+  // Dialog stays open so the user can add more columns in succession.
+}
+
+const handleKanbanSettingsEditColumn = (payload: {
+  columnId: string
+  name: string
+  description: string
+}) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.updateKanbanColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    payload.columnId,
+    { name: payload.name, description: payload.description },
+  )
+}
+
+const handleKanbanSettingsDeleteColumn = (columnId: string) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.deleteKanbanColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    columnId,
+  )
+}
+
 // + Add on a column: open the standard chat dialog directly
 // (skipping the AddTaskPickerDialog). Kanban cards are always
 // standard chats — the column is a workflow stage, not a task-type
@@ -1156,6 +1216,7 @@ watch(chatSessionCwd, (newCwd) => {
             @edit-routine="handleKanbanEditRoutine"
             @run-routine="handleKanbanRunRoutine"
             @pin-task="handleKanbanPinTask"
+            @open-settings="handleOpenKanbanSettings"
           />
         </div>
         <!--
@@ -1240,6 +1301,7 @@ watch(chatSessionCwd, (newCwd) => {
         @edit-routine="handleKanbanEditRoutine"
         @run-routine="handleKanbanRunRoutine"
         @pin-task="handleKanbanPinTask"
+        @open-settings="handleOpenKanbanSettings"
       />
       <ChatView
         v-else-if="activeChatId.startsWith('chat-')"
@@ -1370,6 +1432,25 @@ watch(chatSessionCwd, (newCwd) => {
       @add="handleKanbanColumnEditorAdd"
       @rename="handleKanbanColumnEditorRename"
       @delete="handleKanbanColumnEditorDelete"
+    />
+
+    <!--
+      KanbanSettingsDialog — per-board column management. Mounted
+      alongside the KanbanColumnEditor (not inside the KanbanView
+      scoped tree) so the modal's Teleport/animation lifecycle
+      works cleanly even if the KanbanView branch unmounts
+      mid-edit. The dialog owns its own KanbanColumnEditor
+      instance for per-row rename/delete actions so the two
+      dialogs can coexist (a user can open the settings while
+      the ⋮ menu is already showing).
+    -->
+    <KanbanSettingsDialog
+      :show="showKanbanSettingsDialog"
+      :item="activeWorkspaceItem ?? null"
+      @close="handleCloseKanbanSettings"
+      @add-column="handleKanbanSettingsAddColumn"
+      @edit-column="handleKanbanSettingsEditColumn"
+      @delete-column="handleKanbanSettingsDeleteColumn"
     />
   </div>
 </template>
