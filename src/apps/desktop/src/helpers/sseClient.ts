@@ -656,7 +656,11 @@ export function createSseClient(opts: SseClientOptions): SseClient {
       // for the timer. Mark the reason so logs / UI can show
       // "resumed on visibility" if they want to.
       emitState('reconnecting', { attempt, reason: 'visible' })
-      start()
+      // Deferred to the next macrotask so the tab-becoming-visible
+      // path doesn't fire `new EventSource(url)` synchronously —
+      // see the constructor's deferral comment for the full
+      // rationale (HTTP/1.1 6-connection pool saturation).
+      setTimeout(start, 0)
     }
   }
 
