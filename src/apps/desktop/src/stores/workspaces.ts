@@ -748,24 +748,35 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
-  // Patch a kanban column's name and/or position. The backend
-  // re-numbers sibling positions when `position` changes; we
-  // replace the local column with the backend's returned object
-  // (the source of truth for the new position). `description` is
-  // part of the patch — the backend applies it independently of
-  // name/position (any combination is valid).
+  // Patch a kanban column's name, description, and/or position. The
+  // backend re-numbers sibling positions when `position` changes;
+  // it returns the FULL updated board on every successful PATCH
+  // (same `{columns, count}` envelope as `listKanbanColumns`) so the
+  // frontend can mirror sibling renumbering in one round-trip.
+  //
+  // We replace the local `kanban_columns` array with the backend's
+  // returned list (defensively re-sorted by position) — this keeps
+  // sibling columns in sync after a reorder PATCH without a follow-up
+  // GET, and fixes the "kanban-settings shows 'No description' after
+  // save" bug where the previous version tried to assign the list
+  // response to a single column slot and lost the column's own
+  // fields (`description`, `name`, etc).
   async function updateKanbanColumn(
     workspaceId: string,
     itemId: string,
     columnId: string,
     patch: { name?: string; description?: string; position?: number },
   ): Promise<void> {
-    const col = await api.updateKanbanColumn(workspaceId, itemId, columnId, patch)
+    const result = await api.updateKanbanColumn(workspaceId, itemId, columnId, patch)
     const item = findItem(workspaceId, itemId)
-    if (item && item.kanban_columns) {
-      const i = item.kanban_columns.findIndex((c) => c.id === columnId)
-      if (i !== -1) item.kanban_columns[i] = col
-    }
+    if (!item) return
+    // Mirror the backend's full board — replaces the previous
+    // `item.kanban_columns[i] = result` bug, which corrupted the
+    // single-column slot with the `{columns, count}` envelope and
+    // made every UI field on the saved column read as undefined.
+    item.kanban_columns = [...result.columns].sort(
+      (a, b) => a.position - b.position,
+    )
   }
 
   // Reorder a kanban column via drag-and-drop. The DnD handler in

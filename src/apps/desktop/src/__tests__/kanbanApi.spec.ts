@@ -206,13 +206,24 @@ describe('api.kanban', () => {
   })
 
   describe('updateKanbanColumn', () => {
-    it('PATCHes the column with the patch and returns the updated column', async () => {
+    it('PATCHes the column with the patch and returns the full updated board', async () => {
+      // The backend's PATCH handler returns the full kanban board
+      // (same {columns, count} envelope as listKanbanColumns) on
+      // success so the frontend can mirror sibling renumbering in a
+      // single round-trip. Assert the wire shape here so any future
+      // drift is caught at the API boundary.
       mockFetchOnce(200, {
-        id: 'c1',
-        workspace_item_id: 'item_1',
-        name: 'backlog',
-        position: 0,
-        created_at: '2026-06-21 12:00:00',
+        columns: [
+          {
+            id: 'c1',
+            workspace_item_id: 'item_1',
+            name: 'backlog',
+            description: '',
+            position: 0,
+            created_at: '2026-06-21 12:00:00',
+          },
+        ],
+        count: 1,
       })
 
       const result = await updateKanbanColumn('ws_1', 'item_1', 'c1', { name: 'backlog' })
@@ -222,23 +233,50 @@ describe('api.kanban', () => {
       expect(init.method).toBe('PATCH')
       const body = JSON.parse(init.body as string)
       expect(body).toEqual({ name: 'backlog' })
-      expect(result.name).toBe('backlog')
+      // Full board shape — the store slices result.columns for the
+      // patched column; the test asserts the envelope type here so
+      // a regression to the old single-column shape would fail.
+      expect(result.count).toBe(1)
+      expect(result.columns).toHaveLength(1)
+      expect(result.columns[0]!.name).toBe('backlog')
+      expect(result.columns[0]!.description).toBe('')
     })
 
-    it('supports renaming + repositioning in a single PATCH', async () => {
+    it('supports renaming + repositioning in a single PATCH and reflects the renumbered siblings', async () => {
       mockFetchOnce(200, {
-        id: 'c1',
-        workspace_item_id: 'item_1',
-        name: 'urgent',
-        description: 'Top priority',
-        position: 0,
-        created_at: '2026-06-21 12:00:00',
+        columns: [
+          {
+            id: 'c2',
+            workspace_item_id: 'item_1',
+            name: 'in progress',
+            description: '',
+            position: 0,
+            created_at: '2026-06-21 12:00:00',
+          },
+          {
+            id: 'c1',
+            workspace_item_id: 'item_1',
+            name: 'urgent',
+            description: 'Top priority',
+            position: 1,
+            created_at: '2026-06-21 12:00:00',
+          },
+          {
+            id: 'c3',
+            workspace_item_id: 'item_1',
+            name: 'done',
+            description: '',
+            position: 2,
+            created_at: '2026-06-21 12:00:00',
+          },
+        ],
+        count: 3,
       })
 
       await updateKanbanColumn('ws_1', 'item_1', 'c1', {
         name: 'urgent',
         description: 'Top priority',
-        position: 0,
+        position: 1,
       })
 
       const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
@@ -246,18 +284,23 @@ describe('api.kanban', () => {
       expect(body).toEqual({
         name: 'urgent',
         description: 'Top priority',
-        position: 0,
+        position: 1,
       })
     })
 
     it('forwards description-only patch without name or position', async () => {
       mockFetchOnce(200, {
-        id: 'c1',
-        workspace_item_id: 'item_1',
-        name: 'review',
-        description: 'Updated meaning',
-        position: 0,
-        created_at: '2026-06-21 12:00:00',
+        columns: [
+          {
+            id: 'c1',
+            workspace_item_id: 'item_1',
+            name: 'review',
+            description: 'Updated meaning',
+            position: 0,
+            created_at: '2026-06-21 12:00:00',
+          },
+        ],
+        count: 1,
       })
 
       await updateKanbanColumn('ws_1', 'item_1', 'c1', {
