@@ -422,6 +422,22 @@ const handleAddClick = () => {
       </div>
     </header>
 
+    <!-- Description subtitle (Chunk 2 of kanban-column-description-settings).
+         Sits between the header row (name + count + menu) and the
+         cards drop zone so it reads as a sub-header line. Hidden
+         when description is empty/null/undefined — all three falsy
+         in v-if, which matches the backend's "empty string = no
+         description" sentinel plus legacy KanbanColumn literals. -->
+    <p
+      v-if="column.description"
+      class="text-[11px] px-3 pt-0.5 pb-1.5 truncate"
+      style="color: var(--semantic-text-dim);"
+      :title="column.description"
+      :data-testid="`kanban-column-${column.id}-description`"
+    >
+      {{ column.description }}
+    </p>
+
     <!-- ─── Cards (drop zone) ────────────────────────────────────────── -->
     <div
       class="flex-1 min-h-0 overflow-y-auto p-2 space-y-1"
