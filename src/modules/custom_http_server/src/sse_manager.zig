@@ -91,6 +91,13 @@ pub const SseManager = struct {
     running: bool,
     on_disconnect: ?*const fn (client_id: [16]u8) void = null,
     notify_pipe: [2]i32,
+    /// Long-lived `std.Io.Group` used by `sendDeferred` for fire-and-forget
+    /// tasks. Tasks are spawned on this group but never awaited — the
+    /// handler that calls `sendDeferred` returns `error.WouldBlock`
+    /// immediately and the worker thread is freed for the next incoming
+    /// HTTP request. We cancel the group in `deinit` to release any
+    /// in-flight tasks on shutdown.
+    send_group: std.Io.Group = .init,
 
     pub fn init(allocator: std.mem.Allocator, server_allocator: std.mem.Allocator, io: std.Io) !SseManager {
         var notify_pipe: [2]i32 = .{ -1, -1 };
@@ -112,6 +119,11 @@ pub const SseManager = struct {
 
     pub fn deinit(self: *SseManager) void {
         self.running = false;
+        // Cancel any in-flight `sendDeferred` tasks BEFORE tearing down
+        // `self.clients`. Tasks that already started their `sendToClient`
+        // call will complete (or hit `error.Canceled`); tasks that haven't
+        // started yet are dropped. The `group.cancel` is non-blocking.
+        self.send_group.cancel(self.io);
         if (self.notify_pipe[1] >= 0) {
             var byte_buf: [1]u8 = .{'q'};
             _ = socket.write(self.notify_pipe[1], &byte_buf, 1);
