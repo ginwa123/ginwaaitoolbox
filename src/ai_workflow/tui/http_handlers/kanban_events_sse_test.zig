@@ -107,3 +107,48 @@ test "/api/kanban/events is registered in src/main.zig" {
         return error.RouteRegistrationMissing;
     }
 }
+
+// ─── Contract 4: handler uses sendDeferred (not synchronous sendToClient)
+//                 for the connected-event handshake, so the handler task's
+//                 group.concurrent worker thread is freed immediately.
+//
+//                 Bug history: pre-fix, the handler called
+//                 `server.sse_manager.sendToClient(client_id_copy,
+//                 connected_event)` synchronously, parking the worker
+//                 thread on `socket.write`. With 4 SSE event loops
+//                 permanently parked in `socket.poll`, a burst of
+//                 kanban-SSE connections could starve the Io worker
+//                 pool and block every other API call.
+//                 See docs/plans/2026-06-30-fix-sse-blocking-api.md. ──────
+
+test "kanban_events_sse.zig uses sendDeferred for the connected-event handshake" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // 1. The handler MUST call `sendDeferred` for the connected event.
+    if (std.mem.indexOf(u8, source, "sendDeferred(client_id_copy, connected_event)") == null) {
+        std.debug.print(
+            "\n!! {s} does not use `sendDeferred` for the connected-event send !!\n" ++
+                "   The SSE handler is blocking the Io worker pool on synchronous\n" ++
+                "   `sendToClient` -> `writeChunkedFrame` -> `socket.write`. Replace:\n" ++
+                "     server.sse_manager.sendToClient(client_id_copy, connected_event) catch {{}};\n" ++
+                "   with:\n" ++
+                "     server.sse_manager.sendDeferred(client_id_copy, connected_event);\n",
+            .{HANDLER_PATH},
+        );
+        return error.SendDeferredCallMissing;
+    }
+
+    // 2. The handler MUST NOT also call synchronous `sendToClient` for
+    //    the connected event (would re-introduce the blocking bug).
+    if (std.mem.indexOf(u8, source, "sendToClient(client_id_copy, connected_event)") != null) {
+        std.debug.print(
+            "\n!! {s} still has a synchronous `sendToClient(client_id_copy, connected_event)` call !!\n" ++
+                "   Remove the synchronous call — the deferred `sendDeferred` call handles\n" ++
+                "   the connected-event send.\n",
+            .{HANDLER_PATH},
+        );
+        return error.SynchronousSendToClientPresent;
+    }
+}
