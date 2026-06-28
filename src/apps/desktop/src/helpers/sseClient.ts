@@ -671,7 +671,10 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     if (state === 'reconnecting') {
       clearRetry()
       emitState('reconnecting', { attempt, reason: 'online' })
-      start()
+      // Deferred so the online-event fast-path doesn't fire
+      // `new EventSource(url)` synchronously — see constructor
+      // comment for the HTTP/1.1 connection-pool rationale.
+      setTimeout(start, 0)
     }
   }
 
