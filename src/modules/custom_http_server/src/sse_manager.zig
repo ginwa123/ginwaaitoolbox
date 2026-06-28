@@ -451,13 +451,29 @@ pub const SseManager = struct {
     }
 
     pub fn sendToClient(self: *SseManager, id: [16]u8, data: []const u8) !void {
-        const client = self.clients.get(id) orelse return error.ClientNotFound;
+        // Lock to read `self.clients` so a concurrent `registerClient` /
+        // `removeClient` can't rehash the map under us. We extract the
+        // `fd` value under the lock and release it before the blocking
+        // write — same pattern as `sendHeartbeat` (sse_manager.zig:421).
+        // `std.Io.Mutex.lock` returns `Cancelable!void`; the only
+        // failure variant is `error.Canceled`, which is not reachable
+        // in normal operation (no `Future.cancel` scope wraps this
+        // call site). Propagate it anyway so the caller's error set
+        // stays honest.
+        const fd: i32 = blk: {
+            self.lock.lock(self.io) catch return error.Canceled;
+            defer self.lock.unlock(self.io);
+            const client = self.clients.get(id) orelse return error.ClientNotFound;
+            break :blk client.fd;
+        };
 
         // Route through the chunked-encoding helper so the peer's
         // HTTP/1.1 chunked-decoder can parse the byte stream. A
         // write failure (peer gone) means the client is dead; remove
-        // it and bubble up the error to the caller.
-        if (writeChunkedFrame(client.fd, data)) {
+        // it and bubble up the error to the caller. The blocking
+        // `socket.write` runs OUTSIDE the lock — that's the whole
+        // point of the snapshot.
+        if (writeChunkedFrame(fd, data)) {
             // success
         } else |_| {
             self.removeClient(id);
