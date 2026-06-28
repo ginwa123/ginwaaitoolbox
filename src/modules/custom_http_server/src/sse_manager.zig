@@ -465,6 +465,35 @@ pub const SseManager = struct {
         }
     }
 
+    /// Fire-and-forget send. Spawns a one-shot task on `self.send_group`
+    /// that calls `sendToClient(id, data)` on a separate worker thread,
+    /// then returns immediately. The caller's worker thread is freed for
+    /// the next incoming HTTP request — this is the fix for the "SSE
+    /// handler blocks the Io worker pool" bug.
+    ///
+    /// Lifetime contract: `data` MUST point to memory that outlives the
+    /// worker's read of it. Safe cases:
+    ///   - Static string literals (`const s = "..."`)
+    ///   - Memory allocated from a long-lived allocator (NOT the
+    ///     per-request arena in `http_server.zig`, which is freed when
+    ///     the calling HTTP handler's `handle()` task ends).
+    ///
+    /// `id` is a `[16]u8` — copied by value into the worker's args, no
+    /// lifetime concern.
+    ///
+    /// `send_group.cancel(self.io)` is called in `deinit` to release
+    /// any tasks in flight on shutdown.
+    ///
+    /// Errors from `sendToClient` (peer disconnected, etc.) are
+    /// swallowed — fire-and-forget has no caller to report to.
+    pub fn sendDeferred(self: *SseManager, id: [16]u8, data: []const u8) void {
+        self.send_group.concurrent(self.io, struct {
+            fn run(sm: *SseManager, cid: [16]u8, d: []const u8) void {
+                sm.sendToClient(cid, d) catch {};
+            }
+        }.run, .{ self, id, data }) catch {};
+    }
+
     pub fn broadcast(self: *SseManager, data: []const u8) !void {
         const event = try std.fmt.allocPrint(self.allocator, "data: {s}\n\n", .{data});
         defer self.allocator.free(event);
