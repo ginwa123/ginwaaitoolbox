@@ -251,12 +251,12 @@ describe('createSseClient', () => {
   })
 
   // 1. Backoff schedule
-  it('uses exponential backoff with full jitter on consecutive errors', () => {
+  it('uses exponential backoff with full jitter on consecutive errors', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -312,7 +312,7 @@ describe('createSseClient', () => {
   })
 
   // 2. Jitter range
-  it('jitter scales delay between 0.5×exp and 1.0×exp', () => {
+  it('jitter scales delay between 0.5×exp and 1.0×exp', async () => {
     // With random=0, the actual delay is exp * 0.5.
     // We assert by checking that the timer is scheduled with the
     // expected delay using `vi.getTimerCount()` / next fire time.
@@ -326,7 +326,7 @@ describe('createSseClient', () => {
       const { ctor, instances } = createMockCtor()
       const { target: visTarget } = createMockTarget(false)
       const { target: onlineTarget } = createMockOnlineTarget()
-      const client = createSseClient({
+      const client = await createSseClient({
         url: '/test',
         EventSourceCtor: ctor,
         visibilityTarget: visTarget,
@@ -359,7 +359,7 @@ describe('createSseClient', () => {
       const { ctor, instances } = createMockCtor()
       const { target: visTarget } = createMockTarget(false)
       const { target: onlineTarget } = createMockOnlineTarget()
-      const client = createSseClient({
+      const client = await createSseClient({
         url: '/test',
         EventSourceCtor: ctor,
         visibilityTarget: visTarget,
@@ -388,12 +388,12 @@ describe('createSseClient', () => {
   })
 
   // 3. Open cancels retry
-  it('an `open` event cancels a pending retry', () => {
+  it('an `open` event cancels a pending retry', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -450,12 +450,12 @@ describe('createSseClient', () => {
   })
 
   // 4. First error is fatal (no retry)
-  it('fails immediately on error before the first open', () => {
+  it('fails immediately on error before the first open', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -479,7 +479,7 @@ describe('createSseClient', () => {
   })
 
   // 4b. Non-recoverable when EventSource constructor throws
-  it('fails immediately when the EventSource constructor throws', () => {
+  it('fails immediately when the EventSource constructor throws', async () => {
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
@@ -487,7 +487,7 @@ describe('createSseClient', () => {
       throw new Error('Invalid URL')
     } as unknown as typeof EventSource
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ThrowingCtor,
       visibilityTarget: visTarget,
@@ -504,12 +504,12 @@ describe('createSseClient', () => {
   })
 
   // 5. Mid-stream retry
-  it('reconnects after an error following a successful open', () => {
+  it('reconnects after an error following a successful open', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -534,12 +534,12 @@ describe('createSseClient', () => {
   })
 
   // 5b. maxAttempts is honored
-  it('transitions to `failed` after maxAttempts retries are exhausted', () => {
+  it('transitions to `failed` after maxAttempts retries are exhausted', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -577,12 +577,12 @@ describe('createSseClient', () => {
   })
 
   // 6. Visibility pause
-  it('pauses the retry timer while the tab is hidden and fires on visible', () => {
+  it('pauses the retry timer while the tab is hidden and fires on visible', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(true) // start hidden
     const { target: onlineTarget } = createMockOnlineTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -620,12 +620,12 @@ describe('createSseClient', () => {
   })
 
   // 7. Online fast-path
-  it('reconnects immediately on the browser `online` event', () => {
+  it('reconnects immediately on the browser `online` event', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -655,13 +655,13 @@ describe('createSseClient', () => {
   })
 
   // 8. Close is terminal
-  it('close() is terminal — no further state changes or attempts', () => {
+  it('close() is terminal — no further state changes or attempts', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
     const states: SseState[] = []
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -690,12 +690,12 @@ describe('createSseClient', () => {
   })
 
   // 8b. close() is idempotent
-  it('close() is safe to call multiple times', () => {
+  it('close() is safe to call multiple times', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -715,13 +715,13 @@ describe('createSseClient', () => {
   })
 
   // 9. State emission order
-  it('emits the expected state sequence on connect → error → reconnect → open', () => {
+  it('emits the expected state sequence on connect → error → reconnect → open', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
     const states: SseState[] = []
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -762,7 +762,7 @@ describe('createSseClient', () => {
   })
 
   // 9b. 'connected' server event fires onConnected
-  it('fires onConnected and passes the payload to onEvent on the `connected` event', () => {
+  it('fires onConnected and passes the payload to onEvent on the `connected` event', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
@@ -770,7 +770,7 @@ describe('createSseClient', () => {
     const onConnected = vi.fn()
     const onEvent = vi.fn()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -793,13 +793,13 @@ describe('createSseClient', () => {
   })
 
   // 9c. 'message' events go to onEvent
-  it('routes `message` events to onEvent with the raw payload and type "message"', () => {
+  it('routes `message` events to onEvent with the raw payload and type "message"', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
     const onEvent = vi.fn()
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -826,13 +826,13 @@ describe('createSseClient', () => {
   // saw it — the browser's EventSource only dispatches a named
   // event to listeners registered for THAT name, and the SseClient
   // did not auto-register `queue_message`.
-  it('routes `additionalEventTypes` named events to onEvent with the event name as the type', () => {
+  it('routes `additionalEventTypes` named events to onEvent with the event name as the type', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
     const onEvent = vi.fn()
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -871,13 +871,13 @@ describe('createSseClient', () => {
   // `connected` or `message` in the list must NOT register a
   // second listener (which would cause onEvent to fire twice per
   // event, doubling the consumer's parse work).
-  it('silently de-duplicates reserved names (`connected`, `message`) in additionalEventTypes', () => {
+  it('silently de-duplicates reserved names (`connected`, `message`) in additionalEventTypes', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
     const onEvent = vi.fn()
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -914,13 +914,13 @@ describe('createSseClient', () => {
   // EventSource is built and the previous instance's listeners
   // are gone — the new instance must get the same named-event
   // listeners.
-  it('re-registers additionalEventTypes listeners after a reconnect', () => {
+  it('re-registers additionalEventTypes listeners after a reconnect', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
     const onEvent = vi.fn()
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -970,13 +970,13 @@ describe('createSseClient', () => {
   // (the backend's keepalive) are silently dropped. The consumer
   // never sees them, so JSON-buffering adapters don't grow an
   // unbounded buffer of "ping\nping\n..." between real events.
-  it('silently drops `ping` heartbeat messages from the default `message` event', () => {
+  it('silently drops `ping` heartbeat messages from the default `message` event', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
     const onEvent = vi.fn()
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -1011,13 +1011,13 @@ describe('createSseClient', () => {
   // filter — every default `message` event reaches `onEvent`,
   // including the `'ping'` keepalive. Useful for tests, or for
   // consumers that want to count heartbeats.
-  it('disables the heartbeat filter when heartbeatData is null', () => {
+  it('disables the heartbeat filter when heartbeatData is null', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
     const onEvent = vi.fn()
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -1043,13 +1043,13 @@ describe('createSseClient', () => {
   // 9i. Setting `heartbeatData` to a custom string filters that
   // exact payload (rather than always 'ping'). Tests / servers
   // that use a different keepalive token can plug it in.
-  it('uses a custom heartbeatData string when provided', () => {
+  it('uses a custom heartbeatData string when provided', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
     const onEvent = vi.fn()
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -1079,13 +1079,13 @@ describe('createSseClient', () => {
   })
 
   // Listener cleanup
-  it('removes DOM listeners on close()', () => {
+  it('removes DOM listeners on close()', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
     const { target: unloadTarget } = createMockUnloadTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -1127,14 +1127,14 @@ describe('createSseClient', () => {
   // client is gone until the server-side timeout fires. Listening
   // for `pagehide` + `beforeunload` and calling close() makes the
   // browser drop the stream immediately.
-  it('closes the connection on pagehide so it is not still "open" after refresh', () => {
+  it('closes the connection on pagehide so it is not still "open" after refresh', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
     const { target: unloadTarget } = createMockUnloadTarget()
 
     const states: SseState[] = []
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -1171,13 +1171,13 @@ describe('createSseClient', () => {
 
   // 10b. beforeunload does the same thing (legacy fallback for
   // browsers without pagehide support).
-  it('closes the connection on beforeunload (legacy fallback)', () => {
+  it('closes the connection on beforeunload (legacy fallback)', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
     const { target: unloadTarget } = createMockUnloadTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -1200,13 +1200,13 @@ describe('createSseClient', () => {
 
   // 10c. Stale pagehide handler after explicit close() is a no-op
   // (teardown is idempotent via the `closed` guard).
-  it('a stale pagehide handler after close() is a no-op', () => {
+  it('a stale pagehide handler after close() is a no-op', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
     const { target: unloadTarget } = createMockUnloadTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -1233,13 +1233,13 @@ describe('createSseClient', () => {
 
   // 10d. closeOnUnload: false skips the unload listeners. Useful
   // for SSR / tests / contexts without a real `window`.
-  it('does not attach unload listeners when closeOnUnload is false', () => {
+  it('does not attach unload listeners when closeOnUnload is false', async () => {
     const { ctor } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
     const { target: unloadTarget } = createMockUnloadTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -1260,12 +1260,12 @@ describe('createSseClient', () => {
   })
 
   // getState is synchronous
-  it('getState() returns the current state synchronously', () => {
+  it('getState() returns the current state synchronously', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -1287,13 +1287,13 @@ describe('createSseClient', () => {
   })
 
   // reconnect() resets the attempt counter
-  it('reconnect() resets the attempt counter and opens a new connection', () => {
+  it('reconnect() resets the attempt counter and opens a new connection', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
     const states: SseState[] = []
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -1334,14 +1334,14 @@ describe('createSseClient', () => {
   })
 
   // Subscriber errors do not break the connection
-  it('a throwing onStateChange subscriber does not break the connection', () => {
+  it('a throwing onStateChange subscriber does not break the connection', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -1366,12 +1366,12 @@ describe('createSseClient', () => {
   })
 
   // onStateChange returns an unsubscribe function
-  it('onStateChange returns an unsubscribe function', () => {
+  it('onStateChange returns an unsubscribe function', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -1399,13 +1399,13 @@ describe('createSseClient', () => {
   })
 
   // message handler is robust to non-string data
-  it('handles message events whose `data` is not a string', () => {
+  it('handles message events whose `data` is not a string', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
     const onEvent = vi.fn()
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -1438,12 +1438,12 @@ describe('createSseClient', () => {
   // on the constructor OR on .reconnect() — both would let the
   // EventSource construction race with same-tick fetch API calls
   // and saturate the browser's HTTP/1.1 6-connection pool.
-  it('defers the initial start() — new EventSource is NOT created synchronously', () => {
+  it('defers the initial start() — new EventSource is NOT created synchronously', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,
@@ -1465,12 +1465,12 @@ describe('createSseClient', () => {
     client.close()
   })
 
-  it('defers start() inside .reconnect() — new EventSource is NOT created synchronously', () => {
+  it('defers start() inside .reconnect() — new EventSource is NOT created synchronously', async () => {
     const { ctor, instances } = createMockCtor()
     const { target: visTarget } = createMockTarget(false)
     const { target: onlineTarget } = createMockOnlineTarget()
 
-    const client = createSseClient({
+    const client = await createSseClient({
       url: '/test',
       EventSourceCtor: ctor,
       visibilityTarget: visTarget,

@@ -40,14 +40,16 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     // Replace the SSE factory with a stub that records the
     // onEvent callback. We deliberately ignore onError / onConnected
     // because the subscription handler doesn't depend on them.
+    // The factory now returns a Promise<SseClient> (see Chunk 1),
+    // so the mock wraps the return in Promise.resolve().
     vi.spyOn(api, 'createSessionsSseConnection').mockImplementation(
-      (
+      async (
         onEvent: (event: api.SessionEvent) => void,
         _onError?: (error: Event) => void,
         _onConnected?: () => void,
-      ): api.SseClient => {
+      ): Promise<api.SseClient> => {
         onEventCallback = onEvent
-        return sseClientStub as api.SseClient
+        return Promise.resolve(sseClientStub as api.SseClient)
       },
     )
   })
@@ -83,22 +85,22 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     onEventCallback!(event)
   }
 
-  it('opens an SSE connection when subscribeToSessionEvents is called', () => {
+  it('opens an SSE connection when subscribeToSessionEvents is called', async () => {
     const ws = useWorkspacesStore()
-    ws.subscribeToSessionEvents()
+    await ws.subscribeToSessionEvents()
     expect(api.createSessionsSseConnection).toHaveBeenCalledTimes(1)
   })
 
-  it('is idempotent — calling subscribe twice does not open a second connection', () => {
+  it('is idempotent — calling subscribe twice does not open a second connection', async () => {
     const ws = useWorkspacesStore()
-    ws.subscribeToSessionEvents()
-    ws.subscribeToSessionEvents()
+    await ws.subscribeToSessionEvents()
+    await ws.subscribeToSessionEvents()
     expect(api.createSessionsSseConnection).toHaveBeenCalledTimes(1)
   })
 
-  it('updates a matching task name on session.updated', () => {
+  it('updates a matching task name on session.updated', async () => {
     const ws = seedStore()
-    ws.subscribeToSessionEvents()
+    await ws.subscribeToSessionEvents()
 
     dispatch({
       action: 'updated',
@@ -113,12 +115,12 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     expect(ws.workspaces[0]!.items[0]!.tasks![0]!.name).toBe('New Name from SSE')
   })
 
-  it('keeps navigationStore.activeChatName in sync when the updated task is the active one', () => {
+  it('keeps navigationStore.activeChatName in sync when the updated task is the active one', async () => {
     const ws = seedStore()
     const nav = useNavigationStore()
     ws.setActiveTask('task_1')
     nav.setActiveChatName('Original')
-    ws.subscribeToSessionEvents()
+    await ws.subscribeToSessionEvents()
 
     dispatch({
       action: 'updated',
@@ -133,12 +135,12 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     expect(nav.activeChatName).toBe('Renamed via SSE')
   })
 
-  it('does NOT touch navigationStore when the updated task is not the active one', () => {
+  it('does NOT touch navigationStore when the updated task is not the active one', async () => {
     const ws = seedStore()
     const nav = useNavigationStore()
     ws.setActiveTask('other_task')
     nav.setActiveChatName('Other Task Header')
-    ws.subscribeToSessionEvents()
+    await ws.subscribeToSessionEvents()
 
     dispatch({
       action: 'updated',
@@ -154,9 +156,9 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     expect(nav.activeChatName).toBe('Other Task Header')
   })
 
-  it('leaves the task name unchanged when no task matches the event id', () => {
+  it('leaves the task name unchanged when no task matches the event id', async () => {
     const ws = seedStore()
-    ws.subscribeToSessionEvents()
+    await ws.subscribeToSessionEvents()
 
     dispatch({
       action: 'updated',
@@ -171,9 +173,9 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     expect(ws.workspaces[0]!.items[0]!.tasks![0]!.name).toBe('Original')
   })
 
-  it('removes a task on session.deleted', () => {
+  it('removes a task on session.deleted', async () => {
     const ws = seedStore()
-    ws.subscribeToSessionEvents()
+    await ws.subscribeToSessionEvents()
 
     expect(ws.workspaces[0]!.items[0]!.tasks).toHaveLength(1)
     dispatch({
@@ -188,10 +190,10 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     expect(ws.workspaces[0]!.items[0]!.tasks).toHaveLength(0)
   })
 
-  it('clears activeTaskId when the deleted task was active', () => {
+  it('clears activeTaskId when the deleted task was active', async () => {
     const ws = seedStore()
     ws.setActiveTask('task_1')
-    ws.subscribeToSessionEvents()
+    await ws.subscribeToSessionEvents()
 
     dispatch({
       action: 'deleted',

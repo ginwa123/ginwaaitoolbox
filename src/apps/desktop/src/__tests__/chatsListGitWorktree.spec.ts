@@ -86,7 +86,7 @@ describe('ChatsList worktree badge', () => {
     } as any)
     // The onMounted path also opens a session-events SSE stream;
     // stub it to a no-op so we don't try to open a real connection.
-    vi.spyOn(api, 'createSessionsSseConnection').mockReturnValue({
+    vi.spyOn(api, 'createSessionsSseConnection').mockResolvedValue({
       close: vi.fn(),
       reconnect: vi.fn(),
       getState: vi.fn(() => 'open'),
@@ -126,7 +126,7 @@ describe('ChatsList worktree badge', () => {
       next_cursor: null,
       total: 1,
     } as any)
-    vi.spyOn(api, 'createSessionsSseConnection').mockReturnValue({
+    vi.spyOn(api, 'createSessionsSseConnection').mockResolvedValue({
       close: vi.fn(),
       reconnect: vi.fn(),
       getState: vi.fn(() => 'open'),
@@ -161,7 +161,7 @@ describe('ChatsList worktree badge', () => {
       next_cursor: null,
       total: 1,
     } as any)
-    vi.spyOn(api, 'createSessionsSseConnection').mockReturnValue({
+    vi.spyOn(api, 'createSessionsSseConnection').mockResolvedValue({
       close: vi.fn(),
       reconnect: vi.fn(),
       getState: vi.fn(() => 'open'),
@@ -194,7 +194,7 @@ describe('ChatsList worktree badge', () => {
       next_cursor: null,
       total: 1,
     } as any)
-    vi.spyOn(api, 'createSessionsSseConnection').mockReturnValue({
+    vi.spyOn(api, 'createSessionsSseConnection').mockResolvedValue({
       close: vi.fn(),
       reconnect: vi.fn(),
       getState: vi.fn(() => 'open'),

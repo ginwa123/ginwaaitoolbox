@@ -52,11 +52,13 @@ describe('useKanbanSseStore', () => {
     // Replace the SSE factory with a stub that records the onEvent
     // callback. The factory now uses the 3-callback positional API
     // (matching createWorkersSseConnection), so the spy signature is
-    // (onEvent, onError, onConnected).
+    // (onEvent, onError, onConnected). The factory returns a
+    // Promise<SseClient> (see Chunk 1), so the mock wraps the return
+    // in Promise.resolve().
     vi.spyOn(api, 'createKanbanSseConnection').mockImplementation(
-      (onEvent): api.SseClient => {
+      async (onEvent): Promise<api.SseClient> => {
         onEventCallback = onEvent
-        return sseClientStub as api.SseClient
+        return Promise.resolve(sseClientStub as api.SseClient)
       },
     )
   })
@@ -71,30 +73,30 @@ describe('useKanbanSseStore', () => {
     onEventCallback!(event)
   }
 
-  it('initKanbanSse opens one connection for a workspace', () => {
+  it('initKanbanSse opens one connection for a workspace', async () => {
     const store = useKanbanSseStore()
-    store.initKanbanSse('ws_1')
+    await store.initKanbanSse('ws_1')
     expect(api.createKanbanSseConnection).toHaveBeenCalledTimes(1)
   })
 
-  it('initKanbanSse tears down + reopens when called twice (no stacking)', () => {
+  it('initKanbanSse tears down + reopens when called twice (no stacking)', async () => {
     const store = useKanbanSseStore()
-    store.initKanbanSse('ws_1')
-    store.initKanbanSse('ws_2')
+    await store.initKanbanSse('ws_1')
+    await store.initKanbanSse('ws_2')
     // Two init calls → two connection opens; the first was closed
     // before the second opened (no stacking).
     expect(api.createKanbanSseConnection).toHaveBeenCalledTimes(2)
     expect(sseClientStub.close).toHaveBeenCalledTimes(1)
   })
 
-  it('closeKanbanSse tears down the connection', () => {
+  it('closeKanbanSse tears down the connection', async () => {
     const store = useKanbanSseStore()
-    store.initKanbanSse('ws_1')
+    await store.initKanbanSse('ws_1')
     store.closeKanbanSse()
     expect(sseClientStub.close).toHaveBeenCalledTimes(1)
   })
 
-  it('closeKanbanSse is a no-op when no connection is open', () => {
+  it('closeKanbanSse is a no-op when no connection is open', async () => {
     const store = useKanbanSseStore()
     store.closeKanbanSse()
     expect(sseClientStub.close).not.toHaveBeenCalled()
@@ -105,7 +107,7 @@ describe('useKanbanSseStore', () => {
     const fetchSpy = vi.spyOn(ws, 'fetchKanbanColumns').mockResolvedValue()
 
     const store = useKanbanSseStore()
-    store.initKanbanSse('ws_1')
+    await store.initKanbanSse('ws_1')
 
     const event: KanbanColumnEvent = {
       action: 'updated',
@@ -124,7 +126,7 @@ describe('useKanbanSseStore', () => {
     const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
 
     const store = useKanbanSseStore()
-    store.initKanbanSse('ws_1')
+    await store.initKanbanSse('ws_1')
 
     const event: KanbanTaskEvent = {
       action: 'moved',
@@ -149,7 +151,7 @@ describe('useKanbanSseStore', () => {
     const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
 
     const store = useKanbanSseStore()
-    store.initKanbanSse('ws_1')
+    await store.initKanbanSse('ws_1')
 
     const event: KanbanTaskEvent = {
       action: 'assigned',
@@ -169,7 +171,7 @@ describe('useKanbanSseStore', () => {
     const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
 
     const store = useKanbanSseStore()
-    store.initKanbanSse('ws_1')
+    await store.initKanbanSse('ws_1')
 
     const event: KanbanTaskEvent = {
       action: 'unassigned',
@@ -190,7 +192,7 @@ describe('useKanbanSseStore', () => {
     const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
 
     const store = useKanbanSseStore()
-    store.initKanbanSse('ws_1')
+    await store.initKanbanSse('ws_1')
 
     const event: KanbanColumnEvent = {
       action: 'updated',
@@ -207,12 +209,12 @@ describe('useKanbanSseStore', () => {
     expect(fetchTasksSpy).not.toHaveBeenCalled()
   })
 
-  it('ignores events for other workspaces (filter is per-connection)', () => {
+  it('ignores events for other workspaces (filter is per-connection)', async () => {
     const ws = useWorkspacesStore()
     const fetchSpy = vi.spyOn(ws, 'fetchKanbanColumns').mockResolvedValue()
 
     const store = useKanbanSseStore()
-    store.initKanbanSse('ws_1')
+    await store.initKanbanSse('ws_1')
 
     // Event for a DIFFERENT workspace — must be dropped before reaching
     // the workspacesStore fetch call. The backend's kanban_column
@@ -230,9 +232,9 @@ describe('useKanbanSseStore', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('setActiveWorkspaceId updates the filter without reopening the connection', () => {
+  it('setActiveWorkspaceId updates the filter without reopening the connection', async () => {
     const store = useKanbanSseStore()
-    store.initKanbanSse('ws_1')
+    await store.initKanbanSse('ws_1')
     store.setActiveWorkspaceId('ws_2')
 
     // No reopen — setActiveWorkspaceId just updates the filter.

@@ -118,8 +118,8 @@ function installChatViewMocks(opts: {
   vi.spyOn(api, 'getNalarConfig').mockResolvedValue({
     profiles: {},
   } as any)
-  vi.spyOn(api, 'createSseConnection').mockReturnValue(makeSseStub())
-  vi.spyOn(api, 'createQueueMessagesSseConnection').mockReturnValue(makeSseStub())
+  vi.spyOn(api, 'createSseConnection').mockResolvedValue(makeSseStub())
+  vi.spyOn(api, 'createQueueMessagesSseConnection').mockResolvedValue(makeSseStub())
 }
 
 // ─── mount helper ───────────────────────────────────────────────────────────
