@@ -270,6 +270,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     // First instance: open it, then error it 5 times.
     instances[0]!.simulateOpen()
     instances[0]!.emit('error')
@@ -339,6 +342,10 @@ describe('createSseClient', () => {
           }
         },
       })
+
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
       instances[0]!.simulateOpen()
       instances[0]!.emit('error')
       // exp = 1000, jitter = 0.5, delay = 500
@@ -368,6 +375,10 @@ describe('createSseClient', () => {
           }
         },
       })
+
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
       instances[0]!.simulateOpen()
       instances[0]!.emit('error')
       // exp = 1000, jitter = 1.0, delay = 1000
@@ -392,6 +403,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     instances[0]!.simulateOpen()
     instances[0]!.emit('error')
     // We are now in 'reconnecting' with a 750ms timer.
@@ -445,6 +459,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     // No 'open' — emit error straight away.
     instances[0]!.emit('error')
     expect(client.getState()).toBe('failed')
@@ -474,6 +491,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     expect(client.getState()).toBe('failed')
     client.close()
   })
@@ -494,6 +514,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     instances[0]!.simulateOpen()
     expect(client.getState()).toBe('open')
     instances[0]!.emit('error')
@@ -521,6 +544,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     // attempt 1: open then error → reconnecting (attempt 1)
     instances[0]!.simulateOpen()
     instances[0]!.emit('error')
@@ -560,6 +586,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     // Open then error while hidden.
     instances[0]!.simulateOpen()
     instances[0]!.emit('error')
@@ -595,6 +624,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     instances[0]!.simulateOpen()
     instances[0]!.emit('error')
     expect(client.getState()).toBe('reconnecting')
@@ -624,6 +656,9 @@ describe('createSseClient', () => {
       onStateChange: (s) => states.push(s),
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     instances[0]!.simulateOpen()
     client.close()
     expect(client.getState()).toBe('closed')
@@ -653,6 +688,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     client.close()
     client.close()
     client.close()
@@ -678,6 +716,9 @@ describe('createSseClient', () => {
       onStateChange: (s) => states.push(s),
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     // Walk: construct → connecting, then open → open, then error
     // → reconnecting, then retry fires → connecting, then open
     // → open.
@@ -724,6 +765,9 @@ describe('createSseClient', () => {
       onEvent,
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     // Emit the 'connected' named event with a JSON payload.
     instances[0]!.emit('connected', JSON.stringify({ session_id: 'abc' }))
     expect(onConnected).toHaveBeenCalledTimes(1)
@@ -749,6 +793,9 @@ describe('createSseClient', () => {
       onEvent,
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     instances[0]!.emit('connected', '{"ok":true}')
     onEvent.mockClear() // drop the 'connected' call
     instances[0]!.emit('message', '{"chunk":"hello"}')
@@ -780,6 +827,9 @@ describe('createSseClient', () => {
       onEvent,
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     // Confirm the SseClient actually registered the listeners on
     // the EventSource instance. Without these, the mock's `emit`
     // would have no listener to call.
@@ -822,6 +872,9 @@ describe('createSseClient', () => {
       onEvent,
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     // 'connected' is registered by the SseClient itself (1
     // listener); the dedupe must NOT add a second.
     expect(instances[0]!._listeners.get('connected')?.size ?? 0).toBe(1)
@@ -869,6 +922,9 @@ describe('createSseClient', () => {
       onEvent,
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     // First instance: listener registered.
     expect(instances[0]!._listeners.get('queue_message')?.size ?? 0).toBe(1)
 
@@ -914,6 +970,9 @@ describe('createSseClient', () => {
       onEvent,
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     instances[0]!.emit('connected', '{"ok":true}')
     onEvent.mockClear()
 
@@ -953,6 +1012,9 @@ describe('createSseClient', () => {
       onEvent,
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     instances[0]!.emit('connected', '{"ok":true}')
     onEvent.mockClear()
 
@@ -982,6 +1044,9 @@ describe('createSseClient', () => {
       onEvent,
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     instances[0]!.emit('connected', '{"ok":true}')
     onEvent.mockClear()
 
@@ -1015,6 +1080,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     // Before close: 1 visibility listener, 1 online listener,
     // 1 pagehide listener, 1 beforeunload listener.
     expect(visTarget._listeners.get('visibilitychange')?.size ?? 0).toBe(1)
@@ -1062,6 +1130,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     // Simulate a normal open: server sent the `connected` event.
     instances[0]!.simulateOpen()
     expect(client.getState()).toBe('open')
@@ -1101,6 +1172,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     instances[0]!.simulateOpen()
     expect(client.getState()).toBe('open')
 
@@ -1127,6 +1201,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     client.close()
     expect(client.getState()).toBe('closed')
 
@@ -1158,6 +1235,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     expect(unloadTarget._listeners.get('pagehide')?.size ?? 0).toBe(0)
     expect(unloadTarget._listeners.get('beforeunload')?.size ?? 0).toBe(0)
 
@@ -1179,6 +1259,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     expect(client.getState()).toBe('connecting')
     instances[0]!.simulateOpen()
     expect(client.getState()).toBe('open')
@@ -1205,6 +1288,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     // Burn through 2 retries so attempt=3.
     instances[0]!.simulateOpen()
     instances[0]!.emit('error')
@@ -1247,6 +1333,9 @@ describe('createSseClient', () => {
       },
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     // Despite the throw, the connection should reach 'open'.
     instances[0]!.simulateOpen()
     expect(client.getState()).toBe('open')
@@ -1271,6 +1360,9 @@ describe('createSseClient', () => {
       onEvent: () => {},
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     const cb = vi.fn()
     const unsub = client.onStateChange(cb)
     instances[0]!.simulateOpen()
@@ -1302,6 +1394,9 @@ describe('createSseClient', () => {
       onEvent,
     })
 
+    // Flush the deferred start() — createSseClient schedules start() on the next
+    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+    vi.advanceTimersByTime(0)
     instances[0]!.emit('connected', 'ok')
     onEvent.mockClear()
     // Manually fire a message event with non-string data via the

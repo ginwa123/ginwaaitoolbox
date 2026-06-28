@@ -198,6 +198,69 @@ test "deleteColumn nulls out task kanban_column_id" {
     try testing.expectEqualStrings("", row.values[0]); // empty string for NULL
 }
 
+// ─── Test: countTasksInColumn counts only tasks in that column ───────────
+
+test "countTasksInColumn returns the number of tasks assigned to the column" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try s.db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT,
+        \\    kanban_column_id TEXT, kanban_position INTEGER)
+    , &.{});
+    // Three tasks in c1, one in c2, one unassigned (NULL column).
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, kanban_column_id, kanban_position) " ++
+            "VALUES ('t1', 'A', 'item_1', 'c1', 0), ('t2', 'B', 'item_1', 'c1', 1), " ++
+            "('t3', 'C', 'item_1', 'c1', 2), ('t4', 'D', 'item_1', 'c2', 0), " ++
+            "('t5', 'E', 'item_1', NULL, 0)",
+        &.{});
+
+    try testing.expectEqual(@as(u32, 3), try kanban.countTasksInColumn(alloc, &s.db, "c1"));
+    try testing.expectEqual(@as(u32, 1), try kanban.countTasksInColumn(alloc, &s.db, "c2"));
+}
+
+test "countTasksInColumn returns 0 when no tasks reference the column" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try s.db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT,
+        \\    kanban_column_id TEXT, kanban_position INTEGER)
+    , &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, kanban_column_id, kanban_position) " ++
+            "VALUES ('t1', 'A', 'item_1', 'c1', 0)",
+        &.{});
+
+    // c2 exists in kanban_columns but has no tasks — count is 0, not
+    // an error. (The delete-handler treats 0 as "safe to delete".)
+    try testing.expectEqual(@as(u32, 0), try kanban.countTasksInColumn(alloc, &s.db, "c2"));
+    // Non-existent column id also returns 0 (no rows match the FK).
+    try testing.expectEqual(@as(u32, 0), try kanban.countTasksInColumn(alloc, &s.db, "col_does_not_exist"));
+}
+
+test "countTasksInColumn returns 0 when the task table is empty" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try s.db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT,
+        \\    kanban_column_id TEXT, kanban_position INTEGER)
+    , &.{});
+
+    try testing.expectEqual(@as(u32, 0), try kanban.countTasksInColumn(alloc, &s.db, "any_column"));
+}
+
 // ─── Test: moveTask changes column and renumbers positions ──────────────
 
 test "moveTask changes column and renumbers positions" {

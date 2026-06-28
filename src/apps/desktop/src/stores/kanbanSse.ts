@@ -3,7 +3,12 @@
  * mirroring the workersSse pattern in App.vue:
  *   - Module-level `connection` (one global stream, not per-workspace)
  *   - `initKanbanSse(workspaceId)` tears down any existing connection
- *     before opening a new one
+ *     before opening a new one. Returns `Promise<void>` — the
+ *     underlying `createSseClient` defers its initial `start()` to
+ *     the next macrotask, so callers can `await` the setup to make
+ *     the SSE initialization cooperative with other fetch API calls
+ *     happening on the same tick (avoids saturating the browser's
+ *     HTTP/1.1 per-origin 6-connection pool).
  *   - 3-callback API: `(onEvent, onError, onConnected)` — same shape as
  *     `createWorkersSseConnection`
  *   - `onConnected` re-runs `fetchInitialKanban()` so a server restart
@@ -41,8 +46,19 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
    * connections. Safe to call multiple times — the SseClient's
    * exponential backoff (1s → 30s, full jitter) keeps reconnects
    * bounded.
+   *
+   * **Async**: the underlying `createSseClient` defers its initial
+   * `start()` to the next macrotask (see `helpers/sseClient.ts`) so the
+   * EventSource HTTP request does NOT fire synchronously inside this
+   * function. Returning a `Promise<void>` lets the caller (e.g.
+   * `AppLayout.vue`'s `watch(activeWorkspaceId, ...)`) `await` the
+   * setup, making the SSE initialization fully cooperative with other
+   * fetch API calls happening on the same tick. Without this, the SSE
+   * connection establishment would saturate the browser's per-origin
+   * HTTP/1.1 connection pool (6 max) and starve the in-flight workspace
+   * + chat fetches that the user just navigated to.
    */
-  function initKanbanSse(workspaceId: string): void {
+  async function initKanbanSse(workspaceId: string): Promise<void> {
     // Tear down existing connection before opening a new one.
     // Mirrors the workersSse pattern in App.vue:46-71.
     if (connection) {

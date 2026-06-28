@@ -250,19 +250,7 @@ const handleProjectRootSelected = async (path: string) => {
         <span aria-hidden="true">⚙️</span>
         <span class="ml-1">Settings</span>
       </button>
-      <button
-        type="button"
-        class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
-        style="
-          background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
-          color: var(--color-bg);
-        "
-        :data-testid="`kanban-view-${item.id}-add-column`"
-        @click="handleAddColumn"
-      >
-        <span aria-hidden="true">+</span>
-        <span class="ml-1">Column</span>
-      </button>
+
     </header>
 
     <!-- ─── Columns row (horizontal scroll) ──────────────────────────── -->

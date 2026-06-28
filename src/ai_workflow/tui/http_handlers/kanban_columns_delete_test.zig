@@ -2,12 +2,15 @@
 //!
 //! Why this file exists
 //! ────────────────────
-//! The column-delete endpoint removes a column from the kanban
-//! (tasks that were assigned to it have their `kanban_column_id` set
-//! to NULL by `kanban_model.deleteColumn`). The handler must:
+//! The column-delete endpoint removes a column from the kanban. The
+//! handler must:
 //!   1. Read `item_id` and `column_id` from path params.
-//!   2. Call `kanban_model.deleteColumn(...)`.
-//!   3. Return 200 with a `{success: true, column_id}` body.
+//!   2. Refuse the delete (HTTP 409) when the column still has tasks
+//!      assigned — the user must move them first. This protects against
+//!      silently re-parenting tasks to "unassigned" without consent.
+//!   3. Call `kanban_model.deleteColumn(...)` only after the task-count
+//!      check passes.
+//!   4. Return 200 with a `{success: true, column_id}` body.
 //!
 //! Plan: docs/superpowers/plans/2026-06-21-workspace-item-kanban.md
 //!   (Chunk 3, Task 3.6)
@@ -92,5 +95,113 @@ test "kanban_columns_delete handler returns 200 on success" {
             .{HANDLER_PATH},
         );
         return error.Status200Missing;
+    }
+}
+
+// ─── Contract: handler validates the column has no tasks before deleting ──
+
+test "kanban_columns_delete handler calls countTasksInColumn before deleteColumn" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The handler must call `kanban_model.countTasksInColumn` to gate
+    // the delete on the column's current task count. Without this
+    // check, the handler would silently re-parent tasks to NULL when
+    // the user deletes a non-empty column.
+    //
+    // We search for the FULL call signatures (with `(` and the
+    // namespace prefix) — the function name also appears in the
+    // docstring as a backtick-wrapped reference, which would
+    // produce a false-positive match if we only looked for the bare
+    // name.
+    const count_call_idx = std.mem.indexOf(u8, source, "kanban_model.countTasksInColumn(");
+    const delete_call_idx = std.mem.indexOf(u8, source, "kanban_model.deleteColumn(");
+    if (count_call_idx == null) {
+        std.debug.print(
+            "\n!! {s} does not call kanban_model.countTasksInColumn !!\n" ++
+                "   The delete-validation contract is broken: the handler is missing\n" ++
+                "   the pre-delete task-count check. Add a `countTasksInColumn(...)`\n" ++
+                "   call before `deleteColumn(...)` and return 409 when the count\n" ++
+                "   is > 0.\n",
+            .{HANDLER_PATH},
+        );
+        return error.CountTasksCallMissing;
+    }
+    if (delete_call_idx == null) {
+        std.debug.print(
+            "\n!! {s} does not call kanban_model.deleteColumn !!\n" ++
+                "   (Note: the test searches for the full call signature\n" ++
+                "   `kanban_model.deleteColumn(` to avoid matching the docstring.)\n",
+            .{HANDLER_PATH},
+        );
+        return error.DeleteColumnCallMissing;
+    }
+    // The count check MUST happen before the delete (the count is the
+    // gate; the delete is what we are gating).
+    if (count_call_idx.? > delete_call_idx.?) {
+        std.debug.print(
+            "\n!! {s} calls deleteColumn(...) BEFORE countTasksInColumn(...) !!\n" ++
+                "   The pre-delete gate must run first — otherwise we delete and\n" ++
+                "   then check, which is the bug we're trying to prevent.\n",
+            .{HANDLER_PATH},
+        );
+        return error.CountCheckOrderWrong;
+    }
+}
+
+test "kanban_columns_delete handler returns 409 when column has tasks" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The validation branch must produce a 409 Conflict (REST
+    // convention for "request conflicts with the current resource
+    // state"). 400 would be wrong (the request itself is valid — the
+    // column exists); 500 would be wrong (not an internal error).
+    if (std.mem.indexOf(u8, source, ".status_code = 409") == null) {
+        std.debug.print(
+            "\n!! {s} does not return 409 when the column has tasks !!\n" ++
+                "   The conflict contract is broken: a column with assigned tasks\n" ++
+                "   must be refused with HTTP 409 Conflict so the frontend can show\n" ++
+                "   'move the tasks first' and re-attempt.\n",
+            .{HANDLER_PATH},
+        );
+        return error.Status409Missing;
+    }
+}
+
+test "kanban_columns_delete handler 409 message mentions task count" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The 409 message must surface the task count so the frontend
+    // can render "this column has N tasks — move them first" instead
+    // of a generic "cannot delete". The contract is satisfied by any
+    // `allocPrint`-style format string that interpolates the count
+    // (e.g. `{d} task`).
+    if (std.mem.indexOf(u8, source, "Cannot delete column") == null) {
+        std.debug.print(
+            "\n!! {s} 409 message does not say 'Cannot delete column' !!\n" ++
+                "   The user-facing message must start with 'Cannot delete column'\n" ++
+                "   so the frontend's notification renderer can match on it.\n",
+            .{HANDLER_PATH},
+        );
+        return error.ErrorMessageMissing;
+    }
+    // Must interpolate the count into the message. We accept either
+    // a `{d}` (number) or `{s}` (pre-formatted) format spec on the
+    // same line as the message.
+    if (std.mem.indexOf(u8, source, "{d} task") == null and
+        std.mem.indexOf(u8, source, "{s} task") == null)
+    {
+        std.debug.print(
+            "\n!! {s} 409 message does not include the task count !!\n" ++
+                "   The user-facing message must interpolate the count (e.g.\n" ++
+                "   `\"Cannot delete column: {{d}} task{{s}} still assigned...\"`).\n",
+            .{HANDLER_PATH},
+        );
+        return error.TaskCountNotInMessage;
     }
 }

@@ -630,10 +630,10 @@ test "BuildKanbanStatusPrompt renders mandatory rule + columns for kanban parent
         "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_kanban', 'ws_x', 'kanban')",
         &.{});
     try ctx.db.exec(alloc,
-        "INSERT INTO kanban_columns (id, workspace_item_id, name, position) VALUES " ++
-            "('col_a', 'wi_kanban', 'todo', 0), " ++
-            "('col_b', 'wi_kanban', 'in progress', 1), " ++
-            "('col_c', 'wi_kanban', 'done', 2)",
+        "INSERT INTO kanban_columns (id, workspace_item_id, name, description, position) VALUES " ++
+            "('col_a', 'wi_kanban', 'todo', '', 0), " ++
+            "('col_b', 'wi_kanban', 'in progress', 'Work currently in flight', 1), " ++
+            "('col_c', 'wi_kanban', 'done', 'Shipped to the user', 2)",
         &.{});
     try ctx.db.exec(alloc,
         "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, kanban_column_id, task_type) " ++
@@ -655,6 +655,22 @@ test "BuildKanbanStatusPrompt renders mandatory rule + columns for kanban parent
     try testing.expect(std.mem.indexOf(u8, result, "- `todo` (`col_a`, position 0)") != null);
     try testing.expect(std.mem.indexOf(u8, result, "- `in progress` (`col_b`, position 1)") != null);
     try testing.expect(std.mem.indexOf(u8, result, "- `done` (`col_c`, position 2)") != null);
+
+    // Descriptions (Migration 053): the two non-empty descriptions render
+    // as indented sub-lines, the empty one (col_a) renders no sub-line.
+    try testing.expect(std.mem.indexOf(u8, result, "  Description: Work currently in flight") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "  Description: Shipped to the user") != null);
+
+    // Sanity: the empty-description column should NOT have a stray
+    // "Description: " sub-line immediately after its row. Check only
+    // the next single line (slice up to the next "\n"), not the whole
+    // tail — later rows do have descriptions and would match.
+    const todo_row = std.mem.indexOf(u8, result, "- `todo` (`col_a`, position 0)\n") orelse
+        return error.TodoRowNotFound;
+    const after_todo = result[todo_row..];
+    const next_nl = std.mem.indexOfScalar(u8, after_todo, '\n') orelse after_todo.len;
+    const next_line = after_todo[0..next_nl];
+    try testing.expect(std.mem.indexOf(u8, next_line, "  Description: ") == null);
 
     // All four status transitions present (each as a **bold** word at
     // the start of a bullet).

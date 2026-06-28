@@ -1530,21 +1530,48 @@ pub const Agent = struct {
             // ---------------------------------------------------------------
             const n = reader.readSliceShort(read_buffer[0..]) catch |err| {
                 if (err == error.ReadFailed) {
-                    // Transport error - log underlying cause and surface as StreamInterrupted.
-                    // With TCP keepalive, this is typically ConnectionResetByPeer
-                    // after ~25s of no response from a dead connection.
+                    // ReadFailed can be raised by TWO distinct layers:
+                    //   1. Transport: conn.stream_reader.err (RST/ECONNRESET/EPIPE/etc.)
+                    //      set by Io/net.zig when io.vtable.netRead fails.
+                    //   2. HTTP protocol: response.request.reader.body_err
+                    //      (HttpChunkInvalid / HttpChunkTruncated / HttpHeadersOversize)
+                    //      set by chunkedStream / chunkedDiscard in std/http.zig when
+                    //      the chunked-encoded body is malformed or the server closed
+                    //      cleanly before sending the terminating chunk.
+                    // The previous diagnostic only checked (1), so a clean TCP FIN
+                    // before any body data was logged as "null underlying" instead of
+                    // the real "HttpChunkTruncated" cause. Check BOTH layers.
                     const conn = response.request.connection orelse {
                         self.log_msg(.err, "[STREAM] ReadFailed with no connection");
                         return error.StreamInterrupted;
                     };
-                    const underlying_opt: ?std.Io.net.Stream.Reader.Error = conn.stream_reader.err;
-                    if (underlying_opt) |u| {
+                    const http_err_opt: ?std.http.Reader.BodyError =
+                        response.request.reader.body_err;
+                    const transport_err_opt: ?std.Io.net.Stream.Reader.Error =
+                        conn.stream_reader.err;
+                    if (http_err_opt) |he| {
+                        // HTTP-level error (most common: server sent 200 + chunked
+                        // headers, then closed cleanly before sending any chunks →
+                        // HttpChunkTruncated). The transport is fine; the response
+                        // body is just truncated.
+                        self.log_fmt(.err, "[STREAM] http error: {s} (chunks={}, bytes={}, transport={?s})", .{
+                            @errorName(he), chunk_count, total_bytes_read,
+                            if (transport_err_opt) |t| @errorName(t) else null,
+                        });
+                    } else if (transport_err_opt) |te| {
+                        // Transport-level error (typical: ConnectionResetByPeer
+                        // from TCP keepalive detecting a dead conn after ~25s).
                         self.log_fmt(.err, "[STREAM] transport error: {s} (chunks={}, bytes={}, elapsed={}ms)", .{
-                            @errorName(u), chunk_count, total_bytes_read,
+                            @errorName(te), chunk_count, total_bytes_read,
                             elapsedMs(self.httpClient.io, stream_start),
                         });
                     } else {
-                        self.log_fmt(.err, "[STREAM] ReadFailed with null underlying (chunks={}, bytes={})", .{
+                        // Both null is rare — readSliceShort got ReadFailed from
+                        // somewhere other than transport or chunked-parser. Log
+                        // with the explicit "AND no body_err" wording so future
+                        // grep for "null underlying" is unambiguous about which
+                        // variant fired.
+                        self.log_fmt(.err, "[STREAM] ReadFailed with null transport AND null body_err (chunks={}, bytes={})", .{
                             chunk_count, total_bytes_read,
                         });
                     }

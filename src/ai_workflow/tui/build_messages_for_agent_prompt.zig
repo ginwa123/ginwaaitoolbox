@@ -1090,6 +1090,15 @@ pub fn BuildKanbanStatusPrompt(
             const pos_str = try std.fmt.allocPrint(allocator, "`, position {d})\n", .{c.position});
             defer allocator.free(pos_str);
             try out.appendSlice(allocator, pos_str);
+
+            // Inject the column's free-text description (Migration 053)
+            // as an indented sub-line. Skip when empty so the prompt
+            // stays quiet for un-described columns.
+            if (c.description.len > 0) {
+                try out.appendSlice(allocator, "  Description: ");
+                try out.appendSlice(allocator, c.description);
+                try out.appendSlice(allocator, "\n");
+            }
         }
         if (cols.len > MAX_KANBAN_COLUMNS) {
             const footer = try std.fmt.allocPrint(allocator,

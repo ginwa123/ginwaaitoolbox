@@ -94,20 +94,41 @@ const activeWorkspace = computed(() => workspacesStore.activeWorkspace)
 const kanbanSseStore = useKanbanSseStore()
 const activeWorkspaceId = computed(() => activeWorkspace.value?.id ?? '')
 
-onMounted(() => {
-  if (activeWorkspaceId.value) {
-    kanbanSseStore.initKanbanSse(activeWorkspaceId.value)
+// Subscribe to /api/kanban/events on the FIRST truthy activeWorkspaceId
+// and update the client-side filter on every subsequent change.
+// `watch + { immediate: true }` replaces the previous `onMounted + watch`
+// pair — the onMounted fired while `workspaces.value` was still empty
+// (initializeFromSystemFolder is async and not awaited), so the if-guard
+// was always skipped and initKanbanSse never ran. This watcher covers
+// all three startup shapes:
+//   - URL has ?task=...  → setActiveTask ran before mount; immediate=true
+//     opens the SSE on the first tick with the already-truthy id.
+//   - URL has ?session=... (chat) or no URL params → activeWorkspaceId
+//     is '' at mount; the watch sits idle until
+//     initializeFromSystemFolder's post-init restoration
+//     (workspaces.ts:1559-1577) sets activeWorkspaceItemId, then fires
+//     with the now-truthy id and opens the SSE.
+//   - User clicks a sidebar item mid-session → fires with the new id.
+// `didInitSse` preserves the store's design: ONE connection for the
+// app's lifetime, only filter updates on workspace switches (the
+// backend's kanban routing keys are global, so we don't reopen).
+//
+// The watch callback is async so we can `await` `initKanbanSse`. The
+// underlying `createSseClient` defers its initial `start()` to the
+// next macrotask — awaiting the Promise here makes the SSE setup
+// cooperative with other same-tick fetch API calls (workspace data,
+// chat history) and prevents the EventSource HTTP request from
+// saturating the browser's per-origin 6-connection pool.
+let didInitSse = false
+watch(activeWorkspaceId, async (newId) => {
+  if (!newId) return
+  if (!didInitSse) {
+    didInitSse = true
+    await kanbanSseStore.initKanbanSse(newId)
+  } else {
+    kanbanSseStore.setActiveWorkspaceId(newId)
   }
-})
-
-// Switch workspaces → update the kanban SSE's client-side filter.
-// onMounted only fires once, so the watcher covers subsequent
-// workspace switches (e.g. user clicks a different workspace in the
-// sidebar). The connection itself stays open because the backend's
-// routing key is global — only the filter changes.
-watch(activeWorkspaceId, (newId) => {
-  if (newId) kanbanSseStore.setActiveWorkspaceId(newId)
-})
+}, { immediate: true })
 
 onUnmounted(() => {
   kanbanSseStore.closeKanbanSse()
@@ -288,10 +309,7 @@ const openInCodeEditor: OpenInCodeEditorFn = async (opts: OpenInCodeEditorOption
   try {
     const response = await api.readFileContent(opts.cwd, file.path)
     codeEditorContent.value = response.content
-    console.log(
-      '[openInCodeEditor] codeEditorFile.value after set:',
-      codeEditorFile.value?.path,
-    )
+    console.log('[openInCodeEditor] codeEditorFile.value after set:', codeEditorFile.value?.path)
     // Navigate to code-editor view
     // Encode the file path for URL (base64 to handle special chars)
     const encodedPath = btoa(file.path)
@@ -525,9 +543,7 @@ const kanbanResizeStartWidth = ref(0)
 
 const startKanbanResize = (e: MouseEvent | TouchEvent) => {
   isKanbanResizing.value = true
-  const clientX = 'touches' in e && e.touches[0]
-    ? e.touches[0].clientX
-    : (e as MouseEvent).clientX
+  const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
   kanbanResizeStartX.value = clientX
   // If the kanban is currently percentage-sized (no persisted
   // width yet), measure the rendered column width as the drag
@@ -535,7 +551,9 @@ const startKanbanResize = (e: MouseEvent | TouchEvent) => {
   // this, dragging from a 40% layout would snap to a 280px start.
   const rendered = kanbanResizeStartWidth.value
   if (rendered <= 0) {
-    const el = document.querySelector('[data-kanban-three-column] > :first-child') as HTMLElement | null
+    const el = document.querySelector(
+      '[data-kanban-three-column] > :first-child',
+    ) as HTMLElement | null
     kanbanResizeStartWidth.value = el?.getBoundingClientRect().width ?? 400
   }
   document.addEventListener('mousemove', handleKanbanResize)
@@ -547,9 +565,7 @@ const startKanbanResize = (e: MouseEvent | TouchEvent) => {
 
 const handleKanbanResize = (e: MouseEvent | TouchEvent) => {
   if (!isKanbanResizing.value) return
-  const clientX = 'touches' in e && e.touches[0]
-    ? e.touches[0].clientX
-    : (e as MouseEvent).clientX
+  const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
   const deltaX = clientX - kanbanResizeStartX.value
   const newWidth = Math.max(
     KANBAN_MIN_WIDTH,
@@ -668,12 +684,7 @@ const handleKanbanColumnEditorAdd = (name: string, description: string) => {
   if (!activeWorkspaceItem.value) return
   const ws = activeWorkspace.value
   if (!ws) return
-  void workspacesStore.addKanbanColumn(
-    ws.id,
-    activeWorkspaceItem.value.id,
-    name,
-    description,
-  )
+  void workspacesStore.addKanbanColumn(ws.id, activeWorkspaceItem.value.id, name, description)
   showKanbanColumnEditor.value = false
 }
 
@@ -725,12 +736,7 @@ const handleKanbanSettingsAddColumn = (name: string, description: string) => {
   if (!activeWorkspaceItem.value) return
   const ws = activeWorkspace.value
   if (!ws) return
-  void workspacesStore.addKanbanColumn(
-    ws.id,
-    activeWorkspaceItem.value.id,
-    name,
-    description,
-  )
+  void workspacesStore.addKanbanColumn(ws.id, activeWorkspaceItem.value.id, name, description)
   // Dialog stays open so the user can add more columns in succession.
 }
 
@@ -742,23 +748,17 @@ const handleKanbanSettingsEditColumn = (payload: {
   if (!activeWorkspaceItem.value) return
   const ws = activeWorkspace.value
   if (!ws) return
-  void workspacesStore.updateKanbanColumn(
-    ws.id,
-    activeWorkspaceItem.value.id,
-    payload.columnId,
-    { name: payload.name, description: payload.description },
-  )
+  void workspacesStore.updateKanbanColumn(ws.id, activeWorkspaceItem.value.id, payload.columnId, {
+    name: payload.name,
+    description: payload.description,
+  })
 }
 
 const handleKanbanSettingsDeleteColumn = (columnId: string) => {
   if (!activeWorkspaceItem.value) return
   const ws = activeWorkspace.value
   if (!ws) return
-  void workspacesStore.deleteKanbanColumn(
-    ws.id,
-    activeWorkspaceItem.value.id,
-    columnId,
-  )
+  void workspacesStore.deleteKanbanColumn(ws.id, activeWorkspaceItem.value.id, columnId)
 }
 
 // + Add on a column: open the standard chat dialog directly
@@ -783,11 +783,7 @@ const handleKanbanAddTask = (payload: { columnId: string }) => {
 }
 
 // Drag-and-drop task move between columns. Direct store call.
-const handleKanbanMoveTask = (payload: {
-  taskId: string
-  columnId: string
-  position: number
-}) => {
+const handleKanbanMoveTask = (payload: { taskId: string; columnId: string; position: number }) => {
   if (!activeWorkspaceItem.value) return
   const ws = activeWorkspace.value
   if (!ws) return
@@ -808,12 +804,9 @@ const handleKanbanRenameColumn = (payload: { columnId: string; name: string }) =
   if (!activeWorkspaceItem.value) return
   const ws = activeWorkspace.value
   if (!ws) return
-  void workspacesStore.updateKanbanColumn(
-    ws.id,
-    activeWorkspaceItem.value.id,
-    payload.columnId,
-    { name: payload.name },
-  )
+  void workspacesStore.updateKanbanColumn(ws.id, activeWorkspaceItem.value.id, payload.columnId, {
+    name: payload.name,
+  })
 }
 
 // "Delete column" emitted from the column's quick-delete path (the
@@ -824,11 +817,7 @@ const handleKanbanDeleteColumn = (columnId: string) => {
   if (!activeWorkspaceItem.value) return
   const ws = activeWorkspace.value
   if (!ws) return
-  void workspacesStore.deleteKanbanColumn(
-    ws.id,
-    activeWorkspaceItem.value.id,
-    columnId,
-  )
+  void workspacesStore.deleteKanbanColumn(ws.id, activeWorkspaceItem.value.id, columnId)
 }
 
 // Column header drag-and-drop reorder (Trello/Jira UX). Direct store
@@ -836,10 +825,7 @@ const handleKanbanDeleteColumn = (columnId: string) => {
 // position, PATCHes the moved column, and re-fetches the full
 // column list (because the backend's PATCH response only includes
 // the moved column, but siblings were renumbered too).
-const handleKanbanReorderColumn = (payload: {
-  columnId: string
-  targetColumnId: string
-}) => {
+const handleKanbanReorderColumn = (payload: { columnId: string; targetColumnId: string }) => {
   if (!activeWorkspaceItem.value) return
   const ws = activeWorkspace.value
   if (!ws) return
@@ -865,11 +851,7 @@ const handleKanbanSelectTask = (taskId: string) => {
   sidebarRef.value?.selectTask(taskId)
 }
 
-const handleKanbanDeleteTask = (
-  workspaceId: string,
-  itemId: string,
-  taskId: string,
-) => {
+const handleKanbanDeleteTask = (workspaceId: string, itemId: string, taskId: string) => {
   sidebarRef.value?.deleteTask(workspaceId, itemId, taskId)
 }
 
@@ -882,19 +864,11 @@ const handleKanbanRenameTask = (
   sidebarRef.value?.renameTask(workspaceId, itemId, taskId, currentName)
 }
 
-const handleKanbanEditRoutine = (
-  workspaceId: string,
-  itemId: string,
-  taskId: string,
-) => {
+const handleKanbanEditRoutine = (workspaceId: string, itemId: string, taskId: string) => {
   sidebarRef.value?.editRoutine(workspaceId, itemId, taskId)
 }
 
-const handleKanbanRunRoutine = (
-  workspaceId: string,
-  itemId: string,
-  taskId: string,
-) => {
+const handleKanbanRunRoutine = (workspaceId: string, itemId: string, taskId: string) => {
   void sidebarRef.value?.runRoutine(workspaceId, itemId, taskId)
 }
 
@@ -1058,7 +1032,7 @@ watch(chatSessionCwd, (newCwd) => {
       <GitFileViewer
         v-if="currentView === 'gitfile' && gitViewerFile && rightSidebarCwd"
         class="absolute inset-0"
-        style="z-index: 10;"
+        style="z-index: 10"
         :cwd="rightSidebarCwd"
         :file-path="gitViewerFile.path"
         :file-name="gitViewerFile.path.split('/').pop() || gitViewerFile.path"
@@ -1071,7 +1045,7 @@ watch(chatSessionCwd, (newCwd) => {
       <div
         v-if="currentView === 'skill' && skillViewerSkill"
         class="flex-1 flex flex-col overflow-hidden absolute inset-0"
-        style="background-color: var(--semantic-content-bg); z-index: 10;"
+        style="background-color: var(--semantic-content-bg); z-index: 10"
       >
         <!-- Header -->
         <div
@@ -1119,7 +1093,7 @@ watch(chatSessionCwd, (newCwd) => {
       <div
         v-if="currentView === 'code-editor' && codeEditorFile"
         class="flex-1 flex flex-col overflow-hidden absolute inset-0"
-        style="background-color: var(--semantic-content-bg); z-index: 10;"
+        style="background-color: var(--semantic-content-bg); z-index: 10"
       >
         <!-- Loading state -->
         <div v-if="codeEditorLoading" class="flex-1 flex items-center justify-center">
@@ -1195,7 +1169,7 @@ watch(chatSessionCwd, (newCwd) => {
         <div
           class="flex flex-col h-full min-h-0"
           :style="kanbanColumnStyle"
-          style="border-right: 1px solid var(--color-border);"
+          style="border-right: 1px solid var(--color-border)"
         >
           <KanbanView
             :key="'kanban-' + activeWorkspaceItem.id"
@@ -1242,8 +1216,15 @@ watch(chatSessionCwd, (newCwd) => {
           data-kanban-resize-handle
           data-testid="kanban-resize-handle"
           @mousedown="startKanbanResize"
-          @mouseenter="(e) => ((e.currentTarget as HTMLElement).style.backgroundColor = 'var(--color-violet)')"
-          @mouseleave="(e) => { if (!isKanbanResizing) (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--color-border)' }"
+          @mouseenter="
+            (e) => ((e.currentTarget as HTMLElement).style.backgroundColor = 'var(--color-violet)')
+          "
+          @mouseleave="
+            (e) => {
+              if (!isKanbanResizing)
+                (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--color-border)'
+            }
+          "
         ></div>
         <div class="flex-1 flex flex-col h-full min-w-0 min-h-0">
           <ChatView

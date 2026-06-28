@@ -1758,6 +1758,28 @@ pub fn isSessionRunning(
     return (rows.next() catch return false) != null;
 }
 
+/// Check if a task is currently running (a worker row exists for it).
+///
+/// The nalar convention is `task.id == session.id`, so the worker
+/// table's `session_id` column holds the task's id. If a row exists,
+/// the task is currently being processed by a worker (its LLM call is
+/// in-flight or streaming). Tasks in this state cannot be deleted —
+/// use cases that delete a task should check this first and refuse.
+///
+/// The companion `isSessionRunning` checks the `worker.id` (primary
+/// key) column; this helper checks the `worker.session_id` foreign
+/// key. They are intentionally separate so callers that already have
+/// one or the other can pick the cheap query.
+pub fn isTaskRunning(
+    db: *sqlite.SqliteBackend,
+    task_id: []const u8,
+) bool {
+    const sql = "SELECT 1 FROM worker WHERE session_id = ? LIMIT 1";
+    var rows = db.query(std.heap.c_allocator, sql, &.{task_id}) catch return false;
+    defer rows.deinit();
+    return (rows.next() catch return false) != null;
+}
+
 /// Cancel a session (set cancelled flag)
 pub fn cancelSession(
     allocator: std.mem.Allocator,

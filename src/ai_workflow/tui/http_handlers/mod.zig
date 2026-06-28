@@ -63,6 +63,13 @@ pub const tasksCreateHandler = @import("task_create.zig").tasksCreateHandler;
 pub const tasksUpdateHandler = @import("task_update.zig").tasksUpdateHandler;
 pub const tasksUpdateByIdHandler = @import("task_update.zig").tasksUpdateByIdHandler;
 pub const tasksDeleteHandler = @import("task_delete.zig").tasksDeleteHandler;
+// Use-case + outcome type live in the same file as the handler
+// (DELETE /api/workspaces/:workspace_id/items/:item_id/tasks/:task_id).
+// The handler is a thin orchestrator over `deleteTaskUseCase`; both
+// are scoped under `nalarcore.http_handlers.*` per the project
+// convention (see `nalar_config_profile_delete.zig`'s re-exports).
+pub const deleteTaskUseCase = @import("task_delete.zig").deleteTaskUseCase;
+pub const TaskDeleteOutcome = @import("task_delete.zig").TaskDeleteOutcome;
 pub const taskPinHandler = @import("task_pin.zig").taskPinHandler;
 pub const tasksReorderPinnedHandler = @import("tasks_reorder_pinned.zig").tasksReorderPinnedHandler;
 pub const routinesRunHandler = @import("routines_run.zig").routinesRunHandler;

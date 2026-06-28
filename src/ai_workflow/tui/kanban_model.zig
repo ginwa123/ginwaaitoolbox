@@ -243,6 +243,13 @@ pub fn updateColumn(
 /// their `kanban_column_id` set to `NULL` (so they show in the
 /// "Unassigned" group of the folder-list view); the tasks themselves
 /// are NOT removed.
+///
+/// IMPORTANT: callers MUST first verify the column has no tasks via
+/// `countTasksInColumn` before calling this. The model layer does
+/// NOT enforce the "no orphan tasks" invariant — that decision
+/// belongs at the HTTP handler layer (see
+/// `kanban_columns_delete.zig`), which surfaces it as a 409 Conflict
+/// so the frontend can prompt the user to move the tasks first.
 pub fn deleteColumn(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -256,6 +263,33 @@ pub fn deleteColumn(
     try db.exec(allocator,
         "DELETE FROM kanban_columns WHERE id = ?",
         &.{column_id});
+}
+
+/// Count how many tasks currently reference `column_id` as their
+/// `kanban_column_id`. Used by `kanbanColumnsDeleteHandler` to refuse
+/// deletion when the column still has tasks (the user must move them
+/// to another column first).
+///
+/// Returns `0` when the column has no tasks. Note: this is just a
+/// `COUNT(*)` against the FK column — there is no separate
+/// existence check for the column row itself, so a non-existent
+/// column id also returns `0` (caller doesn't need to distinguish
+/// "no tasks" from "no such column" for the delete-gate purpose).
+///
+/// SQL convention: every inner-table reference is aliased (`t`) per
+/// the project memory `nalar-sql-alias-tables.md`.
+pub fn countTasksInColumn(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    column_id: []const u8,
+) !u32 {
+    var q = try db.query(allocator,
+        \\SELECT COUNT(*) FROM workspace_item_tasks t WHERE t.kanban_column_id = ?
+    , &.{column_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return 0;
+    defer row.deinit(allocator);
+    return try std.fmt.parseInt(u32, row.values[0], 10);
 }
 
 /// Reorder a column to a new position with list-insertion

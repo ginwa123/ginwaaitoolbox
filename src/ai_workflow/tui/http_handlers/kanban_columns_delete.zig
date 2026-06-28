@@ -2,15 +2,26 @@
 //!
 //! Delete a kanban column. Thin wrapper around `kanban_model.deleteColumn`.
 //!
-//! Tasks that were assigned to this column have their `kanban_column_id`
-//! set to NULL by `deleteColumn` (the tasks themselves are NOT removed);
-//! the frontend surfaces them in the "Unassigned" group of the folder-
-//! list view.
+//! Before calling `deleteColumn`, the handler runs a `COUNT(*)` against
+//! `workspace_item_tasks.kanban_column_id` to refuse the delete when
+//! the column still has tasks. This protects against silently
+//! re-parenting tasks to "unassigned" without the user's consent —
+//! the user must first move the tasks to another column.
+//!
+//! On the success path (no tasks using the column), tasks that WERE
+//! assigned to this column have their `kanban_column_id` set to NULL
+//! by `deleteColumn` (the tasks themselves are NOT removed); the
+//! frontend surfaces them in the "Unassigned" group of the folder-
+//! list view. In practice this only applies to a column whose tasks
+//! were all moved away earlier but the column was never deleted —
+//! the normal end-of-life path is "user moves tasks → user deletes
+//! column".
 //!
 //! No request body. Returns 200 with `{"success": true}` on success.
 //!
 //! Errors:
 //!   - 400 missing column_id or item_id
+//!   - 409 column still has N task(s) assigned — caller must move them first
 //!   - 500 DB failure
 //!
 //! Plan: docs/superpowers/plans/2026-06-21-workspace-item-kanban.md
@@ -55,6 +66,32 @@ pub fn kanbanColumnsDeleteHandler(
         return res.jsonResponse(.{
             .status_code = 400,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "column_id required" }),
+        });
+    }
+
+    // Refuse to delete a column that still has tasks assigned. The
+    // user must move the tasks to another column first; the
+    // `kanban_task` SSE event from `tasksMoveHandler` will then
+    // trigger a board refresh on every connected client. We surface
+    // the count in the error so the frontend can render a precise
+    // message ("This column has 3 tasks — move them first") instead
+    // of a generic "cannot delete".
+    const task_count = kanban_model.countTasksInColumn(allocator, sqlite_db, column_id) catch {
+        return res.jsonResponse(.{
+            .status_code = 500,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to check column usage" }),
+        });
+    };
+    if (task_count > 0) {
+        const msg = try std.fmt.allocPrint(
+            allocator,
+            "Cannot delete column: {d} task{s} still assigned. Move them to another column first.",
+            .{ task_count, if (task_count == 1) "" else "s" },
+        );
+        defer allocator.free(msg);
+        return res.jsonResponse(.{
+            .status_code = 409,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = msg }),
         });
     }
 

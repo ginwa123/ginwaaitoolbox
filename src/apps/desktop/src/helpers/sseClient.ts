@@ -41,7 +41,13 @@
  *   - `createSseClient(opts) → SseClient`
  *       Owns one `EventSource`, one retry timer, and the
  *       `visibilitychange` / `online` listeners. All cleaned up in
- *       `.close()`.
+ *       `.close()`. **The constructor is fully async** — the
+ *       initial `start()` is deferred to the next macrotask
+ *       (`setTimeout(start, 0)`) so the HTTP request does not
+ *       fire synchronously inside the caller. Tests that interact
+ *       with `instances[0]` immediately after construction must
+ *       call `vi.advanceTimersByTime(0)` to flush the deferred
+ *       start.
  *   - `SseClient.close()` — terminal, no further reconnects.
  *   - `SseClient.reconnect()` — force a reconnect, resets attempt
  *       counter. Use it for a user-driven "Retry" button.
@@ -700,7 +706,22 @@ export function createSseClient(opts: SseClientOptions): SseClient {
   // ── Kick off the first attempt ────────────────────────────────────────
   // We do this AFTER the listeners are attached so a synchronous
   // success / failure does not race the listener registration.
-  start()
+  //
+  // Defer the start() call to the next macrotask (setTimeout 0) so
+  // the SseClient constructor returns immediately without initiating
+  // the HTTP request synchronously. This makes the SSE setup "fully
+  // async" — callers (e.g. `kanbanSseStore.initKanbanSse`) can be
+  // `await`ed, and other in-flight fetch API calls (workspace data,
+  // chat history, etc.) can proceed before the EventSource connection
+  // is established. Without this defer, the SSE HTTP request would
+  // race with the same-tick fetches and saturate the browser's
+  // per-origin connection pool (6 in HTTP/1.1).
+  //
+  // The `onError` synchronous-constructor-throw path still works:
+  // the throw happens inside `start()` after the deferral, so the
+  // first-attempt fatal error is reported on the next tick (slightly
+  // later than before, but still before any reconnect could fire).
+  setTimeout(start, 0)
 
   // Shared cleanup path. Called by both the public `.close()`
   // method and the `pagehide` / `beforeunload` listener. Idempotent

@@ -79,6 +79,97 @@ test "HttpOptions.idle_timeout_ms default stays above TCP keepalive window" {
 }
 
 // ============================================================================
+// Static regression test for the ReadFailed diagnostic (2026-06-26).
+//
+// Background: a user reported "ReadFailed with null underlying (chunks=0,
+// bytes=0)" in the nalar backend logs. The server had sent HTTP 200 +
+// Transfer-Encoding: chunked headers, then closed the TCP connection
+// cleanly before sending any body chunks. The chunked parser caught
+// EndOfStream, set `body_err = HttpChunkTruncated`, and returned ReadFailed.
+// The previous diagnostic only checked the transport-layer
+// `conn.stream_reader.err` (null on a clean close), so the real cause
+// "HttpChunkTruncated" was invisible.
+//
+// Fix: the diagnostic now also reads `response.request.reader.body_err`
+// and logs "[STREAM] http error: HttpChunkTruncated" instead of the
+// misleading "null underlying" message.
+//
+// This is a SOURCE-grep test (consistent with the project's static-test
+// pattern for handler diagnostics — see `http_handlers/*_test.zig`). The
+// alternative would be a fake-server test like the head_only_then_stall
+// variants above, but those are all skipped due to a known
+// `Io.Threaded.closeFd` hang in deferred cleanup; a skipped test would
+// not actually verify the fix. The source-grep pattern pins the fix
+// at the source level so it can't be silently reverted.
+// ============================================================================
+
+const AGENT_SOURCE_PATH = "src/modules/agent/Agent.zig";
+
+test "ReadFailed diagnostic checks BOTH transport and HTTP body_err" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        AGENT_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| {
+        std.debug.print("!! cannot read {s}: {{}} !!\n", .{AGENT_SOURCE_PATH});
+        return err;
+    };
+    defer std.testing.allocator.free(source);
+
+    // Contract 1: the diagnostic must reference response.request.reader.body_err
+    // (the HTTP-level error field on std.http.Reader).
+    if (std.mem.indexOf(u8, source, "response.request.reader.body_err") == null) {
+        std.debug.print(
+            "!! {s} does not check `body_err` — server-side chunked-encoding " ++
+                "failures will log as misleading 'null underlying' instead of " ++
+                "the real cause (HttpChunkTruncated) !!\n",
+            .{AGENT_SOURCE_PATH},
+        );
+        return error.BodyErrCheckMissing;
+    }
+
+    // Contract 2: the diagnostic must use the typed ?std.http.Reader.BodyError
+    // so the @errorName format gives a meaningful string (not a tag name).
+    if (std.mem.indexOf(u8, source, "std.http.Reader.BodyError") == null) {
+        std.debug.print(
+            "!! {s} does not declare the body_err as `?std.http.Reader.BodyError` " ++
+                "— @errorName will print the type tag, not the error name !!\n",
+            .{AGENT_SOURCE_PATH},
+        );
+        return error.BodyErrorTypeMissing;
+    }
+
+    // Contract 3: the diagnostic must log an http-error branch with
+    // @errorName(he) (where `he` is the unwrapped body_err), so the actual
+    // error name (HttpChunkTruncated etc.) appears in the log.
+    //
+    // We accept any branch that unwraps body_err into a variable named `he`
+    // and passes @errorName(he) to log_fmt — that's the actual cause string.
+    if (std.mem.indexOf(u8, source, "@errorName(he)") == null) {
+        std.debug.print(
+            "!! {s} does not log @errorName(he) — the http-error branch won't " ++
+                "show the actual BodyError variant (HttpChunkTruncated etc.) !!\n",
+            .{AGENT_SOURCE_PATH},
+        );
+        return error.BodyErrorNameLogMissing;
+    }
+
+    // Contract 4: the old misleading "[STREAM] ReadFailed with null underlying"
+    // message must NOT appear anymore. It was replaced with the two-arm
+    // "http error: ..." / "transport error: ..." branches. If it comes back,
+    // grep-based log monitoring will trigger false alarms for users.
+    if (std.mem.indexOf(u8, source, "ReadFailed with null underlying") != null) {
+        std.debug.print(
+            "!! {s} still has the misleading 'ReadFailed with null underlying' " ++
+                "diagnostic — remove it or guard with a more specific message !!\n",
+            .{AGENT_SOURCE_PATH},
+        );
+        return error.ObsoleteNullUnderlyingDiagnosticPresent;
+    }
+}
+
+// ============================================================================
 // Real network test — spins up a fake HTTP server, points the agent at it,
 // and verifies the idle-timeout fix actually fires on a stalled connection.
 // ============================================================================
