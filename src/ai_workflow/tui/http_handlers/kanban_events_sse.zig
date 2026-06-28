@@ -108,8 +108,13 @@ pub fn kanbanEventsStreamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRe
         ai_mod.registerSessionClient("kanban_task", client_id_copy, true) catch {};
 
         // Send the "connected" ack so the frontend's `onopen` fires.
+        // Deferred via `sendDeferred` so the handler task's
+        // `group.concurrent` worker thread is freed immediately —
+        // see docs/plans/2026-06-30-fix-sse-blocking-api.md. The
+        // connected_event string is a static literal, so it's safe
+        // to defer (lifetime contract documented on SseManager.sendDeferred).
         const connected_event = "event: connected\ndata: {\"connected\": true}\n\n";
-        server.sse_manager.sendToClient(client_id_copy, connected_event) catch {};
+        server.sse_manager.sendDeferred(client_id_copy, connected_event);
     }
 
     // Subscribe a callback to BOTH routing keys. Each callback fans
