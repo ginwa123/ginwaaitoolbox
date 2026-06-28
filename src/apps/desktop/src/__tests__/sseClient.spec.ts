@@ -431,6 +431,11 @@ describe('createSseClient', () => {
     // simulate "open arrives first". This is the "open cancels
     // retry" case.
     client.reconnect()
+    // Flush the deferred start() — .reconnect() schedules
+    // `new EventSource(url)` on the next macrotask so the
+    // HTTP request doesn't compete with same-tick fetches
+    // (see helpers/sseClient.ts constructor comment).
+    vi.advanceTimersByTime(0)
     // reconnect() closes the dead ES, so emit 'open' on the
     // freshly-created third instance.
     expect(instances.length).toBe(3)
@@ -603,6 +608,11 @@ describe('createSseClient', () => {
     // Become visible.
     visTarget.setHidden(false)
     visTarget.fire('visibilitychange')
+    // Flush the deferred start() — the visibility/online
+    // fast-path now schedules start() on the next macrotask
+    // so the HTTP request doesn't compete with same-tick
+    // fetches (see helpers/sseClient.ts constructor comment).
+    vi.advanceTimersByTime(0)
     // Now a fresh instance is created.
     expect(instances.length).toBe(2)
 
@@ -634,6 +644,11 @@ describe('createSseClient', () => {
 
     // `online` event fires — should fast-path to a new instance.
     onlineTarget.fire('online')
+    // Flush the deferred start() — the visibility/online
+    // fast-path now schedules start() on the next macrotask
+    // so the HTTP request doesn't compete with same-tick
+    // fetches (see helpers/sseClient.ts constructor comment).
+    vi.advanceTimersByTime(0)
     expect(instances.length).toBe(2)
 
     client.close()
@@ -1304,6 +1319,11 @@ describe('createSseClient', () => {
     // create a fresh one. Attempt counter resets to 0, then
     // start() bumps to 1.
     client.reconnect()
+    // Flush the deferred start() — .reconnect() schedules
+    // `new EventSource(url)` on the next macrotask so the
+    // HTTP request doesn't compete with same-tick fetches
+    // (see helpers/sseClient.ts constructor comment).
+    vi.advanceTimersByTime(0)
     expect(instances.length).toBe(4)
     // The previous instance was closed.
     expect(instances[2]!._closed).toBe(true)
