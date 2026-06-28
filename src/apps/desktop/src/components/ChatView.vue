@@ -1564,7 +1564,7 @@ const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target
 // ─── SSE ─────────────────────────────────────────────────────────────────────
 
 const isAlreadyConnectedSSE = ref(false)
-const connectSse = () => {
+const connectSse = async () => {
   console.log('[connectSse] Connecting SSE for session:', sessionId.value)
   if (!sessionId.value) return
 
@@ -1573,7 +1573,7 @@ const connectSse = () => {
   isStreaming.value = true
   streamingContent.value = ''
 
-  eventSource.value = api.createSseConnection(
+  eventSource.value = await api.createSseConnection(
     sessionId.value,
     (event: api.SseEvent) => {
       console.log('[SSE ChatView] Received event:', event)
@@ -1652,7 +1652,7 @@ const connectSse = () => {
     },
   )
 
-  queueEventSource.value = api.createQueueMessagesSseConnection(
+  queueEventSource.value = await api.createQueueMessagesSseConnection(
     sessionId.value,
     (event: api.QueueMessageEvent) => {
       console.log('[QueueMessages SSE] Received event:', event)

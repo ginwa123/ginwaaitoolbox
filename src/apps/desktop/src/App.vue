@@ -43,13 +43,13 @@ const handleWorkerEvent = (event: api.WorkerEvent) => {
 // pausing, and the `online` event fast-path, so we no longer
 // need the hand-rolled `setTimeout(reconnect, 5000)` — that
 // naive retry is exactly what the SseClient replaces.
-const initWorkersSse = () => {
+const initWorkersSse = async () => {
   // Clean up existing connection
   if (workersSse) {
     workersSse.close()
   }
 
-  workersSse = api.createWorkersSseConnection(
+  workersSse = await api.createWorkersSseConnection(
     handleWorkerEvent,
     // onError is only invoked on TERMINAL failure (state went
     // to `failed`). Transient errors are retried internally and

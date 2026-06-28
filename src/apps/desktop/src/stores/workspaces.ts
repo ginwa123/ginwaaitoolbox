@@ -1483,13 +1483,13 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // unloads on close).
   const sessionsSse = ref<api.SseClient | null>(null)
 
-  function subscribeToSessionEvents() {
+  async function subscribeToSessionEvents() {
     if (sessionsSse.value) {
       // Already subscribed.
       return
     }
     console.log('[workspacesStore] Subscribing to /api/sessions/stream')
-    sessionsSse.value = api.createSessionsSseConnection(
+    sessionsSse.value = await api.createSessionsSseConnection(
       (event) => {
         if (event.action === 'updated') {
           // Find the task (task.id == session_id) and update its

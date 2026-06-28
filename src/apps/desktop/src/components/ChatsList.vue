@@ -261,12 +261,12 @@ const removeChat = async (chatId: string) => {
 
 // ─── Session Events SSE ────────────────────────────────────────────────────────
 
-const connectSessionsSse = () => {
+const connectSessionsSse = async () => {
   console.log('[ChatsList] Connecting sessions SSE')
   if (sessionsSse.value) {
     sessionsSse.value.close()
   }
-  sessionsSse.value = api.createSessionsSseConnection(
+  sessionsSse.value = await api.createSessionsSseConnection(
     (event) => {
       console.log('[ChatsList] Received session event:', event)
       handleSessionEvent(event)

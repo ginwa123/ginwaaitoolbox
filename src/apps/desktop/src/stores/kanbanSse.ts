@@ -67,7 +67,7 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
     }
 
     connection = {
-      sse: createKanbanSseConnection(
+      sse: await createKanbanSseConnection(
         // onEvent — receives a typed KanbanColumnEvent | KanbanTaskEvent
         // (the factory parses JSON internally, see api/index.ts).
         (event) => {
