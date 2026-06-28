@@ -1431,4 +1431,67 @@ describe('createSseClient', () => {
 
     client.close()
   })
+
+  // All start() calls are deferred to the next macrotask so the
+  // SSE HTTP request never fires synchronously inside the caller.
+  // These two tests guard against anyone reverting the deferral
+  // on the constructor OR on .reconnect() — both would let the
+  // EventSource construction race with same-tick fetch API calls
+  // and saturate the browser's HTTP/1.1 6-connection pool.
+  it('defers the initial start() — new EventSource is NOT created synchronously', () => {
+    const { ctor, instances } = createMockCtor()
+    const { target: visTarget } = createMockTarget(false)
+    const { target: onlineTarget } = createMockOnlineTarget()
+
+    const client = createSseClient({
+      url: '/test',
+      EventSourceCtor: ctor,
+      visibilityTarget: visTarget,
+      onlineTarget: onlineTarget,
+      pauseWhenHidden: false,
+      onEvent: () => {},
+    })
+
+    // Before vi.advanceTimersByTime(0): no EventSource constructed yet.
+    // The mock factory is called by `new EventSourceCtor(opts.url)`
+    // inside start(). If start() runs synchronously in the constructor,
+    // this would be 1; with the deferral, it's 0.
+    expect(instances.length).toBe(0)
+
+    // Flush the deferred start.
+    vi.advanceTimersByTime(0)
+    expect(instances.length).toBe(1)
+
+    client.close()
+  })
+
+  it('defers start() inside .reconnect() — new EventSource is NOT created synchronously', () => {
+    const { ctor, instances } = createMockCtor()
+    const { target: visTarget } = createMockTarget(false)
+    const { target: onlineTarget } = createMockOnlineTarget()
+
+    const client = createSseClient({
+      url: '/test',
+      EventSourceCtor: ctor,
+      visibilityTarget: visTarget,
+      onlineTarget: onlineTarget,
+      pauseWhenHidden: false,
+      onEvent: () => {},
+    })
+    vi.advanceTimersByTime(0)  // flush the initial start()
+    expect(instances.length).toBe(1)
+
+    // Trigger a reconnect. Without the deferral, .reconnect() would
+    // synchronously create the new EventSource (instances.length
+    // would jump from 1 to 2 immediately). With the deferral, it
+    // stays at 1 until the next macrotask fires.
+    client.reconnect()
+    expect(instances.length).toBe(1)
+
+    // Flush the deferred start.
+    vi.advanceTimersByTime(0)
+    expect(instances.length).toBe(2)
+
+    client.close()
+  })
 })
