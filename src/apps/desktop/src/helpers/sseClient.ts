@@ -32,26 +32,32 @@
  *      `online` event.
  *
  * This module is the single source of truth for SSE reconnection in
- * the desktop app. It is consumed by `api/index.ts` (the 4 factory
+ * the desktop app. It is consumed by `api/index.ts` (the 5 factory
  * functions there are thin adapters) and can be consumed directly
  * for new streams.
  *
  * Public surface
  * ──────────────
- *   - `createSseClient(opts) → SseClient`
+ *   - `createSseClient(opts) → Promise<SseClient>` (async)
  *       Owns one `EventSource`, one retry timer, and the
  *       `visibilitychange` / `online` listeners. All cleaned up in
  *       `.close()`. **All `start()` calls are deferred** to the
  *       next macrotask (`setTimeout(start, 0)`) — the initial
  *       start in the constructor, plus the 3 fast-path starts
  *       inside `.reconnect()`, `onVisibilityChange()`, and
- *       `onOnline()`. This makes the SSE setup "fully async" —
- *       the HTTP request never fires synchronously inside the
- *       caller, freeing the JS event loop for other fetch API
- *       calls. Tests that interact with `instances[0]`
- *       immediately after construction OR after `.reconnect()`
- *       must call `vi.advanceTimersByTime(0)` to flush the
- *       deferred start.
+ *       `onOnline()`. **The constructor itself is `async`** —
+ *       it returns a Promise that resolves with the SseClient on
+ *       the next microtask, so callers can `await
+ *       createSseClient(...)` to yield to the event loop before
+ *       continuing. Combined with the macrotask deferral of the
+ *       SSE HTTP request itself, this makes the SSE setup
+ *       "fully async" — the HTTP request never fires
+ *       synchronously inside the caller, freeing the JS event
+ *       loop for Vue rendering and other in-flight promises.
+ *       Tests that interact with `instances[0]` immediately
+ *       after `await createSseClient(...)` OR after
+ *       `.reconnect()` must call `vi.advanceTimersByTime(0)` to
+ *       flush the deferred start.
  *   - `SseClient.close()` — terminal, no further reconnects.
  *   - `SseClient.reconnect()` — force a reconnect, resets attempt
  *       counter. Use it for a user-driven "Retry" button.
@@ -196,7 +202,7 @@ export interface SseClientOptions {
    * — they reach the network but never reach the JS handler.
    *
    * Example — the queue-messages stream:
-   *   createSseClient({
+   *   await createSseClient({
    *     url: '/api/.../queue_messages/stream',
    *     additionalEventTypes: ['queue_message'],
    *     onEvent: (raw, type) => {
@@ -374,7 +380,7 @@ export interface SseClient {
  * public surface.
  *
  * @example
- *   const client = createSseClient({
+ *   const client = await createSseClient({
  *     url: '/api/sessions/stream',
  *     onEvent: (raw, type) => console.log(type, raw),
  *     onConnected: () => console.log('live'),
@@ -383,7 +389,7 @@ export interface SseClient {
  *   // later
  *   client.close()
  */
-export function createSseClient(opts: SseClientOptions): SseClient {
+export async function createSseClient(opts: SseClientOptions): Promise<SseClient> {
   const baseDelayMs = opts.baseDelayMs ?? 1_000
   const maxDelayMs = opts.maxDelayMs ?? 30_000
   const maxAttempts = opts.maxAttempts ?? Infinity
