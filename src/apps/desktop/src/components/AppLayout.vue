@@ -618,6 +618,7 @@ const showKanbanColumnEditor = ref(false)
 const kanbanColumnEditorMode = ref<KanbanEditorMode>('add')
 const kanbanColumnEditorTargetId = ref<string | null>(null)
 const kanbanColumnEditorInitialName = ref<string>('')
+const kanbanColumnEditorInitialDescription = ref<string>('')
 
 // Look up the column by id in the active kanban item. Returns
 // undefined if the active item is missing or has no columns — the
@@ -635,13 +636,14 @@ const handleKanbanAddColumn = () => {
 }
 
 // ⋮ menu "Rename" on a column: open the editor in 'rename' mode,
-// pre-filled with the column's current name.
+// pre-filled with the column's current name and description.
 const handleKanbanRequestRenameColumn = (columnId: string) => {
   const col = findKanbanColumn(columnId)
   if (!col) return
   kanbanColumnEditorMode.value = 'rename'
   kanbanColumnEditorTargetId.value = columnId
   kanbanColumnEditorInitialName.value = col.name
+  kanbanColumnEditorInitialDescription.value = col.description ?? ''
   showKanbanColumnEditor.value = true
 }
 
@@ -653,6 +655,7 @@ const handleKanbanRequestDeleteColumn = (columnId: string) => {
   kanbanColumnEditorMode.value = 'delete'
   kanbanColumnEditorTargetId.value = columnId
   kanbanColumnEditorInitialName.value = col.name
+  kanbanColumnEditorInitialDescription.value = col.description ?? ''
   showKanbanColumnEditor.value = true
 }
 
@@ -660,15 +663,20 @@ const handleKanbanColumnEditorClose = () => {
   showKanbanColumnEditor.value = false
 }
 
-const handleKanbanColumnEditorAdd = (name: string) => {
+const handleKanbanColumnEditorAdd = (name: string, description: string) => {
   if (!activeWorkspaceItem.value) return
   const ws = activeWorkspace.value
   if (!ws) return
-  void workspacesStore.addKanbanColumn(ws.id, activeWorkspaceItem.value.id, name)
+  void workspacesStore.addKanbanColumn(
+    ws.id,
+    activeWorkspaceItem.value.id,
+    name,
+    description,
+  )
   showKanbanColumnEditor.value = false
 }
 
-const handleKanbanColumnEditorRename = (name: string) => {
+const handleKanbanColumnEditorRename = (name: string, description: string) => {
   if (!activeWorkspaceItem.value || !kanbanColumnEditorTargetId.value) return
   const ws = activeWorkspace.value
   if (!ws) return
@@ -676,7 +684,7 @@ const handleKanbanColumnEditorRename = (name: string) => {
     ws.id,
     activeWorkspaceItem.value.id,
     kanbanColumnEditorTargetId.value,
-    { name },
+    { name, description },
   )
   showKanbanColumnEditor.value = false
 }
@@ -1357,6 +1365,7 @@ watch(chatSessionCwd, (newCwd) => {
       :show="showKanbanColumnEditor"
       :mode="kanbanColumnEditorMode"
       :initial-name="kanbanColumnEditorInitialName"
+      :initial-description="kanbanColumnEditorInitialDescription"
       @close="handleKanbanColumnEditorClose"
       @add="handleKanbanColumnEditorAdd"
       @rename="handleKanbanColumnEditorRename"
