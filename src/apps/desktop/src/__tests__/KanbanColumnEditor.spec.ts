@@ -102,7 +102,7 @@ describe('KanbanColumnEditor', () => {
       nameInput.dispatchEvent(new Event('input', { bubbles: true }))
       await flushPromises()
       clickInDom('[data-testid="kanban-column-editor-add-submit"]')
-      expect(wrapper.emitted('add')?.[0]).toEqual(['In review'])
+      expect(wrapper.emitted('add')?.[0]).toEqual(['In review', ''])
       expect(wrapper.emitted('close')).toBeTruthy()
     })
 
@@ -116,7 +116,7 @@ describe('KanbanColumnEditor', () => {
       nameInput.dispatchEvent(new Event('input', { bubbles: true }))
       await flushPromises()
       clickInDom('[data-testid="kanban-column-editor-add-submit"]')
-      expect(wrapper.emitted('add')?.[0]).toEqual(['In review'])
+      expect(wrapper.emitted('add')?.[0]).toEqual(['In review', ''])
     })
 
     it('emits close when Cancel is clicked (no add)', async () => {
@@ -161,7 +161,7 @@ describe('KanbanColumnEditor', () => {
       nameInput.dispatchEvent(new Event('input', { bubbles: true }))
       await flushPromises()
       clickInDom('[data-testid="kanban-column-editor-rename-submit"]')
-      expect(wrapper.emitted('rename')?.[0]).toEqual(['Backlog'])
+      expect(wrapper.emitted('rename')?.[0]).toEqual(['Backlog', ''])
       expect(wrapper.emitted('close')).toBeTruthy()
     })
 
@@ -235,5 +235,110 @@ describe('KanbanColumnEditor', () => {
       wrapper = mountEditor('delete', false)
       expect(findInDom('[data-testid="kanban-column-editor-delete"]')).toBeNull()
     })
+  })
+})
+
+// ─── description field (Chunk 2 of kanban-column-description-settings) ─────
+
+describe('KanbanColumnEditor description field', () => {
+  afterEach(() => {
+    document.body.innerHTML = ''
+    document.body.style.overflow = ''
+  })
+
+  // Note: tests in this block use document.querySelector (via
+  // findInDom) instead of wrapper.find() because the editor renders
+  // inside <Teleport to="body"> — Vue Test Utils' wrapper.find() does
+  // not traverse the teleport destination. Same convention as the
+  // existing tests at the top of this file.
+
+  it('shows a description textarea in add mode', async () => {
+    document.body.innerHTML = ''
+    const wrapper = mount(KanbanColumnEditor, {
+      attachTo: document.body,
+      props: { show: true, mode: 'add' },
+    })
+    await flushPromises()
+    const desc = findInDom<HTMLTextAreaElement>(
+      '[data-testid="kanban-column-editor-add-description"]',
+    )
+    expect(desc).not.toBeNull()
+    expect(desc?.tagName).toBe('TEXTAREA')
+    wrapper.unmount()
+  })
+
+  it('emits add with the description when Add is clicked', async () => {
+    document.body.innerHTML = ''
+    const wrapper = mount(KanbanColumnEditor, {
+      attachTo: document.body,
+      props: { show: true, mode: 'add' },
+    })
+    await flushPromises()
+    const nameInput = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-column-editor-add-name"]',
+    )!
+    nameInput.value = 'Review'
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    const descInput = findInDom<HTMLTextAreaElement>(
+      '[data-testid="kanban-column-editor-add-description"]',
+    )!
+    descInput.value = 'Awaiting code review — must pass CI'
+    descInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    clickInDom('[data-testid="kanban-column-editor-add-submit"]')
+    const emitted = wrapper.emitted('add')
+    expect(emitted).toBeTruthy()
+    expect(emitted![0]).toEqual(['Review', 'Awaiting code review — must pass CI'])
+    wrapper.unmount()
+  })
+
+  it('emits rename with the description when Save is clicked', async () => {
+    document.body.innerHTML = ''
+    const wrapper = mount(KanbanColumnEditor, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        mode: 'rename',
+        initialName: 'todo',
+        initialDescription: 'Not started',
+      },
+    })
+    await flushPromises()
+    const nameInput = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-column-editor-rename-name"]',
+    )!
+    nameInput.value = 'backlog'
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    const descInput = findInDom<HTMLTextAreaElement>(
+      '[data-testid="kanban-column-editor-rename-description"]',
+    )!
+    descInput.value = 'Newly triaged items'
+    descInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    clickInDom('[data-testid="kanban-column-editor-rename-submit"]')
+    const emitted = wrapper.emitted('rename')
+    expect(emitted).toBeTruthy()
+    expect(emitted![0]).toEqual(['backlog', 'Newly triaged items'])
+    wrapper.unmount()
+  })
+
+  it('seeds description from initialDescription prop on open', async () => {
+    document.body.innerHTML = ''
+    const wrapper = mount(KanbanColumnEditor, {
+      attachTo: document.body,
+      props: {
+        show: false,
+        mode: 'rename',
+        initialDescription: 'Pre-existing meaning',
+      },
+    })
+    await flushPromises()
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    const descInput = findInDom<HTMLTextAreaElement>(
+      '[data-testid="kanban-column-editor-rename-description"]',
+    )
+    expect(descInput?.value).toBe('Pre-existing meaning')
+    wrapper.unmount()
   })
 })

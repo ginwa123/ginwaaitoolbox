@@ -14,8 +14,10 @@
   presentational.
 
   Public API:
-    props:  show, mode ('add' | 'rename' | 'delete'), initialName
-    emits:  close, add(name), rename(name), delete()
+    props:  show, mode ('add' | 'rename' | 'delete'), initialName,
+            initialDescription
+    emits:  close, add(name, description), rename(name, description),
+            delete()
 -->
 <script setup lang="ts">
 import { ref, watch, nextTick, computed, onBeforeUnmount } from 'vue'
@@ -26,12 +28,15 @@ const props = defineProps<{
   show: boolean
   mode: Mode
   initialName?: string
+  /** Pre-fill the description field. Only used in 'add' (rarely)
+   * and 'rename' modes. Empty string when absent. */
+  initialDescription?: string
 }>()
 
 const emit = defineEmits<{
   close: []
-  add: [name: string]
-  rename: [name: string]
+  add: [name: string, description: string]
+  rename: [name: string, description: string]
   delete: []
 }>()
 
@@ -39,6 +44,14 @@ const emit = defineEmits<{
 
 const name = ref('')
 const nameInput = ref<HTMLInputElement | null>(null)
+const description = ref('')
+const descriptionInput = ref<HTMLTextAreaElement | null>(null)
+
+// 500-char cap matches the project's convention for short text
+// fields. The textarea enforces it via `maxlength`; the backend
+// does NOT re-validate the cap (Zig error sets grow with every
+// constraint; we accept "client says 500, server trusts it" for v1).
+const DESCRIPTION_MAX = 500
 
 // ─── Computed labels & description per mode ────────────────────────────────
 
@@ -90,13 +103,16 @@ const handleSubmit = () => {
   }
   const trimmed = name.value.trim()
   if (!trimmed) return
+  // Description is optional; trim but allow empty (the backend's
+  // "no description" sentinel is the empty string).
+  const trimmedDescription = description.value.trim()
   if (props.mode === 'add') {
-    emit('add', trimmed)
+    emit('add', trimmed, trimmedDescription)
   } else if (props.mode === 'rename') {
     // For rename, we still emit even if the name equals the initial
     // — the parent can choose to no-op. We deliberately do NOT skip
     // the emit because the user explicitly clicked Save.
-    emit('rename', trimmed)
+    emit('rename', trimmed, trimmedDescription)
   }
   handleClose()
 }
@@ -126,6 +142,7 @@ watch(
   async (show) => {
     if (show) {
       name.value = props.initialName ?? ''
+      description.value = props.initialDescription ?? ''
       await nextTick()
       // Focus the name input when it exists; in delete mode there is
       // no input to focus, but focusing the dialog itself is harmless.
@@ -214,6 +231,38 @@ onBeforeUnmount(() => {
               "
               @keyup.enter="handleSubmit"
             />
+            <label
+              class="block text-xs font-medium mb-2 mt-3"
+              style="color: var(--semantic-text-dim);"
+            >
+              Description
+              <span
+                class="ml-1 text-[10px]"
+                style="color: var(--semantic-text-dim);"
+              >(optional — what this column means)</span>
+            </label>
+            <textarea
+              ref="descriptionInput"
+              v-model="description"
+              :maxlength="DESCRIPTION_MAX"
+              rows="3"
+              :placeholder="mode === 'add' ? 'e.g. Awaiting code review — must pass CI before merge' : ''"
+              :data-testid="`kanban-column-editor-${mode}-description`"
+              class="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200 resize-y"
+              style="
+                background-color: var(--semantic-sidebar-bg);
+                border: 1px solid var(--color-border);
+                color: var(--semantic-text);
+                font-family: inherit;
+              "
+            ></textarea>
+            <div
+              class="text-[10px] mt-1 text-right"
+              style="color: var(--semantic-text-dim);"
+              :data-testid="`kanban-column-editor-${mode}-description-counter`"
+            >
+              {{ description.length }} / {{ DESCRIPTION_MAX }}
+            </div>
           </div>
           <div v-else class="px-5 pb-4">
             <!-- Delete-mode confirmation: surface the column name so the
