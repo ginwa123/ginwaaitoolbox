@@ -87,6 +87,11 @@ test "SSE handshake: all 4 registered stream handlers send the connected event" 
         "src/ai_workflow/tui/http_handlers/sessions_sse.zig",
         "src/ai_workflow/tui/http_handlers/llm_history_sse.zig",
         "src/ai_workflow/tui/http_handlers/queue_messages_sse.zig",
+        // Added when kanban_events_sse.zig landed — chunk 5 of the
+        // kanban-list-empty-add-sse plan added the handler without
+        // including it in this regression list. Adding now to keep
+        // the contract test authoritative.
+        "src/ai_workflow/tui/http_handlers/kanban_events_sse.zig",
     };
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
