@@ -1488,62 +1488,64 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Already subscribed.
       return
     }
-    console.log('[workspacesStore] Subscribing to /api/sessions/stream')
-    sessionsSse.value = api.createSessionsSseConnection(
-      (event) => {
-        if (event.action === 'updated') {
-          // Find the task (task.id == session_id) and update its
-          // name. We also keep navigationStore.activeChatName in
-          // sync if the renamed task is active — this is the same
-          // pattern as renameTask (workspaces.ts:renameTask).
-          for (const ws of workspaces.value) {
-            for (const item of ws.items) {
-              if (!item.tasks) continue
-              const task = item.tasks.find((t) => t.id === event.id)
-              if (task) {
-                task.name = event.name || task.name
-                if (activeTaskId.value === task.id) {
-                  useNavigationStore().setActiveChatName(task.name)
+    console.log('[workspacesStore] Subscribing to /api/events (sessions channel)')
+    sessionsSse.value = api.createUnifiedSseConnection({
+      channels: {
+        sessions: (event) => {
+          if (event.action === 'updated') {
+            // Find the task (task.id == session_id) and update its
+            // name. We also keep navigationStore.activeChatName in
+            // sync if the renamed task is active — this is the same
+            // pattern as renameTask (workspaces.ts:renameTask).
+            for (const ws of workspaces.value) {
+              for (const item of ws.items) {
+                if (!item.tasks) continue
+                const task = item.tasks.find((t) => t.id === event.id)
+                if (task) {
+                  task.name = event.name || task.name
+                  if (activeTaskId.value === task.id) {
+                    useNavigationStore().setActiveChatName(task.name)
+                  }
+                  return
                 }
-                return
+              }
+            }
+          } else if (event.action === 'deleted') {
+            // Find and remove the task. If it was active, clear the
+            // active state so the chat view doesn't render a stale
+            // task id.
+            for (const ws of workspaces.value) {
+              for (const item of ws.items) {
+                if (!item.tasks) continue
+                const idx = item.tasks.findIndex((t) => t.id === event.id)
+                if (idx !== -1) {
+                  item.tasks.splice(idx, 1)
+                  if (activeTaskId.value === event.id) {
+                    activeTaskId.value = null
+                  }
+                  return
+                }
               }
             }
           }
-        } else if (event.action === 'deleted') {
-          // Find and remove the task. If it was active, clear the
-          // active state so the chat view doesn't render a stale
-          // task id.
-          for (const ws of workspaces.value) {
-            for (const item of ws.items) {
-              if (!item.tasks) continue
-              const idx = item.tasks.findIndex((t) => t.id === event.id)
-              if (idx !== -1) {
-                item.tasks.splice(idx, 1)
-                if (activeTaskId.value === event.id) {
-                  activeTaskId.value = null
-                }
-                return
-              }
-            }
-          }
-        }
-        // 'created' events are deliberately ignored here: tasks are
-        // only ever created via POST /workspaces/:w/items/:i/tasks
-        // (which the addTask action handles directly). A 'created'
-        // SSE event for an unbound session is a no-op for the
-        // workspace tree.
+          // 'created' events are deliberately ignored here: tasks are
+          // only ever created via POST /workspaces/:w/items/:i/tasks
+          // (which the addTask action handles directly). A 'created'
+          // SSE event for an unbound session is a no-op for the
+          // workspace tree.
+        },
       },
       // onError is only invoked on TERMINAL failure (SseClient
       // state went to `failed`). Transient errors are retried
       // internally with exponential backoff — see
       // helpers/sseClient.ts.
-      (error) => {
+      onError: (error) => {
         console.error('[workspacesStore] Sessions SSE failed permanently:', error)
       },
-      () => {
+      onConnected: () => {
         console.log('[workspacesStore] Sessions SSE connected')
       },
-    )
+    })
   }
 
   // Initialize workspace items from system folder
