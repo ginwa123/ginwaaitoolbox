@@ -66,6 +66,31 @@ pub fn workspaceItemsUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.Http
         break :blk null;
     };
 
+    // Optional name. Mirror the path branch's presence vs absence
+    // semantics: when the key is ABSENT we leave the existing name
+    // unchanged; when PRESENT:
+    //   - non-empty string → UPDATE the name
+    //   - empty string      → 400 (the model's column is nullable but
+    //                         we treat empty as "you forgot to enter
+    //                         anything" — the user retried the rename
+    //                         dialog and blanked it; refuse instead of
+    //                         writing NULL which breaks KanbanView's
+    //                         `{{ item.name }}` rendering).
+    //   - null              → 400 (same reason).
+    // This makes the contract strict: if you PUT the field, it must be
+    // a non-empty string.
+    const name_present = root.get("name") != null;
+    const name_value: ?[]const u8 = blk: {
+        const v = root.get("name") orelse break :blk null;
+        if (v == .null) break :blk null;
+        if (v == .string and v.string.len == 0) break :blk null;
+        if (v == .string) break :blk v.string;
+        break :blk null;
+    };
+    // `name_valid` is true when name is present AND non-empty; the
+    // handler uses this to decide whether to UPDATE or 400.
+    const name_valid: bool = name_present and name_value != null;
+
     // Check if item exists first
     const existing = ai_mod.workspace_items.getWorkspaceItem(allocator, sqlite_db, item_id) catch {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to fetch workspace item" }) });
@@ -76,6 +101,19 @@ pub fn workspaceItemsUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.Http
     }
     defer existing.?.deinit(allocator);
 
+    // If the caller sent `name` but it was null or empty, reject
+    // before hitting the DB. Empty names break the UI rendering
+    // (`{{ item.name }}` shows nothing).
+    if (name_present and !name_valid) {
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(
+                allocator,
+                .{ .@"error" = "name must be a non-empty string when present" },
+            ),
+        });
+    }
+
     // Get the current workspace_id for the update
     const current_workspace_id = existing.?.workspace_id;
 
@@ -84,19 +122,106 @@ pub fn workspaceItemsUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.Http
     // the create endpoint: NULL for empty / null, the string for
     // a non-empty value). Otherwise the legacy item_type-only
     // update path keeps the existing path column untouched.
-    if (path_present) {
+    if (path_present and name_valid) {
+        // Caller wants BOTH path + name updated. We update name first
+        // (separate SQL) then path (separate SQL). Two cheap UPDATEs on
+        // an indexed primary-key lookup are cheaper than a JOINed CTE;
+        // the model layer keeps the single-column setter shape (see
+        // updateWorkspaceItemName's docstring).
+        ai_mod.workspace_items.updateWorkspaceItemName(
+            allocator, sqlite_db, item_id, name_value.?,
+        ) catch {
+            return res.jsonResponse(.{
+                .status_code = 500,
+                .data = try http_response.makeErrorResponse(
+                    allocator,
+                    .{ .@"error" = "Failed to update workspace item name" },
+                ),
+            });
+        };
         if (path_clear or path_value == null) {
-            ai_mod.workspace_items.updateWorkspaceItemPath(allocator, sqlite_db, item_id, null) catch {
-                return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to clear workspace item path" }) });
+            ai_mod.workspace_items.updateWorkspaceItemPath(
+                allocator, sqlite_db, item_id, null,
+            ) catch {
+                return res.jsonResponse(.{
+                    .status_code = 500,
+                    .data = try http_response.makeErrorResponse(
+                        allocator,
+                        .{ .@"error" = "Failed to clear workspace item path" },
+                    ),
+                });
             };
         } else {
-            ai_mod.workspace_items.updateWorkspaceItemPath(allocator, sqlite_db, item_id, path_value.?) catch {
-                return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to update workspace item path" }) });
+            ai_mod.workspace_items.updateWorkspaceItemPath(
+                allocator, sqlite_db, item_id, path_value.?,
+            ) catch {
+                return res.jsonResponse(.{
+                    .status_code = 500,
+                    .data = try http_response.makeErrorResponse(
+                        allocator,
+                        .{ .@"error" = "Failed to update workspace item path" },
+                    ),
+                });
+            };
+        }
+    } else if (name_valid) {
+        // Name-only update (the rename path). Common case for the
+        // KanbanSettingsDialog and KanbanView pencil.
+        ai_mod.workspace_items.updateWorkspaceItemName(
+            allocator, sqlite_db, item_id, name_value.?,
+        ) catch {
+            return res.jsonResponse(.{
+                .status_code = 500,
+                .data = try http_response.makeErrorResponse(
+                    allocator,
+                    .{ .@"error" = "Failed to update workspace item name" },
+                ),
+            });
+        };
+    } else if (path_present) {
+        // Path-only update (preserves the original
+        // "PUT /items/:id {item_type: 'kanban'}" path-set behavior).
+        // The branch is the same as the old code, but renamed for
+        // readability and inlined.
+        if (path_clear or path_value == null) {
+            ai_mod.workspace_items.updateWorkspaceItemPath(
+                allocator, sqlite_db, item_id, null,
+            ) catch {
+                return res.jsonResponse(.{
+                    .status_code = 500,
+                    .data = try http_response.makeErrorResponse(
+                        allocator,
+                        .{ .@"error" = "Failed to clear workspace item path" },
+                    ),
+                });
+            };
+        } else {
+            ai_mod.workspace_items.updateWorkspaceItemPath(
+                allocator, sqlite_db, item_id, path_value.?,
+            ) catch {
+                return res.jsonResponse(.{
+                    .status_code = 500,
+                    .data = try http_response.makeErrorResponse(
+                        allocator,
+                        .{ .@"error" = "Failed to update workspace item path" },
+                    ),
+                });
             };
         }
     } else {
-        ai_mod.workspace_items.updateWorkspaceItem(allocator, sqlite_db, item_id, current_workspace_id, item_type_val.string) catch {
-            return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to update workspace item" }) });
+        // Neither name nor path in body → legacy item_type-only update
+        // path keeps the existing columns untouched.
+        ai_mod.workspace_items.updateWorkspaceItem(
+            allocator, sqlite_db, item_id, current_workspace_id,
+            item_type_val.string,
+        ) catch {
+            return res.jsonResponse(.{
+                .status_code = 500,
+                .data = try http_response.makeErrorResponse(
+                    allocator,
+                    .{ .@"error" = "Failed to update workspace item" },
+                ),
+            });
         };
     }
 
