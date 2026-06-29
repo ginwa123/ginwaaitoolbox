@@ -2114,11 +2114,14 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
         }
 
         const obj = parsed as Record<string, unknown>
-        let dispatched = false
         // Order matters: check session BEFORE worker because both have
         // `action`; the discriminator is `working_directory` (worker
         // has it, session doesn't) plus `status` (session has it,
         // worker doesn't). Either combination uniquely identifies.
+        // We dispatch to AT MOST ONE consumer — the first matching
+        // shape wins. If no shape matches, the event is silently
+        // dropped (after the buffer advance below) so the buffer
+        // stays bounded.
         if (
           opts.channels.sessions &&
           typeof obj.action === 'string' &&
@@ -2126,31 +2129,27 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
           typeof obj.cwd === 'string'
         ) {
           opts.channels.sessions(obj as unknown as SessionEvent)
-          dispatched = true
         } else if (
           opts.channels.workers &&
           typeof obj.action === 'string' &&
           typeof obj.working_directory === 'string'
         ) {
           opts.channels.workers(obj as unknown as WorkerEvent)
-          dispatched = true
         } else if (
           opts.channels.llm &&
           (obj.type === 'chunk' || obj.type === 'full')
         ) {
           opts.channels.llm.onEvent(obj as unknown as SseEvent)
-          dispatched = true
         }
 
-        if (dispatched) {
-          // Slice past the consumed JSON object so the next event
-          // starts fresh. This is the SINGLE buffer's whole point:
-          // one slice after a successful dispatch, regardless of
-          // which consumer matched.
-          defaultMessageBuf.value = defaultMessageBuf.value.slice(jsonEnd + 1)
-        }
-        // If none matched: drop the line silently (avoid log spam from
-        // the periodic `data: ping` heartbeat the SseClient filters).
+        // ALWAYS advance past the consumed JSON object, regardless of
+        // whether a consumer matched. The single-stream design means
+        // every default-message event MUST produce forward progress —
+        // if a caller subscribed only to `kanban` and the backend
+        // emits a worker-shaped default-message event, we must still
+        // slice past it so the buffer doesn't grow unboundedly.
+        // (Code Reviewer Critical Fix, 2026-06-30.)
+        defaultMessageBuf.value = defaultMessageBuf.value.slice(jsonEnd + 1)
       } catch (e) {
         console.error('[unifiedSSE] default message dispatch error:', e)
       }

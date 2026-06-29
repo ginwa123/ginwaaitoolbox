@@ -333,4 +333,133 @@ describe('createUnifiedSseConnection: single-buffer design (regression for Plan 
     // Worker cb was NOT called for the session event.
     expect(workersCb).toHaveBeenCalledTimes(1)
   })
+
+  /**
+   * Regression for Code Reviewer Critical Fix (2026-06-30):
+   * when the caller's `channels` set does NOT include a consumer for
+   * a default-message event shape the backend emits, the buffer
+   * MUST still advance past the event. Otherwise the buffer grows
+   * unboundedly on every dropped event.
+   *
+   * Setup: subscribe only to `kanban` (no workers/sessions/llm).
+   * Action: fire 50 worker-shaped default-message events (which no
+   * consumer will match), then fire 1 kanban named event.
+   * Expectation: the kanban callback fires (buffer didn't get
+   * corrupted). The buffer was advanced past every worker event
+   * even though no consumer matched.
+   *
+   * Without the fix: the buffer accumulates 50 worker events, then
+   * `indexOf('{')` and `lastIndexOf('}')` span ALL of them,
+   * producing malformed JSON, which trips `JSON.parse`, which
+   * slides 1 byte, and the buffer becomes a tangled mess — the
+   * kanban event never reaches the consumer.
+   */
+  it('advances the buffer past default-message events with no matching consumer', () => {
+    // Re-spy with a fresh mockImplementation (the describe-level
+    // spy already exists; just update its impl to capture the new
+    // onEvent arg from this test's createUnifiedSseConnection call).
+    spy.mockImplementation(((opts: sseClient.SseClientOptions) => {
+      capturedOnEvent = opts.onEvent
+      return {
+        close: vi.fn(),
+        reconnect: vi.fn(),
+        getState: () => 'open' as const,
+        onStateChange: () => () => {},
+      }
+    }) as unknown as typeof sseClient.createSseClient)
+
+    const kanbanCb = vi.fn()
+    // Note: NO workers/sessions/llm consumer — only kanban.
+    createUnifiedSseConnection({
+      channels: { kanban: kanbanCb },
+    })
+
+    // Fire 50 worker-shaped default-message events. None should
+    // dispatch (no workers consumer), but the buffer MUST advance.
+    for (let i = 0; i < 50; i++) {
+      capturedOnEvent!(
+        JSON.stringify({
+          action: 'updated',
+          id: `w-${i}`,
+          session_id: `task_${i}`,
+          working_directory: '/tmp/w',
+          last_activity: 0,
+          last_activity_description: 'tick',
+          created_at: '2026-06-30T00:00:00Z',
+        }),
+        'message',
+      )
+    }
+
+    // Now fire a kanban named event — it MUST reach the consumer.
+    // (If the buffer had been corrupted by accumulated bytes, the
+    // JSON.parse for the next default-message event would have
+    // failed silently and the kanban named-event branch would
+    // still work since named events are dispatched independently.
+    // To really catch the bug we need a default-message event AFTER
+    // the dropped events — see below.)
+    capturedOnEvent!(
+      JSON.stringify({
+        action: 'created',
+        workspace_id: 'ws-1',
+        item_id: 'item-1',
+        column_id: 'col-1',
+      }),
+      'kanban_column',
+    )
+
+    expect(kanbanCb).toHaveBeenCalledTimes(1)
+    // The bug doesn't fire the kanban cb with the right payload if
+    // the buffer had been corrupted. Verify the payload is intact.
+    expect(kanbanCb).toHaveBeenCalledWith(
+      expect.objectContaining({ column_id: 'col-1', action: 'created' }),
+    )
+
+    // Follow up: fire a VALID default-message event AFTER the dropped
+    // ones. If the buffer was tangled, this `indexOf('{')` would
+    // land inside the LAST dropped event, `lastIndexOf('}')` would
+    // land at the end of the kanban cb invocation's leftover
+    // bytes, the slice would be malformed JSON, JSON.parse would
+    // fail, and the cb would never fire. With the fix, the buffer
+    // is clean and the dispatch works.
+    const afterCb = vi.fn()
+    const client2 = createUnifiedSseConnection({
+      channels: {
+        kanban: () => {},
+        sessions: afterCb,
+      },
+    })
+    void client2
+
+    // Drop a worker event (no workers consumer — sessions-cb
+    // shouldn't fire either since neither discriminator matches).
+    capturedOnEvent!(
+      JSON.stringify({
+        action: 'updated',
+        id: 'w-x',
+        session_id: 'task_x',
+        working_directory: '/tmp/w',
+        last_activity: 0,
+        last_activity_description: 'tick',
+        created_at: '2026-06-30T00:00:00Z',
+      }),
+      'message',
+    )
+
+    // Now fire a session event — MUST dispatch cleanly.
+    capturedOnEvent!(
+      JSON.stringify({
+        action: 'updated',
+        id: 's-1',
+        name: 'S',
+        status: 'active',
+        cwd: '/tmp/s',
+        created_at: '2026-06-30T00:00:00Z',
+        updated_at: '2026-06-30T00:00:01Z',
+      }),
+      'message',
+    )
+
+    expect(afterCb).toHaveBeenCalledTimes(1)
+  })
 })
