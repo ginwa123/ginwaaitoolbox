@@ -1,26 +1,22 @@
 <script setup lang="ts">
-import { ref, provide, onMounted, onUnmounted } from 'vue'
+import { ref, provide, onMounted, onUnmounted, watch } from 'vue'
 import * as api from './api'
+import { installSseBus, useSseBus } from './helpers/sseBus'
 
 // LLM processing state - provided to child components
 // Object mapping sessionId to processing status (using object instead of Set for better reactivity)
 const processingState = ref<Record<string, boolean>>({})
 provide('processingState', processingState)
 
-// Global SSE connection for worker events. Now an `SseClient`
-// (the shared auto-reconnecting wrapper in `helpers/sseClient.ts`)
-// instead of a raw `EventSource` — see `docs/sse-reconnect-plan.md`
-// §1.1 for the two bugs this fixes (timer leak on unmount, stale
-// timer closing a working connection).
+// Handle worker event from the SSE bus. Migrated from an App.vue-owned
+// SseClient (Chunk 5 of the unify-SSE plan): the bus now owns the
+// `/api/events?channels=workers,sessions,kanban` connection, and App.vue
+// only subscribes to the `worker` channel via `bus.on('worker', cb)`.
 //
-// The previous per-channel `createWorkersSseConnection` factory was
-// retired with the unify-SSE plan (sessions + kanban are migrated in
-// Chunks 5 + 6; the workers channel is the only one App.vue owns).
-// The connection still hits `/api/events?channels=workers` under the
-// hood — see `createUnifiedSseConnection` in `api/index.ts`.
-let globalSse: api.SseClient | null = null
-
-// Handle worker event from SSE
+// The previous per-app `createUnifiedSseConnection` factory was retired
+// with the unify-SSE plan — see `docs/sse-reconnect-plan.md` §1.1 for
+// the two bugs the SseClient it used to wrap fixes (timer leak on
+// unmount, stale timer closing a working connection).
 const handleWorkerEvent = (event: api.WorkerEvent) => {
   console.log('[App] Worker event:', event)
 
@@ -44,46 +40,6 @@ const handleWorkerEvent = (event: api.WorkerEvent) => {
   }
 }
 
-// Initialize the GLOBAL SSE connection. The SseClient handles
-// exponential backoff (1s → 30s, full jitter), visibility-aware
-// pausing, and the `online` event fast-path, so we no longer
-// need the hand-rolled `setTimeout(reconnect, 5000)` — that
-// naive retry is exactly what the SseClient replaces.
-//
-// Migrated from the per-channel `createWorkersSseConnection`
-// factory to the unified `createUnifiedSseConnection` factory
-// (unify-sse-endpoints plan, Chunk 4). Only the `workers`
-// channel is wired here; sessions + kanban stay on their
-// store-scoped connections until Chunks 5 + 6 migrate them.
-const initGlobalSse = () => {
-  // Clean up existing connection
-  if (globalSse) {
-    globalSse.close()
-  }
-
-  globalSse = api.createUnifiedSseConnection({
-    channels: {
-      workers: handleWorkerEvent,
-    },
-    // onError is only invoked on TERMINAL failure (state went
-    // to `failed`). Transient errors are retried internally and
-    // do not fire this callback — the old behavior of logging
-    // every retry attempt was misleading, since a reconnect
-    // is not an error from the user's perspective.
-    onError: (error) => {
-      console.error('[App] Global SSE failed permanently:', error)
-    },
-    onConnected: () => {
-      console.log('[App] Global SSE connected')
-      // Initial fetch to sync state. This re-runs on every
-      // successful reconnect, which is what we want — a
-      // server restart that loses in-memory state should be
-      // re-synced on the next open.
-      fetchInitialWorkers()
-    },
-  })
-}
-
 // Fetch initial worker state (fallback for when SSE connection starts)
 const fetchInitialWorkers = async () => {
   try {
@@ -104,19 +60,52 @@ const fetchInitialWorkers = async () => {
 // Check if a session is processing
 const isProcessing = (sessionId: string) => !!processingState.value[sessionId]
 
+let offWorker: (() => void) | null = null
+
 onMounted(() => {
-  initGlobalSse()
+  // `installSseBus(app)` takes an `App` for future `provide()` use; the
+  // module-singleton implementation doesn't use it, so passing
+  // `undefined` is safe. The signature is left unchanged for now — see
+  // the plan note on Chunk 5.
+  //
+  // Idempotent: a second call (e.g. HMR re-mount, or App.vue's own
+  // install from `main.ts` mounting first) returns the same singleton.
+  const bus = installSseBus(undefined as any)
+  offWorker = bus.on('worker', handleWorkerEvent)
+
+  // Re-sync `processingState` from the DB on every (re)connect. The
+  // bus's underlying SseClient may have been `connecting` for a while
+  // (server restart, network drop), so the previous in-memory state
+  // (built from earlier `worker` events) is stale and may include
+  // sessions that no longer exist or omit new ones.
+  //
+  // `{ immediate: true }` covers the fast path where the SseClient
+  // is already `'open'` by the time the watcher is registered (the
+  // SseClient defers its first `start()` via `setTimeout(0)`, so
+  // there's a race between bus install and watch registration).
+  watch(
+    () => bus.state.value,
+    (s) => {
+      if (s === 'open') void fetchInitialWorkers()
+    },
+    { immediate: true },
+  )
 })
 
 onUnmounted(() => {
-  if (globalSse) {
-    // SseClient.close() removes its visibility/online listeners
-    // and cancels any pending retry timer — no more timer leak
-    // (the previous hand-rolled setTimeout could fire after
-    // unmount and create a dangling EventSource).
-    globalSse.close()
-    globalSse = null
+  // Unsubscribe the worker listener first so any in-flight event
+  // dispatched during the unmount window doesn't try to mutate
+  // unmounted reactive state.
+  if (offWorker) {
+    offWorker()
+    offWorker = null
   }
+  // Close the bus. Forwards to all underlying SseClients (global +
+  // any per-session). Terminal — removes visibility/online listeners,
+  // cancels retry timers (no timer leak that would create a dangling
+  // EventSource), and nulls the singleton so a subsequent `installSseBus`
+  // rebuilds from scratch.
+  useSseBus().close()
 })
 </script>
 
