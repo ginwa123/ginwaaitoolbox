@@ -154,7 +154,7 @@ test "parseChannels: queue:<sid> → queue_messages_<sid> as routing key" {
     try testing.expectEqualStrings("queue_messages_chat-abc", list.routing_keys[0]);
 }
 
-test "parseChannels: mixed 5 channels → 5 routing keys" {
+test "parseChannels: mixed 5 channels → 6 routing keys (kanban expands)" {
     const allocator = testing.allocator;
     const list = try parseChannels(allocator,
         "workers,sessions,kanban,llm:chat-1,queue:chat-1");
