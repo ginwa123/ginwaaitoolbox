@@ -84,6 +84,11 @@ pub const workersStreamHandler = @import("worker_sse.zig").workersStreamHandler;
 // onto one EventSource stream opened by the frontend.
 pub const kanbanEventsStreamHandler = @import("kanban_events_sse.zig").kanbanEventsStreamHandler;
 
+// Unified SSE handler — single endpoint that fans out all event families.
+// Replaces the 5 dedicated routes registered in main.zig. See
+// unified_events_sse.zig for the channel grammar (?channels=).
+pub const unifiedEventsStreamHandler = @import("unified_events_sse.zig").unifiedEventsStreamHandler;
+
 // Skills API handlers
 pub const skillsListHandler = @import("skills_list.zig").skillsListHandler;
 pub const skillDetailHandler = @import("skill_detail.zig").skillDetailHandler;

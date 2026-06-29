@@ -269,6 +269,10 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.sse("/api/sessions/stream", ai_mod.http_handlers.sessionsStreamHandler);
     // Kanban SSE — fans out kanban_column + kanban_task events onto one stream
     try gs.router.sse("/api/kanban/events", ai_mod.http_handlers.kanbanEventsStreamHandler);
+    // Unified SSE endpoint — single EventSource for all event families.
+    // Replaces the 5 dedicated routes above in Chunk 9 (cleanup).
+    // See src/ai_workflow/tui/http_handlers/unified_events_sse.zig.
+    try gs.router.sse("/api/events", ai_mod.http_handlers.unifiedEventsStreamHandler);
     // try gs.router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
     //
     // // Desktop app routes (system, health, workspaces)
