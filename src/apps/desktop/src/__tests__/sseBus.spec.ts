@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { createApp, type App } from 'vue'
 import { installSseBus, useSseBus, __resetSseBus } from '../helpers/sseBus'
 

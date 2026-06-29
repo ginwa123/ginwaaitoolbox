@@ -1,7 +1,7 @@
 // src/apps/desktop/src/helpers/sseBus.ts
 import type { App, ShallowRef } from 'vue'
 import { shallowRef } from 'vue'
-import type { SseClient, SseState } from './sseClient'
+import type { SseState } from './sseClient'
 import type {
   WorkerEvent,
   SessionEvent,
@@ -27,12 +27,52 @@ type SseEventMap = {
 type Listener<K extends keyof SseEventMap> = (event: SseEventMap[K]) => void
 
 export interface SseBus {
+  /**
+   * Register a listener for events of `type`. Returns an unsubscribe
+   * function. The same `cb` registered twice for the same `type`
+   * counts twice (callers must dedupe themselves). No-op if the bus
+   * is not yet installed.
+   */
   on<K extends keyof SseEventMap>(type: K, cb: Listener<K>): () => void
+  /**
+   * Remove a previously-registered listener. No-op if `cb` was not
+   * registered for `type`. No-op if the bus is not yet installed.
+   */
   off<K extends keyof SseEventMap>(type: K, cb: Listener<K>): void
+  /**
+   * Subscribe to session-scoped channels (`llm`, `queue`) for the
+   * given session id. Idempotent (refcount per sid — first call
+   * opens, last unsubscribe closes). No-op if the bus is not yet
+   * installed.
+   */
   subscribeSessionChannels(sessionId: string): void
+  /**
+   * Decrement the per-sid refcount; closes the underlying session
+   * stream when the last subscriber leaves. Refcount is per
+   * `sessionId`, so multiple `on()` registrations on the same sid
+   * still count as one logical subscriber. No-op if the bus is not
+   * yet installed or the sid was never subscribed.
+   */
   unsubscribeSessionChannels(sessionId: string): void
+  /**
+   * Reactive read of the current SSE connection state (one of
+   * `connecting | open | reconnecting | closed | failed`). Updates
+   * synchronously on every state transition emitted by the
+   * underlying `SseClient`.
+   */
   readonly state: ShallowRef<SseState>
+  /**
+   * Force a reconnect of the global (non-session-scoped) channels
+   * and reset the attempt counter. Use this for a user-driven
+   * "Retry" button on the `failed` badge. No-op if the bus is not
+   * yet installed.
+   */
   reconnectGlobal(): void
+  /**
+   * Close the bus. Terminal — stops all streams, clears retry
+   * timers, leaves the bus uninstalled (a subsequent `installSseBus`
+   * rebuilds it). Safe to call multiple times.
+   */
   close(): void
 }
 
@@ -63,7 +103,11 @@ export function useSseBus(): SseBus {
   return _instance
 }
 
-/** Test-only: clears the singleton + all listener state. */
+/**
+ * Test-only: clears the singleton. Listeners added in Chunk 2 must
+ * also be cleared here — extending this function is part of Chunk 2's
+ * work.
+ */
 export function __resetSseBus(): void {
   _instance = null
 }
