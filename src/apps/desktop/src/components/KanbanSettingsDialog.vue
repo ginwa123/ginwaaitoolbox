@@ -29,6 +29,7 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
 import KanbanColumnEditor from './KanbanColumnEditor.vue'
+import InlineEditableText from './InlineEditableText.vue'
 import type { WorkspaceItem } from '../stores/workspaces'
 
 const props = defineProps<{
@@ -43,6 +44,15 @@ const emit = defineEmits<{
     payload: { columnId: string; name: string; description: string },
   ]
   deleteColumn: [columnId: string]
+  /**
+   * Fired when the user renames the kanban via the inline pencil
+   * in the dialog header. The new name is the trimmed value the
+   * user entered. The host (AppLayout) delegates to
+   * workspacesStore.updateKanbanItemName.
+   *
+   * Plan: docs/superpowers/plans/2026-06-30-edit-workspace-item-name.md
+   */
+  renameItem: [name: string]
 }>()
 
 // ─── Add Column inline form state ────────────────────────────────────────
@@ -196,11 +206,15 @@ const sortedColumns = () => {
               >
                 <span aria-hidden="true">⚙️</span>
                 Kanban Settings
-                <span
+                <InlineEditableText
                   v-if="item"
-                  class="text-sm font-normal ml-1"
-                  style="color: var(--semantic-text-muted);"
-                >— {{ item.name }}</span>
+                  :value="item.name"
+                  :placeholder="'unnamed kanban'"
+                  :ariaLabel="'kanban name'"
+                  :testId="`kanban-settings-rename`"
+                  display-class="text-sm font-normal ml-1"
+                  @save="(newName) => emit('renameItem', newName)"
+                />
               </h3>
               <button
                 type="button"
