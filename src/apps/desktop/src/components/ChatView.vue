@@ -37,6 +37,10 @@ import SetGitWorktree from './tool_outputs/SetGitWorktree.vue'
 import ReadCompactedMessages from './tool_outputs/ReadCompactedMessages.vue'
 import KanbanMove from './tool_outputs/KanbanMove.vue'
 import KanbanList from './tool_outputs/KanbanList.vue'
+import SubAgentPeekPanel from './nalar/SubAgentPeekPanel.vue'
+import { useNavigationStore } from '../stores/navigation'
+import { useSubAgentPeek } from '../composables/useSubAgentPeek'
+import { useRouter } from 'vue-router'
 import CompactionCard from './CompactionCard.vue'
 import SkillsPopup from './SkillsPopup.vue'
 import ImagePreview from './ImagePreview.vue'
@@ -376,6 +380,42 @@ const isLLMProcessing = computed(() => !!processingState.value[sessionId.value])
 // Pagination state
 const messageCursor = ref<string | null>(null)
 const PAGE_SIZE = 1000
+
+// ── Sub-agent peek ────────────────────────────────────────────────
+// Owns the slide-over panel for watching a single sub-agent's
+// progress. The composable is only mounted when `peekPanel` is
+// non-null (lazy) so we don't open SSE channels speculatively.
+//
+// Two flows reach the panel:
+//   1. 👁 click on a <SpawnSubAgent> row  →  SpawnSubAgent emits
+//      `peek`  →  ChatView calls `nav.openPeek(payload)`. The
+//      composable mounts on the next render.
+//   2. "Open full" in the panel  →  panel emits `openFull(sid)`
+//      →  ChatView closes the peek + navigates the URL to switch
+//      the main chat view to the sub-agent's session.
+const nav = useNavigationStore()
+const router = useRouter()
+
+// Lazy: only call useSubAgentPeek when a panel is open (otherwise
+// the composable's onMounted would fire a fetch unconditionally).
+const peek = computed(() => {
+  const payload = nav.peekPanel
+  if (!payload) return null
+  return useSubAgentPeek({
+    sessionId: payload.sessionId,
+    agentName: payload.agentName,
+    instruction: payload.instruction,
+  })
+})
+
+/**
+ * Handler for the panel's `openFull` event — closes the peek and
+ * navigates to the sub-agent's own chat view in the main panel.
+ */
+function onPeekOpenFull(sessionId: string) {
+  nav.closePeek()
+  router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
+}
 
 // SSE connection. Both streams are now `api.SseClient` (the
 // shared auto-reconnecting wrapper) instead of raw `EventSource`.
@@ -2203,6 +2243,7 @@ const compactSession = async () => {
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                             :sub-agent-args="findSubAgentArgsForToolGroup(msg.tool_call_id, messageGroups, groupIndex)"
+                            @peek="nav.openPeek($event)"
                           />
                           <NalarBrowser
                             v-else-if="msg.tool_name === 'nalar_browser'"
@@ -2623,6 +2664,24 @@ const compactSession = async () => {
       :initial-cwd="cwd"
       @create="onCreateWorktree"
       @close="showCreateWorktreeDialog = false"
+    />
+
+    <!-- Sub-agent peek panel — slide-over from the right.
+         Renders only when navigationStore.peekPanel is set;
+         teardown happens when ChatView unmounts (route change
+         away from this chat). -->
+    <SubAgentPeekPanel
+      v-if="nav.peekPanel && peek"
+      :session-id="nav.peekPanel.sessionId"
+      :agent-name="nav.peekPanel.agentName"
+      :instruction="nav.peekPanel.instruction"
+      :status="peek.status.value"
+      :error-message="peek.errorMessage.value"
+      :messages="peek.messages.value"
+      :total-tokens="peek.totalTokens.value"
+      @close="nav.closePeek()"
+      @open-full="onPeekOpenFull"
+      @reload="peek.reload"
     />
   </div>
 </template>
