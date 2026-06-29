@@ -1954,6 +1954,219 @@ export function createKanbanSseConnection(
   })
 }
 
+/**
+ * Unified SSE channel options.
+ *
+ * Each property is a per-channel callback. Only the keys present in
+ * `channels` are subscribed on the backend (passed as the
+ * `?channels=` query param). The factory always registers all
+ * known named event types (`kanban_column`, `kanban_task`,
+ * `queue_message`) with the SseClient so the browser dispatches
+ * them; the actual dispatch to a consumer's callback is filtered
+ * by `eventType` + a payload-shape check inside the factory.
+ */
+export interface UnifiedChannels {
+  workers?: (event: WorkerEvent) => void
+  sessions?: (event: SessionEvent) => void
+  kanban?: (event: KanbanColumnEvent | KanbanTaskEvent) => void
+  llm?: { sessionId: string; onEvent: (event: SseEvent) => void }
+  queue?: { sessionId: string; onEvent: (event: QueueMessageEvent) => void }
+}
+
+export interface UnifiedSseOptions {
+  channels: UnifiedChannels
+  onError?: (error: Event) => void
+  onConnected?: () => void
+}
+
+/**
+ * Open ONE EventSource that fans out every event family the caller
+ * wired up. Replaces the 5 dedicated `create*SseConnection` factories
+ * (workers / sessions / kanban / queue / llm) — they all route to
+ * `/api/events?channels=…` under the hood.
+ *
+ * **Why "1 SSE endpoint" doesn't mean "1 EventSource globally":**
+ * Chat-scoped channels (`llm:<sid>`, `queue:<sid>`) are inherently
+ * bounded by the chat's lifetime. Opening the connection with the
+ * global channels (`workers`, `sessions`, `kanban`) and swapping
+ * `?channels=` on every chat-view mount would cost 1 reconnect per
+ * navigation. Instead, we use 2 EventSources per app:
+ *   - 1 in App.vue (the global SSE; `workers+sessions+kanban`)
+ *   - 1 in ChatView.vue (the chat SSE; `llm:<sid>+queue:<sid>`)
+ *
+ * The backend's `/api/events` endpoint is identical for both — it's
+ * the SINGLE SSE endpoint in main.zig that the user requested.
+ *
+ * Plan: docs/superpowers/plans/2026-06-30-unify-sse-endpoints.md
+ */
+export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
+  // 1. Build the ?channels= comma-separated list.
+  const tokens: string[] = []
+  if (opts.channels.workers) tokens.push('workers')
+  if (opts.channels.sessions) tokens.push('sessions')
+  if (opts.channels.kanban) tokens.push('kanban')
+  if (opts.channels.llm) tokens.push(`llm:${opts.channels.llm.sessionId}`)
+  if (opts.channels.queue) tokens.push(`queue:${opts.channels.queue.sessionId}`)
+
+  // Empty subscriptions are meaningless; the backend would 400 anyway.
+  // Throw early with a developer-friendly message.
+  if (tokens.length === 0) {
+    throw new Error('createUnifiedSseConnection: opts.channels is empty')
+  }
+
+  // Per-channel JSON buffer for the 3 unnamed default `message` events
+  // (workers, sessions, llm). The 'kanban_column', 'kanban_task', and
+  // 'queue_message' named events carry complete single-line JSON in
+  // one `data:` frame, so they don't need a buffer. The 'connected'
+  // event is auto-parsed by the SseClient.
+  //
+  // ONE shared buffer (not 3 per-channel buffers) — the SSE wire format
+  // is a SINGLE stream of `data:` lines; the buffer holds the
+  // accumulated bytes until a complete JSON object is parsed, then
+  // the consumer that matches the shape dispatches and the buffer is
+  // sliced past the consumed bytes. Using N buffers and feeding all
+  // of them the same bytes leaks memory on the long-lived global
+  // SSE — see Plan Reviewer finding #1.
+  const defaultMessageBuf = { value: '' }
+
+  return createSseClient({
+    url: `${API_BASE}/events?channels=${tokens.join(',')}`,
+    onConnected: opts.onConnected,
+    // The 3 named event types must be pre-registered — the browser's
+    // EventSource only dispatches each `event: <name>` to listeners
+    // registered for that exact name. See the SseClient JSDoc + the
+    // project memory browser-eventsource-named-events.md.
+    additionalEventTypes: ['kanban_column', 'kanban_task', 'queue_message'],
+    // Default heartbeat filter (matches backend sse_manager.sendHeartbeat).
+    heartbeatData: 'ping',
+    onEvent: (raw: string, eventType: string) => {
+      if (eventType === 'connected') {
+        // Reset the buffer on (re)connect — leftover bytes from the
+        // previous connection would corrupt the next parse.
+        defaultMessageBuf.value = ''
+        return
+      }
+
+      // Named events: dispatch by eventType.
+      if (eventType === 'kanban_column' || eventType === 'kanban_task') {
+        if (!opts.channels.kanban) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.kanban(data as KanbanColumnEvent | KanbanTaskEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] kanban event parse failed:', err, raw)
+        }
+        return
+      }
+
+      if (eventType === 'queue_message') {
+        if (!opts.channels.queue) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.queue.onEvent(data as QueueMessageEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] queue event parse failed:', err, raw)
+        }
+        return
+      }
+
+      // Default `message` events: 3 distinct JSON shapes, differentiated
+      // by which consumer registered the channel. The backend sends
+      // these as multi-line JSON strings (one `data:` line per JSON
+      // object's newline-delimited line), so we accumulate + parse
+      // in a single shared buffer, then dispatch by JSON-shape check.
+      //
+      // Shape discrimination: `action` is present in worker and session
+      // events but NOT in LLM chunk/full events (LLM uses `type`).
+      // - `{action, id, working_directory, ...}`    → WorkerEvent
+      // - `{action, id, name, status, cwd, ...}`   → SessionEvent
+      // - `{type, content, session_id, ...}`      → SseEvent (LLM)
+      //
+      // Single buffer (not per-channel): the SSE wire format is ONE
+      // stream; each `data:` line goes to exactly one consumer based on
+      // its shape. After dispatch, the buffer is sliced past the
+      // consumed JSON object so the next event starts fresh.
+      try {
+        const trimmed = raw.trim()
+        if (!trimmed) return
+
+        defaultMessageBuf.value += trimmed + '\n'
+        const jsonStart = defaultMessageBuf.value.indexOf('{')
+        const jsonEnd = defaultMessageBuf.value.lastIndexOf('}')
+        if (jsonStart === -1 || jsonEnd === -1 || jsonEnd <= jsonStart) {
+          // Incomplete JSON object — wait for more bytes. If the
+          // buffer grows unbounded (e.g. server sends invalid JSON),
+          // a future fix could add a size guard; current callers
+          // trust the backend's wire format.
+          return
+        }
+        const jsonStr = defaultMessageBuf.value.slice(jsonStart, jsonEnd + 1)
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(jsonStr)
+        } catch {
+          // Invalid JSON; drop the leading bytes and keep accumulating.
+          // (Defensive — the backend's std.json.fmt should always
+          // emit valid JSON. But a buggy future emitter shouldn't
+          // crash the SSE.)
+          defaultMessageBuf.value = defaultMessageBuf.value.slice(jsonStart + 1)
+          return
+        }
+
+        const obj = parsed as Record<string, unknown>
+        let dispatched = false
+        // Order matters: check session BEFORE worker because both have
+        // `action`; the discriminator is `working_directory` (worker
+        // has it, session doesn't) plus `status` (session has it,
+        // worker doesn't). Either combination uniquely identifies.
+        if (
+          opts.channels.sessions &&
+          typeof obj.action === 'string' &&
+          typeof obj.status === 'string' &&
+          typeof obj.cwd === 'string'
+        ) {
+          opts.channels.sessions(obj as unknown as SessionEvent)
+          dispatched = true
+        } else if (
+          opts.channels.workers &&
+          typeof obj.action === 'string' &&
+          typeof obj.working_directory === 'string'
+        ) {
+          opts.channels.workers(obj as unknown as WorkerEvent)
+          dispatched = true
+        } else if (
+          opts.channels.llm &&
+          (obj.type === 'chunk' || obj.type === 'full')
+        ) {
+          opts.channels.llm.onEvent(obj as unknown as SseEvent)
+          dispatched = true
+        }
+
+        if (dispatched) {
+          // Slice past the consumed JSON object so the next event
+          // starts fresh. This is the SINGLE buffer's whole point:
+          // one slice after a successful dispatch, regardless of
+          // which consumer matched.
+          defaultMessageBuf.value = defaultMessageBuf.value.slice(jsonEnd + 1)
+        }
+        // If none matched: drop the line silently (avoid log spam from
+        // the periodic `data: ping` heartbeat the SseClient filters).
+      } catch (e) {
+        console.error('[unifiedSSE] default message dispatch error:', e)
+      }
+    },
+    onStateChange: (state, info) => {
+      // Match the convention of the 5 old factories: terminal-failure
+      // only. Transient errors are retried internally by the SseClient.
+      // See memory nalar-sse-incomplete-chunked-encoding.md for why
+      // ChatView's isStreaming flag flips ONLY on 'failed'.
+      if (state === 'failed') {
+        opts.onError?.(info.lastError ?? new Event('error'))
+      }
+    },
+  })
+}
+
 // Nalar Config API
 export interface NalarProfile {
   model?: string
