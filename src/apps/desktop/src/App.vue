@@ -7,12 +7,18 @@ import * as api from './api'
 const processingState = ref<Record<string, boolean>>({})
 provide('processingState', processingState)
 
-// SSE connection for worker events. Now a `SseClient` (the
-// shared auto-reconnecting wrapper in `helpers/sseClient.ts`)
+// Global SSE connection for worker events. Now an `SseClient`
+// (the shared auto-reconnecting wrapper in `helpers/sseClient.ts`)
 // instead of a raw `EventSource` — see `docs/sse-reconnect-plan.md`
 // §1.1 for the two bugs this fixes (timer leak on unmount, stale
 // timer closing a working connection).
-let workersSse: api.SseClient | null = null
+//
+// The previous per-channel `createWorkersSseConnection` factory was
+// retired with the unify-SSE plan (sessions + kanban are migrated in
+// Chunks 5 + 6; the workers channel is the only one App.vue owns).
+// The connection still hits `/api/events?channels=workers` under the
+// hood — see `createUnifiedSseConnection` in `api/index.ts`.
+let globalSse: api.SseClient | null = null
 
 // Handle worker event from SSE
 const handleWorkerEvent = (event: api.WorkerEvent) => {
@@ -38,36 +44,44 @@ const handleWorkerEvent = (event: api.WorkerEvent) => {
   }
 }
 
-// Initialize SSE connection for workers. The SseClient handles
+// Initialize the GLOBAL SSE connection. The SseClient handles
 // exponential backoff (1s → 30s, full jitter), visibility-aware
 // pausing, and the `online` event fast-path, so we no longer
 // need the hand-rolled `setTimeout(reconnect, 5000)` — that
 // naive retry is exactly what the SseClient replaces.
-const initWorkersSse = () => {
+//
+// Migrated from the per-channel `createWorkersSseConnection`
+// factory to the unified `createUnifiedSseConnection` factory
+// (unify-sse-endpoints plan, Chunk 4). Only the `workers`
+// channel is wired here; sessions + kanban stay on their
+// store-scoped connections until Chunks 5 + 6 migrate them.
+const initGlobalSse = () => {
   // Clean up existing connection
-  if (workersSse) {
-    workersSse.close()
+  if (globalSse) {
+    globalSse.close()
   }
 
-  workersSse = api.createWorkersSseConnection(
-    handleWorkerEvent,
+  globalSse = api.createUnifiedSseConnection({
+    channels: {
+      workers: handleWorkerEvent,
+    },
     // onError is only invoked on TERMINAL failure (state went
     // to `failed`). Transient errors are retried internally and
     // do not fire this callback — the old behavior of logging
     // every retry attempt was misleading, since a reconnect
     // is not an error from the user's perspective.
-    (error) => {
-      console.error('[App] Workers SSE failed permanently:', error)
+    onError: (error) => {
+      console.error('[App] Global SSE failed permanently:', error)
     },
-    () => {
-      console.log('[App] Workers SSE connected')
+    onConnected: () => {
+      console.log('[App] Global SSE connected')
       // Initial fetch to sync state. This re-runs on every
       // successful reconnect, which is what we want — a
       // server restart that loses in-memory state should be
       // re-synced on the next open.
       fetchInitialWorkers()
     },
-  )
+  })
 }
 
 // Fetch initial worker state (fallback for when SSE connection starts)
@@ -91,17 +105,17 @@ const fetchInitialWorkers = async () => {
 const isProcessing = (sessionId: string) => !!processingState.value[sessionId]
 
 onMounted(() => {
-  initWorkersSse()
+  initGlobalSse()
 })
 
 onUnmounted(() => {
-  if (workersSse) {
+  if (globalSse) {
     // SseClient.close() removes its visibility/online listeners
     // and cancels any pending retry timer — no more timer leak
     // (the previous hand-rolled setTimeout could fire after
     // unmount and create a dangling EventSource).
-    workersSse.close()
-    workersSse = null
+    globalSse.close()
+    globalSse = null
   }
 })
 </script>
