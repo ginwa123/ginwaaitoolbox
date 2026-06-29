@@ -1,7 +1,7 @@
 // src/apps/desktop/src/helpers/sseBus.ts
 import type { App, ShallowRef } from 'vue'
 import { shallowRef } from 'vue'
-import type { SseClient, SseState } from './sseClient'
+import type { SseClient, SseState, SseStateInfo } from './sseClient'
 import { createUnifiedSseConnection } from '../api'
 import type {
   WorkerEvent,
@@ -96,6 +96,21 @@ let _instance: SseBus | null = null
 type DispatchFn = <K extends keyof SseEventMap>(type: K, event: SseEventMap[K]) => void
 let _dispatch: DispatchFn | null = null
 
+// Module-level handle to the currently-installed global SseClient.
+// Populated by `installSseBus` (and by `__setSseBusGlobalClient` when
+// tests swap the client). Read by `__getSseBusGlobalClient` so tests
+// can assert which client is wired in. Cleared in `close()` and
+// `__resetSseBus` so a fresh test starts with `null`.
+let _globalClient: SseClient | null = null
+
+// Module-level unsubscribe for the `onStateChange` listener that
+// mirrors the global SseClient's state into the bus's public
+// `state` ShallowRef. Stashed here so `__setSseBusGlobalClient`
+// can detach the OLD client's listener before swapping — without
+// this handle, replacing the client would leak the old listener
+// (each `onStateChange` call adds to the array without bound).
+let _stateUnsub: (() => void) | null = null
+
 export function installSseBus(_app: App): SseBus {
   if (_instance) return _instance
 
@@ -133,11 +148,15 @@ export function installSseBus(_app: App): SseBus {
   // Mirror SseClient state into our ShallowRef so the badge can
   // read it. `getState()` returns the initial value
   // ('connecting', set by createSseClient); subsequent transitions
-  // arrive via `onStateChange`.
+  // arrive via `onStateChange`. The unsub is stashed in a
+  // module-level handle so `__setSseBusGlobalClient` can detach
+  // it before swapping the client (otherwise the OLD client's
+  // listener would keep firing into the NEW client's ShallowRef).
   state.value = globalClient.getState()
-  globalClient.onStateChange((s) => {
+  _stateUnsub = globalClient.onStateChange((s, _info: SseStateInfo) => {
     state.value = s
   })
+  _globalClient = globalClient
 
   function dispatch<K extends keyof SseEventMap>(
     type: K,
@@ -231,6 +250,14 @@ export function installSseBus(_app: App): SseBus {
       sessionClients.clear()
       sessionRefcounts.clear()
       globalClient.close()
+      // Detach the state-mirror listener and clear the test-only
+      // handles so a subsequent `installSseBus` starts clean (and
+      // `__getSseBusGlobalClient()` returns null after close).
+      if (_stateUnsub) {
+        _stateUnsub()
+        _stateUnsub = null
+      }
+      _globalClient = null
       _dispatch = null
       _instance = null
     },
@@ -253,6 +280,15 @@ export function __resetSseBus(): void {
   if (_instance) {
     _instance.close()
   }
+  // `close()` already nulls `_stateUnsub` + `_globalClient` +
+  // `_dispatch`, but be defensive in case `__resetSseBus` is called
+  // before `installSseBus` (when `_instance` is null) AND a previous
+  // test leaked module-level state via a partial swap.
+  _globalClient = null
+  if (_stateUnsub) {
+    _stateUnsub()
+    _stateUnsub = null
+  }
   _instance = null
   _dispatch = null
 }
@@ -268,4 +304,57 @@ export function __dispatchSseBus<K extends keyof SseEventMap>(
   event: SseEventMap[K],
 ): void {
   _dispatch?.(type, event)
+}
+
+/**
+ * Test-only: replaces the global SseClient and re-wires the state
+ * mirror. Closes the previous global client (if any) and detaches
+ * the old `onStateChange` listener before subscribing the new
+ * client's listener. Updates the bus's public `state` ShallowRef
+ * to the new client's initial state so observers see the swap
+ * immediately. No-op if the bus is not installed.
+ *
+ * Used by the migration test files (Chunks 5-7) to drive the
+ * SSE state badge behavior — the production code paths under test
+ * react to `bus.state.value` transitions, not to the underlying
+ * `EventSource` lifecycle.
+ */
+export function __setSseBusGlobalClient(client: SseClient): void {
+  if (!_instance) return
+  // Detach the OLD client's state listener first so it doesn't keep
+  // firing into the bus's ShallowRef after we swap.
+  if (_stateUnsub) {
+    _stateUnsub()
+    _stateUnsub = null
+  }
+  // Close the old client (terminal — no further state transitions).
+  // Only when it's a different instance — the same object passed in
+  // twice would close-then-resubscribe-onto-the-same-thing, which is
+  // fine but wasteful.
+  if (_globalClient && _globalClient !== client) {
+    _globalClient.close()
+  }
+  _globalClient = client
+  _stateUnsub = client.onStateChange((s, _info: SseStateInfo) => {
+    // Defensive: `_instance` could theoretically be nulled out
+    // by a concurrent `close()` between the check above and this
+    // callback firing.
+    if (_instance) {
+      _instance.state.value = s
+    }
+  })
+  // Update the public ShallowRef so observers see the new initial
+  // state synchronously — they shouldn't have to wait for the new
+  // client to emit its first transition.
+  _instance.state.value = client.getState()
+}
+
+/**
+ * Test-only: returns the currently-installed global SseClient, or
+ * null if the bus is not yet installed (or has been closed).
+ * Useful for asserting that `__setSseBusGlobalClient` swapped the
+ * right client, and for spying on `.close()` to verify cleanup.
+ */
+export function __getSseBusGlobalClient(): SseClient | null {
+  return _globalClient
 }
