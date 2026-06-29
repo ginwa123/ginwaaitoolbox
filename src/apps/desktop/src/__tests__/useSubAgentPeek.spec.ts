@@ -209,4 +209,131 @@ describe('useSubAgentPeek (skeleton)', () => {
     })
     expect(peek.totalTokens.value).toBe(0)
   })
+
+  // ── Chunk 2 — chunk accumulation tests ──────────────────────────────────
+  // Use the wired SSE onEvent callback to simulate streaming chunks
+  // arriving for an open sub-agent.
+
+  /**
+   * Drive streaming chunks via the registered SSE callback. Returns
+   * the composable's peek so callers can assert on the final state.
+   */
+  async function runChunkScenario(
+    initialMessages: Message[],
+    chunks: Array<{
+      id?: string
+      role?: 'user' | 'assistant' | 'system' | 'tool'
+      content?: string
+      tool_calls_json?: unknown
+      tool_call_id?: string
+      tool_name?: string
+      finish_reason?: string
+      total_tokens?: number
+    }>,
+  ) {
+    mockFetchOnce(200, { messages: initialMessages, has_more: false, next_cursor: null })
+    const { peek } = mountWith({
+      sessionId: 'subagent_chunk_test',
+      agentName: 'chunk-test',
+      instruction: 'do X',
+    })
+    await flushPromises()
+
+    const sseCall = mockedCreateUnified.mock.calls[0]?.[0]
+    expect(sseCall).toBeTruthy()
+    const onEvent = (
+      sseCall as { channels: { llm: { onEvent: (ev: unknown) => void } } }
+    ).channels.llm.onEvent
+
+    for (const chunk of chunks) {
+      onEvent(chunk as unknown as Parameters<typeof onEvent>[0])
+      await nextTick()
+    }
+    return peek
+  }
+
+  it('appends a content chunk to an in-progress assistant message (find-or-create by id)', async () => {
+    const initial = msgs([
+      { id: 'm1', role: 'user', content: 'do X', created_at: 1000 },
+    ])
+    const peek = await runChunkScenario(initial, [
+      // First SSE chunk for assistant message id=a1 — creates it
+      { id: 'a1', role: 'assistant', content: 'Hello' },
+      // Second chunk — appends to the existing a1
+      { id: 'a1', role: 'assistant', content: ' world' },
+      // Third chunk with finish_reason — closes the bubble
+      { id: 'a1', role: 'assistant', content: '!', finish_reason: 'stop' },
+    ])
+
+    expect(peek.messages.value).toHaveLength(2)
+    const last = peek.messages.value[peek.messages.value.length - 1]!
+    expect(last.id).toBe('a1')
+    expect(last.content).toBe('Hello world!')
+    expect(last.finish_reason).toBe('stop')
+    expect(peek.status.value).toBe('complete')
+  })
+
+  it('creates a new message when SSE chunk has no matching id', async () => {
+    // No initial fetch — patch fetchMock to return empty
+    fetchMock.mockReset()
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ messages: [], has_more: false, next_cursor: null }),
+      text: () => Promise.resolve('{"messages":[]}'),
+    } as Response)
+
+    const { peek } = mountWith({
+      sessionId: 'subagent_new_msg',
+      agentName: 'new-msg',
+      instruction: 'do X',
+    })
+    await flushPromises()
+
+    const sseCall = mockedCreateUnified.mock.calls[0]?.[0] as {
+      channels: { llm: { onEvent: (ev: unknown) => void } }
+    }
+    sseCall.channels.llm.onEvent({ id: 'x1', role: 'tool', content: 'r', tool_call_id: 'call_1' })
+    await nextTick()
+
+    expect(peek.messages.value).toHaveLength(1)
+    expect(peek.messages.value[0]?.role).toBe('tool')
+    expect(peek.messages.value[0]?.tool_call_id).toBe('call_1')
+  })
+
+  it('tracks total_tokens from SSE chunks', async () => {
+    const initial = msgs([
+      { id: 'a1', role: 'assistant', content: '', created_at: 1000 },
+    ])
+    const peek = await runChunkScenario(initial, [
+      { id: 'a1', role: 'assistant', content: 'partial', total_tokens: 4217 },
+      { id: 'a1', role: 'assistant', content: 'more', total_tokens: 5102, finish_reason: 'stop' },
+    ])
+
+    expect(peek.totalTokens.value).toBe(5102)
+  })
+
+  it('keeps status=streaming while chunks arrive without finish_reason', async () => {
+    const initial = msgs([{ id: 'a1', role: 'assistant', content: '', created_at: 1000 }])
+    const peek = await runChunkScenario(initial, [
+      { id: 'a1', role: 'assistant', content: 'chunk 1' },
+      { id: 'a1', role: 'assistant', content: 'chunk 2' },
+    ])
+    expect(peek.status.value).toBe('streaming')
+  })
+
+  it('marks complete on tool_calls finish_reason (sub-agent waits for tool result next)', async () => {
+    const initial = msgs([
+      { id: 'a1', role: 'assistant', content: '', created_at: 1000 },
+    ])
+    const peek = await runChunkScenario(initial, [
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'calling tool',
+        finish_reason: 'tool_calls',
+      },
+    ])
+    expect(peek.status.value).toBe('complete')
+  })
 })

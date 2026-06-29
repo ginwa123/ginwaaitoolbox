@@ -40,19 +40,108 @@ export interface UseSubAgentPeekReturn {
 }
 
 /**
- * Internal — wraps a single chunk's payload and applies it to the
- * messages ref. Implemented in Chunk 2 (currently a no-op so the
- * skeleton compiles and the initial-fetch test passes).
+ * Internal — wraps a single SSE chunk and applies it to the messages
+ * ref. The chunk shapes we care about:
+ *
+ *   1. role='assistant' with id=X, content='partial'
+ *      → find the message with id=X (or append a new one) and APPEND
+ *        content to it; if finish_reason is set, mark status=complete.
+ *   2. role='assistant' with tool_calls attached to id=X
+ *      → attach the tool_calls payload to the assistant message with
+ *        id=X (so the panel can render the tool-cards inline).
+ *   3. role='tool' with tool_call_id='call_xyz', content='result'
+ *      → append a NEW tool-result message; paired by tool_call_id to
+ *        the assistant's tool_calls entry.
+ *
+ * The function is intentionally permissive (tolerant of nullable
+ * fields) because the SSE can race with the initial REST fetch —
+ * the server may emit a chunk for a message that's already in
+ * `messages`. The find-by-id path uses immutable splice so Vue
+ * picks up the change reliably.
+ *
+ * Note: `ev.tool_calls` (SSE wire field) is renamed to
+ * `tool_calls_json` (Message interface field) on the wire boundary.
  */
 function applyChunkToMessages(
-  _messages: Ref<Message[]>,
-  _ev: SseEvent,
-  _totalTokens: Ref<number>,
-  _status: Ref<PeekStatus>,
+  messages: Ref<Message[]>,
+  ev: SseEvent,
+  totalTokens: Ref<number>,
+  status: Ref<PeekStatus>,
 ): void {
-  // TODO Chunk 2: find-or-append the message matching ev.id; if
-  // tool_call_id is set, append a new tool result message; flip
-  // status to 'complete' on finish_reason.
+  // Token-usage accounting — applied regardless of role.
+  if (typeof ev.total_tokens === 'number' && !Number.isNaN(ev.total_tokens)) {
+    totalTokens.value = ev.total_tokens
+  }
+
+  // Tool-result chunks — always create a NEW message keyed by
+  // tool_call_id (the panel groups them with the assistant call).
+  if (ev.role === 'tool' && ev.tool_call_id) {
+    // Cast role='tool' through unknown — the public Message interface
+    // doesn't list 'tool' as a role (only user/assistant/system), but
+    // tool-result messages do arrive on the wire in practice.
+    const newMsg = {
+      id: ev.id ?? `tool-${ev.tool_call_id}`,
+      role: 'tool',
+      content: ev.content ?? '',
+      created_at: ev.created_at ?? Math.floor(Date.now() / 1000),
+      tool_call_id: ev.tool_call_id,
+      tool_name: ev.tool_name,
+      finish_reason: ev.finish_reason ?? undefined,
+    } as unknown as Message
+    messages.value = [...messages.value, newMsg]
+  } else {
+    // Assistant / user chunks — find-or-create by ev.id.
+    const chunkId = ev.id
+    const existingIdx = chunkId
+      ? messages.value.findIndex((m) => m.id === chunkId)
+      : -1
+
+    if (existingIdx >= 0) {
+      // Append / update the existing message in place (immutable splice).
+      const existing = messages.value[existingIdx]!
+      const updated: Message = {
+        ...existing,
+        content: (existing.content ?? '') + (ev.content ?? ''),
+        finish_reason: ev.finish_reason ?? existing.finish_reason,
+        // tool_calls_json / tool_name arrive on the assistant turn that
+        // emits a tool call; preserve them across subsequent content chunks.
+        tool_calls_json: (ev as { tool_calls?: unknown }).tool_calls ?? existing.tool_calls_json,
+        tool_name: ev.tool_name ?? existing.tool_name,
+      }
+      const arr = messages.value.slice()
+      arr[existingIdx] = updated
+      messages.value = arr
+    } else {
+      // No matching id — append a new message.
+      if (ev.content || (ev as { tool_calls?: unknown }).tool_calls || ev.role) {
+        const newMsg = {
+          id: ev.id ?? `sse-${Math.floor(Date.now() / 1000)}-${Math.random().toString(36).slice(2, 8)}`,
+          role: (ev.role as Message['role']) ?? 'assistant',
+          content: ev.content ?? '',
+          created_at: ev.created_at ?? Math.floor(Date.now() / 1000),
+          tool_name: ev.tool_name,
+          tool_calls_json: (ev as { tool_calls?: unknown }).tool_calls,
+          finish_reason: ev.finish_reason ?? undefined,
+        } as Message
+        messages.value = [...messages.value, newMsg]
+      }
+    }
+  }
+
+  // Completion detection — applied to any chunk that carries a
+  // finish_reason. Note: a `finish_reason: 'tool_calls'` means
+  // "assistant stopped to await a tool result", which we count as
+  // complete for the panel UI (the sub-agent will either come back
+  // with the tool result SSE or fail). A `finish_reason: 'stop'` is
+  // the terminal state.
+  if (
+    ev.finish_reason === 'stop' ||
+    ev.finish_reason === 'length' ||
+    ev.finish_reason === 'tool_calls' ||
+    ev.finish_reason === 'content_filter'
+  ) {
+    status.value = 'complete'
+  }
 }
 
 export function useSubAgentPeek(opts: UseSubAgentPeekOptions): UseSubAgentPeekReturn {
