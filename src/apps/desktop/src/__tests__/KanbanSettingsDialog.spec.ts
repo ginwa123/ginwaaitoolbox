@@ -273,4 +273,30 @@ describe('KanbanSettingsDialog', () => {
       'Finished work awaiting review',
     )
   })
+
+  // ─── Inline rename pencil (2026-06-30 — header rename) ─────────────────
+  //
+  // The header inline-rename pencil (InlineEditableText primitive)
+  // wraps the kanban name in the settings dialog title. Clicking
+  // it swaps to edit mode; pressing Save emits `rename-item` with
+  // the trimmed new value, which the host (AppLayout) delegates to
+  // workspacesStore.updateKanbanItemName.
+
+  it('emits renameItem with the new name when the header pencil saves', async () => {
+    const w = mountDialog()
+    await flushPromises()
+    // 1. Click the display span to enter edit mode.
+    clickInDom('[data-testid="kanban-settings-rename-display"]')
+    await flushPromises()
+    // 2. Edit the input value.
+    setInputValue('[data-testid="kanban-settings-rename-input"]', 'Sprint 13')
+    await flushPromises()
+    // 3. Click Save.
+    clickInDom('[data-testid="kanban-settings-rename-save"]')
+    await flushPromises()
+
+    const emitted = w!.emitted('renameItem')
+    expect(emitted).toBeTruthy()
+    expect(emitted![0]).toEqual(['Sprint 13'])
+  })
 })

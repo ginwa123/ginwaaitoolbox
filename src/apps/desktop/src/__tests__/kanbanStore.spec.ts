@@ -664,4 +664,63 @@ describe('useWorkspacesStore — kanban actions', () => {
       consoleErrorSpy.mockRestore()
     })
   })
+
+  // ─── updateKanbanItemName ───────────────────────────────────────────────
+  //
+  // The kanban header rename (from KanbanSettingsDialog's inline
+  // pencil or KanbanView's header pencil) hits the store via this
+  // action. The contract: optimistic-update item.name BEFORE the
+  // API call resolves so the UI updates immediately; roll back on
+  // error. The PUT handler accepts `{name}` and writes the column;
+  // when the API call throws, `item.name` must be restored to the
+  // pre-call value (so the UI doesn't lie about the rename).
+
+  describe('updateKanbanItemName', () => {
+    it('calls api.updateWorkspaceItem with the new name and optimistic-updates the local store', async () => {
+      const store = seedStore([
+        ws('ws_1', 'W1', [item('item_1', 'Old Name', 'kanban')]),
+      ])
+      const updateWorkspaceItemMock = vi
+        .spyOn(api, 'updateWorkspaceItem')
+        .mockResolvedValueOnce({
+          id: 'item_1',
+          name: 'New Name',
+          item_type: 'kanban',
+          path: null,
+        } as any)
+
+      await store.updateKanbanItemName('ws_1', 'item_1', 'New Name')
+
+      expect(updateWorkspaceItemMock).toHaveBeenCalledWith('ws_1', 'item_1', {
+        name: 'New Name',
+      })
+      // Optimistic update: the local item reflects the new name.
+      const wsRow = store.workspaces.find((w) => w.id === 'ws_1')!
+      const updatedItem = wsRow.items.find((i) => i.id === 'item_1')!
+      expect(updatedItem.name).toBe('New Name')
+    })
+
+    it('rolls back the local name and rethrows when the API fails', async () => {
+      const consoleErrorSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {})
+      const store = seedStore([
+        ws('ws_1', 'W1', [item('item_1', 'Old Name', 'kanban')]),
+      ])
+      vi.spyOn(api, 'updateWorkspaceItem').mockRejectedValueOnce(
+        new Error('boom'),
+      )
+
+      await expect(
+        store.updateKanbanItemName('ws_1', 'item_1', 'New Name'),
+      ).rejects.toThrow('boom')
+
+      // Optimistic update was rolled back.
+      const wsRow = store.workspaces.find((w) => w.id === 'ws_1')!
+      const updatedItem = wsRow.items.find((i) => i.id === 'item_1')!
+      expect(updatedItem.name).toBe('Old Name')
+      expect(consoleErrorSpy).toHaveBeenCalled()
+      consoleErrorSpy.mockRestore()
+    })
+  })
 })
