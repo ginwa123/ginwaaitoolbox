@@ -1483,6 +1483,32 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // unloads on close).
   const sessionsSse = ref<api.SseClient | null>(null)
 
+  // External subscribers for session events. The internal handler
+  // (below, inside `subscribeToSessionEvents`) already mutates
+  // workspace tree state; this hook lets OTHER components (e.g.
+  // ChatsList) react to the same events without re-opening their
+  // own SSE stream — ChatsList's `navItems` mirror is shaped
+  // differently (relativeTime, processing flag, etc.) and is
+  // populated by `loadChats()`, not derived from the workspace
+  // tree, so a fan-out is the simplest correct path.
+  const sessionEventSubscribers = new Set<(event: api.SessionEvent) => void>()
+
+  /**
+   * Subscribe to session events. The callback fires once per
+   * session event (after the internal workspacesStore handler runs).
+   * Returns an unsubscribe function.
+   *
+   * Use this when you have a SEPARATE data structure that needs to
+   * stay in sync with session renames/deletes/creates — for
+   * example, ChatsList.vue's `navItems` mirror.
+   */
+  function onSessionEvent(cb: (event: api.SessionEvent) => void): () => void {
+    sessionEventSubscribers.add(cb)
+    return () => {
+      sessionEventSubscribers.delete(cb)
+    }
+  }
+
   function subscribeToSessionEvents() {
     if (sessionsSse.value) {
       // Already subscribed.
@@ -1492,6 +1518,23 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     sessionsSse.value = api.createUnifiedSseConnection({
       channels: {
         sessions: (event) => {
+          // Fan out to external subscribers FIRST (registered via
+          // `onSessionEvent`). Subscribers like ChatsList re-fetch
+          // from the API regardless of whether the internal
+          // workspace-tree mutation below finds a matching task,
+          // so a leading position here works for every action —
+          // updated/deleted (which `return` early when matched),
+          // created (no-op), and unmatched ids alike.
+          for (const cb of sessionEventSubscribers) {
+            try {
+              cb(event)
+            } catch (e) {
+              // Swallow subscriber errors so a buggy callback
+              // can't take down the SSE stream.
+              console.error('[workspacesStore] session event subscriber threw:', e)
+            }
+          }
+
           if (event.action === 'updated') {
             // Find the task (task.id == session_id) and update its
             // name. We also keep navigationStore.activeChatName in
@@ -1630,6 +1673,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     fetchKanbanTasks,
     initializeFromSystemFolder,
     subscribeToSessionEvents,
+    onSessionEvent,
     fetchSystemFolder,
     fetchFolderContents,
   }

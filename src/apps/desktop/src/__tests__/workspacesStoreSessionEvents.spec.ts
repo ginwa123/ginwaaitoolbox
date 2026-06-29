@@ -202,4 +202,135 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     })
     expect(ws.activeTaskId).toBeNull()
   })
+
+  // ─── onSessionEvent fan-out (ChatsList regression fix) ───────────────────
+  //
+  // The internal handler mutates workspace tree state. External
+  // components (ChatsList.vue's `navItems` mirror) need to be
+  // notified too — they have their own shape (relativeTime,
+  // processing flag, etc.) that's not derived from the workspace
+  // tree. The fan-out fires AFTER the internal handler so
+  // subscribers can safely re-fetch from the API.
+  it('fan-outs session.updated events to onSessionEvent subscribers', () => {
+    const ws = seedStore()
+    ws.subscribeToSessionEvents()
+
+    const cb = vi.fn()
+    const unsub = ws.onSessionEvent(cb)
+
+    dispatch({
+      action: 'updated',
+      id: 'task_1',
+      name: 'New Name',
+      status: 'active',
+      cwd: '/tmp',
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: '2024-01-02T00:00:00Z',
+    })
+
+    expect(cb).toHaveBeenCalledTimes(1)
+    expect(cb).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'updated', id: 'task_1', name: 'New Name' }),
+    )
+
+    unsub()
+  })
+
+  it('fan-outs session.deleted events to onSessionEvent subscribers', () => {
+    const ws = seedStore()
+    ws.subscribeToSessionEvents()
+
+    const cb = vi.fn()
+    ws.onSessionEvent(cb)
+
+    dispatch({
+      action: 'deleted',
+      id: 'task_1',
+      name: '',
+      status: '',
+      cwd: '',
+      created_at: '',
+      updated_at: '',
+    })
+
+    expect(cb).toHaveBeenCalledTimes(1)
+    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ action: 'deleted', id: 'task_1' }))
+  })
+
+  it('fan-outs session.created events to onSessionEvent subscribers', () => {
+    // The internal handler deliberately ignores 'created' (tasks
+    // are created via POST /tasks, not via session.created) — but
+    // external subscribers like ChatsList still need to see the
+    // event so the new session appears in their list.
+    const ws = seedStore()
+    ws.subscribeToSessionEvents()
+
+    const cb = vi.fn()
+    ws.onSessionEvent(cb)
+
+    dispatch({
+      action: 'created',
+      id: 'task_new',
+      name: 'Brand New Session',
+      status: 'active',
+      cwd: '/tmp',
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: '2024-01-01T00:00:00Z',
+    })
+
+    expect(cb).toHaveBeenCalledTimes(1)
+    expect(cb).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'created', id: 'task_new' }),
+    )
+  })
+
+  it('onSessionEvent returns an unsubscribe function that detaches the callback', () => {
+    const ws = seedStore()
+    ws.subscribeToSessionEvents()
+
+    const cb = vi.fn()
+    const unsub = ws.onSessionEvent(cb)
+    unsub()
+
+    dispatch({
+      action: 'updated',
+      id: 'task_1',
+      name: 'New',
+      status: 'active',
+      cwd: '/tmp',
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: '2024-01-02T00:00:00Z',
+    })
+
+    expect(cb).not.toHaveBeenCalled()
+  })
+
+  it('swallows errors thrown by subscribers without breaking the SSE stream', () => {
+    const ws = seedStore()
+    ws.subscribeToSessionEvents()
+
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const goodCb = vi.fn()
+    ws.onSessionEvent(() => {
+      throw new Error('subscriber bug')
+    })
+    ws.onSessionEvent(goodCb)
+
+    // Should NOT throw out of the dispatch path.
+    dispatch({
+      action: 'updated',
+      id: 'task_1',
+      name: 'New',
+      status: 'active',
+      cwd: '/tmp',
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: '2024-01-02T00:00:00Z',
+    })
+
+    // Both subscribers got called (the throwing one threw, was
+    // caught + logged, and the next subscriber still ran).
+    expect(consoleSpy).toHaveBeenCalled()
+    expect(goodCb).toHaveBeenCalledTimes(1)
+    consoleSpy.mockRestore()
+  })
 })

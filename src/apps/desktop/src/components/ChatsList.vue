@@ -41,16 +41,18 @@ const isChatsResizing = ref(false)
 const chatsResizeStartY = ref(0)
 const chatsResizeStartPx = ref(0)
 
-// The sessions SSE was previously owned here and was redundant
-// with `workspacesStore.subscribeToSessionEvents()` (which still
-// runs on store init and keeps the workspace-tree task list in
-// sync). With the unify-SSE migration, ChatsList no longer owns
-// a session-event stream — the canonical subscription lives in
-// the workspaces store. The chat list still receives `created`,
-// `updated`, and `deleted` events through that store's handler.
+// ChatsList maintains its OWN navItems mirror of workspacesStore
+// state, populated by loadChats(). To keep navItems in sync with
+// session renames/deletes/creates, we subscribe to the store's
+// session event fan-out (registered via workspacesStore.onSessionEvent).
+// The callback re-runs loadChats() — the simplest correct path since
+// navItems has its own shape (relativeTime, processing flag, etc.)
+// that's not derived from the workspace tree.
 //
+// Without this subscription, session events would update the
+// workspace tree but leave the sidebar stale until manual reload.
 // See `docs/superpowers/plans/2026-06-30-unify-sse-endpoints.md`
-// Chunk 5 / Task 5.3.
+// Chunk 5 / Task 5.3 for the migration context.
 
 // Virtual scroller ref
 const virtualScrollerRef = ref<any>(null)
@@ -275,6 +277,18 @@ const removeChat = async (chatId: string) => {
 //   - No local SSE connection, no <SseStatusBadge> binding needed.
 
 // Lifecycle
+// Subscribe to session events at setup time (synchronously) so the
+// `onUnmounted` cleanup hook can also be registered synchronously
+// (Vue 3 lifecycle injection APIs must run during setup, not after
+// the first `await` inside `onMounted`). The callback just re-runs
+// loadChats() — works whether it fires before or after mount.
+const unsubSession = workspacesStore.onSessionEvent(() => {
+  loadChats()
+})
+onUnmounted(() => {
+  unsubSession()
+})
+
 onMounted(async () => {
   console.log('[ChatsList] onMounted called')
   // Wait for DOM to be ready
