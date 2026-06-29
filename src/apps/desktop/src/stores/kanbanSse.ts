@@ -25,7 +25,7 @@
  *   pattern (this version).
  */
 import { defineStore } from 'pinia'
-import { createKanbanSseConnection } from '../api'
+import { createUnifiedSseConnection } from '../api'
 import type { SseClient } from '../api'
 import { useWorkspacesStore } from './workspaces'
 
@@ -67,60 +67,62 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
     }
 
     connection = {
-      sse: createKanbanSseConnection(
-        // onEvent — receives a typed KanbanColumnEvent | KanbanTaskEvent
-        // (the factory parses JSON internally, see api/index.ts).
-        (event) => {
-          // Drop events for other workspaces — the backend fans out
-          // kanban events globally, so any connected client receives
-          // them all. Skipping the no-op fetch keeps the local store's
-          // re-fetch rate at 1 per actual mutation.
-          if (event.workspace_id !== workspaceId) return
-          const ws = useWorkspacesStore()
-          // Dispatch by event family. Column events refresh the column
-          // list (renames, reorder, add, delete); task events refresh
-          // the task list (move, assign, unassign). A full re-fetch
-          // (vs in-place patch) is the simplest correct action —
-          // sibling positions renumber as part of every move, and the
-          // SSE payload doesn't include the new positions of every
-          // sibling, so client-side patching would be brittle. A
-          // future optimization could grow the payload and switch to
-          // in-place updates.
-          //
-          // The `'column_id' in event` / `'task_id' in event` check
-          // narrows the discriminated union (`KanbanColumnEvent`
-          // has `column_id`, `KanbanTaskEvent` has `task_id`, neither
-          // has the other). TypeScript narrows the type and the
-          // downstream call type-checks correctly.
-          if ('column_id' in event) {
-            // KanbanColumnEvent: column_id is the discriminator.
-            void ws.fetchKanbanColumns(event.workspace_id, event.item_id)
-          } else if ('task_id' in event) {
-            // KanbanTaskEvent: task_id is the discriminator. The move /
-            // assign / unassign all change item.tasks, so a single
-            // fetchKanbanTasks handles all three.
-            void ws.fetchKanbanTasks(event.workspace_id, event.item_id)
-          }
-          // Defensive: unknown event shapes are silently dropped (no
-          // fetch, no warning) — the API factory guarantees only the
-          // two known shapes reach this callback.
+      sse: createUnifiedSseConnection({
+        channels: {
+          // Receives a typed KanbanColumnEvent | KanbanTaskEvent
+          // (the factory parses JSON internally, see api/index.ts).
+          kanban: (event) => {
+            // Drop events for other workspaces — the backend fans out
+            // kanban events globally, so any connected client receives
+            // them all. Skipping the no-op fetch keeps the local store's
+            // re-fetch rate at 1 per actual mutation.
+            if (event.workspace_id !== workspaceId) return
+            const ws = useWorkspacesStore()
+            // Dispatch by event family. Column events refresh the column
+            // list (renames, reorder, add, delete); task events refresh
+            // the task list (move, assign, unassign). A full re-fetch
+            // (vs in-place patch) is the simplest correct action —
+            // sibling positions renumber as part of every move, and the
+            // SSE payload doesn't include the new positions of every
+            // sibling, so client-side patching would be brittle. A
+            // future optimization could grow the payload and switch to
+            // in-place updates.
+            //
+            // The `'column_id' in event` / `'task_id' in event` check
+            // narrows the discriminated union (`KanbanColumnEvent`
+            // has `column_id`, `KanbanTaskEvent` has `task_id`, neither
+            // has the other). TypeScript narrows the type and the
+            // downstream call type-checks correctly.
+            if ('column_id' in event) {
+              // KanbanColumnEvent: column_id is the discriminator.
+              void ws.fetchKanbanColumns(event.workspace_id, event.item_id)
+            } else if ('task_id' in event) {
+              // KanbanTaskEvent: task_id is the discriminator. The move /
+              // assign / unassign all change item.tasks, so a single
+              // fetchKanbanTasks handles all three.
+              void ws.fetchKanbanTasks(event.workspace_id, event.item_id)
+            }
+            // Defensive: unknown event shapes are silently dropped (no
+            // fetch, no warning) — the API factory guarantees only the
+            // two known shapes reach this callback.
+          },
         },
         // onError — fires on TERMINAL failure only (state went to
         // 'failed'). Transient errors are retried internally and do
         // not fire this callback — the old behavior of logging every
         // retry attempt was misleading, since a reconnect is not an
         // error from the user's perspective.
-        (error) => {
+        onError: (error) => {
           console.error('[kanbanSse] connection failed permanently:', error)
         },
         // onConnected — re-runs on every successful (re)connect. A
         // server restart that loses in-memory state should be re-synced
         // on the next open, just like the workers SSE pattern.
-        () => {
+        onConnected: () => {
           console.log('[kanbanSse] connected')
           fetchInitialKanban(workspaceId)
         },
-      ),
+      }),
       workspaceId,
     }
   }
