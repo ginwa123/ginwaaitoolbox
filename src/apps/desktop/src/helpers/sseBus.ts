@@ -163,21 +163,25 @@ export function installSseBus(_app: App): SseBus {
   const sessionClients = new Map<string, SseClient>()
   const sessionRefcounts = new Map<string, number>()
 
-  function subscribeSessionChannels(sid: string): void {
-    sessionRefcounts.set(sid, (sessionRefcounts.get(sid) ?? 0) + 1)
-    if (sessionClients.has(sid)) return
+  function subscribeSessionChannels(_sid: string): void {
+    sessionRefcounts.set(_sid, (sessionRefcounts.get(_sid) ?? 0) + 1)
+    if (sessionClients.has(_sid)) return
     // Chunk 4 will open the session-scoped EventSource here:
     //
     //   const c: SseClient = createUnifiedSseConnection({
     //     channels: {
-    //       llm:    { sessionId: sid, onEvent: (e) => dispatch('llm', e)    },
-    //       queue:  { sessionId: sid, onEvent: (e) => dispatch('queue', e)  },
+    //       llm:    { sessionId: _sid, onEvent: (e) => dispatch('llm', e)    },
+    //       queue:  { sessionId: _sid, onEvent: (e) => dispatch('queue', e)  },
     //     },
     //   })
-    //   sessionClients.set(sid, c)
+    //   sessionClients.set(_sid, c)
+    //
+    // Chunk 4 contract: the real createUnifiedSseConnection call above MUST
+    // be gated on `listeners.llm.size > 0 || listeners.queue.size > 0`
+    // so that a subscribeSessionChannels without any matching listener
+    // registration does not open an EventSource no one listens to.
     //
     // Until then, the refcount is the only state being maintained.
-    void sid
   }
 
   function unsubscribeSessionChannels(sid: string): void {
