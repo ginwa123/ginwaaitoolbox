@@ -2457,6 +2457,42 @@ pub fn updateWorkspaceItemPath(
     }
 }
 
+/// Update only the `name` column of a workspace item. Used by the
+/// Kanban Settings dialog (and the KanbanView header pencil) to
+/// rename a workspace item — typically a kanban whose title the
+/// user wants to change (e.g. "kanban sprint 1" → "Sprint 12").
+///
+/// The pattern mirrors `updateWorkspaceItemPath` (single-column
+/// UPDATE + `updated_at = datetime('now')`). Both columns could
+/// theoretically be batched into a single UPDATE, but the rest of
+/// the project uses single-column setters (see `updateWorkspaceItem`
+/// above + `updateWorkspaceItemPath`) — keeping the same shape
+/// makes the model layer easy to reason about and matches the
+/// handler's per-field `if (presence)` branching.
+///
+/// Pass a non-null, non-empty slice to set the name. The handler
+/// layer rejects empty strings with a 400 BEFORE reaching this
+/// function; passing `""` here would write the empty string into
+/// the DB (the column has no `NOT NULL DEFAULT ''` constraint — it's
+/// nullable).
+///
+/// Why the column is nullable (instead of NOT NULL DEFAULT ''):
+/// earlier migration (`migration.zig:484`) added `name TEXT` without
+/// a NOT NULL constraint, so existing rows pre-migration retain
+/// `name = NULL`. The frontend renders `null` and `""` indistinguishably
+/// via `{{ item.name ?? '' }}` or `column.name ?? ''`. Changing this
+/// to NOT NULL DEFAULT '' is out of scope (would require a backfill
+/// migration on every row + every referenced field).
+pub fn updateWorkspaceItemName(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    name: []const u8,
+) !void {
+    const sql = "UPDATE workspace_items SET name = ?, updated_at = datetime('now') WHERE id = ?";
+    try db.exec(allocator, sql, &.{ name, id });
+}
+
 /// Delete a workspace item by id
 pub fn deleteWorkspaceItem(
     allocator: std.mem.Allocator,
