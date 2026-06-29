@@ -21,10 +21,10 @@ import { useNavigationStore } from '../stores/navigation'
 import { makeLocalStorageStub } from './helpers'
 
 describe('useWorkspacesStore.subscribeToSessionEvents', () => {
-  // The SseClient factory returns this stub. We capture the
-  // onEvent callback so tests can simulate SSE events by invoking
-  // it directly.
-  let onEventCallback: ((event: api.SessionEvent) => void) | null = null
+  // The unified factory takes a single options object. We capture
+  // it so tests can simulate SSE events by invoking the `sessions`
+  // channel callback directly (`capturedOpts!.channels.sessions!(event)`).
+  let capturedOpts: api.UnifiedSseOptions | undefined
   const sseClientStub: Partial<api.SseClient> = {
     close: vi.fn(),
   }
@@ -37,16 +37,12 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
       configurable: true,
     })
 
-    // Replace the SSE factory with a stub that records the
-    // onEvent callback. We deliberately ignore onError / onConnected
-    // because the subscription handler doesn't depend on them.
-    vi.spyOn(api, 'createSessionsSseConnection').mockImplementation(
-      (
-        onEvent: (event: api.SessionEvent) => void,
-        _onError?: (error: Event) => void,
-        _onConnected?: () => void,
-      ): api.SseClient => {
-        onEventCallback = onEvent
+    // Replace the unified SSE factory with a stub that records the
+    // captured options object. The `sessions` channel callback is
+    // the only one the subscription handler depends on.
+    vi.spyOn(api, 'createUnifiedSseConnection').mockImplementation(
+      (opts: api.UnifiedSseOptions): api.SseClient => {
+        capturedOpts = opts
         return sseClientStub as api.SseClient
       },
     )
@@ -54,7 +50,7 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
-    onEventCallback = null
+    capturedOpts = undefined
   })
 
   function seedStore() {
@@ -79,21 +75,23 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
   }
 
   function dispatch(event: api.SessionEvent) {
-    expect(onEventCallback).not.toBeNull()
-    onEventCallback!(event)
+    expect(capturedOpts).toBeDefined()
+    const onSession = capturedOpts!.channels.sessions
+    expect(onSession).toBeDefined()
+    onSession!(event)
   }
 
   it('opens an SSE connection when subscribeToSessionEvents is called', () => {
     const ws = useWorkspacesStore()
     ws.subscribeToSessionEvents()
-    expect(api.createSessionsSseConnection).toHaveBeenCalledTimes(1)
+    expect(api.createUnifiedSseConnection).toHaveBeenCalledTimes(1)
   })
 
   it('is idempotent — calling subscribe twice does not open a second connection', () => {
     const ws = useWorkspacesStore()
     ws.subscribeToSessionEvents()
     ws.subscribeToSessionEvents()
-    expect(api.createSessionsSseConnection).toHaveBeenCalledTimes(1)
+    expect(api.createUnifiedSseConnection).toHaveBeenCalledTimes(1)
   })
 
   it('updates a matching task name on session.updated', () => {
