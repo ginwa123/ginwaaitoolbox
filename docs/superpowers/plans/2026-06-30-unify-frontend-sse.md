@@ -184,16 +184,17 @@ import type { SseClient, SseState } from './sseClient'
 import type {
   WorkerEvent,
   SessionEvent,
-  KanbanEvent,
-  LlmChunkEvent,
+  KanbanColumnEvent,
+  KanbanTaskEvent,
+  SseEvent,
   QueueMessageEvent,
 } from '../api'
 
 type SseEventMap = {
   worker: WorkerEvent
   session: SessionEvent
-  kanban: KanbanEvent
-  llm: LlmChunkEvent
+  kanban: KanbanColumnEvent | KanbanTaskEvent
+  llm: SseEvent
   queue: QueueMessageEvent
 }
 
