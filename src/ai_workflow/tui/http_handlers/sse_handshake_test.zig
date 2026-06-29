@@ -18,7 +18,7 @@
 //! full trace.
 //!
 //! This file pins the contract via a STATIC check: each of the
-//! 4 registered SSE handler source files must contain the
+//! 5 registered SSE handler source files must contain the
 //! handshake constant verbatim. Catches a future handler being
 //! added without the 3-line send block, or the block being
 //! removed in a refactor.
@@ -63,11 +63,11 @@ const connected_handshake_in_source =
     "data: {\\\"connected\\\": true}\\n" ++
     "\\n";
 
-// ─── Static check on all 4 handler source files ────────────────────────────
+// ─── Static check on all 5 handler source files ────────────────────────────
 
-test "SSE handshake: all 4 registered stream handlers send the connected event" {
-    // The 4 SSE routes registered in src/main.zig. Each MUST
-    // contain the `connected` handshake string in its source, or
+test "SSE handshake: all 5 stream handlers send the connected event" {
+    // The 5 SSE routes registered in src/main.zig (4 legacy + 1 unified).
+    // Each MUST contain the `connected` handshake string in its source, or
     // the frontend SseStatusBadge will be stuck on "Connecting…".
     //
     // This is a SOURCE-LEVEL test — it reads the .zig file from
@@ -87,6 +87,7 @@ test "SSE handshake: all 4 registered stream handlers send the connected event" 
         "src/ai_workflow/tui/http_handlers/sessions_sse.zig",
         "src/ai_workflow/tui/http_handlers/llm_history_sse.zig",
         "src/ai_workflow/tui/http_handlers/queue_messages_sse.zig",
+        "src/ai_workflow/tui/http_handlers/unified_events_sse.zig",
     };
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
