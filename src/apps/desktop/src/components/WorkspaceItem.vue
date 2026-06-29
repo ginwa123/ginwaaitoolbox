@@ -418,28 +418,34 @@ const handlePinnedDrop = (event: DragEvent) => {
             data-testid="item-active-dot"
           />
         </button>
-        <!-- Add Task Button (show on hover) -->
-        <button
-          @click="handleAddTask"
-          class="w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/item:opacity-100 transition-opacity duration-200 hover:text-green-400"
-          style="color: var(--semantic-text-dim);"
-          title="Add Task"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-          </svg>
-        </button>
-        <!-- Delete Item Button (show on hover) -->
-        <button
-          @click="handleDelete"
-          class="w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/item:opacity-100 transition-opacity duration-200 hover:text-red-400"
-          style="color: var(--semantic-text-dim);"
-          title="Delete Item"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
+        <!-- Add Task + Delete Item buttons (show on hover). Hidden for
+             kanban items because (a) kanban adds tasks through its own
+             column-based UI, not the generic task picker, and (b)
+             deleting a kanban requires column cleanup first — the
+             bare delete handler doesn't do that. -->
+        <template v-if="item.item_type !== 'kanban'">
+          <button
+            @click="handleAddTask"
+            class="w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/item:opacity-100 transition-opacity duration-200 hover:text-green-400"
+            style="color: var(--semantic-text-dim);"
+            title="Add Task"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+          <!-- Delete Item Button (show on hover) -->
+          <button
+            @click="handleDelete"
+            class="w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/item:opacity-100 transition-opacity duration-200 hover:text-red-400"
+            style="color: var(--semantic-text-dim);"
+            title="Delete Item"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </template>
       </div>
 
       <!-- Tasks List (shown when expanded - allows multiple). Per-task
