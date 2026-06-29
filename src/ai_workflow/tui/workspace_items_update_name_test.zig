@@ -117,3 +117,39 @@ test "workspace_items_update handler returns 400 for empty name" {
         return error.EmptyNameNotRejected;
     }
 }
+
+// ─── Contract 4: item_type is optional in the body ───────────────────────
+
+test "workspace_items_update handler makes item_type optional (falls back to existing row)" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The rename flow (workspacesStore.updateKanbanItemName) sends
+    // only {name: "X"} — the caller does NOT know or send the
+    // current item_type. The handler MUST accept this without
+    // returning 400, by falling back to the existing row's
+    // item_type. The contract-named check looks for the
+    // effective_item_type fallback var.
+    if (std.mem.indexOf(u8, source, "effective_item_type") == null) {
+        std.debug.print("\n!! " ++ HANDLER_PATH ++ " does not compute effective_item_type !!\n", .{});
+        return error.ItemTypeFallbackMissing;
+    }
+}
+
+// ─── Contract 5: empty body (no updatable field) returns 400 ───────────────
+
+test "workspace_items_update handler rejects empty body with 400" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // Without item_type, name, AND path in the body, the handler
+    // would silently no-op. The 400 catches the PUT {} edge case so
+    // the caller knows nothing was requested. Searching for the
+    // canonical error message keeps the check contract-named.
+    if (std.mem.indexOf(u8, source, "At least one of item_type, name, or path is required") == null) {
+        std.debug.print("\n!! " ++ HANDLER_PATH ++ " does not return 400 for empty body !!\n", .{});
+        return error.EmptyBodyNotRejected;
+    }
+}

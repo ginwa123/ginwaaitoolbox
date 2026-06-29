@@ -35,12 +35,30 @@ pub fn workspaceItemsUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.Http
 
     const root = parsed.value.object;
 
-    // Get item_type (required in update)
-    const item_type_val = root.get("item_type") orelse {
-        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_type required" }) });
+    // Optional item_type. Mirror the path/name branch's presence vs
+    // absence semantics. Previously this field was REQUIRED (the
+    // legacy `updateItemType` contract: `PUT /items/:id
+    // {item_type: 'kanban'}` converted a folder to a kanban).
+    // The rename feature added cases where the caller only sends
+    // `{name: ...}` (e.g. the KanbanSettingsDialog pencil in
+    // AppLayout.vue forwards through workspacesStore
+    // .updateKanbanItemName, which doesn't carry item_type). To
+    // support rename without forcing the caller to know the
+    // item_type, we make the field optional: when PRESENT, validate
+    // it's a non-empty string; when ABSENT, fall back to the
+    // existing item's type (fetched from the DB later in this
+    // handler). The 4-way branch (path+name / name-only /
+    // path-only / legacy item_type) still requires item_type when
+    // name AND path are both absent (backward compat).
+    const item_type_present = root.get("item_type") != null;
+    const item_type_in_body: ?[]const u8 = blk: {
+        const v = root.get("item_type") orelse break :blk null;
+        if (v != .string) break :blk null;
+        if (v.string.len == 0) break :blk null;
+        break :blk v.string;
     };
-    if (item_type_val != .string) {
-        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_type must be a string" }) });
+    if (item_type_present and item_type_in_body == null) {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_type, when present, must be a non-empty string" }) });
     }
 
     // Optional path. When the key is ABSENT from the body we leave the
@@ -116,6 +134,32 @@ pub fn workspaceItemsUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.Http
 
     // Get the current workspace_id for the update
     const current_workspace_id = existing.?.workspace_id;
+
+    // Effective item_type: prefer the value sent in the body, fall back
+    // to the existing row's type. The fallback makes rename-only calls
+    // (e.g. `PUT {name: "X"}`) work without forcing the caller to know
+    // the row's current type. The legacy `PUT {item_type: 'kanban'}`
+    // contract (no name, no path) still works because `item_type_in_body`
+    // is set in that case.
+    //
+    // The blk:-pattern avoids `orelse` type-unification friction between
+    // `?[]const u8` and `[]u8` (the existing row's type field is
+    // non-optional `[]u8`; we copy into a fresh const to match types).
+    const effective_item_type: []const u8 = blk: {
+        if (item_type_in_body) |v| break :blk v;
+        break :blk existing.?.item_type;
+    };
+
+    // If the caller sent NOTHING updatable, return 400. Without this,
+    // the handler would silently no-op when the body is `{name: ""}`
+    // (rejected earlier anyway) or completely empty. Catches the
+    // `PUT {}` edge case where all three are absent.
+    if (!item_type_present and !name_valid and !path_present) {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(
+            allocator,
+            .{ .@"error" = "At least one of item_type, name, or path is required" },
+        ) });
+    }
 
     // Update the item — if path is present in the body, run the
     // dedicated path-update SQL (preserves `path` semantics from
@@ -210,10 +254,17 @@ pub fn workspaceItemsUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.Http
         }
     } else {
         // Neither name nor path in body → legacy item_type-only update
-        // path keeps the existing columns untouched.
+        // path keeps the existing columns untouched. The
+        // effective_item_type is sourced from the body when the
+        // caller sent it (the legacy `PUT {item_type: 'kanban'}`
+        // contract) or from the existing row's type when the
+        // handler was reached via the rename branch — but in the
+        // legacy branch, name and path are both absent AND the
+        // pre-branch 400 catches the empty case, so
+        // `effective_item_type` always carries the right value.
         ai_mod.workspace_items.updateWorkspaceItem(
             allocator, sqlite_db, item_id, current_workspace_id,
-            item_type_val.string,
+            effective_item_type,
         ) catch {
             return res.jsonResponse(.{
                 .status_code = 500,
@@ -228,7 +279,7 @@ pub fn workspaceItemsUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.Http
     return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeWorkspaceItemGetResponse(allocator, .{
         .id = item_id,
         .workspace_id = current_workspace_id,
-        .item_type = item_type_val.string,
+        .item_type = effective_item_type,
         // When the body didn't mention path, leave the response
         // field as `null` so callers can distinguish "field not in
         // body" from "field cleared to NULL". The frontend's
