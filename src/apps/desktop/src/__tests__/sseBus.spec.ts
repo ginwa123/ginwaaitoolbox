@@ -7,6 +7,7 @@ import {
   __dispatchSseBus,
   __setSseBusGlobalClient,
   __getSseBusGlobalClient,
+  __setSseBusSessionFactory,
 } from '../helpers/sseBus'
 import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
@@ -143,5 +144,44 @@ describe('sseBus', () => {
     const stub = makeStubClient('closed')
     __setSseBusGlobalClient(stub)
     expect(closeSpy).toHaveBeenCalled()
+  })
+
+  it('subscribeSessionChannels — first call opens a client; second is a no-op (refcount)', () => {
+    // Track how many times the factory is invoked
+    const factoryCalls: Array<{ sid: string }> = []
+    __setSseBusSessionFactory((sid) => {
+      factoryCalls.push({ sid })
+      // Return a minimal SseClient stub (use the existing makeStubClient helper)
+      return makeStubClient('connecting')
+    })
+
+    const bus = installSseBus(app)
+    bus.subscribeSessionChannels('s_1')
+    bus.subscribeSessionChannels('s_1')
+    // Refcount is 2, factory invoked ONCE
+    expect(factoryCalls).toHaveLength(1)
+    expect(factoryCalls[0]?.sid).toBe('s_1')
+
+    bus.unsubscribeSessionChannels('s_1') // refcount → 1
+    bus.unsubscribeSessionChannels('s_1') // refcount → 0, client closed
+    expect(factoryCalls).toHaveLength(1) // still only one open call
+  })
+
+  it('subscribeSessionChannels — listener fires once per event even with multiple subscribes', () => {
+    __setSseBusSessionFactory((_sid) => makeStubClient('connecting'))
+    const bus = installSseBus(app)
+    const a = vi.fn(),
+      b = vi.fn()
+    bus.on('llm', a)
+    bus.on('llm', b)
+    bus.subscribeSessionChannels('s_1')
+    bus.subscribeSessionChannels('s_1')
+    // Two subscribes, one underlying client. Dispatch an llm event.
+    __dispatchSseBus('llm', { session_id: 's_1', content: 'hi' } as any)
+    expect(a).toHaveBeenCalledTimes(1)
+    expect(b).toHaveBeenCalledTimes(1)
+    // Cleanup
+    bus.unsubscribeSessionChannels('s_1')
+    bus.unsubscribeSessionChannels('s_1')
   })
 })
