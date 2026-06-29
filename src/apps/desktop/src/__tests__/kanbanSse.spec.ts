@@ -4,20 +4,18 @@
  *
  * The store owns ONE kanban SSE connection for the app's lifetime,
  * mirroring the workersSse pattern in App.vue. Tests verify:
- *   - initKanbanSse opens a connection via createKanbanSseConnection
+ *   - initKanbanSse opens a connection via createUnifiedSseConnection
  *   - subsequent initKanbanSse calls tear down + reopen (no stacking)
  *   - closeKanbanSse tears down the connection
  *   - workspace filter: events for other workspaces are dropped
  *   - kanban_column / kanban_task events both trigger
  *     workspacesStore.fetchKanbanColumns
  *
- * Mock pattern: vi.spyOn(api, 'createKanbanSseConnection') captures
- * the onEvent callback so tests can simulate SSE events by invoking
- * it directly. The factory now uses the 3-callback positional API
- * (onEvent, onError, onConnected) — matching createWorkersSseConnection.
- * Each test runs in isolation: beforeEach installs a fresh Pinia
- * instance and resets the mock capture arrays, so connections from
- * prior tests don't leak.
+ * Mock pattern: vi.spyOn(api, 'createUnifiedSseConnection') captures
+ * the opts object so tests can simulate SSE events by invoking
+ * `capturedOpts!.channels.kanban!(event)` directly. Each test runs
+ * in isolation: beforeEach installs a fresh Pinia instance and resets
+ * the captured opts, so connections from prior tests don't leak.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -31,9 +29,7 @@ import { makeLocalStorageStub } from './helpers'
 describe('useKanbanSseStore', () => {
   // Captured by the mock below. Tests invoke `dispatch(...)` to
   // simulate an SSE event arriving on the connection.
-  let onEventCallback:
-    | ((event: KanbanColumnEvent | KanbanTaskEvent) => void)
-    | null = null
+  let capturedOpts: api.UnifiedSseOptions | undefined
   let sseClientStub: Partial<api.SseClient>
 
   beforeEach(() => {
@@ -47,15 +43,15 @@ describe('useKanbanSseStore', () => {
     // don't leak across tests (the prior test's close would otherwise
     // be reflected in the next test's assertion).
     sseClientStub = { close: vi.fn() }
-    onEventCallback = null
+    capturedOpts = undefined
 
-    // Replace the SSE factory with a stub that records the onEvent
-    // callback. The factory now uses the 3-callback positional API
-    // (matching createWorkersSseConnection), so the spy signature is
-    // (onEvent, onError, onConnected).
-    vi.spyOn(api, 'createKanbanSseConnection').mockImplementation(
-      (onEvent): api.SseClient => {
-        onEventCallback = onEvent
+    // Replace the unified SSE factory with a stub that records the
+    // captured opts object. The factory takes a single options
+    // argument (matching the unify-SSE plan), so the spy signature
+    // is `(opts: UnifiedSseOptions)`.
+    vi.spyOn(api, 'createUnifiedSseConnection').mockImplementation(
+      (opts: api.UnifiedSseOptions): api.SseClient => {
+        capturedOpts = opts
         return sseClientStub as api.SseClient
       },
     )
@@ -63,18 +59,20 @@ describe('useKanbanSseStore', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
-    onEventCallback = null
+    capturedOpts = undefined
   })
 
   function dispatch(event: KanbanColumnEvent | KanbanTaskEvent): void {
-    expect(onEventCallback).not.toBeNull()
-    onEventCallback!(event)
+    expect(capturedOpts).toBeDefined()
+    const onKanban = capturedOpts!.channels.kanban
+    expect(onKanban).toBeDefined()
+    onKanban!(event)
   }
 
   it('initKanbanSse opens one connection for a workspace', () => {
     const store = useKanbanSseStore()
     store.initKanbanSse('ws_1')
-    expect(api.createKanbanSseConnection).toHaveBeenCalledTimes(1)
+    expect(api.createUnifiedSseConnection).toHaveBeenCalledTimes(1)
   })
 
   it('initKanbanSse tears down + reopens when called twice (no stacking)', () => {
@@ -83,7 +81,7 @@ describe('useKanbanSseStore', () => {
     store.initKanbanSse('ws_2')
     // Two init calls → two connection opens; the first was closed
     // before the second opened (no stacking).
-    expect(api.createKanbanSseConnection).toHaveBeenCalledTimes(2)
+    expect(api.createUnifiedSseConnection).toHaveBeenCalledTimes(2)
     expect(sseClientStub.close).toHaveBeenCalledTimes(1)
   })
 
@@ -236,7 +234,7 @@ describe('useKanbanSseStore', () => {
     store.setActiveWorkspaceId('ws_2')
 
     // No reopen — setActiveWorkspaceId just updates the filter.
-    expect(api.createKanbanSseConnection).toHaveBeenCalledTimes(1)
+    expect(api.createUnifiedSseConnection).toHaveBeenCalledTimes(1)
     expect(sseClientStub.close).not.toHaveBeenCalled()
   })
 })

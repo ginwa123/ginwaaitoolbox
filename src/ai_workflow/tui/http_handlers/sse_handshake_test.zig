@@ -11,17 +11,21 @@
 //!
 //!     event: connected\ndata: {"connected": true}\n\n
 //!
-//! Two of the four backend SSE handlers used to skip this handshake,
-//! leaving the badge stuck on "Connecting…" forever (the stream
-//! was alive and streaming, but the badge had no signal to hide).
-//! See docs/plans/2026-06-05-stuck-connecting-badge.md for the
-//! full trace.
+//! Two of the four legacy backend SSE handlers used to skip this
+//! handshake, leaving the badge stuck on "Connecting…" forever
+//! (the stream was alive and streaming, but the badge had no
+//! signal to hide). See docs/plans/2026-06-05-stuck-connecting-badge.md
+//! for the full trace.
 //!
-//! This file pins the contract via a STATIC check: each of the
-//! 4 registered SSE handler source files must contain the
-//! handshake constant verbatim. Catches a future handler being
-//! added without the 3-line send block, or the block being
-//! removed in a refactor.
+//! After the 5→1 SSE endpoint unification (plan
+//! docs/superpowers/plans/2026-06-30-unify-sse-endpoints.md),
+//! only ONE backend SSE handler is registered
+//! (`unified_events_sse.zig`); this test pins its contract via a
+//! STATIC check: the unified handler source file must contain the
+//! handshake constant verbatim. Catches a future regression where
+//! the 3-line send block is removed or the byte sequence changes
+//! and the frontend SseStatusBadge gets stuck on "Connecting…"
+//! again.
 //!
 //! The behavioral test (round-trip through a real SseManager +
 //! socketpair) was considered and dropped: Zig 0.16 removed
@@ -34,11 +38,10 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const testing = std.testing;
 
-/// The exact byte sequence the SSE handlers MUST send as the
-/// liveness handshake. `worker_sse.zig` and `sessions_sse.zig`
-/// already use this string verbatim; this test requires the
-/// other two handlers (`llm_history_sse.zig`,
-/// `queue_messages_sse.zig`) to use the same string.
+/// The exact byte sequence the unified SSE handler MUST send as the
+/// liveness handshake. Mirrors what the previous `worker_sse.zig`
+/// / `sessions_sse.zig` emitted (those are now deleted; their
+/// string is preserved here as the source of truth).
 ///
 /// The trailing blank line (`\n\n`) is REQUIRED — it's the SSE
 /// frame terminator. Without it, the browser's `EventSource`
@@ -47,8 +50,7 @@ const testing = std.testing;
 ///
 /// The JSON in the `data:` line (`{"connected": true}`) is a
 /// convention; the SseClient does NOT parse it. The empty JSON
-/// object `{}` would also work. Keep the string identical across
-/// handlers so the static check can be a substring match.
+/// object `{}` would also work.
 ///
 /// IMPORTANT: this constant is the SOURCE-FORM of the handshake
 /// as it appears in the .zig source files, NOT the in-memory
@@ -63,12 +65,12 @@ const connected_handshake_in_source =
     "data: {\\\"connected\\\": true}\\n" ++
     "\\n";
 
-// ─── Static check on all 4 handler source files ────────────────────────────
+// ─── Static check on the single unified handler source file ───────────────
 
-test "SSE handshake: all 4 registered stream handlers send the connected event" {
-    // The 4 SSE routes registered in src/main.zig. Each MUST
-    // contain the `connected` handshake string in its source, or
-    // the frontend SseStatusBadge will be stuck on "Connecting…".
+test "SSE handshake: unified stream handler sends the connected event" {
+    // The single SSE route registered in src/main.zig. Must contain
+    // the `connected` handshake string in its source, or the frontend
+    // SseStatusBadge will be stuck on "Connecting…".
     //
     // This is a SOURCE-LEVEL test — it reads the .zig file from
     // disk at test time and asserts the handshake string appears
@@ -76,17 +78,13 @@ test "SSE handshake: all 4 registered stream handlers send the connected event" 
     // full AST walk) because:
     //   - The 3-line block is small and the byte sequence is the
     //     actual contract that reaches the client.
-    //   - The constant string is also defined in this file and in
-    //     the two already-correct handlers, so a single source of
-    //     truth is enforced by the test.
+    //   - The constant string is also defined in this file as the
+    //     source of truth, so any change must be made in lockstep.
     //
     // Path is relative to the project root, which is the cwd when
     // `zig build test:ai_workflow:tui` runs.
     const handlers = .{
-        "src/ai_workflow/tui/http_handlers/worker_sse.zig",
-        "src/ai_workflow/tui/http_handlers/sessions_sse.zig",
-        "src/ai_workflow/tui/http_handlers/llm_history_sse.zig",
-        "src/ai_workflow/tui/http_handlers/queue_messages_sse.zig",
+        "src/ai_workflow/tui/http_handlers/unified_events_sse.zig",
     };
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

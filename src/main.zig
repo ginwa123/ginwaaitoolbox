@@ -252,7 +252,6 @@ pub fn main(init: std.process.Init) !void {
     //
     // // Worker API
     try gs.router.get("/api/workers", ai_mod.http_handlers.workerListHandler);
-    try gs.router.sse("/api/workers/stream", ai_mod.http_handlers.workersStreamHandler);
     //
     // // LLM API aliases (desktop app uses /api/llm/*)
     try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
@@ -264,11 +263,12 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/llm/session", ai_mod.http_handlers.sessionListHandler);
     try gs.router.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.sessionMessagesHandler);
     try gs.router.get("/api/llm/session/:session_id/queue_messages", ai_mod.http_handlers.queueMessagesGetHandler);
-    try gs.router.sse("/api/llm/session/:session_id/queue_messages/stream", ai_mod.http_handlers.queueMessagesStreamHandler);
-    try gs.router.sse("/api/llm/stream/:session_id", ai_mod.http_handlers.llmHistorySSE);
-    try gs.router.sse("/api/sessions/stream", ai_mod.http_handlers.sessionsStreamHandler);
-    // Kanban SSE — fans out kanban_column + kanban_task events onto one stream
-    try gs.router.sse("/api/kanban/events", ai_mod.http_handlers.kanbanEventsStreamHandler);
+    // Unified SSE endpoint — single EventSource for all event families
+    // (workers, sessions, kanban_column, kanban_task, per-session llm +
+    // queue_messages). Replaces the 5 dedicated routes that previously
+    // registered one EventSource per family. See
+    // src/ai_workflow/tui/http_handlers/unified_events_sse.zig.
+    try gs.router.sse("/api/events", ai_mod.http_handlers.unifiedEventsStreamHandler);
     // try gs.router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
     //
     // // Desktop app routes (system, health, workspaces)

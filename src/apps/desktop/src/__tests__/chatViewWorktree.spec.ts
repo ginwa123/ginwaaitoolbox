@@ -59,10 +59,12 @@ if (
 }
 
 // ─── shared SSE stub ────────────────────────────────────────────────────────
-// Both the chat SSE stream and the queue-messages SSE stream return
-// objects that match the SseClient interface (close / reconnect /
-// getState / onStateChange). Tests don't fire events; they just need
-// the close() call to be a no-op so onUnmounted doesn't throw.
+// The chat SSE connection (now unified — llm + queue channels on one
+// EventSource, see plan 2026-06-30-unify-sse-endpoints.md Chunk 7)
+// returns an object that matches the SseClient interface (close /
+// reconnect / getState / onStateChange). Tests don't fire events; they
+// just need the close() call to be a no-op so onUnmounted doesn't
+// throw.
 function makeSseStub(): api.SseClient {
   return {
     close: vi.fn(),
@@ -73,7 +75,7 @@ function makeSseStub(): api.SseClient {
 }
 
 // ─── default mocks ──────────────────────────────────────────────────────────
-// `installChatViewMocks` wires up the 6 api.* dependencies the
+// `installChatViewMocks` wires up the api.* dependencies the
 // component touches in onMounted. The `getChatHistory` callback lets
 // each test customize the `git_worktree_cwd` field (and the cwd) the
 // mocked response returns.
@@ -118,8 +120,15 @@ function installChatViewMocks(opts: {
   vi.spyOn(api, 'getNalarConfig').mockResolvedValue({
     profiles: {},
   } as any)
-  vi.spyOn(api, 'createSseConnection').mockReturnValue(makeSseStub())
-  vi.spyOn(api, 'createQueueMessagesSseConnection').mockReturnValue(makeSseStub())
+  // The unified factory opens ONE EventSource carrying both the llm
+  // and queue channels. The stub satisfies the SseClient interface
+  // (close / reconnect / getState / onStateChange) so onUnmounted's
+  // chatSse.value.close() call is a no-op. Tests don't fire events
+  // through the channel callbacks (this spec only exercises the
+  // worktree status button — see kanbanSse.spec.ts and
+  // workspacesStoreSessionEvents.spec.ts for the event-dispatch
+  // pattern using capturedOpts).
+  vi.spyOn(api, 'createUnifiedSseConnection').mockReturnValue(makeSseStub())
 }
 
 // ─── mount helper ───────────────────────────────────────────────────────────

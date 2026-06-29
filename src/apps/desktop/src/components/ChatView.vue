@@ -384,8 +384,7 @@ const PAGE_SIZE = 1000
 // the user reloaded. The new behaviour: exponential backoff
 // (1s → 30s), visibility-aware pause, and `online` fast-path
 // — all in `helpers/sseClient.ts`.
-const eventSource = ref<api.SseClient | null>(null)
-const queueEventSource = ref<api.SseClient | null>(null)
+const chatSse = ref<api.SseClient | null>(null)
 const isStreaming = ref(false)
 const streamingContent = ref('')
 
@@ -1565,7 +1564,7 @@ const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target
 
 const isAlreadyConnectedSSE = ref(false)
 const connectSse = () => {
-  console.log('[connectSse] Connecting SSE for session:', sessionId.value)
+  console.log('[connectSse] Connecting unified SSE for session:', sessionId.value)
   if (!sessionId.value) return
 
   if (isAlreadyConnectedSSE.value == false) disconnectSse()
@@ -1573,115 +1572,110 @@ const connectSse = () => {
   isStreaming.value = true
   streamingContent.value = ''
 
-  eventSource.value = api.createSseConnection(
-    sessionId.value,
-    (event: api.SseEvent) => {
-      console.log('[SSE ChatView] Received event:', event)
+  chatSse.value = api.createUnifiedSseConnection({
+    channels: {
+      llm: {
+        sessionId: sessionId.value,
+        onEvent: (event: api.SseEvent) => {
+          console.log('[SSE ChatView] Received event:', event)
 
-      if (event.type === 'connected' && event.session_id) {
-        console.log('SSE connected, session:', event.session_id)
-        return
-      }
+          if (event.type === 'connected' && event.session_id) {
+            console.log('SSE connected, session:', event.session_id)
+            return
+          }
 
-      if (event.type !== 'chunk' && event.type !== 'full') {
-        return
-      }
+          if (event.type !== 'chunk' && event.type !== 'full') {
+            return
+          }
 
 
-      if (event.type === 'chunk' && event.content) {
-        streamingContent.value = event.content
-        updateStreamingMessage()
-        return
-      }
+          if (event.type === 'chunk' && event.content) {
+            streamingContent.value = event.content
+            updateStreamingMessage()
+            return
+          }
 
-      if (event.type === 'full' && event.finish_reason && event.content) {
-        messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
+          if (event.type === 'full' && event.finish_reason && event.content) {
+            messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
 
-        const role =
-          (event.role as 'user' | 'assistant' | 'system' | 'tool') ||
-          (event.tool_call_id ? 'tool' : 'assistant')
+            const role =
+              (event.role as 'user' | 'assistant' | 'system' | 'tool') ||
+              (event.tool_call_id ? 'tool' : 'assistant')
 
-        messages.value.push({
-          id: event.id || `assistant-${Date.now()}`,
-          role: role,
-          content: event.content,
-          timestamp: new Date(),
-          tool_name: event.tool_name,
-          diffview_before: event.diffview_before,
-          diffview_after: event.diffview_after,
-          // Match the loadChatHistory REST path (line 824): split the
-          // pipe-separated image_url string the backend sends. Undefined
-          // for messages without images keeps the v-if="image_urls?.length"
-          // check in the template clean.
-          image_urls: event.image_url ? event.image_url.split('|') : undefined,
-          finish_reason: event.finish_reason,
-          tool_call_id: event.tool_call_id,
-        })
-        streamingContent.value = ''
-        isStreaming.value = false
-        scrollLogger.markProgrammatic()
-        // One more auto-stick fires (scrollToBottom below) for the
-        // final, post-stream assistant message. Mark the timestamp so
-        // the loadMore gate sees the stick as still active during the
-        // tail of the message-complete render frame. After ~500ms
-        // (AUTO_STICK_GATE_MS) the gate lifts and the user can
-        // scroll-up-and-prepend as normal.
-        lastAutoStickAt.value = Date.now()
-        nextTick(() => scrollToBottom(false, 'sse-message-complete'))
-        setupCodeBlockCopyButtons()
+            messages.value.push({
+              id: event.id || `assistant-${Date.now()}`,
+              role: role,
+              content: event.content,
+              timestamp: new Date(),
+              tool_name: event.tool_name,
+              diffview_before: event.diffview_before,
+              diffview_after: event.diffview_after,
+              // Match the loadChatHistory REST path (line 824): split the
+              // pipe-separated image_url string the backend sends. Undefined
+              // for messages without images keeps the v-if="image_urls?.length"
+              // check in the template clean.
+              image_urls: event.image_url ? event.image_url.split('|') : undefined,
+              finish_reason: event.finish_reason,
+              tool_call_id: event.tool_call_id,
+            })
+            streamingContent.value = ''
+            isStreaming.value = false
+            scrollLogger.markProgrammatic()
+            // One more auto-stick fires (scrollToBottom below) for the
+            // final, post-stream assistant message. Mark the timestamp so
+            // the loadMore gate sees the stick as still active during the
+            // tail of the message-complete render frame. After ~500ms
+            // (AUTO_STICK_GATE_MS) the gate lifts and the user can
+            // scroll-up-and-prepend as normal.
+            lastAutoStickAt.value = Date.now()
+            nextTick(() => scrollToBottom(false, 'sse-message-complete'))
+            setupCodeBlockCopyButtons()
 
-        if (event.total_tokens) {
-          maxTotalTokens.value = event.total_tokens
-        }
+            if (event.total_tokens) {
+              maxTotalTokens.value = event.total_tokens
+            }
 
-        return
-      }
+            return
+          }
 
-      if (event.reasoning_content && !event.content) {
-        console.log('Reasoning:', event.reasoning_content)
-      }
+          if (event.reasoning_content && !event.content) {
+            console.log('Reasoning:', event.reasoning_content)
+          }
+        },
+      },
+      queue: {
+        sessionId: sessionId.value,
+        onEvent: (event: api.QueueMessageEvent) => {
+          console.log('[QueueMessages SSE] Received event:', event)
+          if (event.action === 'queued') {
+            queuedMessages.value.push({
+              id: event.id ?? `q-${Date.now()}`,
+              message: event.message,
+            })
+          } else if (event.action === 'deleted') {
+            queuedMessages.value = queuedMessages.value.filter((m) => m.message !== event.message)
+          }
+        },
+      },
     },
-    (err) => {
+    // Terminal failure: ChatView's isStreaming flag flips ONLY here
+    // (see memory nalar-sse-incomplete-chunked-encoding.md).
+    onError: (err) => {
       console.error('SSE error:', err)
       isStreaming.value = false
       streamingContent.value = ''
     },
-    () => {
+    onConnected: () => {
       console.log('SSE connected')
       isAlreadyConnectedSSE.value = true
     },
-  )
-
-  queueEventSource.value = api.createQueueMessagesSseConnection(
-    sessionId.value,
-    (event: api.QueueMessageEvent) => {
-      console.log('[QueueMessages SSE] Received event:', event)
-      if (event.action === 'queued') {
-        queuedMessages.value.push({
-          id: event.id ?? `q-${Date.now()}`,
-          message: event.message,
-        })
-      } else if (event.action === 'deleted') {
-        queuedMessages.value = queuedMessages.value.filter((m) => m.message !== event.message)
-      }
-    },
-    (err) => {
-      console.error('QueueMessages SSE error:', err)
-    },
-    () => {
-      console.log('QueueMessages SSE connected')
-    },
-  )
+  })
 }
 
 const disconnectSse = () => {
-  if (eventSource.value) {
-    eventSource.value.close()
-    eventSource.value = null
-  }
-  if (queueEventSource.value) {
-    queueEventSource.value.close()
-    queueEventSource.value = null
+  if (chatSse.value) {
+    chatSse.value.close()
+    chatSse.value = null
   }
   isStreaming.value = false
   streamingContent.value = ''
@@ -2589,7 +2583,7 @@ const compactSession = async () => {
               the SseClient's onStateChange API — see
               components/SseStatusBadge.vue and helpers/sseClient.ts.
             -->
-            <SseStatusBadge :client="eventSource" />
+            <SseStatusBadge :client="chatSse" />
           </div>
         </div>
       </div>
