@@ -52,7 +52,6 @@ test {
     _ = @import("http_handlers/kanban_columns_delete_test.zig");
     _ = @import("http_handlers/tasks_move_test.zig");
     _ = @import("http_handlers/tasks_create_kanban_test.zig");
-    _ = @import("http_handlers/kanban_events_sse_test.zig");
     _ = @import("http_handlers/system_prompt_get_test.zig");
     _ = @import("http_handlers/unified_events_sse_test.zig");
     // _ = @import("session_helpers_test.zig"); // DISABLED - requires std.Io which needs Init

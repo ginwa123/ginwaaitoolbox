@@ -20,8 +20,6 @@ pub const http_response = nalarcore.http_response;
 
 // Re-export all handlers
 pub const corsPreflightHandler = @import("cors.zig").corsPreflightHandler;
-pub const llmHistorySSE = @import("llm_history_sse.zig").llmHistorySSE;
-pub const sessionsStreamHandler = @import("sessions_sse.zig").sessionsStreamHandler;
 pub const sessionCreateHandler = @import("session_create.zig").sessionCreateHandler;
 pub const sessionUpdateHandler = @import("session_update.zig").sessionUpdateHandler;
 pub const sessionListHandler = @import("session_list.zig").sessionListHandler;
@@ -78,11 +76,6 @@ pub const routinesListHandler = @import("routines_list.zig").routinesListHandler
 // Worker API handlers
 pub const workerGetHandler = @import("worker_get.zig").workerGetHandler;
 pub const workerListHandler = @import("worker_list.zig").workerListHandler;
-pub const workersStreamHandler = @import("worker_sse.zig").workersStreamHandler;
-
-// Kanban SSE handler - fans out kanban_column + kanban_task events
-// onto one EventSource stream opened by the frontend.
-pub const kanbanEventsStreamHandler = @import("kanban_events_sse.zig").kanbanEventsStreamHandler;
 
 // Unified SSE handler — single endpoint that fans out all event families.
 // Replaces the 5 dedicated routes registered in main.zig. See
@@ -124,7 +117,6 @@ pub const gitWorktreeInfoHandler = @import("git_worktree_info.zig").gitWorktreeI
 pub const gitPrCreateHandler = @import("git_pr_create.zig").gitPrCreateHandler;
 
 // Queue messages handlers
-pub const queueMessagesStreamHandler = @import("queue_messages_sse.zig").queueMessagesStreamHandler;
 pub const queueMessagesGetHandler = @import("queue_messages_get.zig").queueMessagesGetHandler;
 
 // Session to client IDs monitoring
