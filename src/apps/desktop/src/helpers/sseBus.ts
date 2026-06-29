@@ -264,7 +264,14 @@ export function installSseBus(_app: App): SseBus {
     unsubscribeSessionChannels,
     state,
     reconnectGlobal(): void {
-      globalClient.reconnect()
+      // Read through the module-level `_globalClient` handle at call
+      // time (not the closure-scoped `globalClient` from install time)
+      // so a swap via `__setSseBusGlobalClient` takes effect here.
+      // The optional chain is defensive — `_globalClient` could be
+      // null after a `close()` followed by `reconnectGlobal()` on a
+      // torn-down bus (which `SseBus.close()` already protects
+      // against by nulling `_instance`, but tests sometimes poke this).
+      _globalClient?.reconnect()
     },
     close(): void {
       // Close all session-scoped clients first so any in-flight
@@ -275,7 +282,15 @@ export function installSseBus(_app: App): SseBus {
       }
       sessionClients.clear()
       sessionRefcounts.clear()
-      globalClient.close()
+      // Read through the module-level `_globalClient` handle at call
+      // time (not the closure-scoped `globalClient` from install time)
+      // so a swap via `__setSseBusGlobalClient` takes effect here.
+      // The `_globalClient ?? globalClient` fallback is defensive —
+      // in production the two point to the same object, but a test
+      // that nulled `_globalClient` via `__resetSseBus` between
+      // install and close still gets the original closed.
+      const gc = _globalClient ?? globalClient
+      gc.close()
       // Detach the state-mirror listener and clear the test-only
       // handles so a subsequent `installSseBus` starts clean (and
       // `__getSseBusGlobalClient()` returns null after close).

@@ -146,6 +146,33 @@ describe('sseBus', () => {
     expect(closeSpy).toHaveBeenCalled()
   })
 
+  it('bus.close() closes the SWAPPED-IN global client, not the original', () => {
+    installSseBus(app)
+    const original = __getSseBusGlobalClient()!
+    const originalCloseSpy = vi.spyOn(original, 'close')
+
+    const stub = makeStubClient('connecting')
+    const stubCloseSpy = vi.spyOn(stub, 'close')
+    __setSseBusGlobalClient(stub)
+
+    // The swap itself already called `original.close()` exactly once
+    // (the `_globalClient && _globalClient !== client` branch in
+    // __setSseBusGlobalClient). The test asserts bus.close() does NOT
+    // call it again — which would happen if bus.close() reads the
+    // closure-scoped `globalClient` (the pre-fix bug).
+    expect(originalCloseSpy).toHaveBeenCalledTimes(1)
+
+    const bus = useSseBus()
+    bus.close()
+
+    // After bus.close(): still exactly 1 close on the original
+    // (only the swap called it). If the fix regresses, this jumps
+    // to 2 because bus.close() would call original.close() again.
+    expect(originalCloseSpy).toHaveBeenCalledTimes(1)
+    // bus.close() must close the SWAPPED-IN stub.
+    expect(stubCloseSpy).toHaveBeenCalledTimes(1)
+  })
+
   it('subscribeSessionChannels — first call opens a client; second is a no-op (refcount)', () => {
     // Track how many times the factory is invoked
     const factoryCalls: Array<{ sid: string }> = []
