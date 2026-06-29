@@ -661,6 +661,32 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Update kanban item name from the Settings dialog or KanbanView
+  // inline-rename pencil. Optimistic: mutate `item.name` BEFORE the
+  // API call resolves so the UI updates immediately; roll back on
+  // error. Backend contract: PUT /items/:id accepts `{name}` and
+  // either writes it (200) or rejects empty (400) — the API throws
+  // on non-2xx so we catch + restore + rethrow.
+  async function updateKanbanItemName(
+    workspaceId: string,
+    itemId: string,
+    newName: string,
+  ): Promise<void> {
+    const ws = workspaces.value.find((w) => w.id === workspaceId)
+    const item = ws?.items.find((i) => i.id === itemId)
+    const previousName = item?.name
+    // Optimistic update.
+    if (item) item.name = newName
+    try {
+      await api.updateWorkspaceItem(workspaceId, itemId, { name: newName })
+    } catch (err) {
+      // Restore the previous name on failure so the UI doesn't lie.
+      if (item && previousName !== undefined) item.name = previousName
+      console.error('[workspacesStore.updateKanbanItemName] API call failed:', err)
+      throw err
+    }
+  }
+
   // Fetch the columns for a kanban from the backend and populate
   // `item.kanban_columns`. Called when a kanban item is expanded
   // (mirrors the folder-item `fetchFolderContents` pattern). The
@@ -1669,6 +1695,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     reorderKanbanColumn,
     moveTaskToColumn,
     updateKanbanItemPath,
+    updateKanbanItemName,
     fetchKanbanColumns,
     fetchKanbanTasks,
     initializeFromSystemFolder,

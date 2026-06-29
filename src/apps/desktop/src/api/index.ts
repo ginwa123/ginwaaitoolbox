@@ -986,16 +986,33 @@ export async function createKanban(
 
 /**
  * Update a workspace item. Supports partial updates — pass only
- * the fields you want to change. Currently used by the kanban
- * "Set project root" banner to backfill `path` on kanbans that
- * were created before the field existed.
+ * the fields you want to change.
+ *
+ * Fields:
+ *   - `item_type`: new type (kanban / folder / chat / memory). The
+ *     caller historically always sent this; current callers may
+ *     omit it when only `name`/`path` change (the backend treats a
+ *     missing `item_type` as "leave unchanged" since the rename
+ *     branch doesn't read it).
+ *   - `path`: new on-disk path (kanban cwd) or `null` to clear.
+ *     Presence-detected by the backend (omitted → leave unchanged,
+ *     `null` or `""` → clear, non-empty string → set).
+ *   - `name`: new display name (used by the Kanban Settings rename
+ *     pencil and the KanbanView header pencil). Presence-detected
+ *     and rejected with 400 if empty/null.
  *
  * PUT /api/workspaces/:workspaceId/items/:itemId
+ *
+ * Plan: docs/superpowers/plans/2026-06-30-edit-workspace-item-name.md
  */
 export async function updateWorkspaceItem(
   workspaceId: string,
   itemId: string,
-  data: { item_type?: string; path?: string | null },
+  data: {
+    item_type?: string
+    path?: string | null
+    name?: string
+  },
 ): Promise<WorkspaceItem> {
   return await apiFetch<WorkspaceItem>(
     `/workspaces/${workspaceId}/items/${itemId}`,

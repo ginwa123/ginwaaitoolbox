@@ -24,7 +24,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
-import { mount, type VueWrapper } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { ref, type Ref } from 'vue'
 
 import KanbanView from '../components/KanbanView.vue'
@@ -376,5 +376,64 @@ describe('KanbanView — "Set project root" banner', () => {
     // that the click is a no-op and doesn't crash, which is what the
     // mount-time test verifies.
     expect(wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-set-project-root"]`).exists()).toBe(true)
+  })
+})
+
+// ─── Inline rename pencil (2026-06-30 — kanban header rename) ─────────────
+//
+// The kanban header h3 wraps the item name in an InlineEditableText
+// primitive. Clicking the pencil swaps to an <input> + Save/Cancel
+// buttons; pressing Save emits `rename-item` with the trimmed new
+// value, which the host (AppLayout) delegates to
+// workspacesStore.updateKanbanItemName.
+
+describe('KanbanView — inline rename pencil', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    vi.restoreAllMocks()
+  })
+
+  it('renders the item name in an InlineEditableText by default', () => {
+    const item = makeItem({ name: 'Sprint 12' })
+    wrapper = mountView(item)
+    // The InlineEditableText primitive renders the value inside a
+    // child <span data-testid="…-value">. Asserting on that span
+    // confirms the name flows through the primitive without
+    // truncation or extra whitespace.
+    const valueSpan = wrapper.find(
+      `[data-testid="kanban-view-${ITEM_ID}-rename-value"]`,
+    )
+    expect(valueSpan.exists()).toBe(true)
+    expect(valueSpan.text()).toBe('Sprint 12')
+  })
+
+  it('emits rename-item with the new name when the header pencil saves', async () => {
+    const item = makeItem({ name: 'Sprint 12' })
+    wrapper = mountView(item)
+    // 1. Click the display span to enter edit mode.
+    await wrapper
+      .find(`[data-testid="kanban-view-${ITEM_ID}-rename-display"]`)
+      .trigger('click')
+    await flushPromises()
+    // 2. Edit the input value.
+    const input = wrapper.find(
+      `[data-testid="kanban-view-${ITEM_ID}-rename-input"]`,
+    )
+    await input.setValue('Sprint 13')
+    // 3. Click Save.
+    await wrapper
+      .find(`[data-testid="kanban-view-${ITEM_ID}-rename-save"]`)
+      .trigger('click')
+
+    const emitted = wrapper.emitted('renameItem')
+    expect(emitted).toBeTruthy()
+    expect(emitted![0]).toEqual(['Sprint 13'])
   })
 })

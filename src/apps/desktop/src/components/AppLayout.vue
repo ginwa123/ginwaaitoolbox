@@ -664,6 +664,21 @@ const handleKanbanRequestRenameColumn = (columnId: string) => {
   showKanbanColumnEditor.value = true
 }
 
+/**
+ * Forward a kanban rename (from either the Settings dialog header
+ * pencil or the KanbanView header pencil) to the store. Both
+ * children emit `rename-item` with the trimmed new name; the
+ * store action optimistic-updates + rolls back on error.
+ *
+ * Plan: docs/superpowers/plans/2026-06-30-edit-workspace-item-name.md
+ */
+const handleKanbanRenameItem = (newName: string) => {
+  if (!activeWorkspaceItem.value) return
+  const ws = activeWorkspace.value
+  if (!ws) return
+  void workspacesStore.updateKanbanItemName(ws.id, activeWorkspaceItem.value.id, newName)
+}
+
 // ⋮ menu "Delete" on a column: open the editor in 'delete' mode
 // (the editor renders the confirmation copy itself).
 const handleKanbanRequestDeleteColumn = (columnId: string) => {
@@ -1191,6 +1206,7 @@ watch(chatSessionCwd, (newCwd) => {
             @run-routine="handleKanbanRunRoutine"
             @pin-task="handleKanbanPinTask"
             @open-settings="handleOpenKanbanSettings"
+            @rename-item="handleKanbanRenameItem"
           />
         </div>
         <!--
@@ -1283,6 +1299,7 @@ watch(chatSessionCwd, (newCwd) => {
         @run-routine="handleKanbanRunRoutine"
         @pin-task="handleKanbanPinTask"
         @open-settings="handleOpenKanbanSettings"
+        @rename-item="handleKanbanRenameItem"
       />
       <ChatView
         v-else-if="activeChatId.startsWith('chat-')"
@@ -1432,6 +1449,7 @@ watch(chatSessionCwd, (newCwd) => {
       @add-column="handleKanbanSettingsAddColumn"
       @edit-column="handleKanbanSettingsEditColumn"
       @delete-column="handleKanbanSettingsDeleteColumn"
+      @rename-item="handleKanbanRenameItem"
     />
   </div>
 </template>

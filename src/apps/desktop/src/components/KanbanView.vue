@@ -56,6 +56,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import KanbanColumn from './KanbanColumn.vue'
+import InlineEditableText from './InlineEditableText.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import type { WorkspaceItem, Task } from '../stores/workspaces'
 
@@ -115,6 +116,14 @@ const emit = defineEmits<{
   // KanbanColumnEditor in the right mode.
   requestRenameColumn: [columnId: string]
   requestDeleteColumn: [columnId: string]
+  /**
+   * Fired when the user renames the kanban via the inline pencil
+   * on the header title. Mirrors KanbanSettingsDialog's
+   * rename-item emit so AppLayout handles both with one handler.
+   *
+   * Plan: docs/superpowers/plans/2026-06-30-edit-workspace-item-name.md
+   */
+  renameItem: [name: string]
 }>()
 
 // ─── Derived data ──────────────────────────────────────────────────────────
@@ -202,7 +211,14 @@ const handleProjectRootSelected = async (path: string) => {
         style="color: var(--semantic-text);"
         :data-testid="`kanban-view-${item.id}-title`"
       >
-        {{ item.name }}
+        <InlineEditableText
+          :value="item.name"
+          :placeholder="'unnamed kanban'"
+          :ariaLabel="'kanban name'"
+          :testId="`kanban-view-${item.id}-rename`"
+          display-class="text-sm font-semibold"
+          @save="(newName) => emit('renameItem', newName)"
+        />
       </h3>
 
       <!--
