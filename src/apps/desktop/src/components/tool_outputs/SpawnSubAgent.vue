@@ -8,6 +8,14 @@ const props = defineProps<{
   subAgentArgs?: SubAgentArgs[] | null
 }>()
 
+const emit = defineEmits<{
+  /**
+   * Fired when the user clicks 👁 on a sub-agent row. The parent
+   * (ChatView) opens <SubAgentPeekPanel> with this payload.
+   */
+  peek: [payload: { sessionId: string; agentName: string; instruction: string }]
+}>()
+
 const isExpanded = ref(props.expanded ?? false)
 
 // Parse agents from <agent> tags
@@ -99,6 +107,22 @@ const toggle = () => {
 const copyResponse = async (e: Event, response: string) => {
   e.stopPropagation()
   await navigator.clipboard.writeText(response)
+}
+
+/**
+ * Emit a peek event for one sub-agent row. The parent ChatView
+ * listens for this and opens SubAgentPeekPanel. No-op when the
+ * agent has no session_id (i.e. the sub-agent failed before a
+ * session was created — nothing to peek into).
+ */
+function peekAgent(idx: number, agent: { sessionId: string | null; name: string }) {
+  if (!agent.sessionId) return
+  const instruction = props.subAgentArgs?.[idx]?.instruction ?? ''
+  emit('peek', {
+    sessionId: agent.sessionId,
+    agentName: agent.name,
+    instruction,
+  })
 }
 
 // Count of agents
@@ -197,6 +221,19 @@ function describeInheritedContext(mode: string): string {
             >
               parent: {{ subAgentArgs[idx].inherited_context }}
             </span>
+            <!-- 👁 peek button — opens <SubAgentPeekPanel> in ChatView.
+                 Emits the sub-agent's sessionId + the parsed
+                 instruction so the panel can stream its progress
+                 without leaving the parent chat. -->
+            <button
+              v-if="agent.sessionId"
+              class="text-[var(--semantic-text-muted)] hover:text-[var(--color-violet)] px-1 rounded text-xs leading-none"
+              data-testid="peek-button"
+              :title="`Peek into ${agent.name}'s progress`"
+              @click.stop="peekAgent(idx, agent)"
+            >
+              👁
+            </button>
             <span class="flex-1"></span>
             <span 
               v-if="agent.success" 

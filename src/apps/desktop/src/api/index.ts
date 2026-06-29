@@ -545,7 +545,7 @@ export interface Chat {
 
 export interface Message {
   id: string
-  role: 'user' | 'assistant' | 'system'
+  role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
   created_at: number
   tool_name?: string

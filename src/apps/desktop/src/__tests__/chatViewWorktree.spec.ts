@@ -27,7 +27,8 @@
  * `getQueuedMessages`, `getNalarConfig`, and sets up a spacer
  * MutationObserver. All of those are stubbed via `vi.spyOn(api, ...)`.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setActivePinia, createPinia } from 'pinia'
 import { nextTick } from 'vue'
 import { mount, type VueWrapper } from '@vue/test-utils'
 
@@ -151,6 +152,32 @@ async function mountChatView(chatId = 'session_test') {
 
 describe('ChatView worktree status button', () => {
   let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    // jsdom 29 in this project's Vitest does not provide localStorage.
+    // navigation.ts reads localStorage at store init (loadSidebarCollapsed
+    // etc.), so we stub a minimal in-memory implementation that
+    // satisfies the `localStorage.getItem/.setItem/.removeItem` calls.
+    // See nav.spec.ts for the same pattern.
+    if (typeof localStorage === 'undefined' || typeof localStorage.getItem !== 'function') {
+      const store: Record<string, string> = {}
+      vi.stubGlobal('localStorage', {
+        getItem: (k: string) => (k in store ? store[k] : null),
+        setItem: (k: string, v: string) => { store[k] = String(v) },
+        removeItem: (k: string) => { delete store[k] },
+        clear: () => { for (const k in store) delete store[k] },
+        key: () => null,
+        length: 0,
+      } as Storage)
+    } else {
+      localStorage.clear()
+    }
+
+    // ChatView setup() now reads useNavigationStore() to wire the
+    // sub-agent peek panel (@peek event + lazy peek composable).
+    // Pinia must be active for any useXxxStore() call.
+    setActivePinia(createPinia())
+  })
 
   afterEach(() => {
     wrapper?.unmount()
