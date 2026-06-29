@@ -290,12 +290,19 @@ watch(inputText, () => {
 const selectFile = (file: FileEntry) => {
   const text = inputText.value
   const pos = cursorPos.value
-  // Replace @query at cursor position (includes /, \, :, - for paths)
+  // Replace @query at cursor position (includes /, \, :, - for paths).
+  // The @ trigger must be preserved — the picked path is inserted AFTER the @,
+  // not in place of it, so users see "@/folder" in the input rather than "/folder".
   const textBeforeCursor = text.slice(0, pos)
   const textAfterCursor = text.slice(pos)
   const atMatch = textBeforeCursor.match(/@([\w./\\:-]*)$/)
-  if (atMatch) {
-    inputText.value = textBeforeCursor.slice(0, -atMatch[0].length) + file.path + textAfterCursor
+  if (atMatch && atMatch.index !== undefined) {
+    // Slice up to (but not including) the @ — keeps everything before
+    // the trigger untouched. Then prepend @ + picked path. The query
+    // part (atMatch[1]) is dropped because the picker already filtered
+    // down to exactly the entry the user picked.
+    inputText.value =
+      textBeforeCursor.slice(0, atMatch.index) + '@' + file.path + textAfterCursor
   }
   showFilePicker.value = false
   fileQuery.value = ''
