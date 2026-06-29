@@ -3,7 +3,6 @@ import { ref, watch, inject, onMounted, onUnmounted, nextTick, type Ref } from '
 import { useRouter } from 'vue-router'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
-import SseStatusBadge from './SseStatusBadge.vue'
 import { useSidebarStore } from '../stores/sidebar'
 import { VirtualScroller, formatRelativeTime } from '../helpers'
 import * as api from '../api'
@@ -42,12 +41,16 @@ const isChatsResizing = ref(false)
 const chatsResizeStartY = ref(0)
 const chatsResizeStartPx = ref(0)
 
-// SSE connection for session events. Now an `api.SseClient`
-// (auto-reconnecting) instead of a raw `EventSource`. The
-// previous version had NO reconnect logic at all — a single
-// network blip or server restart would freeze the chat list
-// until manual reload. See `docs/sse-reconnect-plan.md`.
-const sessionsSse = ref<api.SseClient | null>(null)
+// The sessions SSE was previously owned here and was redundant
+// with `workspacesStore.subscribeToSessionEvents()` (which still
+// runs on store init and keeps the workspace-tree task list in
+// sync). With the unify-SSE migration, ChatsList no longer owns
+// a session-event stream — the canonical subscription lives in
+// the workspaces store. The chat list still receives `created`,
+// `updated`, and `deleted` events through that store's handler.
+//
+// See `docs/superpowers/plans/2026-06-30-unify-sse-endpoints.md`
+// Chunk 5 / Task 5.3.
 
 // Virtual scroller ref
 const virtualScrollerRef = ref<any>(null)
@@ -260,96 +263,16 @@ const removeChat = async (chatId: string) => {
 }
 
 // ─── Session Events SSE ────────────────────────────────────────────────────────
-
-const connectSessionsSse = () => {
-  console.log('[ChatsList] Connecting sessions SSE')
-  if (sessionsSse.value) {
-    sessionsSse.value.close()
-  }
-  sessionsSse.value = api.createSessionsSseConnection(
-    (event) => {
-      console.log('[ChatsList] Received session event:', event)
-      handleSessionEvent(event)
-    },
-    // onError is only invoked on TERMINAL failure (SseClient
-    // state went to `failed`). Transient errors are retried
-    // internally with exponential backoff, so the old "log
-    // every onerror" behavior was misleading — a reconnect is
-    // not an error from the user's perspective.
-    (error) => {
-      console.error('[ChatsList] Sessions SSE failed permanently:', error)
-    },
-    () => {
-      console.log('[ChatsList] Sessions SSE connected')
-    },
-  )
-}
-
-const disconnectSessionsSse = () => {
-  if (sessionsSse.value) {
-    sessionsSse.value.close()
-    sessionsSse.value = null
-  }
-}
-
-// Handle session events from SSE - create, update, or delete
-const handleSessionEvent = (event: api.SessionEvent) => {
-  console.log('[ChatsList] handleSessionEvent:', event)
-
-  if (event.action === 'created') {
-    // Prepend new session to top of list
-    const newItem = {
-      id: event.id,
-      name: event.name || 'New Chat',
-      active: false,
-      processing: false,
-      relativeTime: 'now',
-    }
-    // Check if already exists (avoid duplicates)
-    const existingIndex = navItems.value.findIndex((item) => item.id === event.id)
-    if (existingIndex === -1) {
-      navItems.value.unshift(newItem)
-    }
-  } else if (event.action === 'updated') {
-    // Update existing session or create if not found
-    const existingIndex = navItems.value.findIndex((item) => item.id === event.id)
-    if (existingIndex !== -1) {
-      const existing = navItems.value[existingIndex]
-      if (existing) {
-        navItems.value[existingIndex] = {
-          ...existing,
-          name: event.name || existing.name,
-          selected_profile_model: event.selected_profile_model ?? existing.selected_profile_model,
-          git_worktree_cwd: event.git_worktree_cwd ?? existing.git_worktree_cwd,
-        }
-      }
-    } else {
-      // Create if not exists
-      navItems.value.unshift({
-        id: event.id,
-        name: event.name || 'New Chat',
-        active: false,
-        processing: false,
-        relativeTime: 'now',
-      })
-    }
-  } else if (event.action === 'deleted') {
-    // Remove session from list
-    const index = navItems.value.findIndex((item) => item.id === event.id)
-    if (index !== -1) {
-      const wasActive = navItems.value[index]?.active ?? false
-      navItems.value.splice(index, 1)
-      // If was active, navigate to first chat
-      if (wasActive && navItems.value.length > 0) {
-        const firstItem = navItems.value[0]
-        if (firstItem) {
-          firstItem.active = true
-          emit('navigate', firstItem.id, firstItem.name)
-        }
-      }
-    }
-  }
-}
+//
+// The sessions SSE plumbing (connect / disconnect + handleSessionEvent)
+// was removed with the unify-SSE migration (Chunk 5 / Task 5.3):
+//   - `workspacesStore.subscribeToSessionEvents()` is the SINGLE
+//     subscription point for session events; it runs on store init.
+//   - The workspace store already handles `updated` and `deleted`
+//     (it ignores `created` by design — see workspaces.ts:1530).
+//   - The ChatsList receives the same `SessionEvent` flow through
+//     Vue reactivity (workspacesStore state is shared).
+//   - No local SSE connection, no <SseStatusBadge> binding needed.
 
 // Lifecycle
 onMounted(async () => {
@@ -358,8 +281,6 @@ onMounted(async () => {
   await nextTick()
   // Load chats immediately when mounted
   loadChats()
-
-  Promise.all([connectSessionsSse()])
 })
 
 // Watch for navItems changes to sync active state
@@ -384,13 +305,14 @@ watch(processingState, (state) => {
 })
 
 onUnmounted(() => {
-  disconnectSessionsSse()
+  // No SSE teardown needed — ChatsList no longer owns a session-
+  // event stream. The canonical subscription lives in the
+  // workspaces store and persists for the app's lifetime.
 })
 
 // Cleanup on unmount
 const cleanup = () => {
   stopChatsResize()
-  disconnectSessionsSse()
 }
 
 defineExpose({
@@ -437,13 +359,6 @@ defineExpose({
         style="color: var(--semantic-text-dim)"
         >Chats</span
       >
-      <!--
-        SSE connection indicator for the sessions stream. Hidden
-        when the stream is healthy; a small pill appears when
-        reconnecting so the user knows the chat list is recovering
-        instead of silently freezing. See helpers/sseClient.ts.
-      -->
-      <SseStatusBadge v-if="sidebarStore.navExpanded" :client="sessionsSse" />
       <div class="flex items-center gap-1 ml-auto" v-if="sidebarStore.navExpanded">
         <select
           v-model="chatsSortDirection"

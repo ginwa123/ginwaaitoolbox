@@ -84,14 +84,9 @@ describe('ChatsList worktree badge', () => {
       next_cursor: null,
       total: 1,
     } as any)
-    // The onMounted path also opens a session-events SSE stream;
-    // stub it to a no-op so we don't try to open a real connection.
-    vi.spyOn(api, 'createSessionsSseConnection').mockReturnValue({
-      close: vi.fn(),
-      reconnect: vi.fn(),
-      getState: vi.fn(() => 'open'),
-      onStateChange: vi.fn(() => () => {}),
-    } as unknown as api.SseClient)
+    // ChatsList no longer opens a session-events SSE stream of its
+    // own — that subscription moved to workspacesStore (Chunk 5).
+    // The component still mounts cleanly without a local SSE stub.
 
     const wrapper = mountChatsList()
     // Wait for the async loadChats() in onMounted to resolve and the
@@ -126,12 +121,6 @@ describe('ChatsList worktree badge', () => {
       next_cursor: null,
       total: 1,
     } as any)
-    vi.spyOn(api, 'createSessionsSseConnection').mockReturnValue({
-      close: vi.fn(),
-      reconnect: vi.fn(),
-      getState: vi.fn(() => 'open'),
-      onStateChange: vi.fn(() => () => {}),
-    } as unknown as api.SseClient)
 
     const wrapper = mountChatsList()
     await new Promise((r) => setTimeout(r, 0))
@@ -161,12 +150,6 @@ describe('ChatsList worktree badge', () => {
       next_cursor: null,
       total: 1,
     } as any)
-    vi.spyOn(api, 'createSessionsSseConnection').mockReturnValue({
-      close: vi.fn(),
-      reconnect: vi.fn(),
-      getState: vi.fn(() => 'open'),
-      onStateChange: vi.fn(() => () => {}),
-    } as unknown as api.SseClient)
 
     const wrapper = mountChatsList()
     await new Promise((r) => setTimeout(r, 0))
@@ -194,12 +177,6 @@ describe('ChatsList worktree badge', () => {
       next_cursor: null,
       total: 1,
     } as any)
-    vi.spyOn(api, 'createSessionsSseConnection').mockReturnValue({
-      close: vi.fn(),
-      reconnect: vi.fn(),
-      getState: vi.fn(() => 'open'),
-      onStateChange: vi.fn(() => () => {}),
-    } as unknown as api.SseClient)
 
     const wrapper = mountChatsList()
     await new Promise((r) => setTimeout(r, 0))
