@@ -174,20 +174,54 @@ const dropIndicatorBoxShadow = computed<string>(() => {
 // NEW (change-task-to-card-kanban plan): outer container class for
 // the root <button>. 'row' is the legacy compact single-line layout
 // (byte-identical to today for sidebar consumers); 'card' is the
-// modern-minimalist kanban-card layout — generous padding, soft
-// border, subtle hover lift. Updated in card-ux-v2:
-//   - p-3 (was p-2.5) — more breathing room
-//   - gap-2.5 (was gap-1.5) — more vertical rhythm
-//   - border stays 1px (no layout shift on hover); opacity-60 softens it
-//   - shadow-sm idle + shadow-md on hover for a refined lift
-//   - rounded-md (slightly more rounded for a softer feel)
+// modern-minimalist kanban-card layout.
+//
+// card-ux-v3 (Jira-style): the previous v2's `border` was too thick
+// visually (1px solid + shadow + hover border change). v3 uses a
+// very subtle border (`border-[--color-border]/40`) for a softer
+// "card" look that relies mostly on shadow + background tint, with
+// the border just providing a quiet outline. The hover state keeps
+// the same 1px width (no layout shift) but tints to violet for an
+// accent cue.
 const containerClass = computed<string>(() => {
   if (props.variant === 'card') {
-    return 'flex flex-col gap-2.5 p-3 rounded-lg text-xs group/task cursor-pointer transition-all duration-200 border shadow-sm hover:shadow-md bg-[--semantic-card-bg] border-[--color-border] hover:border-[--color-violet]'
+    return 'flex flex-col gap-2 p-3 rounded-lg text-xs group/task cursor-pointer transition-all duration-200 border shadow-sm hover:shadow-md bg-[--semantic-card-bg] border-[--color-border]/40 hover:border-[--color-violet]/60'
   }
   // Legacy row layout — kept byte-identical so existing tests + the
   // sidebar consumer (WorkspaceItem.vue:472, 491) are unaffected.
   return 'flex items-center gap-2 px-3 py-1 rounded text-xs group/task cursor-pointer transition-all duration-200'
+})
+
+// NEW (card-ux-v3 — Jira-style priority-bar pattern). A thin
+// 3px colored stripe down the left edge of the card that reflects
+// the task's type. Standard tasks get NO stripe (cleanest default);
+// routine tasks get a violet stripe; memory tasks get a blue
+// stripe. Implemented as an inset box-shadow so it doesn't affect
+// the card's layout (no width change) and stacks naturally with
+// the dropIndicator box-shadow.
+//
+// Returns a string suitable for use as the `boxShadow` CSS value,
+// or `''` for the no-stripe case (the caller's `||` chain keeps
+// the dropIndicator in place when the type stripe is absent).
+function typeAccentShadow(): string {
+  if (!isCardVariant.value) return ''
+  const t = props.task.task_type
+  if (t === 'routine') return 'inset 3px 0 0 0 rgb(167, 139, 250)' // violet-400
+  if (t === 'memory') return 'inset 3px 0 0 0 rgb(96, 165, 250)'   // blue-400
+  return ''
+}
+
+// NEW (card-ux-v3): combined box-shadow for the card. Layered
+// values: type accent (Jira-style left stripe) + drop indicator
+// (yellow line for pinned-region drag). Returns the legacy
+// `dropIndicatorBoxShadow` value when no type accent applies so
+// the pre-existing tests / behavior is preserved.
+const cardBoxShadow = computed<string>(() => {
+  const accent = typeAccentShadow()
+  const drop = dropIndicatorBoxShadow.value
+  if (accent && drop && drop !== 'none') return `${drop}, ${accent}`
+  if (accent) return accent
+  return drop
 })
 
 // NEW (card-ux-v2 plan): human-readable "time since" formatter for
@@ -291,7 +325,10 @@ const hasMeta = computed<boolean>(() =>
     :style="{
       color: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : (variant === 'card' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)'),
       backgroundColor: workspacesStore.activeTaskId === task.id ? 'var(--semantic-active-bg)' : 'transparent',
-      boxShadow: dropIndicatorBoxShadow,
+      // card-ux-v3: `cardBoxShadow` layers the type-accent stripe
+      // (Jira-style left edge) with the dropIndicator when both
+      // are present; falls back to dropIndicator only otherwise.
+      boxShadow: cardBoxShadow,
     }"
     @click="handleSelectTask"
   >
@@ -534,8 +571,8 @@ const hasMeta = computed<boolean>(() =>
          for clear visual separation. -->
     <div
       v-if="isCardVariant && (lastUpdatedLabel || typeBadge)"
-      class="flex items-center gap-1.5 pt-2 mt-0.5 text-[10px] flex-wrap"
-      style="border-top: 1px solid var(--color-border); color: var(--semantic-text-dim);"
+      class="flex items-center gap-1.5 pt-1 text-[10px] flex-wrap"
+      style="color: var(--semantic-text-dim);"
       data-testid="task-meta"
     >
       <!-- Last-updated time pill. Single SVG clock icon + text.
