@@ -85,6 +85,7 @@ const handleDragEnd = () => {
       :task="task"
       :workspace-id="workspaceId"
       :item-id="itemId"
+      variant="card"
       @select-task="(id) => emit('selectTask', id)"
       @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
       @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"

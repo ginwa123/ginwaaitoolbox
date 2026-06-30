@@ -30,7 +30,7 @@ const processingState = inject<Ref<Record<string, boolean>>>(
 
 const workspacesStore = useWorkspacesStore()
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   task: Task
   workspaceId: string
   itemId: string
@@ -42,7 +42,16 @@ const props = defineProps<{
   // indicator. The line is a 2px box-shadow so it doesn't affect
   // the row's layout (no margin/height shift between drag states).
   dropIndicator?: 'above' | 'below' | null
-}>()
+  // NEW (change-task-to-card-kanban plan): rendering variant.
+  // 'row' (default) renders the legacy single-line compact row used
+  // in the sidebar list. 'card' renders a bordered box with optional
+  // description preview — used by <KanbanCard> inside kanban columns.
+  // The default keeps the existing UX byte-identical for every
+  // non-kanban call site (WorkspaceItem.vue:472, 491).
+  variant?: 'row' | 'card'
+}>(), {
+  variant: 'row',
+})
 
 const emit = defineEmits<{
   selectTask: [taskId: string]
@@ -156,20 +165,47 @@ const dropIndicatorBoxShadow = computed<string>(() => {
   if (props.dropIndicator === 'below') return 'inset 0 -2px 0 0 #facc15'
   return 'none'
 })
+
+// NEW (change-task-to-card-kanban plan): outer container class for
+// the root <button>. 'row' is the legacy compact single-line layout
+// (byte-identical to today for sidebar consumers); 'card' is the
+// kanban-column layout — bordered box with more padding, vertical
+// stack, and hover-raised violet border. The border uses border-width
+// 1px so the layout doesn't shift between hover and idle states.
+const containerClass = computed<string>(() => {
+  if (props.variant === 'card') {
+    // flex-col + items-stretch so the description preview (rendered
+    // below the top row via a sibling <p>) takes the full card width.
+    // Hover lifts the border to violet + bumps the shadow; the border
+    // stays 1px in both states so layout doesn't jitter.
+    return 'flex flex-col gap-1 p-2.5 rounded-md text-xs group/task cursor-pointer transition-all duration-200 border shadow-sm hover:shadow-md bg-[--semantic-card-bg] border-[--color-border] hover:border-[--color-violet]'
+  }
+  // Legacy row layout — kept byte-identical so existing tests + the
+  // sidebar consumer (WorkspaceItem.vue:472, 491) are unaffected.
+  return 'flex items-center gap-2 px-3 py-1 rounded text-xs group/task cursor-pointer transition-all duration-200'
+})
 </script>
 
 <template>
   <button
-    class="flex items-center gap-2 px-3 py-1 rounded text-xs group/task cursor-pointer transition-all duration-200"
+    :class="containerClass"
     :data-task-id="task.id"
     :data-drop-indicator="dropIndicator ?? undefined"
+    :data-task-row="variant === 'row' ? '' : null"
+    :data-task-card="variant === 'card' ? '' : null"
     :style="{
-      color: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : 'var(--semantic-text-dim)',
+      color: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : (variant === 'card' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)'),
       backgroundColor: workspacesStore.activeTaskId === task.id ? 'var(--semantic-active-bg)' : 'transparent',
       boxShadow: dropIndicatorBoxShadow,
     }"
     @click="handleSelectTask"
   >
+    <!-- Top row (always rendered): icon/bullet + name + action icons.
+         In card variant the outer flex is column, so we add an
+         inner flex-row to keep the existing icon-name-actions layout.
+         In row variant the outer flex is row, so the inner wrapper
+         collapses — its `items-center gap-2` mirrors the legacy class. -->
+    <div class="flex items-center gap-2 min-w-0">
     <!-- ───── ROUTINE branch ───── -->
     <template v-if="isRoutine">
       <!-- Spinner while worker is processing this task (mirrors ChatsList). -->
@@ -328,5 +364,23 @@ const dropIndicatorBoxShadow = computed<string>(() => {
         </svg>
       </button>
     </template>
+    </div>
+    <!-- Description preview (NEW — change-task-to-card-kanban plan):
+         Card variant only. Surfaces Task.description (already on the
+         data model, never rendered before) below the icon-row inside
+         the card. v-if gates BOTH conditions so empty/undefined
+         descriptions produce zero padding (the column's space-y-1
+         between cards handles the visual gap). Truncated with
+         text-ellipsis; the full text is available via the card title
+         tooltip in a future enhancement.
+         data-testid locks in a stable selector for tests. -->
+    <p
+      v-if="variant === 'card' && task.description"
+      class="text-[11px] leading-snug pl-5 pr-1 truncate"
+      style="color: var(--semantic-text-dim);"
+      data-testid="task-description"
+    >
+      {{ task.description }}
+    </p>
   </button>
 </template>

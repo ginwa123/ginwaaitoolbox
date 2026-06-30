@@ -97,4 +97,21 @@ describe('KanbanCard', () => {
     // dragend emits no payload — the args array is empty.
     expect(wrapper.emitted('dragend')?.[0]).toEqual([])
   })
+
+  // NEW (change-task-to-card-kanban plan): KanbanCard passes the
+  // `variant="card"` prop to its wrapped <WorkspaceItemTask> so the
+  // kanban-card UX (bordered card layout, optional description
+  // preview) is used inside kanban columns.
+  it('renders the wrapped WorkspaceItemTask in card variant (data-task-card present, data-task-row absent)', () => {
+    wrapper = mountCard(sampleTask)
+    expect(wrapper.find('[data-task-card]').exists()).toBe(true)
+    expect(wrapper.find('[data-task-row]').exists()).toBe(false)
+  })
+
+  it('renders the card description when the task has one', () => {
+    wrapper = mountCard({ ...sampleTask, description: 'Card body text' })
+    const desc = wrapper.find('[data-testid="task-description"]')
+    expect(desc.exists()).toBe(true)
+    expect(desc.text()).toBe('Card body text')
+  })
 })
