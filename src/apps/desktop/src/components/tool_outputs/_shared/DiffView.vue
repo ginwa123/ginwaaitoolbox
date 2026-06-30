@@ -134,7 +134,7 @@ const DiffSplitSide = defineComponent({
         'div',
         {
           class:
-            'overflow-x-auto text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
+            'overflow-x-hidden text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
         },
         props.rows.map((row, idx) => renderSplitRow(row, idx, props.side)),
       )
@@ -147,18 +147,16 @@ function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after') {
   const text = isBefore ? row.beforeText : row.afterText
   const lineNum = isBefore ? row.beforeLine : row.afterLine
 
-  // Row background: GitHub-style whole-row tint, with no inline word
-  // highlights (the user finds the combination of row bg + strikethrough
-  // + per-word highlight on the same line impossible to parse — the
-  // screenshot showed strikethrough on green, etc.).
+  // GitHub-style split-view row: full-row tinted bg that ALWAYS covers
+  // the full pane width regardless of content length.
   //
-  // Width strategy: the row takes width = max(parent-pane-width,
-  // content-width). Short lines → row = pane width → bg fills visible
-  // pane. Long lines → row expands to fit content → bg extends to the
-  // full content width, and the user sees the bg scroll WITH the
-  // content (which is what GitHub does — the bg is on the row, which
-  // is in normal flow inside the scroll container, so bg and content
-  // move together; the eye fills in the rest).
+  // Strategy:
+  //   - The row is `display: block; width: 100%` — fills the pane width.
+  //   - The row has `overflow: hidden` — clips content that extends past
+  //     the pane (no horizontal scroll on the pane; long lines are
+  //     clipped, matching GitHub's diff behavior).
+  //   - The line content uses `white-space: pre` to preserve spaces and
+  //     allow long lines to render at their natural width.
   let bgColor = ''
   if (row.isChanged) {
     if (isBefore) {
@@ -199,24 +197,18 @@ function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after') {
       }
     : {}
 
-  // Row container: width = max-content, min-width = 100% of pane.
-  // `width: max-content` makes the row expand to fit content (so bg
-  // covers the full content width for long lines). `min-width: 100%`
-  // ensures the row is at least the pane's width (so short lines'
-  // bg covers the full visible pane).
-  const rowStyle: Record<string, string> = {
-    width: 'max-content',
-    minWidth: '100%',
-  }
-  if (bgColor) {
-    rowStyle.backgroundColor = bgColor
-  }
-
+  // The row is `display: block` (default for div). We use `overflow:hidden`
+  // to clip long content past the pane edge — matches GitHub's diff
+  // (long lines are clipped, not scrolled). The bg is on the row itself,
+  // so it always fills the pane width.
   return h(
     'div',
     {
-      class: ['w-full whitespace-pre', bgColor ? '' : 'hover:bg-white/[0.03]'],
-      style: rowStyle,
+      class: [
+        'block w-full whitespace-pre overflow-hidden',
+        bgColor ? '' : 'hover:bg-white/[0.03]',
+      ],
+      style: bgColor ? { backgroundColor: bgColor } : undefined,
       'data-row': idx,
       'data-side': side,
       'data-changed': row.isChanged ? 'true' : 'false',
@@ -224,8 +216,8 @@ function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after') {
     },
     [
       // Gutter: line number cell. Card-bg colored so the number stays
-      // readable against the row's red/green bg. Inline so it sits next
-      // to the content on the same row.
+      // readable against the row's red/green bg. Inline-block so it
+      // sits next to the content on the same line.
       h(
         'span',
         {
@@ -236,9 +228,8 @@ function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after') {
         },
         lineNum !== null ? String(lineNum) : '\u00a0',
       ),
-      // Line content. Plain text — no inline highlights. Inline-block so
-      // the bg color (on the outer row) extends to the full content
-      // width when scrolled.
+      // Line content. Plain text — no inline highlights. Inline-block
+      // + white-space:pre keeps each line as one logical line.
       h(
         'span',
         {

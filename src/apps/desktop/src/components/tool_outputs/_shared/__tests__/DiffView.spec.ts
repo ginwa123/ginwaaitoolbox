@@ -260,10 +260,12 @@ describe('DiffView', () => {
     expect(firstAfterRow.html()).not.toContain('line-through')
   })
 
-  it('split view: row uses max-content + min-width:100% so bg fills pane even with short content', () => {
-    // Critical for the "bg fills full visible pane when scrolled" UX.
-    // The CSS is: `width: max-content; min-width: 100%`. min-width:100%
-    // ensures the bg covers the pane width when content is short.
+  it('split view: row uses width:100% + overflow:hidden so bg always fills the pane (matches GitHub diff UX)', () => {
+    // Critical for the "bg fills full visible pane" UX the user wants.
+    // The CSS is `display: block; width: 100%; overflow: hidden` — the
+    // row takes 100% of the pane width regardless of content length, so
+    // the bg covers the full pane. Long lines are clipped (no horizontal
+    // scroll, matching GitHub's diff behavior).
     const wrapper = mount(DiffView, {
       props: {
         before: 'x',
@@ -272,8 +274,27 @@ describe('DiffView', () => {
     })
     const row = wrapper.find('[data-row]')
     expect(row.exists()).toBe(true)
-    const style = row.attributes('style') ?? ''
-    expect(style).toMatch(/width:\s*max-content/)
-    expect(style).toMatch(/min-width:\s*100%/)
+    // The row's class list should include `w-full` (Tailwind for
+    // `width: 100%`) and `overflow-hidden`.
+    expect(row.classes()).toContain('w-full')
+    expect(row.classes()).toContain('overflow-hidden')
+  })
+
+  it('split view: pane uses overflow-x-hidden (no horizontal scroll, long lines are clipped)', () => {
+    // The pane (parent of all rows) sets `overflow-x-hidden` so we don't
+    // accidentally introduce a horizontal scrollbar. Long lines are
+    // clipped at the pane edge; the row bg still fills the visible
+    // area. This is the GitHub diff UX.
+    const wrapper = mount(DiffView, {
+      props: {
+        before: 'a\nb',
+        after: 'A\nB',
+      },
+    })
+    // The pane is the parent of the rows.
+    const row = wrapper.find('[data-row]')
+    expect(row.exists()).toBe(true)
+    const pane = row.element.parentElement!
+    expect(pane.classList.contains('overflow-x-hidden')).toBe(true)
   })
 })
