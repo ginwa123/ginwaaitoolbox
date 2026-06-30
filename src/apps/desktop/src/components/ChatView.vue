@@ -13,8 +13,8 @@ import {
   type ScrollLogger,
 } from '@/helpers'
 import FileInput from './FileInput.vue'
-import SseStatusBadge from './SseStatusBadge.vue'
 import FolderExplorer from './FolderExplorer.vue'
+import { useSseBus } from '../helpers/sseBus'
 import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
 import DiffView from './tool_outputs/DiffView.vue'
 import ReadFile from './tool_outputs/ReadFile.vue'
@@ -417,14 +417,11 @@ function onPeekOpenFull(sessionId: string) {
   router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
 }
 
-// SSE connection. Both streams are now `api.SseClient` (the
-// shared auto-reconnecting wrapper) instead of raw `EventSource`.
-// The previous versions had NO reconnect logic — a single network
-// blip during a long chat would kill the stream silently until
-// the user reloaded. The new behaviour: exponential backoff
-// (1s → 30s), visibility-aware pause, and `online` fast-path
-// — all in `helpers/sseClient.ts`.
-const chatSse = ref<api.SseClient | null>(null)
+// SSE connection. Both the `llm` and `queue` channels now flow
+// through the global `sseBus` (opened once by App.vue). ChatView
+// no longer owns its own EventSource; it just registers listeners
+// and asks the bus to open/close the session-scoped client via
+// `subscribeSessionChannels(sid)` / `unsubscribeSessionChannels(sid)`.
 const isStreaming = ref(false)
 const streamingContent = ref('')
 
@@ -1602,121 +1599,137 @@ const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target
 
 // ─── SSE ─────────────────────────────────────────────────────────────────────
 
-const isAlreadyConnectedSSE = ref(false)
+// Bus listener unsubscribes. Declared at script-setup scope so they
+// persist across `connectSse`/`disconnectSse` calls (re-declaring them
+// inside the function would reset them to null on every mount, losing
+// the unsubscribe). Initialized to null; set by `connectSse`, cleared
+// by `disconnectSse`. Same pattern as the existing `sseScrollPending`
+// flag below.
+let offLlm: (() => void) | null = null
+let offQueue: (() => void) | null = null
+
 const connectSse = () => {
-  console.log('[connectSse] Connecting unified SSE for session:', sessionId.value)
-  if (!sessionId.value) return
+  console.log('[connectSse] Connecting SSE via sseBus for session:', sessionId.value)
+  const sid = sessionId.value
+  if (!sid) return
 
-  if (isAlreadyConnectedSSE.value == false) disconnectSse()
+  // Defensive: if a previous connectSse didn't clean up (e.g. mid-mount
+  // session change), tear down before re-registering. The new
+  // bus.subscribeSessionChannels is refcounted, so the matching
+  // unsubscribe below keeps the per-session EventSource lifecycle
+  // correct.
+  disconnectSse()
 
-  isStreaming.value = true
   streamingContent.value = ''
 
-  chatSse.value = api.createUnifiedSseConnection({
-    channels: {
-      llm: {
-        sessionId: sessionId.value,
-        onEvent: (event: api.SseEvent) => {
-          console.log('[SSE ChatView] Received event:', event)
+  const bus = useSseBus()
+  // Subscribe FIRST so we don't miss the first event after the
+  // per-session EventSource opens. The `event.session_id !== sid` filter
+  // is defense-in-depth — the backend filters by `llm:<sid>` on the
+  // per-session stream, but the listener-side filter catches backend
+  // regressions and protects against cross-session event bleed if the
+  // bus ever routes events between sids (it doesn't today).
+  offLlm = bus.on('llm', (event: api.SseEvent) => {
+    if (event.session_id !== sid) return
 
-          if (event.type === 'connected' && event.session_id) {
-            console.log('SSE connected, session:', event.session_id)
-            return
-          }
+    console.log('[SSE ChatView] Received event:', event)
 
-          if (event.type !== 'chunk' && event.type !== 'full') {
-            return
-          }
+    if (event.type === 'connected' && event.session_id) {
+      console.log('SSE connected, session:', event.session_id)
+      return
+    }
+
+    if (event.type !== 'chunk' && event.type !== 'full') {
+      return
+    }
 
 
-          if (event.type === 'chunk' && event.content) {
-            streamingContent.value = event.content
-            updateStreamingMessage()
-            return
-          }
+    if (event.type === 'chunk' && event.content) {
+      streamingContent.value = event.content
+      updateStreamingMessage()
+      return
+    }
 
-          if (event.type === 'full' && event.finish_reason && event.content) {
-            messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
+    if (event.type === 'full' && event.finish_reason && event.content) {
+      messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
 
-            const role =
-              (event.role as 'user' | 'assistant' | 'system' | 'tool') ||
-              (event.tool_call_id ? 'tool' : 'assistant')
+      const role =
+        (event.role as 'user' | 'assistant' | 'system' | 'tool') ||
+        (event.tool_call_id ? 'tool' : 'assistant')
 
-            messages.value.push({
-              id: event.id || `assistant-${Date.now()}`,
-              role: role,
-              content: event.content,
-              timestamp: new Date(),
-              tool_name: event.tool_name,
-              diffview_before: event.diffview_before,
-              diffview_after: event.diffview_after,
-              // Match the loadChatHistory REST path (line 824): split the
-              // pipe-separated image_url string the backend sends. Undefined
-              // for messages without images keeps the v-if="image_urls?.length"
-              // check in the template clean.
-              image_urls: event.image_url ? event.image_url.split('|') : undefined,
-              finish_reason: event.finish_reason,
-              tool_call_id: event.tool_call_id,
-            })
-            streamingContent.value = ''
-            isStreaming.value = false
-            scrollLogger.markProgrammatic()
-            // One more auto-stick fires (scrollToBottom below) for the
-            // final, post-stream assistant message. Mark the timestamp so
-            // the loadMore gate sees the stick as still active during the
-            // tail of the message-complete render frame. After ~500ms
-            // (AUTO_STICK_GATE_MS) the gate lifts and the user can
-            // scroll-up-and-prepend as normal.
-            lastAutoStickAt.value = Date.now()
-            nextTick(() => scrollToBottom(false, 'sse-message-complete'))
-            setupCodeBlockCopyButtons()
-
-            if (event.total_tokens) {
-              maxTotalTokens.value = event.total_tokens
-            }
-
-            return
-          }
-
-          if (event.reasoning_content && !event.content) {
-            console.log('Reasoning:', event.reasoning_content)
-          }
-        },
-      },
-      queue: {
-        sessionId: sessionId.value,
-        onEvent: (event: api.QueueMessageEvent) => {
-          console.log('[QueueMessages SSE] Received event:', event)
-          if (event.action === 'queued') {
-            queuedMessages.value.push({
-              id: event.id ?? `q-${Date.now()}`,
-              message: event.message,
-            })
-          } else if (event.action === 'deleted') {
-            queuedMessages.value = queuedMessages.value.filter((m) => m.message !== event.message)
-          }
-        },
-      },
-    },
-    // Terminal failure: ChatView's isStreaming flag flips ONLY here
-    // (see memory nalar-sse-incomplete-chunked-encoding.md).
-    onError: (err) => {
-      console.error('SSE error:', err)
-      isStreaming.value = false
+      messages.value.push({
+        id: event.id || `assistant-${Date.now()}`,
+        role: role,
+        content: event.content,
+        timestamp: new Date(),
+        tool_name: event.tool_name,
+        diffview_before: event.diffview_before,
+        diffview_after: event.diffview_after,
+        // Match the loadChatHistory REST path (line 824): split the
+        // pipe-separated image_url string the backend sends. Undefined
+        // for messages without images keeps the v-if="image_urls?.length"
+        // check in the template clean.
+        image_urls: event.image_url ? event.image_url.split('|') : undefined,
+        finish_reason: event.finish_reason,
+        tool_call_id: event.tool_call_id,
+      })
       streamingContent.value = ''
-    },
-    onConnected: () => {
-      console.log('SSE connected')
-      isAlreadyConnectedSSE.value = true
-    },
+      isStreaming.value = false
+      scrollLogger.markProgrammatic()
+      // One more auto-stick fires (scrollToBottom below) for the
+      // final, post-stream assistant message. Mark the timestamp so
+      // the loadMore gate sees the stick as still active during the
+      // tail of the message-complete render frame. After ~500ms
+      // (AUTO_STICK_GATE_MS) the gate lifts and the user can
+      // scroll-up-and-prepend as normal.
+      lastAutoStickAt.value = Date.now()
+      nextTick(() => scrollToBottom(false, 'sse-message-complete'))
+      setupCodeBlockCopyButtons()
+
+      if (event.total_tokens) {
+        maxTotalTokens.value = event.total_tokens
+      }
+
+      return
+    }
+
+    if (event.reasoning_content && !event.content) {
+      console.log('Reasoning:', event.reasoning_content)
+    }
   })
+  offQueue = bus.on('queue', (event: api.QueueMessageEvent) => {
+    if (event.session_id !== sid) return
+    console.log('[QueueMessages SSE] Received event:', event)
+    if (event.action === 'queued') {
+      queuedMessages.value.push({
+        id: event.id ?? `q-${Date.now()}`,
+        message: event.message,
+      })
+    } else if (event.action === 'deleted') {
+      queuedMessages.value = queuedMessages.value.filter((m) => m.message !== event.message)
+    }
+  })
+  // Open the chat-scoped EventSource via the bus (refcounted;
+  // idempotent across repeated connectSse calls with the same sid).
+  bus.subscribeSessionChannels(sid)
+  // Set isStreaming LAST so external observers (tests, UI) can poll
+  // it as a "listeners are wired up" signal — flipping it before
+  // would race with test assertions that fire events into the bus
+  // expecting the listener to be registered.
+  isStreaming.value = true
 }
 
 const disconnectSse = () => {
-  if (chatSse.value) {
-    chatSse.value.close()
-    chatSse.value = null
+  if (offLlm) {
+    offLlm()
+    offLlm = null
   }
+  if (offQueue) {
+    offQueue()
+    offQueue = null
+  }
+  const sid = sessionId.value
+  if (sid) useSseBus().unsubscribeSessionChannels(sid)
   isStreaming.value = false
   streamingContent.value = ''
   messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
@@ -2615,16 +2628,6 @@ const compactSession = async () => {
                 >skill{{ sessionSkills.length !== 1 ? 's' : '' }}</span
               >
             </button>
-
-            <!--
-              SSE connection indicator for the chat stream. Hidden
-              when the stream is healthy (the common case); a small
-              pill appears when reconnecting so the user knows their
-              chat is recovering instead of silently dying. Driven by
-              the SseClient's onStateChange API — see
-              components/SseStatusBadge.vue and helpers/sseClient.ts.
-            -->
-            <SseStatusBadge :client="chatSse" />
           </div>
         </div>
       </div>
