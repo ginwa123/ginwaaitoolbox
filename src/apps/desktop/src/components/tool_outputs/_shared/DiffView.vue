@@ -41,6 +41,17 @@ const props = withDefaults(defineProps<Props>(), {
   initialMode: 'split',
 })
 
+/**
+ * Emitted when the user clicks a line-number cell in the diff.
+ * Payload is the 1-based line number in the file (the `after`-side line
+ * for split view, the actual row's new-line number for unified view).
+ * Parents should wire this to the code-editor open handler so the user
+ * can land on the exact line they were inspecting.
+ */
+const emit = defineEmits<{
+  'jump-to-line': [line: number]
+}>()
+
 const STORAGE_KEY = 'diffview.mode'
 
 const readStoredMode = (): 'split' | 'unified' => {
@@ -151,6 +162,31 @@ function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after') {
     }
   }
 
+  // For clickable line numbers: the AFTER side always points at the new file
+  // line, so we emit on that. The BEFORE side maps to a line in the original
+  // file that no longer exists on disk after a successful edit — emit on
+  // before-line only when the row is unchanged (context line) so the user
+  // can still jump to a context line. For delete-only rows on the before
+  // side, the after-side has nothing; emit on the (unchanged) row's after
+  // line instead.
+  const isClickable = lineNum !== null
+  const gutterClickHandler = isClickable
+    ? {
+        onClick: (e: MouseEvent) => {
+          e.stopPropagation()
+          emit('jump-to-line', lineNum!)
+        },
+        onMouseover: (e: MouseEvent) => {
+          ;(e.currentTarget as HTMLElement).style.cursor = 'pointer'
+          ;(e.currentTarget as HTMLElement).style.color =
+            'var(--color-violet)'
+        },
+        onMouseout: (e: MouseEvent) => {
+          ;(e.currentTarget as HTMLElement).style.color = ''
+        },
+      }
+    : {}
+
   return h(
     'div',
     {
@@ -158,17 +194,20 @@ function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after') {
       'data-row': idx,
       'data-side': side,
       'data-changed': row.isChanged ? 'true' : 'false',
+      'data-line': lineNum !== null ? String(lineNum) : undefined,
     },
     [
       // Sticky gutter: line number cell. z-10 keeps it above the row's
       // background color when horizontal scroll positions the content
-      // underneath.
+      // underneath. Click → emit jump-to-line so the parent can open the
+      // code editor at that exact line.
       h(
         'span',
         {
           class:
             'shrink-0 sticky left-0 z-10 w-10 px-2 py-0.5 text-right text-[var(--semantic-text-muted)] font-mono select-none border-r border-[var(--color-border)]',
           style: { background: 'var(--semantic-card-bg)' },
+          ...gutterClickHandler,
         },
         lineNum !== null ? String(lineNum) : '',
       ),
@@ -265,12 +304,38 @@ function renderUnifiedRow(row: UnifiedRow, idx: number) {
   if (row.kind === 'delete') rowBgClass = '!bg-red-400/15 !text-red-500'
   else if (row.kind === 'insert') rowBgClass = '!bg-green-400/15 !text-green-500'
 
+  // Unified view: prefer the after-line for click (that's the file's new
+  // state). For delete-only rows there is no after-line; fall back to the
+  // before-line so the user can still jump to that line in the original
+  // (pre-edit) snapshot — for an inserted row that line no longer exists,
+  // but the editor's revealLine clamps gracefully.
+  const jumpLine = row.afterLine ?? row.beforeLine
+  const gutterClickHandler =
+    jumpLine !== undefined && jumpLine !== null
+      ? {
+          onClick: (e: MouseEvent) => {
+            e.stopPropagation()
+            emit('jump-to-line', jumpLine as number)
+          },
+          onMouseover: (e: MouseEvent) => {
+            ;(e.currentTarget as HTMLElement).style.cursor = 'pointer'
+            ;(e.currentTarget as HTMLElement).style.color =
+              'var(--color-violet)'
+          },
+          onMouseout: (e: MouseEvent) => {
+            ;(e.currentTarget as HTMLElement).style.color = ''
+          },
+        }
+      : {}
+
   return h(
     'div',
     {
       class: ['flex min-w-max hover:bg-violet-500/5', rowBgClass],
       'data-row': idx,
       'data-kind': row.kind,
+      'data-after-line': row.afterLine ?? undefined,
+      'data-before-line': row.beforeLine ?? undefined,
     },
     [
       h(
@@ -279,6 +344,9 @@ function renderUnifiedRow(row: UnifiedRow, idx: number) {
           class:
             'shrink-0 sticky left-0 z-10 w-10 px-2 py-0.5 text-right text-[var(--semantic-text-muted)] font-mono select-none border-r border-[var(--color-border)]',
           style: { background: 'var(--semantic-card-bg)' },
+          ...(row.beforeLine !== null && row.beforeLine !== undefined
+            ? gutterClickHandler
+            : {}),
         },
         row.beforeLine ?? '',
       ),
@@ -288,6 +356,9 @@ function renderUnifiedRow(row: UnifiedRow, idx: number) {
           class:
             'shrink-0 sticky left-10 z-10 w-10 px-2 py-0.5 text-right text-[var(--semantic-text-muted)] font-mono select-none border-r border-[var(--color-border)]',
           style: { background: 'var(--semantic-card-bg)' },
+          ...(row.afterLine !== null && row.afterLine !== undefined
+            ? gutterClickHandler
+            : {}),
         },
         row.afterLine ?? '',
       ),

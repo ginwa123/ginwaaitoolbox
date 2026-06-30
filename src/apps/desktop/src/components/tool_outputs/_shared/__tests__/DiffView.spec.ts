@@ -157,4 +157,61 @@ describe('DiffView', () => {
     expect(wrapper.text()).toMatch(/@@ -\d+,\d+ \+\d+,\d+ @@/)
     localStorage.clear()
   })
+
+  // ─────────────────────────────────────────────────────────────────────
+  // jump-to-line emit (chunks 5+6)
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('emits jump-to-line when an after-side line number is clicked (split view)', async () => {
+    const wrapper = mount(DiffView, {
+      props: {
+        before: 'l1\nl2\nl3',
+        after: 'l1\nL2-CHANGED\nl3',
+      },
+    })
+    // Find the row containing the after-line "2" (the inserted row).
+    // The after-side row has data-side="after" and data-line="2".
+    const afterLineRows = wrapper.findAll('[data-side="after"][data-line="2"]')
+    expect(afterLineRows.length).toBe(1)
+    const afterLineRow = afterLineRows[0]!
+    // The gutter is the first <span> child (sticky left-0). Trigger click
+    // on the row's gutter via the row's click handler proxy.
+    await afterLineRow.element.firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    const events = wrapper.emitted('jump-to-line')
+    expect(events).toBeTruthy()
+    expect(events![0]).toEqual([2])
+  })
+
+  it('emits jump-to-line from the unified gutter when clicked', async () => {
+    const wrapper = mount(DiffView, {
+      props: { before: 'a\nb', after: 'a\nB' },
+    })
+    await wrapper.findAll('button').find((b) => b.text() === 'Unified')!.trigger('click')
+    // Find the unified row for the inserted 'B' line — its afterLine is 2
+    const insertedRows = wrapper.findAll('[data-kind="insert"][data-after-line="2"]')
+    expect(insertedRows.length).toBe(1)
+    // After-side gutter is the second span (sticky left-10).
+    await insertedRows[0]!.element.children[1]!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    const events = wrapper.emitted('jump-to-line')
+    expect(events).toBeTruthy()
+    expect(events![0]).toEqual([2])
+  })
+
+  it('does not emit jump-to-line for rows with no line number', async () => {
+    const wrapper = mount(DiffView, {
+      // Pure insert: empty before → no before-line numbers anywhere.
+      props: { before: '', after: 'NEW' },
+    })
+    // The before-side gutter cells should have no line number — clicking
+    // them should NOT emit (no `data-line` attr on those rows).
+    const rowsWithoutLine = wrapper.findAll('[data-side="before"][data-row]')
+    rowsWithoutLine.forEach((r) => {
+      expect(r.attributes('data-line')).toBeUndefined()
+    })
+    expect(wrapper.emitted('jump-to-line')).toBeFalsy()
+  })
 })

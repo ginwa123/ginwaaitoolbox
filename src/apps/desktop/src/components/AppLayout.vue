@@ -281,9 +281,13 @@ const codeEditorFile = ref<api.FolderEntry | null>(null)
 const codeEditorContent = ref<string>('')
 const codeEditorLoading = ref(false)
 const codeEditorError = ref<string | null>(null)
+// 1-based line number to scroll to when the editor mounts. Set by
+// openInCodeEditor when the caller (e.g. diff view) wants the editor to
+// land on a specific line; cleared on close and on new file selection.
+const codeEditorRequestedLine = ref<number | null>(null)
 
 const openInCodeEditor: OpenInCodeEditorFn = async (opts: OpenInCodeEditorOptions) => {
-  console.log('[openInCodeEditor] filePath:', opts.filePath, 'cwd:', opts.cwd)
+  console.log('[openInCodeEditor] filePath:', opts.filePath, 'cwd:', opts.cwd, 'line:', opts.line)
   if (!opts.cwd) return
 
   // Build a FolderEntry-shaped object from the lightweight options
@@ -300,6 +304,7 @@ const openInCodeEditor: OpenInCodeEditorFn = async (opts: OpenInCodeEditorOption
   skillViewerSkill.value = null
 
   codeEditorFile.value = file
+  codeEditorRequestedLine.value = typeof opts.line === 'number' && opts.line > 0 ? opts.line : null
   codeEditorLoading.value = true
   codeEditorError.value = null
   codeEditorContent.value = ''
@@ -311,13 +316,17 @@ const openInCodeEditor: OpenInCodeEditorFn = async (opts: OpenInCodeEditorOption
     // Navigate to code-editor view
     // Encode the file path for URL (base64 to handle special chars)
     const encodedPath = btoa(file.path)
+    const query: Record<string, string> = {
+      view: 'code-editor',
+      file: encodedPath,
+      cwd: opts.cwd,
+    }
+    if (codeEditorRequestedLine.value !== null) {
+      query.line = String(codeEditorRequestedLine.value)
+    }
     router.replace({
       path: '/app',
-      query: {
-        view: 'code-editor',
-        file: encodedPath,
-        cwd: opts.cwd,
-      },
+      query,
     })
   } catch (err) {
     console.error('Failed to read file:', err)
@@ -344,6 +353,7 @@ const closeCodeEditor = () => {
   codeEditorFile.value = null
   codeEditorContent.value = ''
   codeEditorError.value = null
+  codeEditorRequestedLine.value = null
   // Navigate back to previous view
   if (activeTask.value) {
     router.replace({ path: '/app', query: { view: 'task', task: activeTask.value.id } })
@@ -952,6 +962,12 @@ watch(
       // Restore code editor state from URL
       const filePath = query.file as string
       const cwd = query.cwd as string
+      // Optional 1-based line number to scroll to on mount (set when the user
+      // clicks a line in the diff view). Only valid numbers > 0 are honored.
+      const lineParam = query.line as string | undefined
+      const parsedLine = lineParam ? parseInt(lineParam, 10) : NaN
+      const requestedLine =
+        Number.isFinite(parsedLine) && parsedLine > 0 ? parsedLine : null
 
       if (filePath) {
         // Decode the file path
@@ -965,6 +981,7 @@ watch(
           }
           codeEditorContent.value = ''
           codeEditorError.value = null
+          codeEditorRequestedLine.value = requestedLine
           // Fetch file content
           loadCodeEditorContent()
         } catch {
@@ -1152,6 +1169,7 @@ watch(chatSessionCwd, (newCwd) => {
           :file-name="codeEditorFile.name"
           :content="codeEditorContent"
           :cwd="rightSidebarCwd"
+          :line="codeEditorRequestedLine ?? undefined"
           @close="closeCodeEditor"
           @save="handleCodeEditorSave"
         />

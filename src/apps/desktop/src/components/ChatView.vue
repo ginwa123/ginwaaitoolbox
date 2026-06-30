@@ -40,6 +40,7 @@ import KanbanList from './tool_outputs/KanbanList.vue'
 import SubAgentPeekPanel from './nalar/SubAgentPeekPanel.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useSubAgentPeek } from '../composables/useSubAgentPeek'
+import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
 import { useRouter } from 'vue-router'
 import CompactionCard from './CompactionCard.vue'
 import SkillsPopup from './SkillsPopup.vue'
@@ -806,6 +807,24 @@ const toggleToolExpanded = (groupIndex: number, msgIndex: number) => {
     newSet.add(key)
   }
   expandedToolIds.value = newSet
+}
+
+// Code-editor wiring for the fallback `<DiffView>` rendered for tools that
+// don't have a dedicated component (e.g. legacy tools). When the user clicks
+// a line number in the fallback diff we forward to the in-app editor — but
+// only when we know the target file path. We don't have a stable path here
+// (the fallback is rendered for any tool with diffview_*), so we silently
+// no-op when the path is missing. Most tools with diff content now route
+// through the dedicated `<TextReplace>` component (which knows the path);
+// this fallback is for legacy/edge cases.
+const fallbackOpenInEditor = useInjectOpenInCodeEditor()
+const handleFallbackJumpToLine = (line: number) => {
+  // No-op: we don't have a target file path in the fallback context.
+  // The click affordance still works (hover/cursor change), but won't
+  // open the editor. Hook retained for future enhancement when we add a
+  // generic tool→path lookup.
+  void fallbackOpenInEditor
+  void line
 }
 
 // Git status state
@@ -2309,10 +2328,20 @@ const compactSession = async () => {
                               v-if="expandedToolIds.has(`${groupIndex}-${idx}`)"
                               class="tool-full-content"
                             >
+                              <!--
+                                Render the diff whenever the tool emitted
+                                diffview_before/after, even if one is empty.
+                                The outer v-if handles the expand/collapse
+                                toggle. Empty-before or empty-after still
+                                renders the diff frame so the user sees the
+                                "all deleted" / "new file" case clearly.
+                              -->
                               <DiffView
-                                v-if="msg.diffview_before && msg.diffview_after"
-                                :before="msg.diffview_before"
-                                :after="msg.diffview_after"
+                                v-if="msg.diffview_before !== undefined || msg.diffview_after !== undefined"
+                                :before="msg.diffview_before ?? ''"
+                                :after="msg.diffview_after ?? ''"
+                                :file-path="msg.tool_name"
+                                @jump-to-line="handleFallbackJumpToLine"
                               />
                             </div>
                           </div>

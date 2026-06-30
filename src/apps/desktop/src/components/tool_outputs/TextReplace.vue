@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import DiffView from './_shared/DiffView.vue'
 import { parseTextReplace } from './_shared/toolOutputParser'
+import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
 
 const props = defineProps<{
   content: string
@@ -14,6 +15,19 @@ const props = defineProps<{
 
 const isExpanded = ref(props.expanded ?? false)
 
+// Keep local toggle state in sync with the parent's `expanded` prop so the
+// component behaves as a *controlled* component (parent owns the truth).
+// Without this watcher, mount({expanded:true}) → setProps({expanded:false})
+// leaves the local ref out of sync with the prop, which is wrong for any
+// caller that programmatically expands/collapses from outside (e.g. tests,
+// a "collapse all" toolbar, etc.).
+watch(
+  () => props.expanded,
+  (next) => {
+    isExpanded.value = next ?? false
+  },
+)
+
 const parsed = computed(() => parseTextReplace(props.content))
 
 // Diff content: prefer explicit props.diffviewBefore/After, then parsed before/after.
@@ -21,6 +35,23 @@ const diffBefore = computed(() => props.diffviewBefore ?? parsed.value.before)
 const diffAfter = computed(() => props.diffviewAfter ?? parsed.value.after)
 
 const hasDiff = computed(() => diffBefore.value !== '' || diffAfter.value !== '')
+
+const openInEditor = useInjectOpenInCodeEditor()
+
+// Forward the diff-view's @jump-to-line to the in-app code editor so the
+// user can click a line number in the diff and land on that exact line
+// in the file viewer. We require both `cwd` and a path (the target file
+// must be on disk + a workspace) before forwarding; otherwise we silently
+// ignore the click (the line-number still renders the hover affordance
+// but won't do anything, which is correct for tests / standalone renders).
+const handleJumpToLine = (line: number) => {
+  if (!openInEditor || !props.cwd || !parsed.value.path) return
+  openInEditor({
+    filePath: parsed.value.path,
+    cwd: props.cwd,
+    line,
+  })
+}
 
 const handleToggle = (next: boolean) => {
   isExpanded.value = next
@@ -31,6 +62,7 @@ const handleToggle = (next: boolean) => {
   <div
     class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
     :class="{ 'border-red-500/50 opacity-80': !parsed.success }"
+    data-testid="text-replace-card"
   >
     <ToolCardHeader
       tool-name="text_replace"
@@ -56,6 +88,7 @@ const handleToggle = (next: boolean) => {
         :after="diffAfter"
         :file-path="parsed.path || undefined"
         class="rounded-none border-0"
+        @jump-to-line="handleJumpToLine"
       />
     </div>
   </div>
