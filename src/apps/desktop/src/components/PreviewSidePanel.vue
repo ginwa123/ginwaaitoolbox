@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { marked } from 'marked'
+import { tryUnwrapToolOutput } from '@/helpers/unwrapToolOutput'
 
 interface PreviewItem {
   id: string
   content: string
-  parameters?: string
   tool_call_id?: string
 }
 
@@ -46,8 +46,16 @@ const activePreviewId = computed(() => findTag(activePreview.value?.content ?? '
 interface Args { content_type?: string; content?: string; title?: string; language?: string; caption?: string }
 const activeArgs = computed<Args>(() => {
   const p = activePreview.value
-  if (!p?.parameters) return {}
-  try { return JSON.parse(p.parameters) as Args } catch { return {} }
+  if (!p) return {}
+  // Extract the JSON-encoded tool-call arguments from the wrapper
+  // envelope. The backend stores the show_preview input as a
+  // <parameters>{...}</parameters> tag inside the <tool>...</tool>
+  // envelope (see tool_registry.wrapToolOutput). Using
+  // tryUnwrapToolOutput here matches the pattern used by
+  // <NalarBrowser> via ChatView's getParametersForMessage helper.
+  const unwrapped = tryUnwrapToolOutput(p.content)
+  if (!unwrapped?.parameters) return {}
+  try { return JSON.parse(unwrapped.parameters) as Args } catch { return {} }
 })
 
 function escapeHtml(s: string): string {
@@ -81,9 +89,10 @@ function tabLabel(p: PreviewItem): string {
   const ct = findTag(p.content, 'content_type') ?? 'text'
   const icon = ICONS[ct] ?? '?'
   let title = ''
-  if (p.parameters) {
+  const unwrapped = tryUnwrapToolOutput(p.content)
+  if (unwrapped?.parameters) {
     try {
-      const parsed = JSON.parse(p.parameters)
+      const parsed = JSON.parse(unwrapped.parameters)
       if (parsed?.title) title = String(parsed.title)
     } catch { /* ignore */ }
   }
