@@ -136,7 +136,7 @@ describe('TextReplace', () => {
     const afterLineRows = wrapper.findAll('[data-side="after"][data-line="2"]')
     expect(afterLineRows.length).toBe(1)
     const afterLineRow = afterLineRows[0]!
-    await afterLineRow.element.firstElementChild!.dispatchEvent(
+    await afterLineRow.element.querySelector("span:not([data-bg])")!.dispatchEvent(
       new MouseEvent('click', { bubbles: true }),
     )
 
@@ -165,7 +165,7 @@ describe('TextReplace', () => {
 
     const afterLineRows = wrapper.findAll('[data-side="after"][data-line="2"]')
     expect(afterLineRows.length).toBe(1)
-    await afterLineRows[0]!.element.firstElementChild!.dispatchEvent(
+    await afterLineRows[0]!.element.querySelector("span:not([data-bg])")!.dispatchEvent(
       new MouseEvent('click', { bubbles: true }),
     )
 
@@ -182,7 +182,7 @@ describe('TextReplace', () => {
     const afterLineRows = wrapper.findAll('[data-side="after"][data-line="2"]')
     expect(afterLineRows.length).toBe(1)
     // Click should NOT throw and NOT call any handler.
-    await afterLineRows[0]!.element.firstElementChild!.dispatchEvent(
+    await afterLineRows[0]!.element.querySelector("span:not([data-bg])")!.dispatchEvent(
       new MouseEvent('click', { bubbles: true }),
     )
     // No assertions on emitted events — just that nothing crashed.

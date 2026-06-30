@@ -174,11 +174,12 @@ describe('DiffView', () => {
     const afterLineRows = wrapper.findAll('[data-side="after"][data-line="2"]')
     expect(afterLineRows.length).toBe(1)
     const afterLineRow = afterLineRows[0]!
-    // The gutter is the first <span> child (sticky left-0). Trigger click
-    // on the row's gutter via the row's click handler proxy.
-    await afterLineRow.element.firstElementChild!.dispatchEvent(
-      new MouseEvent('click', { bubbles: true }),
-    )
+    // The gutter is the first <span> child (sibling of the bg layer).
+    // Query for it directly because the row now has a [data-bg] div
+    // before the gutter span.
+    const gutter = afterLineRow.element.querySelector('span:not([data-bg])')!
+    expect(gutter).toBeTruthy()
+    await gutter.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     const events = wrapper.emitted('jump-to-line')
     expect(events).toBeTruthy()
     expect(events![0]).toEqual([2])
@@ -219,22 +220,25 @@ describe('DiffView', () => {
   // Clean split-view rendering (chunks 5+6 redesign)
   // ─────────────────────────────────────────────────────────────────────
 
-  it('split view: changed rows have full-row bg, NO inline highlights (no strikethrough)', () => {
+  it('split view: changed rows have a sticky bg layer, NO inline highlights', () => {
     // User feedback: the previous version mixed row bg + per-word
     // strikethrough + per-word highlights on the same line, which was
-    // unreadable. The new design is just row bg + plain text.
+    // unreadable. The new design is row bg (via sticky layer) + plain
+    // text.
     const wrapper = mount(DiffView, {
       props: {
         before: 'hello world',
         after: 'hello THERE',
       },
     })
-    // The changed row (line 1) on the BEFORE side should have red bg.
     const beforeRows = wrapper.findAll('[data-side="before"][data-row]')
     expect(beforeRows.length).toBeGreaterThan(0)
     const firstBeforeRow = beforeRows[0]!
-    // bg-color is set inline via `style="background-color: rgba(...)"`.
-    expect(firstBeforeRow.attributes('style') ?? '').toMatch(/background-color/)
+    // The bg is on a separate [data-bg] layer inside the row, with
+    // position:sticky so it always covers the visible pane.
+    const bgLayer = firstBeforeRow.find('[data-bg]')
+    expect(bgLayer.exists()).toBe(true)
+    expect(bgLayer.attributes('style') ?? '').toMatch(/background-color/)
     // The row content should be PLAIN text — no <span class="...line-through...">.
     expect(firstBeforeRow.html()).not.toContain('line-through')
     // And no green "insert" highlight inside the before side (that was
@@ -242,7 +246,7 @@ describe('DiffView', () => {
     expect(firstBeforeRow.html()).not.toMatch(/bg-green/)
   })
 
-  it('split view: after-side changed rows have full green bg', () => {
+  it('split view: after-side changed rows have sticky green bg layer', () => {
     const wrapper = mount(DiffView, {
       props: {
         before: 'hello world',
@@ -252,20 +256,19 @@ describe('DiffView', () => {
     const afterRows = wrapper.findAll('[data-side="after"][data-row]')
     expect(afterRows.length).toBeGreaterThan(0)
     const firstAfterRow = afterRows[0]!
-    // Green bg for after-side changed rows.
-    expect(firstAfterRow.attributes('style') ?? '').toMatch(
+    const bgLayer = firstAfterRow.find('[data-bg]')
+    expect(bgLayer.exists()).toBe(true)
+    expect(bgLayer.attributes('style') ?? '').toMatch(
       /background-color:\s*rgba\(\s*46,\s*160,\s*67/,
     )
     // Plain text — no strikethrough on the inserted line.
     expect(firstAfterRow.html()).not.toContain('line-through')
   })
 
-  it('split view: row uses width:100% + overflow:hidden so bg always fills the pane (matches GitHub diff UX)', () => {
-    // Critical for the "bg fills full visible pane" UX the user wants.
-    // The CSS is `display: block; width: 100%; overflow: hidden` — the
-    // row takes 100% of the pane width regardless of content length, so
-    // the bg covers the full pane. Long lines are clipped (no horizontal
-    // scroll, matching GitHub's diff behavior).
+  it('split view: row uses width:max-content + min-width:100% + sticky bg so bg fills pane + long lines scroll', () => {
+    // Critical UX combination: bg always covers the full pane (sticky
+    // layer + min-width: 100%) AND the user can horizontally scroll
+    // for long lines (row width = max-content + pane overflow-x-auto).
     const wrapper = mount(DiffView, {
       props: {
         before: 'x',
@@ -274,27 +277,52 @@ describe('DiffView', () => {
     })
     const row = wrapper.find('[data-row]')
     expect(row.exists()).toBe(true)
-    // The row's class list should include `w-full` (Tailwind for
-    // `width: 100%`) and `overflow-hidden`.
-    expect(row.classes()).toContain('w-full')
-    expect(row.classes()).toContain('overflow-hidden')
+    // Row's CSS is width: max-content + min-width: 100% (inline style).
+    const rowStyle = row.attributes('style') ?? ''
+    expect(rowStyle).toMatch(/width:\s*max-content/)
+    expect(rowStyle).toMatch(/min-width:\s*100%/)
+    // The bg layer is position:sticky with left:0 + right:0.
+    const bgLayer = row.find('[data-bg]')
+    expect(bgLayer.exists()).toBe(true)
+    const bgStyle = bgLayer.attributes('style') ?? ''
+    expect(bgStyle).toMatch(/position:\s*sticky/)
+    expect(bgStyle).toMatch(/left:\s*0/)
   })
 
-  it('split view: pane uses overflow-x-hidden (no horizontal scroll, long lines are clipped)', () => {
-    // The pane (parent of all rows) sets `overflow-x-hidden` so we don't
-    // accidentally introduce a horizontal scrollbar. Long lines are
-    // clipped at the pane edge; the row bg still fills the visible
-    // area. This is the GitHub diff UX.
+  it('split view: pane uses overflow-x-auto (long lines trigger horizontal scroll)', () => {
+    // The pane (parent of all rows) uses `overflow-x: auto` so long
+    // content triggers a horizontal scrollbar. Combined with the
+    // sticky bg layer, the bg stays anchored to the visible pane
+    // while the content scrolls under it.
     const wrapper = mount(DiffView, {
       props: {
         before: 'a\nb',
         after: 'A\nB',
       },
     })
-    // The pane is the parent of the rows.
     const row = wrapper.find('[data-row]')
     expect(row.exists()).toBe(true)
     const pane = row.element.parentElement!
-    expect(pane.classList.contains('overflow-x-hidden')).toBe(true)
+    expect(pane.classList.contains('overflow-x-auto')).toBe(true)
+  })
+
+  it('split view: gutter is position:sticky so line numbers stay visible when scrolling right', () => {
+    // When the user scrolls right, the gutter (line number cell)
+    // should stay visible at the left edge of the pane. This is
+    // implemented via position:sticky + left:0 on the gutter span.
+    const wrapper = mount(DiffView, {
+      props: {
+        before: 'a',
+        after: 'B',
+      },
+    })
+    const row = wrapper.find('[data-row]')
+    expect(row.exists()).toBe(true)
+    // The gutter is the first <span> in the row (sibling of [data-bg]).
+    const gutter = row.element.querySelector('span:not([data-bg])')!
+    expect(gutter).toBeTruthy()
+    const gutterStyle = gutter.getAttribute('style') ?? ''
+    expect(gutterStyle).toMatch(/position:\s*sticky/)
+    expect(gutterStyle).toMatch(/left:\s*0/)
   })
 })

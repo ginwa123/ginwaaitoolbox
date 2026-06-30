@@ -134,7 +134,7 @@ const DiffSplitSide = defineComponent({
         'div',
         {
           class:
-            'overflow-x-hidden text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
+            'overflow-x-auto text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
         },
         props.rows.map((row, idx) => renderSplitRow(row, idx, props.side)),
       )
@@ -147,16 +147,21 @@ function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after') {
   const text = isBefore ? row.beforeText : row.afterText
   const lineNum = isBefore ? row.beforeLine : row.afterLine
 
-  // GitHub-style split-view row: full-row tinted bg that ALWAYS covers
-  // the full pane width regardless of content length.
-  //
-  // Strategy:
-  //   - The row is `display: block; width: 100%` — fills the pane width.
-  //   - The row has `overflow: hidden` — clips content that extends past
-  //     the pane (no horizontal scroll on the pane; long lines are
-  //     clipped, matching GitHub's diff behavior).
-  //   - The line content uses `white-space: pre` to preserve spaces and
-  //     allow long lines to render at their natural width.
+  // GitHub-style split-view row with horizontal scroll:
+  //   - The row is `display: block; width: max-content; min-width: 100%`
+  //     so it ALWAYS spans at least the pane width (bg covers the visible
+  //     pane for short lines) and expands past it for long lines (pane
+  //     scrolls horizontally).
+  //   - The pane uses `overflow-x: auto` so long lines trigger a
+  //     horizontal scrollbar.
+  //   - The bg layer is `position: sticky; left: 0; right: 0` — sticks
+  //     to the pane viewport so the bg ALWAYS covers the visible pane
+  //     width even when scrolled (GitHub-style "bg stays put while
+  //     content scrolls under it" behavior).
+  //   - The gutter is also `position: sticky; left: 0` so the line
+  //     number stays visible when scrolling right.
+  //   - The line content is a regular block element that can be wider
+  //     than the pane (white-space: pre, no wrap).
   let bgColor = ''
   if (row.isChanged) {
     if (isBefore) {
@@ -197,39 +202,63 @@ function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after') {
       }
     : {}
 
-  // The row is `display: block` (default for div). We use `overflow:hidden`
-  // to clip long content past the pane edge — matches GitHub's diff
-  // (long lines are clipped, not scrolled). The bg is on the row itself,
-  // so it always fills the pane width.
+  // Row container:
+  //   - display: block
+  //   - position: relative (so the sticky bg layer can be absolutely
+  //     positioned against the row)
+  //   - width: max-content; min-width: 100% (fills pane at minimum,
+  //     expands for long content)
+  //   - whiteSpace: pre (preserve spaces, no wrap)
   return h(
     'div',
     {
       class: [
-        'block w-full whitespace-pre overflow-hidden',
+        'block whitespace-pre relative',
         bgColor ? '' : 'hover:bg-white/[0.03]',
       ],
-      style: bgColor ? { backgroundColor: bgColor } : undefined,
+      style: { width: 'max-content', minWidth: '100%' },
       'data-row': idx,
       'data-side': side,
       'data-changed': row.isChanged ? 'true' : 'false',
       'data-line': lineNum !== null ? String(lineNum) : undefined,
     },
     [
-      // Gutter: line number cell. Card-bg colored so the number stays
-      // readable against the row's red/green bg. Inline-block so it
-      // sits next to the content on the same line.
+      // Sticky bg layer: position:sticky + left:0 + right:0 makes the
+      // bg stay anchored to the pane's visible viewport. When the user
+      // scrolls horizontally, the bg doesn't move; the content underneath
+      // does. This is the GitHub-style "bg fills the visible pane
+      // regardless of scroll position" UX.
+      // z-index: 0 (or negative) so it sits BEHIND the content.
+      h('div', {
+        class: 'absolute inset-0 pointer-events-none',
+        style: {
+          position: 'sticky',
+          left: '0',
+          right: '0',
+          ...(bgColor ? { backgroundColor: bgColor } : {}),
+        },
+        'data-bg': 'true',
+      }),
+      // Gutter: line number cell. position:sticky + left:0 makes it stay
+      // visible at the left edge when the user scrolls right. Card-bg
+      // colored so the number stays readable against the row's bg.
       h(
         'span',
         {
           class:
             'inline-block px-2 py-0.5 select-none text-[var(--semantic-text-muted)] font-mono align-top',
-          style: { background: 'var(--semantic-card-bg)' },
+          style: {
+            position: 'sticky',
+            left: '0',
+            background: 'var(--semantic-card-bg)',
+          },
           ...gutterClickHandler,
         },
         lineNum !== null ? String(lineNum) : '\u00a0',
       ),
-      // Line content. Plain text — no inline highlights. Inline-block
-      // + white-space:pre keeps each line as one logical line.
+      // Line content. Plain text — no inline highlights. Sits in
+      // normal flow after the sticky gutter; long content extends
+      // past the pane's visible edge and triggers horizontal scroll.
       h(
         'span',
         {
