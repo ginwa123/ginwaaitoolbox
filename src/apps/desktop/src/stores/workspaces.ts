@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useNavigationStore } from './navigation'
+import { useSseBus } from '../helpers/sseBus'
 
 export interface KanbanColumn {
   id: string
@@ -226,6 +227,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   async function init() {
     isLoading.value = true
     loadingError.value = null
+
+    // Install the bus-backed session-event listeners (idempotent —
+    // safe to call on every init, including HMR re-mounts). The bus
+    // is opened once by App.vue, so we don't own the SSE connection
+    // here anymore (Chunk 6 of unify-frontend-sse).
+    installSessionEventHandlers()
 
     try {
       // Step 1: fetch the workspaces list (no items — those come separately).
@@ -1485,39 +1492,31 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
-  // ─── Session events SSE subscription ──────────────────────────────────────
+  // ─── Session events via sseBus ─────────────────────────────────────────────
   //
   // The backend cascade for task rename (updateTaskName →
   // updateSessionName → onEventSendSessions → SSE session.updated)
-  // emits a `session.updated` event on `/api/sessions/stream`.
-  // The ChatsList listens for that to update its own navItems
-  // (the top-of-sidebar chat list), but the workspace-item task
-  // list lives in THIS store, so we also need to listen and update
-  // the matching task's name. Without this, renaming a task from
-  // anywhere (this store's renameTask action, or any future
-  // external renamer) leaves the task row showing the old name
-  // until manual reload.
+  // emits a `session.updated` event on `/api/sessions/stream`. The
+  // bus (opened once by App.vue at app start, see `helpers/sseBus.ts`)
+  // is the SINGLE subscription point for session events. The ChatsList
+  // listens for that to update its own navItems (the top-of-sidebar
+  // chat list), but the workspace-item task list lives in THIS store,
+  // so we also need to listen and update the matching task's name.
+  // Without this, renaming a task from anywhere (this store's
+  // renameTask action, or any future external renamer) leaves the
+  // task row showing the old name until manual reload.
   //
   // task.id is the session_id (see AppLayout.vue:651
   // `:chat-id="activeTask.id"`), so the lookup is by task.id ==
   // event.id. We iterate workspaces → items → tasks until we find
   // the match.
   //
-  // Idempotent: calling subscribeToSessionEvents() twice is a
-  // no-op. The SSE client lives for the lifetime of the app; no
-  // cleanup is needed (Pinia stores live forever, the page
+  // Idempotent: the install flag guards against HMR re-entry (the
+  // bus's listener Set accepts duplicates, but we don't want double
+  // mutations per event). The bus lives for the lifetime of the app;
+  // no cleanup is needed (Pinia stores live forever, the page
   // unloads on close).
-  const sessionsSse = ref<api.SseClient | null>(null)
-
-  // External subscribers for session events. The internal handler
-  // (below, inside `subscribeToSessionEvents`) already mutates
-  // workspace tree state; this hook lets OTHER components (e.g.
-  // ChatsList) react to the same events without re-opening their
-  // own SSE stream — ChatsList's `navItems` mirror is shaped
-  // differently (relativeTime, processing flag, etc.) and is
-  // populated by `loadChats()`, not derived from the workspace
-  // tree, so a fan-out is the simplest correct path.
-  const sessionEventSubscribers = new Set<(event: api.SessionEvent) => void>()
+  let sessionHandlersInstalled = false
 
   /**
    * Subscribe to session events. The callback fires once per
@@ -1529,91 +1528,71 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
    * example, ChatsList.vue's `navItems` mirror.
    */
   function onSessionEvent(cb: (event: api.SessionEvent) => void): () => void {
-    sessionEventSubscribers.add(cb)
-    return () => {
-      sessionEventSubscribers.delete(cb)
-    }
+    const bus = useSseBus()
+    return bus.on('session', (event) => {
+      try {
+        cb(event)
+      } catch (e) {
+        // Swallow subscriber errors so a buggy callback can't take
+        // down sibling subscribers (the bus's own dispatch already
+        // wraps the listener call in try/catch — this is defense
+        // in depth: it also covers the case where a future bus
+        // implementation drops that wrapping).
+        console.error('[workspacesStore] session event subscriber threw:', e)
+      }
+    })
   }
 
-  function subscribeToSessionEvents() {
-    if (sessionsSse.value) {
-      // Already subscribed.
+  function installSessionEventHandlers() {
+    if (sessionHandlersInstalled) {
+      // Already installed — don't double-register on HMR.
       return
     }
-    console.log('[workspacesStore] Subscribing to /api/events (sessions channel)')
-    sessionsSse.value = api.createUnifiedSseConnection({
-      channels: {
-        sessions: (event) => {
-          // Fan out to external subscribers FIRST (registered via
-          // `onSessionEvent`). Subscribers like ChatsList re-fetch
-          // from the API regardless of whether the internal
-          // workspace-tree mutation below finds a matching task,
-          // so a leading position here works for every action —
-          // updated/deleted (which `return` early when matched),
-          // created (no-op), and unmatched ids alike.
-          for (const cb of sessionEventSubscribers) {
-            try {
-              cb(event)
-            } catch (e) {
-              // Swallow subscriber errors so a buggy callback
-              // can't take down the SSE stream.
-              console.error('[workspacesStore] session event subscriber threw:', e)
-            }
-          }
+    sessionHandlersInstalled = true
 
-          if (event.action === 'updated') {
-            // Find the task (task.id == session_id) and update its
-            // name. We also keep navigationStore.activeChatName in
-            // sync if the renamed task is active — this is the same
-            // pattern as renameTask (workspaces.ts:renameTask).
-            for (const ws of workspaces.value) {
-              for (const item of ws.items) {
-                if (!item.tasks) continue
-                const task = item.tasks.find((t) => t.id === event.id)
-                if (task) {
-                  task.name = event.name || task.name
-                  if (activeTaskId.value === task.id) {
-                    useNavigationStore().setActiveChatName(task.name)
-                  }
-                  return
-                }
+    const bus = useSseBus()
+    bus.on('session', (event) => {
+      if (event.action === 'updated') {
+        // Find the task (task.id == session_id) and update its
+        // name. We also keep navigationStore.activeChatName in
+        // sync if the renamed task is active — this is the same
+        // pattern as renameTask (workspaces.ts:renameTask).
+        for (const ws of workspaces.value) {
+          for (const item of ws.items) {
+            if (!item.tasks) continue
+            const task = item.tasks.find((t) => t.id === event.id)
+            if (task) {
+              task.name = event.name || task.name
+              if (activeTaskId.value === task.id) {
+                useNavigationStore().setActiveChatName(task.name)
               }
-            }
-          } else if (event.action === 'deleted') {
-            // Find and remove the task. If it was active, clear the
-            // active state so the chat view doesn't render a stale
-            // task id.
-            for (const ws of workspaces.value) {
-              for (const item of ws.items) {
-                if (!item.tasks) continue
-                const idx = item.tasks.findIndex((t) => t.id === event.id)
-                if (idx !== -1) {
-                  item.tasks.splice(idx, 1)
-                  if (activeTaskId.value === event.id) {
-                    activeTaskId.value = null
-                  }
-                  return
-                }
-              }
+              return
             }
           }
-          // 'created' events are deliberately ignored here: tasks are
-          // only ever created via POST /workspaces/:w/items/:i/tasks
-          // (which the addTask action handles directly). A 'created'
-          // SSE event for an unbound session is a no-op for the
-          // workspace tree.
-        },
-      },
-      // onError is only invoked on TERMINAL failure (SseClient
-      // state went to `failed`). Transient errors are retried
-      // internally with exponential backoff — see
-      // helpers/sseClient.ts.
-      onError: (error) => {
-        console.error('[workspacesStore] Sessions SSE failed permanently:', error)
-      },
-      onConnected: () => {
-        console.log('[workspacesStore] Sessions SSE connected')
-      },
+        }
+      } else if (event.action === 'deleted') {
+        // Find and remove the task. If it was active, clear the
+        // active state so the chat view doesn't render a stale
+        // task id.
+        for (const ws of workspaces.value) {
+          for (const item of ws.items) {
+            if (!item.tasks) continue
+            const idx = item.tasks.findIndex((t) => t.id === event.id)
+            if (idx !== -1) {
+              item.tasks.splice(idx, 1)
+              if (activeTaskId.value === event.id) {
+                activeTaskId.value = null
+              }
+              return
+            }
+          }
+        }
+      }
+      // 'created' events are deliberately ignored here: tasks are
+      // only ever created via POST /workspaces/:w/items/:i/tasks
+      // (which the addTask action handles directly). A 'created'
+      // SSE event for an unbound session is a no-op for the
+      // workspace tree.
     })
   }
 
@@ -1699,7 +1678,6 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     fetchKanbanColumns,
     fetchKanbanTasks,
     initializeFromSystemFolder,
-    subscribeToSessionEvents,
     onSessionEvent,
     fetchSystemFolder,
     fetchFolderContents,

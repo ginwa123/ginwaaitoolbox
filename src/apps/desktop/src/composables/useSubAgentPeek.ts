@@ -4,20 +4,23 @@
  * Owns the lifecycle of a "peek" into a sub-agent session:
  *   1. Fetch the sub-agent's initial message history via
  *      `GET /llm/session/{sid}/messages`.
- *   2. Open a dedicated `?channels=llm:{sid}` SSE connection for live
- *      streaming updates.
+ *   2. Subscribe to the shared SSE bus (`bus.on('llm', ...)`) for live
+ *      streaming updates — filtered by `event.session_id === opts.sessionId`
+ *      so a peek for one sub-agent doesn't get distracted by another
+ *      sub-agent's events on the same bus.
  *   3. Accumulate incoming chunks into a `messages` ref that the
  *      panel component can render.
  *   4. Detect completion via `finish_reason` and stop the SSE.
- *   5. Clean up the SSE on unmount.
+ *   5. Clean up the bus subscription on unmount.
  *
  * The composable is a thin wrapper around two existing primitives
- * (`apiFetch` for the history, `createUnifiedSseConnection` for the
- * live stream). The panel component (`SubAgentPeekPanel.vue`) is
- * presentational — it only renders props.
+ * (`apiFetch` for the history, the shared `sseBus` for the live stream).
+ * The panel component (`SubAgentPeekPanel.vue`) is presentational —
+ * it only renders props.
  */
 import { onMounted, onUnmounted, ref, type Ref } from 'vue'
-import { apiFetch, createUnifiedSseConnection, type SseClient, type SseEvent, type Message } from '../api'
+import { apiFetch, type SseEvent, type Message } from '../api'
+import { useSseBus } from '../helpers/sseBus'
 
 /** Inputs the composable needs to open a peek. */
 export interface UseSubAgentPeekOptions {
@@ -150,7 +153,7 @@ export function useSubAgentPeek(opts: UseSubAgentPeekOptions): UseSubAgentPeekRe
   const errorMessage = ref<string | null>(null) as Ref<string | null>
   const totalTokens = ref(0) as Ref<number>
 
-  let sseClient: SseClient | null = null
+  let offLlm: (() => void) | null = null
 
   async function fetchInitial(): Promise<void> {
     status.value = 'loading'
@@ -186,22 +189,23 @@ export function useSubAgentPeek(opts: UseSubAgentPeekOptions): UseSubAgentPeekRe
   }
 
   function openSse(): void {
-    sseClient = createUnifiedSseConnection({
-      channels: {
-        llm: {
-          sessionId: opts.sessionId,
-          onEvent: (ev: SseEvent) => {
-            applyChunkToMessages(messages, ev, totalTokens, status)
-          },
-        },
-      },
+    const bus = useSseBus()
+    const sid = opts.sessionId
+    offLlm = bus.on('llm', (event: SseEvent) => {
+      // Listener-side filter — the bus's single global EventSource
+      // carries all sessions' llm events, so we drop events for other
+      // sessions here. This is the layer that knows which session is
+      // 'current' for this peek; the global stream itself has no notion
+      // of 'current session'.
+      if (event.session_id !== sid) return
+      applyChunkToMessages(messages, event, totalTokens, status)
     })
   }
 
   function closeSse(): void {
-    if (sseClient) {
-      sseClient.close()
-      sseClient = null
+    if (offLlm) {
+      offLlm()
+      offLlm = null
     }
   }
 

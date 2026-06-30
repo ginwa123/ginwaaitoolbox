@@ -17,23 +17,34 @@
  *
  * Guards the Chunk 7 wiring:
  *   - The status button has the expected `data-testid="worktree-status-button"`
- *   - The `:disabled` binding tracks `!gitWorktreeCwd` correctly
- *   - The `<template v-if="gitWorktreeCwd">` block renders the
- *     `🌳 <basename>` text
+ *   - The button is always clickable (no `:disabled` binding)
+ *   - The worktree-basename template renders inside the dropdown
+ *     menu header (the chip shows the branch instead)
  *   - The `:title` binding shows the full worktree path
  *
  * Mounting ChatView is heavier than the standalone components: it
- * opens an SSE stream, polls git status, calls `getChatHistory`,
- * `getQueuedMessages`, `getNalarConfig`, and sets up a spacer
- * MutationObserver. All of those are stubbed via `vi.spyOn(api, ...)`.
+ * subscribes to the sseBus for `llm` + `queue` events, polls git
+ * status, calls `getChatHistory`, `getQueuedMessages`, `getNalarConfig`,
+ * and sets up a spacer MutationObserver. All of those are stubbed —
+ * the bus is installed once in `beforeEach` with a stub global
+ * SseClient. Tests drive `llm` and `queue` events via
+ * `__dispatchSseBus`. The bus's single global SseClient carries all
+ * 5 channels; there is no per-session client in the post-Chunk-3 model.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
-import { nextTick } from 'vue'
+import { createApp, nextTick, type App as VueApp } from 'vue'
 import { mount, type VueWrapper } from '@vue/test-utils'
 
 import * as api from '../api'
 import ChatView from '../components/ChatView.vue'
+import {
+  installSseBus,
+  __resetSseBus,
+  __setSseBusGlobalClient,
+  __dispatchSseBus,
+} from '../helpers/sseBus'
+import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
 // jsdom 29 (the version used by this project's Vitest) does not
 // implement `Element.prototype.scrollTo`. The VirtualScroller's
@@ -60,19 +71,25 @@ if (
 }
 
 // ─── shared SSE stub ────────────────────────────────────────────────────────
-// The chat SSE connection (now unified — llm + queue channels on one
-// EventSource, see plan 2026-06-30-unify-sse-endpoints.md Chunk 7)
-// returns an object that matches the SseClient interface (close /
-// reconnect / getState / onStateChange). Tests don't fire events; they
-// just need the close() call to be a no-op so onUnmounted doesn't
-// throw.
-function makeSseStub(): api.SseClient {
-  return {
+// Mirrors the helper in `sseBus.spec.ts` / `App.spec.ts` — kept inline
+// rather than shared to avoid coupling between the two spec files.
+// The stub satisfies the SseClient interface (close / reconnect /
+// getState / onStateChange) so the bus's global client slot can be
+// filled without opening a real EventSource in jsdom. This spec
+// exercises the worktree status button and the cross-session listener
+// isolation — see kanbanSse.spec.ts / workspacesStoreSessionEvents.spec.ts
+// for the event-dispatch pattern using `__dispatchSseBus`.
+function makeStubClient(initial: SseState): SseClient {
+  const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
-    getState: vi.fn(() => 'open' as const),
-    onStateChange: vi.fn(() => () => {}),
-  } as unknown as api.SseClient
+    getState: () => stub._state,
+    onStateChange: (_cb: (s: SseState, _info: SseStateInfo) => void) => {
+      return () => {}
+    },
+  }
+  stub._state = initial
+  return stub as SseClient
 }
 
 // ─── default mocks ──────────────────────────────────────────────────────────
@@ -80,6 +97,12 @@ function makeSseStub(): api.SseClient {
 // component touches in onMounted. The `getChatHistory` callback lets
 // each test customize the `git_worktree_cwd` field (and the cwd) the
 // mocked response returns.
+//
+// After the single-global-EventSource migration ChatView no longer
+// calls `api.createUnifiedSseConnection` directly and the bus no
+// longer exposes a per-session subscribe/unsubscribe API. The global
+// bus is installed once per test (in `beforeEach`) with a stub global
+// SseClient; tests drive `llm`/`queue` events via `__dispatchSseBus`.
 function installChatViewMocks(opts: {
   gitWorktreeCwd?: string
   cwd?: string
@@ -121,15 +144,6 @@ function installChatViewMocks(opts: {
   vi.spyOn(api, 'getNalarConfig').mockResolvedValue({
     profiles: {},
   } as any)
-  // The unified factory opens ONE EventSource carrying both the llm
-  // and queue channels. The stub satisfies the SseClient interface
-  // (close / reconnect / getState / onStateChange) so onUnmounted's
-  // chatSse.value.close() call is a no-op. Tests don't fire events
-  // through the channel callbacks (this spec only exercises the
-  // worktree status button — see kanbanSse.spec.ts and
-  // workspacesStoreSessionEvents.spec.ts for the event-dispatch
-  // pattern using capturedOpts).
-  vi.spyOn(api, 'createUnifiedSseConnection').mockReturnValue(makeSseStub())
 }
 
 // ─── mount helper ───────────────────────────────────────────────────────────
@@ -141,17 +155,24 @@ async function mountChatView(chatId = 'session_test') {
   // onMounted is async: loadChatHistory → connectSse → startGitStatusPoll
   // → getQueuedMessages. Wait several ticks for all the awaits to
   // resolve and the template to re-render with the loaded values.
-  await new Promise((r) => setTimeout(r, 0))
-  await nextTick()
-  await new Promise((r) => setTimeout(r, 0))
-  await nextTick()
-  await new Promise((r) => setTimeout(r, 0))
+  // Tests that depend on `connectSse` having registered its bus
+  // listeners (the bus cross-session isolation tests below) also poll
+  // the component's `isStreaming` ref, which is flipped synchronously
+  // at the top of `connectSse()` — that's the earliest observable
+  // signal that the listener is wired in.
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+    const streaming = (wrapper.vm as unknown as { isStreaming?: boolean }).isStreaming
+    if (streaming) break
+  }
   await nextTick()
   return wrapper
 }
 
 describe('ChatView worktree status button', () => {
   let wrapper: VueWrapper | null = null
+  let app: VueApp | null = null
 
   beforeEach(() => {
     // jsdom 29 in this project's Vitest does not provide localStorage.
@@ -177,11 +198,26 @@ describe('ChatView worktree status button', () => {
     // sub-agent peek panel (@peek event + lazy peek composable).
     // Pinia must be active for any useXxxStore() call.
     setActivePinia(createPinia())
+
+    // Install the bus BEFORE mounting ChatView so ChatView's
+    // `useSseBus()` calls in `connectSse()` find an installed bus
+    // (the bus throws "useSseBus called before installSseBus" if not
+    // installed). Replace the global client so we never touch
+    // jsdom's EventSource — the stub satisfies the SseClient
+    // interface (close / reconnect / getState / onStateChange). The
+    // bus's single global SseClient carries all 5 channels; tests
+    // drive `llm` and `queue` events via `__dispatchSseBus`.
+    __resetSseBus()
+    app = createApp({})
+    installSseBus(app)
+    __setSseBusGlobalClient(makeStubClient('connecting'))
   })
 
   afterEach(() => {
     wrapper?.unmount()
     wrapper = null
+    __resetSseBus()
+    app = null
     vi.restoreAllMocks()
   })
 
@@ -283,5 +319,77 @@ describe('ChatView worktree status button', () => {
     // worktrees named the same).
     const title = btn.attributes('title') ?? ''
     expect(title).toContain('/abs/.worktrees/auth-fix')
+  })
+
+  // ─── bus cross-session isolation ──────────────────────────────────────────
+  //
+  // After the single-global-EventSource migration, ChatView's SSE
+  // listener filters by `event.session_id !== sid` (the closure-
+  // captured sessionId inside `connectSse`). The bus's single global
+  // EventSource carries ALL sessions' llm/queue events; the listener-
+  // side filter scopes each ChatView to its own sid. This is the
+  // SINGLE layer that does the scoping — there's no per-session stream
+  // on the wire. We exercise the listener filter by dispatching events
+  // through the bus and asserting that:
+  //   - events matching the active sid DO mutate state
+  //   - events for a different sid do NOT mutate state
+  //
+  // We don't need to wire the full `messages.push({...})` path —
+  // the easiest observable is `streamingContent.value`, which the
+  // `chunk` handler writes synchronously and which lives on a
+  // ref we can read via `wrapper.vm`.
+  it('bus llm events for the active session_id update streamingContent', async () => {
+    installChatViewMocks({ gitWorktreeCwd: '' })
+
+    wrapper = await mountChatView('session_bus_match')
+
+    // Read the ref via the component instance proxy. Refs declared
+    // in <script setup> are exposed under the proxy's properties.
+    const vm = wrapper!.vm as unknown as { streamingContent: string }
+
+    // Dispatch a chunk event for the matching session_id.
+    __dispatchSseBus('llm', {
+      session_id: 'session_bus_match',
+      type: 'chunk',
+      content: 'hello from bus',
+    } as any)
+    await nextTick()
+    await nextTick()
+
+    expect(vm.streamingContent).toBe('hello from bus')
+  })
+
+  it('bus llm events for a DIFFERENT session_id do NOT update streamingContent (cross-session isolation)', async () => {
+    installChatViewMocks({ gitWorktreeCwd: '' })
+
+    wrapper = await mountChatView('session_bus_isolation')
+    const vm = wrapper!.vm as unknown as { streamingContent: string }
+
+    // Dispatch a chunk event for the WRONG session_id. The listener
+    // filter (`event.session_id !== sid`) must drop this — the bus's
+    // single global EventSource delivers ALL sessions' events to the
+    // listener; the filter is the layer that scopes them to the
+    // active ChatView.
+    __dispatchSseBus('llm', {
+      session_id: 'OTHER_SESSION',
+      type: 'chunk',
+      content: 'should be dropped',
+    } as any)
+    await nextTick()
+    await nextTick()
+
+    expect(vm.streamingContent).toBe('')
+
+    // Now send a matching one — confirms the previous "no update"
+    // wasn't just because the wiring was broken.
+    __dispatchSseBus('llm', {
+      session_id: 'session_bus_isolation',
+      type: 'chunk',
+      content: 'matching one passes',
+    } as any)
+    await nextTick()
+    await nextTick()
+
+    expect(vm.streamingContent).toBe('matching one passes')
   })
 })

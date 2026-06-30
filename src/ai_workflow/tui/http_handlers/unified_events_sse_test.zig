@@ -56,12 +56,10 @@ test "unified_events_sse.zig recognizes all 5 channel tokens" {
         "\"kanban\"",
         "\"kanban_column\"",
         "\"kanban_task\"",
-        // llm: branch
-        "\"llm:\"",
-        // queue: branch
-        "\"queue:\"",
-        // queue_messages_<sid> composed routing key
-        "queue_messages_",
+        // bare 'llm' branch
+        "eql(u8, token, \"llm\")",
+        // bare 'queue' branch
+        "eql(u8, token, \"queue\")",
     };
 
     inline for (required_tokens) |needle| {
@@ -110,9 +108,9 @@ test "/api/events is registered in src/main.zig" {
 //
 // Plan Reviewer finding #3: the 4 static contracts above only verify
 // the file's shape, not the parser's correctness. A typo in the
-// `queue_messages_` prefix, a wrong separator for `llm:`, or an off-
-// by-one in the kanban expansion would silently drop events in
-// production. These behavioral tests pin the parser contract.
+// bare `llm`/`queue` token names, or an off-by-one in the kanban
+// expansion would silently drop events in production. These
+// behavioral tests pin the parser contract.
 //
 // To make `parseChannels` testable from this file, the production
 // code must expose it as `pub fn` (currently `fn`). Chunk 1.1's
@@ -138,45 +136,59 @@ test "parseChannels: sessions,kanban → 3 routing keys (kanban expands)" {
     try testing.expectEqualStrings("kanban_task", list.routing_keys[2]);
 }
 
-test "parseChannels: llm:<sid> → sid as routing key" {
-    const allocator = testing.allocator;
-    const list = try parseChannels(allocator, "llm:chat-123");
-    defer list.deinit(allocator);
-    try testing.expectEqual(@as(usize, 1), list.routing_keys.len);
-    try testing.expectEqualStrings("chat-123", list.routing_keys[0]);
+test "parseChannels: llm:<sid> → error.UnknownChannel (superseded by bare 'llm')" {
+    try testing.expectError(error.UnknownChannel, parseChannels(testing.allocator, "llm:chat-123"));
 }
 
-test "parseChannels: queue:<sid> → queue_messages_<sid> as routing key" {
-    const allocator = testing.allocator;
-    const list = try parseChannels(allocator, "queue:chat-abc");
-    defer list.deinit(allocator);
-    try testing.expectEqual(@as(usize, 1), list.routing_keys.len);
-    try testing.expectEqualStrings("queue_messages_chat-abc", list.routing_keys[0]);
+test "parseChannels: queue:<sid> → error.UnknownChannel (superseded by bare 'queue')" {
+    try testing.expectError(error.UnknownChannel, parseChannels(testing.allocator, "queue:chat-abc"));
 }
 
-test "parseChannels: mixed 5 channels → 6 routing keys (kanban expands)" {
+test "parseChannels: bare 'llm' → central 'llm' routing key" {
+    const allocator = testing.allocator;
+    const list = try parseChannels(allocator, "llm");
+    defer list.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), list.routing_keys.len);
+    try testing.expectEqualStrings("llm", list.routing_keys[0]);
+}
+
+test "parseChannels: bare 'queue' → central 'queue' routing key" {
+    const allocator = testing.allocator;
+    const list = try parseChannels(allocator, "queue");
+    defer list.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), list.routing_keys.len);
+    try testing.expectEqualStrings("queue", list.routing_keys[0]);
+}
+
+test "parseChannels: mixed 5 channels (bare llm+queue) → 6 routing keys (kanban expands)" {
     const allocator = testing.allocator;
     const list = try parseChannels(allocator,
-        "workers,sessions,kanban,llm:chat-1,queue:chat-1");
+        "workers,sessions,kanban,llm,queue");
     defer list.deinit(allocator);
     try testing.expectEqual(@as(usize, 6), list.routing_keys.len);
+    // workers, sessions, kanban_column, kanban_task, llm, queue (in registration order)
     try testing.expectEqualStrings("workers", list.routing_keys[0]);
     try testing.expectEqualStrings("sessions", list.routing_keys[1]);
     try testing.expectEqualStrings("kanban_column", list.routing_keys[2]);
     try testing.expectEqualStrings("kanban_task", list.routing_keys[3]);
-    try testing.expectEqualStrings("chat-1", list.routing_keys[4]);
-    try testing.expectEqualStrings("queue_messages_chat-1", list.routing_keys[5]);
+    try testing.expectEqualStrings("llm", list.routing_keys[4]);
+    try testing.expectEqualStrings("queue", list.routing_keys[5]);
 }
 
-test "parseChannels: multiple session-scoped channels → multiple keys" {
+test "parseChannels: multiple bare tokens (llm+queue repeated) → 2 keys" {
     const allocator = testing.allocator;
+    // Bare 'llm' and 'queue' tokens each register once under their
+    // central key. The ChannelList does NOT deduplicate (see the
+    // ChannelList docstring); the SSE event_bus handles duplicate
+    // subscribers without error.
     const list = try parseChannels(allocator,
-        "llm:chat-1,llm:chat-2,queue:chat-2");
+        "llm,llm,queue,queue");
     defer list.deinit(allocator);
-    try testing.expectEqual(@as(usize, 3), list.routing_keys.len);
-    try testing.expectEqualStrings("chat-1", list.routing_keys[0]);
-    try testing.expectEqualStrings("chat-2", list.routing_keys[1]);
-    try testing.expectEqualStrings("queue_messages_chat-2", list.routing_keys[2]);
+    try testing.expectEqual(@as(usize, 4), list.routing_keys.len);
+    try testing.expectEqualStrings("llm", list.routing_keys[0]);
+    try testing.expectEqualStrings("llm", list.routing_keys[1]);
+    try testing.expectEqualStrings("queue", list.routing_keys[2]);
+    try testing.expectEqualStrings("queue", list.routing_keys[3]);
 }
 
 test "parseChannels: empty string → error.MissingChannels" {
@@ -199,14 +211,14 @@ test "parseChannels: unknown channel → error.UnknownChannel" {
     try testing.expectError(error.UnknownChannel, parseChannels(allocator, "foo"));
 }
 
-test "parseChannels: llm: (empty sid) → error.EmptySessionId" {
+test "parseChannels: llm: (per-session token removed) → error.UnknownChannel" {
     const allocator = testing.allocator;
-    try testing.expectError(error.EmptySessionId, parseChannels(allocator, "llm:"));
+    try testing.expectError(error.UnknownChannel, parseChannels(allocator, "llm:"));
 }
 
-test "parseChannels: queue: (empty sid) → error.EmptySessionId" {
+test "parseChannels: queue: (per-session token removed) → error.UnknownChannel" {
     const allocator = testing.allocator;
-    try testing.expectError(error.EmptySessionId, parseChannels(allocator, "queue:"));
+    try testing.expectError(error.UnknownChannel, parseChannels(allocator, "queue:"));
 }
 
 test "parseChannels: trims whitespace around tokens" {

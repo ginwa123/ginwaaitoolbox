@@ -463,3 +463,187 @@ describe('createUnifiedSseConnection: single-buffer design (regression for Plan 
     expect(afterCb).toHaveBeenCalledTimes(1)
   })
 })
+
+/**
+ * Regression tests for Chunk 4 of
+ * docs/superpowers/plans/2026-06-30-single-sse-all-sessions.md:
+ *
+ * The `UnifiedChannels.llm` / `.queue` shapes now accept an OPTIONAL
+ * `sessionId`. When the caller omits it (the bus, in Chunk 2), the
+ * factory must send a BARE `llm` / `queue` token (not `llm:` /
+ * `queue:`) so the backend's `parseChannels` routes to the central
+ * broadcast keys. When the caller provides a `sessionId`, the
+ * factory sends the per-session routing token `llm:<sid>` /
+ * `queue:<sid>` (kept for back-compat with any future caller that
+ * wants server-side filtering).
+ *
+ * These tests capture the URL passed to `createSseClient` (the
+ * existing describe above captures only `onEvent`; this one captures
+ * the URL via its own spy + a per-test reset).
+ */
+describe('createUnifiedSseConnection: bare vs per-session tokens (Chunk 4)', () => {
+  const spy = vi.spyOn(sseClient, 'createSseClient')
+  let capturedUrl: string | null = null
+  let capturedAdditionalEventTypes: string[] | null = null
+
+  beforeEach(() => {
+    capturedUrl = null
+    capturedAdditionalEventTypes = null
+    spy.mockImplementation(((opts: sseClient.SseClientOptions) => {
+      capturedUrl = opts.url
+      capturedAdditionalEventTypes = opts.additionalEventTypes ?? null
+      return {
+        close: vi.fn(),
+        reconnect: vi.fn(),
+        getState: () => 'open' as const,
+        onStateChange: () => () => {},
+      }
+    }) as unknown as typeof sseClient.createSseClient)
+  })
+
+  it('sends bare "llm" token (not "llm:") when sessionId is omitted', () => {
+    const llmCb = vi.fn()
+
+    createUnifiedSseConnection({
+      channels: { llm: { onEvent: llmCb } },
+    })
+
+    expect(capturedUrl).not.toBeNull()
+    // Must contain the bare token
+    expect(capturedUrl).toMatch(/[?&]channels=[^&]*\bllm\b/)
+    // Must NOT contain the per-session form (`llm:` followed by anything)
+    expect(capturedUrl).not.toMatch(/[?&]channels=[^&]*\bllm:/)
+  })
+
+  it('sends bare "queue" token (not "queue:") when sessionId is omitted', () => {
+    const queueCb = vi.fn()
+
+    createUnifiedSseConnection({
+      channels: { queue: { onEvent: queueCb } },
+    })
+
+    expect(capturedUrl).not.toBeNull()
+    expect(capturedUrl).toMatch(/[?&]channels=[^&]*\bqueue\b/)
+    expect(capturedUrl).not.toMatch(/[?&]channels=[^&]*\bqueue:/)
+  })
+
+  it('sends per-session "llm:<sid>" token when sessionId is provided', () => {
+    const llmCb = vi.fn()
+
+    createUnifiedSseConnection({
+      channels: { llm: { sessionId: 'sid-back-compat', onEvent: llmCb } },
+    })
+
+    expect(capturedUrl).not.toBeNull()
+    expect(capturedUrl).toMatch(/[?&]channels=[^&]*\bllm:sid-back-compat\b/)
+  })
+
+  it('sends per-session "queue:<sid>" token when sessionId is provided', () => {
+    const queueCb = vi.fn()
+
+    createUnifiedSseConnection({
+      channels: { queue: { sessionId: 'qid-back-compat', onEvent: queueCb } },
+    })
+
+    expect(capturedUrl).not.toBeNull()
+    expect(capturedUrl).toMatch(/[?&]channels=[^&]*\bqueue:qid-back-compat\b/)
+  })
+
+  it('sends BOTH bare "llm" + bare "queue" when both channels omit sessionId (the bus shape)', () => {
+    const llmCb = vi.fn()
+    const queueCb = vi.fn()
+
+    createUnifiedSseConnection({
+      channels: {
+        llm: { onEvent: llmCb },
+        queue: { onEvent: queueCb },
+      },
+    })
+
+    expect(capturedUrl).not.toBeNull()
+    // Both bare tokens present
+    expect(capturedUrl).toMatch(/[?&]channels=[^&]*\bllm\b/)
+    expect(capturedUrl).toMatch(/[?&]channels=[^&]*\bqueue\b/)
+    // Neither per-session form present
+    expect(capturedUrl).not.toMatch(/[?&]channels=[^&]*\bllm:/)
+    expect(capturedUrl).not.toMatch(/[?&]channels=[^&]*\bqueue:/)
+  })
+})
+
+/**
+ * Regression tests for the granular `event:` names commit.
+ *
+ * The factory must pre-register EVERY named event type the backend can
+ * emit — the browser's EventSource only dispatches each `event: <name>`
+ * to listeners registered for that exact name. Missing a name here
+ * means the server-side `event:` line is silently dropped on the
+ * floor (the JS handler never fires). See SseClient JSDoc + the
+ * project memory browser-eventsource-named-events.md.
+ *
+ * The full set (must stay in lockstep with on_event_sent.zig +
+ * llm_history.zig in the backend):
+ *   - kanban_column, kanban_task
+ *   - queue_queued, queue_deleted  (was 'queue_message' before)
+ *   - llm_chunk, llm_full
+ *   - worker_created, worker_updated, worker_deleted
+ *   - session_created, session_deleted
+ */
+describe('createUnifiedSseConnection: pre-registers all granular event names', () => {
+  const REQUIRED_EVENT_TYPES = [
+    'kanban_column',
+    'kanban_task',
+    'queue_queued',
+    'queue_deleted',
+    'llm_chunk',
+    'llm_full',
+    'worker_created',
+    'worker_updated',
+    'worker_deleted',
+    'session_created',
+    'session_deleted',
+  ]
+
+  const spy = vi.spyOn(sseClient, 'createSseClient')
+  let capturedAdditionalEventTypes: string[] | null = null
+
+  beforeEach(() => {
+    capturedAdditionalEventTypes = null
+    spy.mockImplementation(((opts: sseClient.SseClientOptions) => {
+      capturedAdditionalEventTypes = opts.additionalEventTypes ?? null
+      return {
+        close: vi.fn(),
+        reconnect: vi.fn(),
+        getState: () => 'open' as const,
+        onStateChange: () => () => {},
+      }
+    }) as unknown as typeof sseClient.createSseClient)
+  })
+
+  it('registers every required event type as an additionalEventType', () => {
+    // Any single-channel subscription triggers factory construction.
+    createUnifiedSseConnection({
+      channels: { workers: () => {} },
+    })
+
+    expect(capturedAdditionalEventTypes).not.toBeNull()
+    const registered = new Set(capturedAdditionalEventTypes!)
+    for (const name of REQUIRED_EVENT_TYPES) {
+      expect(
+        registered.has(name),
+        `expected additionalEventTypes to include "${name}" but the list was: [${capturedAdditionalEventTypes!.join(', ')}]`,
+      ).toBe(true)
+    }
+  })
+
+  it('does NOT register the obsolete "queue_message" event name', () => {
+    // Belt-and-braces: the queue event name was renamed from
+    // `queue_message` to `queue_queued` for parity with `queue_deleted`.
+    // The old name must NOT appear in additionalEventTypes anymore.
+    createUnifiedSseConnection({
+      channels: { queue: { onEvent: () => {} } },
+    })
+
+    expect(capturedAdditionalEventTypes).not.toBeNull()
+    expect(capturedAdditionalEventTypes).not.toContain('queue_message')
+  })
+})

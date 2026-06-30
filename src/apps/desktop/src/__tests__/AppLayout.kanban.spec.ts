@@ -25,13 +25,55 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { flushPromises, mount } from '@vue/test-utils'
-import { nextTick, reactive, ref } from 'vue'
+import { createApp, nextTick, reactive, ref } from 'vue'
 
 import * as api from '../api'
 import { useWorkspacesStore } from '../stores/workspaces'
 import type { Workspace, WorkspaceItem, KanbanColumn, Task } from '../stores/workspaces'
 import AppLayout from '../components/AppLayout.vue'
 import { makeLocalStorageStub } from './helpers'
+import {
+  installSseBus,
+  __resetSseBus,
+  __setSseBusGlobalClient,
+} from '../helpers/sseBus'
+import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
+
+// Test-only stub SseClient. Mirrors the helper in App.spec.ts /
+// sseBus.spec.ts (kept inline rather than shared to avoid coupling
+// between spec files). Starts in 'open' state — the SseStatusBadge
+// is a no-op for 'open' and 'closed', so the AppLayout mount won't
+// render any pill, which keeps the existing assertions about
+// <KanbanView> / <ChatView> placement clean.
+function makeStubClient(initial: SseState = 'open'): SseClient {
+  const stub: any = {
+    close: vi.fn(),
+    reconnect: vi.fn(),
+    getState: () => stub._state,
+    onStateChange: (cb: (s: SseState, info: SseStateInfo) => void) => {
+      stub.__stateListeners.push(cb)
+      return () => {
+        const i = stub.__stateListeners.indexOf(cb)
+        if (i >= 0) stub.__stateListeners.splice(i, 1)
+      }
+    },
+  }
+  stub._state = initial
+  stub.__stateListeners = [] as Array<(s: SseState, info: SseStateInfo) => void>
+  return stub as SseClient
+}
+
+// Install the SSE bus singleton BEFORE mounting AppLayout. Required
+// by (a) the workspaces store's installSessionEventHandlers which
+// calls useSseBus() in its init() (line 1553 of stores/workspaces.ts),
+// and (b) the <SseStatusBadge /> child of AppLayout which calls
+// useSseBus() in its setup. App.vue's production onMounted does this
+// install; in tests we do it explicitly per beforeEach.
+function installBusForTests() {
+  __resetSseBus()
+  installSseBus(createApp({}))
+  __setSseBusGlobalClient(makeStubClient('open'))
+}
 
 // AppLayout uses useRouter / useRoute. Stub the composables at
 // module level (Options-API mocks only patch this.$router, not
@@ -123,6 +165,7 @@ function mountAppLayout(workspaces: Workspace[] = []) {
 describe('AppLayout — kanban main-content rendering', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    installBusForTests()
     Object.defineProperty(globalThis, 'localStorage', {
       value: makeLocalStorageStub(),
       writable: true,
@@ -195,6 +238,7 @@ describe('AppLayout — kanban main-content rendering', () => {
 describe('AppLayout — kanban task view (3-column layout)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    installBusForTests()
     Object.defineProperty(globalThis, 'localStorage', {
       value: makeLocalStorageStub(),
       writable: true,
@@ -439,6 +483,7 @@ describe('AppLayout — kanban survives route navigation (regression: activeWork
   // active workspace item.
   beforeEach(() => {
     setActivePinia(createPinia())
+    installBusForTests()
     Object.defineProperty(globalThis, 'localStorage', {
       value: makeLocalStorageStub(),
       writable: true,

@@ -1,85 +1,75 @@
 <!--
   SseStatusBadge.vue
 
-  A small inline pill that surfaces the connection state of an
-  `api.SseClient`. Driven by the SseClient's `onStateChange` API
-  (see `helpers/sseClient.ts`). Renders NOTHING for the common
-  case (`open`) so the chat UI is unchanged when the connection
-  is healthy.
+  A small inline pill that surfaces the GLOBAL SSE connection state
+  held by the SSE bus (`helpers/sseBus.ts`). Reads `bus.state`
+  reactively and renders NOTHING for the common case (`open`) so the
+  chat UI is unchanged when the connection is healthy.
 
   Visible states
   ──────────────
   - `connecting`    → grey pill "Connecting…"
   - `reconnecting`  → amber pill "Reconnecting… (attempt N)"
-  - `failed`        → red pill "Connection lost — Retry"
+  - `failed`        → red pill "Connection lost"
   - `open`, `closed` → hidden (default)
 
-  Why a separate component
-  ────────────────────────
-  The SseClient's `onStateChange(cb)` returns an unsubscribe
-  function. To avoid leaking listeners when the parent component
-  re-renders with a new client reference, the badge:
-    1. Holds the unsubscribe function in a setup-scope variable
-    2. Watches the `client` prop and re-subscribes when it
-       changes
-    3. Cleans up the listener in `onUnmounted`
+  Why the badge self-subscribes
+  ─────────────────────────────
+  Before this chunk the badge took a `client: SseClient` prop. After
+  Chunks 1–7 the desktop app has ONE global SseClient owned by the
+  bus; per-chat clients are gone. Hard-coding the bus as the data
+  source is simpler and matches the rest of the app:
 
-  This way, swapping one SseClient for another (e.g. on session
-  change) automatically unsubscribes from the old one and
-  subscribes to the new one — no manual teardown in the parent.
+    1. No parent has to thread a client reference through
+    2. The badge reflects the same connection that drives every other
+       SSE consumer (chats list, workspace store, sub-agent peek)
+    3. Mounting order is trivial — `App.vue` installs the bus in
+       `onMounted` (Chunk 5), and every component mounted after that
+       can call `useSseBus()` safely
+
+  The badge counts reconnect attempts locally (the bus's state
+  ShallowRef exposes only the state, not the attempt number, so we
+  track it ourselves: bump on every `reconnecting` transition,
+  reset on `open`/`closed`).
+
+  Requires `useSseBus()` — the bus must be installed before this
+  component mounts. `App.vue` does the install.
 -->
 <script setup lang="ts">
 import { onUnmounted, ref, watch } from 'vue'
 
-import type { SseClient, SseState } from '../helpers/sseClient'
+import { useSseBus } from '../helpers/sseBus'
+import type { SseState } from '../helpers/sseClient'
 
-const props = defineProps<{
-  /**
-   * The SseClient to observe. When this reference changes
-   * (e.g. a new chat is opened, a new session SSE is created),
-   * the badge unsubscribes from the old client and
-   * subscribes to the new one.
-   */
-  client: SseClient | null | undefined
-}>()
-
-const state = ref<SseState>('connecting')
+const bus = useSseBus()
+const state = ref<SseState>(bus.state.value)
 const attempt = ref(0)
-let unsubscribe: (() => void) | null = null
 
-function attach(c: SseClient | null | undefined): void {
-  // Always tear down the previous subscription first. This is
-  // the defense against the App.vue-style "stale timer
-  // closes a working connection" class of bug.
-  if (unsubscribe) {
-    unsubscribe()
-    unsubscribe = null
-  }
-  if (!c) {
-    state.value = 'closed'
-    return
-  }
-  // Read the current state immediately so we don't flash the
-  // wrong pill for a frame while waiting for the first state
-  // emission.
-  state.value = c.getState()
-  unsubscribe = c.onStateChange((s, info) => {
+// `bus.state` is a `ShallowRef<SseState>`. Vue 3 doesn't expose
+// `ref.watch(...)` (that's a Vue 2 / pinia idiom), so use the
+// standalone `watch()` from 'vue' with `{ immediate: true }` so the
+// initial render reads the right state without waiting for the first
+// transition. The returned stop-handle tears down the watcher in
+// `onUnmounted`.
+const stop = watch(
+  bus.state,
+  (s) => {
     state.value = s
-    attempt.value = info.attempt
-  })
-}
-
-watch(
-  () => props.client,
-  (next) => attach(next),
+    // Bump the attempt counter on every reconnect; reset once the
+    // connection recovers or the bus is torn down. We track this
+    // locally because the bus's state ShallowRef does NOT expose the
+    // underlying `SseClient`'s `info.attempt` — only the state name.
+    if (s === 'reconnecting') {
+      attempt.value += 1
+    } else if (s === 'open' || s === 'closed') {
+      attempt.value = 0
+    }
+  },
   { immediate: true },
 )
 
 onUnmounted(() => {
-  if (unsubscribe) {
-    unsubscribe()
-    unsubscribe = null
-  }
+  stop()
 })
 </script>
 

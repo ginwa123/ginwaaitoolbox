@@ -10,10 +10,30 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
+import { createApp, type App as VueApp } from 'vue'
 
 import * as api from '../api'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
+import {
+  installSseBus,
+  __resetSseBus,
+  __setSseBusGlobalClient,
+} from '../helpers/sseBus'
+import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
+
+function makeStubClient(initial: SseState): SseClient {
+  const stub: any = {
+    close: vi.fn(),
+    reconnect: vi.fn(),
+    getState: () => stub._state,
+    onStateChange: (_cb: (s: SseState, info: SseStateInfo) => void) => {
+      return () => {}
+    },
+  }
+  stub._state = initial
+  return stub as SseClient
+}
 
 const seedTasks = (n: number) =>
   Array.from({ length: n }, (_, i) => ({
@@ -41,6 +61,7 @@ describe('useWorkspacesStore.loadMoreTasks()', () => {
   const getTasksMock = vi.fn()
 
   let localStorageStub: Storage
+  let app: VueApp
 
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -50,6 +71,14 @@ describe('useWorkspacesStore.loadMoreTasks()', () => {
       writable: true,
       configurable: true,
     })
+
+    // init() calls installSessionEventHandlers() which uses
+    // useSseBus() — install a stub bus before the store's init()
+    // runs so the install path doesn't throw.
+    __resetSseBus()
+    app = createApp({})
+    installSseBus(app)
+    __setSseBusGlobalClient(makeStubClient('connecting'))
 
     // The vi.fn()s are at describe scope, so mock.calls accumulates
     // across tests by default. Clear the call history at the start of
@@ -66,6 +95,7 @@ describe('useWorkspacesStore.loadMoreTasks()', () => {
   })
 
   afterEach(() => {
+    __resetSseBus()
     vi.restoreAllMocks()
   })
 

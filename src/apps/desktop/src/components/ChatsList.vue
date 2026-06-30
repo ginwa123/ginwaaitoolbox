@@ -264,17 +264,17 @@ const removeChat = async (chatId: string) => {
   }
 }
 
-// ─── Session Events SSE ────────────────────────────────────────────────────────
+// ─── Session Events via sseBus ─────────────────────────────────────────────────
 //
-// The sessions SSE plumbing (connect / disconnect + handleSessionEvent)
-// was removed with the unify-SSE migration (Chunk 5 / Task 5.3):
-//   - `workspacesStore.subscribeToSessionEvents()` is the SINGLE
-//     subscription point for session events; it runs on store init.
-//   - The workspace store already handles `updated` and `deleted`
-//     (it ignores `created` by design — see workspaces.ts:1530).
-//   - The ChatsList receives the same `SessionEvent` flow through
-//     Vue reactivity (workspacesStore state is shared).
-//   - No local SSE connection, no <SseStatusBadge> binding needed.
+// Session events (renames / deletes / creates) arrive through the
+// global sseBus (opened once by App.vue). The workspaces store
+// installs its own `bus.on('session', ...)` handler in its `init()`
+// for internal tree mutation; we register a second listener here
+// (via `workspacesStore.onSessionEvent(cb)`) to re-fetch our
+// navItems mirror whenever any session event arrives — the nav
+// list isn't derived from the workspace tree, so the internal
+// handler's match-by-task-id path is a no-op for us. See Chunk 6
+// of the unify-frontend-sse plan.
 
 // Lifecycle
 // Subscribe to session events at setup time (synchronously) so the

@@ -11,15 +11,16 @@
 //! it cares about via the `?channels=` query parameter:
 //!
 //!   /api/events?channels=workers,sessions,kanban
-//!   /api/events?channels=llm:<sid>,queue:<sid>
-//!   /api/events?channels=workers,sessions,kanban,llm:<sid>,queue:<sid>
+//!   /api/events?channels=llm
+//!   /api/events?channels=queue
+//!   /api/events?channels=workers,sessions,kanban,llm,queue
 //!
 //! Channel tokens and the event_bus routing keys they fan out to:
 //!   workers        → "workers"
 //!   sessions       → "sessions"
 //!   kanban         → "kanban_column", "kanban_task"
-//!   llm:<sid>      → "<sid>"
-//!   queue:<sid>    → "queue_messages_<sid>"
+//!   llm            → "llm"          (central key — all sessions' LLM events)
+//!   queue          → "queue"        (central key — all sessions' queue events)
 //!
 //! Plan: docs/superpowers/plans/2026-06-30-unify-sse-endpoints.md
 
@@ -86,13 +87,12 @@ pub const ChannelList = struct {
     }
 };
 
-/// Parse `?channels=workers,sessions,kanban,llm:<sid>,queue:<sid>`.
+/// Parse `?channels=workers,sessions,kanban,llm,queue`.
 /// Returns the list of routing keys to subscribe + register. Returns
 /// ChannelParseError on missing/empty/unknown channel tokens.
 pub const ChannelParseError = error{
     MissingChannels,
     UnknownChannel,
-    EmptySessionId,
     OutOfMemory,
 };
 
@@ -122,15 +122,10 @@ pub fn parseChannels(allocator: std.mem.Allocator, raw: []const u8) ChannelParse
         } else if (std.mem.eql(u8, token, "kanban")) {
             try routing_keys.append(allocator, try allocator.dupe(u8, "kanban_column"));
             try routing_keys.append(allocator, try allocator.dupe(u8, "kanban_task"));
-        } else if (std.mem.startsWith(u8, token, "llm:")) {
-            const sid = token["llm:".len..];
-            if (sid.len == 0) return error.EmptySessionId;
-            try routing_keys.append(allocator, try allocator.dupe(u8, sid));
-        } else if (std.mem.startsWith(u8, token, "queue:")) {
-            const sid = token["queue:".len..];
-            if (sid.len == 0) return error.EmptySessionId;
-            const composed = try std.fmt.allocPrint(allocator, "queue_messages_{s}", .{sid});
-            try routing_keys.append(allocator, composed);
+        } else if (std.mem.eql(u8, token, "llm")) {
+            try routing_keys.append(allocator, try allocator.dupe(u8, "llm"));
+        } else if (std.mem.eql(u8, token, "queue")) {
+            try routing_keys.append(allocator, try allocator.dupe(u8, "queue"));
         } else {
             return error.UnknownChannel;
         }
@@ -183,25 +178,21 @@ pub const CallbackUnifiedSessionsStream = struct {
     }
 };
 
-/// Callback for the per-session LLM routing key. The session_id is
-/// carried inside `SseEvent.session_id`, so the routing key is read
-/// from there (mirrors llm_history_sse.zig:11-12).
-pub const CallbackUnifiedLLMStream = struct {
+/// Callback for the central "llm" routing key. Forwards to every
+/// client registered under "llm" — the frontend listener then
+/// filters by `data.session_id` on the JS side.
+pub const CallbackUnifiedLLMBroadcast = struct {
     pub fn callback(data: ai_mod.on_event_sent.SseEvent) void {
-        forwardToClients(data.session_id, data);
+        forwardToClients("llm", data);
     }
 };
 
-/// Callback for `queue_messages_<sid>` routing key. The session_id
-/// is read from `data.session_id` and composed into the routing key,
-/// mirroring queue_messages_sse.zig:19.
-pub const CallbackUnifiedQueueStream = struct {
+/// Callback for the central "queue" routing key. Forwards to every
+/// client registered under "queue" — the frontend listener then
+/// filters by `data.session_id` on the JS side.
+pub const CallbackUnifiedQueueBroadcast = struct {
     pub fn callback(data: ai_mod.on_event_sent.SseEvent) void {
-        const di = nalar_core.getSingleton() catch return;
-        const allocator = di.allocator;
-        const composed = std.fmt.allocPrint(allocator, "queue_messages_{s}", .{data.session_id}) catch return;
-        defer allocator.free(composed);
-        forwardToClients(composed, data);
+        forwardToClients("queue", data);
     }
 };
 
@@ -238,12 +229,6 @@ pub fn unifiedEventsStreamHandler(
                 \\{{"error":"unknown channel in {s}"}}
             , .{raw_channels}),
         }),
-        error.EmptySessionId => return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try std.fmt.allocPrint(allocator,
-                \\{{"error":"session-scoped channel requires non-empty session_id"}}
-            , .{}),
-        }),
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer channels.deinit(allocator);
@@ -279,12 +264,10 @@ pub fn unifiedEventsStreamHandler(
                 event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedWorkersStream.callback) catch {};
             } else if (std.mem.eql(u8, rk, "sessions")) {
                 event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedSessionsStream.callback) catch {};
-            } else if (std.mem.startsWith(u8, rk, "queue_messages_")) {
-                event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedQueueStream.callback) catch {};
-            } else {
-                // Default: treat as a per-session LLM routing key.
-                // The session_id IS the routing key for LLM events.
-                event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedLLMStream.callback) catch {};
+            } else if (std.mem.eql(u8, rk, "llm")) {
+                event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedLLMBroadcast.callback) catch {};
+            } else if (std.mem.eql(u8, rk, "queue")) {
+                event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedQueueBroadcast.callback) catch {};
             }
         }
 

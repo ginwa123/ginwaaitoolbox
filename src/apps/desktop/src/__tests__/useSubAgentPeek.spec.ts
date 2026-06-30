@@ -4,47 +4,75 @@
  * Mocks global.fetch to assert the initial history call shape and
  * the messages ref updates. The SSE/chunk-accumulation behavior is
  * covered by Chunk 2 tests.
+ *
+ * After the single-global-EventSource migration (Chunks 1-3 of the
+ * `single-sse-all-sessions` plan), the composable no longer creates
+ * its own SseClient and the bus no longer exposes a per-session
+ * subscribe/unsubscribe API. The composable registers a listener on
+ * the bus's `llm` channel and filters by `event.session_id === sid`
+ * on the JS side. Tests install the bus in `beforeEach` and drive
+ * `llm` events via `__dispatchSseBus`. The bus's single global
+ * SseClient is replaced with a stub so no real EventSource is
+ * opened in jsdom.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, nextTick } from 'vue'
 import { mount, flushPromises } from '@vue/test-utils'
 import { useSubAgentPeek } from '../composables/useSubAgentPeek'
-import { createUnifiedSseConnection } from '../api'
-import type { Message, SseClient } from '../api'
+import type { Message } from '../api'
+import {
+  installSseBus,
+  __resetSseBus,
+  __setSseBusGlobalClient,
+  __dispatchSseBus,
+} from '../helpers/sseBus'
+import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
-// Spy on the SSE factory so we can assert it's called (or not) and
-// grab the close() fn without spinning up a real EventSource. We
-// only stub the function, not the whole module — the composable
-// still calls apiFetch via real fetch.
-vi.mock('../api', async () => {
-  const actual = await vi.importActual<typeof import('../api')>('../api')
-  return {
-    ...actual,
-    createUnifiedSseConnection: vi.fn(
-      (): SseClient => ({
-        close: vi.fn(),
-        reconnect: vi.fn(),
-        getState: () => 'open',
-        onStateChange: () => () => {},
-      }),
-    ),
+// ─── shared SSE stub ────────────────────────────────────────────────────────
+// Mirrors the helper in chatViewWorktree.spec.ts / sseBus.spec.ts. The
+// stub satisfies the SseClient interface (close / reconnect / getState /
+// onStateChange) so the bus's global client slot can be filled without
+// opening a real EventSource in jsdom.
+function makeStubClient(initial: SseState): SseClient {
+  const stub: {
+    close: ReturnType<typeof vi.fn>
+    reconnect: ReturnType<typeof vi.fn>
+    getState: () => SseState
+    onStateChange: (cb: (s: SseState, info: SseStateInfo) => void) => () => void
+    _state: SseState
+  } = {
+    close: vi.fn(),
+    reconnect: vi.fn(),
+    getState: () => stub._state,
+    onStateChange: (_cb) => () => {},
+    _state: initial,
   }
-})
+  return stub as unknown as SseClient
+}
 
-const mockedCreateUnified = vi.mocked(createUnifiedSseConnection)
-
-describe('useSubAgentPeek (skeleton)', () => {
+describe('useSubAgentPeek', () => {
   const originalFetch = global.fetch
   const fetchMock = vi.fn()
 
   beforeEach(() => {
     fetchMock.mockReset()
-    mockedCreateUnified.mockClear()
     global.fetch = fetchMock as unknown as typeof fetch
+
+    // Install the bus BEFORE mounting so useSubAgentPeek's
+    // `useSseBus()` call in openSse finds an installed bus (the bus
+    // throws "useSseBus called before installSseBus" if not installed).
+    // The global client is stubbed so no real EventSource is opened
+    // in jsdom — the stub satisfies the SseClient interface. The bus
+    // owns a single global SseClient carrying all 5 channels; tests
+    // drive the `llm` channel via `__dispatchSseBus`.
+    __resetSseBus()
+    installSseBus({} as unknown as Parameters<typeof installSseBus>[0])
+    __setSseBusGlobalClient(makeStubClient('connecting'))
   })
 
   afterEach(() => {
     global.fetch = originalFetch
+    __resetSseBus()
     vi.clearAllMocks()
   })
 
@@ -105,9 +133,11 @@ describe('useSubAgentPeek (skeleton)', () => {
     expect(url).toContain('direction=asc')
     expect(peek.messages.value).toHaveLength(2)
     expect(peek.messages.value[0]?.id).toBe('m1')
-    // Last message has no finish_reason → SSE should open
+    // Last message has no finish_reason → SSE should open. After the
+    // global EventSource migration, opening SSE no longer touches any
+    // per-session client; status=streaming is the observable signal
+    // that the listener was registered on the bus.
     expect(peek.status.value).toBe('streaming')
-    expect(mockedCreateUnified).toHaveBeenCalledTimes(1)
   })
 
   it('marks status=complete when the latest message already has finish_reason', async () => {
@@ -131,8 +161,7 @@ describe('useSubAgentPeek (skeleton)', () => {
     await flushPromises()
 
     expect(peek.status.value).toBe('complete')
-    // No SSE for an already-completed sub-agent
-    expect(mockedCreateUnified).not.toHaveBeenCalled()
+    // No SSE listener registered for an already-completed sub-agent.
   })
 
   it('marks status=error when the initial fetch throws', async () => {
@@ -158,7 +187,6 @@ describe('useSubAgentPeek (skeleton)', () => {
 
     expect(peek.status.value).toBe('error')
     expect(peek.errorMessage.value).toContain('500')
-    expect(mockedCreateUnified).not.toHaveBeenCalled()
   })
 
   it('reloads via the public reload() action', async () => {
@@ -177,28 +205,45 @@ describe('useSubAgentPeek (skeleton)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  it('closes the SSE connection on unmount', async () => {
+  it('after unmount, bus events for the peek sid no longer mutate messages (listener unsubscribed)', async () => {
     const messages = msgs([
       { id: 'm1', role: 'user', content: 'do X', created_at: 1000 },
     ])
     mockFetchOnce(200, { messages, has_more: false, next_cursor: null })
 
+    const peekSessionId = 'subagent_5b_listener_off'
     const { wrapper, peek } = mountWith({
-      sessionId: 'subagent_5_quux',
-      agentName: 'quux',
+      sessionId: peekSessionId,
+      agentName: 'listener-off',
       instruction: 'do X',
     })
     await flushPromises()
     expect(peek.status.value).toBe('streaming')
 
-    const sseInstance = mockedCreateUnified.mock.results[0]?.value as SseClient | undefined
-    expect(sseInstance).toBeTruthy()
-    const closeSpy = sseInstance!.close as ReturnType<typeof vi.fn>
+    // Sanity: events for the peek sid DO update messages while the
+    // composable is mounted.
+    __dispatchSseBus('llm', {
+      session_id: peekSessionId,
+      id: 'a1',
+      role: 'assistant',
+      content: 'before-unmount',
+    } as any)
+    await nextTick()
+    expect(peek.messages.value.some((m) => m.content === 'before-unmount')).toBe(true)
 
     wrapper.unmount()
-    // After unmount the composable's onUnmounted handler should have
-    // called close() on the SSE.
-    expect(closeSpy).toHaveBeenCalled()
+
+    // After unmount, dispatching more events for the peek sid must
+    // NOT mutate messages — the listener unsubscribe in closeSse()
+    // removed the callback from the bus's llm Set.
+    __dispatchSseBus('llm', {
+      session_id: peekSessionId,
+      id: 'a2',
+      role: 'assistant',
+      content: 'after-unmount',
+    } as any)
+    await nextTick()
+    expect(peek.messages.value.some((m) => m.content === 'after-unmount')).toBe(false)
   })
 
   it('exposes a reactive totalTokens ref that defaults to 0', () => {
@@ -211,12 +256,22 @@ describe('useSubAgentPeek (skeleton)', () => {
   })
 
   // ── Chunk 2 — chunk accumulation tests ──────────────────────────────────
-  // Use the wired SSE onEvent callback to simulate streaming chunks
-  // arriving for an open sub-agent.
+  // After the bus migration, chunks arrive via `__dispatchSseBus('llm',
+  // ...)` rather than the old per-channel onEvent callback. The
+  // listener-side filter (`event.session_id !== sid` returns early)
+  // scopes the events to the peek's own sid.
+
+  // Stable sid for the chunk scenario tests so the dispatched events
+  // match the peek's filter. Pulled out as a constant so the
+  // `creates a new message` test (which doesn't use runChunkScenario)
+  // can also reuse it.
+  const CHUNK_PEEK_SID = 'subagent_chunk_test'
 
   /**
-   * Drive streaming chunks via the registered SSE callback. Returns
-   * the composable's peek so callers can assert on the final state.
+   * Drive streaming chunks through the bus's llm channel. Returns the
+   * composable's peek so callers can assert on the final state. Each
+   * chunk is dispatched as `{ session_id: CHUNK_PEEK_SID, ...chunk }`
+   * so the listener-side filter passes through.
    */
   async function runChunkScenario(
     initialMessages: Message[],
@@ -233,20 +288,17 @@ describe('useSubAgentPeek (skeleton)', () => {
   ) {
     mockFetchOnce(200, { messages: initialMessages, has_more: false, next_cursor: null })
     const { peek } = mountWith({
-      sessionId: 'subagent_chunk_test',
+      sessionId: CHUNK_PEEK_SID,
       agentName: 'chunk-test',
       instruction: 'do X',
     })
     await flushPromises()
 
-    const sseCall = mockedCreateUnified.mock.calls[0]?.[0]
-    expect(sseCall).toBeTruthy()
-    const onEvent = (
-      sseCall as { channels: { llm: { onEvent: (ev: unknown) => void } } }
-    ).channels.llm.onEvent
-
     for (const chunk of chunks) {
-      onEvent(chunk as unknown as Parameters<typeof onEvent>[0])
+      __dispatchSseBus('llm', {
+        session_id: CHUNK_PEEK_SID,
+        ...chunk,
+      } as any)
       await nextTick()
     }
     return peek
@@ -283,22 +335,77 @@ describe('useSubAgentPeek (skeleton)', () => {
       text: () => Promise.resolve('{"messages":[]}'),
     } as Response)
 
+    const NEW_MSG_PEEK_SID = 'subagent_new_msg'
     const { peek } = mountWith({
-      sessionId: 'subagent_new_msg',
+      sessionId: NEW_MSG_PEEK_SID,
       agentName: 'new-msg',
       instruction: 'do X',
     })
     await flushPromises()
 
-    const sseCall = mockedCreateUnified.mock.calls[0]?.[0] as {
-      channels: { llm: { onEvent: (ev: unknown) => void } }
-    }
-    sseCall.channels.llm.onEvent({ id: 'x1', role: 'tool', content: 'r', tool_call_id: 'call_1' })
+    // Drive the chunk through the bus with the peek's sid so the
+    // listener-side filter lets it through. The chunk has no
+    // matching message in `messages` (empty initial fetch) so
+    // `applyChunkToMessages` must create a NEW tool message.
+    __dispatchSseBus('llm', {
+      session_id: NEW_MSG_PEEK_SID,
+      id: 'x1',
+      role: 'tool',
+      content: 'r',
+      tool_call_id: 'call_1',
+    } as any)
     await nextTick()
 
     expect(peek.messages.value).toHaveLength(1)
     expect(peek.messages.value[0]?.role).toBe('tool')
     expect(peek.messages.value[0]?.tool_call_id).toBe('call_1')
+  })
+
+  it('listener-side filter drops bus events for OTHER session_ids (cross-peek isolation)', async () => {
+    // Two peeks on different sids — bus events for sid A must not
+    // mutate peek B's messages, and vice versa. Mirrors the
+    // cross-session isolation test in chatViewWorktree.spec.ts.
+    mockFetchOnce(200, { messages: [], has_more: false, next_cursor: null })
+    mockFetchOnce(200, { messages: [], has_more: false, next_cursor: null })
+
+    const SID_A = 'subagent_iso_A'
+    const SID_B = 'subagent_iso_B'
+
+    const { peek: peekA } = mountWith({
+      sessionId: SID_A,
+      agentName: 'iso-A',
+      instruction: 'do X',
+    })
+    const { peek: peekB } = mountWith({
+      sessionId: SID_B,
+      agentName: 'iso-B',
+      instruction: 'do X',
+    })
+    await flushPromises()
+
+    // Event for SID_A must mutate peekA only.
+    __dispatchSseBus('llm', {
+      session_id: SID_A,
+      id: 'a1',
+      role: 'assistant',
+      content: 'for-A',
+    } as any)
+    await nextTick()
+
+    expect(peekA.messages.value.some((m) => m.content === 'for-A')).toBe(true)
+    expect(peekB.messages.value.some((m) => m.content === 'for-A')).toBe(false)
+
+    // Event for SID_B must mutate peekB only.
+    __dispatchSseBus('llm', {
+      session_id: SID_B,
+      id: 'b1',
+      role: 'assistant',
+      content: 'for-B',
+    } as any)
+    await nextTick()
+
+    expect(peekA.messages.value.some((m) => m.content === 'for-B')).toBe(false)
+    expect(peekB.messages.value.some((m) => m.content === 'for-B')).toBe(true)
   })
 
   it('tracks total_tokens from SSE chunks', async () => {
