@@ -38,6 +38,13 @@ const props = defineProps<{
   language?: string
   readonly?: boolean
   cwd?: string
+  /**
+   * Optional 1-based line number to scroll to once the editor mounts.
+   * When undefined, the editor opens at the top.
+   * Set from `OpenInCodeEditorOptions.line` so clicking a diff line number
+   * opens the file already scrolled to that line.
+   */
+  line?: number
 }>()
 
 const emit = defineEmits<{
@@ -192,6 +199,24 @@ onMounted(() => {
   })
 
   editor.value = editorInstance
+
+  // If the caller passed a line number, scroll to it (centered) once the
+  // editor is laid out. Monaco's `revealLineInCenter` handles both the
+  // scroll position and a brief selection highlight so the user sees
+  // exactly which line they jumped to from the diff.
+  if (typeof props.line === 'number' && props.line > 0) {
+    // Wait one tick so automaticLayout has produced real line heights.
+    setTimeout(() => {
+      editorInstance.revealLineInCenter(props.line!, 0)
+      editorInstance.setSelection({
+        startLineNumber: props.line!,
+        startColumn: 1,
+        endLineNumber: props.line!,
+        endColumn: 1,
+      })
+      editorInstance.focus()
+    }, 0)
+  }
 
   // Listen for content changes
   editorInstance.onDidChangeModelContent(() => {

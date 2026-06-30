@@ -5,6 +5,28 @@ const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
 
+/// XML-escape a string for safe inclusion in tool-result XML output.
+/// Mirrors `src/ai_workflow/tui/llm_history.zig xmlEscape` exactly so the
+/// frontend's `unwrapToolOutput` can safely un-escape (& -> &amp; first
+/// during decoding to avoid double-decoding).
+/// Local definition (rather than importing the canonical one) keeps
+/// `text_replace.zig` free of cross-module dependencies.
+fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    for (s) |c| {
+        switch (c) {
+            '&' => try out.appendSlice(allocator, "&amp;"),
+            '<' => try out.appendSlice(allocator, "&lt;"),
+            '>' => try out.appendSlice(allocator, "&gt;"),
+            '"' => try out.appendSlice(allocator, "&quot;"),
+            '\'' => try out.appendSlice(allocator, "&apos;"),
+            else => try out.append(allocator, c),
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 pub const TextReplaceInput = struct {
     path: []const u8,
     old_str: []const u8,
@@ -458,43 +480,56 @@ pub fn executeTextReplace(
 
 /// Create a minimal XML error output (no success field, just error + original args)
 pub fn xmlError(allocator: std.mem.Allocator, err_msg: []const u8, path: []const u8, old_str: []const u8, new_str: []const u8) []const u8 {
+    // XML-escape every user-controlled field. Otherwise a `&` or `<` in the
+    // path / old_str / new_str silently corrupts the parsed XML on the
+    // frontend (the `toolOutputParser.extractTag` will misalign).
+    const escaped_err = xmlEscape(allocator, err_msg) catch "<success>false</success><error>UnknownError</error>";
+    defer allocator.free(escaped_err);
+    const escaped_path = xmlEscape(allocator, path) catch "<success>false</success><error>UnknownError</error>";
+    defer allocator.free(escaped_path);
+    const escaped_old = xmlEscape(allocator, old_str) catch "<success>false</success><error>UnknownError</error>";
+    defer allocator.free(escaped_old);
+    const escaped_new = xmlEscape(allocator, new_str) catch "<success>false</success><error>UnknownError</error>";
+    defer allocator.free(escaped_new);
     return std.fmt.allocPrint(allocator,
         \\<error>{s}</error>
         \\<path>{s}</path>
         \\<old_str>{s}</old_str>
         \\<new_str>{s}</new_str>
         \\<success>false</success>
-    , .{ err_msg, path, old_str, new_str }) catch "<success>false</success><error>UnknownError</error>";
+    , .{ escaped_err, escaped_path, escaped_old, escaped_new }) catch "<success>false</success><error>UnknownError</error>";
 }
 
-/// Serialize result to XML string with diff view
+/// Serialize result to XML string with diff view (split + unified)
 pub fn toXmlSuccess(allocator: std.mem.Allocator, result: TextReplaceResult, path: []const u8) []const u8 {
     const dv = result.diff_view;
-    // const unified = if (dv) |d| d.unified else "";
+    const unified = if (dv) |d| d.unified else "";
     const before = if (dv) |d| d.before else "";
     const after = if (dv) |d| d.after else "";
     const lines_changed = if (dv) |d| d.lines_changed else 0;
+
+    // XML-escape every user-controlled field. Without this, a `&`, `<`, or
+    // `>` in the path / before / after content would silently corrupt the
+    // parsed XML on the frontend.
+    const escaped_path = xmlEscape(allocator, path) catch "<success>true</success><path>Unknown</path>";
+    defer allocator.free(escaped_path);
+    const escaped_unified = xmlEscape(allocator, unified) catch "<success>true</success><path>Unknown</path>";
+    defer allocator.free(escaped_unified);
+    const escaped_before = xmlEscape(allocator, before) catch "<success>true</success><path>Unknown</path>";
+    defer allocator.free(escaped_before);
+    const escaped_after = xmlEscape(allocator, after) catch "<success>true</success><path>Unknown</path>";
+    defer allocator.free(escaped_after);
 
     return std.fmt.allocPrint(allocator,
         \\<success>true</success>
         \\<path>{s}</path>
         \\<diff_view>
+        \\<unified>{s}</unified>
         \\<before>{s}</before>
         \\<after>{s}</after>
         \\<lines_changed>{d}</lines_changed>
         \\</diff_view>
-    , .{ path, before, after, lines_changed }) catch "<success>true</success><path>Unknown</path>";
-
-    // return std.fmt.allocPrint(allocator,
-    //     \\<success>true</success>
-    //     \\<path>{s}</path>
-    //     \\<diff_view>
-    //     \\<unified>{s}</unified>
-    //     \\<before>{s}</before>
-    //     \\<after>{s}</after>
-    //     \\<lines_changed>{d}</lines_changed>
-    //     \\</diff_view>
-    // , .{ path, unified, before, after, lines_changed }) catch "<success>true</success><path>Unknown</path>";
+    , .{ escaped_path, escaped_unified, escaped_before, escaped_after, lines_changed }) catch "<success>true</success><path>Unknown</path>";
 }
 
 pub fn toXmlError(allocator: std.mem.Allocator, result: anyerror, path: []const u8, old_str: []const u8) []const u8 {

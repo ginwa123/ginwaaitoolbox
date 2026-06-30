@@ -11,6 +11,13 @@ export type OpenInCodeEditorOptions = {
   filePath: string
   fileName?: string
   cwd: string
+  /**
+   * Optional 1-based line number to scroll to when the editor opens.
+   * When `undefined`, the editor opens at line 1.
+   * Threaded through from the diff-view's `@jump-to-line` emit so the user
+   * can click a line in the diff and land on that exact line in the editor.
+   */
+  line?: number
 }
 
 export type OpenInCodeEditorFn = (opts: OpenInCodeEditorOptions) => Promise<void> | void

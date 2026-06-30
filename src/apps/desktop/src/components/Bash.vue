@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { parseBash } from './tool_outputs/_shared/toolOutputParser'
 
 const props = defineProps<{
   content: string
@@ -7,63 +8,17 @@ const props = defineProps<{
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
+const parsed = computed(() => parseBash(props.content))
 
-// Parse command from <command>...</command>
-const command = computed(() => {
-  const match = props.content.match(/<command>([\s\S]*?)<\/command>/)
-  return match ? match[1] : null
-})
-
-// Parse stdout from <stdout>...</stdout>
-const stdout = computed(() => {
-  const match = props.content.match(/<stdout>([\s\S]*?)<\/stdout>/)
-  return match ? match[1] : ''
-})
-
-// Parse stderr from <stderr>...</stderr>
-const stderr = computed(() => {
-  const match = props.content.match(/<stderr>([\s\S]*?)<\/stderr>/)
-  return match ? match[1] : ''
-})
-
-// Parse exit_code from <exit_code>...</exit_code>
-const exitCode = computed(() => {
-  const match = props.content.match(/<exit_code>(.*?)<\/exit_code>/)
-  return match?.[1] != null ? parseInt(match[1], 10) : null
-})
-
-// Parse truncated from <truncated>...</truncated>
-const isTruncated = computed(() => {
-  const match = props.content.match(/<truncated>([\s\S]*?)<\/truncated>/)
-  if (!match || !match[1]) return false
-  return match[1].trim() === 'true'
-})
-
-// Parse timeout from <timeout>...</timeout>
-const isTimeout = computed(() => {
-  const match = props.content.match(/<timeout>([\s\S]*?)<\/timeout>/)
-  if (!match || !match[1]) return false
-  return match[1].trim() === 'true'
-})
-
-// Parse stdout_lines from <stdout_lines>...</stdout_lines>
-const stdoutLines = computed(() => {
-  const match = props.content.match(/<stdout_lines>(.*?)<\/stdout_lines>/)
-  return match?.[1] != null ? parseInt(match[1], 10) : 0
-})
-
-// Parse stderr_lines from <stderr_lines>...</stderr_lines>
-const stderrLines = computed(() => {
-  const match = props.content.match(/<stderr_lines>(.*?)<\/stderr_lines>/)
-  return match?.[1] != null ? parseInt(match[1], 10) : 0
-})
-
-// Parse is_self from <is_self>...</is_self>
-const isSelf = computed(() => {
-  const match = props.content.match(/<is_self>([\s\S]*?)<\/is_self>/)
-  if (!match || !match[1]) return false
-  return match[1].trim() === 'true'
-})
+const command = computed(() => parsed.value.command)
+const stdout = computed(() => parsed.value.stdout)
+const stderr = computed(() => parsed.value.stderr)
+const exitCode = computed(() => parsed.value.exitCode)
+const isTruncated = computed(() => parsed.value.truncated)
+const isTimeout = computed(() => parsed.value.timedOut)
+const stdoutLines = computed(() => parsed.value.stdoutLines)
+const stderrLines = computed(() => parsed.value.stderrLines)
+const isSelf = computed(() => parsed.value.isSelf)
 
 // Has stderr content (not empty and not "No errors.")
 const hasStderr = computed(() => {
