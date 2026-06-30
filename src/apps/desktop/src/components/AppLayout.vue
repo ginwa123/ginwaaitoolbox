@@ -10,6 +10,7 @@ import Chats from './Chats.vue'
 import SettingsView from './SettingsView.vue'
 import CodeEditor from './CodeEditor.vue'
 import NotificationContainer from './NotificationContainer.vue'
+import SseStatusBadge from './SseStatusBadge.vue'
 import KanbanView from './KanbanView.vue'
 import KanbanColumnEditor from './KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './KanbanSettingsDialog.vue'
@@ -1407,6 +1408,19 @@ watch(chatSessionCwd, (newCwd) => {
 
     <!-- Global error notification stack -->
     <NotificationContainer />
+
+    <!-- Global SSE connection status pill. Renders nothing while the
+         connection is healthy (state === 'open'); surfaces a small
+         "Connecting…" / "Reconnecting…" / "Connection lost" pill in
+         the top-right corner when the bus is in a degraded state.
+         Fixed-positioned so it stays visible regardless of which
+         view (chat / kanban / settings / workspace) is active. -->
+    <div
+      class="fixed top-3 right-3 z-50"
+      data-testid="sse-status-badge-container"
+    >
+      <SseStatusBadge />
+    </div>
 
     <!-- Kanban column editor: add / rename / delete a column on the
          currently-active kanban item. Mounted at the AppLayout root
