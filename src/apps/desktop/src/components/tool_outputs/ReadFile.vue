@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
+import { parseReadFile } from './_shared/toolOutputParser'
 
 const props = defineProps<{
   content: string
@@ -9,54 +10,15 @@ const props = defineProps<{
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
+const parsed = computed(() => parseReadFile(props.content))
 
-// Parse <path>...</path>
-const filePath = computed(() => {
-  const match = props.content.match(/<path>(.*?)<\/path>/)
-  return match ? match[1] : null
-})
-
-// Parse <error>...</error> (only when not success)
-const errorMessage = computed(() => {
-  if (!isSuccess.value) {
-    const match = props.content.match(/<error>(.*?)<\/error>/)
-    if (!match || !match[1]) return null
-    return match[1].trim()
-  }
-  return null
-})
-
-// Parse <success>true|false</success> (default true for legacy)
-const isSuccess = computed(() => {
-  const match = props.content.match(/<success>([\s\S]*?)<\/success>/)
-  if (!match || !match[1]) return true
-  return match[1].trim() === 'true'
-})
-
-// Strip XML tags from the file content for clean display
-const stripXml = (text: string | undefined | null): string => {
-  if (!text) return ''
-  return text
-    .replace(/<path>.*?<\/path>/gs, '')
-    .replace(/<content>[\s\S]*?<\/content>/gs, '')
-    .replace(/<total_lines>.*?<\/total_lines>/gs, '')
-    .replace(/<start_line>.*?<\/start_line>/gs, '')
-    .replace(/<end_line>.*?<\/end_line>/gs, '')
-    .replace(/<error>.*?<\/error>/gs, '')
-    .replace(/<success>.*?<\/success>/gs, '')
-    .trim()
-}
-
-const fileContent = computed(() => {
-  const match = props.content.match(/<content>([\s\S]*?)<\/content>/)
-  if (match) return stripXml(match[1])
-  return stripXml(props.content)
-})
+// Display the parsed content; the parser already strips XML wrappers.
+const fileContent = computed(() => parsed.value.content || '')
 
 const lineCount = computed(() => {
-  const content = fileContent.value
-  if (!content || typeof content !== 'string') return 0
-  return content.split('\n').length
+  const c = fileContent.value
+  if (!c) return 0
+  return c.split('\n').length
 })
 
 const handleToggle = (next: boolean) => {
@@ -67,23 +29,23 @@ const handleToggle = (next: boolean) => {
 <template>
   <div
     class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
-    :class="{ 'border-red-500/50 opacity-80': !!errorMessage }"
+    :class="{ 'border-red-500/50 opacity-80': !!parsed.error }"
   >
     <ToolCardHeader
       tool-name="read_file"
-      :primary="filePath"
-      :success="isSuccess"
+      :primary="parsed.path"
+      :success="parsed.success"
       :expanded="isExpanded"
       :expandable="true"
       :cwd="cwd"
-      :right-meta="errorMessage ? 'Error' : `${lineCount}L`"
+      :right-meta="parsed.error ? 'Error' : `${lineCount}L`"
       @update:expanded="handleToggle"
     />
 
     <div v-if="isExpanded" class="border-t border-[var(--color-border)]">
-      <div v-if="errorMessage" class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
+      <div v-if="parsed.error" class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
         <span class="font-semibold shrink-0">Error:</span>
-        <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
+        <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
       <pre
         v-else

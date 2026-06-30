@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
+import { parseRemoveFile } from './_shared/toolOutputParser'
 
 const props = defineProps<{
   content: string
@@ -9,33 +10,7 @@ const props = defineProps<{
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
-
-// Parse <path>...</path>
-const filePath = computed(() => {
-  const match = props.content.match(/<path>(.*?)<\/path>/)
-  return match ? match[1] : null
-})
-
-// Parse <deleted>true|false</deleted>
-const isDeleted = computed(() => {
-  const match = props.content.match(/<deleted>([\s\S]*?)<\/deleted>/)
-  if (!match || !match[1]) return false
-  return match[1].trim() === 'true'
-})
-
-// Parse <error>...</error>
-const errorMessage = computed(() => {
-  const match = props.content.match(/<error>(.*?)<\/error>/)
-  if (!match || !match[1]) return null
-  return match[1].trim()
-})
-
-// Parse <recursive>true|false</recursive>
-const isRecursive = computed(() => {
-  const match = props.content.match(/<recursive>([\s\S]*?)<\/recursive>/)
-  if (!match || !match[1]) return false
-  return match[1].trim() === 'true'
-})
+const parsed = computed(() => parseRemoveFile(props.content))
 
 const handleToggle = (next: boolean) => {
   isExpanded.value = next
@@ -45,26 +20,26 @@ const handleToggle = (next: boolean) => {
 <template>
   <div
     class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
-    :class="{ 'border-red-500/50 opacity-80': !isDeleted }"
+    :class="{ 'border-red-500/50 opacity-80': !parsed.deleted }"
   >
     <ToolCardHeader
       tool-name="remove_file"
-      :primary="filePath"
-      :success="isDeleted"
+      :primary="parsed.path"
+      :success="parsed.deleted"
       :expanded="isExpanded"
-      :expandable="!!errorMessage"
+      :expandable="!!parsed.error"
       :cwd="cwd"
-      :inline-tag="isRecursive ? '(recursive)' : null"
+      :inline-tag="parsed.recursive ? '(recursive)' : null"
       @update:expanded="handleToggle"
     />
 
     <div
-      v-if="isExpanded && errorMessage"
+      v-if="isExpanded && parsed.error"
       class="border-t border-[var(--color-border)] bg-black/[0.02]"
     >
       <div class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
         <span class="font-semibold shrink-0">Error:</span>
-        <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
+        <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
     </div>
   </div>

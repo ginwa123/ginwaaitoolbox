@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
+import { parseWriteFile } from './_shared/toolOutputParser'
 
 const props = defineProps<{
   content: string
@@ -9,26 +10,7 @@ const props = defineProps<{
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
-
-// Parse <file_write>...</file_write>
-const filePath = computed(() => {
-  const match = props.content.match(/<file_write>(.*?)<\/file_write>/)
-  return match ? match[1] : null
-})
-
-// Parse <success>true|false</success>
-const isSuccess = computed(() => {
-  const match = props.content.match(/<success>([\s\S]*?)<\/success>/)
-  if (!match || !match[1]) return false
-  return match[1].trim() === 'true'
-})
-
-// Parse <error>...</error>
-const errorMessage = computed(() => {
-  const match = props.content.match(/<error>(.*?)<\/error>/)
-  if (!match || !match[1]) return null
-  return match[1].trim()
-})
+const parsed = computed(() => parseWriteFile(props.content))
 
 const handleToggle = (next: boolean) => {
   isExpanded.value = next
@@ -38,25 +20,25 @@ const handleToggle = (next: boolean) => {
 <template>
   <div
     class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
-    :class="{ 'border-red-500/50 opacity-80': !isSuccess }"
+    :class="{ 'border-red-500/50 opacity-80': !parsed.success }"
   >
     <ToolCardHeader
       tool-name="write_file"
-      :primary="filePath"
-      :success="isSuccess"
+      :primary="parsed.path"
+      :success="parsed.success"
       :expanded="isExpanded"
-      :expandable="!!errorMessage"
+      :expandable="!!parsed.error"
       :cwd="cwd"
       @update:expanded="handleToggle"
     />
 
     <div
-      v-if="isExpanded && errorMessage"
+      v-if="isExpanded && parsed.error"
       class="border-t border-[var(--color-border)] bg-black/[0.02]"
     >
       <div class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
         <span class="font-semibold shrink-0">Error:</span>
-        <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
+        <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
     </div>
   </div>

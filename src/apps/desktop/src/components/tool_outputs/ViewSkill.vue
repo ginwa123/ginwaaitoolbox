@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
+import { parseViewSkill } from './_shared/toolOutputParser'
 
 const props = defineProps<{
   content: string
@@ -8,50 +9,11 @@ const props = defineProps<{
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
+const parsed = computed(() => parseViewSkill(props.content))
 
-// Parse <skill_name>...</skill_name>
-const skillName = computed(() => {
-  const match = props.content.match(/<skill_name>(.*?)<\/skill_name>/)
-  return match ? match[1] : null
-})
-
-// Parse <description>...</description>
-const description = computed(() => {
-  const match = props.content.match(/<description>(.*?)<\/description>/)
-  return match ? match[1] : ''
-})
-
-// Parse <found>true|false</found>
-const isFound = computed(() => {
-  const match = props.content.match(/<found>(.*?)<\/found>/)
-  if (!match || !match[1]) return false
-  return match[1].trim() === 'true'
-})
-
-// Parse <error>...</error>
-const errorMessage = computed(() => {
-  const match = props.content.match(/<error>(.*?)<\/error>/)
-  if (!match || !match[1]) return null
-  return match[1].trim()
-})
-
-// Parse <available_skills>...</available_skills>, each containing <skill>...</skill>
-const availableSkills = computed((): string[] => {
-  const results: string[] = []
-  const match = props.content.match(/<available_skills>([\s\S]*?)<\/available_skills>/)
-  if (!match || !match[1]) return results
-
-  const skillRegex = /<skill>(.*?)<\/skill>/g
-  let m
-  while ((m = skillRegex.exec(match[1])) !== null) {
-    if (m[1]) results.push(m[1])
-  }
-  return results
-})
-
-const hasAvailableSkills = computed(() => availableSkills.value.length > 0)
+const hasAvailableSkills = computed(() => parsed.value.availableSkills.length > 0)
 const rightMeta = computed(() =>
-  hasAvailableSkills.value ? `${availableSkills.value.length} available` : null,
+  hasAvailableSkills.value ? `${parsed.value.availableSkills.length} available` : null,
 )
 
 const handleToggle = (next: boolean) => {
@@ -62,14 +24,14 @@ const handleToggle = (next: boolean) => {
 <template>
   <div
     class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
-    :class="{ 'border-red-500/50 opacity-80': !isFound }"
+    :class="{ 'border-red-500/50 opacity-80': !parsed.found }"
   >
     <ToolCardHeader
       tool-name="view_skill"
-      :primary="skillName"
-      :success="isFound"
+      :primary="parsed.skillName"
+      :success="parsed.found"
       :expanded="isExpanded"
-      :expandable="!isFound || !!errorMessage || hasAvailableSkills || !!description"
+      :expandable="!parsed.found || !!parsed.error || hasAvailableSkills || !!parsed.description"
       :right-meta="rightMeta"
       :show-open-in-editor="false"
       @update:expanded="handleToggle"
@@ -80,11 +42,11 @@ const handleToggle = (next: boolean) => {
       class="border-t border-[var(--color-border)] bg-black/[0.02] flex flex-col min-h-0"
     >
       <div
-        v-if="errorMessage"
+        v-if="parsed.error"
         class="flex gap-2 px-2 py-1.5 text-red-500 text-xs border-b border-dashed border-[var(--color-border)]"
       >
         <span class="font-semibold shrink-0">Error:</span>
-        <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
+        <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
 
       <div
@@ -98,7 +60,7 @@ const handleToggle = (next: boolean) => {
         </div>
         <div class="px-2 py-1 flex flex-wrap gap-1">
           <span
-            v-for="(skill, idx) in availableSkills"
+            v-for="(skill, idx) in parsed.availableSkills"
             :key="idx"
             class="inline-block px-1.5 py-0.5 bg-violet-500/10 text-[var(--color-violet)] rounded text-[0.65rem]"
           >
@@ -108,7 +70,7 @@ const handleToggle = (next: boolean) => {
       </div>
 
       <div
-        v-if="description"
+        v-if="parsed.description"
         class="flex-1 min-h-0 flex flex-col overflow-hidden"
       >
         <div
@@ -118,7 +80,7 @@ const handleToggle = (next: boolean) => {
         </div>
         <pre
           class="flex-1 p-2 m-0 whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs overflow-auto"
-        >{{ description }}</pre>
+        >{{ parsed.description }}</pre>
       </div>
     </div>
   </div>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
+import { parseSetGitWorktree } from './_shared/toolOutputParser'
 
 const props = defineProps<{
   content: string
@@ -8,48 +9,17 @@ const props = defineProps<{
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
+const parsed = computed(() => parseSetGitWorktree(props.content))
 
 const pathBasename = (p: string): string => {
   const parts = p.split('/').filter(Boolean)
   return parts.length > 0 ? (parts[parts.length - 1] ?? p) : p
 }
 
-// Parse <path>...</path>
-const path = computed(() => {
-  const match = props.content.match(/<path>([\s\S]*?)<\/path>/)
-  return match?.[1]?.trim() ?? null
-})
-
-// Parse <branch>...</branch>
-const branch = computed(() => {
-  const match = props.content.match(/<branch>([\s\S]*?)<\/branch>/)
-  return match?.[1]?.trim() ?? null
-})
-
-// Parse <cleared>true|false</cleared>
-const isCleared = computed(() => {
-  const match = props.content.match(/<cleared>([\s\S]*?)<\/cleared>/)
-  return match?.[1]?.trim() === 'true'
-})
-
-// Parse <created>true|false</created>
-const isCreated = computed(() => {
-  const match = props.content.match(/<created>([\s\S]*?)<\/created>/)
-  return match?.[1]?.trim() === 'true'
-})
-
-const isSuccess = computed(() => isCreated.value || isCleared.value)
-
-// Parse <error>...</error>
-const errorMessage = computed(() => {
-  const match = props.content.match(/<error>([\s\S]*?)<\/error>/)
-  return match?.[1]?.trim() ?? null
-})
-
 // Header label: basename for SET, "(cleared)" for CLEAR, "error" otherwise
 const headerLabel = computed(() => {
-  if (isCleared.value) return '(cleared)'
-  if (path.value) return pathBasename(path.value)
+  if (parsed.value.cleared) return '(cleared)'
+  if (parsed.value.path) return pathBasename(parsed.value.path)
   return 'error'
 })
 
@@ -62,17 +32,17 @@ const handleToggle = (next: boolean) => {
 <template>
   <div
     class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
-    :class="{ 'border-red-500/50 opacity-80': !isSuccess }"
+    :class="{ 'border-red-500/50 opacity-80': !parsed.success }"
   >
     <ToolCardHeader
       tool-name="set_git_worktree"
       :primary="headerLabel"
-      :primary-title="path ?? ''"
+      :primary-title="parsed.path ?? ''"
       :primary-class="'text-[var(--semantic-text-dim)]'"
-      :success="isSuccess"
+      :success="parsed.success"
       :expanded="isExpanded"
       :expandable="true"
-      :show-copy="!!path"
+      :show-copy="!!parsed.path"
       :show-open-in-editor="false"
       @update:expanded="handleToggle"
     />
@@ -82,31 +52,31 @@ const handleToggle = (next: boolean) => {
       class="border-t border-[var(--color-border)] bg-black/[0.02] flex flex-col min-h-0"
     >
       <div
-        v-if="errorMessage"
+        v-if="parsed.error"
         class="flex gap-2 px-2 py-1.5 text-red-500 text-xs border-b border-dashed border-[var(--color-border)]"
       >
         <span class="font-semibold shrink-0">Error:</span>
-        <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
+        <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
 
       <div
-        v-if="path"
+        v-if="parsed.path"
         class="flex gap-2 px-2 py-1.5 text-xs border-b border-dashed border-[var(--color-border)]"
       >
         <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Path:</span>
-        <span class="whitespace-pre-wrap break-all text-[var(--color-violet)]" :title="path">{{ path }}</span>
+        <span class="whitespace-pre-wrap break-all text-[var(--color-violet)]" :title="parsed.path">{{ parsed.path }}</span>
       </div>
 
       <div
-        v-if="branch"
+        v-if="parsed.branch"
         class="flex gap-2 px-2 py-1.5 text-xs border-b border-dashed border-[var(--color-border)]"
       >
         <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Branch:</span>
-        <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)] font-mono">{{ branch }}</span>
+        <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)] font-mono">{{ parsed.branch }}</span>
       </div>
 
       <div
-        v-if="isCleared"
+        v-if="parsed.cleared"
         class="flex gap-2 px-2 py-1.5 text-[var(--semantic-text-dim)] text-xs"
       >
         <span>Worktree binding removed and directory deleted.</span>
