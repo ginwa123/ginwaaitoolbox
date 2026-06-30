@@ -402,3 +402,188 @@ test "HTTP server: acceptClient sets SO_KEEPALIVE on accepted sockets" {
         return error.TcpKeepcntMissing;
     }
 }
+
+// ============================================================================
+// Task 3: SSE Manager FD-leak regression tests
+// (`docs/superpowers/plans/2026-06-30-fix-sse-fd-leak.md`)
+// ============================================================================
+
+test "SseManager: poll reaper subscribes to POLL.NVAL (static contract)" {
+    // The FD leak that produced `ProcessFdQuotaExceeded` after long
+    // nalar uptimes was caused by the poll reaper NOT subscribing to
+    // POLL.NVAL. The kernel returns POLL.NVAL when a process holds an
+    // FD whose underlying socket has been fully reaped — the classic
+    // "orphan sock FD" signature seen in the leaked-FD audit (`lsof`
+    // showed 1011 such FDs). Without subscription, the reaper's
+    // `revents == 0` early-exit silently skips the FD, leaking it for
+    // the process lifetime.
+    //
+    // This is a static-contract test (matches the convention in the
+    // other test files in this directory: the project has no
+    // behavioural test harness for standing up `startEventLoop` from
+    // a unit test, and the same Threaded-Io + spawned-thread pattern
+    // hangs on this Zig 0.16 Io runtime). Behavioural verification is
+    // deferred to the manual smoke test in the plan.
+    const source = @embedFile("../../../../src/modules/custom_http_server/src/sse_manager.zig");
+
+    // Subscription: the `for (my_fds.items)` block must request
+    // POLL.NVAL in addition to POLL.IN and POLL.HUP.
+    const events_pos = std.mem.indexOf(u8, source, ".events = posix.POLL.IN | posix.POLL.HUP") orelse
+        std.mem.indexOf(u8, source, ".events = posix.POLL.IN | posix.POLL.HUP | posix.POLL.NVAL") orelse 0;
+    if (events_pos == 0 or
+        std.mem.indexOf(u8, source, "posix.POLL.IN | posix.POLL.HUP | posix.POLL.NVAL") == null)
+    {
+        std.debug.print(
+            "\n!! sse_manager.zig poll subscription missing POS | POLL.NVAL !!\n" ++
+                "   Without POLL.NVAL the reaper cannot see orphan-sock FDs and they leak.\n",
+            .{},
+        );
+        return error.PollNvalMissing;
+    }
+
+    // Reaping branch: the `(poll_err | poll_hup)` test must also
+    // check `poll_nval`.
+    if (std.mem.indexOf(u8, source, "poll_err | poll_hup | poll_nval") == null) {
+        std.debug.print(
+            "\n!! sse_manager.zig poll reaping branch missing poll_nval !!\n" ++
+                "   Even with subscription, orphan FDs are not reaped unless checked.\n",
+            .{},
+        );
+        return error.PollNvalCheckMissing;
+    }
+}
+
+test "SseManager: heartbeat sharding uses id[0] mod LOOP_COUNT (static contract)" {
+    // The sendHeartbeat shard rule must match the runEventLoop shard
+    // rule (`id[0] % LOOP_COUNT == loop_id`). Heartbeat and poll
+    // disagreed on ownership (heartbeat used a `global_idx` counter),
+    // so a client could be polled by one loop and heartbeated by
+    // another. While every client was still covered (the modulo spans
+    // all residue classes), the sharding rule divergence made the
+    // ownership model fragile to future refactors and made the
+    // periodic sweep helper's invariants opaque.
+    const source = @embedFile("../../../../src/modules/custom_http_server/src/sse_manager.zig");
+
+    if (std.mem.indexOf(u8, source, "if (entry.value_ptr.*.id[0] % LOOP_COUNT == loop_id)") == null) {
+        std.debug.print(
+            "\n!! sse_manager.zig: sendHeartbeat sharding must match runEventLoop !!\n" ++
+                "   Expected: `entry.value_ptr.*.id[0] % LOOP_COUNT == loop_id`\n",
+            .{},
+        );
+        return error.HeartbeatShardingMismatch;
+    }
+
+    // Reverse-direction guard: the buggy `global_idx` rule must be gone.
+    if (std.mem.indexOf(u8, source, "if (global_idx % LOOP_COUNT == loop_id)") != null) {
+        std.debug.print(
+            "\n!! sse_manager.zig: sendHeartbeat still uses global_idx shard !!\n" ++
+                "   The global_idx counter depends on hashmap iteration order.\n",
+            .{},
+        );
+        return error.HeartbeatShardingStillGlobalIdx;
+    }
+}
+
+test "SseManager: last_heartbeat updated only on successful write (static contract)" {
+    // The `last_heartbeat` field is consulted by `sweepStaleClients`
+    // to detect stale clients. If it's updated BEFORE the write,
+    // failed heartbeats record a fresh timestamp, hiding staleness
+    // from the sweep — defeating its purpose as a safety net.
+    //
+    // Verify by source check: the heartbeat write loop body must put
+    // `last_heartbeat = timestamp()` INSIDE the success branch of the
+    // `writeChunkedFrame` `|`/`else| |` dispatch.
+    const source = @embedFile("../../../../src/modules/custom_http_server/src/sse_manager.zig");
+
+    // The success branch of the heartbeat write must contain the
+    // `last_heartbeat = timestamp()` assignment.
+    const success_assign = std.mem.indexOf(
+        u8,
+        source,
+        "writeChunkedFrame(client.fd, ping)) |_| {\n                client.last_heartbeat = timestamp();",
+    ) orelse 0;
+    if (success_assign == 0) {
+        std.debug.print(
+            "\n!! sse_manager.zig: last_heartbeat must update INSIDE the success branch !!\n" ++
+                "   Sweep helper relies on stale timestamps catching failed heartbeats.\n",
+            .{},
+        );
+        return error.LastHeartbeatOutsideSuccessBranch;
+    }
+}
+
+test "SseManager: sweepStaleClients removes clients whose last_heartbeat is stale" {
+    // Regression test for the periodic-stale sweep in
+    // `docs/superpowers/plans/2026-06-30-fix-sse-fd-leak.md` Change 3.
+    // A client whose `last_heartbeat` is older than `max_stale_ms` must
+    // be reaped, closing its FD and freeing the SseClient.
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var server_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer server_arena.deinit();
+    const server_allocator = server_arena.allocator();
+
+    var mgr = try SseManager.init(std.testing.allocator, server_allocator, io);
+    defer mgr.deinit();
+
+    // Register a client backed by a real socket pair so the FD is valid
+    // (we only want to test the staleness sweep, not POLL.NVAL).
+    const pair = try createSocketPair();
+    // The sweep closes pair[0] for us; we close the other end.
+    defer _ = posix.system.close(pair[1]);
+    const id: [16]u8 = .{ 0x42 } ** 16;
+    _ = try mgr.registerClientForTest(pair[0], id);
+    try std.testing.expect(mgr.clientCount() == 1);
+
+    // The client's `last_heartbeat` was set to `timestamp()` at register
+    // time. Wait long enough that 200ms have elapsed (so a 100ms
+    // staleness threshold catches it).
+    try std.Io.sleep(io, .{ .nanoseconds = 200 * std.time.ns_per_ms }, .real);
+
+    // Sweep with max_stale_ms=100 (anything older than 100ms is stale).
+    mgr.sweepStaleClients(100, 64);
+    try std.testing.expect(mgr.clientCount() == 0);
+}
+
+test "SseManager: sweepStaleClients respects max_per_call cap" {
+    // The sweep helper is bounded per-call to avoid O(N²) behaviour when
+    // a large batch goes stale at once (e.g., on a server-side rollback).
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var server_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer server_arena.deinit();
+    const server_allocator = server_arena.allocator();
+
+    var mgr = try SseManager.init(std.testing.allocator, server_allocator, io);
+    defer mgr.deinit();
+
+    const pair1 = try createSocketPair();
+    const pair2 = try createSocketPair();
+    const pair3 = try createSocketPair();
+    const pair4 = try createSocketPair();
+    defer _ = posix.system.close(pair1[1]);
+    defer _ = posix.system.close(pair2[1]);
+    defer _ = posix.system.close(pair3[1]);
+    defer _ = posix.system.close(pair4[1]);
+
+    _ = try mgr.registerClientForTest(pair1[0], .{ 0x11 } ** 16);
+    _ = try mgr.registerClientForTest(pair2[0], .{ 0x22 } ** 16);
+    _ = try mgr.registerClientForTest(pair3[0], .{ 0x33 } ** 16);
+    _ = try mgr.registerClientForTest(pair4[0], .{ 0x44 } ** 16);
+    try std.testing.expect(mgr.clientCount() == 4);
+
+    // Make all 4 stale.
+    try std.Io.sleep(io, .{ .nanoseconds = 200 * std.time.ns_per_ms }, .real);
+
+    // Sweep with max_per_call=2 — at most 2 per call.
+    mgr.sweepStaleClients(100, 2);
+    try std.testing.expect(mgr.clientCount() == 2);
+
+    // Second sweep picks up the remaining 2.
+    mgr.sweepStaleClients(100, 2);
+    try std.testing.expect(mgr.clientCount() == 0);
+}
