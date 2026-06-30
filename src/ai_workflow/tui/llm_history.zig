@@ -1868,10 +1868,15 @@ pub fn queueMessage(
         .event_type = "queue_message",
     };
 
+    // Per-session emit (kept for any future server-side fan-out that
+    // needs only this session's queue messages).
     const key = try std.fmt.allocPrint(allocator, "queue_messages_{s}", .{session_id});
     defer allocator.free(key);
-
     event_bus.emit(ai_mod.on_event_sent.SseEvent, key, event);
+    // Central broadcast: subscribers to bare "queue" receive ALL sessions'
+    // queue messages. The frontend listener filter narrows to the current
+    // session_id on the JS side.
+    event_bus.emit(ai_mod.on_event_sent.SseEvent, "queue", event);
 }
 
 /// Struct to hold queued message data including image_url
@@ -1947,10 +1952,15 @@ pub fn deleteQueuedMessage(
         .event_type = "queue_message",
     };
 
+    // Per-session emit (kept for any future server-side fan-out that
+    // needs only this session's queue messages).
     const key = try std.fmt.allocPrint(allocator, "queue_messages_{s}", .{session_id});
     defer allocator.free(key);
-
     event_bus.emit(ai_mod.on_event_sent.SseEvent, key, event);
+    // Central broadcast: subscribers to bare "queue" receive ALL sessions'
+    // queue messages (including deletes). The frontend listener filter
+    // narrows to the current session_id on the JS side.
+    event_bus.emit(ai_mod.on_event_sent.SseEvent, "queue", event);
 }
 
 /// Check if session has queued messages

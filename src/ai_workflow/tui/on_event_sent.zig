@@ -299,7 +299,13 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         .session_id = input.session_id,
         .data = data_copy,
     };
+    // Per-session emit (kept for any future server-side fan-out that
+    // needs only this session's events).
     event_bus.emit(SseEvent, input.session_id, event);
+    // Central broadcast: subscribers to bare "llm" receive ALL sessions'
+    // LLM events. The frontend listener filter narrows to the current
+    // session_id on the JS side.
+    event_bus.emit(SseEvent, "llm", event);
 }
 
 /// Send session events to all subscribed clients via SSE
@@ -499,7 +505,13 @@ pub fn sendStreamChunkContent(
         .session_id = session_id,
         .data = data,
     };
+    // Per-session emit (kept for future server-side fan-out that
+    // needs only this session's events).
     event_bus.emit(SseEvent, session_id, event);
+    // Central broadcast on "llm" — required for the single global
+    // EventSource pattern (the frontend listener filters by
+    // session_id on the JS side).
+    event_bus.emit(SseEvent, "llm", event);
 }
 
 /// Send reasoning chunk during streaming response
@@ -518,7 +530,13 @@ pub fn sendStreamChunkReasoning(
         .session_id = session_id,
         .data = data,
     };
+    // Per-session emit (kept for future server-side fan-out that
+    // needs only this session's events).
     event_bus.emit(SseEvent, session_id, event);
+    // Central broadcast on "llm" — required for the single global
+    // EventSource pattern (the frontend listener filters by
+    // session_id on the JS side).
+    event_bus.emit(SseEvent, "llm", event);
 }
 
 /// Send final chunk with usage information during streaming
@@ -537,7 +555,13 @@ pub fn sendStreamChunkFinal(
         .session_id = session_id,
         .data = data,
     };
+    // Per-session emit (kept for future server-side fan-out that
+    // needs only this session's events).
     event_bus.emit(SseEvent, session_id, event);
+    // Central broadcast on "llm" — required for the single global
+    // EventSource pattern (the frontend listener filters by
+    // session_id on the JS side).
+    event_bus.emit(SseEvent, "llm", event);
 }
 
 /// Send tool call delta chunk during streaming response
@@ -556,5 +580,11 @@ pub fn sendStreamToolCallDelta(
         .session_id = session_id,
         .data = data,
     };
+    // Per-session emit (kept for future server-side fan-out that
+    // needs only this session's events).
     event_bus.emit(SseEvent, session_id, event);
+    // Central broadcast on "llm" — required for the single global
+    // EventSource pattern (the frontend listener filters by
+    // session_id on the JS side).
+    event_bus.emit(SseEvent, "llm", event);
 }
