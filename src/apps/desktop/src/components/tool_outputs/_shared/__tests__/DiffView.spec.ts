@@ -214,4 +214,66 @@ describe('DiffView', () => {
     })
     expect(wrapper.emitted('jump-to-line')).toBeFalsy()
   })
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Clean split-view rendering (chunks 5+6 redesign)
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('split view: changed rows have full-row bg, NO inline highlights (no strikethrough)', () => {
+    // User feedback: the previous version mixed row bg + per-word
+    // strikethrough + per-word highlights on the same line, which was
+    // unreadable. The new design is just row bg + plain text.
+    const wrapper = mount(DiffView, {
+      props: {
+        before: 'hello world',
+        after: 'hello THERE',
+      },
+    })
+    // The changed row (line 1) on the BEFORE side should have red bg.
+    const beforeRows = wrapper.findAll('[data-side="before"][data-row]')
+    expect(beforeRows.length).toBeGreaterThan(0)
+    const firstBeforeRow = beforeRows[0]!
+    // bg-color is set inline via `style="background-color: rgba(...)"`.
+    expect(firstBeforeRow.attributes('style') ?? '').toMatch(/background-color/)
+    // The row content should be PLAIN text — no <span class="...line-through...">.
+    expect(firstBeforeRow.html()).not.toContain('line-through')
+    // And no green "insert" highlight inside the before side (that was
+    // the original visual confusion — a strikethrough on green).
+    expect(firstBeforeRow.html()).not.toMatch(/bg-green/)
+  })
+
+  it('split view: after-side changed rows have full green bg', () => {
+    const wrapper = mount(DiffView, {
+      props: {
+        before: 'hello world',
+        after: 'hello THERE',
+      },
+    })
+    const afterRows = wrapper.findAll('[data-side="after"][data-row]')
+    expect(afterRows.length).toBeGreaterThan(0)
+    const firstAfterRow = afterRows[0]!
+    // Green bg for after-side changed rows.
+    expect(firstAfterRow.attributes('style') ?? '').toMatch(
+      /background-color:\s*rgba\(\s*46,\s*160,\s*67/,
+    )
+    // Plain text — no strikethrough on the inserted line.
+    expect(firstAfterRow.html()).not.toContain('line-through')
+  })
+
+  it('split view: row uses max-content + min-width:100% so bg fills pane even with short content', () => {
+    // Critical for the "bg fills full visible pane when scrolled" UX.
+    // The CSS is: `width: max-content; min-width: 100%`. min-width:100%
+    // ensures the bg covers the pane width when content is short.
+    const wrapper = mount(DiffView, {
+      props: {
+        before: 'x',
+        after: 'Y',
+      },
+    })
+    const row = wrapper.find('[data-row]')
+    expect(row.exists()).toBe(true)
+    const style = row.attributes('style') ?? ''
+    expect(style).toMatch(/width:\s*max-content/)
+    expect(style).toMatch(/min-width:\s*100%/)
+  })
 })

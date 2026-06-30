@@ -4,7 +4,6 @@ import {
   computeSplitView,
   computeUnifiedView,
   splitLines,
-  type InlineChange,
   type SplitRow,
   type UnifiedRow,
 } from './myersDiff'
@@ -147,28 +146,41 @@ function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after') {
   const isBefore = side === 'before'
   const text = isBefore ? row.beforeText : row.afterText
   const lineNum = isBefore ? row.beforeLine : row.afterLine
-  const changes = isBefore ? row.beforeChanges : row.afterChanges
 
-  // Row background: red for delete (before side of a changed row), green for
-  // insert (after side of a changed row). The bg extends with the row's
-  // min-w-max width; the sticky gutter cells use their own background to
-  // cover the row's color when scrolled to the gutter area.
-  let rowBgClass = ''
+  // Row background: GitHub-style whole-row tint, with no inline word
+  // highlights (the user finds the combination of row bg + strikethrough
+  // + per-word highlight on the same line impossible to parse — the
+  // screenshot showed strikethrough on green, etc.).
+  //
+  // Width strategy: the row takes width = max(parent-pane-width,
+  // content-width). Short lines → row = pane width → bg fills visible
+  // pane. Long lines → row expands to fit content → bg extends to the
+  // full content width, and the user sees the bg scroll WITH the
+  // content (which is what GitHub does — the bg is on the row, which
+  // is in normal flow inside the scroll container, so bg and content
+  // move together; the eye fills in the rest).
+  let bgColor = ''
   if (row.isChanged) {
     if (isBefore) {
-      rowBgClass = '!bg-red-400/15 !text-red-500'
+      bgColor = 'rgba(248, 81, 73, 0.15)'
     } else if (row.afterText !== null) {
-      rowBgClass = '!bg-green-400/15 !text-green-500'
+      bgColor = 'rgba(46, 160, 67, 0.15)'
     }
   }
 
-  // For clickable line numbers: the AFTER side always points at the new file
-  // line, so we emit on that. The BEFORE side maps to a line in the original
-  // file that no longer exists on disk after a successful edit — emit on
-  // before-line only when the row is unchanged (context line) so the user
-  // can still jump to a context line. For delete-only rows on the before
-  // side, the after-side has nothing; emit on the (unchanged) row's after
-  // line instead.
+  // Text color: red for deleted (before) lines, green for inserted
+  // (after) lines. Context (unchanged) lines keep the default text color.
+  let textColorClass = ''
+  if (row.isChanged) {
+    if (isBefore) {
+      textColorClass = '!text-[rgb(248,81,73)]'
+    } else if (row.afterText !== null) {
+      textColorClass = '!text-[rgb(63,185,80)]'
+    }
+  }
+
+  // Clickable gutter: clicking the line number emits jump-to-line so the
+  // parent can open the code editor at that exact line.
   const isClickable = lineNum !== null
   const gutterClickHandler = isClickable
     ? {
@@ -187,63 +199,61 @@ function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after') {
       }
     : {}
 
+  // Row container: width = max-content, min-width = 100% of pane.
+  // `width: max-content` makes the row expand to fit content (so bg
+  // covers the full content width for long lines). `min-width: 100%`
+  // ensures the row is at least the pane's width (so short lines'
+  // bg covers the full visible pane).
+  const rowStyle: Record<string, string> = {
+    width: 'max-content',
+    minWidth: '100%',
+  }
+  if (bgColor) {
+    rowStyle.backgroundColor = bgColor
+  }
+
   return h(
     'div',
     {
-      class: ['flex min-w-max hover:bg-violet-500/5', rowBgClass],
+      class: ['w-full whitespace-pre', bgColor ? '' : 'hover:bg-white/[0.03]'],
+      style: rowStyle,
       'data-row': idx,
       'data-side': side,
       'data-changed': row.isChanged ? 'true' : 'false',
       'data-line': lineNum !== null ? String(lineNum) : undefined,
     },
     [
-      // Sticky gutter: line number cell. z-10 keeps it above the row's
-      // background color when horizontal scroll positions the content
-      // underneath. Click → emit jump-to-line so the parent can open the
-      // code editor at that exact line.
+      // Gutter: line number cell. Card-bg colored so the number stays
+      // readable against the row's red/green bg. Inline so it sits next
+      // to the content on the same row.
       h(
         'span',
         {
           class:
-            'shrink-0 sticky left-0 z-10 w-10 px-2 py-0.5 text-right text-[var(--semantic-text-muted)] font-mono select-none border-r border-[var(--color-border)]',
+            'inline-block px-2 py-0.5 select-none text-[var(--semantic-text-muted)] font-mono align-top',
           style: { background: 'var(--semantic-card-bg)' },
           ...gutterClickHandler,
         },
-        lineNum !== null ? String(lineNum) : '',
+        lineNum !== null ? String(lineNum) : '\u00a0',
       ),
-      // Sticky diff marker (- / +)
+      // Line content. Plain text — no inline highlights. Inline-block so
+      // the bg color (on the outer row) extends to the full content
+      // width when scrolled.
       h(
         'span',
         {
-          class:
-            'shrink-0 sticky left-10 z-10 w-4 mr-3 font-semibold text-center',
-          style: { background: 'var(--semantic-card-bg)' },
+          class: ['inline-block py-0.5 pr-2 whitespace-pre align-top', textColorClass],
         },
-        text === null ? '' : isBefore ? '-' : '+',
+        text ?? '\u00a0',
       ),
-      // The line content (scrolls horizontally)
-      text === null
-        ? h('span', { class: 'shrink-0 text-[var(--semantic-text-muted)] italic' }, ' ')
-        : h(
-            'span',
-            { class: 'shrink-0 px-2 py-0.5 whitespace-pre' },
-            changes && changes.length > 0 ? renderInlineChanges(changes) : text,
-          ),
     ],
   )
 }
 
-function renderInlineChanges(changes: InlineChange[]) {
-  return changes.map((c) => {
-    const className =
-      c.type === 'insert'
-        ? 'bg-green-400/30 text-green-700 dark:text-green-300'
-        : c.type === 'delete'
-          ? 'bg-red-400/30 text-red-700 dark:text-red-300 line-through'
-          : ''
-    return h('span', { class: className }, c.text)
-  })
-}
+// renderInlineChanges was removed in the chunks 5+6 redesign — users
+// found the combination of row bg + strikethrough + per-word highlight
+// on the same line impossible to parse. See renderSplitRow and
+// renderUnifiedRow for the new plain-text rendering.
 
 /**
  * Renders the unified-view rows: line numbers, diff prefix, and content,
