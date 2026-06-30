@@ -72,15 +72,14 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
    * The bus listener is GLOBAL — workspace-id filtering happens
    * inside the handler closure, so we don't detach/re-attach.
    *
-   * NO-OP if the bus is not yet installed (the bus is installed by
-   * App.vue's `onMounted`, which runs after the AppLayout.vue mount
-   * in practice — see Chunk 7 lessons learned). The store's listen
-   * hooks will be set up when init() runs after the bus is ready;
-   * before that, kanban events from the bus (if any) are simply
-   * dropped, which matches the "no connection yet" behavior of the
-   * pre-migration implementation (the old code's `createUnifiedSseConnection`
-   * would also defer until the next macrotask, so an install-mid-mount
-   * race is not a regression).
+   * Throws if the bus is not yet installed — call this AFTER App.vue's
+   * `onMounted` has run. The bus is installed by App.vue's
+   * `onMounted`, which runs after AppLayout.vue's mount in practice
+   * (the AppLayout's `watch(activeWorkspaceId, async ...)` fires only
+   * after both components have mounted, by which point the bus is
+   * ready). The async signature preserves the cooperative-init
+   * contract with that watcher — even though the body is now
+   * synchronous, callers still `await` us.
    */
   async function initKanbanSse(workspaceId: string): Promise<void> {
     // Set the filter first — if we're called for the first time,

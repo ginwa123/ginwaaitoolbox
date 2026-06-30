@@ -134,7 +134,7 @@ const DEFAULT_SESSION_FACTORY: SessionClientFactory = (sid, dispatch) =>
 
 let _sessionFactory: SessionClientFactory = DEFAULT_SESSION_FACTORY
 
-export function installSseBus(_app: App): SseBus {
+export function installSseBus(_app?: App): SseBus {
   if (_instance) return _instance
 
   // Per-type listener Sets. Each channel's listeners live in their

@@ -202,6 +202,8 @@ describe('sidebar active-state exclusivity', () => {
 })
 
 describe('AppLayout URL-driven chat navigation', () => {
+  let app: VueApp
+
   beforeEach(() => {
     setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
@@ -209,6 +211,15 @@ describe('AppLayout URL-driven chat navigation', () => {
       writable: true,
       configurable: true,
     })
+    // AppLayout now includes <SseStatusBadge /> (Chunk 7), which calls
+    // `useSseBus()` synchronously in setup. Without a bus install, the
+    // badge throws "useSseBus called before installSseBus" and the
+    // whole mount fails. Install a stub bus first — the badge only
+    // reads `state` and doesn't subscribe to any event channels.
+    __resetSseBus()
+    app = createApp({})
+    installSseBus(app)
+    __setSseBusGlobalClient(makeStubClient('connecting'))
 
     // Mock the workspace API calls triggered by
     // `workspacesStore.initializeFromSystemFolder()` in onMounted. The
@@ -251,6 +262,7 @@ describe('AppLayout URL-driven chat navigation', () => {
   })
 
   afterEach(() => {
+    __resetSseBus()
     vi.restoreAllMocks()
   })
 

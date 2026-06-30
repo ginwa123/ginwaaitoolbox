@@ -63,14 +63,12 @@ const isProcessing = (sessionId: string) => !!processingState.value[sessionId]
 let offWorker: (() => void) | null = null
 
 onMounted(() => {
-  // `installSseBus(app)` takes an `App` for future `provide()` use; the
-  // module-singleton implementation doesn't use it, so passing
-  // `undefined` is safe. The signature is left unchanged for now — see
-  // the plan note on Chunk 5.
-  //
-  // Idempotent: a second call (e.g. HMR re-mount, or App.vue's own
-  // install from `main.ts` mounting first) returns the same singleton.
-  const bus = installSseBus(undefined as any)
+  // `installSseBus(_app?: App)` takes an optional `App` parameter for
+  // future `provide()` use; the module-singleton implementation
+  // doesn't use it, so we pass nothing. Idempotent: a second call
+  // (e.g. HMR re-mount, or App.vue's own install from `main.ts`
+  // mounting first) returns the same singleton.
+  const bus = installSseBus()
   offWorker = bus.on('worker', handleWorkerEvent)
 
   // Re-sync `processingState` from the DB on every (re)connect. The
