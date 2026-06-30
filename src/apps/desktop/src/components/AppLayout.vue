@@ -124,7 +124,7 @@ watch(activeWorkspaceId, async (newId) => {
     didInitSse = true
     await kanbanSseStore.initKanbanSse(newId)
   } else {
-    kanbanSseStore.setActiveWorkspaceId(newId)
+    await kanbanSseStore.setActiveWorkspaceId(newId)
   }
 }, { immediate: true })
 

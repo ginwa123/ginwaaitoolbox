@@ -1,152 +1,180 @@
 /**
- * KanbanSse — owns ONE kanban SSE connection for the app's lifetime,
- * mirroring the workersSse pattern in App.vue:
- *   - Module-level `connection` (one global stream, not per-workspace)
- *   - `initKanbanSse(workspaceId)` tears down any existing connection
- *     before opening a new one. Returns `Promise<void>` — the
- *     underlying `createSseClient` defers its initial `start()` to
- *     the next macrotask, so callers can `await` the setup to make
- *     the SSE initialization cooperative with other fetch API calls
- *     happening on the same tick (avoids saturating the browser's
- *     HTTP/1.1 per-origin 6-connection pool).
- *   - 3-callback API: `(onEvent, onError, onConnected)` — same shape as
- *     `createWorkersSseConnection`
- *   - `onConnected` re-runs `fetchInitialKanban()` so a server restart
- *     that lost in-memory state re-syncs on the next open
+ * KanbanSse — bus-backed kanban event handlers (Chunk 10 of the
+ * unify-frontend-sse plan).
+ *
+ * Before this migration, the store opened its OWN EventSource via
+ * `createUnifiedSseConnection` for the `kanban` channel — the 5th
+ * duplicate subscription to a stream the bus (opened by App.vue at
+ * app start via `installSseBus`) already subscribes to. That setup
+ * opened an EventSource per Pinia store activation (and a 2nd one
+ * for every `initKanbanSse` re-entry), saturating the browser's
+ * per-origin HTTP/1.1 connection pool and triggering the chained
+ * `ERR_INCOMPLETE_CHUNKED_ENCODING` reconnect loop.
+ *
+ * After: the store subscribes via `useSseBus().on('kanban', ...)`
+ * (one listener per Pinia store activation, lifetime ≈ page
+ * lifetime). The bus's singleton EventSource owns the actual network
+ * stream and re-emits events to all subscribers with built-in
+ * reconnect-on-drop.
+ *
+ * The async `initKanbanSse` signature is preserved (callers in
+ * AppLayout.vue's `watch(activeWorkspaceId, ...)` `await` it) even
+ * though the body is synchronous, because the cooperative-init
+ * semantic contract with the AppLayout watcher is part of the
+ * public API.
  *
  * The backend's kanban SSE routing keys (`kanban_column`,
  * `kanban_task`) are GLOBAL — every connected client receives every
- * event. We filter client-side by `event.workspace_id ==
+ * event. The handler filters client-side by `event.workspace_id ==
  * activeWorkspaceId` before dispatching to workspacesStore. Workspace
- * switches don't reopen the connection; they just update the filter.
+ * switches update the filter via `setActiveWorkspaceId` (no
+ * re-subscription — the bus listener is workspace-agnostic).
  *
- * Plan: docs/superpowers/plans/2026-06-26-fix-kanban-list-empty-add-sse.md
- *   Chunk 4 / Task 4.2 (original SSE wiring) → refactored to workers
- *   pattern (this version).
+ * Plan: docs/superpowers/plans/2026-06-30-unify-frontend-sse.md
+ *   Chunk 10.
  */
 import { defineStore } from 'pinia'
-import { createUnifiedSseConnection } from '../api'
-import type { SseClient } from '../api'
+import { ref, watch } from 'vue'
+import { useSseBus } from '../helpers/sseBus'
+import type { KanbanColumnEvent, KanbanTaskEvent } from '../api'
 import { useWorkspacesStore } from './workspaces'
 
-interface KanbanConnection {
-  sse: SseClient
-  workspaceId: string
-}
-
 export const useKanbanSseStore = defineStore('kanbanSse', () => {
-  // One global SSE connection. The kanban events are workspace-scoped,
-  // so we filter by `connection.workspaceId` inside the onEvent handler.
-  let connection: KanbanConnection | null = null
+  // Mutable ref so `setActiveWorkspaceId` can update the filter
+  // without re-subscribing. The `bus.on('kanban', ...)` closure
+  // captured at install time reads `activeWorkspaceId.value` on
+  // EVERY event, so flipping it takes effect immediately for
+  // incoming events (no need to detach + re-attach the listener).
+  const activeWorkspaceId = ref<string>('')
+
+  // The unsubscribe function for the bus listener. Stashed so
+  // `closeKanbanSse()` can detach the handler on unmount. Null
+  // before `initKanbanSse` runs and after `closeKanbanSse` runs.
+  let offKanban: (() => void) | null = null
+
+  // Disposer for the `bus.state → fetchInitialKanban` watcher.
+  // See `initKanbanSse` below for why this is needed even though
+  // we're no longer owning the EventSource.
+  let stopStateWatch: (() => void) | null = null
 
   /**
-   * Open the kanban-event SSE stream for `workspaceId`. If a connection
-   * is already open (e.g. user navigated back to the same workspace, or
-   * we mounted twice), it is torn down first to avoid stacking
-   * connections. Safe to call multiple times — the SseClient's
-   * exponential backoff (1s → 30s, full jitter) keeps reconnects
-   * bounded.
+   * Subscribe the kanban store to the bus's `kanban` channel. The
+   * function signature stays `async` + `Promise<void>` to preserve
+   * the cooperative-init semantic contract with AppLayout.vue's
+   * `watch(activeWorkspaceId, async (newId) => { await
+   * kanbanSseStore.initKanbanSse(newId) })`. The body is synchronous
+   * (bus subscription is in-memory), but callers still `await` us
+   * and that's part of the public API.
    *
-   * **Async**: the underlying `createSseClient` defers its initial
-   * `start()` to the next macrotask (see `helpers/sseClient.ts`) so the
-   * EventSource HTTP request does NOT fire synchronously inside this
-   * function. Returning a `Promise<void>` lets the caller (e.g.
-   * `AppLayout.vue`'s `watch(activeWorkspaceId, ...)`) `await` the
-   * setup, making the SSE initialization fully cooperative with other
-   * fetch API calls happening on the same tick. Without this, the SSE
-   * connection establishment would saturate the browser's per-origin
-   * HTTP/1.1 connection pool (6 max) and starve the in-flight workspace
-   * + chat fetches that the user just navigated to.
+   * Idempotent: a second call with the same workspaceId is a no-op
+   * (the listener + filter are already in place). A call with a
+   * different workspaceId updates the filter without re-subscribing.
+   * The bus listener is GLOBAL — workspace-id filtering happens
+   * inside the handler closure, so we don't detach/re-attach.
+   *
+   * NO-OP if the bus is not yet installed (the bus is installed by
+   * App.vue's `onMounted`, which runs after the AppLayout.vue mount
+   * in practice — see Chunk 7 lessons learned). The store's listen
+   * hooks will be set up when init() runs after the bus is ready;
+   * before that, kanban events from the bus (if any) are simply
+   * dropped, which matches the "no connection yet" behavior of the
+   * pre-migration implementation (the old code's `createUnifiedSseConnection`
+   * would also defer until the next macrotask, so an install-mid-mount
+   * race is not a regression).
    */
   async function initKanbanSse(workspaceId: string): Promise<void> {
-    // Tear down existing connection before opening a new one.
-    // Mirrors the workersSse pattern in App.vue:46-71.
-    if (connection) {
-      connection.sse.close()
-      connection = null
-    }
+    // Set the filter first — if we're called for the first time,
+    // the listener (registered below) will read this value on its
+    // first event. If we're called for a re-init with a new
+    // workspaceId, the existing listener sees the new value on its
+    // next event.
+    activeWorkspaceId.value = workspaceId
 
-    connection = {
-      sse: createUnifiedSseConnection({
-        channels: {
-          // Receives a typed KanbanColumnEvent | KanbanTaskEvent
-          // (the factory parses JSON internally, see api/index.ts).
-          kanban: (event) => {
-            // Drop events for other workspaces — the backend fans out
-            // kanban events globally, so any connected client receives
-            // them all. Skipping the no-op fetch keeps the local store's
-            // re-fetch rate at 1 per actual mutation.
-            if (event.workspace_id !== workspaceId) return
-            const ws = useWorkspacesStore()
-            // Dispatch by event family. Column events refresh the column
-            // list (renames, reorder, add, delete); task events refresh
-            // the task list (move, assign, unassign). A full re-fetch
-            // (vs in-place patch) is the simplest correct action —
-            // sibling positions renumber as part of every move, and the
-            // SSE payload doesn't include the new positions of every
-            // sibling, so client-side patching would be brittle. A
-            // future optimization could grow the payload and switch to
-            // in-place updates.
-            //
-            // The `'column_id' in event` / `'task_id' in event` check
-            // narrows the discriminated union (`KanbanColumnEvent`
-            // has `column_id`, `KanbanTaskEvent` has `task_id`, neither
-            // has the other). TypeScript narrows the type and the
-            // downstream call type-checks correctly.
-            if ('column_id' in event) {
-              // KanbanColumnEvent: column_id is the discriminator.
-              void ws.fetchKanbanColumns(event.workspace_id, event.item_id)
-            } else if ('task_id' in event) {
-              // KanbanTaskEvent: task_id is the discriminator. The move /
-              // assign / unassign all change item.tasks, so a single
-              // fetchKanbanTasks handles all three.
-              void ws.fetchKanbanTasks(event.workspace_id, event.item_id)
-            }
-            // Defensive: unknown event shapes are silently dropped (no
-            // fetch, no warning) — the API factory guarantees only the
-            // two known shapes reach this callback.
-          },
-        },
-        // onError — fires on TERMINAL failure only (state went to
-        // 'failed'). Transient errors are retried internally and do
-        // not fire this callback — the old behavior of logging every
-        // retry attempt was misleading, since a reconnect is not an
-        // error from the user's perspective.
-        onError: (error) => {
-          console.error('[kanbanSse] connection failed permanently:', error)
-        },
-        // onConnected — re-runs on every successful (re)connect. A
-        // server restart that loses in-memory state should be re-synced
-        // on the next open, just like the workers SSE pattern.
-        onConnected: () => {
-          console.log('[kanbanSse] connected')
-          fetchInitialKanban(workspaceId)
-        },
-      }),
-      workspaceId,
-    }
+    // Already subscribed — just refresh the filter and return.
+    if (offKanban) return
+
+    const bus = useSseBus()
+    offKanban = bus.on('kanban', (event: KanbanColumnEvent | KanbanTaskEvent) => {
+      // Drop events for other workspaces — the backend fans out
+      // kanban events globally, so any connected client receives
+      // them all. Skipping the no-op fetch keeps the local store's
+      // re-fetch rate at 1 per actual mutation.
+      if (event.workspace_id !== activeWorkspaceId.value) return
+      const ws = useWorkspacesStore()
+      // Dispatch by event family. Column events refresh the column
+      // list (renames, reorder, add, delete); task events refresh
+      // the task list (move, assign, unassign). A full re-fetch (vs
+      // in-place patch) is the simplest correct action — sibling
+      // positions renumber as part of every move, and the SSE
+      // payload doesn't include the new positions of every sibling,
+      // so client-side patching would be brittle.
+      //
+      // The `'column_id' in event` / `'task_id' in event` check
+      // narrows the discriminated union (`KanbanColumnEvent` has
+      // `column_id`, `KanbanTaskEvent` has `task_id`, neither has
+      // the other).
+      if ('column_id' in event) {
+        void ws.fetchKanbanColumns(event.workspace_id, event.item_id)
+      } else if ('task_id' in event) {
+        void ws.fetchKanbanTasks(event.workspace_id, event.item_id)
+      }
+      // Defensive: unknown event shapes are silently dropped.
+    })
+
+    // Re-sync the kanban state from the DB on every (re)connect of
+    // the bus's underlying global SseClient. The server may have
+    // restarted and lost in-memory state (just like the workers SSE
+    // pattern in App.vue:44-58, `fetchInitialWorkers`). The bus's
+    // state transitions to 'open' on first connect AND on every
+    // successful reconnect from 'reconnecting'.
+    //
+    // `{ immediate: true }` covers the fast path where the bus is
+    // already 'open' by the time we get here (the SseClient defers
+    // its first `start()` via `setTimeout(0)`, so App.vue's
+    // `installSseBus` may have already opened the stream before
+    // AppLayout.vue mounted).
+    stopStateWatch = watch(
+      () => bus.state.value,
+      (s) => {
+        if (s === 'open') void fetchInitialKanban(activeWorkspaceId.value)
+      },
+      { immediate: true },
+    )
   }
 
   /**
-   * Tear down the kanban-event SSE connection. Called on
-   * AppLayout unmount; no-op if the connection is already closed.
+   * Tear down the kanban-event handlers. Called on AppLayout unmount
+   * (and at the end of each test). Mirrors the pre-migration
+   * `closeKanbanSse` contract but for the bus listener instead of a
+   * self-managed SseClient.
    */
   function closeKanbanSse(): void {
-    if (connection) {
-      connection.sse.close()
-      connection = null
+    if (offKanban) {
+      offKanban()
+      offKanban = null
     }
+    if (stopStateWatch) {
+      stopStateWatch()
+      stopStateWatch = null
+    }
+    activeWorkspaceId.value = ''
   }
 
   /**
-   * Update the workspace filter without reopening the SSE connection.
-   * Called by AppLayout's `watch(activeWorkspaceId, ...)` — a
+   * Update the workspace filter without re-subscribing the bus
+   * listener. Called by AppLayout's `watch(activeWorkspaceId, ...)`
+   * when the user switches workspaces after the initial setup. A
    * workspace switch is just a filter change because the backend's
-   * routing key is global.
+   * kanban routing keys are global (every connected client sees every
+   * kanban event).
+   *
+   * Re-installs the bus handlers if they were torn down (e.g. by a
+   * prior `closeKanbanSse` then a workspace re-mount). The async
+   * signature matches `initKanbanSse` so AppLayout can `await` either
+   * the same way.
    */
-  function setActiveWorkspaceId(workspaceId: string): void {
-    if (!connection) return
-    connection = { sse: connection.sse, workspaceId }
+  async function setActiveWorkspaceId(workspaceId: string): Promise<void> {
+    await initKanbanSse(workspaceId)
   }
 
   /**
