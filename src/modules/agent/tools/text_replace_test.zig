@@ -480,3 +480,73 @@ test "generateUnifiedDiff unified output has both traditional diff and conflict 
 
     deleteTestFile(test_path);
 }
+
+// ─── Chunk 4: XML-escape + unified-diff coverage ───────────────────────────
+
+test "toXmlSuccess XML-escapes path containing & and <" {
+    // A file with a `&` or `<` in its path used to break toolOutputParser on
+    // the frontend (the <path> tag was misaligned). This test ensures the
+    // backend escapes such characters.
+    const allocator = std.testing.allocator;
+    var result: text_replace.TextReplaceResult = .{ .ok = {} };
+    defer result.deinit(allocator);
+    // Populate the diff_view with a fixed value so we can assert on the
+    // emitted XML.
+    const before = allocator.dupe(u8, "x") catch unreachable;
+    const after = allocator.dupe(u8, "y") catch unreachable;
+    const unified = allocator.dupe(u8, "--- a\n+++ b\n-old\n+new") catch unreachable;
+    result.diff_view = .{
+        .unified = unified,
+        .before = before,
+        .after = after,
+        .lines_changed = 1,
+    };
+    const xml = text_replace.toXmlSuccess(allocator, result, "/abs/path with & and < and > and \"");
+    defer allocator.free(xml);
+
+    // The escaped path must appear, with & < > " all converted to entities.
+    try std.testing.expect(std.mem.indexOf(u8, xml, "/abs/path with &amp; and &lt; and &gt; and &quot;") != null);
+    // The raw (un-escaped) path must NOT appear inside the body (only in
+    // the escaped form).
+    try std.testing.expect(std.mem.indexOf(u8, xml, "/abs/path with & and <") == null);
+}
+
+test "toXmlSuccess includes the unified diff field" {
+    const allocator = std.testing.allocator;
+    var result: text_replace.TextReplaceResult = .{ .ok = {} };
+    defer result.deinit(allocator);
+    const before = allocator.dupe(u8, "old line") catch unreachable;
+    const after = allocator.dupe(u8, "new line") catch unreachable;
+    const unified = allocator.dupe(u8, "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old line\n+new line") catch unreachable;
+    result.diff_view = .{
+        .unified = unified,
+        .before = before,
+        .after = after,
+        .lines_changed = 1,
+    };
+    const xml = text_replace.toXmlSuccess(allocator, result, "/x");
+    defer allocator.free(xml);
+
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<unified>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "@@ -1,1 +1,1 @@") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "-old line") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "+new line") != null);
+}
+
+test "xmlError XML-escapes path/old_str/new_str containing special chars" {
+    const allocator = std.testing.allocator;
+    const xml = text_replace.xmlError(
+        allocator,
+        "make & sure",
+        "/path with &",
+        "old < thing",
+        "new > thing",
+    );
+    defer allocator.free(xml);
+
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<error>make &amp; sure</error>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<path>/path with &amp;</path>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<old_str>old &lt; thing</old_str>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<new_str>new &gt; thing</new_str>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<success>false</success>") != null);
+}
