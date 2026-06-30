@@ -164,9 +164,9 @@ pub fn main(init: std.process.Init) !void {
     //     // Non-fatal - server can still run without cleanup
     // };
 
-    startup.startup(allocator, ctxParent) catch |err| {
-        std.log.err("Failed to start startup worker: {s}", .{@errorName(err)});
-    };
+    // startup.startup(allocator, ctxParent) catch |err| {
+    //     std.log.err("Failed to start startup worker: {s}", .{@errorName(err)});
+    // };
     //
 
     const address = try gserverz.Address.init(port);
