@@ -1865,7 +1865,7 @@ pub fn queueMessage(
     const event = ai_mod.on_event_sent.SseEvent{
         .session_id = session_id,
         .data = data_copy,
-        .event_type = "queue_message",
+        .event_type = "queue_queued",
     };
 
     // Per-session emit (kept for any future server-side fan-out that
@@ -1949,7 +1949,7 @@ pub fn deleteQueuedMessage(
     const event = ai_mod.on_event_sent.SseEvent{
         .session_id = session_id,
         .data = data_copy,
-        .event_type = "queue_message",
+        .event_type = "queue_deleted",
     };
 
     // Per-session emit (kept for any future server-side fan-out that

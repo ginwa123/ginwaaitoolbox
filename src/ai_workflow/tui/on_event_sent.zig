@@ -17,6 +17,21 @@ const helpers = tree1_mod.helpers;
 // ============================================================================
 // Note: All buffers are dynamic using heap allocation via std.ArrayList(u8).
 // No fixed size limits for chunk content or tool call deltas.
+//
+// SSE wire-format protocol contract (`event:` line names):
+// - workers:  worker_created | worker_updated | worker_deleted
+// - sessions: session_created | session_deleted
+// - llm:      llm_chunk | llm_full
+// - queue:    queue_queued | queue_deleted  (set by llm_history.zig)
+// - kanban:   kanban_column | kanban_task   (set by on_event_sent_kanban.zig)
+//
+// Every `event:` line is set on the SseEvent struct at emit time. The
+// handler (`unified_events_sse.zig` `forwardToClients`) writes
+// `event: <name>` from the `event_type` field when non-null. The
+// frontend's EventSource dispatches each name to a pre-registered
+// listener (see `api/index.ts` `createUnifiedSseConnection`'s
+// `additionalEventTypes` and project memory
+// browser-eventsource-named-events.md).
 
 // ============================================================================
 // Unified Response Types
@@ -139,6 +154,9 @@ pub const OnEventInputWorkers = struct {
 
 /// Send worker events to all subscribed clients via SSE
 /// Broadcasts worker list updates (created, updated, deleted)
+///
+/// SSE event name (the value of `event:` in the wire format):
+/// - workers:  worker_created | worker_updated | worker_deleted
 pub fn onEventSendWorkers(allocator: std.mem.Allocator, input: OnEventInputWorkers) !void {
     const di = try tree1_mod.getSingleton();
     const event_bus = di.event_bus;
@@ -163,10 +181,27 @@ pub fn onEventSendWorkers(allocator: std.mem.Allocator, input: OnEventInputWorke
     // Duplicate the data so event owns its own copy (buf will be deallocated below)
     const data_copy = try allocator.dupe(u8, buf.items);
 
+    // Granular event name drives the SSE wire format `event:` line —
+    // the frontend's EventSource dispatches each named event to its
+    // registered listener without any JSON parsing (see project memory
+    // browser-eventsource-named-events.md).
+    //
+    // Zig 0.16 can't `switch` on `[]const u8`; use an if/else cascade
+    // (Zig's std.mem.eql returns the equality cheaply for short literals).
+    const event_type_name: []const u8 = if (std.mem.eql(u8, input.action, "created"))
+        "worker_created"
+    else if (std.mem.eql(u8, input.action, "updated"))
+        "worker_updated"
+    else if (std.mem.eql(u8, input.action, "deleted"))
+        "worker_deleted"
+    else
+        "worker_unknown"; // future-proofing for new actions
+
     // Use "workers" as routing key for worker events
     const event = SseEvent{
         .session_id = "workers",
         .data = data_copy,
+        .event_type = event_type_name,
     };
 
     event_bus.emit(SseEvent, "workers", event);
@@ -177,6 +212,9 @@ pub fn onEventSendWorkers(allocator: std.mem.Allocator, input: OnEventInputWorke
 /// JSON Protocol:
 /// - Response events contain all message fields as JSON object
 /// - Tool result events include tool_call_id and tool_name
+///
+/// SSE event name (the value of `event:` in the wire format):
+/// - llm:      llm_full
 pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLLMHistory) !void {
 
     // todo dirty code
@@ -298,6 +336,7 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
     const event = SseEvent{
         .session_id = input.session_id,
         .data = data_copy,
+        .event_type = "llm_full",
     };
     // Per-session emit (kept for any future server-side fan-out that
     // needs only this session's events).
@@ -310,6 +349,11 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
 
 /// Send session events to all subscribed clients via SSE
 /// Broadcasts session list updates (created, updated, deleted, list actions)
+///
+/// SSE event name (the value of `event:` in the wire format):
+/// - sessions: session_created | session_deleted
+///   (Only `created` is emitted today; the switch is written for both
+///   so a future `deleted` emitter drops in without protocol churn.)
 pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSessions) !void {
     if (std.mem.indexOf(u8, input.id, "subagent")) |_| {
         return;
@@ -339,10 +383,21 @@ pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSess
     // Duplicate the data so event owns its own copy (buf will be deallocated below)
     const data_copy = try allocator.dupe(u8, buf.items);
 
+    // Granular event name drives the SSE wire format `event:` line.
+    // Today only `created` is emitted; the if/else covers future actions.
+    // (Zig 0.16 can't `switch` on `[]const u8`.)
+    const event_type_name: []const u8 = if (std.mem.eql(u8, input.action, "created"))
+        "session_created"
+    else if (std.mem.eql(u8, input.action, "deleted"))
+        "session_deleted"
+    else
+        "session_unknown"; // future-proofing for new actions
+
     // Use actual session_id as routing key and in event
     const event = SseEvent{
         .session_id = input.id,
         .data = data_copy,
+        .event_type = event_type_name,
     };
 
     event_bus.emit(SseEvent, "sessions", event);
@@ -490,6 +545,9 @@ pub fn serializeToolCallDeltas(allocator: std.mem.Allocator, chunk: ToolCallDelt
 // ============================================================================
 
 /// Send content chunk during streaming response
+///
+/// SSE event name (the value of `event:` in the wire format):
+/// - llm:      llm_chunk
 pub fn sendStreamChunkContent(
     allocator: std.mem.Allocator,
     session_id: []const u8,
@@ -504,6 +562,7 @@ pub fn sendStreamChunkContent(
     const event = SseEvent{
         .session_id = session_id,
         .data = data,
+        .event_type = "llm_chunk",
     };
     // Per-session emit (kept for future server-side fan-out that
     // needs only this session's events).
@@ -515,6 +574,9 @@ pub fn sendStreamChunkContent(
 }
 
 /// Send reasoning chunk during streaming response
+///
+/// SSE event name (the value of `event:` in the wire format):
+/// - llm:      llm_chunk
 pub fn sendStreamChunkReasoning(
     allocator: std.mem.Allocator,
     session_id: []const u8,
@@ -529,6 +591,7 @@ pub fn sendStreamChunkReasoning(
     const event = SseEvent{
         .session_id = session_id,
         .data = data,
+        .event_type = "llm_chunk",
     };
     // Per-session emit (kept for future server-side fan-out that
     // needs only this session's events).
@@ -540,6 +603,9 @@ pub fn sendStreamChunkReasoning(
 }
 
 /// Send final chunk with usage information during streaming
+///
+/// SSE event name (the value of `event:` in the wire format):
+/// - llm:      llm_chunk
 pub fn sendStreamChunkFinal(
     allocator: std.mem.Allocator,
     session_id: []const u8,
@@ -554,6 +620,7 @@ pub fn sendStreamChunkFinal(
     const event = SseEvent{
         .session_id = session_id,
         .data = data,
+        .event_type = "llm_chunk",
     };
     // Per-session emit (kept for future server-side fan-out that
     // needs only this session's events).
@@ -565,6 +632,9 @@ pub fn sendStreamChunkFinal(
 }
 
 /// Send tool call delta chunk during streaming response
+///
+/// SSE event name (the value of `event:` in the wire format):
+/// - llm:      llm_chunk
 pub fn sendStreamToolCallDelta(
     allocator: std.mem.Allocator,
     session_id: []const u8,
@@ -579,6 +649,7 @@ pub fn sendStreamToolCallDelta(
     const event = SseEvent{
         .session_id = session_id,
         .data = data,
+        .event_type = "llm_chunk",
     };
     // Per-session emit (kept for future server-side fan-out that
     // needs only this session's events).

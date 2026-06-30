@@ -1585,9 +1585,11 @@ export interface KanbanTaskEvent {
  * `channels` are subscribed on the backend (passed as the
  * `?channels=` query param). The factory always registers all
  * known named event types (`kanban_column`, `kanban_task`,
- * `queue_message`) with the SseClient so the browser dispatches
- * them; the actual dispatch to a consumer's callback is filtered
- * by `eventType` + a payload-shape check inside the factory.
+ * `queue_queued`, `queue_deleted`, `llm_chunk`, `llm_full`,
+ * `worker_created`, `worker_updated`, `worker_deleted`,
+ * `session_created`, `session_deleted`) with the SseClient so the
+ * browser dispatches them; the actual dispatch to a consumer's
+ * callback is filtered by `eventType` inside the factory.
  */
 export interface UnifiedChannels {
   workers?: (event: WorkerEvent) => void
@@ -1652,13 +1654,15 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
     throw new Error('createUnifiedSseConnection: opts.channels is empty')
   }
 
-  // Per-channel JSON buffer for the 3 unnamed default `message` events
-  // (workers, sessions, llm). The 'kanban_column', 'kanban_task', and
-  // 'queue_message' named events carry complete single-line JSON in
-  // one `data:` frame, so they don't need a buffer. The 'connected'
-  // event is auto-parsed by the SseClient.
+  // Per-channel JSON buffer for the unnamed default `message` event,
+  // if any are emitted. As of the granular `event:` names commit, EVERY
+  // emitted event type sets an explicit `event:` line (worker_*,
+  // session_*, llm_chunk, llm_full, queue_queued, queue_deleted,
+  // kanban_column, kanban_task), so the default-message path below is
+  // only hit by future unnamed events. The buffer stays in place so any
+  // such addition is handled correctly without re-wiring the buffer.
   //
-  // ONE shared buffer (not 3 per-channel buffers) — the SSE wire format
+  // ONE shared buffer (not N per-channel buffers) — the SSE wire format
   // is a SINGLE stream of `data:` lines; the buffer holds the
   // accumulated bytes until a complete JSON object is parsed, then
   // the consumer that matches the shape dispatches and the buffer is
@@ -1670,11 +1674,25 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
   return createSseClient({
     url: `${API_BASE}/events?channels=${tokens.join(',')}`,
     onConnected: opts.onConnected,
-    // The 3 named event types must be pre-registered — the browser's
-    // EventSource only dispatches each `event: <name>` to listeners
-    // registered for that exact name. See the SseClient JSDoc + the
-    // project memory browser-eventsource-named-events.md.
-    additionalEventTypes: ['kanban_column', 'kanban_task', 'queue_message'],
+    // Every named event type the backend can emit MUST be pre-registered
+    // — the browser's EventSource only dispatches each `event: <name>`
+    // to listeners registered for that exact name. See the SseClient
+    // JSDoc + the project memory browser-eventsource-named-events.md.
+    // Set names MUST match the `event_type` values emitted by
+    // on_event_sent.zig and llm_history.zig.
+    additionalEventTypes: [
+      'kanban_column',
+      'kanban_task',
+      'queue_queued',
+      'queue_deleted',
+      'llm_chunk',
+      'llm_full',
+      'worker_created',
+      'worker_updated',
+      'worker_deleted',
+      'session_created',
+      'session_deleted',
+    ],
     // Default heartbeat filter (matches backend sse_manager.sendHeartbeat).
     heartbeatData: 'ping',
     onEvent: (raw: string, eventType: string) => {
@@ -1697,13 +1715,67 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
         return
       }
 
-      if (eventType === 'queue_message') {
+      if (eventType === 'queue_queued' || eventType === 'queue_deleted') {
         if (!opts.channels.queue) return
         try {
           const data = JSON.parse(raw)
           opts.channels.queue.onEvent(data as QueueMessageEvent)
         } catch (err) {
           console.error('[unifiedSSE] queue event parse failed:', err, raw)
+        }
+        return
+      }
+
+      // LLM streaming chunks / full responses. The backend sets
+      // `event_type = "llm_chunk"` for content/reasoning/tool-call/final
+      // chunks (per `on_event_sent.zig` `sendStreamChunk*`) and
+      // `event_type = "llm_full"` for non-streaming full responses
+      // (`onEventSendLLMHistory`). Both shapes are the same `SseEvent`
+      // — the frontend doesn't need to distinguish them; the channel
+      // callback receives the object either way.
+      if (eventType === 'llm_chunk' || eventType === 'llm_full') {
+        if (!opts.channels.llm) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.llm.onEvent(data as SseEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] llm event parse failed:', err, raw)
+        }
+        return
+      }
+
+      // Worker events. The backend sets `worker_created` |
+      // `worker_updated` | `worker_deleted` based on
+      // `OnEventInputWorkers.action` (see `on_event_sent.zig`).
+      if (
+        eventType === 'worker_created' ||
+        eventType === 'worker_updated' ||
+        eventType === 'worker_deleted'
+      ) {
+        if (!opts.channels.workers) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.workers(data as WorkerEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] worker event parse failed:', err, raw)
+        }
+        return
+      }
+
+      // Session events. The backend sets `session_created` |
+      // `session_deleted` based on `OnEventInputSessions.action`. Today
+      // only `created` is emitted; `deleted` is wired in `on_event_sent.zig`
+      // for future use.
+      if (
+        eventType === 'session_created' ||
+        eventType === 'session_deleted'
+      ) {
+        if (!opts.channels.sessions) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.sessions(data as SessionEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] session event parse failed:', err, raw)
         }
         return
       }
