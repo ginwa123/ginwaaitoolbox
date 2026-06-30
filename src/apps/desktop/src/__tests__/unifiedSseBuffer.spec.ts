@@ -463,3 +463,106 @@ describe('createUnifiedSseConnection: single-buffer design (regression for Plan 
     expect(afterCb).toHaveBeenCalledTimes(1)
   })
 })
+
+/**
+ * Regression tests for Chunk 4 of
+ * docs/superpowers/plans/2026-06-30-single-sse-all-sessions.md:
+ *
+ * The `UnifiedChannels.llm` / `.queue` shapes now accept an OPTIONAL
+ * `sessionId`. When the caller omits it (the bus, in Chunk 2), the
+ * factory must send a BARE `llm` / `queue` token (not `llm:` /
+ * `queue:`) so the backend's `parseChannels` routes to the central
+ * broadcast keys. When the caller provides a `sessionId`, the
+ * factory sends the per-session routing token `llm:<sid>` /
+ * `queue:<sid>` (kept for back-compat with any future caller that
+ * wants server-side filtering).
+ *
+ * These tests capture the URL passed to `createSseClient` (the
+ * existing describe above captures only `onEvent`; this one captures
+ * the URL via its own spy + a per-test reset).
+ */
+describe('createUnifiedSseConnection: bare vs per-session tokens (Chunk 4)', () => {
+  const spy = vi.spyOn(sseClient, 'createSseClient')
+  let capturedUrl: string | null = null
+
+  beforeEach(() => {
+    capturedUrl = null
+    spy.mockImplementation(((opts: sseClient.SseClientOptions) => {
+      capturedUrl = opts.url
+      return {
+        close: vi.fn(),
+        reconnect: vi.fn(),
+        getState: () => 'open' as const,
+        onStateChange: () => () => {},
+      }
+    }) as unknown as typeof sseClient.createSseClient)
+  })
+
+  it('sends bare "llm" token (not "llm:") when sessionId is omitted', () => {
+    const llmCb = vi.fn()
+
+    createUnifiedSseConnection({
+      channels: { llm: { onEvent: llmCb } },
+    })
+
+    expect(capturedUrl).not.toBeNull()
+    // Must contain the bare token
+    expect(capturedUrl).toMatch(/[?&]channels=[^&]*\bllm\b/)
+    // Must NOT contain the per-session form (`llm:` followed by anything)
+    expect(capturedUrl).not.toMatch(/[?&]channels=[^&]*\bllm:/)
+  })
+
+  it('sends bare "queue" token (not "queue:") when sessionId is omitted', () => {
+    const queueCb = vi.fn()
+
+    createUnifiedSseConnection({
+      channels: { queue: { onEvent: queueCb } },
+    })
+
+    expect(capturedUrl).not.toBeNull()
+    expect(capturedUrl).toMatch(/[?&]channels=[^&]*\bqueue\b/)
+    expect(capturedUrl).not.toMatch(/[?&]channels=[^&]*\bqueue:/)
+  })
+
+  it('sends per-session "llm:<sid>" token when sessionId is provided', () => {
+    const llmCb = vi.fn()
+
+    createUnifiedSseConnection({
+      channels: { llm: { sessionId: 'sid-back-compat', onEvent: llmCb } },
+    })
+
+    expect(capturedUrl).not.toBeNull()
+    expect(capturedUrl).toMatch(/[?&]channels=[^&]*\bllm:sid-back-compat\b/)
+  })
+
+  it('sends per-session "queue:<sid>" token when sessionId is provided', () => {
+    const queueCb = vi.fn()
+
+    createUnifiedSseConnection({
+      channels: { queue: { sessionId: 'qid-back-compat', onEvent: queueCb } },
+    })
+
+    expect(capturedUrl).not.toBeNull()
+    expect(capturedUrl).toMatch(/[?&]channels=[^&]*\bqueue:qid-back-compat\b/)
+  })
+
+  it('sends BOTH bare "llm" + bare "queue" when both channels omit sessionId (the bus shape)', () => {
+    const llmCb = vi.fn()
+    const queueCb = vi.fn()
+
+    createUnifiedSseConnection({
+      channels: {
+        llm: { onEvent: llmCb },
+        queue: { onEvent: queueCb },
+      },
+    })
+
+    expect(capturedUrl).not.toBeNull()
+    // Both bare tokens present
+    expect(capturedUrl).toMatch(/[?&]channels=[^&]*\bllm\b/)
+    expect(capturedUrl).toMatch(/[?&]channels=[^&]*\bqueue\b/)
+    // Neither per-session form present
+    expect(capturedUrl).not.toMatch(/[?&]channels=[^&]*\bllm:/)
+    expect(capturedUrl).not.toMatch(/[?&]channels=[^&]*\bqueue:/)
+  })
+})
