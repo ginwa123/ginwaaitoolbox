@@ -169,7 +169,10 @@ fn successEnvelope(
     try xml.appendSlice(allocator, "</content_type>");
 
     var len_buf: [32]u8 = undefined;
-    const len_str = std.fmt.bufPrint(&len_buf, "{d}", .{content_length}) catch "0";
+    // 32 bytes is provably enough for a usize (max 20 decimal digits).
+    // Treat NoSpaceLeft as unreachable rather than falling back to "0"
+    // (which would silently lie about the rendered size to the LLM).
+    const len_str = std.fmt.bufPrint(&len_buf, "{d}", .{content_length}) catch unreachable;
     try xml.appendSlice(allocator, "<content_length>");
     try xml.appendSlice(allocator, len_str);
     try xml.appendSlice(allocator, "</content_length>");
@@ -339,15 +342,11 @@ pub fn executeShowPreviewToString(
     }
 
     // 4. For code previews, the language field is required so the
-    //    side panel can apply the right syntax highlighter.
+    //    side panel can apply the right syntax highlighter. Both null
+    //    and empty-string are rejected (the latter is what an LLM that
+    //    emits `"language": ""` would produce).
     if (std.mem.eql(u8, input.content_type, "code")) {
-        const lang = input.language orelse {
-            return errorEnvelope(
-                allocator,
-                \\content_type "code" requires a non-empty `language` field (e.g. "zig", "python", "typescript"). The side panel needs it for syntax highlighting.
-            ,
-            );
-        };
+        const lang = input.language orelse "";
         if (lang.len == 0) {
             return errorEnvelope(
                 allocator,
