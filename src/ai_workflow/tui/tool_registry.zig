@@ -1186,7 +1186,12 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         "subagent_{}_{s}",
         .{ std.Io.Timestamp.now(args_ptr.io, .real).nanoseconds, resolved_display_name },
     ) catch {
-        const err_msg = args_ptr.allocator.dupe(u8, "Failed to create session_id") catch "Failed to allocate";
+        // Mirror the workflow.zig error message pattern (workflow.zig:68)
+        // for consistency with the rest of the runSubAgent error paths.
+        const err_msg = std.fmt.allocPrint(args_ptr.allocator,
+            "Agent Nalar System error, the actual error is ->>>> Failed to create session_id for '{s}'\n",
+            .{args_ptr.agent_name},
+        ) catch "Agent Nalar System error, the actual error is ->>>> Failed to create session_id";
         args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
         args_ptr.logger.errFmt("Failed to create session_id for '{s}'", .{args_ptr.agent_name});
         return;
@@ -1197,7 +1202,10 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
     // Store session_id in shared results immediately after creation
     {
         const session_id_copy = args_ptr.allocator.dupe(u8, sess_id) catch {
-            const err_msg = args_ptr.allocator.dupe(u8, "Failed to copy session_id") catch "Failed to allocate";
+            const err_msg = std.fmt.allocPrint(args_ptr.allocator,
+                "Agent Nalar System error, the actual error is ->>>> Failed to copy session_id for '{s}'\n",
+                .{args_ptr.agent_name},
+            ) catch "Agent Nalar System error, the actual error is ->>>> Failed to copy session_id";
             args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
             args_ptr.logger.errFmt("Failed to copy session_id for '{s}'", .{args_ptr.agent_name});
             return;
@@ -1228,16 +1236,47 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         .inherited_context = args_ptr.inherited_context,
         .sub_agent_overrides = args_ptr.sub_agent_overrides,
     }) catch |err| {
-        const err_msg = std.fmt.allocPrint(args_ptr.allocator, "Workflow error: {s}", .{@errorName(err)}) catch "Failed to allocate error message";
-        args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
-        args_ptr.logger.errFmt("Sub-agent workflow error for '{s}': {s}", .{ args_ptr.agent_name, @errorName(err) });
+        // Mirror the diagnostic pattern used by workflow.zig's outer
+        // catch (workflow.zig:68) and its TooManyRetries bail
+        // (workflow.zig:410-415) so the parent LLM and the user see a
+        // clear, actionable error message instead of a bare error name.
+        //
+        // For TooManyRetries specifically, the inner workflow bail has
+        // already saved a rich diagnostic to the SUB-AGENT's chat history
+        // (see workflow.zig's bail at line 410-475), but the parent LLM
+        // does NOT see that diagnostic — it only sees the error returned
+        // from this tool call. Without a rich message here, the parent
+        // would have no idea WHY retries were happening.
+        const err_name: []const u8 = @errorName(err);
+        const diagnostic: []const u8 = if (std.mem.eql(u8, err_name, "TooManyRetries"))
+            std.fmt.allocPrint(args_ptr.allocator,
+                \\[Agent Nalar System error] sub-agent workflow halted after TooManyRetries (10+ consecutive failures).
+                \\This typically indicates a network connectivity issue to the LLM API endpoint,
+                \\API rate limit exceeded, authentication/authorization failure, or upstream
+                \\service unavailability. The sub-agent's session logs contain the full chain
+                \\of errors at each retry attempt — review them before retrying.
+            , .{}) catch
+                "Agent Nalar System error, the actual error is ->>>> TooManyRetries\n"
+        else
+            std.fmt.allocPrint(args_ptr.allocator,
+                "Agent Nalar System error, the actual error is ->>>> {s}\n",
+                .{err_name},
+            ) catch "Failed to format error message";
+        args_ptr.shared_results.results[args_ptr.thread_idx].error_message = diagnostic;
+        args_ptr.logger.errFmt("Sub-agent workflow error for '{s}': {s}", .{ args_ptr.agent_name, err_name });
         return;
     };
 
     args_ptr.logger.debugFmt("workflow.runAgenticMultiStep completed for '{s}', fetching message", .{args_ptr.agent_name});
 
     const latest_msg_result = llm_history.getLatestMessage(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch |err| {
-        const err_msg = args_ptr.allocator.dupe(u8, "getLatestMessage error") catch return;
+        // Mirror the workflow.zig error message pattern (workflow.zig:68)
+        // so the parent LLM sees a clear "Agent Nalar System error" prefix
+        // instead of a bare error name.
+        const err_msg = std.fmt.allocPrint(args_ptr.allocator,
+            "Agent Nalar System error, the actual error is ->>>> getLatestMessage: {s}\n",
+            .{@errorName(err)},
+        ) catch "Agent Nalar System error, the actual error is ->>>> getLatestMessage failed";
         args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
         args_ptr.logger.errFmt("getLatestMessage error for '{s}': {s}", .{ sess_id, @errorName(err) });
         return;
@@ -1247,7 +1286,10 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         var mutable_msg = msg;
         if (mutable_msg.response_content.len > 0) {
             const response_copy = args_ptr.allocator.dupe(u8, mutable_msg.response_content) catch {
-                const err_msg = args_ptr.allocator.dupe(u8, "Failed to copy response") catch "allocation failed";
+                const err_msg = std.fmt.allocPrint(args_ptr.allocator,
+                    "Agent Nalar System error, the actual error is ->>>> Failed to copy response: OutOfMemory\n",
+                    .{},
+                ) catch "Agent Nalar System error, the actual error is ->>>> Failed to copy response";
                 args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
                 mutable_msg.deinit(args_ptr.allocator);
                 return;
@@ -1255,11 +1297,13 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
             args_ptr.shared_results.results[args_ptr.thread_idx].response = response_copy;
             args_ptr.shared_results.results[args_ptr.thread_idx].success = true;
         } else {
-            args_ptr.shared_results.results[args_ptr.thread_idx].error_message = "Empty response content";
+            args_ptr.shared_results.results[args_ptr.thread_idx].error_message =
+                "Agent Nalar System error, the actual error is ->>>> Sub-agent completed but produced empty response content\n";
         }
         mutable_msg.deinit(args_ptr.allocator);
     } else {
-        args_ptr.shared_results.results[args_ptr.thread_idx].error_message = "No message found in database";
+        args_ptr.shared_results.results[args_ptr.thread_idx].error_message =
+            "Agent Nalar System error, the actual error is ->>>> Sub-agent completed but no message found in database\n";
     }
 
     _ = args_ptr.shared_results.completed_count.fetchAdd(1, .monotonic);

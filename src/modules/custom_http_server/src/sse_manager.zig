@@ -346,7 +346,7 @@ pub const SseManager = struct {
             for (my_fds.items) |fd| {
                 poll_fds[idx] = .{
                     .fd = fd,
-                    .events = posix.POLL.IN | posix.POLL.HUP,
+                    .events = posix.POLL.IN | posix.POLL.HUP | posix.POLL.NVAL,
                     .revents = undefined,
                 };
                 idx += 1;
@@ -361,9 +361,19 @@ pub const SseManager = struct {
 
                 const poll_err = @as(u16, @intCast(posix.POLL.ERR));
                 const poll_hup = @as(u16, @intCast(posix.POLL.HUP));
+                // POLL.NVAL is the only event the kernel can set on a
+                // "sock but not IPv4" orphan FD — the classic signature
+                // of a leaked FD whose underlying kernel socket has
+                // already been reaped (peer FIN + 2MSL + unlink) but
+                // whose userspace FD was never close()'d. Without this
+                // branch, those FDs are invisible to the reaper and
+                // accumulate until `RLIMIT_NOFILE` is hit, surfacing as
+                // `ProcessFdQuotaExceeded` for every FD-allocating
+                // syscall (`read_file`, `bash`, sub-agent `spawn`, etc.).
+                const poll_nval = @as(u16, @intCast(posix.POLL.NVAL));
                 const poll_in = @as(u16, @intCast(posix.POLL.IN));
 
-                if (revents & (poll_err | poll_hup) != 0) {
+                if (revents & (poll_err | poll_hup | poll_nval) != 0) {
                     _ = self.removeClientByFd(pfd.fd);
                     continue;
                 }
@@ -387,6 +397,57 @@ pub const SseManager = struct {
             if (now - last_hb >= heartbeat_ms) {
                 self.sendHeartbeat(loop_id);
                 last_hb = now;
+                // Belt-and-suspenders sweep: pick up any client whose
+                // `last_heartbeat` is older than 3 heartbeat cycles.
+                // Defends against any future bug that lets a dead
+                // client slip past the poll reaper (POLL.HUP/ERR/NVAL)
+                // and the heartbeat reaper (EPIPE/ECONNRESET/EBADF).
+                // Capped at 64 removals per iteration to avoid O(N²)
+                // behaviour when many clients go stale at once (e.g.,
+                // a server-side rollback).
+                self.sweepStaleClients(@as(u64, @intCast(heartbeat_ms)) * 3, 64);
+            }
+        }
+    }
+
+    /// Sweep clients whose `last_heartbeat` is older than
+    /// `max_stale_ms`. Removes up to `max_per_call` clients per call to
+    /// bound the worst-case CPU cost when a large batch goes stale at
+    /// once. Must be called under the per-loop cadence — typically
+    /// once per heartbeat cycle.
+    ///
+    /// Exposed as `pub` so the unit test can verify the staleness
+    /// sweep without standing up the full event loop. Production
+    /// callers should rely on `runEventLoop`'s per-cycle call.
+    pub fn sweepStaleClients(self: *SseManager, max_stale_ms: u64, max_per_call: usize) void {
+        const now = timestamp();
+
+        self.lock.lock(self.io) catch unreachable;
+        defer self.lock.unlock(self.io);
+
+        var stale_ids: std.ArrayListUnmanaged([16]u8) = .empty;
+        defer stale_ids.deinit(self.allocator);
+
+        var it = self.clients.iterator();
+        outer: while (it.next()) |entry| {
+            const client = entry.value_ptr.*;
+            const age_ms = now -| client.last_heartbeat;
+            if (age_ms > max_stale_ms) {
+                stale_ids.append(self.allocator, client.id) catch break :outer;
+                if (stale_ids.items.len >= max_per_call) break :outer;
+            }
+        }
+
+        // Reap under the same lock. Mirrors the close-before-deinit
+        // pattern in `removeClient` so partial-write chunked frames
+        // don't produce `ERR_INCOMPLETE_CHUNKED_ENCODING` in the browser.
+        for (stale_ids.items) |id| {
+            if (self.clients.fetchRemove(id)) |entry| {
+                const fd = entry.value.*.fd;
+                _ = self.fd_to_id.remove(fd);
+                _ = sendAll(fd, "0\r\n\r\n");
+                entry.value.*.deinit();
+                self.server_allocator.destroy(entry.value);
             }
         }
     }
@@ -411,9 +472,17 @@ pub const SseManager = struct {
         defer client_ptrs.deinit(self.allocator);
 
         var it = self.clients.iterator();
-        var global_idx: usize = 0;
-        while (it.next()) |entry| : (global_idx += 1) {
-            if (global_idx % LOOP_COUNT == loop_id) {
+        // Shard by `id[0] % LOOP_COUNT` to MATCH the poll loop's
+        // sharding rule (`sse_manager.zig:308`). The previous
+        // implementation used `global_idx % LOOP_COUNT`, which depended
+        // on hashmap iteration order — two shards can disagree on which
+        // loop "owns" a client. While every client was still heartbeated
+        // (the modulo covered all residue classes), the sharding rule
+        // had to match the poll loop's so future per-client ownership
+        // invariants (e.g., the periodic sweep in
+        // `sweepStaleClients`) can rely on a single source of truth.
+        while (it.next()) |entry| {
+            if (entry.value_ptr.*.id[0] % LOOP_COUNT == loop_id) {
                 client_ptrs.append(self.allocator, entry.value_ptr.*) catch break;
             }
         }
@@ -423,12 +492,16 @@ pub const SseManager = struct {
         defer dead_ids.deinit(self.allocator);
 
         for (client_ptrs.items) |client| {
-            client.last_heartbeat = timestamp();
-            // Send the heartbeat as a chunked frame so the peer can
-            // decode the byte stream as HTTP/1.1 chunked-transfer-
-            // encoding. Failure (peer already gone) means the client
-            // is dead; remove it so the next iteration skips it.
-            if (writeChunkedFrame(client.fd, ping)) |_| {} else |_| {
+            // Only update `last_heartbeat` on a SUCCESSFUL write — a
+            // failed heartbeat leaves the timestamp stale, so the
+            // periodic sweep (`sweepStaleClients`) can catch the
+            // client on the next iteration even if `dead_ids` itself
+            // races with another thread's `removeClient` call.
+            // Previously the timestamp was updated unconditionally,
+            // which made the sweep blind to actual staleness.
+            if (writeChunkedFrame(client.fd, ping)) |_| {
+                client.last_heartbeat = timestamp();
+            } else |_| {
                 dead_ids.append(self.allocator, client.id) catch break;
             }
         }
