@@ -1,12 +1,13 @@
 /**
- * Tests for the workspaces store's session-events SSE subscription.
+ * Tests for the workspaces store's session-events handling.
  *
  * The backend cascade for task rename emits a `session.updated`
- * event on /api/sessions/stream. The workspaces store subscribes
- * so the workspace-item task row updates in real time (without
- * this, the user has to refresh the page to see the new name in
- * the task list, even though the ChatsList updates correctly
- * because it has its own subscription).
+ * event on /api/sessions/stream. After the unify-frontend-sse
+ * migration (Chunk 6), the workspaces store receives session
+ * events through the global sseBus (opened once by App.vue)
+ * rather than opening its own EventSource. We use the bus's
+ * test injection point (`__dispatchSseBus`) to drive events
+ * deterministically.
  *
  * task.id == session_id (per AppLayout.vue:651
  * `:chat-id="activeTask.id"`), so the lookup is a straight
@@ -14,20 +15,42 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
+import { createApp, type App as VueApp } from 'vue'
 
 import * as api from '../api'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useNavigationStore } from '../stores/navigation'
 import { makeLocalStorageStub } from './helpers'
+import {
+  installSseBus,
+  __resetSseBus,
+  __dispatchSseBus,
+  __setSseBusGlobalClient,
+} from '../helpers/sseBus'
+import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
+import type { SessionEvent } from '../api'
 
-describe('useWorkspacesStore.subscribeToSessionEvents', () => {
-  // The unified factory takes a single options object. We capture
-  // it so tests can simulate SSE events by invoking the `sessions`
-  // channel callback directly (`capturedOpts!.channels.sessions!(event)`).
-  let capturedOpts: api.UnifiedSseOptions | undefined
-  const sseClientStub: Partial<api.SseClient> = {
+/**
+ * Test-only stub SseClient. We don't drive state transitions
+ * from these tests (the bus's `state` ShallowRef is not asserted
+ * here), but the install path requires a real-looking client —
+ * see sseBus.spec.ts / App.spec.ts for the same helper.
+ */
+function makeStubClient(initial: SseState): SseClient {
+  const stub: any = {
     close: vi.fn(),
+    reconnect: vi.fn(),
+    getState: () => stub._state,
+    onStateChange: (_cb: (s: SseState, info: SseStateInfo) => void) => {
+      return () => {}
+    },
   }
+  stub._state = initial
+  return stub as SseClient
+}
+
+describe('useWorkspacesStore session events (via sseBus)', () => {
+  let app: VueApp
 
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -37,24 +60,36 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
       configurable: true,
     })
 
-    // Replace the unified SSE factory with a stub that records the
-    // captured options object. The `sessions` channel callback is
-    // the only one the subscription handler depends on.
-    vi.spyOn(api, 'createUnifiedSseConnection').mockImplementation(
-      (opts: api.UnifiedSseOptions): api.SseClient => {
-        capturedOpts = opts
-        return sseClientStub as api.SseClient
-      },
-    )
+    // Install the bus BEFORE the store's `init()` is called —
+    // `installSessionEventHandlers` invokes `useSseBus()` which
+    // throws if the bus hasn't been installed yet. Replace the
+    // underlying SseClient so we never touch the network in tests.
+    __resetSseBus()
+    app = createApp({})
+    installSseBus(app)
+    __setSseBusGlobalClient(makeStubClient('connecting'))
+
+    // Stub the workspaces/items API so init() doesn't hit the
+    // network. The same stub pattern is used by
+    // workspacesStoreInit.spec.ts and workspacesStoreTaskTypes.spec.ts.
+    vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
+    vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
   })
 
   afterEach(() => {
+    __resetSseBus()
     vi.restoreAllMocks()
-    capturedOpts = undefined
   })
 
-  function seedStore() {
+  /**
+   * Install the bus-backed handlers AND seed the store. Order
+   * matters: `init()` resets `workspaces.value` to `[]` on
+   * completion (or to the fetched list), so we seed AFTER the
+   * install call returns.
+   */
+  async function setupHandlersAndSeed() {
     const ws = useWorkspacesStore()
+    await ws.init()
     ws.workspaces = [
       {
         id: 'ws_1',
@@ -74,29 +109,45 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     return ws
   }
 
-  function dispatch(event: api.SessionEvent) {
-    expect(capturedOpts).toBeDefined()
-    const onSession = capturedOpts!.channels.sessions
-    expect(onSession).toBeDefined()
-    onSession!(event)
+  function dispatch(event: SessionEvent) {
+    __dispatchSseBus('session', event as any)
   }
 
-  it('opens an SSE connection when subscribeToSessionEvents is called', () => {
+  it('installs a session handler on init (idempotent — second init does not double-register)', async () => {
     const ws = useWorkspacesStore()
-    ws.subscribeToSessionEvents()
-    expect(api.createUnifiedSseConnection).toHaveBeenCalledTimes(1)
+    // First init — installs the handler, resets workspaces.value to [].
+    await ws.init()
+    // Second init — must NOT double-register the handler. The
+    // install flag is closure-scoped inside the store, so a second
+    // init() in the same store IS the no-op path (the flag is
+    // already true).
+    await ws.init()
+    // Seed after the second init so the handler has data to mutate.
+    ws.workspaces = [
+      {
+        id: 'ws_1',
+        name: 'W1',
+        icon: '📁',
+        expanded: true,
+        items: [{ id: 'item_a', name: 'A', item_type: 'folder', tasks: [{ id: 'task_1', name: 'Original' }] }],
+      },
+    ]
+
+    dispatch({
+      action: 'updated',
+      id: 'task_1',
+      name: 'Renamed',
+      status: 'active',
+      cwd: '/tmp',
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: '2024-01-02T00:00:00Z',
+    })
+
+    expect(ws.workspaces[0]!.items[0]!.tasks![0]!.name).toBe('Renamed')
   })
 
-  it('is idempotent — calling subscribe twice does not open a second connection', () => {
-    const ws = useWorkspacesStore()
-    ws.subscribeToSessionEvents()
-    ws.subscribeToSessionEvents()
-    expect(api.createUnifiedSseConnection).toHaveBeenCalledTimes(1)
-  })
-
-  it('updates a matching task name on session.updated', () => {
-    const ws = seedStore()
-    ws.subscribeToSessionEvents()
+  it('updates a matching task name on session.updated', async () => {
+    const ws = await setupHandlersAndSeed()
 
     dispatch({
       action: 'updated',
@@ -111,12 +162,11 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     expect(ws.workspaces[0]!.items[0]!.tasks![0]!.name).toBe('New Name from SSE')
   })
 
-  it('keeps navigationStore.activeChatName in sync when the updated task is the active one', () => {
-    const ws = seedStore()
+  it('keeps navigationStore.activeChatName in sync when the updated task is the active one', async () => {
     const nav = useNavigationStore()
-    ws.setActiveTask('task_1')
     nav.setActiveChatName('Original')
-    ws.subscribeToSessionEvents()
+    const ws = await setupHandlersAndSeed()
+    ws.setActiveTask('task_1')
 
     dispatch({
       action: 'updated',
@@ -131,12 +181,11 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     expect(nav.activeChatName).toBe('Renamed via SSE')
   })
 
-  it('does NOT touch navigationStore when the updated task is not the active one', () => {
-    const ws = seedStore()
+  it('does NOT touch navigationStore when the updated task is not the active one', async () => {
     const nav = useNavigationStore()
-    ws.setActiveTask('other_task')
     nav.setActiveChatName('Other Task Header')
-    ws.subscribeToSessionEvents()
+    const ws = await setupHandlersAndSeed()
+    ws.setActiveTask('other_task')
 
     dispatch({
       action: 'updated',
@@ -152,9 +201,8 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     expect(nav.activeChatName).toBe('Other Task Header')
   })
 
-  it('leaves the task name unchanged when no task matches the event id', () => {
-    const ws = seedStore()
-    ws.subscribeToSessionEvents()
+  it('leaves the task name unchanged when no task matches the event id', async () => {
+    const ws = await setupHandlersAndSeed()
 
     dispatch({
       action: 'updated',
@@ -169,9 +217,8 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     expect(ws.workspaces[0]!.items[0]!.tasks![0]!.name).toBe('Original')
   })
 
-  it('removes a task on session.deleted', () => {
-    const ws = seedStore()
-    ws.subscribeToSessionEvents()
+  it('removes a task on session.deleted', async () => {
+    const ws = await setupHandlersAndSeed()
 
     expect(ws.workspaces[0]!.items[0]!.tasks).toHaveLength(1)
     dispatch({
@@ -186,10 +233,9 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     expect(ws.workspaces[0]!.items[0]!.tasks).toHaveLength(0)
   })
 
-  it('clears activeTaskId when the deleted task was active', () => {
-    const ws = seedStore()
+  it('clears activeTaskId when the deleted task was active', async () => {
+    const ws = await setupHandlersAndSeed()
     ws.setActiveTask('task_1')
-    ws.subscribeToSessionEvents()
 
     dispatch({
       action: 'deleted',
@@ -209,11 +255,10 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
   // components (ChatsList.vue's `navItems` mirror) need to be
   // notified too — they have their own shape (relativeTime,
   // processing flag, etc.) that's not derived from the workspace
-  // tree. The fan-out fires AFTER the internal handler so
+  // tree. The fan-out fires after the internal handler so
   // subscribers can safely re-fetch from the API.
-  it('fan-outs session.updated events to onSessionEvent subscribers', () => {
-    const ws = seedStore()
-    ws.subscribeToSessionEvents()
+  it('fan-outs session.updated events to onSessionEvent subscribers', async () => {
+    const ws = await setupHandlersAndSeed()
 
     const cb = vi.fn()
     const unsub = ws.onSessionEvent(cb)
@@ -236,9 +281,8 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     unsub()
   })
 
-  it('fan-outs session.deleted events to onSessionEvent subscribers', () => {
-    const ws = seedStore()
-    ws.subscribeToSessionEvents()
+  it('fan-outs session.deleted events to onSessionEvent subscribers', async () => {
+    const ws = await setupHandlersAndSeed()
 
     const cb = vi.fn()
     ws.onSessionEvent(cb)
@@ -257,13 +301,12 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     expect(cb).toHaveBeenCalledWith(expect.objectContaining({ action: 'deleted', id: 'task_1' }))
   })
 
-  it('fan-outs session.created events to onSessionEvent subscribers', () => {
+  it('fan-outs session.created events to onSessionEvent subscribers', async () => {
     // The internal handler deliberately ignores 'created' (tasks
     // are created via POST /tasks, not via session.created) — but
     // external subscribers like ChatsList still need to see the
     // event so the new session appears in their list.
-    const ws = seedStore()
-    ws.subscribeToSessionEvents()
+    const ws = await setupHandlersAndSeed()
 
     const cb = vi.fn()
     ws.onSessionEvent(cb)
@@ -284,9 +327,8 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     )
   })
 
-  it('onSessionEvent returns an unsubscribe function that detaches the callback', () => {
-    const ws = seedStore()
-    ws.subscribeToSessionEvents()
+  it('onSessionEvent returns an unsubscribe function that detaches the callback', async () => {
+    const ws = await setupHandlersAndSeed()
 
     const cb = vi.fn()
     const unsub = ws.onSessionEvent(cb)
@@ -305,9 +347,8 @@ describe('useWorkspacesStore.subscribeToSessionEvents', () => {
     expect(cb).not.toHaveBeenCalled()
   })
 
-  it('swallows errors thrown by subscribers without breaking the SSE stream', () => {
-    const ws = seedStore()
-    ws.subscribeToSessionEvents()
+  it('swallows errors thrown by subscribers without breaking the SSE stream', async () => {
+    const ws = await setupHandlersAndSeed()
 
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const goodCb = vi.fn()

@@ -5,7 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
-import { nextTick, reactive, ref } from 'vue'
+import { createApp, type App as VueApp, nextTick, reactive, ref } from 'vue'
 
 import * as api from '../api'
 import { useNavigationStore } from '../stores/navigation'
@@ -14,6 +14,25 @@ import ChatsList from '../components/ChatsList.vue'
 import AppLayout from '../components/AppLayout.vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { makeLocalStorageStub } from './helpers'
+import {
+  installSseBus,
+  __resetSseBus,
+  __setSseBusGlobalClient,
+} from '../helpers/sseBus'
+import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
+
+function makeStubClient(initial: SseState): SseClient {
+  const stub: any = {
+    close: vi.fn(),
+    reconnect: vi.fn(),
+    getState: () => stub._state,
+    onStateChange: (_cb: (s: SseState, info: SseStateInfo) => void) => {
+      return () => {}
+    },
+  }
+  stub._state = initial
+  return stub as SseClient
+}
 
 // ChatsList calls useRouter() in setup; the `mocks: { $router: ... }`
 // option below only patches `this.$router` (Options API), so we must
@@ -50,6 +69,8 @@ function mountChatsList() {
 }
 
 describe('sidebar active-state exclusivity', () => {
+  let app: VueApp
+
   beforeEach(() => {
     setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
@@ -57,6 +78,14 @@ describe('sidebar active-state exclusivity', () => {
       writable: true,
       configurable: true,
     })
+    // ChatsList and AppLayout both call
+    // workspacesStore.onSessionEvent(cb) synchronously in setup,
+    // which now requires the sseBus to be installed (Chunk 6 of
+    // unify-frontend-sse). Install a stub bus before mounting.
+    __resetSseBus()
+    app = createApp({})
+    installSseBus(app)
+    __setSseBusGlobalClient(makeStubClient('connecting'))
     vi.spyOn(api, 'getChats').mockResolvedValue({
       sessions: [],
       has_more: false,
@@ -66,6 +95,7 @@ describe('sidebar active-state exclusivity', () => {
   })
 
   afterEach(() => {
+    __resetSseBus()
     vi.restoreAllMocks()
   })
 
