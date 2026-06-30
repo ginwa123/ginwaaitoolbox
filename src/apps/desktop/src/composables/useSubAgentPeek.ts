@@ -192,14 +192,14 @@ export function useSubAgentPeek(opts: UseSubAgentPeekOptions): UseSubAgentPeekRe
     const bus = useSseBus()
     const sid = opts.sessionId
     offLlm = bus.on('llm', (event: SseEvent) => {
-      // Listener-side filter — the bus is shared across all peeks and
-      // the active chat, so we drop events for other sessions here.
-      // The per-session SSE stream itself is also filtered server-side
-      // by `?channels=llm:<sid>`, so this is belt-and-suspenders.
+      // Listener-side filter — the bus's single global EventSource
+      // carries all sessions' llm events, so we drop events for other
+      // sessions here. This is the layer that knows which session is
+      // 'current' for this peek; the global stream itself has no notion
+      // of 'current session'.
       if (event.session_id !== sid) return
       applyChunkToMessages(messages, event, totalTokens, status)
     })
-    bus.subscribeSessionChannels(sid)
   }
 
   function closeSse(): void {
@@ -207,7 +207,6 @@ export function useSubAgentPeek(opts: UseSubAgentPeekOptions): UseSubAgentPeekRe
       offLlm()
       offLlm = null
     }
-    useSseBus().unsubscribeSessionChannels(opts.sessionId)
   }
 
   onMounted(() => {

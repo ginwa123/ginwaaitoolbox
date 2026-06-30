@@ -418,10 +418,13 @@ function onPeekOpenFull(sessionId: string) {
 }
 
 // SSE connection. Both the `llm` and `queue` channels now flow
-// through the global `sseBus` (opened once by App.vue). ChatView
-// no longer owns its own EventSource; it just registers listeners
-// and asks the bus to open/close the session-scoped client via
-// `subscribeSessionChannels(sid)` / `unsubscribeSessionChannels(sid)`.
+// through the global `sseBus` (opened once by App.vue). The bus's
+// single global SseClient carries ALL 5 channels (including bare
+// 'llm' and bare 'queue'). Listeners here filter by
+// `event.session_id === sid` on the JS side — defense-in-depth
+// against backend routing regressions. The same listener filter
+// would also be needed in a future multi-tab scenario where
+// multiple ChatViews share one EventSource.
 const isStreaming = ref(false)
 const streamingContent = ref('')
 
@@ -1614,21 +1617,19 @@ const connectSse = () => {
   if (!sid) return
 
   // Defensive: if a previous connectSse didn't clean up (e.g. mid-mount
-  // session change), tear down before re-registering. The new
-  // bus.subscribeSessionChannels is refcounted, so the matching
-  // unsubscribe below keeps the per-session EventSource lifecycle
-  // correct.
+  // session change), tear down before re-registering. The bus's single
+  // global EventSource is already open (App.vue opens it once), so we
+  // only need to manage our listener subscriptions here.
   disconnectSse()
 
   streamingContent.value = ''
 
   const bus = useSseBus()
-  // Subscribe FIRST so we don't miss the first event after the
-  // per-session EventSource opens. The `event.session_id !== sid` filter
-  // is defense-in-depth — the backend filters by `llm:<sid>` on the
-  // per-session stream, but the listener-side filter catches backend
-  // regressions and protects against cross-session event bleed if the
-  // bus ever routes events between sids (it doesn't today).
+  // Subscribe FIRST so we don't miss any bus events that arrive between
+  // registration and the next tick. The `event.session_id !== sid` filter
+  // is defense-in-depth — the bus's single global EventSource carries
+  // ALL sessions' llm/queue events (no per-session routing), and the
+  // listener-side filter scopes each ChatView to its own sid.
   offLlm = bus.on('llm', (event: api.SseEvent) => {
     if (event.session_id !== sid) return
 
@@ -1709,9 +1710,6 @@ const connectSse = () => {
       queuedMessages.value = queuedMessages.value.filter((m) => m.message !== event.message)
     }
   })
-  // Open the chat-scoped EventSource via the bus (refcounted;
-  // idempotent across repeated connectSse calls with the same sid).
-  bus.subscribeSessionChannels(sid)
   // Set isStreaming LAST so external observers (tests, UI) can poll
   // it as a "listeners are wired up" signal — flipping it before
   // would race with test assertions that fire events into the bus
@@ -1728,8 +1726,6 @@ const disconnectSse = () => {
     offQueue()
     offQueue = null
   }
-  const sid = sessionId.value
-  if (sid) useSseBus().unsubscribeSessionChannels(sid)
   isStreaming.value = false
   streamingContent.value = ''
   messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
