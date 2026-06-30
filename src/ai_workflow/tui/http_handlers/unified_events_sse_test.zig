@@ -60,8 +60,6 @@ test "unified_events_sse.zig recognizes all 5 channel tokens" {
         "eql(u8, token, \"llm\")",
         // bare 'queue' branch
         "eql(u8, token, \"queue\")",
-        // queue_messages_<sid> composed routing key
-        "queue_messages_",
     };
 
     inline for (required_tokens) |needle| {
@@ -110,9 +108,9 @@ test "/api/events is registered in src/main.zig" {
 //
 // Plan Reviewer finding #3: the 4 static contracts above only verify
 // the file's shape, not the parser's correctness. A typo in the
-// `queue_messages_` prefix, a wrong separator for `llm:`, or an off-
-// by-one in the kanban expansion would silently drop events in
-// production. These behavioral tests pin the parser contract.
+// bare `llm`/`queue` token names, or an off-by-one in the kanban
+// expansion would silently drop events in production. These
+// behavioral tests pin the parser contract.
 //
 // To make `parseChannels` testable from this file, the production
 // code must expose it as `pub fn` (currently `fn`). Chunk 1.1's

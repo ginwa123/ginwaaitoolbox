@@ -93,7 +93,6 @@ pub const ChannelList = struct {
 pub const ChannelParseError = error{
     MissingChannels,
     UnknownChannel,
-    EmptySessionId,
     OutOfMemory,
 };
 
@@ -179,34 +178,12 @@ pub const CallbackUnifiedSessionsStream = struct {
     }
 };
 
-/// Callback for the per-session LLM routing key. The session_id is
-/// carried inside `SseEvent.session_id`, so the routing key is read
-/// from there (mirrors llm_history_sse.zig:11-12).
-pub const CallbackUnifiedLLMStream = struct {
-    pub fn callback(data: ai_mod.on_event_sent.SseEvent) void {
-        forwardToClients(data.session_id, data);
-    }
-};
-
 /// Callback for the central "llm" routing key. Forwards to every
 /// client registered under "llm" — the frontend listener then
 /// filters by `data.session_id` on the JS side.
 pub const CallbackUnifiedLLMBroadcast = struct {
     pub fn callback(data: ai_mod.on_event_sent.SseEvent) void {
         forwardToClients("llm", data);
-    }
-};
-
-/// Callback for `queue_messages_<sid>` routing key. The session_id
-/// is read from `data.session_id` and composed into the routing key,
-/// mirroring queue_messages_sse.zig:19.
-pub const CallbackUnifiedQueueStream = struct {
-    pub fn callback(data: ai_mod.on_event_sent.SseEvent) void {
-        const di = nalar_core.getSingleton() catch return;
-        const allocator = di.allocator;
-        const composed = std.fmt.allocPrint(allocator, "queue_messages_{s}", .{data.session_id}) catch return;
-        defer allocator.free(composed);
-        forwardToClients(composed, data);
     }
 };
 
@@ -252,12 +229,6 @@ pub fn unifiedEventsStreamHandler(
                 \\{{"error":"unknown channel in {s}"}}
             , .{raw_channels}),
         }),
-        error.EmptySessionId => return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try std.fmt.allocPrint(allocator,
-                \\{{"error":"session-scoped channel requires non-empty session_id"}}
-            , .{}),
-        }),
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer channels.deinit(allocator);
@@ -297,12 +268,6 @@ pub fn unifiedEventsStreamHandler(
                 event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedLLMBroadcast.callback) catch {};
             } else if (std.mem.eql(u8, rk, "queue")) {
                 event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedQueueBroadcast.callback) catch {};
-            } else if (std.mem.startsWith(u8, rk, "queue_messages_")) {
-                event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedQueueStream.callback) catch {};
-            } else {
-                // Default: treat as a per-session LLM routing key.
-                // The session_id IS the routing key for LLM events.
-                event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedLLMStream.callback) catch {};
             }
         }
 
