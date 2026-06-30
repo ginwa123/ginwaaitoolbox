@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import ToolCardHeader from './_shared/ToolCardHeader.vue'
 
 const props = defineProps<{
   content: string
@@ -8,38 +9,38 @@ const props = defineProps<{
 
 const isExpanded = ref(props.expanded ?? false)
 
-// Parse skill name from <skill_name>...</skill_name>
+// Parse <skill_name>...</skill_name>
 const skillName = computed(() => {
   const match = props.content.match(/<skill_name>(.*?)<\/skill_name>/)
   return match ? match[1] : null
 })
 
-// Parse description
+// Parse <description>...</description>
 const description = computed(() => {
   const match = props.content.match(/<description>(.*?)<\/description>/)
   return match ? match[1] : ''
 })
 
-// Parse found status
+// Parse <found>true|false</found>
 const isFound = computed(() => {
   const match = props.content.match(/<found>(.*?)<\/found>/)
   if (!match || !match[1]) return false
   return match[1].trim() === 'true'
 })
 
-// Parse error message if any
+// Parse <error>...</error>
 const errorMessage = computed(() => {
   const match = props.content.match(/<error>(.*?)<\/error>/)
   if (!match || !match[1]) return null
   return match[1].trim()
 })
 
-// Parse available skills (when skill not found)
+// Parse <available_skills>...</available_skills>, each containing <skill>...</skill>
 const availableSkills = computed((): string[] => {
   const results: string[] = []
   const match = props.content.match(/<available_skills>([\s\S]*?)<\/available_skills>/)
   if (!match || !match[1]) return results
-  
+
   const skillRegex = /<skill>(.*?)<\/skill>/g
   let m
   while ((m = skillRegex.exec(match[1])) !== null) {
@@ -48,92 +49,56 @@ const availableSkills = computed((): string[] => {
   return results
 })
 
-// Has available skills list (skill not found)
 const hasAvailableSkills = computed(() => availableSkills.value.length > 0)
+const rightMeta = computed(() =>
+  hasAvailableSkills.value ? `${availableSkills.value.length} available` : null,
+)
 
-// Status indicator
-const statusIndicator = computed(() => isFound.value ? '✓' : '✗')
-
-// Content preview (first line or truncated)
-const descriptionPreview = computed(() => {
-  const desc = description.value
-  if (!desc) return ''
-  return desc.length > 80 ? desc.slice(0, 80) + '...' : desc
-})
-
-const toggle = () => {
-  if (!isFound.value || errorMessage.value || hasAvailableSkills.value || description.value) {
-    isExpanded.value = !isExpanded.value
-  }
-}
-
-const copySkillName = async (e: Event) => {
-  e.stopPropagation()
-  if (skillName.value) {
-    await navigator.clipboard.writeText(skillName.value)
-  }
+const handleToggle = (next: boolean) => {
+  isExpanded.value = next
 }
 </script>
 
 <template>
-  <div 
+  <div
     class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
     :class="{ 'border-red-500/50 opacity-80': !isFound }"
   >
-    <!-- Header -->
-    <div 
-      class="group flex items-center gap-1 px-2 py-1 cursor-pointer select-none hover:bg-violet-500/5"
-      :class="{ 'cursor-default': isFound && !errorMessage && !hasAvailableSkills && !description }"
-      @click="toggle"
-      role="button"
-      tabindex="0"
-    >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">view_skill</span>
-      <span class="flex-1 truncate text-left text-[var(--color-violet)] font-medium" :title="skillName || ''">
-        {{ skillName || 'unknown' }}
-      </span>
-      
-      <!-- Status indicator -->
-      <span class="text-xs font-semibold" :class="isFound ? 'text-green-500' : 'text-red-500'">
-        {{ statusIndicator }}
-      </span>
-      
-      <!-- Available skills count badge -->
-      <span v-if="hasAvailableSkills" class="text-[var(--semantic-text-muted)] text-[0.65rem]">
-        {{ availableSkills.length }} available
-      </span>
-      
-      <!-- Copy button -->
-      <button 
-        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
-        @click="copySkillName" 
-        title="Copy skill name"
-      >
-        ⎘
-      </button>
-      
-      <!-- Toggle indicator -->
-      <span v-if="!isFound || errorMessage || hasAvailableSkills || description" class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
-        {{ isExpanded ? '−' : '+' }}
-      </span>
-    </div>
+    <ToolCardHeader
+      tool-name="view_skill"
+      :primary="skillName"
+      :success="isFound"
+      :expanded="isExpanded"
+      :expandable="!isFound || !!errorMessage || hasAvailableSkills || !!description"
+      :right-meta="rightMeta"
+      :show-open-in-editor="false"
+      @update:expanded="handleToggle"
+    />
 
-    <!-- Expanded content -->
-    <div v-if="isExpanded" class="border-t border-[var(--color-border)] bg-black/[0.02] flex flex-col min-h-0">
-      <!-- Error message -->
-      <div v-if="errorMessage" class="flex gap-2 px-2 py-1.5 text-red-500 text-xs border-b border-dashed border-[var(--color-border)]">
+    <div
+      v-if="isExpanded"
+      class="border-t border-[var(--color-border)] bg-black/[0.02] flex flex-col min-h-0"
+    >
+      <div
+        v-if="errorMessage"
+        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs border-b border-dashed border-[var(--color-border)]"
+      >
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
       </div>
 
-      <!-- Available skills list -->
-      <div v-if="hasAvailableSkills" class="py-1 border-b border-dashed border-[var(--color-border)]">
-        <div class="px-2 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02]">
+      <div
+        v-if="hasAvailableSkills"
+        class="py-1 border-b border-dashed border-[var(--color-border)]"
+      >
+        <div
+          class="px-2 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02]"
+        >
           Available skills
         </div>
         <div class="px-2 py-1 flex flex-wrap gap-1">
-          <span 
-            v-for="(skill, idx) in availableSkills" 
+          <span
+            v-for="(skill, idx) in availableSkills"
             :key="idx"
             class="inline-block px-1.5 py-0.5 bg-violet-500/10 text-[var(--color-violet)] rounded text-[0.65rem]"
           >
@@ -142,12 +107,18 @@ const copySkillName = async (e: Event) => {
         </div>
       </div>
 
-      <!-- Description content -->
-      <div v-if="description" class="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <div class="px-2 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] shrink-0">
+      <div
+        v-if="description"
+        class="flex-1 min-h-0 flex flex-col overflow-hidden"
+      >
+        <div
+          class="px-2 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] shrink-0"
+        >
           Description
         </div>
-        <pre class="flex-1 p-2 m-0 whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs overflow-auto">{{ description }}</pre>
+        <pre
+          class="flex-1 p-2 m-0 whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs overflow-auto"
+        >{{ description }}</pre>
       </div>
     </div>
   </div>
