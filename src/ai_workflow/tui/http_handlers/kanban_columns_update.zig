@@ -33,10 +33,17 @@ const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 /// fields that are non-null, so an absent `name` keeps the existing
 /// name, an absent `description` keeps the existing description,
 /// and an absent `position` keeps the existing position.
+///
+/// Distinguish two states for `description`:
+///   - field absent → `null` → "leave unchanged"
+///   - field present with `""` → "clear" (the Settings UI sends
+///     explicit `""` when the user empties the description textarea;
+///     this is distinct from omitting the field).
+/// See `kanban_model.updateColumn` for the SQL-level handling.
 const UpdateColumnBody = struct {
     name: ?[]const u8 = null,
-    /// New description (only set when the caller wants to change it;
-    /// null leaves the existing description unchanged).
+    /// New description: `null` leaves the existing description
+    /// unchanged; `""` clears it; non-empty replaces it.
     description: ?[]const u8 = null,
     position: ?i64 = null,
 };

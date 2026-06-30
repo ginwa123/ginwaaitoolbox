@@ -202,9 +202,16 @@ pub fn seedDefaultColumns(
 
 /// Update an existing column. `name` and `description` are both
 /// optional; at least one must be non-null (validated at the HTTP
-/// handler layer). Only non-null fields are written — a null
-/// `name` leaves the existing name unchanged, a null
-/// `description` leaves the existing description unchanged.
+/// handler layer). Field semantics:
+///   - `null` → "leave the field unchanged" (absent from PATCH body)
+///   - `""` (empty string) → "clear the field" (the user explicitly
+///      sent `""` to remove the existing value)
+///   - non-empty → "set the field to this value"
+///
+/// These three states are distinct: the frontend's Settings UI sends
+/// an explicit `""` when the user clears the description (saves an
+/// empty textarea), distinct from omitting the field entirely (the
+/// user only wants to rename, not touch the description).
 ///
 /// `workspace_item_id` is accepted for symmetry with the other
 /// column-mutators but the WHERE clause matches only on `id`
@@ -223,18 +230,25 @@ pub fn updateColumn(
             "UPDATE kanban_columns SET name = ? WHERE id = ?",
             &.{ n, column_id });
     }
-    // Skip the UPDATE when description is `null` OR an empty slice
-    // — `null` means "don't change", and an empty slice would be
-    // bound as NULL by SQLiteBackend.exec, overwriting the existing
-    // description with NULL and violating the NOT NULL constraint.
-    // Callers wanting to "clear" a description should use a
-    // different mechanism (out of scope for v1; the frontend treats
-    // `""` and `null` identically).
+    // Three distinct states for `description`:
+    //   null     → don't change (field absent from PATCH body)
+    //   ""       → clear (user explicitly sent empty string)
+    //   non-empty → overwrite with the new value
+    // The "clear" branch binds the empty literal directly in SQL
+    // rather than passing `""` as a parameter, because
+    // SqliteBackend.exec treats `arg.len == 0` as SQL NULL (see
+    // project memory `sqlite-backend-empty-slice-binds-as-null.md`)
+    // which would violate the NOT NULL constraint on
+    // `kanban_columns.description`.
     if (description) |d| {
         if (d.len > 0) {
             try db.exec(allocator,
                 "UPDATE kanban_columns SET description = ? WHERE id = ?",
                 &.{ d, column_id });
+        } else {
+            try db.exec(allocator,
+                "UPDATE kanban_columns SET description = '' WHERE id = ?",
+                &.{column_id});
         }
     }
 }
