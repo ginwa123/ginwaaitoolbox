@@ -183,9 +183,17 @@ const dropIndicatorBoxShadow = computed<string>(() => {
 // the border just providing a quiet outline. The hover state keeps
 // the same 1px width (no layout shift) but tints to violet for an
 // accent cue.
+//
+// card-ux-v4: 40% opacity border was still too visible against the
+// very dark `--color-border` (#282727) on a near-black background.
+// v4 takes the most aggressive Jira-style approach — REMOVES the
+// border entirely at idle (the card is defined by shadow + the
+// slight bg difference vs the column) and only shows a subtle
+// violet ring on hover for the interactive cue. This is the
+// cleanest possible card; the only visible "edge" is the shadow.
 const containerClass = computed<string>(() => {
   if (props.variant === 'card') {
-    return 'flex flex-col gap-2 p-3 rounded-lg text-xs group/task cursor-pointer transition-all duration-200 border shadow-sm hover:shadow-md bg-[--semantic-card-bg] border-[--color-border]/40 hover:border-[--color-violet]/60'
+    return 'flex flex-col gap-2 p-3 rounded-lg text-xs group/task cursor-pointer transition-all duration-200 border border-transparent hover:border-[--color-violet]/40 bg-[--semantic-card-bg] shadow-sm hover:shadow-md'
   }
   // Legacy row layout — kept byte-identical so existing tests + the
   // sidebar consumer (WorkspaceItem.vue:472, 491) are unaffected.

@@ -408,23 +408,6 @@ describe('WorkspaceItemTask card-ux-v3 (Jira-style type accent)', () => {
   }
 
   it('routine card in card variant has a violet left accent', () => {
-    wrapper = mountTask(
-      {
-        id: 't1',
-        name: 'Daily sync',
-        task_type: 'routine',
-        routine: {
-          schedule: '0 9 * * *',
-          initial_prompt: 'p',
-          enabled: true,
-          last_run_at: null,
-          next_run_at: '2026-07-02T09:00:00Z',
-          last_status: null,
-          last_error: null,
-        },
-      },
-      { variant: 'card' },
-    )
     const style = rootStyleFor(
       {
         id: 't1',
@@ -442,6 +425,9 @@ describe('WorkspaceItemTask card-ux-v3 (Jira-style type accent)', () => {
       },
       'card',
     )
+    // card-ux-v4: container now uses border-transparent at idle;
+    // the only visible border is the type-accent (left stripe) for
+    // routine/memory tasks, plus the hover violet ring.
     expect(style).toContain('inset 3px 0 0 0')
     expect(style).toContain('rgb(167, 139, 250)') // violet-400
   })
@@ -455,7 +441,7 @@ describe('WorkspaceItemTask card-ux-v3 (Jira-style type accent)', () => {
     expect(style).toContain('rgb(96, 165, 250)') // blue-400
   })
 
-  it('standard card in card variant has NO type accent', () => {
+  it('standard card in card variant has NO type accent (and a transparent border)', () => {
     const style = rootStyleFor(
       { id: 't1', name: 'Standard' },
       'card',
