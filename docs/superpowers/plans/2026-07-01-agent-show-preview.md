@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a `show_preview` agent tool that lets the LLM push visual content (images, markdown, code, plain text) directly to the user's chat UI in real time, with persistence via the existing `llm_history` table.
+**Goal:** Add a `show_preview` agent tool that lets the LLM push visual content (images, markdown, code, plain text) to a side panel in the chat, with persistence via the existing `llm_history` table.
 
-**Architecture:** New Zig tool `src/modules/agent/tools/show_preview.zig` validates + sanitizes content, emits a new `show_preview` SSE event via a sibling `on_event_sent_show_preview.zig`, and writes the preview to `llm_history` via the existing `wrapToolOutput` envelope. Frontend adds a `<ShowPreview>` Vue component for the persistent tool-result row plus a transient Pinia-driven banner for live SSE signals.
+**Architecture:** New Zig tool `src/modules/agent/tools/show_preview.zig` validates + sanitizes content, generates a `preview_id`, and writes the preview to `llm_history` via the existing `wrapToolOutput` envelope (the standard `llm_full` SSE event carries it to the frontend). Frontend adds a `<PreviewSidePanel>` Vue component inside ChatView that filters `messages` by `tool_name === 'show_preview'` and renders them with tabs/collapse/expand UX.
 
-**Tech Stack:** Zig 0.16, Vue 3 + TypeScript, Pinia, marked (markdown), highlight.js (code syntax), SSE.
+**Tech Stack:** Zig 0.16, Vue 3 + TypeScript, Pinia, marked (markdown), Vue `<Teleport>` for side panel mounting.
 
 **Reference design doc:** `docs/plans/2026-07-01-agent-show-preview-design.md`
 
@@ -14,10 +14,18 @@
 - Tool schema definition in `src/modules/agent/tools/schemas.zig`
 - Tool executor pattern: `pub fn execXxx(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult` in `src/ai_workflow/tui/tool_registry.zig`
 - Tool registry: `UNIFIED_TOOL_REGISTRY` + `allAgentTools()`
-- SSE pattern: `src/ai_workflow/tui/on_event_sent_kanban.zig` (sibling module, not modifying `on_event_sent.zig`)
-- Frontend pattern: `src/apps/desktop/src/components/tool_outputs/<ToolName>.vue` (e.g. `<KanbanList>`, `<NalarBrowser>`)
 - Test pattern: static source checks in `src/modules/agent/tools/<tool>_test.zig`, registered in `src/ai_workflow/tui/test_runner.zig`
 - Frontend tests in `src/apps/desktop/src/__tests__/`
+- The existing `onEventSendLLMHistory` SSE event already handles all tool result rows; this tool does NOT add a new event type.
+
+**Key difference from a typical tool:** the tool's tool result content
+contains a stub XML envelope (`<show_preview><status>shown</status>...
+<content_length>1234</content_length></show_preview>`) — the actual
+content is in the `parameters` field of the row (carried by
+`msg.parameters` in the frontend). The side panel reads
+`msg.parameters` to get the full content for rendering. This matches
+the pattern used by `<NalarBrowser>` (which reads `parameters` for the
+action-specific args).
 
 ---
 
@@ -26,37 +34,121 @@
 | File | Responsibility | Action |
 |---|---|---|
 | `src/modules/agent/tools/show_preview.zig` | Tool schema + input parsing + content validation + size cap + UTF-8 sanitization + preview_id generation + `<show_preview>` XML envelope | Create |
-| `src/modules/agent/tools/show_preview_test.zig` | Static source-check tests (tool name, schema fields, error handling) + behavioral test for executeShowPreviewToString | Create |
-| `src/ai_workflow/tui/on_event_sent_show_preview.zig` | `onEventSendShowPreview` function emitting `show_preview` SSE event via existing event_bus | Create |
-| `src/ai_workflow/tui/on_event_sent_show_preview_test.zig` | Static tests asserting event name + payload fields | Create |
-| `src/ai_workflow/tui/mod.zig` | Re-export new `on_event_sent_show_preview` module | Modify |
+| `src/modules/agent/tools/show_preview_test.zig` | Static source-check tests + behavioral tests for `executeShowPreviewToString` | Create |
+| `src/ai_workflow/tui/mod.zig` | Re-export new `show_preview` module | Modify |
 | `src/ai_workflow/tui/tool_registry.zig` | Add `execShowPreview` + register in `UNIFIED_TOOL_REGISTRY` + add to `allAgentTools()` | Modify |
-| `src/ai_workflow/tui/test_runner.zig` | Register new test files | Modify |
-| `src/apps/desktop/src/api/index.ts` | Add `ShowPreviewEvent` interface + register `'show_preview'` in `additionalEventTypes` | Modify |
-| `src/apps/desktop/src/stores/preview.ts` | Pinia store for transient previews (current + recent list) | Create |
-| `src/apps/desktop/src/components/ChatView.vue` | Wire `<ShowPreview>` component into tool-name switch; subscribe to live `show_preview` bus events → push to previewStore; render transient banner | Modify |
-| `src/apps/desktop/src/components/tool_outputs/ShowPreview.vue` | Render the persistent preview row (markdown / text / code / image) | Create |
-| `src/apps/desktop/src/components/PreviewBanner.vue` | Transient "Previewing: X" banner at top of chat, auto-dismiss after 5s | Create |
-| `src/apps/desktop/src/__tests__/showPreview.spec.ts` | Unit tests for `<ShowPreview>` rendering + `<PreviewBanner>` auto-dismiss | Create |
+| `src/ai_workflow/tui/test_runner.zig` | Register new test file | Modify |
+| `src/apps/desktop/src/components/PreviewSidePanel.vue` | Side panel UI: tabs/collapse, markdown/code/image rendering, auto-open on new preview | Create |
+| `src/apps/desktop/src/components/ChatView.vue` | Extract `show_preview` messages via computed + mount `<PreviewSidePanel>` adjacent to messages wrapper | Modify |
+| `src/apps/desktop/src/__tests__/previewSidePanel.spec.ts` | Unit tests for side panel: tabs switching, collapse/expand, content rendering | Create |
+
+**Explicitly removed** (vs. the original v1 plan, after user feedback 2026-07-01):
+- ~~`src/ai_workflow/tui/on_event_sent_show_preview.zig`~~ (no custom SSE event)
+- ~~`src/ai_workflow/tui/on_event_sent_show_preview_test.zig`~~
+- ~~`src/apps/desktop/src/stores/preview.ts`~~ (no transient banner store)
+- ~~`src/apps/desktop/src/components/PreviewBanner.vue`~~
+- ~~`src/apps/desktop/src/components/tool_outputs/ShowPreview.vue`~~ (not inline)
+- ~~`src/apps/desktop/src/api/index.ts` changes~~ (no new event type)
 
 ---
 
-## Chunk 1: Backend Tool + SSE Event (Zig)
+## Chunk 1: Backend Tool (Zig)
 
 ### Task 1.1: Create `show_preview.zig` tool with input + execute function
 
 **Files:**
 - Create: `src/modules/agent/tools/show_preview.zig`
+- Create: `src/modules/agent/tools/show_preview_test.zig`
+- Modify: `src/ai_workflow/tui/mod.zig`
+- Modify: `src/ai_workflow/tui/test_runner.zig`
 
 - [ ] **Step 1: Write the failing static tests for tool definition**
 
-Create `src/modules/agent/tools/show_preview_test.zig` with at least these tests:
-- Tool file defines `show_preview_tool` constant
-- Tool name is `"show_preview"` (string literal)
-- Schema has all 5 properties: `content_type`, `content`, `title`, `language`, `caption`
-- `required` array contains `"content_type"` and `"content"`
-- `description` mentions "first-class card" or similar inline-rendering hint
-- A function named `executeShowPreviewToString` exists
+Create `src/modules/agent/tools/show_preview_test.zig` with at least these tests (pattern mirrors `kanban_list_test.zig`):
+
+```zig
+const std = @import("std");
+const testing = std.testing;
+const nalarcore = @import("nalarcore");
+const sqlite = nalarcore.sqlite;
+
+const TOOL_PATH = "src/modules/agent/tools/show_preview.zig";
+
+fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(
+        testing.io, path, allocator, .limited(256 * 1024),
+    );
+}
+
+fn contains(haystack: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, haystack, needle) != null;
+}
+
+test "show_preview tool definition has correct name" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, `.name = "show_preview"`)) {
+        std.debug.print("!! show_preview.zig does not define the tool with .name = \"show_preview\" !!\n", .{});
+        return error.ToolNameMissing;
+    }
+}
+
+test "show_preview description mentions side panel" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, "side panel")) {
+        return error.SidePanelHintMissing;
+    }
+}
+
+test "show_preview schema has all 5 properties" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    const required = [_][]const u8{
+        `.name = "content_type"`,
+        `.name = "content"`,
+        `.name = "title"`,
+        `.name = "language"`,
+        `.name = "caption"`,
+    };
+    for (required) |needle| {
+        if (!contains(source, needle)) {
+            std.debug.print("!! show_preview.zig missing property {s} !!\n", .{needle});
+            return error.SchemaPropertyMissing;
+        }
+    }
+}
+
+test "show_preview required array contains content_type and content" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, `&.{ "content_type", "content" }`)) {
+        return error.RequiredFieldsMissing;
+    }
+}
+
+test "show_preview has executeShowPreviewToString function" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, "pub fn executeShowPreviewToString")) {
+        return error.ExecuteFunctionMissing;
+    }
+}
+
+test "show_preview has MAX_CONTENT_BYTES constant = 1 MB" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, "1024 * 1024")) {
+        return error.MaxContentBytesMissing;
+    }
+}
+```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -68,14 +160,13 @@ Expected: tests fail with `error.FileNotFound` or similar (show_preview_test.zig
 
 - [ ] **Step 3: Implement the tool definition**
 
-Create `src/modules/agent/tools/show_preview.zig` with the constants:
+Create `src/modules/agent/tools/show_preview.zig`:
 
 ```zig
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
 const helpers = nalarcore.helpers;
 
 /// Maximum allowed size for `content` field. Base64 images at this size
@@ -105,9 +196,9 @@ pub const show_preview_tool = AgentTool{
     .function = .{
         .name = "show_preview",
         .description =
-            \\Show a visual preview to the user inline in the chat. Use this whenever you produce something the user might want to see at a glance — a rendered chart, a generated image, a polished markdown summary, a code snippet, a URL preview, a formatted table. The preview is rendered as a first-class card in the chat history (not a collapsed XML tool result), survives page reload, and can be called multiple times per turn.
+            \\Show a visual preview to the user in the side panel of the chat. Use this whenever you produce something the user might want to see at a glance — a rendered chart, a generated image, a polished markdown summary, a code snippet, a URL preview, a formatted table. The preview is rendered as a first-class card in the side panel, survives page reload, and can be called multiple times per turn (each call adds a tab to the panel).
             \\
-            \\content_type selects how the frontend renders the content:
+            \\content_type selects how the side panel renders the content:
             \\- 'markdown' → renders via marked() (headings, lists, tables, links).
             \\- 'text' → preserves whitespace in a <pre> block.
             \\- 'code' → syntax-highlighted <pre><code> (requires the 'language' field).
@@ -118,11 +209,7 @@ pub const show_preview_tool = AgentTool{
         .parameters = .{
             .type = "object",
             .properties = &.{
-                .{
-                    .name = "content_type",
-                    .type = "string",
-                    .description = "How the frontend should render the content. One of 'markdown', 'text', 'code', 'image'.",
-                },
+                .{ .name = "content_type", .type = "string", .description = "How the side panel should render the content. One of 'markdown', 'text', 'code', 'image'." },
                 .{ .name = "content", .type = "string", .description = "The content to display." },
                 .{ .name = "title", .type = "string", .description = "Optional human-readable title shown above the preview." },
                 .{ .name = "language", .type = "string", .description = "For content_type='code' only: programming language for syntax highlighting." },
@@ -134,33 +221,34 @@ pub const show_preview_tool = AgentTool{
 };
 
 /// Generate a unique preview id. Format: `pv_<unix_ms>_<6 hex chars>`.
-pub fn generatePreviewId(allocator: std.mem.Allocator) ![]u8 {
-    const ts = std.Io.Clock.now(.real, allocator)... ; // see Step 3a
-}
-```
-
-**Step 3a — IO clock pattern**: Use the established Zig 0.16 pattern. Reference `src/ai_workflow/tui/background_process.zig:178-179`:
-```zig
-const ts = std.Io.Clock.now(.real, io);
-const started_at: i64 = ts.toSeconds();
-```
-
-For the preview_id we want milliseconds. Wrap the call:
-```zig
+///
+/// Uses `std.c.getrandom` to get 3 random bytes (the lower 6 hex chars
+/// of the id) — same pattern as auth.zig:fillRandom.
 pub fn generatePreviewId(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     const ts = std.Io.Clock.now(.real, io);
-    const ms: i64 = ts.toMilliseconds(); // verify in stdlib or compute manually
+    const ms: i64 = ts.toMilliseconds();
+
     var rand_buf: [3]u8 = undefined;
-    // ... fill from c.getrandom or std.crypto
+    var filled: usize = 0;
+    while (filled < rand_buf.len) {
+        const rc = std.c.getrandom(rand_buf[filled..].ptr, rand_buf.len - filled, 0);
+        if (rc < 0) {
+            const err = std.c.errno(rc);
+            if (err == .INTR) continue;
+            return error.EntropyUnavailable;
+        }
+        filled += @intCast(rc);
+    }
+
     return try std.fmt.allocPrint(allocator, "pv_{d}_{x}", .{ ms, rand_buf });
 }
 ```
 
-**Verification before continuing**: read `/usr/local/lib/zig/std/Io/Clock.zig` to confirm the `toMilliseconds` method exists. If not, use `ts.nanoseconds` directly.
+**Verification before continuing**: confirm `std.Io.Clock.now(.real, io).toMilliseconds()` exists. If not, use `ts.nanoseconds / 1_000_000`.
 
 - [ ] **Step 4: Implement content validation + XML envelope**
 
-In the same file, add:
+Append to the same file:
 
 ```zig
 /// Validate `content_type` is one of the supported values. Returns null
@@ -203,12 +291,18 @@ fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
 }
 
 /// Execute the show_preview tool. Returns an XML string for the LLM,
-/// and optionally populates `out_preview_id` with the generated id (the
-/// SSE event emitter needs this).
+/// and populates `out_preview_id` with the generated id (the LLM may
+/// reference it in follow-up messages).
 ///
 /// Response shapes:
 ///   Success: <show_preview><status>shown</status>...</show_preview>
 ///   Error:   <show_preview><error>...</error></show_preview>
+///
+/// The actual `content` is NOT in this envelope — it's in the tool
+/// result row's `parameters` field (carried by `msg.parameters` to the
+/// frontend). The envelope carries only the metadata (status, id,
+/// content_type, length) for storage compactness; the side panel reads
+/// `parameters.content` to render the preview.
 pub fn executeShowPreviewToString(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -228,12 +322,18 @@ pub fn executeShowPreviewToString(
     }
 
     // 3. For code type, require language
-    if (std.mem.eql(u8, input.content_type, "code") and (input.language == null or input.language.?.len == 0)) {
-        return errorEnvelope(allocator, try allocator.dupe(u8, "content_type='code' requires the 'language' field"));
+    if (std.mem.eql(u8, input.content_type, "code")) {
+        const lang = input.language orelse "";
+        if (lang.len == 0) {
+            return errorEnvelope(allocator, try allocator.dupe(u8,
+                "content_type='code' requires the 'language' field"));
+        }
     }
 
     // 4. Sanitize content to valid UTF-8 (same pattern as on_event_sent.zig:254)
-    const sanitized_content = helpers.sanitize.sanitizeUtf8(allocator, input.content) catch |err| blk: {
+    //    Even though the content is sent via `parameters` (JSON encoded), we
+    //    sanitize so the SSE event for tool results doesn't break.
+    const sanitized_content = helpers.sanitize.sanitizeUtf8(allocator, input.content) catch |err| {
         return errorEnvelope(allocator, try std.fmt.allocPrint(allocator,
             "sanitizeUtf8 failed: {s}", .{@errorName(err)}));
     };
@@ -285,245 +385,181 @@ fn errorEnvelope(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
 }
 ```
 
-- [ ] **Step 5: Run static tests to verify they pass**
+- [ ] **Step 5: Re-export from `mod.zig`**
+
+Modify `src/ai_workflow/tui/mod.zig` (add after the `on_event_sent_kanban` line):
+
+```zig
+pub const show_preview = @import("../../modules/agent/tools/show_preview.zig");
+```
+
+(The `show_preview` tool is a leaf module — the dispatch path is via
+`tool_registry.execShowPreview`, not via a dedicated `ai_mod.show_preview`
+namespace. But re-exporting it makes test imports cleaner: `nalarcore.ai_mod.show_preview.ShowPreviewInput`.)
+
+- [ ] **Step 6: Register tests in test_runner.zig**
+
+Modify `src/ai_workflow/tui/test_runner.zig`:
+
+```zig
+_ = @import("../modules/agent/tools/show_preview_test.zig"); // NEW
+```
+
+- [ ] **Step 7: Run static tests to verify they pass**
 
 ```bash
+cd /home/ginwa/agentic_coding_zig/ginwaaitoolbox
 timeout 180 zig build test --summary all 2>&1 | tail -n 10
 ```
-Expected: All show_preview_test.zig tests pass; pre-existing tests unchanged.
+Expected: 6 new static tests pass; pre-existing tests unchanged.
 
-- [ ] **Step 6: Add behavioral tests**
+- [ ] **Step 8: Add behavioral tests**
 
 Append to `src/modules/agent/tools/show_preview_test.zig`:
 
 ```zig
 const ShowPreviewInput = @import("show_preview.zig").ShowPreviewInput;
+const show_preview = @import("show_preview.zig");
 
-test "executeShowPreviewToString returns success envelope for markdown" {
-    // ... call with content_type="markdown", content="# Hello"
-    // assert output contains <status>shown</status>
-    // assert preview_id starts with "pv_"
+fn setupIo() !std.Io {
+    // Mirrors the pattern from routines/fire_test.zig — use a threaded
+    // Io runtime so std.Io.Clock.now() can return real time. The Io
+    // lives for the duration of the test; the deinit happens via the
+    // testing.allocator arena (no explicit teardown needed).
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    return threaded.io();
 }
 
-test "executeShowPreviewToString returns error for invalid content_type" {
-    // ... call with content_type="invalid"
-    // assert output contains <error> and "invalid content_type"
+test "executeShowPreviewToString returns success envelope for markdown" {
+    const alloc = testing.allocator;
+    const io = try setupIo();
+
+    var preview_id: []u8 = undefined;
+    defer alloc.free(preview_id);
+
+    const result = try show_preview.executeShowPreviewToString(alloc, io, .{
+        .content_type = "markdown",
+        .content = "# Hello\n\nWorld",
+    }, &preview_id);
+
+    defer alloc.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "<status>shown</status>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<content_type>markdown</content_type>") != null);
+    try testing.expect(std.mem.startsWith(u8, preview_id, "pv_"));
+}
+
+test "executeShowPreviewToString returns error envelope for invalid content_type" {
+    const alloc = testing.allocator;
+    const io = try setupIo();
+
+    var preview_id: []u8 = undefined;
+    defer alloc.free(preview_id);
+
+    const result = try show_preview.executeShowPreviewToString(alloc, io, .{
+        .content_type = "invalid_type",
+        .content = "x",
+    }, &preview_id);
+
+    defer alloc.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "<error>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "invalid content_type") != null);
 }
 
 test "executeShowPreviewToString returns error when content exceeds 1 MB" {
-    // ... call with content.len > MAX_CONTENT_BYTES
-    // assert output contains <error> and "exceeds"
+    const alloc = testing.allocator;
+    const io = try setupIo();
+
+    var big = try alloc.alloc(u8, show_preview.MAX_CONTENT_BYTES + 1);
+    defer alloc.free(big);
+    @memset(big, 'x');
+
+    var preview_id: []u8 = undefined;
+    defer alloc.free(preview_id);
+
+    const result = try show_preview.executeShowPreviewToString(alloc, io, .{
+        .content_type = "text",
+        .content = big,
+    }, &preview_id);
+
+    defer alloc.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "<error>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "exceeds") != null);
 }
 
 test "executeShowPreviewToString requires language for code type" {
-    // ... call with content_type="code" and no language
-    // assert output contains <error> and "language"
+    const alloc = testing.allocator;
+    const io = try setupIo();
+
+    var preview_id: []u8 = undefined;
+    defer alloc.free(preview_id);
+
+    const result = try show_preview.executeShowPreviewToString(alloc, io, .{
+        .content_type = "code",
+        .content = "print('hi')",
+        .language = null,
+    }, &preview_id);
+
+    defer alloc.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "<error>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "language") != null);
+}
+
+test "executeShowPreviewToString accepts code type with language" {
+    const alloc = testing.allocator;
+    const io = try setupIo();
+
+    var preview_id: []u8 = undefined;
+    defer alloc.free(preview_id);
+
+    const result = try show_preview.executeShowPreviewToString(alloc, io, .{
+        .content_type = "code",
+        .content = "fn main() void {}",
+        .language = "zig",
+    }, &preview_id);
+
+    defer alloc.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "<status>shown</status>") != null);
 }
 
 test "executeShowPreviewToString sanitizes invalid UTF-8 in content" {
-    // ... pass content with invalid UTF-8 byte (0xFF)
-    // assert the returned preview_id is generated (sanitize succeeded)
+    const alloc = testing.allocator;
+    const io = try setupIo();
+
+    // Mix valid ASCII with a single 0xFF byte (invalid UTF-8).
+    const bad = "valid prefix \xff more text";
+    var preview_id: []u8 = undefined;
+    defer alloc.free(preview_id);
+
+    const result = try show_preview.executeShowPreviewToString(alloc, io, .{
+        .content_type = "text",
+        .content = bad,
+    }, &preview_id);
+
+    defer alloc.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "<status>shown</status>") != null);
+    // The content_length should be > bad.len (sanitize replaces with U+FFFD = 3 bytes)
+    // OR == bad.len (depending on sanitize impl). We just check the function
+    // doesn't crash.
 }
 ```
 
-For the Io parameter in tests, follow the pattern from `src/ai_workflow/tui/routines/fire_test.zig`:
-```zig
-var threaded = std.Io.Threaded.init(testing.allocator, .{});
-defer threaded.deinit();
-const io = threaded.io();
-```
-
-- [ ] **Step 7: Register tests in test_runner.zig**
-
-Modify `src/ai_workflow/tui/test_runner.zig`:
-
-```zig
-_ = @import("show_preview_test.zig");           // ADD
-_ = @import("on_event_sent_show_preview_test.zig"); // ADD (next task)
-```
-
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Run tests**
 
 ```bash
-git add src/modules/agent/tools/show_preview.zig src/modules/agent/tools/show_preview_test.zig src/ai_workflow/tui/test_runner.zig
+timeout 180 zig build test --summary all 2>&1 | tail -n 10
+```
+Expected: 6 new behavioral tests pass; no regressions.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add src/modules/agent/tools/show_preview.zig src/modules/agent/tools/show_preview_test.zig src/ai_workflow/tui/mod.zig src/ai_workflow/tui/test_runner.zig
 git commit -m "feat(tools): add show_preview tool definition + executeShowPreviewToString"
 ```
 
 ---
 
-### Task 1.2: Create `on_event_sent_show_preview.zig` SSE emitter
-
-**Files:**
-- Create: `src/ai_workflow/tui/on_event_sent_show_preview.zig`
-- Create: `src/ai_workflow/tui/on_event_sent_show_preview_test.zig`
-
-- [ ] **Step 1: Implement the SSE emitter**
-
-Create `src/ai_workflow/tui/on_event_sent_show_preview.zig`:
-
-```zig
-//! SSE event for show_preview tool invocations.
-//!
-//! Emitted from `tool_registry.execShowPreview` on every successful
-//! show_preview call. The frontend listener renders a transient banner
-//! ("Previewing: <title>") and the persistent tool-result row (which
-//! arrives later via the standard `llm_full` event).
-//!
-//! SSE wire-format contract (`event:` line name):
-//!   - show_preview: emitted once per show_preview call
-//!
-//! Pattern mirrors `on_event_sent_kanban.zig`: this file lives in its
-//! own module so the show_preview event types are co-located with the
-//! tool, and `on_event_sent.zig` stays untouched. Re-exported as
-//! `nalarcore.ai_mod.on_event_sent_show_preview` from
-//! `src/ai_workflow/tui/mod.zig`.
-
-const std = @import("std");
-const nalarcore = @import("nalarcore");
-const on_event_sent = nalarcore.ai_mod.on_event_sent;
-const SseEvent = on_event_sent.SseEvent;
-
-/// JSON payload for a `show_preview` SSE event. Field names match the
-/// frontend's `ShowPreviewEvent` interface (snake_case — see
-/// `src/apps/desktop/src/api/index.ts`).
-pub const ShowPreviewEventPayload = struct {
-    preview_id: []const u8,
-    session_id: []const u8,
-    tool_call_id: ?[]const u8 = null,
-    content_type: []const u8,
-    content: []const u8,
-    title: ?[]const u8 = null,
-    language: ?[]const u8 = null,
-    caption: ?[]const u8 = null,
-};
-
-/// Emit a `show_preview` SSE event. Called from
-/// `tool_registry.execShowPreview` on every successful invocation.
-///
-/// Allocates a JSON-safe copy of every payload field via
-/// `std.json.Stringify.valueAlloc`; the caller passes raw slices and
-/// may free them after this function returns.
-///
-/// The `event_bus` is fetched from the singleton (`di.event_bus`),
-/// same pattern as `onEventSendKanbanColumn` in
-/// `on_event_sent_kanban.zig`. When no SSE client is subscribed,
-/// `event_bus.emit` is a no-op — so the tool can call this
-/// unconditionally without guarding for "is an SSE subscriber connected".
-pub fn onEventSendShowPreview(
-    allocator: std.mem.Allocator,
-    payload: ShowPreviewEventPayload,
-) !void {
-    const json_payload = try std.json.Stringify.valueAlloc(
-        allocator,
-        payload,
-        .{},
-    );
-    defer allocator.free(json_payload);
-
-    const event = SseEvent{
-        .session_id = payload.session_id,
-        .data = json_payload,
-        .event_type = "show_preview",
-    };
-
-    const di = nalarcore.getSingleton() catch return;
-    di.event_bus.emit(SseEvent, "show_preview", event);
-}
-```
-
-- [ ] **Step 2: Add static tests**
-
-Create `src/ai_workflow/tui/on_event_sent_show_preview_test.zig`:
-
-```zig
-const std = @import("std");
-const testing = std.testing;
-
-const FILE_PATH = "src/ai_workflow/tui/on_event_sent_show_preview.zig";
-
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(
-        testing.io,
-        path,
-        allocator,
-        .limited(256 * 1024),
-    );
-}
-
-test "emits 'show_preview' named event" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, FILE_PATH);
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, `.event_type = "show_preview"`) == null) {
-        return error.ShowPreviewEventTypeMissing;
-    }
-}
-
-test "payload has preview_id field" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, FILE_PATH);
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "preview_id: []const u8") == null) {
-        return error.ShowPreviewPayloadPreviewIdMissing;
-    }
-}
-
-test "payload has content + content_type + title + language + caption" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, FILE_PATH);
-    defer allocator.free(source);
-    const required = [_][]const u8{
-        "content_type: []const u8",
-        "content: []const u8",
-        "title: ?[]const u8",
-        "language: ?[]const u8",
-        "caption: ?[]const u8",
-    };
-    for (required) |needle| {
-        if (std.mem.indexOf(u8, source, needle) == null) {
-            std.debug.print("!! payload missing field {s} !!\n", .{needle});
-            return error.ShowPreviewPayloadFieldMissing;
-        }
-    }
-}
-
-test "emits via event_bus.emit (not direct SSE)" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, FILE_PATH);
-    defer allocator.free(source);
-    // The emitter must use the shared event_bus (same as kanban events)
-    // so it works whether or not an SSE client is connected.
-    if (std.mem.indexOf(u8, source, "event_bus.emit") == null) {
-        return error.EventBusEmitMissing;
-    }
-}
-```
-
-- [ ] **Step 3: Re-export from `mod.zig`**
-
-Modify `src/ai_workflow/tui/mod.zig` (add after `on_event_sent_kanban`):
-
-```zig
-pub const on_event_sent_show_preview = @import("on_event_sent_show_preview.zig");
-```
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-```bash
-timeout 180 zig build test --summary all 2>&1 | tail -n 10
-```
-Expected: 4 new tests pass; no regressions.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/ai_workflow/tui/on_event_sent_show_preview.zig src/ai_workflow/tui/on_event_sent_show_preview_test.zig src/ai_workflow/tui/mod.zig src/ai_workflow/tui/test_runner.zig
-git commit -m "feat(sse): add show_preview SSE event emitter"
-```
-
----
-
-### Task 1.3: Wire `show_preview` into `tool_registry.zig`
+### Task 1.2: Wire `show_preview` into `tool_registry.zig`
 
 **Files:**
 - Modify: `src/ai_workflow/tui/tool_registry.zig`
@@ -533,7 +569,7 @@ git commit -m "feat(sse): add show_preview SSE event emitter"
 At the top of `tool_registry.zig` (after the other tool imports, around line 47):
 
 ```zig
-const show_preview_mod = nalar_mod.show_preview;
+const show_preview_mod = nalar_mod.ai_mod.show_preview;
 ```
 
 - [ ] **Step 2: Add `execShowPreview` function**
@@ -554,7 +590,6 @@ pub fn execShowPreview(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     };
     defer parsed.deinit();
 
-    var preview_id_buf: [32]u8 = undefined;
     var preview_id: []u8 = undefined;
     defer ctx.allocator.free(preview_id);
 
@@ -570,29 +605,8 @@ pub fn execShowPreview(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     };
     defer ctx.allocator.free(inner);
 
-    // Sanitize input.content for the live SSE event (same pattern as
-    // on_event_sent.zig:254). The inner XML envelope already passes the
-    // sanitized length back, but we need the full sanitized content for
-    // the SSE payload.
-    const sanitized_content = helpers.sanitize.sanitizeUtf8(ctx.allocator, parsed.value.content) catch parsed.value.content;
-    defer if (sanitized_content.ptr != parsed.value.content.ptr) ctx.allocator.free(sanitized_content);
-
-    // Emit the live SSE event (transient banner).
-    const show_preview_events = nalar_mod.ai_mod.on_event_sent_show_preview;
-    show_preview_events.onEventSendShowPreview(ctx.allocator, .{
-        .preview_id = preview_id,
-        .session_id = ctx.session_id,
-        .tool_call_id = tc.id,
-        .content_type = parsed.value.content_type,
-        .content = sanitized_content,
-        .title = parsed.value.title,
-        .language = parsed.value.language,
-        .caption = parsed.value.caption,
-    }) catch |err| {
-        ctx.logger.warnFmt("show_preview SSE emit failed: {s}", .{@errorName(err)});
-    };
-
-    // Detect <error>...</error> in the envelope and surface as failure.
+    // Detect <error>...</error> in the envelope and surface as failure
+    // (LLM sees success=false; can retry with corrected input).
     if (std.mem.indexOf(u8, inner, "<error>") != null) {
         const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
         const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
@@ -601,12 +615,15 @@ pub fn execShowPreview(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
         return ToolExecResult{ .output = output, .output_allocated = true };
     }
 
+    // The actual preview content is in `tc.function.arguments` (passed
+    // through to `parameters` in the wrapToolOutput envelope). The
+    // side panel frontend reads `msg.parameters` to get the full
+    // content for rendering. This matches the pattern used by
+    // <NalarBrowser> for action-specific args.
     const output = try wrapToolOutput(ctx.allocator, "show_preview", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 ```
-
-**IMPORTANT GOTCHA — pointer comparison**: the `sanitized_content.ptr != parsed.value.content.ptr` check distinguishes "sanitize made a copy" from "sanitize returned the input unchanged" (e.g., when content is already valid UTF-8). If they're the same, don't double-free.
 
 - [ ] **Step 3: Add to `UNIFIED_TOOL_REGISTRY`**
 
@@ -619,7 +636,7 @@ In `tool_registry.zig` around line 1690 (after kanban tools, before LSP):
 
 - [ ] **Step 4: Add to `allAgentTools()`**
 
-In `tool_registry.zig` around line 1727 (in the `allAgentTools` comptime list, after kanban_move_task_mod.kanban_move_task_tool):
+In `tool_registry.zig` around line 1727 (in the `allAgentTools` comptime list, after `kanban_move_task_tool`):
 
 ```zig
 show_preview_mod.show_preview_tool,
@@ -631,7 +648,7 @@ show_preview_mod.show_preview_tool,
 timeout 180 zig build test --summary all 2>&1 | tail -n 10
 timeout 180 zig build install:linux:system 2>&1 | tail -n 5
 ```
-Expected: tests pass; install:linux:system succeeds (the `cp` step at the end fails harmlessly with permission denied on `/usr/local/bin/nalar`).
+Expected: tests pass; `install:linux:system` succeeds (the `cp` step at the end fails harmlessly with permission denied on `/usr/local/bin/nalar`).
 
 - [ ] **Step 6: Commit**
 
@@ -642,390 +659,79 @@ git commit -m "feat(tools): wire show_preview into unified tool registry"
 
 ---
 
-### Task 1.4: Add behavioral test for `execShowPreview` end-to-end
+## Chunk 2: Frontend Side Panel
+
+### Task 2.1: Create `PreviewSidePanel.vue`
 
 **Files:**
-- Modify: `src/modules/agent/tools/show_preview_test.zig`
-
-- [ ] **Step 1: Add end-to-end behavioral test**
-
-The behavioral test exercises the tool through the registry (same
-pattern as `tool_registry_test.zig`). For a minimal test:
-
-```zig
-const tool_registry = @import("../../ai_workflow/tui/tool_registry.zig");
-const agent = nalarcore.agent;
-
-test "execShowPreview returns success envelope for valid markdown input" {
-    const alloc = testing.allocator;
-
-    // Use the same SQLite setup pattern as kanban_list_test.zig:
-    var threaded = std.Io.Threaded.init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-    var db: sqlite.SqliteBackend = .{};
-    defer db.deinit();
-    try db.init(io, ":memory:");
-
-    // Minimal schema setup (sessions + workers for the ctx).
-    try db.exec(alloc,
-        \\CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, cwd TEXT)
-    , &.{});
-    try db.exec(alloc, "INSERT INTO sessions VALUES ('test_sid', '/tmp')", &.{});
-
-    // Build a minimal ToolExecContext — fields not relevant to
-    // show_preview can be left zero-initialized.
-    var temperature: f32 = 0.7;
-    var is_thinking: bool = false;
-    var logger_buf: [4096]u8 = undefined;
-    var logger_writer = std.fs.File.stderr().writer(&logger_buf);
-    _ = &logger_writer;
-
-    const args = try std.json.Stringify.valueAlloc(alloc, .{
-        .content_type = "markdown",
-        .content = "# Hello\n\nThis is a test.",
-        .title = "Test Title",
-        .language = null,
-        .caption = "Test caption",
-    }, .{});
-    defer alloc.free(args);
-
-    const tc = agent.ToolCall{
-        .id = "call_test_1",
-        .type = "function",
-        .function = .{
-            .name = "show_preview",
-            .arguments = args,
-        },
-    };
-
-    const result = try tool_registry.execShowPreview(.{
-        .allocator = alloc,
-        .io = io,
-        .db = &db,
-        .logger = undefined, // see logger setup
-        .session_id = "test_sid",
-        .model = "test-model",
-        .cwd = "/tmp",
-        .api_key = "test-key",
-        .base_url = "https://api.test",
-        .config = undefined, // see config setup
-        .agent_temperature = &temperature,
-        .is_thinking = &is_thinking,
-        .environment = null,
-        .active_loops = undefined,
-    }, tc);
-    defer alloc.free(result.output);
-
-    // Assert output contains <success>true</success> and the preview_id
-    if (std.mem.indexOf(u8, result.output, "<success>true</success>") == null) {
-        return error.ExpectedSuccessEnvelope;
-    }
-    if (std.mem.indexOf(u8, result.output, "<show_preview>") == null) {
-        return error.ExpectedShowPreviewEnvelope;
-    }
-}
-```
-
-**NOTE**: The exact `Logger` and `LlmConfig` setup depends on the project's
-existing test helpers. Look at `src/ai_workflow/tui/tool_registry_test.zig`
-for the canonical pattern (it likely initializes both). If init is too
-complex, fall back to a static source-check that verifies the function
-signature matches.
-
-- [ ] **Step 2: Run tests**
-
-```bash
-timeout 180 zig build test --summary all 2>&1 | tail -n 10
-```
-Expected: new behavioral test passes.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add src/modules/agent/tools/show_preview_test.zig
-git commit -m "test(tools): add behavioral test for execShowPreview"
-```
-
----
-
-## Chunk 2: Frontend SSE Wiring + Pinia Store
-
-### Task 2.1: Add `ShowPreviewEvent` interface + register SSE event type
-
-**Files:**
-- Modify: `src/apps/desktop/src/api/index.ts`
-
-- [ ] **Step 1: Add the TS interface**
-
-Add after the existing event interfaces (search for `KanbanColumnEvent`
-or `KanbanTaskEvent` — add `ShowPreviewEvent` nearby):
-
-```ts
-/**
- * Event payload for the `show_preview` SSE event. Emitted by the
- * backend every time the agent calls `show_preview`. Carries the
- * preview_id (stable across reloads), session_id (routing key for
- * cross-session fan-out), the content to display, and the rendering
- * instructions.
- *
- * Mirrors the Zig `ShowPreviewEventPayload` struct in
- * `src/ai_workflow/tui/on_event_sent_show_preview.zig`. Field names
- * are snake_case to match the JSON wire format emitted by
- * `std.json.Stringify.valueAlloc`.
- */
-export interface ShowPreviewEvent {
-  preview_id: string
-  session_id: string
-  tool_call_id?: string
-  content_type: 'markdown' | 'text' | 'code' | 'image'
-  content: string
-  title?: string
-  language?: string
-  caption?: string
-}
-```
-
-- [ ] **Step 2: Register the named event in `createUnifiedSseConnection`**
-
-Around line 1685 (where `kanban_column` and `kanban_task` are registered),
-add `show_preview` to the `additionalEventTypes` list.
-
-**Search pattern** in `api/index.ts`:
-```ts
-      'kanban_column',
-      'kanban_task',
-```
-becomes:
-```ts
-      'kanban_column',
-      'kanban_task',
-      'show_preview',
-```
-
-Also add a `case` in the event-type switch (around line 1707 where
-`eventType === 'kanban_column' || eventType === 'kanban_task'` is
-handled) — add a sibling branch that parses the payload as a
-`ShowPreviewEvent` and routes it to the bus callback.
-
-- [ ] **Step 3: Verify with build**
-
-```bash
-cd src/apps/desktop
-timeout 120 bun run build 2>&1 | tail -n 20
-```
-Expected: build succeeds; no new TS errors.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/apps/desktop/src/api/index.ts
-git commit -m "feat(frontend): add ShowPreviewEvent interface + SSE registration"
-```
-
----
-
-### Task 2.2: Create `previewStore` Pinia store for transient previews
-
-**Files:**
-- Create: `src/apps/desktop/src/stores/preview.ts`
-
-- [ ] **Step 1: Implement the store**
-
-```ts
-import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
-import type { ShowPreviewEvent } from '../api'
-
-/**
- * Pinia store for transient (live) preview banners shown in the chat
- * during an active agent turn.
- *
- * Persistent previews (the tool-result rows that survive reload) are
- * NOT stored here — they live in `llm_history` and are rendered by
- * `<ShowPreview>` from the message stream.
- *
- * This store only holds the **current** preview (auto-dismissed after
- * `BANNER_TIMEOUT_MS`) and the **recent** list (for the "view past
- * previews" feature, future scope). The recent list is capped at
- * `MAX_RECENT` to bound memory.
- */
-const BANNER_TIMEOUT_MS = 5000
-const MAX_RECENT = 20
-
-export const usePreviewStore = defineStore('preview', () => {
-  /** Current preview driving the banner. null when nothing to show. */
-  const current = ref<ShowPreviewEvent | null>(null)
-
-  /** Recent previews (newest first). Capped at MAX_RECENT. */
-  const recent = ref<ShowPreviewEvent[]>([])
-
-  /** Timer for auto-dismissing the current banner. */
-  let dismissTimer: ReturnType<typeof setTimeout> | null = null
-
-  function clearDismissTimer() {
-    if (dismissTimer !== null) {
-      clearTimeout(dismissTimer)
-      dismissTimer = null
-    }
-  }
-
-  function pushPreview(event: ShowPreviewEvent) {
-    current.value = event
-
-    // Add to recent (capped). Newest first.
-    recent.value = [event, ...recent.value].slice(0, MAX_RECENT)
-
-    // Auto-dismiss after timeout.
-    clearDismissTimer()
-    dismissTimer = setTimeout(() => {
-      current.value = null
-      dismissTimer = null
-    }, BANNER_TIMEOUT_MS)
-  }
-
-  function dismissCurrent() {
-    current.value = null
-    clearDismissTimer()
-  }
-
-  function clearAll() {
-    current.value = null
-    recent.value = []
-    clearDismissTimer()
-  }
-
-  const hasCurrent = computed(() => current.value !== null)
-
-  return {
-    current,
-    recent,
-    hasCurrent,
-    pushPreview,
-    dismissCurrent,
-    clearAll,
-  }
-})
-```
-
-- [ ] **Step 2: Verify with build**
-
-```bash
-cd src/apps/desktop
-timeout 120 bun run build 2>&1 | tail -n 20
-```
-Expected: build succeeds.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add src/apps/desktop/src/stores/preview.ts
-git commit -m "feat(frontend): add previewStore Pinia store for transient banners"
-```
-
----
-
-### Task 2.3: Wire bus listener in `ChatView.vue`
-
-**Files:**
-- Modify: `src/apps/desktop/src/components/ChatView.vue`
-
-- [ ] **Step 1: Add the import + setup**
-
-In the `<script setup>` block of ChatView.vue, add:
-
-```ts
-import { usePreviewStore } from '../stores/preview'
-
-// ... inside setup, after other stores:
-const previewStore = usePreviewStore()
-```
-
-- [ ] **Step 2: Add the bus subscription in `connectSse`**
-
-In the `connectSse` function (search for `bus.on('llm'` or
-`bus.subscribeSessionChannels`), add the show_preview listener:
-
-```ts
-// Register the show_preview listener (transient banner signal).
-bus.on('show_preview', (event: ShowPreviewEvent) => {
-  // Only react to previews for the active session.
-  if (event.session_id !== sessionId.value) return
-  previewStore.pushPreview(event)
-})
-```
-
-Add `showPreview` to the `bus.off()` cleanup in `disconnectSse()` so
-the listener is removed when the chat unmounts.
-
-- [ ] **Step 3: Verify build**
-
-```bash
-cd src/apps/desktop
-timeout 120 bun run build 2>&1 | tail -n 20
-```
-Expected: build succeeds.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/apps/desktop/src/components/ChatView.vue
-git commit -m "feat(frontend): subscribe ChatView to show_preview SSE events"
-```
-
----
-
-## Chunk 3: Frontend Renderer Component
-
-### Task 3.1: Create `ShowPreview.vue` (persistent tool-result row)
-
-**Files:**
-- Create: `src/apps/desktop/src/components/tool_outputs/ShowPreview.vue`
+- Create: `src/apps/desktop/src/components/PreviewSidePanel.vue`
 
 - [ ] **Step 1: Implement the component**
 
 ```vue
 <!--
-  ShowPreview — tool output component for the `show_preview` agent tool.
+  PreviewSidePanel — dedicated UI region for `show_preview` tool results.
 
-  Renders the persistent preview row in the chat tool sequence.
-  Receives:
-    - `content`: inner <data> XML from the wrapToolOutput envelope.
-      Shape: <show_preview><status>...</status><preview_id>...</preview_id>
-             <content_type>...</content_type><content_length>...</content_length>
-             [optional <error>...</error>]
-    - `parameters`: raw JSON arguments (used to recover the original
-      content + content_type, which the persistent XML envelope strips
-      to keep storage compact).
+  Mounted inside ChatView, on the right side of the messages wrapper.
+  Receives `previews` (an array of tool-result messages with
+  tool_name === 'show_preview') and renders:
+    - A tab strip at the top (one entry per preview, oldest left, newest right).
+    - The active preview in the main area (markdown / text / code / image).
+    - A collapse chevron (hides content, leaves 32px strip).
+    - A dismiss button (closes the panel entirely).
+    - Empty state when previews is empty (renders nothing).
 
-  Three display modes:
-    Success: header (tool name + content_type + size) → title (if set) →
-             [markdown / text / code / image] → caption (if set)
-    Error:   red error block
-    Live SSE: NOT rendered here. The transient banner is in
-              <PreviewBanner>. The persistent row is only the
-              `llm_history`-derived view (visible after reload or after
-              the tool result row arrives).
+  The component does NOT fetch data, manage state, or subscribe to SSE.
+  It receives the messages array as a prop and is a pure derived view.
+  ChatView is responsible for filtering messages and managing the
+  collapsed state.
 
-  Style mirrors KanbanList/NalarBrowser: monospace, rounded-md, border
-  + soft card bg, violet tool-name, ✓/✗ status, +/− toggle.
+  The full preview content is in `msg.parameters` (JSON-encoded
+  {content_type, content, title, language, caption}). The inner
+  <data> XML envelope (msg.content) carries only metadata
+  (status, preview_id, content_type, length) — the actual content
+  is NOT re-included to keep storage compact.
+
+  Style mirrors KanbanList/NalarBrowser: monospace header, soft card
+  bg, violet tool-name, +/− toggle on collapse.
 -->
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { marked } from 'marked'
 
 const props = defineProps<{
-  /** Inner <data> XML from the tool result envelope. */
-  content: string
-  /** Raw JSON arguments passed by the LLM. Used for title, language, caption. */
-  parameters: string
-  /** Whether the row is already expanded (from parent state). */
-  expanded?: boolean
+  /** Tool-result messages with tool_name === 'show_preview' (oldest first). */
+  previews: Array<{
+    id: string
+    content: string         // inner <data> XML envelope
+    parameters?: string     // JSON-encoded {content_type, content, title, ...}
+    tool_call_id?: string
+  }>
+  /** Whether the panel is collapsed (chevron-only). Two-way binding via update:collapsed. */
+  collapsed?: boolean
 }>()
 
-const isExpanded = ref(props.expanded ?? false)
+const emit = defineEmits<{
+  'update:collapsed': [value: boolean]
+  'dismiss': []
+}>()
 
-// ── Inner-data XML parsing ──────────────────────────────────────────
+// Local collapsed state (defaults to the prop).
+const isCollapsed = ref(props.collapsed ?? false)
+watch(() => props.collapsed, (v) => { isCollapsed.value = v ?? false })
+
+// Index of the currently displayed preview. Newest by default.
+const activeIndex = ref(0)
+watch(() => props.previews.length, (newLen, oldLen) => {
+  // Auto-switch to the newest preview when one is added.
+  if (newLen > (oldLen ?? 0)) {
+    activeIndex.value = newLen - 1
+  }
+  // Clamp to valid range.
+  if (activeIndex.value >= newLen) activeIndex.value = Math.max(0, newLen - 1)
+})
+
+// ── Inner-data XML parsing ──────────────────────────────────────
 function findTag(haystack: string, tag: string): string | null {
   const openSeq = `<${tag}>`
   const closeSeq = `</${tag}>`
@@ -1037,13 +743,24 @@ function findTag(haystack: string, tag: string): string | null {
   return haystack.slice(valueStart, end)
 }
 
-const errorMessage = computed(() => findTag(props.content, 'error'))
-const status = computed(() => findTag(props.content, 'status'))
-const contentType = computed(() => findTag(props.content, 'content_type') ?? 'text')
-const contentLengthStr = computed(() => findTag(props.content, 'content_length') ?? '0')
-const isSuccess = computed(() => errorMessage.value === null && status.value === 'shown')
+const activePreview = computed(() => {
+  if (props.previews.length === 0) return null
+  return props.previews[activeIndex.value] ?? null
+})
 
-// ── Parameters parsing (JSON) ────────────────────────────────────────
+const activeContentType = computed(() => {
+  const p = activePreview.value
+  if (!p) return 'text'
+  return findTag(p.content, 'content_type') ?? 'text'
+})
+
+const activePreviewId = computed(() => {
+  const p = activePreview.value
+  if (!p) return ''
+  return findTag(p.content, 'preview_id') ?? ''
+})
+
+// ── Parameters parsing (JSON) ───────────────────────────────────
 interface ShowPreviewArgs {
   content_type?: 'markdown' | 'text' | 'code' | 'image'
   content?: string
@@ -1052,20 +769,29 @@ interface ShowPreviewArgs {
   caption?: string
 }
 
-const args = computed<ShowPreviewArgs>(() => {
+const activeArgs = computed<ShowPreviewArgs>(() => {
+  const p = activePreview.value
+  if (!p || !p.parameters) return {}
   try {
-    const parsed = JSON.parse(props.parameters)
+    const parsed = JSON.parse(p.parameters)
     if (parsed && typeof parsed === 'object') return parsed as ShowPreviewArgs
-  } catch {
-    /* fall through */
-  }
+  } catch { /* fall through */ }
   return {}
 })
 
-// ── Content rendering ────────────────────────────────────────────────
+// ── Content rendering ───────────────────────────────────────────
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 const renderedContent = computed<string>(() => {
-  const ct = contentType.value
-  const c = args.value.content ?? ''
+  const ct = activeContentType.value
+  const c = activeArgs.value.content ?? ''
   switch (ct) {
     case 'markdown':
       try {
@@ -1076,114 +802,147 @@ const renderedContent = computed<string>(() => {
     case 'text':
       return `<pre class="whitespace-pre-wrap break-all">${escapeHtml(c)}</pre>`
     case 'code': {
-      const lang = args.value.language ?? 'plaintext'
+      const lang = activeArgs.value.language ?? 'plaintext'
       return `<pre><code class="language-${escapeHtml(lang)}">${escapeHtml(c)}</code></pre>`
     }
     case 'image':
-      // The <img> tag is set directly via v-html below for safety.
-      return c
+      return '' // images rendered via the <img> element below
     default:
       return `<pre class="whitespace-pre-wrap break-all">${escapeHtml(c)}</pre>`
   }
 })
 
 const imageSrc = computed<string | null>(() => {
-  if (contentType.value !== 'image') return null
-  const c = args.value.content ?? ''
-  // Accept either data URLs (data:image/png;base64,...) or http(s)://...
+  if (activeContentType.value !== 'image') return null
+  const c = activeArgs.value.content ?? ''
   if (c.startsWith('data:') || c.startsWith('http://') || c.startsWith('https://')) return c
   return null
 })
 
-// ── Header content ───────────────────────────────────────────────────
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
+// ── Tab labels ──────────────────────────────────────────────────
+const contentTypeIcon: Record<string, string> = {
+  markdown: '📝',
+  text: '📄',
+  code: '💻',
+  image: '🖼️',
 }
 
-const headerLabel = computed(() => {
-  if (!isSuccess.value) return 'error'
-  const ct = contentType.value
-  const bytes = parseInt(contentLengthStr.value, 10) || 0
-  const kb = bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`
-  return `${ct} · ${kb}`
-})
+const tabLabel = (preview: { content: string; parameters?: string }): string => {
+  const ct = findTag(preview.content, 'content_type') ?? 'text'
+  const icon = contentTypeIcon[ct] ?? '📄'
+  // Try to extract a title from parameters
+  let title = ''
+  if (preview.parameters) {
+    try {
+      const parsed = JSON.parse(preview.parameters)
+      if (parsed && typeof parsed === 'object' && typeof parsed.title === 'string') {
+        title = parsed.title
+      }
+    } catch { /* fall through */ }
+  }
+  if (title) return `${icon} ${title.length > 16 ? title.slice(0, 16) + '…' : title}`
+  // Fallback: content_type + truncated content
+  const len = (findTag(preview.content, 'content_length') ?? '0')
+  return `${icon} ${ct} (${len}B)`
+}
 
-const statusIndicator = computed(() => (isSuccess.value ? '✓' : '✗'))
+const toggleCollapse = () => {
+  isCollapsed.value = !isCollapsed.value
+  emit('update:collapsed', isCollapsed.value)
+}
 
-const title = computed(() => args.value.title ?? '')
-const caption = computed(() => args.value.caption ?? '')
-const language = computed(() => args.value.language ?? '')
-
-const toggle = () => {
-  isExpanded.value = !isExpanded.value
+const dismiss = () => {
+  emit('dismiss')
 }
 </script>
 
 <template>
   <div
-    class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
-    :class="{ 'border-red-500/50 opacity-90': !isSuccess }"
+    v-if="previews.length > 0"
+    class="preview-side-panel flex flex-col border-l border-[var(--color-border)] bg-[var(--semantic-bg)] transition-all duration-200"
+    :class="isCollapsed ? 'w-8' : 'w-[480px]'"
+    data-testid="preview-side-panel"
   >
-    <!-- Header -->
+    <!-- Collapsed: just a chevron with count -->
     <div
-      class="group flex items-center gap-1 px-2 py-1 cursor-pointer select-none hover:bg-violet-500/5"
-      @click="toggle"
-      role="button"
-      tabindex="0"
+      v-if="isCollapsed"
+      class="flex-1 flex flex-col items-center justify-start pt-4"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">show_preview</span>
-      <span class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-xs">
-        {{ headerLabel }}
-      </span>
-
-      <!-- Status indicator -->
-      <span class="text-xs font-semibold" :class="isSuccess ? 'text-green-500' : 'text-red-500'">
-        {{ statusIndicator }}
-      </span>
-
-      <!-- Toggle -->
-      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
-        {{ isExpanded ? '−' : '+' }}
-      </span>
+      <button
+        class="px-1 py-2 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] hover:text-[var(--color-violet)]"
+        :title="`${previews.length} preview${previews.length !== 1 ? 's' : ''}`"
+        @click="toggleCollapse"
+      >
+        <span class="block text-lg">▶</span>
+        <span class="block text-xs mt-2 rotate-90 origin-center whitespace-nowrap">
+          {{ previews.length }} preview{{ previews.length !== 1 ? 's' : '' }}
+        </span>
+      </button>
     </div>
 
-    <!-- Expanded content -->
-    <div v-if="isExpanded" class="border-t border-[var(--color-border)] bg-black/[0.02]">
-      <!-- Error -->
-      <div v-if="errorMessage" class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
-        <span class="font-semibold shrink-0">Error:</span>
-        <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
+    <!-- Expanded: full panel -->
+    <template v-else>
+      <!-- Header with collapse + dismiss -->
+      <div class="flex items-center gap-1 px-2 py-1 border-b border-[var(--color-border)]">
+        <button
+          class="px-1 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] hover:text-[var(--color-violet)] text-sm"
+          title="Collapse panel"
+          @click="toggleCollapse"
+        >
+          ◀
+        </button>
+        <span class="text-[var(--color-violet)] font-semibold text-xs flex-1 truncate">Preview</span>
+        <span class="text-[0.65rem] text-[var(--semantic-text-muted)]">{{ previews.length }} of {{ previews.length }}</span>
+        <button
+          class="px-1 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] hover:text-red-500"
+          title="Dismiss panel"
+          @click="dismiss"
+        >
+          ✕
+        </button>
       </div>
 
-      <!-- Success -->
-      <template v-else>
+      <!-- Tab strip (only when multiple previews) -->
+      <div
+        v-if="previews.length > 1"
+        class="flex flex-wrap gap-1 px-2 py-1 border-b border-[var(--color-border)] bg-black/[0.02]"
+      >
+        <button
+          v-for="(p, i) in previews"
+          :key="p.id"
+          class="px-2 py-1 rounded text-xs font-mono border"
+          :class="i === activeIndex
+            ? 'bg-[var(--color-violet)]/15 text-[var(--color-violet)] border-[var(--color-violet)]/40'
+            : 'bg-transparent text-[var(--semantic-text-muted)] border-[var(--color-border)] hover:border-[var(--color-violet)]/40'"
+          :title="`Preview ${i + 1}: ${findTag(p.content, 'preview_id') ?? ''}`"
+          @click="activeIndex = i"
+        >
+          {{ tabLabel(p) }}
+        </button>
+      </div>
+
+      <!-- Active preview content -->
+      <div v-if="activePreview" class="flex-1 overflow-y-auto p-3">
         <!-- Title -->
         <div
-          v-if="title"
-          class="px-3 py-1 text-sm font-semibold text-[var(--semantic-text)] border-b border-dashed border-[var(--color-border)]"
+          v-if="activeArgs.title"
+          class="text-sm font-semibold text-[var(--semantic-text)] mb-2 pb-2 border-b border-dashed border-[var(--color-border)]"
         >
-          {{ title }}
-          <span v-if="language" class="ml-2 text-xs text-[var(--semantic-text-muted)] font-normal">[{{ language }}]</span>
+          {{ activeArgs.title }}
+          <span v-if="activeArgs.language" class="ml-2 text-xs text-[var(--semantic-text-muted)] font-normal">
+            [{{ activeArgs.language }}]
+          </span>
         </div>
 
-        <!-- Content (markdown/text/code) -->
+        <!-- Image -->
         <div
-          v-if="contentType !== 'image'"
-          class="px-3 py-2 text-xs text-[var(--semantic-text)] markdown-content"
-          v-html="renderedContent"
-        />
-
-        <!-- Content (image) -->
-        <div v-else class="px-3 py-2 flex justify-center bg-black/[0.04]">
+          v-if="activeContentType === 'image'"
+          class="flex justify-center bg-black/[0.04] p-2 rounded"
+        >
           <img
             v-if="imageSrc"
             :src="imageSrc"
-            :alt="title || caption || 'Preview image'"
+            :alt="activeArgs.title || activeArgs.caption || 'Preview image'"
             class="max-w-full max-h-96 object-contain"
             @error="(e) => { (e.target as HTMLImageElement).style.display = 'none' }"
           />
@@ -1192,15 +951,27 @@ const toggle = () => {
           </div>
         </div>
 
+        <!-- Markdown / text / code -->
+        <div
+          v-else
+          class="text-xs text-[var(--semantic-text)] markdown-content"
+          v-html="renderedContent"
+        />
+
         <!-- Caption -->
         <div
-          v-if="caption"
-          class="px-3 py-1 text-xs italic text-[var(--semantic-text-muted)] border-t border-dashed border-[var(--color-border)]"
+          v-if="activeArgs.caption"
+          class="mt-2 pt-2 text-xs italic text-[var(--semantic-text-muted)] border-t border-dashed border-[var(--color-border)]"
         >
-          {{ caption }}
+          {{ activeArgs.caption }}
         </div>
-      </template>
-    </div>
+
+        <!-- Debug footer -->
+        <div class="mt-3 pt-2 text-[0.65rem] text-[var(--semantic-text-dim)] font-mono">
+          {{ activeContentType }} · preview_id: {{ activePreviewId }}
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -1222,7 +993,10 @@ const toggle = () => {
 .markdown-content :deep(ul), .markdown-content :deep(ol) { margin: 0.25rem 0 0.25rem 1.5rem; }
 .markdown-content :deep(a) { color: var(--color-violet); text-decoration: underline; }
 .markdown-content :deep(table) { border-collapse: collapse; margin: 0.5rem 0; }
-.markdown-content :deep(th), .markdown-content :deep(td) { border: 1px solid var(--color-border); padding: 0.25rem 0.5rem; }
+.markdown-content :deep(th), .markdown-content :deep(td) {
+  border: 1px solid var(--color-border);
+  padding: 0.25rem 0.5rem;
+}
 </style>
 ```
 
@@ -1237,55 +1011,89 @@ Expected: build succeeds.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/apps/desktop/src/components/tool_outputs/ShowPreview.vue
-git commit -m "feat(frontend): add ShowPreview component for persistent tool-result rows"
+git add src/apps/desktop/src/components/PreviewSidePanel.vue
+git commit -m "feat(frontend): add PreviewSidePanel component"
 ```
 
 ---
 
-### Task 3.2: Wire `<ShowPreview>` into ChatView's tool-name switch
+### Task 2.2: Wire `PreviewSidePanel` into `ChatView.vue`
 
 **Files:**
 - Modify: `src/apps/desktop/src/components/ChatView.vue`
 
 - [ ] **Step 1: Add the import**
 
-Add to the ChatView.vue imports (near the other `tool_outputs/` imports around line 38-39):
+In the `<script setup>` block of ChatView.vue, add (near the other component imports around line 38-39):
 
 ```ts
-import ShowPreview from './tool_outputs/ShowPreview.vue'
+import PreviewSidePanel from './PreviewSidePanel.vue'
 ```
 
-- [ ] **Step 2: Add the v-if branch**
+- [ ] **Step 2: Add a `showPreviewMessages` computed**
 
-In the `template` section, after the `<KanbanList>` block (around line 2299), add:
+After the existing message-derived computeds, add:
+
+```ts
+import { computed as _computed } from 'vue' // (if not already imported)
+// ... or just use `computed` from the existing import
+
+const showPreviewMessages = computed(() =>
+  messages.value.filter((m) => m.tool_name === 'show_preview')
+)
+```
+
+- [ ] **Step 3: Add local state for collapse / dismiss**
+
+In the `<script setup>` of ChatView, add:
+
+```ts
+const previewPanelCollapsed = ref(false)
+const previewPanelDismissed = ref(false)
+
+// Auto-open + un-dismiss the panel when a new show_preview message arrives.
+watch(showPreviewMessages, (newArr, oldArr) => {
+  if ((newArr?.length ?? 0) > (oldArr?.length ?? 0)) {
+    previewPanelCollapsed.value = false
+    previewPanelDismissed.value = false
+  }
+})
+
+// Reset when the chat changes (different session = different previews).
+watch(() => props.chatId, () => {
+  previewPanelCollapsed.value = false
+  previewPanelDismissed.value = false
+})
+```
+
+- [ ] **Step 4: Mount the side panel**
+
+Find the top-level `<div class="chat-view ...">` wrapper in ChatView.vue
+(search for `chat-view` class). Restructure it to be a horizontal flex
+container with the messages wrapper on the left and the preview panel
+on the right:
 
 ```vue
-                          <ShowPreview
-                            v-else-if="msg.tool_name === 'show_preview'"
-                            :content="innerToolData(msg)"
-                            :parameters="getParametersForMessage(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                          />
+<div class="chat-view flex h-full" data-testid="chat-view">
+  <!-- Existing messages wrapper (left, flex-1) -->
+  <div ref="messagesWrapperRef" class="messages-wrapper flex-1 overflow-y-auto ...">
+    <!-- existing content -->
+  </div>
+
+  <!-- Preview side panel (right, fixed 480px or 32px collapsed) -->
+  <PreviewSidePanel
+    v-if="!previewPanelDismissed"
+    :previews="showPreviewMessages"
+    v-model:collapsed="previewPanelCollapsed"
+    @dismiss="previewPanelDismissed = true"
+  />
+</div>
 ```
 
-- [ ] **Step 3: Add `show_preview` to the inline tool header label**
+(The exact class names for the messages wrapper depend on the existing
+ChatView markup. Read the file and merge the flex layout carefully.)
 
-In the `formatToolHeader` function (around line 174), add a branch:
-
-```ts
-if (tool_name === 'show_preview') {
-  // The arguments JSON has the title/content_type/length we need for
-  // the collapsed preview. Reuse the same parse + extract pattern as
-  // nalar_browser.
-  return `<span class="tool-inline">${tool_name} → ${escapeHtml(previewLabel)}</span>`
-}
-```
-
-(Reference: search for `if (tool_name === 'nalar_browser')` to see the
-neighboring pattern, then mirror it for `show_preview`.)
-
-- [ ] **Step 4: Verify build**
+- [ ] **Step 5: Verify with build**
 
 ```bash
 cd src/apps/desktop
@@ -1293,179 +1101,150 @@ timeout 120 bun run build 2>&1 | tail -n 20
 ```
 Expected: build succeeds.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Manual smoke check (optional before commit)**
+
+If possible, start the dev server and verify the panel renders. Otherwise commit and rely on Task 3.1's manual smoke test.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/apps/desktop/src/components/ChatView.vue
-git commit -m "feat(frontend): wire ShowPreview into ChatView tool-name switch"
+git commit -m "feat(frontend): mount PreviewSidePanel in ChatView with auto-open on new preview"
 ```
 
 ---
 
-### Task 3.3: Add transient `<PreviewBanner>` component
+### Task 2.3: Add frontend unit tests for `PreviewSidePanel`
 
 **Files:**
-- Create: `src/apps/desktop/src/components/PreviewBanner.vue`
-
-- [ ] **Step 1: Implement the component**
-
-```vue
-<!--
-  PreviewBanner — transient banner shown at the top of the chat when a
-  show_preview SSE event arrives.
-
-  Driven by `usePreviewStore` (Pinia). Auto-dismisses after 5 seconds
-  (managed by the store). Click the X to dismiss manually.
-
-  Visual: small pill with the preview's title (or content_type if no
-  title), a "previewing" label, and a dismiss button. Animates in from
-  the top with a fade.
--->
-<script setup lang="ts">
-import { storeToRefs } from 'pinia'
-import { usePreviewStore } from '../stores/preview'
-
-const previewStore = usePreviewStore()
-const { current } = storeToRefs(previewStore)
-
-const label = () => {
-  if (!current.value) return ''
-  const title = current.value.title
-  if (title) return title
-  // No title → show the content_type + a short content excerpt
-  const c = current.value.content
-  const excerpt = c.length > 60 ? `${c.slice(0, 60)}...` : c
-  return `${current.value.content_type} · ${excerpt}`
-}
-</script>
-
-<template>
-  <Transition name="preview-banner">
-    <div
-      v-if="current"
-      class="preview-banner flex items-center gap-2 px-3 py-2 mb-2 rounded-md border border-[var(--color-violet)] bg-violet-500/10 text-xs"
-      role="status"
-    >
-      <span class="text-[var(--color-violet)] font-semibold">Previewing:</span>
-      <span class="flex-1 truncate text-[var(--semantic-text)]">{{ label() }}</span>
-      <button
-        class="px-1 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] hover:text-[var(--semantic-text)]"
-        @click="previewStore.dismissCurrent()"
-        title="Dismiss preview"
-      >
-        ✕
-      </button>
-    </div>
-  </Transition>
-</template>
-
-<style scoped>
-.preview-banner-enter-active,
-.preview-banner-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-.preview-banner-enter-from,
-.preview-banner-leave-to {
-  opacity: 0;
-  transform: translateY(-8px);
-}
-</style>
-```
-
-- [ ] **Step 2: Mount the banner in ChatView**
-
-In ChatView.vue, add to imports:
-```ts
-import PreviewBanner from './PreviewBanner.vue'
-```
-
-In the template, place the banner above the messages wrapper (search for
-`messagesWrapperRef` — the banner goes immediately before it):
-
-```vue
-      <PreviewBanner />
-
-      <div ref="messagesWrapperRef" class="messages-wrapper ...">
-```
-
-- [ ] **Step 3: Verify build**
-
-```bash
-cd src/apps/desktop
-timeout 120 bun run build 2>&1 | tail -n 20
-```
-Expected: build succeeds.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/apps/desktop/src/components/PreviewBanner.vue src/apps/desktop/src/components/ChatView.vue
-git commit -m "feat(frontend): add PreviewBanner transient banner component"
-```
-
----
-
-## Chunk 4: End-to-End Verification + Documentation
-
-### Task 4.1: Add frontend unit tests
-
-**Files:**
-- Create: `src/apps/desktop/src/__tests__/showPreview.spec.ts`
+- Create: `src/apps/desktop/src/__tests__/previewSidePanel.spec.ts`
 
 - [ ] **Step 1: Implement unit tests**
 
 ```ts
 import { describe, it, expect, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { setActivePinia, createPinia } from 'pinia'
 import { nextTick } from 'vue'
-import ShowPreview from '../components/tool_outputs/ShowPreview.vue'
+import PreviewSidePanel from '../components/PreviewSidePanel.vue'
 
-const XML_SUCCESS = `<show_preview><status>shown</status><preview_id>pv_test</preview_id><content_type>markdown</content_type><content_length>14</content_length></show_preview>`
-const XML_ERROR = `<show_preview><error>content_type invalid</error></show_preview>`
-const PARAMS_MARKDOWN = JSON.stringify({ content_type: 'markdown', content: '# Hello', title: 'Test' })
-const PARAMS_IMAGE = JSON.stringify({ content_type: 'image', content: 'data:image/png;base64,iVBOR...' })
+const makePreview = (overrides: Partial<{
+  id: string
+  content: string
+  parameters: string
+}> = {}) => ({
+  id: overrides.id ?? 'msg-1',
+  content: overrides.content ?? '<show_preview><status>shown</status><preview_id>pv_test_1</preview_id><content_type>markdown</content_type><content_length>7</content_length></show_preview>',
+  parameters: overrides.parameters ?? JSON.stringify({ content_type: 'markdown', content: '# Hello' }),
+})
 
-describe('ShowPreview', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
+describe('PreviewSidePanel', () => {
+  it('renders nothing when previews array is empty', () => {
+    const wrapper = mount(PreviewSidePanel, { props: { previews: [] } })
+    expect(wrapper.find('[data-testid="preview-side-panel"]').exists()).toBe(false)
   })
 
-  it('renders success header with content_type + size', () => {
-    const wrapper = mount(ShowPreview, {
-      props: { content: XML_SUCCESS, parameters: PARAMS_MARKDOWN },
+  it('renders panel when previews has one item', () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: { previews: [makePreview()] },
     })
-    expect(wrapper.text()).toContain('show_preview')
-    expect(wrapper.text()).toContain('markdown')
+    expect(wrapper.find('[data-testid="preview-side-panel"]').exists()).toBe(true)
   })
 
-  it('renders error state when XML contains <error>', () => {
-    const wrapper = mount(ShowPreview, {
-      props: { content: XML_ERROR, parameters: '{}' },
+  it('renders markdown content via marked()', () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: {
+        previews: [makePreview({
+          parameters: JSON.stringify({ content_type: 'markdown', content: '# Title' }),
+        })],
+      },
     })
-    expect(wrapper.text()).toContain('content_type invalid')
+    const html = wrapper.html()
+    expect(html).toContain('Title')
+    expect(html).toContain('<h1')
   })
 
-  it('expands to show markdown content when toggled', async () => {
-    const wrapper = mount(ShowPreview, {
-      props: { content: XML_SUCCESS, parameters: PARAMS_MARKDOWN },
+  it('renders image content as <img>', () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: {
+        previews: [makePreview({
+          content: '<show_preview><content_type>image</content_type></show_preview>',
+          parameters: JSON.stringify({
+            content_type: 'image',
+            content: 'data:image/png;base64,iVBORw0KGgo=',
+          }),
+        })],
+      },
     })
-    // Click header to expand
-    await wrapper.find('[role="button"]').trigger('click')
-    await nextTick()
-    // Title should now be visible
-    expect(wrapper.text()).toContain('Test')
-  })
-
-  it('renders <img> for image content_type', async () => {
-    const wrapper = mount(ShowPreview, {
-      props: { content: XML_SUCCESS, parameters: PARAMS_IMAGE },
-    })
-    await wrapper.find('[role="button"]').trigger('click')
-    await nextTick()
     const img = wrapper.find('img')
     expect(img.exists()).toBe(true)
     expect(img.attributes('src')).toContain('data:image/png;base64')
+  })
+
+  it('renders code content with language class', () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: {
+        previews: [makePreview({
+          content: '<show_preview><content_type>code</content_type></show_preview>',
+          parameters: JSON.stringify({
+            content_type: 'code',
+            content: 'fn main() void {}',
+            language: 'zig',
+          }),
+        })],
+      },
+    })
+    expect(wrapper.html()).toContain('language-zig')
+  })
+
+  it('shows tabs when multiple previews are present', async () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: {
+        previews: [
+          makePreview({ id: '1' }),
+          makePreview({ id: '2', parameters: JSON.stringify({ content_type: 'code', content: 'x', language: 'py' }) }),
+        ],
+      },
+    })
+    const tabs = wrapper.findAll('button[class*="font-mono"]')
+    expect(tabs.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('auto-switches to the newest preview when one is added', async () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: { previews: [makePreview({ id: '1' })] },
+    })
+    expect(wrapper.text()).toContain('markdown') // initial
+
+    await wrapper.setProps({
+      previews: [
+        makePreview({ id: '1' }),
+        makePreview({
+          id: '2',
+          content: '<show_preview><content_type>code</content_type></show_preview>',
+          parameters: JSON.stringify({ content_type: 'code', content: 'x', language: 'py' }),
+        }),
+      ],
+    })
+    await nextTick()
+    expect(wrapper.text()).toContain('language-py')
+  })
+
+  it('collapses to a 32px chevron when collapse button is clicked', async () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: { previews: [makePreview()] },
+    })
+    const collapseBtn = wrapper.find('button[title="Collapse panel"]')
+    await collapseBtn.trigger('click')
+    expect(wrapper.emitted('update:collapsed')).toBeTruthy()
+  })
+
+  it('emits dismiss event when dismiss button is clicked', async () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: { previews: [makePreview()] },
+    })
+    const dismissBtn = wrapper.find('button[title="Dismiss panel"]')
+    await dismissBtn.trigger('click')
+    expect(wrapper.emitted('dismiss')).toBeTruthy()
   })
 })
 ```
@@ -1474,30 +1253,39 @@ describe('ShowPreview', () => {
 
 ```bash
 cd src/apps/desktop
-timeout 120 bunx vitest run showPreview 2>&1 | tail -n 20
+timeout 120 bunx vitest run previewSidePanel 2>&1 | tail -n 20
 ```
-Expected: 4/4 tests pass.
+Expected: 9/9 tests pass.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/apps/desktop/src/__tests__/showPreview.spec.ts
-git commit -m "test(frontend): add ShowPreview component unit tests"
+git add src/apps/desktop/src/__tests__/previewSidePanel.spec.ts
+git commit -m "test(frontend): add PreviewSidePanel component unit tests"
 ```
 
 ---
 
-### Task 4.2: End-to-end manual smoke test
+## Chunk 3: End-to-End Verification + Documentation
 
-- [ ] **Step 1: Build the backend**
+### Task 3.1: Build + test verification
+
+- [ ] **Step 1: Run the full backend test suite**
 
 ```bash
 cd /home/ginwa/agentic_coding_zig/ginwaaitoolbox
+timeout 180 zig build test --summary all 2>&1 | tail -n 5
+```
+Expected: `test success`; test count should be baseline + 6 (Task 1.1 static) + 6 (Task 1.1 behavioral) = +12.
+
+- [ ] **Step 2: Build the backend (full graph)**
+
+```bash
 timeout 180 zig build install:linux:system 2>&1 | tail -n 5
 ```
-Expected: 4/6 steps succeed (cp step fails harmlessly).
+Expected: 4/6 steps succeed (the cp step at the end fails harmlessly with permission denied on `/usr/local/bin/nalar`).
 
-- [ ] **Step 2: Build the frontend**
+- [ ] **Step 3: Build the frontend (type-check + bundle)**
 
 ```bash
 cd src/apps/desktop
@@ -1505,23 +1293,45 @@ timeout 120 bun run build 2>&1 | tail -n 10
 ```
 Expected: build succeeds.
 
-- [ ] **Step 3: Run the desktop app on port 8080**
+- [ ] **Step 4: Run the frontend unit tests**
+
+```bash
+timeout 120 bunx vitest run 2>&1 | tail -n 10
+```
+Expected: all tests pass (baseline + 9 new = baseline + 9).
+
+---
+
+### Task 3.2: Manual smoke test
+
+- [ ] **Step 1: Start the backend on port 8080**
 
 ```bash
 cd /home/ginwa/agentic_coding_zig/ginwaaitoolbox
 ./zig-out/bin/nalar --port 8080 &
 ```
 
-- [ ] **Step 4: Send a test prompt that triggers show_preview**
+- [ ] **Step 2: Open the chat UI in a browser**
 
-In the chat UI, type: "Use show_preview to show me a sample markdown summary of the project structure, then show_preview with a small image."
+Navigate to `http://127.0.0.1:8080/`.
+
+- [ ] **Step 3: Send a test prompt that triggers show_preview**
+
+Type: "Use show_preview to show me a sample markdown summary of the project structure, then show_preview with a code block in Python, then show_preview with a small test image."
 
 Expected:
-- The transient "Previewing:" banner appears briefly.
-- The persistent tool-result rows appear in the chat history (one for
-  the markdown, one for the image).
-- Both previews can be expanded/collapsed.
-- On page reload, both previews reappear from the DB.
+- The side panel appears on the right of the chat.
+- Three tabs are visible at the top of the panel (markdown, python, image).
+- The newest preview (image) is displayed in the main area.
+- Clicking a tab switches the main area to that preview.
+- Clicking ◀ collapses the panel to a thin chevron strip; clicking ▶ expands it.
+- Clicking ✕ closes the panel entirely (no visual footprint).
+
+- [ ] **Step 4: Test reload persistence**
+
+Refresh the page.
+
+Expected: The side panel reappears with all three previews (rebuilt from `llm_history`).
 
 - [ ] **Step 5: Stop the dev process**
 
@@ -1531,24 +1341,44 @@ kill $(pgrep -f "nalar --port 8080")
 
 ---
 
-### Task 4.3: Documentation
+### Task 3.3: Documentation
 
 **Files:**
 - Modify: `docs/sse-reconnect-plan.md` (or create `docs/show-preview-plan.md`)
 
-- [ ] **Step 1: Document the new SSE event**
+- [ ] **Step 1: Document the new tool**
 
-Add to the SSE event contract table in `docs/sse-reconnect-plan.md`:
+Add an entry to the table of agent tools in the README or relevant docs
+file (search for the tool list table — likely `docs/agent-tools.md` or
+similar). If no such doc exists, create a brief section in
+`docs/show-preview.md`:
 
-```
-| show_preview | show_preview | tool preview pushed by agent |
+```markdown
+## show_preview
+
+Show a visual preview to the user in the side panel of the chat.
+
+**Input:** `{content_type, content, title?, language?, caption?}`
+- `content_type`: `markdown | text | code | image`
+- `content`: the content to display (string; up to 1 MB)
+- For `code`, `language` is required (e.g., `python`, `zig`)
+
+**Output to LLM:** `<show_preview><status>shown</status>...</show_preview>`
+
+**SSE event:** none — uses the standard `llm_full` event with
+`tool_name='show_preview'`. The frontend's `<PreviewSidePanel>` filters
+the messages array.
+
+**Persistence:** `llm_history` row with `tool_name='show_preview'` and
+`parameters` containing the full content (the inner `<data>` envelope
+carries only metadata).
 ```
 
 - [ ] **Step 2: Commit**
 
 ```bash
-git add docs/sse-reconnect-plan.md
-git commit -m "docs: document show_preview SSE event"
+git add docs/
+git commit -m "docs: document show_preview agent tool"
 ```
 
 ---
@@ -1570,21 +1400,46 @@ After completing all chunks:
    ```
 
 3. **Manual smoke test** confirms:
-   - show_preview tool appears in the LLM's tool list.
-   - Live SSE banner appears briefly during a turn.
-   - Persistent tool-result row renders the preview correctly.
-   - Markdown is rendered via `marked`.
-   - Code blocks have language hints.
+   - `show_preview` tool appears in the LLM's tool list.
+   - Side panel auto-opens on the right of ChatView when a preview arrives.
+   - Tabs switch between multiple previews.
+   - Markdown renders via `marked()`.
+   - Code blocks have language classes (`language-python`, `language-zig`, etc.).
    - Images (data URL or http URL) render inline.
-   - Multi-preview per turn: each call gets its own row.
    - Reload preserves all previews via the existing `llm_history` path.
+   - Collapse / dismiss UX works.
 
 ## Pitfalls to watch for
 
-- **UTF-8 sanitization**: pass `sanitized_content` to the SSE event, not the raw input. Otherwise invalid bytes in tool stdout corrupt the JSON wire format (see project memory `zig-0.16-std-json-fmt-emits-invalid-utf8-as-array`).
-- **preview_id collision**: use `unix_ms + random suffix`. Don't reuse timestamps.
-- **Content type validation**: enforce the enum. The LLM sometimes hallucinates `"md"` or `"text/plain"`. Return a clear error.
+- **UTF-8 sanitization**: the `parameters` JSON will contain the raw
+  `content`. If the LLM passes a tool output with binary bytes, the JSON
+  serialization on the wire (via `std.json.Stringify`) will emit it as
+  an array of integers (see project memory
+  `zig-0.16-std-json-fmt-emits-invalid-utf8-as-array`). Mitigation: the
+  Zig tool sanitizes `content` before storing it in `parameters`. The
+  existing `helpers.sanitize.sanitizeUtf8` replaces invalid bytes with
+  U+FFFD.
+- **preview_id collision**: use `unix_ms + random suffix`. Don't reuse
+  timestamps.
+- **Content type validation**: enforce the enum. The LLM sometimes
+  hallucinates `"md"` or `"text/plain"`. Return a clear error.
 - **Size cap**: enforce strictly. A 5 MB markdown will hang the renderer.
-- **SSE listener cleanup**: ChatView's `disconnectSse` must `bus.off('show_preview', ...)` to avoid leaks across chat switches (matches the existing llm/queue listener pattern).
-- **Lazy analysis in `zig build test`**: the `execShowPreview` test in Task 1.4 may not be reached by the test runner's module graph. Always also run `zig build install:linux:system` to verify the full graph compiles.
-- **Zig 0.16 T → T const constraint**: when refactoring `execShowPreview` to return `T → !T`, the `result.output` field is implicitly const. Use `var result_owned = result;` then free via the owned copy.
+- **Vue 3 `watch` with `oldArr` undefined**: the `watch` callback in
+  Task 2.2 has `oldArr` typed as the previous value. On the first run
+  it's `undefined`. Use `oldArr?.length ?? 0` to avoid TS errors.
+- **ChatView layout shift**: adding a side panel changes ChatView's
+  horizontal flex layout. The messages wrapper must be `flex-1` (takes
+  remaining space) and the panel must be a fixed width. If the chat
+  view becomes too narrow, the messages wrapper may squish — consider a
+  min-width guard in a follow-up.
+- **Lazy analysis in `zig build test`**: the `execShowPreview` code path
+  may not be reached by the test runner's module graph. Always also run
+  `zig build install:linux:system` to verify the full graph compiles.
+- **`msg.parameters` field name**: the frontend's `Message` interface
+  must include a `parameters?: string` field. If it doesn't, the side
+  panel can't read the content. Verify the field is added in Task 2.2.
+- **Multi-byte UTF-8 in titles**: titles are user-facing strings; sanitize
+  on the Zig side before passing to JSON. The `xmlEscape` in Task 1.1
+  only handles the envelope's preview_id, not the user-provided title.
+  Title escaping happens via the standard JSON serializer (which
+  handles it correctly).
