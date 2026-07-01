@@ -121,7 +121,17 @@ pub const SseManager = struct {
 
         var it = self.clients.iterator();
         while (it.next()) |entry| {
-            entry.value_ptr.*.forceDestroy();
+            // Use the full `deinit()` (not `forceDestroy()`) so each
+            // client's per-client arena (which holds every message string
+            // ever sent through `sendToClient` and any other allocations
+            // made via `client.allocator()`) is freed. `forceDestroy`
+            // closes the fd but leaks the arena — for a long-lived
+            // server that has served many distinct connections, that
+            // leak accumulates to the point of `ProcessFdQuotaExceeded`
+            // (the prior commit `5df11a9a` documented a 1011-FD leak;
+            // the leaked ARENA memory is the same shape of bug, just
+            // measured in bytes instead of FDs).
+            entry.value_ptr.*.deinit();
             self.server_allocator.destroy(entry.value_ptr);
         }
         self.clients.clearRetainingCapacity();
@@ -264,7 +274,7 @@ pub const SseManager = struct {
             // Send the close event as one chunked frame, then send the
             // chunked-encoding terminator (0\r\n\r\n) so the peer can
             // finalize its chunked-decoding state cleanly. Both writes
-            // are best-effort — `forceDestroy` below closes the fd
+            // are best-effort — `deinit` below closes the fd
             // regardless, and a stale peer will get EPOLLHUP on its
             // next read.
             writeChunkedFrame(fd, close_msg) catch {};
@@ -276,7 +286,10 @@ pub const SseManager = struct {
             if (it2.next()) |entry| {
                 const id = entry.key_ptr.*;
                 const fd = entry.value_ptr.*.fd;
-                entry.value_ptr.*.forceDestroy();
+                // Full `deinit()` (not `forceDestroy()`) so the per-client
+                // arena + message_queue are freed — see the comment in
+                // `deinit` above for the rationale.
+                entry.value_ptr.*.deinit();
                 _ = self.clients.remove(id);
                 _ = self.fd_to_id.remove(fd);
             }
@@ -512,16 +525,50 @@ pub const SseManager = struct {
     }
 
     pub fn sendToClient(self: *SseManager, id: [16]u8, data: []const u8) !void {
+        // Acquire the per-manager lock BEFORE reading from `self.clients`
+        // so a concurrent `registerClient` / `removeClient` cannot
+        // rehash the underlying bucket array out from under us (which
+        // would read freed memory and — if `client.fd` happened to be
+        // recycled by a subsequent `registerClient` — write chunked
+        // data to the wrong socket, causing `removeClient` on the
+        // failure path to fire against a foreign client and leak the
+        // real victim's fd). See the "sendToClient UAF" audit in
+        // docs/superpowers/plans/2026-07-01-fix-remaining-fd-leak-risks.md.
+        self.lock.lock(self.io) catch unreachable;
+        defer self.lock.unlock(self.io);
+
         const client = self.clients.get(id) orelse return error.ClientNotFound;
 
         // Route through the chunked-encoding helper so the peer's
         // HTTP/1.1 chunked-decoder can parse the byte stream. A
         // write failure (peer gone) means the client is dead; remove
         // it and bubble up the error to the caller.
-        if (writeChunkedFrame(client.fd, data)) {
+        //
+        // Zig pattern: `if (error_union) { success } else |err| { ... }`
+        // compiles because the else branch handles the error and
+        // returns it — the body of the if-statement is reached only
+        // on success. The payload capture `|_|` is required because
+        // `writeChunkedFrame` returns `!void` (no payload) and the
+        // pattern needs explicit binding for the success branch.
+        if (writeChunkedFrame(client.fd, data)) |_| {
             // success
         } else |_| {
-            self.removeClient(id);
+            // Failed write — inline the remove logic so we don't
+            // try to re-acquire `self.lock` (which we already hold).
+            // Mirrors the close-before-deinit pattern in `removeClient`
+            // so partial chunked frames don't produce
+            // `ERR_INCOMPLETE_CHUNKED_ENCODING` in the browser.
+            if (self.clients.fetchRemove(id)) |entry| {
+                const fd = entry.value.*.fd;
+                _ = self.fd_to_id.remove(fd);
+                _ = sendAll(fd, "0\r\n\r\n");
+                entry.value.*.deinit();
+                self.server_allocator.destroy(entry.value);
+            }
+            if (self.on_disconnect) |cb| cb(id);
+            // The only error variant in the `writeChunkedFrame` error
+            // set is `WriteFailed`; map it to ClientDisconnected to
+            // preserve the original public API of `sendToClient`.
             return error.ClientDisconnected;
         }
     }
