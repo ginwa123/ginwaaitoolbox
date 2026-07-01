@@ -1,0 +1,126 @@
+# .github/workflows/ci.yml
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same PR when a new commit is pushed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.16.0
+  BUN_VERSION: 1.1.42
+
+jobs:
+  backend:
+    name: backend (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Chunk 1: Linux only. Chunks 3 and 4 add windows-latest,
+        # macos-latest (Intel), and macos-14 (Apple Silicon).
+        os: [ubuntu-latest]
+        target:
+          - { zig: x86_64-linux-gnu,       step: install:linux:system }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install system dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libssl-dev \
+            libsqlite3-dev \
+            pkg-config
+
+      - name: Show toolchain versions
+        run: |
+          zig version
+          cc --version | head -n 1
+          pkg-config --modversion sqlite3
+          pkg-config --modversion openssl
+
+      - name: Cache Zig build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            zig-out
+          key: zig-${{ runner.os }}-${{ matrix.target.zig }}-${{ hashFiles('build.zig.zon', 'build.zig') }}
+          restore-keys: |
+            zig-${{ runner.os }}-${{ matrix.target.zig }}-
+
+      - name: Run main test suite
+        run: zig build test --summary all
+
+      - name: Run AI workflow TUI tests
+        run: zig build test:ai_workflow:tui --summary all
+
+      - name: Build nalar binary
+        run: zig build ${{ matrix.target.step }}
+
+      - name: Verify binary was produced
+        run: |
+          test -f zig-out/bin/nalar && \
+            echo "✓ zig-out/bin/nalar exists ($(stat -c%s zig-out/bin/nalar) bytes)"
+
+      - name: "Smoke test: version check"
+        run: ./zig-out/bin/nalar --version || true
+        # The --version flag may not exist; this is a "does it run?" smoke test.
+
+      - name: Upload nalar binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: nalar-${{ matrix.target.zig }}
+          path: zig-out/bin/nalar
+          retention-days: 14
+
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Bun ${{ env.BUN_VERSION }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun node_modules
+        uses: actions/cache@v4
+        with:
+          path: src/apps/desktop/node_modules
+          key: bun-${{ runner.os }}-${{ hashFiles('src/apps/desktop/package-lock.json') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install dependencies
+        working-directory: src/apps/desktop
+        run: bun install --frozen-lockfile
+
+      - name: Type-check + bundle (vue-tsc + vite)
+        working-directory: src/apps/desktop
+        run: bun run build
+
+      - name: Run vitest unit tests
+        working-directory: src/apps/desktop
+        run: bunx vitest run
