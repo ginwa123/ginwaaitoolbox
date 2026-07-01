@@ -36,6 +36,8 @@
 
 const std = @import("std");
 const testing = std.testing;
+const nalarcore = @import("nalarcore");
+const text_normalize = nalarcore.helpers.text_normalize;
 
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/task_update.zig";
 const LLM_HISTORY_PATH = "src/ai_workflow/tui/llm_history.zig";
@@ -43,12 +45,15 @@ const LLM_HISTORY_PATH = "src/ai_workflow/tui/llm_history.zig";
 /// Read a source file from disk, relative to the project root
 /// (which is the cwd when `zig build test:ai_workflow:tui` runs).
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         path,
         allocator,
         .limited(256 * 1024),
     );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
+    return normalized;
 }
 
 // ─── Contract 1: handler uses the cascade path for renames ─────────────────

@@ -176,9 +176,16 @@ pub fn resolve(
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const n = try root_dir.realPathFile(io, rel, &path_buf);
     const resolved = try cfg.allocator.dupe(u8, path_buf[0..n]);
-    errdefer cfg.allocator.free(resolved);
 
-    if (!isInsideRoot(cfg.root_dir, resolved)) return .forbidden;
+    // Path-traversal defense: if `realPathFile` resolved to a path
+    // outside the root (e.g. via symlinks), reject as forbidden AND
+    // free the duplicated path (the errdefer above only fires on
+    // error, not on regular returns like this one — this is a
+    // classic Zig pitfall; the prior code leaked `resolved` here).
+    if (!isInsideRoot(cfg.root_dir, resolved)) {
+        cfg.allocator.free(resolved);
+        return .forbidden;
+    }
 
     return .{ .file = .{
         .abs_path = resolved,

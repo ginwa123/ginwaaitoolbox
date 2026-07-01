@@ -6,11 +6,16 @@
 
 const std = @import("std");
 const testing = std.testing;
+const nalarcore = @import("nalarcore");
+const text_normalize = nalarcore.helpers.text_normalize;
 
 const LLM_HISTORY_PATH = "src/ai_workflow/tui/llm_history.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    const raw = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
+    return normalized;
 }
 
 test "WorkspaceItemTaskInfo has task_type + routine fields" {

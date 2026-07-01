@@ -43,6 +43,8 @@
 
 const std = @import("std");
 const testing = std.testing;
+const nalarcore = @import("nalarcore");
+const text_normalize = nalarcore.helpers.text_normalize;
 
 const DETAIL_PATH = "src/ai_workflow/tui/http_handlers/memories_detail.zig";
 const CREATE_PATH = "src/ai_workflow/tui/http_handlers/memories_create.zig";
@@ -55,12 +57,15 @@ const MEMORIES_HELPERS_PATH = "src/modules/agent/tools/memories.zig";
 /// Read a source file from disk, relative to the project root
 /// (the cwd when `zig build test:ai_workflow:tui` runs).
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         path,
         allocator,
         .limited(256 * 1024),
     );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
+    return normalized;
 }
 
 // =============================================================================

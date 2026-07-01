@@ -1,5 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
+const nalarcore = @import("nalarcore");
+const text_normalize = nalarcore.helpers.text_normalize;
 
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/git_worktree_info.zig";
 const MOD_PATH = "src/ai_workflow/tui/http_handlers/mod.zig";
@@ -11,12 +13,15 @@ const HTTP_RESP_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
 /// behavioral handler-test infrastructure, so we static-grep for required
 /// substrings.
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         path,
         allocator,
         .limited(256 * 1024),
     );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
+    return normalized;
 }
 
 // ─── Static wiring tests ───────────────────────────────────────────────────

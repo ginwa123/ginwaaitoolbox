@@ -31,7 +31,7 @@ fn deleteTestFile(path: []const u8) void {
 }
 
 test "text_replace - unified diff contains diff markers" {
-    const test_path = "/tmp/test_diff_view_unified.txt";
+    const test_path = "test_diff_view_unified.txt";
     try createTestFile(test_path, "Hello World\n");
 
     var result = try text_replace.executeTextReplace(
@@ -61,7 +61,7 @@ test "text_replace - unified diff contains diff markers" {
 }
 
 test "text_replace - split diff_view before contains original content" {
-    const test_path = "/tmp/test_diff_view_before.txt";
+    const test_path = "test_diff_view_before.txt";
     try createTestFile(test_path, "Hello World\n");
 
     var result = try text_replace.executeTextReplace(
@@ -86,7 +86,7 @@ test "text_replace - split diff_view before contains original content" {
 }
 
 test "text_replace - split diff_view after contains replacement content" {
-    const test_path = "/tmp/test_diff_view_after.txt";
+    const test_path = "test_diff_view_after.txt";
     try createTestFile(test_path, "Hello World\n");
 
     var result = try text_replace.executeTextReplace(
@@ -111,7 +111,7 @@ test "text_replace - split diff_view after contains replacement content" {
 }
 
 test "text_replace - split diff_view before and after are distinct" {
-    const test_path = "/tmp/test_diff_view_distinct.txt";
+    const test_path = "test_diff_view_distinct.txt";
     try createTestFile(test_path, "original text\n");
 
     var result = try text_replace.executeTextReplace(
@@ -140,7 +140,7 @@ test "text_replace - split diff_view before and after are distinct" {
 }
 
 test "text_replace - unified diff shows line removal" {
-    const test_path = "/tmp/test_diff_view_removal.txt";
+    const test_path = "test_diff_view_removal.txt";
     try createTestFile(test_path, "line1\nline2\nline3\n");
 
     var result = try text_replace.executeTextReplace(
@@ -169,7 +169,7 @@ test "text_replace - unified diff shows line removal" {
 }
 
 test "text_replace - unified diff shows line insertion" {
-    const test_path = "/tmp/test_diff_view_insert.txt";
+    const test_path = "test_diff_view_insert.txt";
     try createTestFile(test_path, "line1\nline3\n");
 
     var result = try text_replace.executeTextReplace(
@@ -199,7 +199,7 @@ test "text_replace - unified diff shows line insertion" {
 }
 
 test "text_replace - unified diff shows multiline replacement" {
-    const test_path = "/tmp/test_diff_view_multiline.txt";
+    const test_path = "test_diff_view_multiline.txt";
     try createTestFile(test_path,
         \\fn add(a: i32, b: i32) i32 {
         \\    return a + b;
@@ -232,7 +232,7 @@ test "text_replace - unified diff shows multiline replacement" {
 }
 
 test "text_replace - unified diff includes hunk header with line numbers" {
-    const test_path = "/tmp/test_diff_view_hunk.txt";
+    const test_path = "test_diff_view_hunk.txt";
     try createTestFile(test_path, "line1\nline2\nline3\nline4\nline5\n");
 
     var result = try text_replace.executeTextReplace(
@@ -257,7 +257,7 @@ test "text_replace - unified diff includes hunk header with line numbers" {
 }
 
 test "text_replace - lines_changed reflects actual change count" {
-    const test_path = "/tmp/test_diff_view_lines.txt";
+    const test_path = "test_diff_view_lines.txt";
     try createTestFile(test_path, "line1\nline2\nline3\n");
 
     var result = try text_replace.executeTextReplace(
@@ -288,7 +288,7 @@ test "text_replace - lines_changed reflects actual change count" {
 // ============================================================================
 
 test "generateUnifiedDiff output contains git merge conflict markers" {
-    const test_path = "/tmp/test_git_conflict_markers.txt";
+    const test_path = "test_git_conflict_markers.txt";
     try createTestFile(test_path, "line1\nline2\nline3\n");
 
     var result = try text_replace.executeTextReplace(
@@ -313,7 +313,7 @@ test "generateUnifiedDiff output contains git merge conflict markers" {
 }
 
 test "generateUnifiedDiff split view shows old_str under <<<<<<<" {
-    const test_path = "/tmp/test_split_before.txt";
+    const test_path = "test_split_before.txt";
     try createTestFile(test_path, "Hello World\n");
 
     var result = try text_replace.executeTextReplace(
@@ -341,7 +341,7 @@ test "generateUnifiedDiff split view shows old_str under <<<<<<<" {
 }
 
 test "generateUnifiedDiff split view shows new_str under =======" {
-    const test_path = "/tmp/test_split_after.txt";
+    const test_path = "test_split_after.txt";
     try createTestFile(test_path, "Hello World\n");
 
     var result = try text_replace.executeTextReplace(
@@ -371,7 +371,7 @@ test "generateUnifiedDiff split view shows new_str under =======" {
 }
 
 test "generateUnifiedDiff before field equals old_str exactly" {
-    const test_path = "/tmp/test_before_exact.txt";
+    const test_path = "test_before_exact.txt";
     try createTestFile(test_path, "Hello World\n");
 
     var result = try text_replace.executeTextReplace(
@@ -394,7 +394,7 @@ test "generateUnifiedDiff before field equals old_str exactly" {
 }
 
 test "generateUnifiedDiff after field equals new_str exactly" {
-    const test_path = "/tmp/test_after_exact.txt";
+    const test_path = "test_after_exact.txt";
     try createTestFile(test_path, "Hello World\n");
 
     var result = try text_replace.executeTextReplace(
@@ -417,7 +417,7 @@ test "generateUnifiedDiff after field equals new_str exactly" {
 }
 
 test "generateUnifiedDiff multiline old_str shows all lines in split view" {
-    const test_path = "/tmp/test_multiline_split.txt";
+    const test_path = "test_multiline_split.txt";
     try createTestFile(test_path,
         \\fn add(a: i32, b: i32) i32 {
         \\    return a + b;
@@ -452,7 +452,7 @@ test "generateUnifiedDiff multiline old_str shows all lines in split view" {
 }
 
 test "generateUnifiedDiff unified output has both traditional diff and conflict markers" {
-    const test_path = "/tmp/test_unified_and_conflict.txt";
+    const test_path = "test_unified_and_conflict.txt";
     try createTestFile(test_path, "line1\nline2\nline3\n");
 
     var result = try text_replace.executeTextReplace(

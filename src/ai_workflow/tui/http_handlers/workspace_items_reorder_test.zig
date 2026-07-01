@@ -12,6 +12,8 @@
 
 const std = @import("std");
 const testing = std.testing;
+const nalarcore = @import("nalarcore");
+const text_normalize = nalarcore.helpers.text_normalize;
 
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/workspace_items_reorder.zig";
 // workspace_items_list's SQL is delegated to
@@ -25,12 +27,15 @@ const RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
 const MIGRATION_PATH = "src/ai_workflow/tui/migration.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         path,
         allocator,
         .limited(256 * 1024),
     );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
+    return normalized;
 }
 
 test "workspace_items_reorder handler parses ordered_ids from the request body" {
