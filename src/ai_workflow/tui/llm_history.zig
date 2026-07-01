@@ -1594,9 +1594,7 @@ pub fn upsertWorker(
 
     // Emit worker event
     const action = if (exists) "updated" else "created";
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-    const now_timestamp: i64 = ts.sec;
+    const now_timestamp: i64 = helpers.unixTimestamp();
     on_event_sent.onEventSendWorkers(allocator, .{
         .action = action,
         .id = worker_id,
@@ -1619,9 +1617,7 @@ pub fn updateWorkerActivityWithDescription(
     try db.exec(allocator, sql, &.{ description, worker_id });
 
     // Emit worker update event
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-    const now_timestamp: i64 = ts.sec;
+    const now_timestamp: i64 = helpers.unixTimestamp();
     on_event_sent.onEventSendWorkers(allocator, .{
         .action = "updated",
         .id = worker_id,

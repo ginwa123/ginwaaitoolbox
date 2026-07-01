@@ -1,23 +1,56 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
-    pub const Error = error{
-        OpenFailed,
-        DatabaseNotFound,
-        PermissionDenied,
-        DiskFull,
-        DatabaseCorrupt,
-        QueryFailed,
-        PrepareFailed,
-        BindFailed,
-        ExecuteFailed,
-        RowNotFound,
-        OutOfMemory,
-        Canceled,
+pub const Error = error{
+    OpenFailed,
+    DatabaseNotFound,
+    PermissionDenied,
+    DiskFull,
+    DatabaseCorrupt,
+    QueryFailed,
+    PrepareFailed,
+    BindFailed,
+    ExecuteFailed,
+    RowNotFound,
+    OutOfMemory,
+    Canceled,
+};
+
+/// Cross-platform sqlite3 bindings.
+/// On Linux/macOS with sqlite3 headers installed, we use @cImport.
+/// On Windows (or when headers are missing), we use manual extern declarations.
+const c = if (builtin.os.tag != .windows)
+    @cImport(@cInclude("sqlite3.h"))
+else
+    struct {
+        pub const sqlite3 = extern struct {};
+        pub const sqlite3_stmt = extern struct {};
+
+        pub const SQLITE_OK: c_int = 0;
+        pub const SQLITE_ROW: c_int = 100;
+        pub const SQLITE_DONE: c_int = 101;
+        pub const SQLITE_CANTOPEN: c_int = 14;
+        pub const SQLITE_PERM: c_int = 3;
+        pub const SQLITE_FULL: c_int = 13;
+        pub const SQLITE_CORRUPT: c_int = 11;
+        pub const SQLITE_TRANSIENT: isize = -1;
+
+        pub extern fn sqlite3_open(filename: [*:0]const u8, ppDb: *?*sqlite3) c_int;
+        pub extern fn sqlite3_close(db: ?*sqlite3) c_int;
+        pub extern fn sqlite3_errmsg(db: ?*sqlite3) [*:0]const u8;
+        pub extern fn sqlite3_exec(db: ?*sqlite3, sql: [*:0]const u8, callback: ?*anyopaque, arg: ?*anyopaque, errmsg: ?*?[*:0]const u8) c_int;
+        pub extern fn sqlite3_prepare_v2(db: ?*sqlite3, sql: [*]const u8, nByte: c_int, ppStmt: *?*sqlite3_stmt, pzTail: ?*?[*]const u8) c_int;
+        pub extern fn sqlite3_step(stmt: ?*sqlite3_stmt) c_int;
+        pub extern fn sqlite3_finalize(stmt: ?*sqlite3_stmt) c_int;
+        pub extern fn sqlite3_bind_text(stmt: ?*sqlite3_stmt, idx: c_int, text: [*]const u8, n: c_int, destroy: isize) c_int;
+        pub extern fn sqlite3_bind_null(stmt: ?*sqlite3_stmt, idx: c_int) c_int;
+        pub extern fn sqlite3_column_count(stmt: ?*sqlite3_stmt) c_int;
+        pub extern fn sqlite3_column_text(stmt: ?*sqlite3_stmt, col: c_int) ?[*]const u8;
+        pub extern fn sqlite3_column_bytes(stmt: ?*sqlite3_stmt, col: c_int) c_int;
+        pub extern fn sqlite3_changes(db: ?*sqlite3) c_int;
     };
 
 pub const SqliteBackend = struct {
-    const c = @cImport(@cInclude("sqlite3.h"));
-
     io: std.Io = .failing,
     db: ?*c.sqlite3 = null,
     mutex: std.Io.Mutex = .init,

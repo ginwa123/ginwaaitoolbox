@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const json = std.json;
 const Reader = std.Io.Reader;
 const bashTool = @import("tools/bash.zig").bash_tool;
@@ -808,6 +809,7 @@ pub const Agent = struct {
     /// The backend treats EAGAIN as a programmer bug and panics. TCP keepalive
     /// is the correct mechanism here.
     fn apply_tcp_keepalive(self: Agent, req: anytype) ?i32 {
+        if (builtin.os.tag == .windows) return null;
         const conn = req.connection orelse {
             self.log_msg(.warn, "[STREAM] cannot set TCP keepalive: no connection");
             return null;
@@ -875,7 +877,11 @@ pub const Agent = struct {
 
         fn threadMain(wd: *StreamWatchdog) void {
             while (true) {
-                _ = std.c.nanosleep(&.{ .sec = 0, .nsec = 250 * std.time.ns_per_ms }, null);
+                if (builtin.os.tag == .windows) {
+                    std.os.windows.kernel32.Sleep(250);
+                } else {
+                    _ = std.c.nanosleep(&.{ .sec = 0, .nsec = 250 * std.time.ns_per_ms }, null);
+                }
                 if (wd.cancel.load(.acquire)) return;
                 const fd_now = wd.fd.load(.acquire);
                 if (fd_now < 0) return; // main thread reset fd
@@ -911,6 +917,12 @@ pub const Agent = struct {
         /// progress on the local side (the kernel is waiting for data, not
         /// for the peer's FIN). The local recv would remain stuck.
         fn forceCancel(fd_now: i32) void {
+            // This function uses Linux-only syscalls (shutdown, dup2, open /dev/null)
+            // to force-cancel a blocked recv. On Windows, these syscalls are not
+            // available. The stream watchdog is a best-effort mechanism; on Windows
+            // we rely on TCP keepalive and the Io runtime's timeout instead.
+            if (builtin.os.tag != .linux) return;
+
             // Two-pronged approach: shutdown(SHUT_RD) "may" unblock the pending
             // recv on Linux (per shutdown(2) man page). If it doesn't, the
             // dup2-to-/dev/null trick replaces the socket fd with /dev/null so
@@ -937,10 +949,14 @@ pub const Agent = struct {
         }
 
         fn wallClockMs() i64 {
-            var ts: std.c.timespec = undefined;
-            _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-            const sec: i64 = @intCast(ts.sec);
-            return sec * 1000 + @divFloor(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
+            if (builtin.os.tag == .windows) {
+                return @import("../../helpers/mod.zig").unixTimestamp() * 1000;
+            } else {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+                const sec: i64 = @intCast(ts.sec);
+                return sec * 1000 + @divFloor(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
+            }
         }
     };
 

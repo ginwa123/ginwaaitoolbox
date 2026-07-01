@@ -254,17 +254,10 @@ pub fn generatePreviewId(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     const ts = std.Io.Clock.now(.real, io);
     const unix_ms = ts.toMilliseconds();
 
-    // Fill 3 random bytes via the kernel CSPRNG. Loop on EINTR to
-    // match the project's libc-getrandom pattern (see
-    // project memory `zig-0.16-crypto-time-stdlib-removals.md`).
-    var random_bytes: [3]u8 = .{ 0, 0, 0 };
-    while (true) {
-        const rc = std.c.getrandom(&random_bytes, random_bytes.len, 0);
-        if (rc >= 0) break;
-        const errno_val = std.c.errno(rc);
-        if (errno_val == .INTR) continue;
-        return error.RandomSourceFailed;
-    }
+    // Fill 3 random bytes via the kernel CSPRNG. Use the Io runtime's
+    // random which is cross-platform (works on Windows, Linux, macOS).
+    var random_bytes: [3]u8 = undefined;
+    io.random(&random_bytes);
 
     var hex: [6]u8 = undefined;
     for (random_bytes, 0..) |b, i| {

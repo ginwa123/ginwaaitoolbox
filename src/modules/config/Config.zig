@@ -1081,10 +1081,11 @@ pub const LlmConfig = struct {
 fn generateRandomAgentName(allocator: std.mem.Allocator) ![]u8 {
     // 8 bytes of pseudo-random entropy → 16 hex chars.
     var entropy_bytes: [8]u8 = undefined;
-    const pid: u64 = if (@hasDecl(std.c, "getpid"))
-        @intCast(std.c.getpid())
-    else
-        0;
+    const pid: u64 = switch (builtin.os.tag) {
+        .linux, .macos => @intCast(std.c.getpid()),
+        .windows => @intCast(std.os.windows.GetCurrentProcessId()),
+        else => 0,
+    };
     const stack_addr: u64 = @intCast(@intFromPtr(&entropy_bytes));
     const alloc_addr: u64 = @intCast(@intFromPtr(allocator.ptr));
     const entropy: u64 = pid ^ (stack_addr << 17) ^ (alloc_addr << 33);

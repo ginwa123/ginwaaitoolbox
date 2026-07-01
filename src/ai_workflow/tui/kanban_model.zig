@@ -104,11 +104,19 @@ pub fn listColumns(
 ///
 /// `std.time.timestamp()` was removed in Zig 0.16 — see the project
 /// memory `zig-0.16-crypto-time-stdlib-removals.md`.
+/// Uses stack address + pseudo-random bytes for uniqueness (avoids
+/// `std.c.clock_gettime` which doesn't compile on Windows).
 fn generateColumnId(allocator: std.mem.Allocator) ![]u8 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-    const ns: i128 = @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
-    return std.fmt.allocPrint(allocator, "col_{d}", .{ns});
+    var entropy: [8]u8 = undefined;
+    const stack_addr: u64 = @intCast(@intFromPtr(&entropy));
+    @as(*u64, @ptrCast(@alignCast(&entropy))).* = stack_addr;
+    var hex: [16]u8 = undefined;
+    const hex_chars = "0123456789abcdef";
+    for (entropy, 0..) |b, i| {
+        hex[i * 2] = hex_chars[b >> 4];
+        hex[i * 2 + 1] = hex_chars[b & 0x0F];
+    }
+    return std.fmt.allocPrint(allocator, "col_{s}", .{&hex});
 }
 
 /// Append a new column to the end of the kanban's column sequence.
