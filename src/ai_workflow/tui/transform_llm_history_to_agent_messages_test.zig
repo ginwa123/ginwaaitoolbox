@@ -191,8 +191,12 @@ test "transform - assistant message with image_url creates content_parts" {
         .tools = try allocator.dupe(u8, ""),
         .agent = try allocator.dupe(u8, "Agent"),
         .image_urls = blk: {
+            // Each entry must be heap-allocated — see the matching
+            // comment in the first test below. deinit() walks the array
+            // and frees every entry, and Allocator.free in Zig 0.16
+            // memsets the bytes before dispatching to the vtable.
             const arr = try std.heap.c_allocator.alloc([]const u8, 1);
-            arr[0] = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+            arr[0] = try allocator.dupe(u8, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
             break :blk arr;
         },
     };
@@ -228,8 +232,12 @@ test "transform - tool message ignores image_url" {
         .agent = try allocator.dupe(u8, "Agent"),
         .tool_call_id = try allocator.dupe(u8, "tool_call_id_123"),
         .image_urls = blk: {
+            // Each entry must be heap-allocated — see the matching
+            // comment in the first test below. deinit() walks the array
+            // and frees every entry, and Allocator.free in Zig 0.16
+            // memsets the bytes before dispatching to the vtable.
             const arr = try std.heap.c_allocator.alloc([]const u8, 1);
-            arr[0] = "data:image/png;base64,ABCD";
+            arr[0] = try allocator.dupe(u8, "data:image/png;base64,ABCD");
             break :blk arr;
         },
     };
