@@ -305,22 +305,49 @@ pub fn handleClientDisconnect(client_id: [16]u8) void {
         cb(client_id);
     }
 
-    // getSessionIdForClient returns an owned copy — we free it at end of scope
-    const maybe_session_id = getSessionIdForClient(client_id, false);
-    if (maybe_session_id) |session_id| {
-        defer di.allocator.free(session_id);
+    // Collect EVERY routing_key that contains this client_id, then
+    // unregister each one and drop its event_bus subscription.
+    //
+    // The previous implementation called `getSessionIdForClient`
+    // which returns the FIRST match — for clients connected via the
+    // unified SSE endpoint (`unified_events_sse.zig:248-250`), the
+    // same client_id is registered under N routing_keys (one per
+    // channel: llm, workers, sessions, kanban_column, kanban_task,
+    // queue). Unregistering only the first match left the other
+    // (N-1) routing_keys as orphans in `session_to_client_ids`,
+    // each holding an owned key + a non-empty ArrayList — a slow
+    // memory leak across reconnects. See the audit in
+    // docs/superpowers/plans/2026-07-01-fix-remaining-fd-leak-risks.md.
+    var routing_keys_to_drop: std.ArrayList([]const u8) = .empty;
+    defer routing_keys_to_drop.deinit(di.allocator);
 
-        // Unregister and free the map key. After this, the session has no
-        // clients left in the map, so there is nothing left to read — the
-        // previous "getListClientsForSession, then check len == 0" branch
-        // was dead code (the lookup would always return null right after
-        // unregister) and its `defer allocator.free(clients)` was
-        // silently freeing a borrowed slice if the order ever changed.
-        unregisterSessionClient(session_id, false);
+    {
+        di.session_map_lock.lock(io) catch {};
+        defer di.session_map_lock.unlock(io);
+        var it = di.session_to_client_ids.iterator();
+        while (it.next()) |entry| {
+            for (entry.value_ptr.items) |v| {
+                if (std.mem.eql(u8, &v, &client_id)) {
+                    // Each routing_key's map entry owns its key string
+                    // (registered via `registerSessionClient` → result.key_ptr.*
+                    // = owned_key). Dupe it here so the unregister loop
+                    // can pass a stable pointer; `unregisterSessionClient`
+                    // owns the key and frees it.
+                    if (di.allocator.dupe(u8, entry.key_ptr.*)) |duped| {
+                        routing_keys_to_drop.append(di.allocator, duped) catch continue;
+                    } else |_| {
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+    }
 
-        // Drop the event‑bus subscription for this session; no client
-        // can be listening any more.
-        ev_bus.unsubscribe(session_id);
+    for (routing_keys_to_drop.items) |rk| {
+        defer di.allocator.free(rk);
+        unregisterSessionClient(rk, false);
+        ev_bus.unsubscribe(rk);
     }
 }
 

@@ -597,3 +597,263 @@ test "SseManager: sweepStaleClients respects max_per_call cap" {
     mgr.sweepStaleClients(100, 2);
     try std.testing.expect(mgr.clientCount() == 0);
 }
+
+// ============================================================================
+// Task 4 (2026-07-01): additional FD-leak / memory-leak regression tests
+// (`docs/superpowers/plans/2026-07-01-fix-remaining-fd-leak-risks.md`).
+//
+// Three fixes audited on 2026-07-01 that were NOT addressed by the prior
+// `5df11a9a` (POLL.NVAL) fix:
+//   1. `sendToClient` reads `self.clients` and `client.fd` without holding
+//      the lock — UAF + potential FD leak if a concurrent `removeClient`
+//      frees the client while the writeChunkedFrame is in flight.
+//   2. `deinit` and `gracefulShutdown` call `client.forceDestroy()` which
+//      closes the fd but leaks the per-client arena + message_queue —
+//      memory leak in long-lived servers that have served many distinct
+//      connections.
+//   3. `handleClientDisconnect` (in root.zig) only unregisters the FIRST
+//      routing_key containing the client_id, leaving N-1 orphans in
+//      `session_to_client_ids` for clients connected via the unified
+//      SSE endpoint (which registers under N channels).
+// ============================================================================
+
+test "SseManager: sendToClient takes the manager lock before reading self.clients (static contract)" {
+    // The audit identified that `sendToClient` previously read from
+    // `self.clients.get(id)` and dereferenced `client.fd` without
+    // holding the per-manager lock. Concurrent `registerClient` /
+    // `removeClient` could rehash the underlying bucket array or free
+    // the client pointer mid-write, leaving the failed-write path's
+    // `removeClient` call operating on a foreign (recycled) client_id
+    // and silently leaking the real victim's FD. The fix holds the
+    // lock for the duration of the `get` + writeChunkedFrame +
+    // inlined-remove sequence.
+    const source = @embedFile("../../../../src/modules/custom_http_server/src/sse_manager.zig");
+
+    // Find `fn sendToClient` and look at the next ~8 KiB of body
+    // (matches the window size used by the existing sendHeartbeat
+    // static-contract test in this file; the function is ~50 lines
+    // with verbose comments).
+    const decl_pos = std.mem.indexOf(u8, source, "pub fn sendToClient(") orelse 0;
+    if (decl_pos == 0) {
+        std.debug.print("\n!! sse_manager.zig missing `pub fn sendToClient` !!\n", .{});
+        return error.SendToClientDeclMissing;
+    }
+    const window_end = @min(decl_pos + 8192, source.len);
+    const window = source[decl_pos..window_end];
+
+    // Reverse-direction guard: the lock must NOT be commented out —
+    // the regression that motivated this fix was an unlocked read
+    // that the test would otherwise miss if someone commented the
+    // lock back out.
+    if (std.mem.indexOf(u8, window, "// self.lock.lock(self.io)") != null) {
+        std.debug.print(
+            "\n!! sse_manager.zig: sendToClient lock is commented out !!\n" ++
+                "   Uncomment `self.lock.lock(self.io)` and `self.lock.unlock(self.io)`.\n",
+            .{},
+        );
+        return error.SendToClientLockCommentedOut;
+    }
+
+    const lock_pos = std.mem.indexOf(u8, window, "self.lock.lock(self.io)") orelse 0;
+    if (lock_pos == 0) {
+        std.debug.print(
+            "\n!! sse_manager.zig: sendToClient must lock before reading self.clients !!\n" ++
+                "   Concurrent register/remove can race with the unlocked read and leak FDs.\n",
+            .{},
+        );
+        return error.SendToClientLockMissing;
+    }
+    if (std.mem.indexOf(u8, window, "self.lock.unlock(self.io)") == null) {
+        std.debug.print(
+            "\n!! sse_manager.zig: sendToClient must release `self.lock` !!\n" ++
+                "   Missing `defer self.lock.unlock(self.io)` would deadlock registerClient.\n",
+            .{},
+        );
+        return error.SendToClientUnlockMissing;
+    }
+
+    // The lock MUST be acquired BEFORE the read of `self.clients` (or
+    // an inlined `fetchRemove` is fine — that's still under the lock).
+    const get_pos = std.mem.indexOf(u8, window, "self.clients.get(id)") orelse 0;
+    const fetch_pos = std.mem.indexOf(u8, window, "self.clients.fetchRemove(id)") orelse 0;
+    if (get_pos == 0 and fetch_pos == 0) {
+        std.debug.print(
+            "\n!! sse_manager.zig: sendToClient must read self.clients under the lock !!\n" ++
+                "   Expected either `self.clients.get(id)` or `self.clients.fetchRemove(id)` in the body.\n",
+            .{},
+        );
+        return error.SendToClientUnlockedClientsRead;
+    }
+    const read_pos = if (get_pos != 0) get_pos else fetch_pos;
+    if (read_pos < lock_pos) {
+        std.debug.print(
+            "\n!! sse_manager.zig: self.clients read precedes the lock acquire !!\n" ++
+                "   The read happens at offset {d} but the lock acquire is at offset {d}.\n",
+            .{ read_pos, lock_pos },
+        );
+        return error.SendToClientReadBeforeLock;
+    }
+}
+
+test "SseManager: sendToClient removes the client on a failed write (behavioural)" {
+    // Verify the failed-write path correctly cleans up: after
+    // sendToClient returns ClientDisconnected, the client must no
+    // longer be in the manager (so the FD is properly closed and the
+    // SseClient struct is freed).
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var server_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer server_arena.deinit();
+    const server_allocator = server_arena.allocator();
+
+    var mgr = try SseManager.init(std.testing.allocator, server_allocator, io);
+    defer mgr.deinit();
+
+    const pair = try createSocketPair();
+    // We close pair[0] BEFORE calling sendToClient so the write
+    // fails with EPIPE — this simulates the "peer crashed" scenario
+    // that the failed-write branch must clean up.
+    _ = posix.system.close(pair[0]);
+    defer _ = posix.system.close(pair[1]);
+
+    const id: [16]u8 = .{ 0xAA, 0xBB, 0xCC, 0xDD } ++ .{0} ** 12;
+    _ = try mgr.registerClientForTest(pair[0], id);
+    try std.testing.expect(mgr.clientCount() == 1);
+
+    // sendToClient should observe the failed write, remove the client,
+    // and return error.ClientDisconnected.
+    const result = mgr.sendToClient(id, "data: ping\n\n");
+    try std.testing.expectError(error.ClientDisconnected, result);
+    try std.testing.expect(mgr.clientCount() == 0);
+}
+
+test "SseManager: sendToClient returns ClientNotFound for an unknown id (behavioural)" {
+    // Sanity check: the lock-protected path still returns ClientNotFound
+    // when the id is not registered.
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var server_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer server_arena.deinit();
+    const server_allocator = server_arena.allocator();
+
+    var mgr = try SseManager.init(std.testing.allocator, server_allocator, io);
+    defer mgr.deinit();
+
+    const bogus: [16]u8 = .{0xFE} ** 16;
+    const result = mgr.sendToClient(bogus, "data: hello\n\n");
+    try std.testing.expectError(error.ClientNotFound, result);
+}
+
+test "SseManager: deinit and gracefulShutdown call client.deinit (not forceDestroy)" {
+    // Static-contract guard against the 2026-07-01 audit finding:
+    // `forceDestroy` closes the fd but leaks the per-client arena and
+    // message_queue. Both `deinit` and `gracefulShutdown` must use
+    // the full `client.deinit()` so arena memory is freed.
+    const source = @embedFile("../../../../src/modules/custom_http_server/src/sse_manager.zig");
+
+    // Find each shutdown function and assert the body uses
+    // `entry.value_ptr.*.deinit()` rather than `forceDestroy()`.
+    const functions = [_][]const u8{ "pub fn deinit(self: *SseManager) void {", "pub fn gracefulShutdown(self: *SseManager) void {" };
+    inline for (functions) |fn_sig| {
+        const decl_pos = std.mem.indexOf(u8, source, fn_sig) orelse 0;
+        if (decl_pos == 0) {
+            std.debug.print("\n!! sse_manager.zig missing {s} !!\n", .{fn_sig});
+            return error.ShutdownFnMissing;
+        }
+        // Each shutdown body is <1 KiB in this codebase.
+        const window_end = @min(decl_pos + 1500, source.len);
+        const window = source[decl_pos..window_end];
+
+        // Must contain at least one `entry.value_ptr.*.deinit()` call
+        // (the iterator loop variable name is consistent across both
+        // functions).
+        const deinit_pos = std.mem.indexOf(u8, window, "entry.value_ptr.*.deinit()") orelse 0;
+        if (deinit_pos == 0) {
+            std.debug.print(
+                "\n!! sse_manager.zig: {s} must call entry.value_ptr.*.deinit() !!\n" ++
+                    "   `forceDestroy` closes the fd but leaks the per-client arena.\n",
+                .{fn_sig},
+            );
+            return error.ShutdownLeakForceDestroy;
+        }
+
+        // Must NOT contain `entry.value_ptr.*.forceDestroy()` in the
+        // same window — if both are present, the forceDestroy branch
+        // would win at runtime and the leak is back.
+        const force_pos = std.mem.indexOf(u8, window, "entry.value_ptr.*.forceDestroy()") orelse 0;
+        if (force_pos != 0) {
+            std.debug.print(
+                "\n!! sse_manager.zig: {s} still calls forceDestroy !!\n" ++
+                    "   The full `deinit()` is required to free the per-client arena.\n",
+                .{fn_sig},
+            );
+            return error.ShutdownStillUsesForceDestroy;
+        }
+    }
+}
+
+test "root.zig: handleClientDisconnect iterates ALL routing_keys (static contract)" {
+    // The 2026-07-01 audit found that the previous `handleClientDisconnect`
+    // implementation called `getSessionIdForClient` (which returns the
+    // FIRST match) and unregistered only that one routing_key. For
+    // clients connected via the unified SSE endpoint (which registers
+    // the same client_id under N channels), this left N-1 orphan
+    // entries in `session_to_client_ids` that grew with every reconnect.
+    //
+    // The fix iterates all matches and unregisters each one. This
+    // static-contract test verifies the fix is in place by looking for
+    // the iteration pattern: `it.next()` inside a `while` loop over
+    // the session_to_client_ids iterator.
+    const source = @embedFile("../../../../src/root.zig");
+
+    // Find `fn handleClientDisconnect` and check the next ~2 KiB
+    // contains BOTH an iterator loop AND a check for the client_id
+    // inside the loop body. The previous implementation had a single
+    // `getSessionIdForClient` call instead.
+    const decl_pos = std.mem.indexOf(u8, source, "pub fn handleClientDisconnect(") orelse 0;
+    if (decl_pos == 0) {
+        std.debug.print("\n!! root.zig missing `pub fn handleClientDisconnect` !!\n", .{});
+        return error.HandleClientDisconnectDeclMissing;
+    }
+    const window_end = @min(decl_pos + 2000, source.len);
+    const window = source[decl_pos..window_end];
+
+    // Must iterate over session_to_client_ids (the iterator loop).
+    const it_loop = std.mem.indexOf(u8, window, "session_to_client_ids.iterator()") orelse 0;
+    if (it_loop == 0) {
+        std.debug.print(
+            "\n!! root.zig: handleClientDisconnect must iterate session_to_client_ids !!\n" ++
+                "   Without iteration, only one routing_key per disconnect is unregistered.\n",
+            .{},
+        );
+        return error.HandleClientDisconnectNoIteration;
+    }
+
+    // Must compare the client_id inside the loop body (the inner
+    // `for (entry.value_ptr.items) |v| { ... eql(&v, &client_id) }`).
+    const cmp_pos = std.mem.indexOf(u8, window, "std.mem.eql(u8, &v, &client_id)") orelse
+        std.mem.indexOf(u8, window, "std.mem.eql(u8, &client_id, &v)") orelse 0;
+    if (cmp_pos == 0) {
+        std.debug.print(
+            "\n!! root.zig: handleClientDisconnect must compare client_id inside the iteration !!\n" ++
+                "   Without the inner comparison, the loop iterates but does not match.\n",
+            .{},
+        );
+        return error.HandleClientDisconnectNoCompare;
+    }
+
+    // Reverse-direction guard: the OLD single-match pattern must be gone.
+    // The previous implementation called `getSessionIdForClient` once.
+    if (std.mem.indexOf(u8, window, "getSessionIdForClient(client_id, false)") != null) {
+        std.debug.print(
+            "\n!! root.zig: handleClientDisconnect still uses single-match getSessionIdForClient !!\n" ++
+                "   The fix replaced this with an iterator loop to handle multi-channel clients.\n",
+            .{},
+        );
+        return error.HandleClientDisconnectStillSingleMatch;
+    }
+}
