@@ -159,8 +159,16 @@ pub const SessionMessage = struct {
     role: []const u8,
     content: []const u8,
     created_at: []const u8,
-    is_input: []const u8,
-    is_output: []const u8,
+    /// Wire-format boolean. Emitted as JSON `true`/`false` by
+    /// `std.json.Stringify.valueAlloc` (called from
+    /// `makeSessionMessagesResponse`). Matches the SSE
+    /// `SseEventLLMHistory.is_input` shape and the TypeScript
+    /// `is_input?: boolean` type. The DB column is `INTEGER` (0/1);
+    /// the conversion to bool happens in `llm_history.SessionMessage`
+    /// via `parseRowBool`. See
+    /// docs/plans/2026-07-01-is-input-output-bool-consistency.md.
+    is_input: bool,
+    is_output: bool,
     tool_name: []const u8,
     finish_reason: []const u8,
     reasoning_content: []const u8,
