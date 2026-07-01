@@ -47,15 +47,34 @@ interface Args { content_type?: string; content?: string; title?: string; langua
 const activeArgs = computed<Args>(() => {
   const p = activePreview.value
   if (!p) return {}
-  // Extract the JSON-encoded tool-call arguments from the wrapper
-  // envelope. The backend stores the show_preview input as a
-  // <parameters>{...}</parameters> tag inside the <tool>...</tool>
-  // envelope (see tool_registry.wrapToolOutput). Using
-  // tryUnwrapToolOutput here matches the pattern used by
-  // <NalarBrowser> via ChatView's getParametersForMessage helper.
+  // Extract the show_preview tool-call arguments from the wrapper
+  // envelope. The backend stores the input inside the
+  // `<parameters>...</parameters>` tag of the `<tool>...</tool>`
+  // envelope (see tool_registry.wrapToolOutput). After my backend fix
+  // for the `<parameters>` double-wrap, the inner content is XML
+  // (converted by jsonArgsToXml), NOT raw JSON — so we must read it
+  // with findTag, not JSON.parse. The JSON.parse fallback handles
+  // the rare case of legacy rows still in raw-JSON form.
   const unwrapped = tryUnwrapToolOutput(p.content)
   if (!unwrapped?.parameters) return {}
-  try { return JSON.parse(unwrapped.parameters) as Args } catch { return {} }
+  const paramsXml = unwrapped.parameters
+  // Try XML-based extraction first (current backend behavior).
+  const fromXml: Args = {
+    content_type: findTag(paramsXml, 'content_type') ?? undefined,
+    content: findTag(paramsXml, 'content') ?? undefined,
+    title: findTag(paramsXml, 'title') ?? undefined,
+    language: findTag(paramsXml, 'language') ?? undefined,
+    caption: findTag(paramsXml, 'caption') ?? undefined,
+  }
+  if (fromXml.content) return fromXml
+  // Fallback: try JSON (legacy raw-JSON rows, if any exist).
+  try {
+    const parsed = JSON.parse(paramsXml) as Args
+    if (parsed && typeof parsed === 'object') return parsed
+  } catch {
+    /* not JSON — fall through */
+  }
+  return {}
 })
 
 function escapeHtml(s: string): string {

@@ -38,11 +38,42 @@ interface PreviewInput {
  * `PreviewSidePanel` uses `tryUnwrapToolOutput` to pull `parameters`
  * out of this envelope, so the test fixtures must produce the
  * real envelope shape — not a synthetic `{content, parameters}` object.
+ *
+ * This variant embeds the parameters as **raw JSON** inside
+ * `<parameters>...</parameters>`. Most tests use this form because
+ * it's simpler; the production-pipeline form is `buildXmlEnvelope`
+ * below (which mirrors what jsonArgsToXml produces after the
+ * double-wrap fix — see tool_registry.zig:1581).
  */
 const buildEnvelope = (input: PreviewInput): string => {
   const parameters = JSON.stringify(input)
   const innerData = `<show_preview><status>shown</status><preview_id>pv_test_1</preview_id><content_type>${input.content_type ?? 'markdown'}</content_type><content_length>${input.content?.length ?? 0}</content_length></show_preview>`
   return `<tool><name>show_preview</name><parameters>${parameters}</parameters><success>true</success><data>${innerData}</data></tool>`
+}
+
+/**
+ * Build a `<tool>...</tool>` envelope where the inner `<parameters>`
+ * is XML (the form produced by the backend's `jsonArgsToXml` after
+ * the double-wrap fix), not raw JSON. Each JSON key becomes a
+ * child tag: `{"content_type":"markdown","content":"hi"}` →
+ * `<parameters><content_type>markdown</content_type><content>hi</content></parameters>`.
+ *
+ * The frontend MUST extract these via `findTag(...)`, not `JSON.parse`,
+ * because `<` and `>` are not escaped inside JSON string values that
+ * happen to contain markdown/code.
+ */
+const buildXmlEnvelope = (input: PreviewInput): string => {
+  const paramsInner = Object.entries(input)
+    .map(([k, v]) => {
+      // Escape any XML-incompatible chars in the value (defensive —
+      // the backend's xmlEscape covers & < > " ' but the test only
+      // needs & and <, which are the ones that would break findTag).
+      const escaped = String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      return `<${k}>${escaped}</${k}>`
+    })
+    .join('')
+  const innerData = `<show_preview><status>shown</status><preview_id>pv_test_1</preview_id><content_type>${input.content_type ?? 'markdown'}</content_type><content_length>${input.content?.length ?? 0}</content_length></show_preview>`
+  return `<tool><name>show_preview</name><parameters>${paramsInner}</parameters><success>true</success><data>${innerData}</data></tool>`
 }
 
 const makePreview = (overrides: PreviewOverrides = {}) => {
@@ -217,5 +248,56 @@ describe('PreviewSidePanel', () => {
     expect(wrapper.html()).toContain('Integration Test')
     // content_type from inner envelope drives the header label
     expect(wrapper.text()).toContain('markdown')
+  })
+
+  // Regression test for the production pipeline: the backend's
+  // jsonArgsToXml (tool_registry.zig:1581) converts each JSON key
+  // into a child tag inside <parameters>, so the final envelope
+  // is XML — NOT raw JSON. PreviewSidePanel must extract the
+  // content/title/etc. via findTag, not JSON.parse. Without that
+  // fix the panel renders empty (activeArgs === {} from a failed
+  // JSON.parse).
+  it('extracts parameters from XML-form <parameters> (production pipeline)', () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: {
+        previews: [
+          {
+            id: 'xml-1',
+            content: buildXmlEnvelope({
+              content_type: 'markdown',
+              content: '# XML Pipeline\n\nRendered via findTag.',
+              title: 'From XML Params',
+            }),
+          },
+        ],
+      },
+    })
+    // Title from <title>...</title> inside <parameters>...</parameters>
+    expect(wrapper.text()).toContain('From XML Params')
+    // Markdown content from <content>...</content> renders via marked
+    expect(wrapper.html()).toContain('<h1')
+    expect(wrapper.html()).toContain('XML Pipeline')
+    // content_type from inner envelope drives the header
+    expect(wrapper.text()).toContain('markdown')
+  })
+
+  it('renders code preview via XML parameters (production pipeline)', () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: {
+        previews: [
+          {
+            id: 'xml-code-1',
+            content: buildXmlEnvelope({
+              content_type: 'code',
+              content: 'fn main() !void {}',
+              language: 'zig',
+            }),
+          },
+        ],
+      },
+    })
+    // code renders as <pre><code class="language-zig">…</code></pre>
+    expect(wrapper.html()).toContain('language-zig')
+    expect(wrapper.html()).toContain('fn main')
   })
 })
