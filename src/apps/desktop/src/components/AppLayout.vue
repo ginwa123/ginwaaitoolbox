@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick, provide } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import Sidebar from './Sidebar.vue'
-import RightSidebar from './RightSidebar.vue'
+// DISABLED: import RightSidebar from './RightSidebar.vue'   // 2026-06-29 — task disable-rightsidebar-vue
 import GitFileViewer from './GitFileViewer.vue'
 import SkillDetail from './SkillDetail.vue'
 import ChatView from './ChatView.vue'
@@ -1413,7 +1413,7 @@ watch(chatSessionCwd, (newCwd) => {
     <!-- Settings page -->
     <SettingsView v-if="currentView === 'settings'" />
 
-    <!-- Right Sidebar (Explorer + Git tabs) -->
+    <!-- Right Sidebar (Explorer + Git tabs) — DISABLED 2026-06-29 (task disable-rightsidebar-vue)
     <RightSidebar
       v-if="rightSidebarCwd"
       :cwd="rightSidebarCwd"
@@ -1423,6 +1423,7 @@ watch(chatSessionCwd, (newCwd) => {
       @code-editor-file-click="handleCodeEditorFileClick"
       @resize="handleRightSidebarResize"
     />
+    -->
 
     <!-- Global error notification stack -->
     <NotificationContainer />
