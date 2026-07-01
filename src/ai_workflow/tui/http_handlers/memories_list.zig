@@ -1,3 +1,15 @@
+//! `GET /api/memories` — list all global memory files (markdown) in
+//! `$XDG_CONFIG_HOME/nalar/memories/` or `~/.config/nalar/memories/`.
+//!
+//! Returns JSON: `{"memories":[{"name":"...","title":"...","path":"...","size":N}]}`
+//! Empty list when no memories exist or the folder is missing — never throws.
+//!
+//! Layered as:
+//!   - `useCase` — resolves the singleton, looks up the environment,
+//!     and lists the memories.
+//!   - `memoriesListHandler` — thin orchestrator: delegates to `useCase`,
+//!     maps errors to status codes, builds the JSON response.
+
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
@@ -5,30 +17,99 @@ const memories_mod = nalarcore.memories;
 const list_memory_mod = nalarcore.list_memory_tool;
 const http_response = @import("http_response.zig");
 
-/// GET /api/memories - List all global memory files (markdown) in
-/// $XDG_CONFIG_HOME/nalar/memories/ or ~/.config/nalar/memories/.
+/// Domain-level error set for `useCase`. The `getSingleton` call may
+/// fail when the singleton has not been initialised yet, and the
+/// environment may legitimately be missing on a server without a
+/// config dir.
+pub const MemoriesListError = error{
+    /// `nalarcore.getSingleton()` failed (server has not been
+    /// initialised yet). Maps to 500.
+    ServerNotInitialized,
+    /// The singleton has no `*const std.process.Environ.Map` (the
+    /// server was constructed without an env). Maps to 500 with the
+    /// "Missing environment" message preserved for the static contract.
+    MissingEnvironment,
+    /// `list_memory_mod.toJson` returned `error.OutOfMemory`. Maps to 500.
+    /// In production this is effectively unreachable (the
+    /// per-request arena reaps everything at request end) but the
+    /// type system requires the variant so the `try` on the call
+    /// propagates a typed error.
+    OutOfMemory,
+};
+
+/// Inputs to the list-memories use-case. Currently empty — the
+/// endpoint takes no path params / body — kept as a struct for
+/// forward compatibility (e.g. adding `?cwd=...` filtering later).
+pub const MemoriesListInput = struct {};
+
+/// Output of the list-memories use-case: the allocated JSON body to
+/// return to the caller, plus the borrowed memory-list backing (the
+/// caller does NOT free either — both live in the per-request arena).
+pub const MemoriesListOutput = struct {
+    json_body: []const u8,
+};
+
+// =====================================================================
+// Use case
+// =====================================================================
+
+/// Resolve the environment and produce the memories list JSON.
 ///
-/// Returns JSON: `{"memories":[{"name":"...","title":"...","path":"...","size":N}]}`
-/// Empty list when no memories exist or the folder is missing — never throws.
+/// Steps:
+///   1. Get the singleton (catches 500 on a server not yet ready).
+///   2. Read its environment (catches 500 on missing env).
+///   3. List memories and serialize to JSON.
+///   4. Return the heap-owned JSON body for the handler to wrap in
+///      a 200 response.
+fn useCase(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    input: MemoriesListInput,
+) MemoriesListError!MemoriesListOutput {
+    _ = input;
+
+    const di = nalarcore.getSingleton() catch return error.ServerNotInitialized;
+    const environment = di.environment orelse return error.MissingEnvironment;
+
+    const list = memories_mod.listAllMemories(allocator, io, environment);
+    defer memories_mod.freeMemoriesList(allocator, list);
+
+    const json_body = try list_memory_mod.toJson(allocator, list);
+    return .{ .json_body = json_body };
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
 pub fn memoriesListHandler(
     ctx: gserverz.HttpContext,
     req: gserverz.HttpRequest,
     res: gserverz.HttpResponse,
 ) !gserverz.HttpResponse {
     _ = req;
-
     const allocator = ctx.allocator;
-    const di = try nalarcore.getSingleton();
-    const environment = di.environment orelse {
+
+    const outcome = useCase(allocator, ctx.io, .{}) catch |err| {
+        // Both switches are exhaustive over the inferred error set —
+        // adding a new `MemoriesListError` variant will fail to
+        // compile here (intentional, to keep status codes in sync).
+        // No `else` prong needed.
+        const status: u16 = switch (err) {
+            error.ServerNotInitialized => 500,
+            error.MissingEnvironment => 500,
+            error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.ServerNotInitialized => "Server not initialized",
+            error.MissingEnvironment => "Missing environment",
+            error.OutOfMemory => "Out of memory",
+        };
         return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing environment" }),
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
         });
     };
 
-    const list = memories_mod.listAllMemories(allocator, ctx.io, environment);
-    defer memories_mod.freeMemoriesList(allocator, list);
-
-    const json_response = try list_memory_mod.toJson(allocator, list);
-    return res.jsonResponse(.{ .status_code = 200, .data = json_response });
+    return res.jsonResponse(.{ .status_code = 200, .data = outcome.json_body });
 }

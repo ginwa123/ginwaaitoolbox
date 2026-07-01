@@ -13,6 +13,11 @@ pub const QueueMessagesError = error{
     MissingSessionId,
     GlobalContextNotInitialized,
     QueryFailed,
+    /// `allocator.dupe` returned no memory. In production the
+    /// per-request arena makes this unreachable but the type
+    /// system requires the variant so `try allocator.dupe`
+    /// propagates a typed error.
+    OutOfMemory,
 };
 
 pub const QueueMessageEntry = struct {
@@ -89,11 +94,13 @@ pub fn queueMessagesGetHandler(
             error.MissingSessionId => 400,
             error.GlobalContextNotInitialized => 500,
             error.QueryFailed => 500,
+            error.OutOfMemory => 500,
         };
         const message: []const u8 = switch (err) {
             error.MissingSessionId => "Missing session_id",
             error.GlobalContextNotInitialized => "Server not initialized",
             error.QueryFailed => "Database query failed",
+            error.OutOfMemory => "Out of memory",
         };
         return res.jsonResponse(.{
             .status_code = status,

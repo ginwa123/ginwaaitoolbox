@@ -15,6 +15,11 @@ const llm_history = nalarcore.llm_history;
 
 pub const SessionListError = error{
     QueryFailed,
+    /// `buildSessionListJson` returns `![]u8` (its body uses
+    /// `std.json.Stringify.valueAlloc` which can fail with
+    /// `OutOfMemory`). Effectively unreachable on the per-request
+    /// arena, but the type system requires the variant.
+    OutOfMemory,
 };
 
 pub const SessionListInput = struct {
@@ -122,9 +127,11 @@ pub fn sessionListHandler(
     const response = useCase(allocator, sqlite_db, input) catch |err| {
         const status: u16 = switch (err) {
             error.QueryFailed => 500,
+            error.OutOfMemory => 500,
         };
         const message: []const u8 = switch (err) {
             error.QueryFailed => "Database query failed",
+            error.OutOfMemory => "Out of memory",
         };
         return res.jsonResponse(.{
             .status_code = status,

@@ -21,13 +21,11 @@ const gserverz = nalarcore.gserverz;
 /// bug, surfaced as a different status code).
 pub const HealthError = error{};
 
-/// Health-probe data returned by the use-case. Mirrors
-/// `http_response.HealthResponse` so the handler can hand it
-/// directly to `makeHealthResponse`.
-pub const HealthData = struct {
-    status: []const u8,
-    timestamp: i64,
-};
+/// Health-probe data returned by the use-case. We use
+/// `http_response.HealthResponse` directly so the handler can hand
+/// the value to `makeHealthResponse` without an extra struct
+/// translation step.
+pub const HealthData = http_response.HealthResponse;
 
 // =====================================================================
 // Use case

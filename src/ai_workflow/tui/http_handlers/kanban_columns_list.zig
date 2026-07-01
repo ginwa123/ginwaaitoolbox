@@ -23,6 +23,11 @@ const kanban_model = @import("../kanban_model.zig");
 pub const KanbanColumnsListError = error{
     ItemIdRequired,
     QueryFailed,
+    /// `makeKanbanColumnListResponse` returns `![]u8` (its body uses
+    /// `std.json.Stringify.valueAlloc` which can fail with
+    /// `OutOfMemory`). Effectively unreachable on the per-request
+    /// arena, but the type system requires the variant.
+    OutOfMemory,
 };
 
 pub const KanbanColumnsListResult = []const u8; // pre-serialized JSON
@@ -64,10 +69,12 @@ pub fn kanbanColumnsListHandler(
         const status: u16 = switch (err) {
             error.ItemIdRequired => 400,
             error.QueryFailed => 500,
+            error.OutOfMemory => 500,
         };
         const message: []const u8 = switch (err) {
             error.ItemIdRequired => "item_id required",
             error.QueryFailed => "Failed to list kanban columns",
+            error.OutOfMemory => "Out of memory",
         };
         return res.jsonResponse(.{
             .status_code = status,

@@ -11,6 +11,14 @@ const gserverz = nalarcore.gserverz;
 
 pub const SessionToClientIdsError = error{
     ServerContextNotInitialized,
+    /// `std.json.Stringify.valueAlloc` returns `error{Canceled}` on
+    /// the Io runtime. Effectively unreachable on the per-request
+    /// arena, but the type system requires the variant.
+    Canceled,
+    /// `std.json.Stringify.valueAlloc` returns `error{OutOfMemory}`.
+    /// Same as above — unreachable on arena, required by the
+    /// type system.
+    OutOfMemory,
 };
 
 pub const SessionToClientIdsEntry = struct {
@@ -99,9 +107,13 @@ pub fn sessionToClientIdsHandler(
     const response = useCase(allocator, ctx.io) catch |err| {
         const status: u16 = switch (err) {
             error.ServerContextNotInitialized => 500,
+            error.Canceled => 500,
+            error.OutOfMemory => 500,
         };
         const message: []const u8 = switch (err) {
             error.ServerContextNotInitialized => "Server context not initialized",
+            error.Canceled => "Io operation canceled",
+            error.OutOfMemory => "Out of memory",
         };
         return res.jsonResponse(.{
             .status_code = status,

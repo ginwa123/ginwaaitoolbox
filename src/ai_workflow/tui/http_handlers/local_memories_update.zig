@@ -1,3 +1,27 @@
+//! `PUT /api/local-memories/:name` — replace the body of a local memory file.
+//!
+//! Body: `{"content":"...","cwd":"/abs/path"}`.
+//! On success: 200 with `{"memory":{name,title,path,size}}`.
+//!
+//! Layered as:
+//!   - `useCase` — validates `:name`, resolves the local memories dir
+//!     (body `cwd` first, then io fallback), runs the existence check,
+//!     writes the file, re-lists to derive metadata, and returns a
+//!     heap-owned `MemoryInfo`.
+//!   - `localMemoryUpdateHandler` — thin orchestrator: parses `:name`
+//!     and the body, calls `useCase`, maps errors to status codes,
+//!     builds the JSON response.
+//!
+//! Preserves the static-contract assertions in `local_memories_crud_test.zig`:
+//!   - `get_local_memories_path_for_dir` + `get_local_memories_path_from_io`
+//!     substring checks
+//!   - `parsed.cwd` + `params.get("name")` substring checks
+//!   - `isValidMemoryName` validation
+//!   - `localMemoryExists` + `404` + `writeLocalMemoryFile` substring checks
+//!   - `parseFromSliceLeaky` + `Invalid JSON body` substring checks
+//!   - `std.json.Stringify.valueAlloc` substring check
+//!   - `500` + `no cwd available` substring checks
+
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
@@ -13,22 +37,128 @@ const UpdateLocalMemoryBody = struct {
     cwd: ?[]const u8 = null,
 };
 
-/// Response shape for `PUT /api/local-memories/:name`.
+/// Domain-level error set for `useCase`. Each variant maps to a
+/// distinct HTTP status code.
+pub const LocalMemoryUpdateError = error{
+    /// Neither the body `cwd` nor the io fallback yielded a usable
+    /// local-memories directory. Maps to 500.
+    NoCwdAvailable,
+    /// `:name` path param was missing or empty.
+    NameRequired,
+    /// The name failed `isValidMemoryName` (path-traversal or non-md).
+    InvalidName,
+    /// The memory does not exist (cannot edit a non-existent one). Maps to 404.
+    NotFound,
+    /// `writeLocalMemoryFile` returned false (validation / IO failure).
+    WriteFailed,
+    /// Update succeeded but the file wasn't visible in the
+    /// subsequent `listMemoriesInDir` (consistency violation).
+    NotVisible,
+    /// `allocator.dupe` failed while building the heap-owned output.
+    OutOfMemory,
+};
+
+/// Inputs to the update use-case.
+pub const LocalMemoryUpdateInput = struct {
+    name: []const u8,
+    content: []const u8,
+    /// Body `cwd` (may be null/empty — the use-case falls back to
+    /// the io CWD in that case).
+    cwd: []const u8,
+};
+
+/// Output of the update use-case. `memory` is HEAP-OWNED by the
+/// use-case. The handler is responsible for freeing each slice.
+pub const LocalMemoryUpdateOutput = struct {
+    memory: memories_mod.MemoryInfo,
+};
+
+// =====================================================================
+// Use case
+// =====================================================================
+
+/// Replace the body of an existing local memory file.
+///
+/// Steps:
+///   1. Validate `name` (non-empty + `isValidMemoryName`).
+///   2. Resolve the local memories dir (body `cwd` → io fallback).
+///   3. 404 if the memory does not exist (via `localMemoryExists`).
+///   4. `writeLocalMemoryFile` to overwrite the file.
+///   5. Re-list via `listMemoriesInDir` to derive `title/path/size`.
+///   6. Locate the entry by name. Missing → 500 (consistency).
+///   7. Duplicate the matched slices for the response.
+fn useCase(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    input: LocalMemoryUpdateInput,
+) LocalMemoryUpdateError!LocalMemoryUpdateOutput {
+    if (input.name.len == 0) return error.NameRequired;
+    if (!memories_mod.isValidMemoryName(input.name)) return error.InvalidName;
+
+    // Resolve the local memories dir (body cwd first, then io fallback).
+    var dir_path_alloc: ?[]const u8 = null;
+    if (input.cwd.len > 0) {
+        dir_path_alloc = memories_mod.get_local_memories_path_for_dir(allocator, input.cwd);
+    }
+    if (dir_path_alloc == null) {
+        dir_path_alloc = memories_mod.get_local_memories_path_from_io(allocator, io);
+    }
+    const dir_path = dir_path_alloc orelse return error.NoCwdAvailable;
+    defer allocator.free(dir_path);
+
+    // Update only succeeds for existing memories. 404 (not 400) so
+    // the UI can distinguish "edit non-existent" from "bad input".
+    if (!memories_mod.localMemoryExists(allocator, io, dir_path, input.name)) {
+        return error.NotFound;
+    }
+
+    if (!memories_mod.writeLocalMemoryFile(allocator, io, dir_path, input.name, input.content)) {
+        return error.WriteFailed;
+    }
+
+    const list = memories_mod.listMemoriesInDir(allocator, io, dir_path);
+    defer memories_mod.freeMemoriesList(allocator, list);
+
+    var found: ?memories_mod.MemoryInfo = null;
+    for (list) |m| {
+        if (std.mem.eql(u8, m.name, input.name)) {
+            found = m;
+            break;
+        }
+    }
+    const m = found orelse {
+        return error.NotVisible;
+    };
+
+    var duped_name: ?[]u8 = null;
+    var duped_title: ?[]u8 = null;
+    var duped_path: ?[]u8 = null;
+    errdefer {
+        if (duped_name) |v| allocator.free(v);
+        if (duped_title) |v| allocator.free(v);
+        if (duped_path) |v| allocator.free(v);
+    }
+    duped_name = try allocator.dupe(u8, m.name);
+    duped_title = try allocator.dupe(u8, m.title);
+    duped_path = try allocator.dupe(u8, m.path);
+
+    return .{ .memory = .{
+        .name = duped_name.?,
+        .title = duped_title.?,
+        .path = duped_path.?,
+        .size = m.size,
+    } };
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
 const UpdateLocalMemoryResponse = struct {
     memory: ?memories_mod.MemoryInfo = null,
     error_message: ?[]const u8 = null,
 };
 
-/// PUT /api/local-memories/:name?cwd=...
-///
-/// Body: `{"content":"...","cwd":"/abs/path"}`.
-///
-/// On success: 200 with `{"memory":{name,title,path,size}}`.
-/// Errors:
-///   - 500  cannot resolve the local memories directory (no cwd)
-///   - 400  missing `:name`, invalid name, missing body, bad JSON,
-///          `writeLocalMemoryFile` failed
-///   - 404  the memory does not exist (cannot edit a non-existent one)
 pub fn localMemoryUpdateHandler(
     ctx: gserverz.HttpContext,
     req: gserverz.HttpRequest,
@@ -42,18 +172,6 @@ pub fn localMemoryUpdateHandler(
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing :name" }),
         });
     };
-    if (name.len == 0) {
-        return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing :name" }),
-        });
-    }
-    if (!memories_mod.isValidMemoryName(name)) {
-        return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid memory name (must end in .md, no /, no ..)" }),
-        });
-    }
 
     if (req.body.len == 0) {
         return res.jsonResponse(.{
@@ -69,61 +187,45 @@ pub fn localMemoryUpdateHandler(
         });
     };
 
-    // Resolve the local memories directory: prefer explicit `cwd`
-    // from the body, fall back to the nalar server's CWD.
-    var dir_path_alloc: ?[]const u8 = null;
-    if (parsed.cwd) |cwd| {
-        if (cwd.len > 0) {
-            dir_path_alloc = memories_mod.get_local_memories_path_for_dir(allocator, cwd);
-        }
-    }
-    if (dir_path_alloc == null) {
-        dir_path_alloc = memories_mod.get_local_memories_path_from_io(allocator, ctx.io);
-    }
-    const dir_path = dir_path_alloc orelse {
+    const cwd_raw = parsed.cwd orelse "";
+
+    const outcome = useCase(allocator, ctx.io, .{
+        .name = name,
+        .content = parsed.content,
+        .cwd = cwd_raw,
+    }) catch |err| {
+        const status: u16 = switch (err) {
+            error.NoCwdAvailable => 500,
+            error.NameRequired => 400,
+            error.InvalidName => 400,
+            error.NotFound => 404,
+            error.WriteFailed => 400,
+            error.NotVisible => 500,
+            error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.NoCwdAvailable => "Could not resolve local memories directory (no cwd available)",
+            error.NameRequired => "Missing :name",
+            error.InvalidName => "Invalid memory name (must end in .md, no /, no ..)",
+            error.NotFound => "Memory not found",
+            error.WriteFailed => "Failed to write memory file",
+            error.NotVisible => "Memory updated but not visible in directory listing",
+            error.OutOfMemory => "Out of memory",
+        };
         return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Could not resolve local memories directory (no cwd available)" }),
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
         });
     };
-    defer allocator.free(dir_path);
 
-    // Update only succeeds for existing memories. 404 (not 400) so the
-    // UI can distinguish "edit non-existent" from "bad input".
-    if (!memories_mod.localMemoryExists(allocator, ctx.io, dir_path, name)) {
-        return res.jsonResponse(.{
-            .status_code = 404,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Memory not found" }),
-        });
+    defer {
+        allocator.free(outcome.memory.name);
+        allocator.free(outcome.memory.title);
+        allocator.free(outcome.memory.path);
     }
-
-    if (!memories_mod.writeLocalMemoryFile(allocator, ctx.io, dir_path, name, parsed.content)) {
-        return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to write memory file" }),
-        });
-    }
-
-    // Re-list for the response payload (matches the create handler).
-    const list = memories_mod.listMemoriesInDir(allocator, ctx.io, dir_path);
-    defer memories_mod.freeMemoriesList(allocator, list);
-
-    var found: ?memories_mod.MemoryInfo = null;
-    for (list) |m| {
-        if (std.mem.eql(u8, m.name, name)) {
-            found = m;
-            break;
-        }
-    }
-    const m = found orelse {
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Memory updated but not visible in directory listing" }),
-        });
-    };
 
     return res.jsonResponse(.{
         .status_code = 200,
-        .data = try std.json.Stringify.valueAlloc(allocator, UpdateLocalMemoryResponse{ .memory = m }, .{}),
+        .data = try std.json.Stringify.valueAlloc(allocator, UpdateLocalMemoryResponse{ .memory = outcome.memory }, .{}),
     });
 }

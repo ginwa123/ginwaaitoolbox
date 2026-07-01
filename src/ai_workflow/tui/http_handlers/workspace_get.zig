@@ -6,6 +6,7 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
+const http_response = @import("http_response.zig");
 
 pub const WorkspaceGetError = error{
     IdRequired,
@@ -84,7 +85,7 @@ pub fn workspaceGetHandler(
         };
         return res.jsonResponse(.{
             .status_code = status,
-            .data = "{\"error\":\"" ++ message ++ "\"}",
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
         });
     };
 

@@ -11,8 +11,13 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const list_skills_mod = nalarcore.list_skills_tool;
 
+/// Domain-level error set for `useCase`. The `listAllSkills` +
+/// `toJson` pipeline can fail with various Io / allocation errors
+/// (OutOfMemory, Canceled, …) — we collapse all of these into the
+/// single `Internal` variant since they all map to the same 500
+/// status and the caller doesn't need to distinguish them.
 pub const SkillsListError = error{
-    GlobalContextNotInitialized,
+    Internal,
 };
 
 // =====================================================================
@@ -23,19 +28,19 @@ fn useCase(
     allocator: std.mem.Allocator,
     io: std.Io,
     cwd_param: ?[]const u8,
-) SkillsListError![]u8 {
-    const di = nalarcore.getSingleton() catch return error.GlobalContextNotInitialized;
+) SkillsListError![]const u8 {
+    const di = nalarcore.getSingleton() catch return error.Internal;
     const environment = di.environment;
 
-    // List all skills using the shared module. `listAllSkills` returns
-    // a `SkillsListData` whose `errdefer freeSkillsListData` is the
-    // caller's responsibility.
-    const data = try list_skills_mod.listAllSkills(allocator, io, cwd_param, environment);
+    // List all skills. Catch the broader set of Io/alloc errors and
+    // collapse them to `error.Internal` so the declared error set
+    // matches the body's actual error surface.
+    const data = list_skills_mod.listAllSkills(allocator, io, cwd_param, environment) catch return error.Internal;
     errdefer list_skills_mod.freeSkillsListData(allocator, data);
 
-    // Convert to JSON. Caller owns the returned slice (lives until
-    // the per-request arena is reset).
-    return try list_skills_mod.toJson(allocator, data);
+    // Convert to JSON. `toJson` returns `error_set![]const u8` —
+    // collapse any internal errors to `error.Internal`.
+    return list_skills_mod.toJson(allocator, data) catch return error.Internal;
 }
 
 // =====================================================================
@@ -52,10 +57,10 @@ pub fn skillsListHandler(
 
     const json_response = useCase(allocator, ctx.io, cwd_param) catch |err| {
         const status: u16 = switch (err) {
-            error.GlobalContextNotInitialized => 500,
+            error.Internal => 500,
         };
         const message: []const u8 = switch (err) {
-            error.GlobalContextNotInitialized => "Global context not initialized",
+            error.Internal => "Internal server error",
         };
         return res.jsonResponse(.{
             .status_code = status,
