@@ -190,12 +190,9 @@ pub fn listAllMemories(
         // Only consider .md files. Memories are markdown by design.
         if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
 
-        // Build absolute path. `std.fs.path.join` may fail on bad input —
-        // skip this file in that case.
-        const full_path = std.fs.path.join(allocator, &[_][]const u8{
-            dir_path,
-            entry.name,
-        }) catch continue;
+        // Build absolute path. Use joinPath for the cross-platform
+        // `/` separator (see joinPath for why).
+        const full_path = joinPath(allocator, dir_path, entry.name) catch continue;
 
         // Open the file to read metadata and a prefix for the title.
         const file = std.Io.Dir.cwd().openFile(io, full_path, .{}) catch {
@@ -303,12 +300,10 @@ pub fn listMemoriesInDir(
         // Only consider .md files. Memories are markdown by design.
         if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
 
-        // Build full path. `std.fs.path.join` may fail on bad input —
-        // skip this file in that case.
-        const full_path = std.fs.path.join(allocator, &[_][]const u8{
-            dir_path,
-            entry.name,
-        }) catch continue;
+        // Build full path. Use the cross-platform `/`-separator joinPath
+        // helper rather than std.fs.path.join (which would produce `\`
+        // on Windows and break string-equality tests).
+        const full_path = joinPath(allocator, dir_path, entry.name) catch continue;
 
         const file = std.Io.Dir.cwd().openFile(io, full_path, .{}) catch {
             allocator.free(full_path);
@@ -453,7 +448,7 @@ pub fn readMemoryFile(
     const dir_path = get_global_memories_path(allocator, environment) orelse return null;
     defer allocator.free(dir_path);
 
-    const full_path = std.fs.path.join(allocator, &.{ dir_path, name }) catch return null;
+    const full_path = joinPath(allocator, dir_path, name) catch return null;
     defer allocator.free(full_path);
 
     return std.Io.Dir.cwd().readFileAlloc(
@@ -493,7 +488,7 @@ pub fn writeMemoryFile(
     // no-op if the dir already exists, so it is safe on every call.
     std.Io.Dir.cwd().createDirPath(io, dir_path) catch return false;
 
-    const full_path = std.fs.path.join(allocator, &.{ dir_path, name }) catch return false;
+    const full_path = joinPath(allocator, dir_path, name) catch return false;
     defer allocator.free(full_path);
 
     // Atomic-ish: write to a temp file then rename. The temp path is
@@ -559,7 +554,7 @@ pub fn deleteMemoryFile(
     const dir_path = get_global_memories_path(allocator, environment) orelse return false;
     defer allocator.free(dir_path);
 
-    const full_path = std.fs.path.join(allocator, &.{ dir_path, name }) catch return false;
+    const full_path = joinPath(allocator, dir_path, name) catch return false;
     defer allocator.free(full_path);
 
     std.Io.Dir.cwd().deleteFile(io, full_path) catch |err| {
@@ -582,7 +577,7 @@ pub fn memoryExists(
     const dir_path = get_global_memories_path(allocator, environment) orelse return false;
     defer allocator.free(dir_path);
 
-    const full_path = std.fs.path.join(allocator, &.{ dir_path, name }) catch return false;
+    const full_path = joinPath(allocator, dir_path, name) catch return false;
     defer allocator.free(full_path);
 
     _ = std.Io.Dir.cwd().statFile(io, full_path, .{}) catch return false;
@@ -689,7 +684,7 @@ pub fn writeLocalMemoryFile(
 ) bool {
     if (dir_path.len == 0) return false;
     if (!isValidMemoryName(name)) return false;
-    const full_path = std.fs.path.join(allocator, &.{ dir_path, name }) catch return false;
+    const full_path = joinPath(allocator, dir_path, name) catch return false;
     defer allocator.free(full_path);
 
     // Ensure the local memories directory exists. createDirPath is a
