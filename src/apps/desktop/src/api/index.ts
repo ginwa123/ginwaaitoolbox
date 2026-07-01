@@ -554,7 +554,9 @@ export interface Message {
   diffview_after?: string
   image_url?: string
   tool_calls_json?: any
-  finish_reason?: string
+  finish_reason?: string,
+  is_input?: string,
+  is_output?: string
 }
 
 export interface SkillInfo {
@@ -731,8 +733,8 @@ export interface SseEvent {
   loop_index?: number
   temperature?: number
   is_thinking?: boolean
-  is_input?: boolean
-  is_output?: boolean
+  is_input?: string,
+  is_output?: string,
   parent_session_id?: string
   parent_id?: string
   created_at?: number

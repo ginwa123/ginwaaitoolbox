@@ -110,7 +110,9 @@ interface Message {
    * `unwrappedByMessageId`. Used by `PreviewSidePanel` to render
    * rich previews without re-fetching.
    */
-  parameters?: string
+  parameters?: string,
+  is_input?: string,
+  is_output?: string,
 }
 
 // Escape HTML to prevent XSS
@@ -602,7 +604,7 @@ const isAtBottom = ref(true)
 // parent is the "user clicked ✕" exit, which persists across the same
 // chat until a new preview arrives (the watcher below re-clears it).
 const showPreviewMessages = computed(() =>
-  messages.value.filter((m) => m.tool_name === 'show_preview'),
+  messages.value.filter((m) => m.tool_name === 'show_preview' && m.is_output === '1')
 )
 const previewPanelCollapsed = ref(false)
 const previewPanelDismissed = ref(false)
@@ -1141,6 +1143,8 @@ const loadChatHistory = async (loadMore = false) => {
       finish_reason: msg.finish_reason,
       tool_calls_json: msg.tool_calls_json,
       tool_call_id: msg.tool_call_id,
+      is_input: msg.is_input,
+      is_output: msg.is_output
     }))
 
     if (loadMore) {
@@ -1756,6 +1760,8 @@ const connectSse = () => {
         image_urls: event.image_url ? event.image_url.split('|') : undefined,
         finish_reason: event.finish_reason,
         tool_call_id: event.tool_call_id,
+        is_input: event.is_input,
+        is_output: event.is_output
       })
       streamingContent.value = ''
       isStreaming.value = false
