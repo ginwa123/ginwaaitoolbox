@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const json = std.json;
 const Reader = std.Io.Reader;
 const bashTool = @import("tools/bash.zig").bash_tool;
@@ -808,6 +809,13 @@ pub const Agent = struct {
     /// The backend treats EAGAIN as a programmer bug and panics. TCP keepalive
     /// is the correct mechanism here.
     fn apply_tcp_keepalive(self: Agent, req: anytype) ?i32 {
+        // Windows: std.posix.setsockopt has @compileError("use std.Io instead")
+        // on Windows. The full std.Io.Net migration of the streaming sockets
+        // is a larger follow-up; for now we skip keepalive on Windows, which
+        // means the watchdog does not spawn and stall-detection falls back to
+        // TCP's default ~2h timeout. The connection still works.
+        if (builtin.os.tag == .windows) return null;
+
         const conn = req.connection orelse {
             self.log_msg(.warn, "[STREAM] cannot set TCP keepalive: no connection");
             return null;
