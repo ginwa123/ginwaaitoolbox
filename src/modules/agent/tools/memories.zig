@@ -10,6 +10,68 @@ pub const MEMORIES_DIR = "memories";
 /// Mirrors `LOCAL_SKILLS_DIR = ".nalar/skills"` in tools/skills.zig.
 pub const LOCAL_MEMORIES_DIR = ".nalar/memories";
 
+/// Concatenate `dir` and `name` into a forward-slash path and return it.
+///
+/// Cross-platform convention for "config path" helpers across this
+/// project: always use `/` as the separator, regardless of OS. On
+/// Windows the kernel accepts both `/` and `\`, so forward-slash
+/// paths work transparently with `Dir.openDir` / `File.openFile`.
+/// `std.fs.path.join` produces OS-native separators (on Windows that's
+/// `\\`) which then breaks tests/code that hardcode the `/` form.
+/// See project memory `zig-path-join-treats-suffix-as-component.md`.
+fn joinPath(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ![]u8 {
+    if (dir.len == 0) {
+        return allocator.dupe(u8, name);
+    }
+    const out = try allocator.alloc(u8, dir.len + 1 + name.len);
+    @memcpy(out[0..dir.len], dir);
+    out[dir.len] = '/';
+    @memcpy(out[dir.len + 1 ..][0..name.len], name);
+    return out;
+}
+
+/// Three-component variant: `parent + "/" + mid + "/" + leaf`.
+fn joinPath3(allocator: std.mem.Allocator, parent: []const u8, mid: []const u8, leaf: []const u8) ![]u8 {
+    const out = try allocator.alloc(u8, parent.len + 1 + mid.len + 1 + leaf.len);
+    var idx: usize = 0;
+    @memcpy(out[idx..][0..parent.len], parent);
+    idx += parent.len;
+    out[idx] = '/';
+    idx += 1;
+    @memcpy(out[idx..][0..mid.len], mid);
+    idx += mid.len;
+    out[idx] = '/';
+    idx += 1;
+    @memcpy(out[idx..][0..leaf.len], leaf);
+    return out;
+}
+
+/// Four-component variant. Single allocation, no partial strings to free.
+fn joinPath4(
+    allocator: std.mem.Allocator,
+    a: []const u8,
+    b: []const u8,
+    c: []const u8,
+    d: []const u8,
+) ![]u8 {
+    const out = try allocator.alloc(u8, a.len + 1 + b.len + 1 + c.len + 1 + d.len);
+    var idx: usize = 0;
+    @memcpy(out[idx..][0..a.len], a);
+    idx += a.len;
+    out[idx] = '/';
+    idx += 1;
+    @memcpy(out[idx..][0..b.len], b);
+    idx += b.len;
+    out[idx] = '/';
+    idx += 1;
+    @memcpy(out[idx..][0..c.len], c);
+    idx += c.len;
+    out[idx] = '/';
+    idx += 1;
+    @memcpy(out[idx..][0..d.len], d);
+    return out;
+}
+
 /// Bytes scanned from the start of a memory file when looking for the
 /// title (first H1). First H1s almost always live in the first line, but
 /// we allow a generous buffer for files that put the H1 after some prose.
@@ -41,20 +103,14 @@ pub fn get_global_memories_path(
     environment: *const std.process.Environ.Map,
 ) ?[]const u8 {
     if (environment.get("XDG_CONFIG_HOME")) |xdg_config| {
-        return std.fs.path.join(allocator, &[_][]const u8{
-            xdg_config,
-            APP_NAME,
-            MEMORIES_DIR,
-        }) catch null;
+        return joinPath3(allocator, xdg_config, APP_NAME, MEMORIES_DIR) catch null;
     }
 
     if (environment.get("HOME")) |home| {
-        return std.fs.path.join(allocator, &[_][]const u8{
-            home,
-            ".config",
-            APP_NAME,
-            MEMORIES_DIR,
-        }) catch null;
+        // Linux/macOS: ~/.config/<APP>/<MEMORIES_DIR>.
+        // On macOS the convention is $HOME/Library/Application Support; keep
+        // the Unix-style fallback for now (separate task to detect macOS).
+        return joinPath4(allocator, home, ".config", APP_NAME, MEMORIES_DIR) catch null;
     }
 
     return null;
@@ -77,10 +133,12 @@ pub fn get_local_memories_path_for_dir(
     cwd: []const u8,
 ) ?[]const u8 {
     if (cwd.len == 0) return null;
-    return std.fs.path.join(allocator, &[_][]const u8{
-        cwd,
-        LOCAL_MEMORIES_DIR,
-    }) catch null;
+    // Note: std.fs.path.join produces OS-native separators (e.g. '\'
+    // on Windows), which breaks string-equality assertions in tests
+    // hardcoded with forward slashes. Use a manual `/`-separator
+    // joinPath helper instead — the Windows kernel accepts both.
+    // (See project memory zig-path-join-treats-suffix-as-component.md.)
+    return joinPath(allocator, cwd, LOCAL_MEMORIES_DIR) catch null;
 }
 
 /// List all .md memory files in the global memories directory.
@@ -582,7 +640,9 @@ pub fn get_local_memory_file_path(
 ) ?[]const u8 {
     if (dir_path.len == 0) return null;
     if (!isValidMemoryName(name)) return null;
-    return std.fs.path.join(allocator, &.{ dir_path, name }) catch null;
+    // See get_local_memories_path_for_dir for why we use joinPath instead
+    // of std.fs.path.join.
+    return joinPath(allocator, dir_path, name) catch null;
 }
 
 /// Read a single local memory file by name. The dir is typically

@@ -9,6 +9,52 @@ const MAX_SKILLS_SIZE: usize = 100 * 1024;
 /// App name for config directory
 const APP_NAME = "nalar";
 
+/// Cross-platform `/`-separator path concat. See memories.zig's `joinPath`
+/// for the rationale — `std.fs.path.join` produces OS-native separators
+/// (`\\` on Windows), which breaks test expectations that hardcode `/`.
+fn joinPath(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ![]u8 {
+    if (dir.len == 0) return allocator.dupe(u8, name);
+    const out = try allocator.alloc(u8, dir.len + 1 + name.len);
+    @memcpy(out[0..dir.len], dir);
+    out[dir.len] = '/';
+    @memcpy(out[dir.len + 1 ..][0..name.len], name);
+    return out;
+}
+
+fn joinPath3(allocator: std.mem.Allocator, a: []const u8, b: []const u8, c: []const u8) ![]u8 {
+    const out = try allocator.alloc(u8, a.len + 1 + b.len + 1 + c.len);
+    var idx: usize = 0;
+    @memcpy(out[idx..][0..a.len], a);
+    idx += a.len;
+    out[idx] = '/';
+    idx += 1;
+    @memcpy(out[idx..][0..b.len], b);
+    idx += b.len;
+    out[idx] = '/';
+    idx += 1;
+    @memcpy(out[idx..][0..c.len], c);
+    return out;
+}
+
+fn joinPath4(allocator: std.mem.Allocator, a: []const u8, b: []const u8, c: []const u8, d: []const u8) ![]u8 {
+    const out = try allocator.alloc(u8, a.len + 1 + b.len + 1 + c.len + 1 + d.len);
+    var idx: usize = 0;
+    @memcpy(out[idx..][0..a.len], a);
+    idx += a.len;
+    out[idx] = '/';
+    idx += 1;
+    @memcpy(out[idx..][0..b.len], b);
+    idx += b.len;
+    out[idx] = '/';
+    idx += 1;
+    @memcpy(out[idx..][0..c.len], c);
+    idx += c.len;
+    out[idx] = '/';
+    idx += 1;
+    @memcpy(out[idx..][0..d.len], d);
+    return out;
+}
+
 /// Local skills directory
 const LOCAL_SKILLS_DIR = ".nalar/skills";
 
@@ -108,11 +154,9 @@ pub fn get_skills_dir_path(allocator: std.mem.Allocator, io: std.Io) ?[]const u8
     };
     const cwd = cwd_buf[0..cwd_len];
 
-    // Build path: .nalar/skills/
-    const path = std.fs.path.join(allocator, &[_][]const u8{
-        cwd,
-        LOCAL_SKILLS_DIR,
-    }) catch {
+    // Build path: <cwd>/.nalar/skills/ — see joinPath for why we don't
+    // use std.fs.path.join (it produces `\` separators on Windows).
+    const path = joinPath(allocator, cwd, LOCAL_SKILLS_DIR) catch {
         std.log.debug("Could not build local skills directory path", .{});
         return null;
     };
@@ -148,7 +192,7 @@ pub fn list_skill_files(allocator: std.mem.Allocator, io: std.Io) ?[][]const u8 
         const folder_name = entry.name;
 
         // Build path to SKILL.MD inside the folder
-        const skill_file_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, folder_name, SKILL_FILE_NAME }) catch continue;
+        const skill_file_path = joinPath3(allocator, dir_path, folder_name, SKILL_FILE_NAME) catch continue;
 
         // Check if SKILL.MD exists and is non-empty
         const file = std.Io.Dir.cwd().openFile(io, skill_file_path, .{}) catch {
@@ -198,11 +242,8 @@ pub fn get_local_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
         return null;
     };
 
-    // Build path: .nalar/skills/
-    const dir_path = std.fs.path.join(allocator, &[_][]const u8{
-        cwd,
-        LOCAL_SKILLS_DIR,
-    }) catch {
+    // Build path: <cwd>/.nalar/skills/ — see joinPath for the rationale.
+    const dir_path = joinPath(allocator, cwd, LOCAL_SKILLS_DIR) catch {
         std.log.debug("Could not build local skills path", .{});
         return null;
     };
@@ -457,13 +498,15 @@ pub fn free_skills_list(allocator: std.mem.Allocator, skills_list: []const Skill
 pub fn get_global_skills_path_from_env(allocator: std.mem.Allocator, environment: *const std.process.Environ.Map) ?[]const u8 {
     // Try XDG_CONFIG_HOME first
     if (environment.get("XDG_CONFIG_HOME")) |xdg_config| {
-        const path = std.fs.path.join(allocator, &[_][]const u8{ xdg_config, APP_NAME, "skills" }) catch return null;
-        return path;
+        return joinPath3(allocator, xdg_config, APP_NAME, "skills") catch return null;
     }
 
     // Fall back to platform-specific defaults
     if (environment.get("HOME")) |home| {
-        return std.fs.path.join(allocator, &[_][]const u8{ home, ".config", APP_NAME, "skills" }) catch null;
+        // Linux/macOS: ~/.config/<APP>/skills. On macOS the convention
+        // is $HOME/Library/Application Support; keep the Unix-style
+        // fallback for now (separate task to detect macOS).
+        return joinPath4(allocator, home, ".config", APP_NAME, "skills") catch null;
     }
 
     return null;
@@ -479,19 +522,13 @@ pub fn get_local_skills_path_from_io(allocator: std.mem.Allocator, io: std.Io) ?
     };
     const cwd = cwd_buf[0..cwd_len];
 
-    return std.fs.path.join(allocator, &[_][]const u8{
-        cwd,
-        LOCAL_SKILLS_DIR,
-    }) catch null;
+    return joinPath(allocator, cwd, LOCAL_SKILLS_DIR) catch null;
 }
 
 /// Get local skills path for a specific directory
 /// Returns allocated string that caller must free, or null if path unavailable
 pub fn get_local_skills_path_for_dir(allocator: std.mem.Allocator, dir_path: []const u8) ?[]const u8 {
-    return std.fs.path.join(allocator, &[_][]const u8{
-        dir_path,
-        LOCAL_SKILLS_DIR,
-    }) catch null;
+    return joinPath(allocator, dir_path, LOCAL_SKILLS_DIR) catch null;
 }
 
 /// List all skill file paths in a specific directory
@@ -514,7 +551,7 @@ pub fn list_skill_files_in_dir(allocator: std.mem.Allocator, io: std.Io, dir_pat
     while (iter.next(io) catch null) |entry| {
         if (entry.kind != .directory) continue;
 
-        const skill_file_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, entry.name, SKILL_FILE_NAME }) catch continue;
+        const skill_file_path = joinPath3(allocator, dir_path, entry.name, SKILL_FILE_NAME) catch continue;
 
         // Check if SKILL.MD exists and is non-empty
         const file = std.Io.Dir.cwd().openFile(io, skill_file_path, .{}) catch {

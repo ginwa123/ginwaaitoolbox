@@ -99,6 +99,16 @@ test "transform - message with image_url creates content_parts" {
         .finish_reason = try allocator.dupe(u8, "stop"),
         .role = try allocator.dupe(u8, "user"),
         .tools = try allocator.dupe(u8, ""),
+        // CRITICAL: every `[]const u8` field on TUIHistory must be
+        // heap-allocated, never a static string literal. deinit() calls
+        // allocator.free() unconditionally on every field, and Zig 0.16's
+        // Allocator.free shim does @memset(bytes, undefined) before
+        // dispatching to the vtable — that memset segfaults on Windows when
+        // the field points into read-only `.rdata` (the static "Agent"
+        // literal). Linux tolerates it in debug builds; Windows does not.
+        // Production code in llm_history.zig always allocates these via
+        // allocator.dupe; the tests need the same treatment.
+        .agent = try allocator.dupe(u8, "Agent"),
         .image_urls = blk: {
             const arr = try std.heap.c_allocator.alloc([]const u8, 1);
             arr[0] = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
@@ -143,6 +153,7 @@ test "transform - message without image_url uses content field" {
         .finish_reason = try allocator.dupe(u8, "stop"),
         .role = try allocator.dupe(u8, "user"),
         .tools = try allocator.dupe(u8, ""),
+        .agent = try allocator.dupe(u8, "Agent"),
         .image_urls = null,
     };
     defer history.deinit(allocator);
@@ -164,18 +175,24 @@ test "transform - assistant message with image_url creates content_parts" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
+    // See the comment on `agent` in the first transform test below — every
+    // []const u8 field on TUIHistory must be heap-allocated because deinit
+    // unconditionally frees them, and Allocator.free in Zig 0.16 memsets
+    // the bytes to `undefined` before calling the vtable (crashes on
+    // Windows when the bytes are a static string literal).
     var history = TUIHistory{
         .id = try allocator.dupe(u8, "msg-1"),
         .session_id = try allocator.dupe(u8, "session-1"),
         .model = try allocator.dupe(u8, "gpt-4o"),
         .created_at = try allocator.dupe(u8, "2025-01-01"),
-        .response_content = try allocator.dupe(u8, "I can see the screenshot shows a login form"),
+        .response_content = try allocator.dupe(u8, "Here's the screenshot"),
         .finish_reason = try allocator.dupe(u8, "stop"),
         .role = try allocator.dupe(u8, "assistant"),
         .tools = try allocator.dupe(u8, ""),
+        .agent = try allocator.dupe(u8, "Agent"),
         .image_urls = blk: {
             const arr = try std.heap.c_allocator.alloc([]const u8, 1);
-            arr[0] = "data:image/png;base64,ABCD";
+            arr[0] = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
             break :blk arr;
         },
     };
@@ -197,6 +214,8 @@ test "transform - tool message ignores image_url" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
+    // See the `agent` comment in the first transform test for why every
+    // []const u8 field on TUIHistory must be heap-allocated.
     var history = TUIHistory{
         .id = try allocator.dupe(u8, "msg-1"),
         .session_id = try allocator.dupe(u8, "session-1"),
@@ -206,6 +225,7 @@ test "transform - tool message ignores image_url" {
         .finish_reason = try allocator.dupe(u8, "tool"),
         .role = try allocator.dupe(u8, "tool"),
         .tools = try allocator.dupe(u8, ""),
+        .agent = try allocator.dupe(u8, "Agent"),
         .tool_call_id = try allocator.dupe(u8, "tool_call_id_123"),
         .image_urls = blk: {
             const arr = try std.heap.c_allocator.alloc([]const u8, 1);
