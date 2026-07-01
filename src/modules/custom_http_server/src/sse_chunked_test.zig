@@ -20,12 +20,14 @@ const is_windows = builtin.os.tag == .windows;
 
 fn closeFd(fd: i32) void {
     if (is_windows) return; // Sockets are HANDLE on Windows; fd is meaningless
-    _ = closeFd(fd);
+    _ = posix.system.close(fd);
 }
 
 fn readFd(fd: i32, buf: []u8, len: usize) isize {
     if (is_windows) return 0; // Not used on Windows (tests skip)
-    return posix.system.read(fd, buf, len);
+    // posix.system.read takes ([*]u8, usize); pass the slice's pointer
+    // (single-pointer-many-items, not the slice header) and the count.
+    return posix.system.read(fd, buf.ptr, len);
 }
 
 fn createSocketPair() ![2]i32 {
@@ -500,11 +502,15 @@ test "SseManager: last_heartbeat updated only on successful write (static contra
     const source = @embedFile("../../../../src/modules/custom_http_server/src/sse_manager.zig");
 
     // The success branch of the heartbeat write must contain the
-    // `last_heartbeat = timestamp()` assignment.
+    // `last_heartbeat = timestamp(self.io)` assignment. The windows-
+    // compatibility branch updated `timestamp()` to take the `io: std.Io`
+    // parameter (cross-platform wrapper around libc `gettimeofday` /
+    // Win32 `GetSystemTimeAsFileTime`), so the assignment now passes
+    // `self.io` as the source of "real" wall-clock time.
     const success_assign = std.mem.indexOf(
         u8,
         source,
-        "writeChunkedFrame(client.fd, ping)) |_| {\n                client.last_heartbeat = timestamp();",
+        "writeChunkedFrame(client.fd, ping)) |_| {\n                client.last_heartbeat = timestamp(self.io);",
     ) orelse 0;
     if (success_assign == 0) {
         std.debug.print(
