@@ -12,6 +12,18 @@ interface PreviewItem {
 const props = defineProps<{
   previews: PreviewItem[]
   collapsed?: boolean
+  /**
+   * When the parent (ChatView) wants the panel to focus a specific
+   * preview — e.g. because the user clicked a `show_preview` tool
+   * message bubble in the chat — it passes the preview's `id` here.
+   * The watcher below finds that preview in `previews` and jumps
+   * `activeIndex` to it. The parent's responsibility is to also
+   * clear `previewPanelCollapsed` and `previewPanelDismissed` so
+   * the panel is visible; this prop only controls which TAB is
+   * active. Set to `null`/`undefined` to fall back to the default
+   * behavior (newest preview when a new one lands).
+   */
+  focusId?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -26,6 +38,19 @@ const activeIndex = ref(0)
 watch(() => props.previews.length, (newLen, oldLen) => {
   if (newLen > (oldLen ?? 0)) activeIndex.value = newLen - 1
   if (activeIndex.value >= newLen) activeIndex.value = Math.max(0, newLen - 1)
+})
+
+// When the parent sets `focusId` (user clicked a `show_preview`
+// message bubble), find the matching preview by id and jump to it.
+// No-op when focusId is null/undefined or doesn't match any current
+// preview (the user may have clicked a bubble for a preview that
+// has since been filtered out — e.g. after a chat switch wiped
+// previews). Falls through silently; the panel keeps whatever
+// `activeIndex` already had.
+watch(() => props.focusId, (fid) => {
+  if (!fid) return
+  const idx = props.previews.findIndex((p) => p.id === fid)
+  if (idx !== -1) activeIndex.value = idx
 })
 
 function findTag(haystack: string, tag: string): string | null {

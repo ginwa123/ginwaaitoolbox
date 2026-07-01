@@ -606,6 +606,15 @@ const showPreviewMessages = computed(() =>
 )
 const previewPanelCollapsed = ref(false)
 const previewPanelDismissed = ref(false)
+// When the user clicks a `show_preview` message bubble in the chat,
+// this gets set to the bubble's `msg.id`. The PreviewSidePanel
+// uses this to jump to that preview's tab. We DO NOT auto-clear
+// it on next-render — keeping it set lets the user click the
+// same bubble repeatedly and reliably re-jump the panel to it.
+// It's cleared by ChatView's `watch(() => props.chatId)` reset
+// and (defensively) when the panel reports the preview no longer
+// matches a current preview (the watcher's no-op behavior).
+const previewToShowId = ref<string | null>(null)
 
 watch(showPreviewMessages, (newArr, oldArr) => {
   // Auto-open + un-dismiss whenever a new preview lands in this chat.
@@ -615,6 +624,17 @@ watch(showPreviewMessages, (newArr, oldArr) => {
   }
 })
 
+// Click handler for `show_preview` message bubbles in the chat.
+// The bubble is rendered *collapsed* (no expand toggle — that would
+// make the user click twice: once to expand, once to view). Instead,
+// the click directly opens the right-side preview panel, jumping to
+// the preview that corresponds to the clicked message id.
+const openPreviewForMessage = (msgId: string) => {
+  previewPanelCollapsed.value = false
+  previewPanelDismissed.value = false
+  previewToShowId.value = msgId
+}
+
 watch(
   () => props.chatId,
   () => {
@@ -623,6 +643,7 @@ watch(
     // carry the dismissed/collapsed flag into the new chat.
     previewPanelCollapsed.value = false
     previewPanelDismissed.value = false
+    previewToShowId.value = null
   },
 )
 // Whether the VirtualScroller's container is currently scrollable
@@ -2342,6 +2363,48 @@ const compactSession = async () => {
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />
+                          <!--
+                            `show_preview` is intentionally NOT
+                            expandable like the other tool outputs.
+                            The whole point of the side panel is to
+                            keep the chat bubble minimal (status,
+                            preview id, content_type, length) and let
+                            the user inspect the rich content in the
+                            right-side panel. A click on the bubble
+                            here does THREE things:
+                              1. Opens / un-dismisses the panel.
+                              2. Un-collapses the panel.
+                              3. Jumps the panel to the matching
+                                 preview tab via the `focusId` prop.
+                            We do NOT render an expandable body — the
+                            existing inline summary (renderResponse →
+                            tool-inline) is the entire bubble. The
+                            user's mental model: "the bubble is just
+                            a bookmark; the panel is the content."
+                          -->
+                          <button
+                            v-else-if="msg.tool_name === 'show_preview'"
+                            type="button"
+                            class="tool-summary show-preview-bubble"
+                            :data-testid="`show-preview-bubble-${msg.id}`"
+                            :title="`Click to open in side panel`"
+                            style="cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background-color 0.15s; text-align: left; width: 100%; border: none; background: transparent; font: inherit; color: inherit;"
+                            @click="openPreviewForMessage(msg.id)"
+                          >
+                            <span
+                              v-html="
+                                renderResponse(
+                                  msg.content,
+                                  msg.role,
+                                  msg.tool_name,
+                                  msg.diffview_before,
+                                  msg.diffview_after,
+                                  msg.finish_reason,
+                                  msg.tool_calls_json,
+                                )
+                              "
+                            ></span>
+                          </button>
                           <div v-else class="tool-expandable">
                             <button
                               class="tool-summary"
@@ -2768,6 +2831,7 @@ const compactSession = async () => {
     <PreviewSidePanel
       v-if="!previewPanelDismissed"
       :previews="showPreviewMessages"
+      :focus-id="previewToShowId"
       v-model:collapsed="previewPanelCollapsed"
       @dismiss="previewPanelDismissed = true"
     />
