@@ -13,7 +13,6 @@ on Linux, Windows, and macOS, plus the Vue webapp on Linux. Every PR to
 | `backend (ubuntu-latest)` | Ubuntu 24.04 | x86_64-linux-gnu | `install:linux:system` | `nalar-x86_64-linux-gnu` |
 | `backend (windows-latest)` | Windows Server 2022 | x86_64-windows-gnu | (tests only) | (none yet — see below) |
 | `backend (macos-latest)` | macOS 14 (Intel) | x86_64-macos | `install:macos` | `nalar-x86_64-macos` |
-| `backend (macos-14)` | macOS 14 (Apple Silicon) | aarch64-macos | `install:macos-arm` | `nalar-aarch64-macos` |
 | `frontend` | Ubuntu 24.04 | n/a | `bun run build` + `bunx vitest run` | n/a |
 
 ## Why no Windows binary in CI yet?

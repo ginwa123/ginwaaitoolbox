@@ -30,41 +30,27 @@ jobs:
         # Chunks 2-4: extended from Linux-only to Linux + Windows + macOS.
         # Windows uses __SKIP__ placeholder because the binary build
         # requires vcpkg wiring in build.zig (out of scope for this plan;
-        # tests only run on Windows for now). macOS builds Intel
-        # (install:macos) and Apple Silicon (install:macos-arm).
-        # The exclude block filters the full cross-product (4 OSes x 4
-        # targets = 16 cells) down to the 4 native-target cells.
-        os: [ubuntu-latest, windows-latest, macos-latest, macos-14]
+        # tests only run on Windows for now). macOS builds Intel only
+        # (install:macos). The exclude block filters the full cross-product
+        # (3 OSes x 3 targets = 9 cells) down to the 3 native-target cells.
+        os: [ubuntu-latest, windows-latest, macos-latest]
         target:
           - { zig: x86_64-linux-gnu,       step: install:linux:system }
           - { zig: x86_64-windows-gnu,     step: __SKIP__ }
           - { zig: x86_64-macos,           step: install:macos }
-          - { zig: aarch64-macos,          step: install:macos-arm }
         exclude:
           - os: ubuntu-latest
             target: { zig: x86_64-windows-gnu, step: __SKIP__ }
           - os: ubuntu-latest
             target: { zig: x86_64-macos, step: install:macos }
-          - os: ubuntu-latest
-            target: { zig: aarch64-macos, step: install:macos-arm }
           - os: windows-latest
             target: { zig: x86_64-linux-gnu, step: install:linux:system }
           - os: windows-latest
             target: { zig: x86_64-macos, step: install:macos }
-          - os: windows-latest
-            target: { zig: aarch64-macos, step: install:macos-arm }
           - os: macos-latest
             target: { zig: x86_64-linux-gnu, step: install:linux:system }
           - os: macos-latest
             target: { zig: x86_64-windows-gnu, step: __SKIP__ }
-          - os: macos-latest
-            target: { zig: aarch64-macos, step: install:macos-arm }
-          - os: macos-14
-            target: { zig: x86_64-linux-gnu, step: install:linux:system }
-          - os: macos-14
-            target: { zig: x86_64-windows-gnu, step: __SKIP__ }
-          - os: macos-14
-            target: { zig: x86_64-macos, step: install:macos }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -144,7 +130,6 @@ jobs:
             zig-out/bin/nalar
             zig-out/bin/nalarcore-windows-x86_64.exe
             zig-out/bin/nalarcore-macos-x86_64
-            zig-out/bin/nalarcore-macos-aarch64
           retention-days: 14
 
   frontend:
