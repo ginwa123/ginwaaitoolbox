@@ -445,9 +445,15 @@ pub const SessionMessage = struct {
     role: []const u8,
     content: []const u8,
     timestamp: []const u8,
-    // New columns
-    is_input: []const u8,
-    is_output: []const u8,
+    /// Wire-format boolean. Emitted as JSON `true`/`false` by
+    /// `buildSessionMessagesJson` (manual format) and by
+    /// `makeSessionMessagesResponse` (via `std.json.Stringify.valueAlloc`).
+    /// Matches the SSE `SseEventLLMHistory.is_input` shape and the
+    /// TypeScript `is_input?: boolean` type. The DB column is
+    /// `INTEGER` (0/1); the SQL read site converts with `parseRowBool`.
+    /// See docs/plans/2026-07-01-is-input-output-bool-consistency.md.
+    is_input: bool,
+    is_output: bool,
     tool_name: []const u8,
     finish_reason: []const u8,
     reasoning_content: []const u8,
@@ -463,8 +469,7 @@ pub const SessionMessage = struct {
         allocator.free(self.role);
         allocator.free(self.content);
         allocator.free(self.timestamp);
-        allocator.free(self.is_input);
-        allocator.free(self.is_output);
+        // is_input / is_output are bool (not slices) — no free needed
         allocator.free(self.tool_name);
         allocator.free(self.finish_reason);
         allocator.free(self.reasoning_content);
@@ -509,6 +514,16 @@ pub const SortSpec = union(enum) {
     role_asc: void,
     role_desc: void,
 };
+
+/// Parse a SQLite INTEGER column value (returned by the SQL binder
+/// as a `[]const u8` slice) into a bool. Empty string is `false`
+/// (matches `COALESCE(col, 0)` semantics). Used for `is_input` /
+/// `is_output` which the SQL binder returns as `[]const u8` slices
+/// but the in-memory struct expects as `bool`.
+fn parseRowBool(s: []const u8) bool {
+    if (s.len == 0) return false;
+    return s[0] == '1';
+}
 
 /// Get messages for a session with cursor-based pagination and sorting
 pub fn getSessionMessagesSorted(
@@ -610,8 +625,8 @@ pub fn getSessionMessagesSorted(
             .role = try allocator.dupe(u8, row.values[2]),
             .content = try allocator.dupe(u8, row.values[3]),
             .timestamp = try allocator.dupe(u8, row.values[4]),
-            .is_input = try allocator.dupe(u8, row.values[5]),
-            .is_output = try allocator.dupe(u8, row.values[6]),
+            .is_input = parseRowBool(row.values[5]),
+            .is_output = parseRowBool(row.values[6]),
             .tool_name = try allocator.dupe(u8, row.values[7]),
             .finish_reason = try allocator.dupe(u8, row.values[8]),
             .reasoning_content = try allocator.dupe(u8, row.values[11]),
@@ -771,10 +786,14 @@ pub fn buildSessionMessagesJson(
         const escaped_reasoning_content = try jsonEscape(allocator, msg.reasoning_content);
         defer allocator.free(escaped_reasoning_content);
 
+        // is_input / is_output are bool — emit as JSON booleans (not strings).
+        // `"is_input":"1"` is the old wrong format; `"is_input":true` is correct.
+        const is_input_str = if (msg.is_input) "true" else "false";
+        const is_output_str = if (msg.is_output) "true" else "false";
         const msg_json = try std.fmt.allocPrint(allocator,
             \\{{"id":"{s}","session_id":"{s}","role":"{s}","content":"{s}","timestamp":"{s}",
-            \\"is_input":"{s}","is_output":"{s}","tool_name":"{s}","finish_reason":"{s}","reasoning_content":"{s}"}}
-        , .{ escaped_id, escaped_session_id, escaped_role, escaped_content, escaped_timestamp, msg.is_input, msg.is_output, escaped_tool_name, escaped_finish_reason, escaped_reasoning_content });
+            \\"is_input":{s},"is_output":{s},"tool_name":"{s}","finish_reason":"{s}","reasoning_content":"{s}"}}
+        , .{ escaped_id, escaped_session_id, escaped_role, escaped_content, escaped_timestamp, is_input_str, is_output_str, escaped_tool_name, escaped_finish_reason, escaped_reasoning_content });
         defer allocator.free(msg_json);
         try json_messages.appendSlice(allocator, msg_json);
     }
@@ -854,6 +873,12 @@ pub fn buildSessionMessagesXml(
         const escaped_reasoning_content = try xmlEscape(allocator, msg.reasoning_content);
         defer allocator.free(escaped_reasoning_content);
 
+        // is_input / is_output as XML text content. Match the JSON wire
+        // format: emit "true" / "false" (not "1" / "0") so the LLM
+        // consumers (read_messages tool etc.) see the same shape on both
+        // the JSON and the XML paths.
+        const is_input_str = if (msg.is_input) "true" else "false";
+        const is_output_str = if (msg.is_output) "true" else "false";
         const msg_xml = try std.fmt.allocPrint(allocator,
             \\<message id="{s}">
             \\<session_id>{s}</session_id>
@@ -866,7 +891,7 @@ pub fn buildSessionMessagesXml(
             \\<finish_reason>{s}</finish_reason>
             \\<reasoning_content>{s}</reasoning_content>
             \\</message>
-        , .{ escaped_id, escaped_session_id, escaped_role, escaped_content, escaped_timestamp, msg.is_input, msg.is_output, escaped_tool_name, escaped_finish_reason, escaped_reasoning_content });
+        , .{ escaped_id, escaped_session_id, escaped_role, escaped_content, escaped_timestamp, is_input_str, is_output_str, escaped_tool_name, escaped_finish_reason, escaped_reasoning_content });
         defer allocator.free(msg_xml);
         try xml_messages.appendSlice(allocator, msg_xml);
     }
@@ -1143,8 +1168,8 @@ pub fn getMessages(
             .prompt_tokens = std.fmt.parseInt(u32, row.values[16], 10) catch 0,
             .completion_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
             .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
-            .is_input = std.mem.eql(u8, row.values[19], "1"),
-            .is_output = std.mem.eql(u8, row.values[20], "1"),
+            .is_input = parseRowBool(row.values[19]),
+            .is_output = parseRowBool(row.values[20]),
             .diffview_before = if (diffview_before_str.len > 0) try allocator.dupe(u8, diffview_before_str) else null,
             .diffview_after = if (diffview_after_str.len > 0) try allocator.dupe(u8, diffview_after_str) else null,
             .image_urls = if (image_url_str.len > 0) blk: {
@@ -1393,8 +1418,8 @@ pub fn getLatestMessage(
             .prompt_tokens = std.fmt.parseInt(u32, row.values[16], 10) catch 0,
             .completion_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
             .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
-            .is_input = std.mem.eql(u8, row.values[19], "1"),
-            .is_output = std.mem.eql(u8, row.values[20], "1"),
+            .is_input = parseRowBool(row.values[19]),
+            .is_output = parseRowBool(row.values[20]),
             .diffview_before = if (diffview_before_str.len > 0) try allocator.dupe(u8, diffview_before_str) else null,
             .diffview_after = if (diffview_after_str.len > 0) try allocator.dupe(u8, diffview_after_str) else null,
             .image_urls = if (image_url_str.len > 0) blk: {

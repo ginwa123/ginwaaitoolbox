@@ -555,8 +555,8 @@ export interface Message {
   image_url?: string
   tool_calls_json?: any
   finish_reason?: string,
-  is_input?: string,
-  is_output?: string
+  is_input?: boolean,
+  is_output?: boolean
 }
 
 export interface SkillInfo {
@@ -733,8 +733,8 @@ export interface SseEvent {
   loop_index?: number
   temperature?: number
   is_thinking?: boolean
-  is_input?: string,
-  is_output?: string,
+  is_input?: boolean,
+  is_output?: boolean,
   parent_session_id?: string
   parent_id?: string
   created_at?: number

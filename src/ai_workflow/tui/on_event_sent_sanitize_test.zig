@@ -160,3 +160,50 @@ test "SseEventLLMHistory with INVALID UTF-8 emits content as byte ARRAY (demonst
     try testing.expect(std.mem.indexOf(u8, json, "\"content\":[") != null);
     try testing.expect(std.mem.indexOf(u8, json, "\"content\":\"<tag>") == null);
 }
+
+test "SseEventLLMHistory emits is_input/is_output as JSON booleans" {
+    // Regression test for the is_input/is_output wire format. The SSE
+    // payload struct fields are typed `bool` and std.json.fmt MUST emit
+    // them as JSON booleans — not as the old string form ("1"/"0") or
+    // as JSON numbers. The backend is consistent with the REST path
+    // (see llm_history_is_input_output_test.zig) and the frontend
+    // expects boolean compare (`m.is_output === true`).
+    //
+    // The SSE code didn't change in this refactor (the struct was
+    // already `bool`); this test is defense-in-depth so a future
+    // refactor doesn't regress to string or number form.
+    //
+    // Plan: docs/plans/2026-07-01-is-input-output-bool-consistency.md
+    // (Chunk 3, Task 3.2).
+    const on_event_sent = @import("on_event_sent.zig");
+
+    const payload = on_event_sent.SseEventLLMHistory{
+        .content = "hi",
+        .session_id = "s1",
+        .model = "m1",
+        .cwd = "/cwd",
+        .loop_index = 0,
+        .temperature = 0.2,
+        .is_thinking = false,
+        .is_input = true,
+        .is_output = false,
+    };
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try buf.print(testing.allocator, "{f}", .{std.json.fmt(payload, .{ .whitespace = .minified })});
+
+    const json = buf.items;
+    // Must contain boolean form (no quotes around true/false):
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_input\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_output\":false") != null);
+    // Must NOT contain string form (the old wrong format):
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_input\":\"1\"") == null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_output\":\"0\"") == null);
+    // Must NOT contain the other string form (true/false wrapped in quotes):
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_input\":\"true\"") == null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_output\":\"false\"") == null);
+    // Must NOT contain number form (alternative refactor that was rejected):
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_input\": 1") == null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_output\": 0") == null);
+}
