@@ -27,11 +27,44 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Chunk 1: Linux only. Chunks 3 and 4 add windows-latest,
-        # macos-latest (Intel), and macos-14 (Apple Silicon).
-        os: [ubuntu-latest]
+        # Chunks 2-4: extended from Linux-only to Linux + Windows + macOS.
+        # Windows uses __SKIP__ placeholder because the binary build
+        # requires vcpkg wiring in build.zig (out of scope for this plan;
+        # tests only run on Windows for now). macOS builds Intel
+        # (install:macos) and Apple Silicon (install:macos-arm).
+        # The exclude block filters the full cross-product (4 OSes x 4
+        # targets = 16 cells) down to the 4 native-target cells.
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-14]
         target:
           - { zig: x86_64-linux-gnu,       step: install:linux:system }
+          - { zig: x86_64-windows-gnu,     step: __SKIP__ }
+          - { zig: x86_64-macos,           step: install:macos }
+          - { zig: aarch64-macos,          step: install:macos-arm }
+        exclude:
+          - os: ubuntu-latest
+            target: { zig: x86_64-windows-gnu, step: __SKIP__ }
+          - os: ubuntu-latest
+            target: { zig: x86_64-macos, step: install:macos }
+          - os: ubuntu-latest
+            target: { zig: aarch64-macos, step: install:macos-arm }
+          - os: windows-latest
+            target: { zig: x86_64-linux-gnu, step: install:linux:system }
+          - os: windows-latest
+            target: { zig: x86_64-macos, step: install:macos }
+          - os: windows-latest
+            target: { zig: aarch64-macos, step: install:macos-arm }
+          - os: macos-latest
+            target: { zig: x86_64-linux-gnu, step: install:linux:system }
+          - os: macos-latest
+            target: { zig: x86_64-windows-gnu, step: __SKIP__ }
+          - os: macos-latest
+            target: { zig: aarch64-macos, step: install:macos-arm }
+          - os: macos-14
+            target: { zig: x86_64-linux-gnu, step: install:linux:system }
+          - os: macos-14
+            target: { zig: x86_64-windows-gnu, step: __SKIP__ }
+          - os: macos-14
+            target: { zig: x86_64-macos, step: install:macos }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,6 +83,17 @@ jobs:
             libssl-dev \
             libsqlite3-dev \
             pkg-config
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install openssl@3
+          # openssl@3 is keg-only; export paths explicitly so pkg-config
+          # and the Zig build can find it.
+          echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+          echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
 
       - name: Show toolchain versions
         run: |
@@ -75,22 +119,32 @@ jobs:
         run: zig build test:ai_workflow:tui --summary all
 
       - name: Build nalar binary
+        if: matrix.target.step != '__SKIP__'
         run: zig build ${{ matrix.target.step }}
 
       - name: Verify binary was produced
+        if: matrix.target.step != '__SKIP__'
         run: |
-          test -f zig-out/bin/nalar && \
-            echo "✓ zig-out/bin/nalar exists ($(stat -c%s zig-out/bin/nalar) bytes)"
+          case "${{ runner.os }}" in
+            Linux)   test -f zig-out/bin/nalar && echo "✓ nalar exists ($(stat -c%s zig-out/bin/nalar) bytes)" ;;
+            Windows) test -f zig-out/bin/nalarcore-windows-x86_64.exe && echo "✓ nalar.exe exists" ;;
+            macOS)   ls zig-out/bin/nalarcore-macos-* 2>/dev/null | grep -q . && echo "✓ macos binary exists" ;;
+          esac
 
       - name: "Smoke test: version check"
         run: ./zig-out/bin/nalar --version || true
         # The --version flag may not exist; this is a "does it run?" smoke test.
 
       - name: Upload nalar binary
+        if: matrix.target.step != '__SKIP__'
         uses: actions/upload-artifact@v4
         with:
           name: nalar-${{ matrix.target.zig }}
-          path: zig-out/bin/nalar
+          path: |
+            zig-out/bin/nalar
+            zig-out/bin/nalarcore-windows-x86_64.exe
+            zig-out/bin/nalarcore-macos-x86_64
+            zig-out/bin/nalarcore-macos-aarch64
           retention-days: 14
 
   frontend:
@@ -120,6 +174,18 @@ jobs:
       - name: Type-check + bundle (vue-tsc + vite)
         working-directory: src/apps/desktop
         run: bun run build
+
+      - name: Lint (non-blocking, see comment)
+        working-directory: src/apps/desktop
+        continue-on-error: true
+        run: |
+          bunx oxlint .
+          bunx eslint . --cache
+        # NOTE: Lint step uses raw commands WITHOUT --fix to avoid
+        # silent file modifications in CI. The package.json `bun run lint`
+        # script uses --fix which would corrupt the working tree.
+        # Tracked as follow-up: add a `lint:check` script to package.json
+        # that runs without --fix.
 
       - name: Run vitest unit tests (non-blocking, see comment)
         working-directory: src/apps/desktop
