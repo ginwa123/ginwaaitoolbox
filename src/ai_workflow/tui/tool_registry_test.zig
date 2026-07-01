@@ -18,6 +18,10 @@ test "wrapToolOutput - success with all fields, JSON params converted to XML" {
     try testing.expect(std.mem.indexOf(u8, out, "<name>read_file</name>") != null);
     // JSON {"path":"/foo/bar.txt"} → <parameters><path>/foo/bar.txt</path></parameters>
     try testing.expect(std.mem.indexOf(u8, out, "<parameters><path>/foo/bar.txt</path></parameters>") != null);
+    // Regression: ensure no double-wrapped <parameters><parameters>...</parameters></parameters>
+    // (jsonArgsToXml previously added its own <parameters> wrapper, which
+    // wrapToolOutput then wrapped again — see show_preview PR #55 bug fix.)
+    try testing.expect(std.mem.indexOf(u8, out, "<parameters><parameters>") == null);
     try testing.expect(std.mem.indexOf(u8, out, "<success>true</success>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "<data>") != null);
     // Data is NOT escaped — it's preserved as-is so the LLM and

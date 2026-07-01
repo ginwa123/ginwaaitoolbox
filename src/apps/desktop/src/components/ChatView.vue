@@ -37,6 +37,7 @@ import SetGitWorktree from './tool_outputs/SetGitWorktree.vue'
 import ReadCompactedMessages from './tool_outputs/ReadCompactedMessages.vue'
 import KanbanMove from './tool_outputs/KanbanMove.vue'
 import KanbanList from './tool_outputs/KanbanList.vue'
+import PreviewSidePanel from './PreviewSidePanel.vue'
 import SubAgentPeekPanel from './nalar/SubAgentPeekPanel.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useSubAgentPeek } from '../composables/useSubAgentPeek'
@@ -102,6 +103,14 @@ interface Message {
   tool_calls_json?: string
   finish_reason?: string
   tool_call_id?: string
+  /**
+   * JSON-stringified tool input arguments (e.g. for `show_preview`:
+   * `{content_type, content, title, language, caption}`). Populated
+   * by the same `tryUnwrapToolOutput` pipeline that fills
+   * `unwrappedByMessageId`. Used by `PreviewSidePanel` to render
+   * rich previews without re-fetching.
+   */
+  parameters?: string
 }
 
 // Escape HTML to prevent XSS
@@ -582,6 +591,40 @@ const isLoadingMore = ref(false)
 const error = ref<string | null>(null)
 const hasMoreMessages = ref(true)
 const isAtBottom = ref(true)
+
+// Preview side panel: derived list + UI state. The panel subscribes to
+// every tool message whose `tool_name === 'show_preview'`; it auto-opens
+// and un-dismisses when a NEW preview arrives (so the user doesn't have
+// to re-open it after dismissing) and resets when switching chats (so
+// the next chat starts with a clean panel). The wrapper has its own
+// `v-if="previews.length > 0"` so the panel itself disappears when the
+// filtered list is empty — the `previewPanelDismissed` flag on the
+// parent is the "user clicked ✕" exit, which persists across the same
+// chat until a new preview arrives (the watcher below re-clears it).
+const showPreviewMessages = computed(() =>
+  messages.value.filter((m) => m.tool_name === 'show_preview'),
+)
+const previewPanelCollapsed = ref(false)
+const previewPanelDismissed = ref(false)
+
+watch(showPreviewMessages, (newArr, oldArr) => {
+  // Auto-open + un-dismiss whenever a new preview lands in this chat.
+  if ((newArr?.length ?? 0) > (oldArr?.length ?? 0)) {
+    previewPanelCollapsed.value = false
+    previewPanelDismissed.value = false
+  }
+})
+
+watch(
+  () => props.chatId,
+  () => {
+    // Switching chats resets the panel state — previews from the
+    // previous chat are no longer relevant, and the user shouldn't
+    // carry the dismissed/collapsed flag into the new chat.
+    previewPanelCollapsed.value = false
+    previewPanelDismissed.value = false
+  },
+)
 // Whether the VirtualScroller's container is currently scrollable
 // (`scrollHeight > clientHeight`). When the container IS scrollable,
 // the user can scroll to the top to trigger loadMore via the
@@ -2710,6 +2753,23 @@ const compactSession = async () => {
       @close="nav.closePeek()"
       @open-full="onPeekOpenFull"
       @reload="peek.reload"
+    />
+    <!--
+      Preview side panel: renders every `show_preview` tool result
+      for this chat in a right-side vertical column. Lives inside
+      the outer `flex h-full w-full` wrapper as a sibling of both
+      the main chat column (above) and `SubAgentPeekPanel` (also
+      here). The panel manages its own width via `w-8` (collapsed
+      tab) / `w-[480px]` (expanded) — adding `flex-1` would let it
+      grow and crowd out the messages. The `v-if="!previewPanelDismissed"`
+      stays mounted only until the user clicks ✕ (or a new preview
+      arrives, which the watcher above clears).
+    -->
+    <PreviewSidePanel
+      v-if="!previewPanelDismissed"
+      :previews="showPreviewMessages"
+      v-model:collapsed="previewPanelCollapsed"
+      @dismiss="previewPanelDismissed = true"
     />
   </div>
 </template>

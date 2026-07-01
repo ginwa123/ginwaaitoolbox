@@ -29,6 +29,7 @@ const edit_skill_mod = nalar_mod.edit_skill;
 const set_git_worktree_mod = nalar_mod.set_git_worktree;
 const kanban_list_mod = nalar_mod.kanban_list;
 const kanban_move_task_mod = nalar_mod.kanban_move_task;
+const show_preview_mod = nalar_mod.ai_mod.show_preview;
 const add_agent_mod = nalar_mod.add_agent;
 const remove_agent_mod = nalar_mod.remove_agent;
 const remove_file_mod = nalar_mod.remove_file;
@@ -641,6 +642,60 @@ pub fn execKanbanMoveTask(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     }
 
     const output = try wrapToolOutput(ctx.allocator, "kanban_move_task", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+pub fn execShowPreview(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        show_preview_mod.ShowPreviewInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "show_preview failed to parse input: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "show_preview", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    // executeShowPreviewToString always allocates a preview_id (even on
+    // validation failure) and writes it to `out_preview_id.*`. We provide
+    // an uninitialized []u8 and take ownership of the allocation after
+    // the call returns.
+    var preview_id: []u8 = undefined;
+
+    // executeShowPreviewToString returns an XML string. Errors
+    // (invalid content_type, content too large, missing language for
+    // code, OOM during sanitization) are encoded as
+    // <show_preview><error>...</error></show_preview> so the LLM
+    // sees a structured failure rather than a tool crash.
+    const inner = show_preview_mod.executeShowPreviewToString(
+        ctx.allocator,
+        ctx.io,
+        parsed.value,
+        &preview_id,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "show_preview failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "show_preview", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer ctx.allocator.free(inner);
+    defer ctx.allocator.free(preview_id);
+
+    // Detect the <show_preview><error>...</error></show_preview> shape
+    // and surface it as a tool failure (so the LLM sees
+    // `success=false` rather than a successful wrapper around an
+    // error body). The inner envelope is still passed through as
+    // `data` so the LLM can read the full diagnostic.
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "show_preview", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "show_preview", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
@@ -1523,23 +1578,43 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 /// Returns `<parameters></parameters>` for an empty input string.
 /// Returns `<parameters><raw>{escaped raw}</raw></parameters>` if the JSON
 /// fails to parse (fallback so the LLM can still see what was passed).
+/// Convert a JSON arguments string into the XML fragment that goes inside
+/// `<parameters>...</parameters>` in the tool output envelope.
+///
+/// **Returns ONLY the inner content** (e.g. `<path>/foo</path>` for
+/// `{"path":"/foo"}`). The outer `<parameters>...</parameters>` wrapper
+/// is added by `wrapToolOutput` so that there is exactly one wrapper
+/// per envelope. Previously this function added the outer wrapper too,
+/// producing a double-wrap like
+/// `<parameters><parameters><path>/foo</path></parameters></parameters>`
+/// which corrupted every show_preview (and any other tool with rich
+/// markdown/code content) — the frontend's `tryUnwrapToolOutput` would
+/// read the inner `<parameters>` as the parameters JSON, fail to
+/// parse, and render an empty preview.
+///
+/// Caller contract: `wrapToolOutput` is the only caller; it always
+/// embeds the returned string inside its own `<parameters>{s}</parameters>`
+/// template, so callers MUST NOT add another `<parameters>` wrapper.
 fn jsonArgsToXml(allocator: std.mem.Allocator, json_str: []const u8) ![]u8 {
     if (json_str.len == 0) {
-        return try allocator.dupe(u8, "<parameters></parameters>");
+        // Empty inner content — wrapToolOutput's template still emits
+        // the surrounding <parameters></parameters>.
+        return try allocator.dupe(u8, "");
     }
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_str, .{}) catch {
-        // Malformed JSON fallback: wrap the raw string in <raw>...</raw>
+        // Malformed JSON fallback: wrap the raw string in <raw>...</raw>.
+        // The outer <parameters>...</parameters> wrapper is added by
+        // wrapToolOutput — we only build the inner content here.
         const escaped = try xmlEscape(allocator, json_str);
         defer allocator.free(escaped);
-        return try std.fmt.allocPrint(allocator, "<parameters><raw>{s}</raw></parameters>", .{escaped});
+        return try std.fmt.allocPrint(allocator, "<raw>{s}</raw>", .{escaped});
     };
     defer parsed.deinit();
 
     var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(allocator);
 
-    try buffer.appendSlice(allocator, "<parameters>");
     switch (parsed.value) {
         .object => |obj| {
             var it = obj.iterator();
@@ -1548,7 +1623,9 @@ fn jsonArgsToXml(allocator: std.mem.Allocator, json_str: []const u8) ![]u8 {
             }
         },
         else => {
-            // Top-level is not an object — wrap as <raw> for safety
+            // Top-level is not an object — wrap as <raw> for safety.
+            // The outer <parameters>...</parameters> wrapper is added by
+            // wrapToolOutput — we only build the inner content here.
             const escaped = try xmlEscape(allocator, json_str);
             defer allocator.free(escaped);
             try buffer.appendSlice(allocator, "<raw>");
@@ -1556,7 +1633,6 @@ fn jsonArgsToXml(allocator: std.mem.Allocator, json_str: []const u8) ![]u8 {
             try buffer.appendSlice(allocator, "</raw>");
         },
     }
-    try buffer.appendSlice(allocator, "</parameters>");
 
     return try buffer.toOwnedSlice(allocator);
 }
@@ -1675,6 +1751,9 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "kanban_list", .exec = execKanbanList, .tool_def = kanban_list_mod.kanban_list_tool },
     .{ .name = "kanban_move_task", .exec = execKanbanMoveTask, .tool_def = kanban_move_task_mod.kanban_move_task_tool },
 
+    // === PREVIEW TOOLS ===
+    .{ .name = "show_preview", .exec = execShowPreview, .tool_def = show_preview_mod.show_preview_tool },
+
     // === LSP TOOLS ===
     .{ .name = "lsp_definition", .exec = execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool },
     .{ .name = "lsp_references", .exec = execLspReferences, .tool_def = lsp_references_mod.lsp_references_tool },
@@ -1726,6 +1805,7 @@ pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool
         set_git_worktree_mod.set_git_worktree_tool,
         kanban_list_mod.kanban_list_tool,
         kanban_move_task_mod.kanban_move_task_tool,
+        show_preview_mod.show_preview_tool,
     };
     return allocator.dupe(tool_models.AgentTool, tools_list) catch return &.{};
 }
