@@ -111,8 +111,8 @@ interface Message {
    * rich previews without re-fetching.
    */
   parameters?: string,
-  is_input?: string,
-  is_output?: string,
+  is_input?: boolean,
+  is_output?: boolean,
 }
 
 // Escape HTML to prevent XSS
@@ -604,7 +604,7 @@ const isAtBottom = ref(true)
 // parent is the "user clicked ✕" exit, which persists across the same
 // chat until a new preview arrives (the watcher below re-clears it).
 const showPreviewMessages = computed(() =>
-  messages.value.filter((m) => m.tool_name === 'show_preview' && m.is_output === '1')
+  messages.value.filter((m) => m.tool_name === 'show_preview' && m.is_output === true)
 )
 const previewPanelCollapsed = ref(false)
 const previewPanelDismissed = ref(false)
