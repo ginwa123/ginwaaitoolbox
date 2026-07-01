@@ -1,3 +1,18 @@
+//! `GET /api/workspaces/:workspace_id/items/:item_id/tasks`.
+//!
+//! Optional query params:
+//!   - `limit`: u32, defaults to 20, max 100
+//!   - `cursor`: string in the form `<sort_field_value>|<id>` from the
+//!     previous page's `next_cursor`; pass undefined for the first page
+//!   - `sort_by`: `"created_at" | "updated_at" | "name"`, default `"updated_at"`
+//!   - `direction`: `"asc" | "desc"`, default `"desc"`
+//!
+//! Response: `{ tasks: [...], count, has_more, next_cursor }`.
+//!
+//! Layered as `useCase` (resolve singleton + parse query + DB
+//! query + build response) and a thin handler that maps errors
+//! to status codes / JSON.
+
 const std = @import("std");
 const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
@@ -20,29 +35,34 @@ const DEFAULT_SORT_FIELD: llm_history.TaskSortField = .updated_at;
 /// `desc` matches the existing "newest first" behavior.
 const DEFAULT_SORT_DIRECTION: llm_history.TaskSortDirection = .desc;
 
-/// GET /api/workspaces/:workspace_id/items/:item_id/tasks
-/// Optional query params:
-///   - limit: u32, defaults to 20, max 100
-///   - cursor: string in the form "<sort_field_value>|<id>" from the
-///             previous page's `next_cursor`; pass undefined for the
-///             first page
-///   - sort_by: "created_at" | "updated_at" | "name", default "updated_at"
-///   - direction: "asc" | "desc", default "desc"
-/// Response: `{ tasks: [...], count, has_more, next_cursor }`
-pub fn tasksListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
-    const allocator = ctx.allocator;
+pub const TasksListError = error{
+    ItemIdRequired,
+    QueryFailed,
+    /// `std.json.Stringify.valueAlloc` / `makeWorkspaceItemTaskListResponse`
+    /// can fail with `OutOfMemory`. Unreachable on the per-request
+    /// arena, but the type system requires the variant.
+    OutOfMemory,
+};
 
-    const di = try nalarcore.getSingleton();
-    const sqlite_db = di.db;
+pub const TasksListInput = struct {
+    item_id: []const u8,
+    limit: u32,
+    cursor: ?[]const u8,
+    sort_field: llm_history.TaskSortField,
+    sort_direction: llm_history.TaskSortDirection,
+};
 
-    const item_id = req.params.get("item_id") orelse "";
-    if (item_id.len == 0) {
-        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }) });
-    }
+pub const TasksListResult = []const u8; // pre-serialized JSON
 
-    const query = req.query;
+// =====================================================================
+// Use case
+// =====================================================================
 
-    // Parse limit (default 20, clamp to MAX_PAGE_SIZE; 0 → default).
+/// Parse the query string into the typed input. Defaults +
+/// clamping + enum-from-string parsing all happen here. Kept as a
+/// free function so the use-case body stays focused on the DB
+/// work.
+fn parseInput(query: anytype) TasksListInput {
     const limit_str = query.get("limit") orelse "20";
     const limit_parsed = std.fmt.parseInt(u32, limit_str, 10) catch DEFAULT_PAGE_SIZE;
     const limit: u32 = if (limit_parsed == 0)
@@ -52,11 +72,9 @@ pub fn tasksListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
     else
         limit_parsed;
 
-    // Parse sort_by (default: updated_at).
     const sort_by_str = query.get("sort_by") orelse "updated_at";
     const sort_field = llm_history.enumFromString(llm_history.TaskSortField, sort_by_str) catch DEFAULT_SORT_FIELD;
 
-    // Parse direction (default: desc).
     const direction_str = query.get("direction") orelse "desc";
     const sort_direction = llm_history.enumFromString(llm_history.TaskSortDirection, direction_str) catch DEFAULT_SORT_DIRECTION;
 
@@ -66,17 +84,29 @@ pub fn tasksListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
     const cursor_raw = query.get("cursor");
     const cursor: ?[]const u8 = if (cursor_raw) |c| (if (c.len == 0) null else c) else null;
 
+    return .{
+        .item_id = "", // set by the handler (path param)
+        .limit = limit,
+        .cursor = cursor,
+        .sort_field = sort_field,
+        .sort_direction = sort_direction,
+    };
+}
+
+fn useCase(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    input: TasksListInput,
+) TasksListError!TasksListResult {
     const result = ai_mod.workspace_item_tasks.listWorkspaceItemTasksWithCursor(
         allocator,
-        sqlite_db,
-        item_id,
-        limit,
-        cursor,
-        sort_field,
-        sort_direction,
-    ) catch {
-        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to fetch tasks" }) });
-    };
+        db,
+        input.item_id,
+        input.limit,
+        input.cursor,
+        input.sort_field,
+        input.sort_direction,
+    ) catch return error.QueryFailed;
     defer {
         for (result.tasks) |task| task.deinit(allocator);
         allocator.free(result.tasks);
@@ -129,7 +159,7 @@ pub fn tasksListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
         if (!result.has_more) break :blk null;
         if (result.tasks.len == 0) break :blk null;
         const last = result.tasks[result.tasks.len - 1];
-        const sort_value: ?[]const u8 = switch (sort_field) {
+        const sort_value: ?[]const u8 = switch (input.sort_field) {
             .created_at => last.created_at orelse null,
             .updated_at => last.updated_at orelse null,
             .name => last.name, // name is NOT NULL in the DB schema
@@ -146,5 +176,55 @@ pub fn tasksListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
     // the allocPrint above leaks on every paginated request.
     defer if (next_cursor) |c| allocator.free(c);
 
-    return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeWorkspaceItemTaskListResponse(allocator, task_responses.items, result.has_more, next_cursor) });
+    return try http_response.makeWorkspaceItemTaskListResponse(
+        allocator,
+        task_responses.items,
+        result.has_more,
+        next_cursor,
+    );
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
+pub fn tasksListHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    res: gserverz.HttpResponse,
+) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+
+    const di = try nalarcore.getSingleton();
+    const sqlite_db = di.db;
+
+    const item_id = req.params.get("item_id") orelse "";
+    if (item_id.len == 0) {
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }),
+        });
+    }
+
+    var input = parseInput(req.query);
+    input.item_id = item_id;
+
+    const data = useCase(allocator, sqlite_db, input) catch |err| {
+        const status: u16 = switch (err) {
+            error.ItemIdRequired => 400,
+            error.QueryFailed => 500,
+            error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.ItemIdRequired => "item_id required",
+            error.QueryFailed => "Failed to fetch tasks",
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        });
+    };
+
+    return res.jsonResponse(.{ .status_code = 200, .data = data });
 }

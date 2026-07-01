@@ -1,19 +1,16 @@
-//! PATCH /api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/move
+//! `PATCH /api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/move`.
 //!
-//! Move a task to a different kanban column (and/or reorder within its
-//! column). Thin wrapper around `kanban_model.moveTask`.
+//! Move a task to a different kanban column (and/or reorder within
+//! its column).
 //!
 //! Body: `{column_id, position}` — both required. The frontend fires
 //! this from the drag-and-drop handler after a card is dropped on a
 //! different column (or a different slot within the same column).
 //!
-//! Response shape: `{"success": true}` — the frontend re-fetches the
-//! board via `GET /kanban/columns` after the move to refresh positions.
+//! Response shape: `{"success": true, task_id, column_id, position}`.
 //!
-//! Errors:
-//!   - 400 missing/invalid JSON body, missing/empty column_id or
-//!     task_id or item_id
-//!   - 500 DB failure
+//! Layered as `useCase` (validate + move + emit SSE) and a thin
+//! handler that maps the outcome + errors to status codes / JSON.
 //!
 //! Plan: docs/superpowers/plans/2026-06-21-workspace-item-kanban.md
 //!   (Chunk 3, Task 3.7)
@@ -38,6 +35,83 @@ const MoveTaskResponse = struct {
     column_id: []const u8,
     position: i64,
 };
+
+pub const TasksMoveError = error{
+    ItemIdRequired,
+    TaskIdRequired,
+    MissingBody,
+    InvalidJson,
+    ColumnIdRequired,
+    MoveFailed,
+    /// `std.json.Stringify.valueAlloc` can fail with `OutOfMemory`.
+    /// Unreachable on the per-request arena, but the type system
+    /// requires the variant.
+    OutOfMemory,
+};
+
+pub const TasksMoveInput = struct {
+    item_id: []const u8,
+    workspace_id: []const u8,
+    task_id: []const u8,
+    body: MoveTaskBody,
+};
+
+pub const TasksMoveResult = []const u8; // pre-serialized JSON
+
+// =====================================================================
+// Use case
+// =====================================================================
+
+fn useCase(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    input: TasksMoveInput,
+) TasksMoveError!TasksMoveResult {
+    if (input.item_id.len == 0) return error.ItemIdRequired;
+    if (input.task_id.len == 0) return error.TaskIdRequired;
+    if (input.body.column_id.len == 0) return error.ColumnIdRequired;
+
+    kanban_model.moveTask(
+        allocator,
+        db,
+        input.item_id,
+        input.task_id,
+        input.body.column_id,
+        input.body.position,
+    ) catch return error.MoveFailed;
+
+    // Emit SSE event so other connected clients refresh their
+    // kanban view. action="moved" matches the frontend's
+    // `KanbanTaskEvent` union variant. `moveTask` renumbers
+    // sibling positions in both source and destination columns —
+    // the frontend re-fetches the full column+task layout on
+    // every move, so a simple re-fetch keeps all boards in sync
+    // without patching in-place. The emit is fire-and-forget;
+    // failures are logged but do NOT fail the request.
+    on_event_sent_kanban.onEventSendKanbanTask(allocator, .{
+        .action = "moved",
+        .workspace_id = input.workspace_id,
+        .item_id = input.item_id,
+        .task_id = input.task_id,
+        .new_column_id = input.body.column_id,
+        .new_position = input.body.position,
+    }) catch |err| {
+        std.log.warn(
+            "tasks_move: SSE emit failed (non-fatal): {s}",
+            .{@errorName(err)},
+        );
+    };
+
+    return try std.json.Stringify.valueAlloc(allocator, MoveTaskResponse{
+        .task_id = input.task_id,
+        .column_id = input.body.column_id,
+        .position = input.body.position,
+    }, .{});
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
 
 pub fn tasksMoveHandler(
     ctx: gserverz.HttpContext,
@@ -82,50 +156,35 @@ pub fn tasksMoveHandler(
         });
     };
 
-    if (parsed.column_id.len == 0) {
-        return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "column_id is required" }),
-        });
-    }
-
-    kanban_model.moveTask(allocator, sqlite_db, item_id, task_id, parsed.column_id, parsed.position) catch {
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to move task" }),
-        });
-    };
-
-    // Emit SSE event so other connected clients refresh their kanban
-    // view. action="moved" matches the frontend's `KanbanTaskEvent`
-    // union variant. `moveTask` renumbers sibling positions in both
-    // source and destination columns — the frontend re-fetches the
-    // full column+task layout on every move, so a simple re-fetch
-    // keeps all boards in sync without patching in-place.
-    on_event_sent_kanban.onEventSendKanbanTask(allocator, .{
-        .action = "moved",
-        .workspace_id = ws_id,
+    const data = useCase(allocator, sqlite_db, .{
         .item_id = item_id,
+        .workspace_id = ws_id,
         .task_id = task_id,
-        .new_column_id = parsed.column_id,
-        .new_position = parsed.position,
+        .body = parsed,
     }) catch |err| {
-        std.log.warn(
-            "tasks_move: SSE emit failed (non-fatal): {s}",
-            .{@errorName(err)},
-        );
+        const status: u16 = switch (err) {
+            error.ItemIdRequired => 400,
+            error.TaskIdRequired => 400,
+            error.MissingBody => 400,
+            error.InvalidJson => 400,
+            error.ColumnIdRequired => 400,
+            error.MoveFailed => 500,
+            error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.ItemIdRequired => "item_id required",
+            error.TaskIdRequired => "task_id required",
+            error.MissingBody => "Request body required",
+            error.InvalidJson => "Invalid JSON body",
+            error.ColumnIdRequired => "column_id is required",
+            error.MoveFailed => "Failed to move task",
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        });
     };
 
-    return res.jsonResponse(.{
-        .status_code = 200,
-        .data = try std.json.Stringify.valueAlloc(
-            allocator,
-            MoveTaskResponse{
-                .task_id = task_id,
-                .column_id = parsed.column_id,
-                .position = parsed.position,
-            },
-            .{},
-        ),
-    });
+    return res.jsonResponse(.{ .status_code = 200, .data = data });
 }
