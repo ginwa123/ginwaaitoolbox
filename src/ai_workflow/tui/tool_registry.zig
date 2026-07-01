@@ -1578,23 +1578,43 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 /// Returns `<parameters></parameters>` for an empty input string.
 /// Returns `<parameters><raw>{escaped raw}</raw></parameters>` if the JSON
 /// fails to parse (fallback so the LLM can still see what was passed).
+/// Convert a JSON arguments string into the XML fragment that goes inside
+/// `<parameters>...</parameters>` in the tool output envelope.
+///
+/// **Returns ONLY the inner content** (e.g. `<path>/foo</path>` for
+/// `{"path":"/foo"}`). The outer `<parameters>...</parameters>` wrapper
+/// is added by `wrapToolOutput` so that there is exactly one wrapper
+/// per envelope. Previously this function added the outer wrapper too,
+/// producing a double-wrap like
+/// `<parameters><parameters><path>/foo</path></parameters></parameters>`
+/// which corrupted every show_preview (and any other tool with rich
+/// markdown/code content) — the frontend's `tryUnwrapToolOutput` would
+/// read the inner `<parameters>` as the parameters JSON, fail to
+/// parse, and render an empty preview.
+///
+/// Caller contract: `wrapToolOutput` is the only caller; it always
+/// embeds the returned string inside its own `<parameters>{s}</parameters>`
+/// template, so callers MUST NOT add another `<parameters>` wrapper.
 fn jsonArgsToXml(allocator: std.mem.Allocator, json_str: []const u8) ![]u8 {
     if (json_str.len == 0) {
-        return try allocator.dupe(u8, "<parameters></parameters>");
+        // Empty inner content — wrapToolOutput's template still emits
+        // the surrounding <parameters></parameters>.
+        return try allocator.dupe(u8, "");
     }
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_str, .{}) catch {
-        // Malformed JSON fallback: wrap the raw string in <raw>...</raw>
+        // Malformed JSON fallback: wrap the raw string in <raw>...</raw>.
+        // The outer <parameters>...</parameters> wrapper is added by
+        // wrapToolOutput — we only build the inner content here.
         const escaped = try xmlEscape(allocator, json_str);
         defer allocator.free(escaped);
-        return try std.fmt.allocPrint(allocator, "<parameters><raw>{s}</raw></parameters>", .{escaped});
+        return try std.fmt.allocPrint(allocator, "<raw>{s}</raw>", .{escaped});
     };
     defer parsed.deinit();
 
     var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(allocator);
 
-    try buffer.appendSlice(allocator, "<parameters>");
     switch (parsed.value) {
         .object => |obj| {
             var it = obj.iterator();
@@ -1603,7 +1623,9 @@ fn jsonArgsToXml(allocator: std.mem.Allocator, json_str: []const u8) ![]u8 {
             }
         },
         else => {
-            // Top-level is not an object — wrap as <raw> for safety
+            // Top-level is not an object — wrap as <raw> for safety.
+            // The outer <parameters>...</parameters> wrapper is added by
+            // wrapToolOutput — we only build the inner content here.
             const escaped = try xmlEscape(allocator, json_str);
             defer allocator.free(escaped);
             try buffer.appendSlice(allocator, "<raw>");
@@ -1611,7 +1633,6 @@ fn jsonArgsToXml(allocator: std.mem.Allocator, json_str: []const u8) ![]u8 {
             try buffer.appendSlice(allocator, "</raw>");
         },
     }
-    try buffer.appendSlice(allocator, "</parameters>");
 
     return try buffer.toOwnedSlice(allocator);
 }
