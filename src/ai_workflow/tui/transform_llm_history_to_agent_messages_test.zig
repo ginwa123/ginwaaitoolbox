@@ -110,8 +110,14 @@ test "transform - message with image_url creates content_parts" {
         // allocator.dupe; the tests need the same treatment.
         .agent = try allocator.dupe(u8, "Agent"),
         .image_urls = blk: {
+            // Each entry must be heap-allocated — see the comment on
+            // `agent` above. deinit() walks this array and frees every
+            // entry, and Allocator.free in Zig 0.16 memsets the bytes
+            // before dispatching to the vtable, which segfaults on
+            // Windows when the entry is a static string literal in
+            // read-only .rdata.
             const arr = try std.heap.c_allocator.alloc([]const u8, 1);
-            arr[0] = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+            arr[0] = try allocator.dupe(u8, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
             break :blk arr;
         },
     };
