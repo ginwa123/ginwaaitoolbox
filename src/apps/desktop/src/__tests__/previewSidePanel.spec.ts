@@ -300,4 +300,75 @@ describe('PreviewSidePanel', () => {
     expect(wrapper.html()).toContain('language-zig')
     expect(wrapper.html()).toContain('fn main')
   })
+
+  // Regression tests for the bubble-click → panel-jump feature
+  // (2026-07-01). When the parent (ChatView) sees a click on a
+  // `show_preview` tool message bubble, it sets `focusId` to the
+  // message id and clears `collapsed`/`dismissed`. The panel
+  // must jump to the matching tab via the watcher.
+
+  it('jumps activeIndex to the preview matching focusId', async () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: {
+        previews: [
+          {
+            id: 'p-1',
+            content: buildEnvelope({ content_type: 'text', content: 'first' }),
+          },
+          {
+            id: 'p-2',
+            content: buildEnvelope({ content_type: 'code', content: 'second', language: 'py' }),
+          },
+          {
+            id: 'p-3',
+            content: buildEnvelope({ content_type: 'markdown', content: '# third' }),
+          },
+        ],
+      },
+    })
+    // Initial mount shows the FIRST preview (activeIndex default = 0;
+    // the auto-switch watcher only fires when new previews arrive
+    // after mount).
+    expect(wrapper.text()).toContain('first')
+    // Now the parent says "user clicked the bubble for p-3" — the panel
+    // should jump to the third preview.
+    await wrapper.setProps({ focusId: 'p-3' })
+    await nextTick()
+    expect(wrapper.text()).toContain('third')
+    expect(wrapper.text()).not.toContain('first')
+    // Clicking p-2 again must also work.
+    await wrapper.setProps({ focusId: 'p-2' })
+    await nextTick()
+    expect(wrapper.html()).toContain('language-py')
+    expect(wrapper.text()).not.toContain('third')
+  })
+
+  it('ignores focusId when it does not match any current preview', async () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: {
+        previews: [makePreview({ id: 'a' })],
+        focusId: 'does-not-exist',
+      },
+    })
+    await nextTick()
+    // Panel still renders (does not crash), activeIndex stays at default
+    expect(wrapper.find('[data-testid="preview-side-panel"]').exists()).toBe(true)
+    // No fallback to "no preview" — the existing preview is still shown
+    expect(wrapper.text()).toContain('markdown')
+  })
+
+  it('treats null focusId as no-op (does not change activeIndex)', async () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: {
+        previews: [makePreview({ id: 'a' })],
+        focusId: 'a',
+      },
+    })
+    await nextTick()
+    expect(wrapper.text()).toContain('markdown')
+    await wrapper.setProps({ focusId: null })
+    await nextTick()
+    // Same preview still shown
+    expect(wrapper.text()).toContain('markdown')
+  })
 })
