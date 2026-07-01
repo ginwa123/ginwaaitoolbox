@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const schemas = @import("schemas.zig");
 const BashInput = schemas.BashInput;
 const BashOutput = schemas.BashOutput;
@@ -365,7 +366,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
             _ = child.kill(io);
             // Do not call child.wait() here; kill() invalidates child.id.
             // The wait happens after the threads join below.
-            child_term = .{ .signal = .KILL };
+            child_term = if (builtin.os.tag == .windows) .{ .unknown = 1 } else .{ .signal = .KILL };
             break;
         }
         if (stdout_eof.load(.acquire) and stderr_eof.load(.acquire)) {

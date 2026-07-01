@@ -33,7 +33,7 @@ pub const SseClient = struct {
             .fd = fd,
             .arena = std.heap.ArenaAllocator.init(parent_allocator),
             .alive = true,
-            .last_heartbeat = timestamp(),
+            .last_heartbeat = timestamp(io),
             .message_queue = .empty,
             .lock = .init,
             .io = io,
@@ -47,11 +47,13 @@ pub const SseClient = struct {
     pub fn deinit(self: *SseClient) void {
         self.message_queue.deinit(self.allocator());
         self.arena.deinit();
-        _ = socket.close(self.fd);
+        // On Windows, socket handles are *anyopaque (HANDLE), not i32.
+        // The fd is only valid on non-Windows platforms where it's a POSIX fd.
+        if (!is_windows) _ = socket.close(self.fd);
     }
 
     pub fn forceDestroy(self: *SseClient) void {
-        _ = socket.close(self.fd);
+        if (!is_windows) _ = socket.close(self.fd);
     }
 
     pub fn markDisconnected(self: *SseClient) void {
@@ -112,7 +114,7 @@ pub const SseManager = struct {
 
     pub fn deinit(self: *SseManager) void {
         self.running = false;
-        if (self.notify_pipe[1] >= 0) {
+        if (!is_windows and self.notify_pipe[1] >= 0) {
             var byte_buf: [1]u8 = .{'q'};
             _ = socket.write(self.notify_pipe[1], &byte_buf, 1);
         }
@@ -127,8 +129,10 @@ pub const SseManager = struct {
         self.clients.clearRetainingCapacity();
         self.fd_to_id.clearRetainingCapacity();
 
-        if (self.notify_pipe[0] >= 0) _ = socket.close(self.notify_pipe[0]);
-        if (self.notify_pipe[1] >= 0) _ = socket.close(self.notify_pipe[1]);
+        if (!is_windows) {
+            if (self.notify_pipe[0] >= 0) _ = socket.close(self.notify_pipe[0]);
+            if (self.notify_pipe[1] >= 0) _ = socket.close(self.notify_pipe[1]);
+        }
     }
 
     pub fn registerClient(self: *SseManager, fd: i32) ![16]u8 {
@@ -225,7 +229,7 @@ pub const SseManager = struct {
     }
 
     fn notifyLoops(self: *SseManager) void {
-        if (self.notify_pipe[1] >= 0) {
+        if (!is_windows and self.notify_pipe[1] >= 0) {
             var byte_buf: [1]u8 = .{'x'};
             _ = socket.write(self.notify_pipe[1], &byte_buf, 1);
         }
@@ -293,7 +297,7 @@ pub const SseManager = struct {
     /// Each loop handles clients at indices where client_index % LOOP_COUNT == loop_id
     fn runEventLoop(self: *SseManager, heartbeat_secs: u32, loop_id: usize) void {
         const heartbeat_ms: i32 = @intCast(heartbeat_secs * 1000);
-        var last_hb: i64 = @intCast(timestamp());
+        var last_hb: i64 = @intCast(timestamp(self.io));
 
         while (self.running) {
             // --- snapshot fds under lock (fast, no poll while holding lock) ---
@@ -316,20 +320,28 @@ pub const SseManager = struct {
 
             if (total_fds == 0) {
                 // no clients — wait for notification or heartbeat interval
-                var ts: socket.timespec = .{
-                    .sec = @intCast(heartbeat_secs),
-                    .nsec = 0,
-                };
-                _ = socket.nanosleep(&ts, null);
+                if (!is_windows) {
+                    var ts: socket.timespec = .{
+                        .sec = @intCast(heartbeat_secs),
+                        .nsec = 0,
+                    };
+                    _ = socket.nanosleep(&ts, null);
+                } else {
+                    std.Io.sleep(self.io, .{ .seconds = heartbeat_secs }, .real) catch {};
+                }
                 continue;
             }
 
             var poll_fds: []posix.pollfd = self.allocator.alloc(posix.pollfd, total_fds) catch {
-                var ts: socket.timespec = .{
-                    .sec = @intCast(heartbeat_secs),
-                    .nsec = 0,
-                };
-                _ = socket.nanosleep(&ts, null);
+                if (!is_windows) {
+                    var ts: socket.timespec = .{
+                        .sec = @intCast(heartbeat_secs),
+                        .nsec = 0,
+                    };
+                    _ = socket.nanosleep(&ts, null);
+                } else {
+                    std.Io.sleep(self.io, .{ .seconds = heartbeat_secs }, .real) catch {};
+                }
                 continue;
             };
             defer self.allocator.free(poll_fds);
@@ -380,8 +392,10 @@ pub const SseManager = struct {
 
                 if (revents & poll_in != 0) {
                     if (has_pipe and pfd.fd == self.notify_pipe[0]) {
-                        var buf: [64]u8 = undefined;
-                        _ = socket.read(self.notify_pipe[0], &buf, buf.len);
+                        if (!is_windows) {
+                            var buf: [64]u8 = undefined;
+                            _ = socket.read(self.notify_pipe[0], &buf, buf.len);
+                        }
                     } else {
                         var buf: [64]u8 = undefined;
                         const n = socket.read(pfd.fd, &buf, buf.len);
@@ -393,7 +407,7 @@ pub const SseManager = struct {
             }
 
             // only send heartbeat when actually due
-            const now: i64 = @intCast(timestamp());
+            const now: i64 = @intCast(timestamp(self.io));
             if (now - last_hb >= heartbeat_ms) {
                 self.sendHeartbeat(loop_id);
                 last_hb = now;
@@ -420,7 +434,7 @@ pub const SseManager = struct {
     /// sweep without standing up the full event loop. Production
     /// callers should rely on `runEventLoop`'s per-cycle call.
     pub fn sweepStaleClients(self: *SseManager, max_stale_ms: u64, max_per_call: usize) void {
-        const now = timestamp();
+        const now = timestamp(self.io);
 
         self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
@@ -500,7 +514,7 @@ pub const SseManager = struct {
             // Previously the timestamp was updated unconditionally,
             // which made the sweep blind to actual staleness.
             if (writeChunkedFrame(client.fd, ping)) |_| {
-                client.last_heartbeat = timestamp();
+                client.last_heartbeat = timestamp(self.io);
             } else |_| {
                 dead_ids.append(self.allocator, client.id) catch break;
             }
@@ -654,11 +668,24 @@ fn sendAll(fd: i32, data: []const u8) isize {
             sent += @as(usize, @intCast(n));
         }
         return @intCast(sent);
+    } else if (is_windows) {
+        // On Windows, sockets are HANDLE (*anyopaque), not i32.
+        // Use std.c.write which goes through the C runtime and handles
+        // the fd translation. The C runtime on Windows (UCRT/MinGW)
+        // translates fd-based writes to HANDLE-based WriteFile calls.
+        var sent: usize = 0;
+        while (sent < data.len) {
+            const rc = std.c.write(@ptrFromInt(@as(usize, @bitCast(@as(isize, fd)))), data[sent..].ptr, data.len - sent);
+            if (rc < 0) return -1;
+            if (rc == 0) return -1;
+            sent += @as(usize, @intCast(rc));
+        }
+        return @intCast(sent);
     } else {
-        // macOS / Windows / BSD: use posix.system.write. SIGPIPE
-        // is a no-op on Windows (no signal) and on macOS the default
-        // disposition varies; the SseClient-side `self.alive` flag
-        // and the next `sendEvent` call will surface the disconnect.
+        // macOS / BSD: use posix.system.write. SIGPIPE is a no-op on
+        // macOS; the default disposition varies; the SseClient-side
+        // `self.alive` flag and the next `sendEvent` call will surface
+        // the disconnect.
         var sent: usize = 0;
         while (sent < data.len) {
             const rc = posix.system.write(fd, data[sent..].ptr, data.len - sent);
@@ -672,8 +699,7 @@ fn sendAll(fd: i32, data: []const u8) isize {
     }
 }
 
-fn timestamp() u64 {
-    var ts: socket.timespec = undefined;
-    _ = socket.clock_gettime(socket.CLOCK.MONOTONIC, &ts);
-    return @as(u64, @intCast(ts.sec)) * 1000 + @as(u64, @intCast(ts.nsec)) / 1000000;
+fn timestamp(io: std.Io) u64 {
+    const ts = std.Io.Timestamp.now(io, .real);
+    return @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_ms));
 }

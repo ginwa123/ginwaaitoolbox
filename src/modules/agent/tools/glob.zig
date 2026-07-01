@@ -2,6 +2,19 @@ const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
 
+/// Cross-platform `/`-separator path concat. See memories.zig's
+/// `joinPath` for the rationale — `std.fs.path.join` produces
+/// backslash separators on Windows, but our glob test asserts
+/// forward-slash paths, so we always use `/`.
+fn joinPath(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ![]u8 {
+    if (dir.len == 0) return allocator.dupe(u8, name);
+    const out = try allocator.alloc(u8, dir.len + 1 + name.len);
+    @memcpy(out[0..dir.len], dir);
+    out[dir.len] = '/';
+    @memcpy(out[dir.len + 1 ..][0..name.len], name);
+    return out;
+}
+
 // ============================================================================
 // Gitignore Types
 // ============================================================================
@@ -623,7 +636,7 @@ fn walkDir(
         const name = entry.name;
         if (!opts.dot and name.len > 0 and name[0] == '.') continue;
 
-        const full_path = std.fs.path.join(allocator, &.{ dir_path, name }) catch continue;
+        const full_path = joinPath(allocator, dir_path, name) catch continue;
 
         // Check gitignore first
         const is_dir = entry.kind == .directory;

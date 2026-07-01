@@ -42,14 +42,8 @@ const PosixTimeval = extern struct {
 /// exposed in this Zig 0.16 stdlib version.
 const Clong = if (@bitSizeOf(usize) == 64 and builtin.os.tag != .windows) i64 else i32;
 
-/// `struct _FILETIME { DWORD dwLowDateTime; DWORD dwHighDateTime; }` (Win32).
-const WinFiletime = extern struct {
-    dw_low_date_time: u32,
-    dw_high_date_time: u32,
-};
-
 /// `void GetSystemTimeAsFileTime(LPFILETIME lpSystemTimeAsFileTime);` (Win32).
-extern "c" fn win_GetSystemTimeAsFileTime(lp_system_time_as_file_time: *WinFiletime) void;
+extern "kernel32" fn GetSystemTimeAsFileTime(lp_system_time_as_file_time: *std.os.windows.FILETIME) callconv(.winapi) void;
 
 /// Cross-platform current working directory getter (no `io: std.Io` required).
 ///
@@ -171,10 +165,10 @@ fn unixTimestampPosix() i64 {
 }
 
 fn unixTimestampWindows() i64 {
-    var ft: WinFiletime = undefined;
-    win_GetSystemTimeAsFileTime(&ft);
+    var ft: std.os.windows.FILETIME = undefined;
+    GetSystemTimeAsFileTime(&ft);
     // Combine low + high 32 bits into u64 (little-endian on Windows).
-    const ticks: u64 = (@as(u64, ft.dw_high_date_time) << 32) | @as(u64, ft.dw_low_date_time);
+    const ticks: u64 = (@as(u64, ft.dwHighDateTime) << 32) | @as(u64, ft.dwLowDateTime);
     // 100-ns ticks → seconds: divide by 10_000_000.
     // Then subtract the 1601→1970 offset (11_644_473_600 seconds).
     const seconds_since_1601: u64 = ticks / 10_000_000;

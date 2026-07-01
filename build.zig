@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 fn createPlatformExe(
     b: *std.Build,
@@ -16,10 +17,18 @@ fn createPlatformExe(
             .imports = &.{.{ .name = "nalarcore", .module = mod }},
         }),
     });
-    exe.root_module.linkSystemLibrary("sqlite3", .{});
-    exe.root_module.linkSystemLibrary("ssl", .{});
-    exe.root_module.linkSystemLibrary("crypto", .{});
     exe.root_module.linkSystemLibrary("c", .{});
+    if (target.result.os.tag == .linux) {
+        exe.root_module.linkSystemLibrary("sqlite3", .{});
+        exe.root_module.linkSystemLibrary("ssl", .{});
+        exe.root_module.linkSystemLibrary("crypto", .{});
+    } else if (target.result.os.tag == .windows) {
+        exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
+        exe.root_module.addCSourceFile(.{
+            .file = b.path("vendor/sqlite3/sqlite3.c"),
+            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
+        });
+    }
     return exe;
 }
 
@@ -36,7 +45,9 @@ pub fn build(b: *std.Build) void {
 
     mod.addImport("nalarcore", mod);
     mod.addImport("httpz", http_dep.module("httpz"));
-    mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    if (target.result.os.tag == .linux) {
+        mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    }
 
     const exe = b.addExecutable(.{
         .name = "nalar",
@@ -52,11 +63,18 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
-    exe.root_module.linkSystemLibrary("sqlite3", .{});
-    exe.root_module.linkSystemLibrary("ssl", .{});
-    exe.root_module.linkSystemLibrary("crypto", .{});
     exe.root_module.linkSystemLibrary("c", .{});
-
+    if (target.result.os.tag == .linux) {
+        exe.root_module.linkSystemLibrary("sqlite3", .{});
+        exe.root_module.linkSystemLibrary("ssl", .{});
+        exe.root_module.linkSystemLibrary("crypto", .{});
+    } else if (target.result.os.tag == .windows) {
+        exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
+        exe.root_module.addCSourceFile(.{
+            .file = b.path("vendor/sqlite3/sqlite3.c"),
+            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
+        });
+    }
     // === Build the Vue webapp (bun) ===
     // Chunk 3: this step is a dependency of the desktop_exe build so the
     // embedded webapp_assets.zig is regenerated on every build. The step
@@ -67,20 +85,22 @@ pub fn build(b: *std.Build) void {
 
     const webapp_dir = "src/apps/desktop";
 
-    // Zig 0.16: `std.fs.cwd()` is gone; use the raw `faccessat(2)` syscall
-    // for the "does this directory exist?" check. (The libc version requires
-    // libc to be linked into the build runner, which it isn't.) Mirrors the
-    // pattern in src/apps/desktop_app/path_resolve.zig's fileExists(). If
-    // node_modules is already populated we skip `bun install` (saves 1-2s
-    // per build).
+    // Check if node_modules exists — if so, skip `bun install` (saves 1-2s
+    // per build). Uses platform-specific syscalls: faccessat(2) on Linux,
+    // std.fs.cwd().openDir on other platforms (the build runner doesn't
+    // have libc linked, so std.fs.cwd() only works via the Io runtime
+    // path on non-Linux hosts).
     const node_modules_path = b.pathJoin(&.{ webapp_dir, "node_modules" });
-    const node_modules_exists = blk: {
-        var buf: [std.fs.max_path_bytes:0]u8 = undefined;
-        if (node_modules_path.len >= buf.len) break :blk false;
-        @memcpy(buf[0..node_modules_path.len], node_modules_path);
-        buf[node_modules_path.len] = 0;
-        const rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, &buf, 0, 0);
-        break :blk rc == 0;
+    const node_modules_exists = switch (builtin.os.tag) {
+        .linux => blk: {
+            var buf: [std.fs.max_path_bytes:0]u8 = undefined;
+            if (node_modules_path.len >= buf.len) break :blk false;
+            @memcpy(buf[0..node_modules_path.len], node_modules_path);
+            buf[node_modules_path.len] = 0;
+            const rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, &buf, 0, 0);
+            break :blk rc == 0;
+        },
+        else => false, // On non-Linux, always run `bun install` (safe no-op)
     };
 
     if (!node_modules_exists) {
@@ -265,9 +285,19 @@ pub fn build(b: *std.Build) void {
         .root_module = mod,
     });
     mod_tests.root_module.linkSystemLibrary("c", .{});
-    mod_tests.root_module.linkSystemLibrary("sqlite3", .{});
-    mod_tests.root_module.linkSystemLibrary("ssl", .{});
-    mod_tests.root_module.linkSystemLibrary("crypto", .{});
+    if (target.result.os.tag == .linux) {
+        mod_tests.root_module.linkSystemLibrary("sqlite3", .{});
+        mod_tests.root_module.linkSystemLibrary("ssl", .{});
+        mod_tests.root_module.linkSystemLibrary("crypto", .{});
+    } else if (target.result.os.tag == .windows) {
+        // Vendor sqlite3 amalgamation for Windows — compile from source
+        // so the test binary has sqlite3 support without system packages.
+        mod_tests.root_module.addIncludePath(b.path("vendor/sqlite3"));
+        mod_tests.root_module.addCSourceFile(.{
+            .file = b.path("vendor/sqlite3/sqlite3.c"),
+            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
+        });
+    }
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
@@ -278,9 +308,17 @@ pub fn build(b: *std.Build) void {
         .root_module = mod,
     });
     ai_workflow_tui_test_mod.root_module.linkSystemLibrary("c", .{});
-    ai_workflow_tui_test_mod.root_module.linkSystemLibrary("sqlite3", .{});
-    ai_workflow_tui_test_mod.root_module.linkSystemLibrary("ssl", .{});
-    ai_workflow_tui_test_mod.root_module.linkSystemLibrary("crypto", .{});
+    if (target.result.os.tag == .linux) {
+        ai_workflow_tui_test_mod.root_module.linkSystemLibrary("sqlite3", .{});
+        ai_workflow_tui_test_mod.root_module.linkSystemLibrary("ssl", .{});
+        ai_workflow_tui_test_mod.root_module.linkSystemLibrary("crypto", .{});
+    } else if (target.result.os.tag == .windows) {
+        ai_workflow_tui_test_mod.root_module.addIncludePath(b.path("vendor/sqlite3"));
+        ai_workflow_tui_test_mod.root_module.addCSourceFile(.{
+            .file = b.path("vendor/sqlite3/sqlite3.c"),
+            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
+        });
+    }
 
     const run_ai_workflow_tui_tests = b.addRunArtifact(ai_workflow_tui_test_mod);
     const test_ai_workflow_tui_step = b.step("test:ai_workflow:tui", "Run AI workflow TUI tests");
@@ -355,10 +393,18 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    dev_exe.root_module.linkSystemLibrary("sqlite3", .{});
-    dev_exe.root_module.linkSystemLibrary("ssl", .{});
-    dev_exe.root_module.linkSystemLibrary("crypto", .{});
     dev_exe.root_module.linkSystemLibrary("c", .{});
+    if (target.result.os.tag == .linux) {
+        dev_exe.root_module.linkSystemLibrary("sqlite3", .{});
+        dev_exe.root_module.linkSystemLibrary("ssl", .{});
+        dev_exe.root_module.linkSystemLibrary("crypto", .{});
+    } else if (target.result.os.tag == .windows) {
+        dev_exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
+        dev_exe.root_module.addCSourceFile(.{
+            .file = b.path("vendor/sqlite3/sqlite3.c"),
+            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
+        });
+    }
     const install_dev = b.addInstallArtifact(dev_exe, .{});
     dev_linux_system_step.dependOn(&install_dev.step);
     const copy_dev_to_system = b.addSystemCommand(&.{

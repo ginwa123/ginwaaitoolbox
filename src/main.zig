@@ -129,7 +129,7 @@ pub fn main(init: std.process.Init) !void {
 
     var port: u16 = 0;
 
-    var args_iter = std.process.Args.Iterator.init(init.minimal.args);
+    var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--port")) {
             if (args_iter.next()) |port_arg| {

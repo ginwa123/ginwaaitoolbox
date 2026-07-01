@@ -49,7 +49,7 @@ pub fn main(init: std.process.Init) !void {
     // `std.process.Init.minimal.args` and consumed through the new
     // `std.process.Args.Iterator` (which yields each argv as a `[]u8`
     // slice borrowed from the OS — safe for the lifetime of the process).
-    var args_iter = std.process.Args.Iterator.init(init.minimal.args);
+    var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     _ = args_iter.next() orelse return error.MissingExeName;
     const dist_path = args_iter.next() orelse return error.MissingDistPath;
     const out_path = args_iter.next() orelse return error.MissingOutPath;

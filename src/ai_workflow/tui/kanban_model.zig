@@ -104,11 +104,37 @@ pub fn listColumns(
 ///
 /// `std.time.timestamp()` was removed in Zig 0.16 — see the project
 /// memory `zig-0.16-crypto-time-stdlib-removals.md`.
+/// Uses a monotonic atomic counter XORed with a stack address for
+/// uniqueness. The counter alone is sufficient (it's process-global
+/// and monotonically increasing), but the address mix-in adds
+/// additional entropy if a future refactor ever threads the same
+/// allocator across threads. Avoids `std.c.clock_gettime` which
+/// doesn't compile on Windows (clockid_t is void there).
 fn generateColumnId(allocator: std.mem.Allocator) ![]u8 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-    const ns: i128 = @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
-    return std.fmt.allocPrint(allocator, "col_{d}", .{ns});
+    const counter = nextColumnIdCounter();
+    var entropy: [8]u8 = undefined;
+    const stack_addr: u64 = @intCast(@intFromPtr(&entropy));
+    const mixed: u64 = counter ^ stack_addr;
+    std.mem.writeInt(u64, &entropy, mixed, .little);
+    var hex: [16]u8 = undefined;
+    const hex_chars = "0123456789abcdef";
+    for (entropy, 0..) |b, i| {
+        hex[i * 2] = hex_chars[b >> 4];
+        hex[i * 2 + 1] = hex_chars[b & 0x0F];
+    }
+    return std.fmt.allocPrint(allocator, "col_{s}", .{&hex});
+}
+
+/// Process-global monotonic counter for `generateColumnId`. Every call
+/// to `generateColumnId` advances the counter by one, guaranteeing a
+/// unique ID per call regardless of how fast the caller invokes it.
+/// Uses `std.atomic.Value(u64)` for lock-free thread safety (the
+/// counter may be touched from any worker thread that creates a
+/// kanban column).
+var column_id_counter: std.atomic.Value(u64) = .init(0);
+
+fn nextColumnIdCounter() u64 {
+    return column_id_counter.fetchAdd(1, .seq_cst);
 }
 
 /// Append a new column to the end of the kanban's column sequence.

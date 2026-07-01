@@ -12,10 +12,31 @@ pub const response = http_parser;
 pub const SseManager = sse_manager.SseManager;
 
 /// Platform abstraction for socket operations
-/// On Linux: uses std.posix.system (low-level Linux socket API)
-/// On macOS/BSD: uses Darwin socket API via std.posix.system
-/// On Windows: uses Windows socket API via std.posix.system (with adaptations)
+/// On POSIX: uses std.posix.system (low-level socket API)
+/// On Windows: uses ws2_32 Winsock API directly
 const socket = posix.system;
+
+/// Winsock extern declarations for Windows
+const winsock = if (builtin.os.tag == .windows) struct {
+    extern "ws2_32" fn socket(domain: c_uint, sock_type: c_uint, protocol: c_uint) callconv(.c) c_int;
+    extern "ws2_32" fn closesocket(sockfd: c_int) callconv(.c) c_int;
+    extern "ws2_32" fn bind(sockfd: c_int, addr: ?*const anyopaque, addrlen: c_int) callconv(.c) c_int;
+    extern "ws2_32" fn listen(sockfd: c_int, backlog: c_int) callconv(.c) c_int;
+    extern "ws2_32" fn accept(sockfd: c_int, addr: ?*anyopaque, addrlen: ?*c_int) callconv(.c) c_int;
+    extern "ws2_32" fn recv(sockfd: c_int, buf: ?*anyopaque, len: c_int, flags: c_int) callconv(.c) c_int;
+    extern "ws2_32" fn send(sockfd: c_int, buf: ?*const anyopaque, len: c_int, flags: c_int) callconv(.c) c_int;
+    extern "ws2_32" fn setsockopt(sockfd: c_int, level: c_int, optname: c_int, optval: ?*const anyopaque, optlen: c_int) callconv(.c) c_int;
+    extern "ws2_32" fn getpeername(sockfd: c_int, addr: ?*anyopaque, addrlen: ?*c_int) callconv(.c) c_int;
+} else struct {};
+
+fn closeFd(fd: SocketFd) void {
+    if (builtin.os.tag == .windows) {
+        _ = winsock.closesocket(fd);
+    } else {
+        _ = socket.close(fd);
+    }
+}
+
 const c = std.c;
 
 /// Address family constants
@@ -26,21 +47,18 @@ const AF_UNIX = if (builtin.os.tag == .windows) @as(u32, 1) else posix.AF.UNIX;
 const SOCK_STREAM = if (builtin.os.tag == .windows) @as(u32, 1) else posix.SOCK.STREAM;
 const IPPROTO_TCP = if (builtin.os.tag == .windows) @as(u32, 6) else posix.IPPROTO.TCP;
 
-/// SOL_SOCKET
-const SOL_SOCKET = if (builtin.os.tag == .windows) @as(i32, 0xffff) else @as(i32, 1);
-/// SO_REUSEADDR
-const SO_REUSEADDR = if (builtin.os.tag == .windows) @as(u32, 4) else @as(u32, 2);
+pub const SocketFd = i32;
 
 pub const Address = struct {
-    sock_fd: i32,
+    sock_fd: SocketFd,
     port: u16,
 
     pub fn init(port: u16) !Address {
         const socket_fd = try createSocket();
-        errdefer _ = socket.close(socket_fd);
+        errdefer closeFd(socket_fd);
 
         try setReuseAddr(socket_fd);
-        try bind(port, socket_fd);
+        try bindPort(port, socket_fd);
 
         return .{
             .sock_fd = socket_fd,
@@ -48,19 +66,30 @@ pub const Address = struct {
         };
     }
 
-    fn createSocket() !i32 {
-        const fd = socket.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (fd < 0) return error.SocketCreationFailed;
-        return @as(i32, @intCast(fd));
+    fn createSocket() !SocketFd {
+        if (builtin.os.tag == .windows) {
+            const fd = winsock.socket(@intCast(AF_INET), @intCast(SOCK_STREAM), @intCast(IPPROTO_TCP));
+            if (fd < 0) return error.SocketCreationFailed;
+            return fd;
+        } else {
+            const fd = socket.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (fd < 0) return error.SocketCreationFailed;
+            return @as(i32, @intCast(fd));
+        }
     }
 
-    fn setReuseAddr(sock_fd: i32) !void {
-        const opt: i32 = 1;
-        // SOL_SOCKET = 1, SO_REUSEADDR = 2
-        try posix.setsockopt(sock_fd, 1, 2, std.mem.asBytes(&opt));
+    fn setReuseAddr(sock_fd: SocketFd) !void {
+        if (builtin.os.tag == .windows) {
+            const opt: c_int = 1;
+            const rc = winsock.setsockopt(sock_fd, 0xffff, 4, &opt, @sizeOf(c_int));
+            if (rc != 0) return error.SetSockOptFailed;
+        } else {
+            const opt: i32 = 1;
+            try posix.setsockopt(sock_fd, 1, 2, std.mem.asBytes(&opt));
+        }
     }
 
-    fn bind(port: u16, sock_fd: i32) !void {
+    fn bindPort(port: u16, sock_fd: SocketFd) !void {
         // Create sockaddr_in structure manually for portability
         // port must be in network byte order (big-endian)
         var sockaddr: socket.sockaddr.in = .{
@@ -70,8 +99,13 @@ pub const Address = struct {
             .zero = undefined,
         };
 
-        const rc = socket.bind(sock_fd, @ptrCast(&sockaddr), @sizeOf(socket.sockaddr.in));
-        if (rc < 0) return error.BindFailed;
+        if (builtin.os.tag == .windows) {
+            const rc = winsock.bind(sock_fd, @ptrCast(&sockaddr), @sizeOf(socket.sockaddr.in));
+            if (rc != 0) return error.BindFailed;
+        } else {
+            const rc = socket.bind(sock_fd, @ptrCast(&sockaddr), @sizeOf(socket.sockaddr.in));
+            if (rc < 0) return error.BindFailed;
+        }
     }
 };
 
@@ -105,7 +139,7 @@ pub const GinwaServer = struct {
         io: std.Io,
         request_path: []const u8,
         range_header: ?[]const u8,
-        fd: i32,
+        fd: SocketFd,
     ) anyerror!void = null,
     /// Opaque cfg pointer forwarded to `static_dir_handler`. Set together
     /// with the handler via `setStaticDirHandler`.
@@ -136,7 +170,7 @@ pub const GinwaServer = struct {
             io: std.Io,
             request_path: []const u8,
             range_header: ?[]const u8,
-            fd: i32,
+            fd: SocketFd,
         ) anyerror!void,
         cfg: ?*const anyopaque,
     ) void {
@@ -151,8 +185,13 @@ pub const GinwaServer = struct {
     }
 
     pub fn listen(self: *GinwaServer) !void {
-        const rc = socket.listen(self.address.sock_fd, 128);
-        if (rc < 0) return error.ListenFailed;
+        if (builtin.os.tag == .windows) {
+            const rc = winsock.listen(self.address.sock_fd, 128);
+            if (rc != 0) return error.ListenFailed;
+        } else {
+            const rc = socket.listen(self.address.sock_fd, 128);
+            if (rc < 0) return error.ListenFailed;
+        }
 
         var group: std.Io.Group = .init;
         errdefer group.cancel(self.io);
@@ -162,7 +201,7 @@ pub const GinwaServer = struct {
             const client_fd = self.acceptClient() catch break;
 
             const arena = self.allocator.create(std.heap.ArenaAllocator) catch {
-                _ = socket.close(client_fd);
+                _ = closeFd(client_fd);
                 continue;
             };
             arena.* = std.heap.ArenaAllocator.init(self.allocator);
@@ -170,7 +209,7 @@ pub const GinwaServer = struct {
             group.concurrent(
                 self.io,
                 struct {
-                    fn handle(server: *GinwaServer, arena_allocator: *std.heap.ArenaAllocator, fd: i32) void {
+                    fn handle(server: *GinwaServer, arena_allocator: *std.heap.ArenaAllocator, fd: SocketFd) void {
                         defer {
                             arena_allocator.deinit();
                             server.allocator.destroy(arena_allocator);
@@ -183,14 +222,14 @@ pub const GinwaServer = struct {
 
                         const request_data = rb.readFullRequest(fd) catch |err| {
                             std.debug.print("HTTP_SERVER: readFullRequest failed: {s}\n", .{@errorName(err)});
-                            _ = socket.close(fd);
+                            _ = closeFd(fd);
                             return;
                         };
                         defer allocator.free(request_data);
 
                         var req = http_parser.parseRequest(request_data, allocator, server.io, fd) catch |err| {
                             std.debug.print("HTTP_SERVER: parseRequest failed: {s}\n", .{@errorName(err)});
-                            _ = socket.close(fd);
+                            _ = closeFd(fd);
                             return;
                         };
                         defer req.headers.deinit();
@@ -202,7 +241,7 @@ pub const GinwaServer = struct {
                                     const final_res = h.handler(h.ctx, req, h.res) catch http_parser.internalError("Handler error", allocator);
                                     const res_bytes = final_res.toBytes() catch {
                                         std.debug.print("Failed to build response\n", .{});
-                                        _ = socket.close(fd);
+                                        _ = closeFd(fd);
                                         return;
                                     };
                                     defer final_res.allocator.free(res_bytes);
@@ -228,11 +267,11 @@ pub const GinwaServer = struct {
                                         "Access-Control-Allow-Origin: *\r\n" ++
                                         "\r\n";
                                     _ = server.sendToClient(fd, headers) catch {
-                                        _ = socket.close(fd);
+                                        _ = closeFd(fd);
                                         return;
                                     };
                                     const client_id = server.sse_manager.registerClient(fd) catch {
-                                        _ = socket.close(fd);
+                                        _ = closeFd(fd);
                                         return;
                                     };
                                     var sse_ctx = sse.ctx;
@@ -286,7 +325,7 @@ pub const GinwaServer = struct {
                             if (!static_served) {
                                 const not_found = http_parser.notFound(allocator);
                                 const res_bytes = not_found.toBytes() catch {
-                                    _ = socket.close(fd);
+                                    _ = closeFd(fd);
                                     return;
                                 };
                                 defer not_found.allocator.free(res_bytes);
@@ -294,7 +333,7 @@ pub const GinwaServer = struct {
                             }
                         }
 
-                        _ = socket.close(fd);
+                        _ = closeFd(fd);
                     }
                 }.handle,
                 .{ self, arena, client_fd },
@@ -302,7 +341,7 @@ pub const GinwaServer = struct {
                 std.debug.print("Failed to spawn handler: {s}\n", .{@errorName(err)});
                 arena.deinit();
                 self.allocator.destroy(arena);
-                _ = socket.close(client_fd);
+                _ = closeFd(client_fd);
                 continue;
             };
         }
@@ -341,13 +380,22 @@ pub const GinwaServer = struct {
         return data.len >= body_start + content_length;
     }
 
-    fn acceptClient(self: *GinwaServer) !i32 {
-        var client_addr: posix.sockaddr.in = undefined;
-        var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.in);
-
-        const rc = socket.accept(self.address.sock_fd, @ptrCast(&client_addr), &addr_len);
-        if (rc < 0) return error.AcceptFailed;
-        const fd: i32 = @intCast(rc);
+    fn acceptClient(self: *GinwaServer) !SocketFd {
+        const fd: SocketFd = blk: {
+            if (builtin.os.tag == .windows) {
+                var client_addr: socket.sockaddr.in = undefined;
+                var addr_len: c_int = @sizeOf(socket.sockaddr.in);
+                const rc = winsock.accept(self.address.sock_fd, @ptrCast(&client_addr), &addr_len);
+                if (rc < 0) return error.AcceptFailed;
+                break :blk rc;
+            } else {
+                var client_addr: posix.sockaddr.in = undefined;
+                var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.in);
+                const rc = socket.accept(self.address.sock_fd, @ptrCast(&client_addr), &addr_len);
+                if (rc < 0) return error.AcceptFailed;
+                break :blk @intCast(rc);
+            }
+        };
 
         // Enable TCP keepalive on the accepted client socket so a
         // silently-dropped connection (Wi-Fi loss, NAT table expiry,
@@ -376,42 +424,76 @@ pub const GinwaServer = struct {
         // level heartbeat (5s) still works without OS keepalive, it
         // just won't catch silent drops as quickly.
         const on: c_int = 1;
-        posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.KEEPALIVE, std.mem.asBytes(&on)) catch {};
         const keepidle: c_int = 10;
-        posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPIDLE, std.mem.asBytes(&keepidle)) catch {};
         const keepintvl: c_int = 5;
-        posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPINTVL, std.mem.asBytes(&keepintvl)) catch {};
         const keepcnt: c_int = 3;
-        posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPCNT, std.mem.asBytes(&keepcnt)) catch {};
+        if (builtin.os.tag == .windows) {
+            _ = winsock.setsockopt(fd, 0xffff, 8, &on, @sizeOf(c_int));
+            _ = winsock.setsockopt(fd, 6, 3, &keepidle, @sizeOf(c_int));
+            _ = winsock.setsockopt(fd, 6, 17, &keepintvl, @sizeOf(c_int));
+            _ = winsock.setsockopt(fd, 6, 16, &keepcnt, @sizeOf(c_int));
+        } else {
+            posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.KEEPALIVE, std.mem.asBytes(&on)) catch {};
+            posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPIDLE, std.mem.asBytes(&keepidle)) catch {};
+            posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPINTVL, std.mem.asBytes(&keepintvl)) catch {};
+            posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPCNT, std.mem.asBytes(&keepcnt)) catch {};
+        }
 
         return fd;
     }
 
-    pub fn recvFromClient(_: *GinwaServer, fd: i32, buf: []u8) !usize {
-        const rc = socket.read(fd, buf.ptr, buf.len);
-        if (rc < 0) return error.RecvFailed;
-        return @as(usize, @intCast(rc));
+    pub fn recvFromClient(_: *GinwaServer, fd: SocketFd, buf: []u8) !usize {
+        if (builtin.os.tag == .windows) {
+            const rc = winsock.recv(fd, buf.ptr, @intCast(buf.len), 0);
+            if (rc < 0) return error.RecvFailed;
+            return @as(usize, @intCast(rc));
+        } else {
+            const rc = socket.read(fd, buf.ptr, buf.len);
+            if (rc < 0) return error.RecvFailed;
+            return @as(usize, @intCast(rc));
+        }
     }
 
-    pub fn sendToClient(_: *GinwaServer, fd: i32, data: []const u8) !usize {
-        const rc = socket.write(fd, data.ptr, data.len);
-        if (rc < 0) return error.SendFailed;
-        return @as(usize, @intCast(rc));
+    pub fn sendToClient(_: *GinwaServer, fd: SocketFd, data: []const u8) !usize {
+        if (builtin.os.tag == .windows) {
+            const rc = winsock.send(fd, data.ptr, @intCast(data.len), 0);
+            if (rc < 0) return error.SendFailed;
+            return @as(usize, @intCast(rc));
+        } else {
+            const rc = socket.write(fd, data.ptr, data.len);
+            if (rc < 0) return error.SendFailed;
+            return @as(usize, @intCast(rc));
+        }
     }
 
-    pub fn getClientPort(_: *GinwaServer, fd: i32) u16 {
-        var addr: posix.sockaddr.in = undefined;
-        var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.in);
-
-        const rc = posix.getpeername(fd, @ptrCast(&addr), &addr_len);
-        if (rc < 0) return 0;
-        return @byteSwap(addr.port);
+    pub fn getClientPort(_: *GinwaServer, fd: SocketFd) u16 {
+        if (builtin.os.tag == .windows) {
+            var addr: socket.sockaddr.in = undefined;
+            var addr_len: c_int = @sizeOf(socket.sockaddr.in);
+            const rc = winsock.getpeername(fd, @ptrCast(&addr), &addr_len);
+            if (rc != 0) return 0;
+            return @byteSwap(addr.port);
+        } else {
+            var addr: posix.sockaddr.in = undefined;
+            var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.in);
+            const rc = posix.getpeername(fd, @ptrCast(&addr), &addr_len);
+            if (rc < 0) return 0;
+            return @byteSwap(addr.port);
+        }
     }
 
     pub fn shutdown(self: *GinwaServer) void {
         self.is_running = false;
     }
 };
+
+fn recvFromSock(fd: SocketFd, buf: [*]u8, len: usize) isize {
+    if (builtin.os.tag == .windows) {
+        return winsock.recv(fd, buf, @intCast(len), 0);
+    } else {
+        return socket.read(fd, buf, len);
+    }
+}
 
 /// Request buffer with auto-growing capability for reading HTTP requests
 pub const RequestBuffer = struct {
@@ -467,10 +549,10 @@ pub const RequestBuffer = struct {
 
     /// Read the full HTTP request (headers + body) from a socket
     /// Returns the complete request data or an error
-    pub fn readFullRequest(self: *RequestBuffer, fd: i32) ![]u8 {
+    pub fn readFullRequest(self: *RequestBuffer, fd: SocketFd) ![]u8 {
         // Phase 1: read until we have complete headers
         while (std.mem.indexOf(u8, self.buf.items, "\r\n\r\n") == null) {
-            const n = socket.read(fd, &self.tmp, self.tmp.len);
+            const n = recvFromSock(fd, &self.tmp, self.tmp.len);
             if (n < 0) return error.RecvFailed;
             if (n == 0) break;
             try self.buf.appendSlice(self.allocator, self.tmp[0..@as(usize, @intCast(n))]);
@@ -507,7 +589,7 @@ pub const RequestBuffer = struct {
         while (self.buf.items.len < target_len) {
             const remaining_bytes = target_len - self.buf.items.len;
             const to_read = @min(remaining_bytes, self.tmp.len);
-            const n = socket.read(fd, &self.tmp, to_read);
+            const n = recvFromSock(fd, &self.tmp, to_read);
             if (n < 0) return error.RecvFailed;
             if (n == 0) break;
             try self.buf.appendSlice(self.allocator, self.tmp[0..@as(usize, @intCast(n))]);
