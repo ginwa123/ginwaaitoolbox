@@ -324,28 +324,27 @@ test "walkDir with negation pattern excludes correctly" {
 }
 
 test "walkDir with 4-component literal prefix returns each file once (regression)" {
-    // The exact pattern from the original bug report:
-    // "src/apps/desktop/src/**/Sidebar*.vue" returned 16 entries.
-    // After the fix, the project's actual Sidebar.vue must appear
-    // exactly once.
+    // The original bug report used a 4-component literal prefix followed by
+    // `**/Sidebar*.vue` (path = "src/apps/desktop/src/**/Sidebar*.vue") and
+    // returned 16 entries (= 2^4) due to the dual-recursion walkDir bug.
+    // The temp tree has the same shape: 4-component literal prefix
+    // `<root>/a/b/c/d/` followed by match.txt. This test uses a 4-component
+    // literal prefix + recursive wildcard pattern that mirrors the original
+    // bug report, locks in the post-fix invariant (1 entry per file),
+    // and is portable (no hardcoded project root).
     const allocator = std.testing.allocator;
 
-    // Use the project root as the search path. The test asserts only on
-    // the count for Sidebar.vue (project invariant: 1 file, 1 result).
-    const project_root = "/home/ginwa/agentic_coding_zig/ginwaaitoolbox";
+    var tree = try setupTempTree(allocator, "literal_4comp");
+    defer {
+        tree.deinit(std.testing.io);
+        allocator.free(tree.root);
+    }
 
     var result = try glob.executeGlob(allocator, std.testing.io, .{
-        .pattern = "src/apps/desktop/src/**/Sidebar*.vue",
-        .path = project_root,
+        .pattern = "a/b/c/d/**/*.txt",
+        .path = tree.root,
     });
     defer result.deinit(allocator);
 
-    // Count how many entries point to Sidebar.vue specifically.
-    var sidebar_count: usize = 0;
-    for (result.matches.items) |m| {
-        if (std.mem.endsWith(u8, m.path, "/Sidebar.vue")) {
-            sidebar_count += 1;
-        }
-    }
-    try std.testing.expectEqual(@as(usize, 1), sidebar_count);
+    try std.testing.expectEqual(@as(usize, 1), result.matches.items.len);
 }
