@@ -67,6 +67,12 @@ describe('WorkspaceItemTask per-task row', () => {
     const { wrapper } = mountTask()
     expect(wrapper.text()).toContain('Alpha task')
     expect(wrapper.findAll('[data-testid="task-spinner"]')).toHaveLength(0)
+    // NEW (change-task-to-card-kanban plan): lock in the row-variant
+    // testid so a future refactor that flips the default to 'card' is
+    // caught here — every existing sidebar consumer (WorkspaceItem.vue)
+    // depends on the implicit 'row' default being unchanged.
+    expect(wrapper.find('[data-task-row]').exists()).toBe(true)
+    expect(wrapper.find('[data-task-card]').exists()).toBe(false)
     // Bullet is a span.w-1.5.h-1.5.rounded-full — at least one exists.
     expect(wrapper.findAll('span.w-1\\.5.h-1\\.5.rounded-full')).toHaveLength(1)
   })
