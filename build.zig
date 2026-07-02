@@ -23,6 +23,13 @@ fn createPlatformExe(
         exe.root_module.linkSystemLibrary("ssl", .{});
         exe.root_module.linkSystemLibrary("crypto", .{});
     } else if (target.result.os.tag == .windows) {
+        // Vendor sqlite3 amalgamation for Windows — compile from
+        // source so the binary has sqlite3 support without relying on
+        // system package layout. On macOS, the `mod` already has
+        // sqlite3.c attached (added once at the shared-module post-
+        // setup), so the executable inherits it via the `imports`
+        // array — duplicating it here would emit two sqlite3.o copies
+        // and fail with "duplicate symbol definition".
         exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
         exe.root_module.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),
@@ -69,6 +76,12 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("ssl", .{});
         exe.root_module.linkSystemLibrary("crypto", .{});
     } else if (target.result.os.tag == .windows) {
+        // Vendor sqlite3 amalgamation for Windows. On macOS the shared
+        // `mod` already has sqlite3.c attached (added once at the
+        // shared-module post-setup), so this executable inherits it
+        // via the `imports` array — duplicating it here would emit
+        // two sqlite3.o copies and fail with "duplicate symbol
+        // definition".
         exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
         exe.root_module.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),
@@ -289,15 +302,12 @@ pub fn build(b: *std.Build) void {
         mod_tests.root_module.linkSystemLibrary("sqlite3", .{});
         mod_tests.root_module.linkSystemLibrary("ssl", .{});
         mod_tests.root_module.linkSystemLibrary("crypto", .{});
-    } else if (target.result.os.tag == .windows) {
-        // Vendor sqlite3 amalgamation for Windows — compile from source
-        // so the test binary has sqlite3 support without system packages.
-        mod_tests.root_module.addIncludePath(b.path("vendor/sqlite3"));
-        mod_tests.root_module.addCSourceFile(.{
-            .file = b.path("vendor/sqlite3/sqlite3.c"),
-            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
-        });
     }
+    // NB: For windows + macOS, sqlite3.c is added to `mod` ONCE below —
+    // see the shared-module block. If we'd added it per-test here,
+    // Zig 0.16's link step would emit two copies of sqlite3.o and
+    // fail with "duplicate symbol definition" (the addCSourceFile
+    // call accumulates per target on the shared `mod` instance).
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
@@ -312,9 +322,16 @@ pub fn build(b: *std.Build) void {
         ai_workflow_tui_test_mod.root_module.linkSystemLibrary("sqlite3", .{});
         ai_workflow_tui_test_mod.root_module.linkSystemLibrary("ssl", .{});
         ai_workflow_tui_test_mod.root_module.linkSystemLibrary("crypto", .{});
-    } else if (target.result.os.tag == .windows) {
-        ai_workflow_tui_test_mod.root_module.addIncludePath(b.path("vendor/sqlite3"));
-        ai_workflow_tui_test_mod.root_module.addCSourceFile(.{
+    }
+    // See comment in mod_tests above — sqlite3.c is shared via `mod`.
+
+    // Shared post-setup: add vendor sqlite3 amalgamation once to `mod`
+    // so it covers BOTH test Compiles. This avoids the duplicate-symbol
+    // error that fires when each Compile adds the same .c file to the
+    // shared `mod` instance (which is what we did before this fix).
+    if (target.result.os.tag == .windows or target.result.os.tag == .macos) {
+        mod.addIncludePath(b.path("vendor/sqlite3"));
+        mod.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),
             .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
         });
@@ -399,6 +416,12 @@ pub fn build(b: *std.Build) void {
         dev_exe.root_module.linkSystemLibrary("ssl", .{});
         dev_exe.root_module.linkSystemLibrary("crypto", .{});
     } else if (target.result.os.tag == .windows) {
+        // Vendor sqlite3 amalgamation for Windows. On macOS the shared
+        // `mod` already has sqlite3.c attached (added once at the
+        // shared-module post-setup), so this executable inherits it
+        // via the `imports` array — duplicating it here would emit
+        // two sqlite3.o copies and fail with "duplicate symbol
+        // definition".
         dev_exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
         dev_exe.root_module.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),

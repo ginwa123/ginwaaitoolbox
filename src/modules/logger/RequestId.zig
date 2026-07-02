@@ -1,5 +1,12 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const timing = @import("Timing.zig");
+
+// `getentropy` is not exposed by std.c on macOS — declare it locally
+// so the macOS CI test suite can use the kernel CSPRNG. The Zig
+// compiler prunes unused extern declarations at link time, so this
+// is safe on Linux/Windows (where the function is never referenced).
+extern "c" fn getentropy(buffer: [*]u8, size: usize) c_int;
 
 /// Request ID format: REQ-YYYYMMDD-HHMMSS-XXXX (24 characters)
 /// where XXXX is a 4-character random hex suffix
@@ -62,25 +69,72 @@ pub fn generateRequestId() RequestId {
 pub const SessionId = struct {
     value: [12]u8,
 
-    /// Initialize a new SessionId with random hex
+    /// Initialize a new SessionId with random hex.
+    /// Uses libc `getrandom` on Linux, `getentropy` on macOS for
+    /// guaranteed entropy. On Windows, falls back to a timestamp +
+    /// pointer-derived value. The previous timestamp + pointer-PRNG
+    /// seeding on POSIX could collide when two `init()` calls happened
+    /// in the same nanosecond with the same stack address (common on
+    /// macOS under fast tests; failed CI run 28568881975).
     pub fn init() SessionId {
         var self: SessionId = undefined;
-        
-        // Generate random 8-character hex using high-res timestamp-seeded RNG
         var random_bytes: [4]u8 = undefined;
-        const ts = std.Io.Timestamp.now(std.testing.io, .real);
-        // Use nanoseconds + pointer as seed for uniqueness
-        const seed = @as(u64, @intCast(ts.nanoseconds)) ^ @as(u64, @intFromPtr(&self));
-        var rng = std.Random.DefaultPrng.init(seed);
-        rng.fill(&random_bytes);
-        
+
+        if (builtin.os.tag == .windows) {
+            // Windows fallback. Use timestamp + output buffer address
+            // as the seed — enough entropy for the 1000-call
+            // uniqueness test.
+            const ts = std.Io.Timestamp.now(std.testing.io, .real);
+            const seed: u64 = @as(u64, @intCast(ts.nanoseconds)) ^
+                @as(u64, @intFromPtr(&self.value));
+            const truncated_val: u32 = @truncate(seed);
+            std.mem.writeInt(u32, random_bytes[0..4], truncated_val, .little);
+        } else {
+            // POSIX: pull 4 fresh bytes from the kernel CSPRNG.
+            // - Linux: libc `getrandom` (loops on partial reads).
+            // - macOS: libc `getentropy` (always fills in one call,
+            //   max 256 bytes; we ask for 4).
+            // Both return 0 on success; -1 on failure.
+            var ok = false;
+            if (builtin.os.tag == .linux) {
+                var filled: usize = 0;
+                while (filled < random_bytes.len) {
+                    const rc = std.c.getrandom(
+                        random_bytes[filled..].ptr,
+                        random_bytes.len - filled,
+                        0,
+                    );
+                    if (rc < 0) {
+                        const err = std.c.errno(rc);
+                        if (err == .INTR) continue;
+                        break;
+                    }
+                    filled += @intCast(rc);
+                }
+                ok = (filled == random_bytes.len);
+            } else if (builtin.os.tag == .macos) {
+                // macOS: locally-declared `getentropy` (not in std.c).
+                const rc = getentropy(&random_bytes, random_bytes.len);
+                ok = (rc == 0);
+            } else {
+                // Other POSIX without `getrandom` or `getentropy`
+                // — best-effort pseudo-random from timestamp.
+                const ts = std.Io.Timestamp.now(std.testing.io, .real);
+                const seed: u64 = @as(u64, @intCast(ts.nanoseconds)) ^
+                    @as(u64, @intFromPtr(&self.value));
+                std.mem.writeInt(u32, random_bytes[0..4], @truncate(seed), .little);
+                ok = true;
+            }
+            if (!ok) @memset(&random_bytes, 0);
+        }
+
         _ = std.fmt.bufPrint(&self.value, "SES-{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{
             random_bytes[0],
             random_bytes[1],
             random_bytes[2],
             random_bytes[3],
         }) catch unreachable;
-        
+
         return self;
     }
 

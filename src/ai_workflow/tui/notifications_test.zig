@@ -149,3 +149,50 @@ test "notifyWithPath returns BinaryNotFound for an empty path" {
     const result = notifications.notifyWithPath(testing.io, allocator, "", "T", "B");
     try testing.expectError(error.BinaryNotFound, result);
 }
+
+// ---------------------------------------------------------------------------
+// buildCommand leak regression (static contract — protects against
+// future refactors that drop the explicit allocator.free calls in the
+// .macos branch). The test only checks the source text; it does not
+// run buildCommand on macOS because the CI matrix only runs tests on
+// the matching target. The .macos branch was the source of three
+// memory leaks in the macOS CI run (title_esc, body_esc, truncated
+// were never freed on the success path). The leak detector's
+// `error: leaked` is what motivated this test.
+// ---------------------------------------------------------------------------
+
+test "buildCommand source frees title_esc, body_esc, and truncated in the macOS branch" {
+    const source = @embedFile("notifications.zig");
+
+    // Extract the .macos branch by tracking brace depth.
+    const branch_start_marker = ".macos => {";
+    const start = std.mem.indexOf(u8, source, branch_start_marker) orelse {
+        std.debug.print("FAIL: .macos branch not found in notifications.zig\n", .{});
+        return error.MacOSBranchNotFound;
+    };
+    var depth: usize = 1;
+    var i: usize = start + branch_start_marker.len;
+    while (i < source.len and depth > 0) {
+        if (source[i] == '{') depth += 1
+        else if (source[i] == '}') depth -= 1;
+        i += 1;
+    }
+    const branch = source[start..i];
+
+    // Each escape buffer and the truncated body must be freed in the
+    // success path. errdefer only fires on error; we need a plain
+    // `defer allocator.free(...)` or an explicit `allocator.free(...)`
+    // after the value has been consumed.
+    if (std.mem.indexOf(u8, branch, "allocator.free(title_esc)") == null) {
+        std.debug.print("FAIL: macOS branch never frees title_esc\n", .{});
+        return error.TitleEscLeaked;
+    }
+    if (std.mem.indexOf(u8, branch, "allocator.free(body_esc)") == null) {
+        std.debug.print("FAIL: macOS branch never frees body_esc\n", .{});
+        return error.BodyEscLeaked;
+    }
+    if (std.mem.indexOf(u8, branch, "allocator.free(truncated)") == null) {
+        std.debug.print("FAIL: macOS branch never frees truncated\n", .{});
+        return error.TruncatedLeaked;
+    }
+}
