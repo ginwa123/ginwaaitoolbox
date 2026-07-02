@@ -22,13 +22,14 @@ fn createPlatformExe(
         exe.root_module.linkSystemLibrary("sqlite3", .{});
         exe.root_module.linkSystemLibrary("ssl", .{});
         exe.root_module.linkSystemLibrary("crypto", .{});
-    } else if (target.result.os.tag == .windows or target.result.os.tag == .macos) {
-        // Vendor sqlite3 amalgamation for Windows + macOS — compile from
+    } else if (target.result.os.tag == .windows) {
+        // Vendor sqlite3 amalgamation for Windows — compile from
         // source so the binary has sqlite3 support without relying on
-        // system package layout. On macOS Sonoma+ the system sqlite3
-        // dylib lives outside Zig's default `-lsqlite3` search paths,
-        // so even when it's installed we get 13 undefined-symbol link
-        // errors. Static linking via the amalgamation sidesteps this.
+        // system package layout. On macOS, the `mod` already has
+        // sqlite3.c attached (added once at the shared-module post-
+        // setup), so the executable inherits it via the `imports`
+        // array — duplicating it here would emit two sqlite3.o copies
+        // and fail with "duplicate symbol definition".
         exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
         exe.root_module.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),
@@ -74,9 +75,13 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("sqlite3", .{});
         exe.root_module.linkSystemLibrary("ssl", .{});
         exe.root_module.linkSystemLibrary("crypto", .{});
-    } else if (target.result.os.tag == .windows or target.result.os.tag == .macos) {
-        // Vendor sqlite3 amalgamation for Windows + macOS — same
-        // reasoning as createPlatformExe.
+    } else if (target.result.os.tag == .windows) {
+        // Vendor sqlite3 amalgamation for Windows. On macOS the shared
+        // `mod` already has sqlite3.c attached (added once at the
+        // shared-module post-setup), so this executable inherits it
+        // via the `imports` array — duplicating it here would emit
+        // two sqlite3.o copies and fail with "duplicate symbol
+        // definition".
         exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
         exe.root_module.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),
@@ -410,9 +415,13 @@ pub fn build(b: *std.Build) void {
         dev_exe.root_module.linkSystemLibrary("sqlite3", .{});
         dev_exe.root_module.linkSystemLibrary("ssl", .{});
         dev_exe.root_module.linkSystemLibrary("crypto", .{});
-    } else if (target.result.os.tag == .windows or target.result.os.tag == .macos) {
-        // Vendor sqlite3 amalgamation for Windows + macOS — same reason
-        // as createPlatformExe.
+    } else if (target.result.os.tag == .windows) {
+        // Vendor sqlite3 amalgamation for Windows. On macOS the shared
+        // `mod` already has sqlite3.c attached (added once at the
+        // shared-module post-setup), so this executable inherits it
+        // via the `imports` array — duplicating it here would emit
+        // two sqlite3.o copies and fail with "duplicate symbol
+        // definition".
         dev_exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
         dev_exe.root_module.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),
