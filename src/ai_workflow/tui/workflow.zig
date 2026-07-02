@@ -478,6 +478,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
         var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
 
         const db_messages = try llm_history.getMessages(allocator, db, copy_session_id);
+        const is_task_kanban = try llm_history.isTaskKanban(allocator, db, copy_session_id);
         defer {
             for (db_messages) |*msg| msg.deinit(allocator);
             allocator.free(db_messages);
@@ -502,7 +503,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
             break :blk max_loop_counter;
         };
         loop_counter += 1;
-        if (loop_counter == 1) {
+        if (loop_counter == 1 and is_task_kanban == false) {
             generateSessionNameNew(db_messages, allocator, effective_api_key, effective_model, effective_base_url, copy_session_id, logger, io, db);
         }
 

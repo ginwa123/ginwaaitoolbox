@@ -1,0 +1,183 @@
+//! Behavioral tests for `llm_history.isTaskKanban`.
+//!
+//! The function answers: "is this session_id bound to a task whose
+//! parent workspace_item has item_type='kanban'?". The workflow uses
+//! the answer to gate `generateSessionNameNew` on the first loop
+//! iteration — if it's true, the kanban flow is in charge of naming
+//! and the LLM-assigned name is skipped.
+//!
+//! Schema note: per Migration 052, the project's convention is
+//! `workspace_item_tasks.id == session.id` for kanban / routine
+//! tasks, so the production table no longer has a `session_id`
+//! column. The function's SQL filters on `wit.id` against this
+//! canonical id; the test schema mirrors that.
+//!
+//! Setup mirrors `kanban_model_test.zig`: in-memory sqlite with a
+//! minimal `workspace_items` + `workspace_item_tasks` schema.
+
+const std = @import("std");
+const testing = std.testing;
+const nalarcore = @import("nalarcore");
+const sqlite = nalarcore.sqlite;
+
+const llm_history = @import("llm_history.zig");
+
+/// Open a fresh in-memory sqlite DB with `db.init(io, ":memory:")`.
+/// Tests call `s.db.exec(...)` to lay down their own schema.
+fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Lay down the two tables `isTaskKanban` joins on. No
+/// `session_id` column — the schema matches post-Migration 052
+/// production. The function filters on `wit.id` which doubles as
+/// the session id for kanban / routine tasks.
+fn seedSchema(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend) !void {
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
+        &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT
+        \\)
+    , &.{});
+}
+
+// ─── Test: kanban task → true ─────────────────────────────────────────────
+
+test "isTaskKanban returns true when the session_id maps to a kanban task" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try seedSchema(alloc, &s.db);
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('item_k1', 'ws_1', 'kanban')",
+        &.{});
+    // Per Migration 052: `task.id == session.id`. The kanban task
+    // was created for a chat whose session id is 'session_abc', so
+    // the task row carries that id directly.
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+        "VALUES ('session_abc', 'plan sprint', 'item_k1')",
+        &.{});
+
+    try testing.expect(try llm_history.isTaskKanban(alloc, &s.db, "session_abc"));
+}
+
+// ─── Test: chat task (non-kanban item_type) → false ───────────────────────
+
+test "isTaskKanban returns false when the parent item is not a kanban" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try seedSchema(alloc, &s.db);
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('item_c1', 'ws_1', 'chat')",
+        &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+        "VALUES ('session_chat', 'free chat', 'item_c1')",
+        &.{});
+
+    try testing.expect(!try llm_history.isTaskKanban(alloc, &s.db, "session_chat"));
+}
+
+// ─── Test: unknown session_id → false ─────────────────────────────────────
+
+test "isTaskKanban returns false when the session_id has no matching task" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try seedSchema(alloc, &s.db);
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('item_k1', 'ws_1', 'kanban')",
+        &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+        "VALUES ('session_other', 'plan', 'item_k1')",
+        &.{});
+
+    try testing.expect(!try llm_history.isTaskKanban(alloc, &s.db, "session_does_not_exist"));
+}
+
+// ─── Test: empty tables → false (no error, no row) ────────────────────────
+
+test "isTaskKanban returns false when both tables are empty" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try seedSchema(alloc, &s.db);
+
+    try testing.expect(!try llm_history.isTaskKanban(alloc, &s.db, "session_anything"));
+}
+
+// ─── Test: only kanban items, no tasks → false ───────────────────────────
+
+test "isTaskKanban returns false when kanban items exist but no tasks" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try seedSchema(alloc, &s.db);
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('item_k1', 'ws_1', 'kanban')",
+        &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('item_k2', 'ws_1', 'kanban')",
+        &.{});
+
+    try testing.expect(!try llm_history.isTaskKanban(alloc, &s.db, "session_no_task"));
+}
+
+// ─── Test: mixed kanban + chat in the same DB ─────────────────────────────
+//
+// Regression guard for the JOIN semantics: a session_id bound to a
+// non-kanban task must NOT be reported as a kanban even when other
+// kanban tasks exist in the same DB. The JOIN + WHERE filter has to
+// match BOTH the task id AND the item_type.
+
+test "isTaskKanban returns false for a session_id bound to a non-kanban task" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try seedSchema(alloc, &s.db);
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('item_k1', 'ws_1', 'kanban')",
+        &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('item_c1', 'ws_1', 'chat')",
+        &.{});
+    // Kanban task with one session_id (must match the JOIN's kanban filter).
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+        "VALUES ('session_kanban', 'plan', 'item_k1')",
+        &.{});
+    // Chat task with a different session_id (must NOT match the kanban filter).
+    try s.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+        "VALUES ('session_chat', 'chat', 'item_c1')",
+        &.{});
+
+    try testing.expect(try llm_history.isTaskKanban(alloc, &s.db, "session_kanban"));
+    try testing.expect(!try llm_history.isTaskKanban(alloc, &s.db, "session_chat"));
+}

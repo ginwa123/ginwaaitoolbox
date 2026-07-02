@@ -2752,7 +2752,8 @@ pub fn getWorkspaceContext(
     anchor_row.deinit(allocator); // Pitfall 1: pass allocator explicitly, NOT `anchor_row.allocator`
 
     // 2. Total item count for the "and N more" footer.
-    var count_q = try db.query(allocator,
+    var count_q = try db.query(
+        allocator,
         "SELECT COUNT(*) FROM workspace_items wi WHERE wi.workspace_id = ?",
         &.{workspace_id},
     );
@@ -2848,7 +2849,8 @@ pub fn getWorkspaceContext(
 
         // 4b. Truncation detection for tasks: see if there are
         // more tasks than we loaded.
-        var task_count_q = try db.query(allocator,
+        var task_count_q = try db.query(
+            allocator,
             "SELECT COUNT(*) FROM workspace_item_tasks t WHERE t.workspace_item_id = ?",
             &.{item_id_owned},
         );
@@ -3103,13 +3105,15 @@ pub fn setTaskPinned(
         const new_pos = max_pos + 1;
         const new_pos_str = try std.fmt.allocPrint(allocator, "{d}", .{new_pos});
         defer allocator.free(new_pos_str);
-        try db.exec(allocator,
+        try db.exec(
+            allocator,
             "UPDATE workspace_item_tasks SET is_pinned = 1, pinned_position = ?, updated_at = datetime('now') WHERE id = ?",
             &.{ new_pos_str, id },
         );
         return new_pos;
     } else {
-        try db.exec(allocator,
+        try db.exec(
+            allocator,
             "UPDATE workspace_item_tasks SET is_pinned = 0, pinned_position = 0, updated_at = datetime('now') WHERE id = ?",
             &.{id},
         );
@@ -3147,7 +3151,8 @@ pub fn reorderPinnedTasks(
         const pos_str = std.fmt.bufPrint(&buf, "{d}", .{new_pos}) catch {
             return error.IntegerTooLarge;
         };
-        try db.exec(allocator,
+        try db.exec(
+            allocator,
             "UPDATE workspace_item_tasks SET pinned_position = ?, updated_at = datetime('now') " ++
                 "WHERE id = ? AND workspace_item_id = ? AND is_pinned = 1",
             &.{ pos_str, id_str, workspace_item_id },
@@ -3195,11 +3200,7 @@ pub fn listWorkspaceItemTasks(
         const routine_meta: ?RoutineMeta = if (has_routine) blk: {
             const v = row.values[15];
             const last_status: routines_model.RoutineRunStatus =
-                if (v.len == 0) .idle
-                else if (std.mem.eql(u8, v, "success")) .success
-                else if (std.mem.eql(u8, v, "failed")) .failed
-                else if (std.mem.eql(u8, v, "running")) .running
-                else .idle;
+                if (v.len == 0) .idle else if (std.mem.eql(u8, v, "success")) .success else if (std.mem.eql(u8, v, "failed")) .failed else if (std.mem.eql(u8, v, "running")) .running else .idle;
             break :blk RoutineMeta{
                 .schedule = try allocator.dupe(u8, row.values[10]),
                 .initial_prompt = try allocator.dupe(u8, row.values[11]),
@@ -3348,11 +3349,7 @@ pub fn listWorkspaceItemTasksWithCursor(
         const routine_meta: ?RoutineMeta = if (has_routine) blk: {
             const v = row.values[15];
             const last_status: routines_model.RoutineRunStatus =
-                if (v.len == 0) .idle
-                else if (std.mem.eql(u8, v, "success")) .success
-                else if (std.mem.eql(u8, v, "failed")) .failed
-                else if (std.mem.eql(u8, v, "running")) .running
-                else .idle;
+                if (v.len == 0) .idle else if (std.mem.eql(u8, v, "success")) .success else if (std.mem.eql(u8, v, "failed")) .failed else if (std.mem.eql(u8, v, "running")) .running else .idle;
             break :blk RoutineMeta{
                 .schedule = try allocator.dupe(u8, row.values[10]),
                 .initial_prompt = try allocator.dupe(u8, row.values[11]),
@@ -3448,4 +3445,29 @@ pub fn updateSessionUpdatedAt(allocator: std.mem.Allocator, db: *sqlite.SqliteBa
 pub fn updateWorkspaceUpdatedAt(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) !void {
     const sql = "UPDATE workspace_item_tasks SET updated_at = datetime('now') WHERE id = ?";
     try db.exec(allocator, sql, &.{session_id});
+}
+
+pub fn isTaskKanban(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) !bool {
+    var is_kanban: bool = false;
+    // Filter on `wit.id` (the canonical session id for kanban /
+    // routine tasks per Migration 052's `task.id == session.id`
+    // convention), not on `session_id` — that column was dropped
+    // by Migration 052 and would return "no such column" against
+    // post-migration production data.
+    const sql =
+        \\
+        \\SELECT 1 FROM workspace_item_tasks wit
+        \\JOIN workspace_items wi ON wit.workspace_item_id = wi.id
+        \\WHERE wit.id = ? AND wi.item_type = 'kanban'
+    ;
+
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        row.deinit(allocator);
+        is_kanban = true;
+    }
+
+    return is_kanban;
 }
