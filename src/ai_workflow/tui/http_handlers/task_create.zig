@@ -113,12 +113,59 @@ pub const StandardResult = struct {
     workspace_item_id: []const u8,
     kanban_column_id: ?[]const u8,
     kanban_position: i64,
-    /// Pre-formatted JSON for the `session_id` field of the response.
-    /// Either `"<id>"` (when the caller passed one) or `"null"` (when
-    /// omitted — the standard-task path no longer accepts a caller-
-    /// supplied session_id per the `task.id == session_id` convention;
-    /// the field is preserved for backward compatibility only).
-    session_id_json: []const u8,
+    /// Caller-supplied session_id (if any). When null the JSON response
+    /// emits "session_id":null. The standard-task path no longer accepts
+    /// a caller-supplied session_id per the task.id == session.id
+    /// convention; the field is preserved for backward compatibility.
+    session_id: ?[]const u8,
+};
+
+// Typed response structs. Serialized via std.json.Stringify.valueAlloc
+// (NOT hand-rolled JSON via the std.fmt formatting helpers) for two
+// reasons:
+//
+// 1. Aliasing safety: chaining two per-arena fmt.allocPrint calls
+//    (one as a format arg of the other) lets Writer.Allocating land
+//    the inner result in the same chunk the outer ensureTotalCapacity
+//    just reallocated from, and Zig 0.16's @memcpy safety check aborts
+//    with "@memcpy arguments alias" (user-reported crash on 2026-07-01).
+//
+// 2. JSON escaping: hand-rolled JSON via the fmt helpers does NOT
+//    escape quotes / backslashes / control chars in user-provided
+//    fields like r.name. A task name containing a quote would produce
+//    malformed JSON and break the frontend. valueAlloc delegates to
+//    std.json.Stringify which handles all escaping per RFC 8259.
+
+const RoutineResponse = struct {
+    id: []const u8,
+    name: []const u8,
+    workspace_item_id: []const u8,
+    task_type: []const u8 = "routine",
+    session_id: []const u8,
+    created_at: ?[]const u8 = null,
+    updated_at: ?[]const u8 = null,
+};
+
+const MemoryResponse = struct {
+    id: []const u8,
+    name: []const u8,
+    workspace_item_id: []const u8,
+    task_type: []const u8 = "memory",
+    session_id: ?[]const u8 = null,
+    created_at: ?[]const u8 = null,
+    updated_at: ?[]const u8 = null,
+};
+
+const StandardResponse = struct {
+    id: []const u8,
+    name: []const u8,
+    workspace_item_id: []const u8,
+    task_type: []const u8 = "standard",
+    session_id: ?[]const u8,
+    kanban_column_id: ?[]const u8 = null,
+    kanban_position: i64 = 0,
+    created_at: ?[]const u8 = null,
+    updated_at: ?[]const u8 = null,
 };
 
 // =====================================================================
@@ -228,14 +275,25 @@ fn createStandardTask(
         input.item_id,
         "standard",
     ) catch return error.StandardTaskCreateFailed;
-    defer task.deinit(allocator);
+    // NOTE: do NOT `defer task.deinit(allocator)` here. The slices
+    // task.id, task.name, task.workspace_item_id, and task.task_type
+    // are duped by createWorkspaceItemTask on the per-request arena
+    // and then BORROWED into the returned StandardResult below. The
+    // handler reads them after this function returns, so freeing
+    // here would be a use-after-free (Zig arena free-fill = 0xAA bytes
+    // end up as field values). The arena reaps everything when
+    // GinwaServer.handle tears down the request arena, so the duped
+    // slices need no explicit cleanup.
 
     // Kanban auto-assign: if the parent is a kanban, append the new
     // task to the bottom of the first column. Errors here are
     // non-fatal — the task row is already created.
     var kanban_column_id: ?[]u8 = null;
     var kanban_position: i64 = 0;
-    defer if (kanban_column_id) |cid| allocator.free(cid);
+    // NOTE: do NOT `defer allocator.free(kanban_column_id)` here.
+    // kanban_column_id (when set) is a dupe on the per-request arena
+    // that is BORROWED into the returned StandardResult. Same use-
+    // after-free reasoning as above.
 
     {
         const parent_is_kanban = blk: {
@@ -298,7 +356,7 @@ fn createStandardTask(
                     .workspace_item_id = task.workspace_item_id,
                     .kanban_column_id = null,
                     .kanban_position = 0,
-                    .session_id_json = "null",
+                    .session_id = input.body.session_id,
                 };
                 defer q2.deinit();
                 blk: {
@@ -315,21 +373,19 @@ fn createStandardTask(
         }
     }
 
-    // session_id is preserved for backward compatibility with the
-    // v1 wire format (the standard-task path no longer accepts a
-    // caller-supplied session_id; the task's own id is the session).
-    const session_id_json: []const u8 = if (input.body.session_id) |sid|
-        std.fmt.allocPrint(allocator, "\"{s}\"", .{sid}) catch "null"
-    else
-        "null";
-
+    // session_id is preserved for backward compatibility with the v1
+    // wire format. The standard-task path no longer accepts a caller-
+    // supplied session_id (the task's own id is the session per the
+    // task.id == session.id convention), so input.body.session_id is
+    // typically null. Pass it through as-is — valueAlloc handles the
+    // optional → "session_id":<id-or-null> serialization.
     return .{
         .task_id = task.id,
         .name = task.name,
         .workspace_item_id = task.workspace_item_id,
         .kanban_column_id = kanban_column_id,
         .kanban_position = kanban_position,
-        .session_id_json = session_id_json,
+        .session_id = input.body.session_id,
     };
 }
 
@@ -341,7 +397,13 @@ fn useCase(
     if (input.item_id.len == 0) return error.ItemIdRequired;
 
     const task_id = try generateTaskId(allocator, input.io);
-    defer allocator.free(task_id);
+    // NOTE: do NOT `defer allocator.free(task_id)` here. `task_id` is
+    // passed to `createRoutineTask` / `createMemoryTask` /
+    // `createStandardTask`, which return it as `*.task_id` in their
+    // `*Result` structs. The handler then reads it after this
+    // function returns — freeing here is a use-after-free. The
+    // per-request arena reaps `task_id` on request teardown, so no
+    // explicit cleanup is needed.
 
     if (std.mem.eql(u8, input.body.task_type, "routine")) {
         const result = try createRoutineTask(allocator, db, input, task_id);
@@ -443,34 +505,50 @@ pub fn tasksCreateHandler(
         });
     };
 
-    // Serialize the response based on the tagged outcome.
+    // Serialize the response based on the tagged outcome. Each branch
+    // uses a typed struct + std.json.Stringify.valueAlloc (not hand-
+    // rolled std.fmt.allocPrint) — see the doc comment above the
+    // response struct definitions for the rationale.
     return switch (outcome) {
         .routine => |r| res.jsonResponse(.{
             .status_code = 201,
-            .data = try std.fmt.allocPrint(allocator,
-                \\{{"id":"{s}","name":"{s}","workspace_item_id":"{s}","task_type":"routine","session_id":"{s}","created_at":null,"updated_at":null}}
-            , .{ r.task_id, r.name, r.workspace_item_id, r.task_id }),
+            .data = try std.json.Stringify.valueAlloc(
+                allocator,
+                RoutineResponse{
+                    .id = r.task_id,
+                    .name = r.name,
+                    .workspace_item_id = r.workspace_item_id,
+                    .session_id = r.task_id, // task.id == session.id
+                },
+                .{},
+            ),
         }),
         .memory => |r| res.jsonResponse(.{
             .status_code = 201,
-            .data = try std.fmt.allocPrint(allocator,
-                \\{{"id":"{s}","name":"{s}","workspace_item_id":"{s}","task_type":"memory","session_id":null,"created_at":null,"updated_at":null}}
-            , .{ r.task_id, r.name, r.workspace_item_id }),
+            .data = try std.json.Stringify.valueAlloc(
+                allocator,
+                MemoryResponse{
+                    .id = r.task_id,
+                    .name = r.name,
+                    .workspace_item_id = r.workspace_item_id,
+                },
+                .{},
+            ),
         }),
         .standard => |r| res.jsonResponse(.{
             .status_code = 201,
-            .data = try std.fmt.allocPrint(allocator,
-                "{{\"id\":\"{s}\",\"name\":\"{s}\",\"workspace_item_id\":\"{s}\",\"task_type\":\"standard\",\"session_id\":{s},{s}}}",
-                .{
-                    r.task_id,
-                    r.name,
-                    r.workspace_item_id,
-                    r.session_id_json,
-                    if (r.kanban_column_id) |cid|
-                        try std.fmt.allocPrint(allocator, "\"kanban_column_id\":\"{s}\",\"kanban_position\":{d}", .{ cid, r.kanban_position })
-                    else
-                        "\"kanban_column_id\":null,\"kanban_position\":0",
-                }),
+            .data = try std.json.Stringify.valueAlloc(
+                allocator,
+                StandardResponse{
+                    .id = r.task_id,
+                    .name = r.name,
+                    .workspace_item_id = r.workspace_item_id,
+                    .session_id = r.session_id,
+                    .kanban_column_id = r.kanban_column_id,
+                    .kanban_position = r.kanban_position,
+                },
+                .{},
+            ),
         }),
     };
 }
