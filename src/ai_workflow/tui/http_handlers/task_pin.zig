@@ -106,15 +106,14 @@ pub fn taskPinHandler(
     // `{ is_pinned: bool }` — we parse as a `std.json.Value` so we
     // can validate the field type without a dedicated struct
     // (the field is a single bool; a dedicated struct adds noise).
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch {
         return res.jsonResponse(.{
             .status_code = 400,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON" }),
         });
     };
-    defer parsed.deinit();
 
-    const is_pinned_val = parsed.value.object.get("is_pinned") orelse {
+    const is_pinned_val = parsed.object.get("is_pinned") orelse {
         return res.jsonResponse(.{
             .status_code = 400,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "is_pinned required" }),

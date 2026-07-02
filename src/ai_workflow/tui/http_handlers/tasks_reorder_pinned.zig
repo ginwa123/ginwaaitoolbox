@@ -98,15 +98,14 @@ pub fn tasksReorderPinnedHandler(
     // We use `std.json.Value` because we want to extract a
     // dynamic-length string array without a dedicated struct
     // (the field name is the contract; the inner type is `[]string`).
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch {
         return res.jsonResponse(.{
             .status_code = 400,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON" }),
         });
     };
-    defer parsed.deinit();
 
-    const root = parsed.value.object;
+    const root = parsed.object;
     const ordered_ids_val = root.get("ordered_ids") orelse {
         return res.jsonResponse(.{
             .status_code = 400,

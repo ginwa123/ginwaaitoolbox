@@ -49,7 +49,7 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     const body = req.body;
 
     // Parse input
-    const input = std.json.parseFromSlice(ConfigInput, allocator, body, .{
+    const input = std.json.parseFromSliceLeaky(ConfigInput, allocator, body, .{
         .ignore_unknown_fields = true,
     }) catch |err| {
         std.log.err("Failed to parse input: {s}", .{@errorName(err)});
@@ -73,40 +73,40 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     // Build new config
     var config_json: ConfigJson = ConfigJson{};
     if (existing_content) |content| {
-        const parsed = try std.json.parseFromSlice(ConfigJson, allocator, content, .{
+        const parsed = try std.json.parseFromSliceLeaky(ConfigJson, allocator, content, .{
             .ignore_unknown_fields = true,
         });
-        config_json = parsed.value;
+        config_json = parsed;
     }
 
     // Update with new values
-    if (input.value.api_endpoint.len > 0) {
-        config_json.base_url = try allocator.dupe(u8, input.value.api_endpoint);
+    if (input.api_endpoint.len > 0) {
+        config_json.base_url = try allocator.dupe(u8, input.api_endpoint);
     }
-    if (input.value.api_key.len > 0) {
-        config_json.api_key = try allocator.dupe(u8, input.value.api_key);
+    if (input.api_key.len > 0) {
+        config_json.api_key = try allocator.dupe(u8, input.api_key);
     }
-    if (input.value.model.len > 0) {
-        config_json.model = try allocator.dupe(u8, input.value.model);
+    if (input.model.len > 0) {
+        config_json.model = try allocator.dupe(u8, input.model);
     }
-    if (input.value.url_style.len > 0) {
-        config_json.url_style = try allocator.dupe(u8, input.value.url_style);
+    if (input.url_style.len > 0) {
+        config_json.url_style = try allocator.dupe(u8, input.url_style);
     }
-    if (input.value.max_tokens) |mt| {
+    if (input.max_tokens) |mt| {
         config_json.max_tokens = mt;
     }
-    if (input.value.system_prompt.len > 0) {
-        config_json.system_prompt = try allocator.dupe(u8, input.value.system_prompt);
+    if (input.system_prompt.len > 0) {
+        config_json.system_prompt = try allocator.dupe(u8, input.system_prompt);
     }
-    if (input.value.notify_on_complete) |n| {
+    if (input.notify_on_complete) |n| {
         config_json.notify_on_complete = n;
     }
-    if (input.value.model_compaction_size_kb) |kb| {
+    if (input.model_compaction_size_kb) |kb| {
         config_json.model_compaction_size_kb = kb;
     }
 
     // Handle profiles - add, update, or delete
-    if (input.value.profiles) |profiles| {
+    if (input.profiles) |profiles| {
         // Create new profiles object
         var profiles_obj = try json.ObjectMap.init(allocator, &.{}, &.{});
 
@@ -144,7 +144,7 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     }
 
     // Handle active profile
-    if (input.value.active_profile) |ap| {
+    if (input.active_profile) |ap| {
         if (ap.len > 0) {
             config_json.active_profile = try allocator.dupe(u8, ap);
         } else {
@@ -156,7 +156,7 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     // the existing list wholesale (whole-list replace matches the UI's
     // add/edit/delete workflow). The input map is deep-copied so the parsed
     // struct can safely go out of scope.
-    if (input.value.mcp_servers) |servers_value| {
+    if (input.mcp_servers) |servers_value| {
         switch (servers_value) {
             .object => |obj| {
                 var new_obj = try json.ObjectMap.init(allocator, &.{}, &.{});
@@ -182,7 +182,7 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     // the UI's add/edit/delete workflow). Each entry's 8 string fields are
     // duped onto the allocator so the new array is independent of the
     // parsed input slice (which goes out of scope after this function).
-    if (input.value.sub_agents) |sas| {
+    if (input.sub_agents) |sas| {
         const owned = try allocator.alloc(LlmConfig.SubAgentJson, sas.len);
         errdefer allocator.free(owned);
         for (sas, 0..) |sa, i| {
