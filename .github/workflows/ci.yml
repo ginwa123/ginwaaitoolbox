@@ -119,21 +119,54 @@ jobs:
         if: matrix.target.step != '__SKIP__'
         run: zig build ${{ matrix.target.step }} ${{ matrix.target.build_args }}
 
-      - name: Verify binary was produced
-        if: matrix.target.step != '__SKIP__'
+      - name: Verify binary was produced (Linux)
+        if: matrix.target.step != '__SKIP__' && runner.os == 'Linux'
         run: |
-          case "${{ runner.os }}" in
-            Linux)   test -f zig-out/bin/nalar && echo "✓ nalar exists ($(stat -c%s zig-out/bin/nalar) bytes)" ;;
-            Windows) test -f zig-out/bin/nalarcore-windows-x86_64.exe && echo "✓ nalar.exe exists" ;;
-            macOS)   ls zig-out/bin/nalarcore-macos-* 2>/dev/null | grep -q . && echo "✓ macos binary exists" ;;
-          esac
+          test -f zig-out/bin/nalar && echo "✓ nalar exists ($(stat -c%s zig-out/bin/nalar) bytes)"
 
-      - name: "Smoke test: version check"
-        if: matrix.target.step != '__SKIP__'
-        run: ./zig-out/bin/nalar --version || true
-        # The --version flag may not exist; this is a "does it run?" smoke test.
-        # Gated on the binary-build step so platforms that don't produce
-        # zig-out/bin/nalar (Windows until vcpkg lands in build.zig) skip it.
+      - name: Verify binary was produced (Windows)
+        if: matrix.target.step != '__SKIP__' && runner.os == 'Windows'
+        shell: bash
+        # `shell: bash` forces Git Bash even on Windows runners, where
+        # PowerShell would otherwise choke on the POSIX shell syntax.
+        # The `$(...)` and `[ ... ]` constructs are GNU bashisms that
+        # Windows' `cmd` and PowerShell can't translate.
+        run: |
+          test -f zig-out/bin/nalarcore-windows-x86_64.exe && echo "✓ nalar.exe exists ($(stat -c%s zig-out/bin/nalarcore-windows-x86_64.exe) bytes)"
+
+      - name: Verify binary was produced (macOS)
+        if: matrix.target.step != '__SKIP__' && runner.os == 'macOS'
+        shell: bash
+        # `shell: bash` matches the runner's default `/bin/bash` on macOS
+        # runner images. Avoids PowerShell/cmd translation issues.
+        run: |
+          found=$(ls zig-out/bin/nalarcore-macos-* 2>/dev/null | head -n1)
+          if [ -n "$found" ]; then echo "✓ macos binary exists ($found, $(stat -f%z "$found") bytes)"; else echo "✗ macos binary missing"; exit 1; fi
+
+      - name: "Smoke test: version check (Linux/macOS)"
+        if: matrix.target.step != '__SKIP__' && (runner.os == 'Linux' || runner.os == 'macOS')
+        shell: bash
+        # Uses the native-host binary name (`nalar` for Linux, the
+        # produced exe name for macOS). The --version flag may not
+        # exist; this is a "does it run?" smoke test.
+        run: |
+          if [ -x "zig-out/bin/nalar" ]; then
+            ./zig-out/bin/nalar --version || true
+          elif [ -x "zig-out/bin/$(ls zig-out/bin/nalarcore-* 2>/dev/null | head -n1 | sed 's:.*/::')" ]; then
+            ./zig-out/bin/$(ls zig-out/bin/nalarcore-* 2>/dev/null | head -n1 | sed 's:.*/::') --version || true
+          else
+            echo "no binary to smoke-test"
+          fi
+
+      - name: "Smoke test: version check (Windows)"
+        if: matrix.target.step != '__SKIP__' && runner.os == 'Windows'
+        shell: bash
+        run: |
+          if [ -f "zig-out/bin/nalarcore-windows-x86_64.exe" ]; then
+            ./zig-out/bin/nalarcore-windows-x86_64.exe --version || true
+          else
+            echo "no binary to smoke-test"
+          fi
 
       - name: Upload nalar binary
         if: matrix.target.step != '__SKIP__'
