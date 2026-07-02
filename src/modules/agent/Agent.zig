@@ -829,10 +829,17 @@ pub const Agent = struct {
             return sock;
         };
 
-        // First keepalive probe after 10s of idle
-        const keepidle: c_int = 10;
-        std.posix.setsockopt(sock, std.posix.IPPROTO.TCP, std.posix.TCP.KEEPIDLE,
-            std.mem.asBytes(&keepidle)) catch {};
+        // First keepalive probe after 10s of idle. `TCP.KEEPIDLE`
+        // is Linux-only; on macOS the equivalent is to set the
+        // `KEEPALIVE` option (which doubles as the idle timer on
+        // Darwin). Skip the idle config on macOS — the 5s probe
+        // interval + 3 probes already detects a dead connection
+        // quickly using the default ~2h idle.
+        if (builtin.os.tag == .linux) {
+            const keepidle: c_int = 10;
+            std.posix.setsockopt(sock, std.posix.IPPROTO.TCP, std.posix.TCP.KEEPIDLE,
+                std.mem.asBytes(&keepidle)) catch {};
+        }
 
         // Probe every 5s
         const keepintvl: c_int = 5;

@@ -434,7 +434,14 @@ pub const GinwaServer = struct {
             _ = winsock.setsockopt(fd, 6, 16, &keepcnt, @sizeOf(c_int));
         } else {
             posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.KEEPALIVE, std.mem.asBytes(&on)) catch {};
-            posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPIDLE, std.mem.asBytes(&keepidle)) catch {};
+            // `TCP.KEEPIDLE` is Linux-only; on macOS the equivalent is
+            // the KEEPALIVE TCP option (which doubles as the idle
+            // timer on Darwin). Skip on macOS — the default ~2h idle
+            // combined with 5s probe + 3 probes still detects dead
+            // connections quickly via SO_KEEPALIVE alone.
+            if (builtin.os.tag == .linux) {
+                posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPIDLE, std.mem.asBytes(&keepidle)) catch {};
+            }
             posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPINTVL, std.mem.asBytes(&keepintvl)) catch {};
             posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPCNT, std.mem.asBytes(&keepcnt)) catch {};
         }
