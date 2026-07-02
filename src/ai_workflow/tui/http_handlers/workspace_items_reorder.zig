@@ -65,12 +65,11 @@ pub fn workspaceItemsReorderHandler(
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "body required" }) });
     }
 
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON" }) });
     };
-    defer parsed.deinit();
 
-    const root = parsed.value.object;
+    const root = parsed.object;
     const ordered_ids_val = root.get("ordered_ids") orelse {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "ordered_ids required" }) });
     };

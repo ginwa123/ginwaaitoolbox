@@ -4,6 +4,12 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const ai_mod = nalarcore.ai_mod;
 
+pub const WorkspaceItemsDeleteError = error{
+    OutOfMemory,
+    WorkspaceItemNotFound,
+    DatabaseError,
+};
+
 /// DELETE /api/workspaces/:workspace_id/items/:item_id - Delete a workspace item
 pub fn workspaceItemsDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
@@ -16,21 +22,46 @@ pub fn workspaceItemsDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.Http
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }) });
     }
 
-    // Check if item exists first
-    const existing = ai_mod.workspace_items.getWorkspaceItem(allocator, sqlite_db, item_id) catch {
-        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to fetch workspace item" }) });
+    const result = useCase(allocator, sqlite_db, item_id) catch |err| {
+        const status: u16 = switch (err) {
+            error.WorkspaceItemNotFound => 404,
+            else => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.WorkspaceItemNotFound => "Workspace item not found",
+            error.DatabaseError => "Failed to delete workspace item",
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        });
     };
 
-    if (existing == null) {
-        return res.jsonResponse(.{ .status_code = 404, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Workspace item not found" }) });
-    }
+    return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeWorkspaceItemResponse(allocator, .{ .id = result.id }) });
+}
+
+const WorkspaceItemsDeleteResult = struct {
+    id: []const u8,
+};
+
+fn useCase(
+    allocator: std.mem.Allocator,
+    sqlite_db: *nalarcore.sqlite.SqliteBackend,
+    item_id: []const u8,
+) WorkspaceItemsDeleteError!WorkspaceItemsDeleteResult {
+    // Check if item exists first
+    const existing = ai_mod.workspace_items.getWorkspaceItem(allocator, sqlite_db, item_id) catch {
+        return error.DatabaseError;
+    };
+
+    if (existing == null) return error.WorkspaceItemNotFound;
     defer existing.?.deinit(allocator);
 
     // Delete the item
     ai_mod.workspace_items.deleteWorkspaceItem(allocator, sqlite_db, item_id) catch {
-        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to delete workspace item" }) });
+        return error.DatabaseError;
     };
 
-    return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeWorkspaceItemResponse(allocator, .{ .id = item_id }) });
+    return .{ .id = item_id };
 }
-

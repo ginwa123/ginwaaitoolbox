@@ -28,12 +28,11 @@ pub fn workspaceItemsUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.Http
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Request body required" }) });
     }
 
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON" }) });
     };
-    defer parsed.deinit();
 
-    const root = parsed.value.object;
+    const root = parsed.object;
 
     // Optional item_type. Mirror the path/name branch's presence vs
     // absence semantics. Previously this field was REQUIRED (the

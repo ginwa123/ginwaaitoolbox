@@ -1,15 +1,38 @@
+//! `GET /api/local-memories/:name?cwd=...` — read a local memory file's
+//! content + metadata.
+//!
+//! On success: 200 with `{"memory":{"name","title","path","size","content"}}`.
+//!
+//! Layered as:
+//!   - `useCase` — validates `:name`, resolves the local memories dir
+//!     (query `cwd` first, then io fallback), reads the file, re-lists
+//!     to derive `title/path/size`, returns a heap-owned
+//!     `LocalMemoryDetailPayload`.
+//!   - `localMemoryDetailHandler` — thin orchestrator: extracts the
+//!     `:name` path param + `?cwd=` query, calls `useCase`, maps
+//!     errors to status codes, builds the JSON response.
+//!
+//! Preserves the static-contract assertions in `local_memories_crud_test.zig`:
+//!   - `get_local_memories_path_for_dir` + `get_local_memories_path_from_io`
+//!     substring checks
+//!   - `params.get("name")` + `400` substring checks
+//!   - `readLocalMemoryFile` + `listMemoriesInDir` + `404` substring checks
+//!   - `isValidMemoryName` validation
+//!   - `std.json.Stringify.valueAlloc` + `content` substring checks
+//!   - `500` + `no cwd available` substring checks
+
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const memories_mod = nalarcore.memories;
 const http_response = @import("http_response.zig");
 
-/// Response shape for `GET /api/local-memories/:name`.
+/// Response payload for `GET /api/local-memories/:name`.
 ///
-/// `memory` is non-null on success; `error_message` is non-null on
-/// 4xx/5xx. Uses `std.json.Stringify.valueAlloc` so `content` is
-/// JSON-escaped automatically — do not hand-roll JSON for the body.
-const LocalMemoryDetailPayload = struct {
+/// `content` is JSON-escaped automatically by
+/// `std.json.Stringify.valueAlloc` — do not hand-roll JSON for the
+/// body.
+pub const LocalMemoryDetailPayload = struct {
     name: []const u8,
     title: []const u8,
     path: []const u8,
@@ -17,18 +40,126 @@ const LocalMemoryDetailPayload = struct {
     content: []const u8,
 };
 
+/// Domain-level error set for `useCase`. Each variant maps to a
+/// distinct HTTP status code.
+pub const LocalMemoryDetailError = error{
+    /// Neither the per-request `cwd` query nor the io fallback
+    /// yielded a usable local-memories directory. Maps to 500.
+    NoCwdAvailable,
+    /// `:name` path param was missing or empty.
+    NameRequired,
+    /// The name failed `isValidMemoryName` (path-traversal or non-md).
+    InvalidName,
+    /// The file does not exist on disk (or the re-list did not see it).
+    NotFound,
+    /// `allocator.dupe` failed while building the heap-owned payload.
+    OutOfMemory,
+};
+
+/// Inputs to the detail use-case.
+pub const LocalMemoryDetailInput = struct {
+    name: []const u8,
+    /// `?cwd=` query value (empty → fall back to the io CWD).
+    cwd: []const u8,
+};
+
+/// Output of the detail use-case. Slice fields are HEAP-OWNED by the
+/// use-case (duplicated from `listMemoriesInDir` + `readLocalMemoryFile`
+/// so they survive the internal `freeMemoriesList` /
+/// `allocator.free(content)` defers).
+pub const LocalMemoryDetailOutput = struct {
+    payload: LocalMemoryDetailPayload,
+};
+
+// =====================================================================
+// Use case
+// =====================================================================
+
+/// Read a local memory file's content and metadata.
+///
+/// Steps:
+///   1. Validate `name` (non-empty + `isValidMemoryName`).
+///   2. Resolve the local memories dir (query `cwd` → io fallback).
+///   3. Read the file via `readLocalMemoryFile`. File not found → 404.
+///   4. Re-list via `listMemoriesInDir` to derive `title/path/size`.
+///   5. Locate the entry by name. Missing → 404 (defensive).
+///   6. Duplicate the matched slices so the output survives internal
+///      `free` defers.
+fn useCase(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    input: LocalMemoryDetailInput,
+) LocalMemoryDetailError!LocalMemoryDetailOutput {
+    if (input.name.len == 0) return error.NameRequired;
+    if (!memories_mod.isValidMemoryName(input.name)) return error.InvalidName;
+
+    // Resolve the local memories dir (query first, then io fallback).
+    var dir_path_alloc: ?[]const u8 = null;
+    if (input.cwd.len > 0) {
+        dir_path_alloc = memories_mod.get_local_memories_path_for_dir(allocator, input.cwd);
+    }
+    if (dir_path_alloc == null) {
+        dir_path_alloc = memories_mod.get_local_memories_path_from_io(allocator, io);
+    }
+    const dir_path = dir_path_alloc orelse return error.NoCwdAvailable;
+    defer allocator.free(dir_path);
+
+    const content = memories_mod.readLocalMemoryFile(allocator, io, dir_path, input.name) orelse {
+        return error.NotFound;
+    };
+    defer allocator.free(content);
+
+    // Re-list for title/path/size. The re-list is cheap (single
+    // openDir + iterate).
+    const list = memories_mod.listMemoriesInDir(allocator, io, dir_path);
+    defer memories_mod.freeMemoriesList(allocator, list);
+
+    var found: ?memories_mod.MemoryInfo = null;
+    for (list) |m| {
+        if (std.mem.eql(u8, m.name, input.name)) {
+            found = m;
+            break;
+        }
+    }
+    const m = found orelse {
+        return error.NotFound;
+    };
+
+    // Duplicate the matched slices + content so the output survives
+    // the `free` defers above.
+    var duped_name: ?[]u8 = null;
+    var duped_title: ?[]u8 = null;
+    var duped_path: ?[]u8 = null;
+    var duped_content: ?[]u8 = null;
+    errdefer {
+        if (duped_name) |v| allocator.free(v);
+        if (duped_title) |v| allocator.free(v);
+        if (duped_path) |v| allocator.free(v);
+        if (duped_content) |v| allocator.free(v);
+    }
+    duped_name = try allocator.dupe(u8, m.name);
+    duped_title = try allocator.dupe(u8, m.title);
+    duped_path = try allocator.dupe(u8, m.path);
+    duped_content = try allocator.dupe(u8, content);
+
+    return .{ .payload = .{
+        .name = duped_name.?,
+        .title = duped_title.?,
+        .path = duped_path.?,
+        .size = m.size,
+        .content = duped_content.?,
+    } };
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
 const LocalMemoryDetailResponse = struct {
     memory: ?LocalMemoryDetailPayload = null,
     error_message: ?[]const u8 = null,
 };
 
-/// GET /api/local-memories/:name?cwd=...
-///
-/// On success: 200 with `{"memory":{"name","title","path","size","content"}}`.
-/// Errors:
-///   - 500  cannot resolve the local memories directory (no cwd)
-///   - 400  missing `:name`, invalid name
-///   - 404  the file does not exist (or its name fails validation)
 pub fn localMemoryDetailHandler(
     ctx: gserverz.HttpContext,
     req: gserverz.HttpRequest,
@@ -42,74 +173,41 @@ pub fn localMemoryDetailHandler(
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing :name" }),
         });
     };
-    if (name.len == 0) {
-        return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing :name" }),
-        });
-    }
-    if (!memories_mod.isValidMemoryName(name)) {
-        return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid memory name" }),
-        });
-    }
 
-    // Resolve the local memories directory: prefer explicit `cwd`
-    // from the query, fall back to the nalar server's CWD.
-    var dir_path_alloc: ?[]const u8 = null;
-    if (req.query.get("cwd")) |cwd| {
-        if (cwd.len > 0) {
-            dir_path_alloc = memories_mod.get_local_memories_path_for_dir(allocator, cwd);
-        }
-    }
-    if (dir_path_alloc == null) {
-        dir_path_alloc = memories_mod.get_local_memories_path_from_io(allocator, ctx.io);
-    }
-    const dir_path = dir_path_alloc orelse {
+    const cwd_raw = req.query.get("cwd") orelse "";
+    const outcome = useCase(allocator, ctx.io, .{
+        .name = name,
+        .cwd = cwd_raw,
+    }) catch |err| {
+        const status: u16 = switch (err) {
+            error.NoCwdAvailable => 500,
+            error.NameRequired => 400,
+            error.InvalidName => 400,
+            error.NotFound => 404,
+            error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.NoCwdAvailable => "Could not resolve local memories directory (no cwd available)",
+            error.NameRequired => "Missing :name",
+            error.InvalidName => "Invalid memory name",
+            error.NotFound => "Memory not found",
+            error.OutOfMemory => "Out of memory",
+        };
         return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Could not resolve local memories directory (no cwd available)" }),
-        });
-    };
-    defer allocator.free(dir_path);
-
-    const content = memories_mod.readLocalMemoryFile(allocator, ctx.io, dir_path, name) orelse {
-        return res.jsonResponse(.{
-            .status_code = 404,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Memory not found" }),
-        });
-    };
-    defer allocator.free(content);
-
-    // Re-list the local directory to find the title/path/size entry
-    // for the loaded file. The list is cheap (single openDir + iterate).
-    const list = memories_mod.listMemoriesInDir(allocator, ctx.io, dir_path);
-    defer memories_mod.freeMemoriesList(allocator, list);
-
-    var found: ?memories_mod.MemoryInfo = null;
-    for (list) |m| {
-        if (std.mem.eql(u8, m.name, name)) {
-            found = m;
-            break;
-        }
-    }
-    const m = found orelse {
-        return res.jsonResponse(.{
-            .status_code = 404,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Memory not found" }),
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
         });
     };
 
-    const payload = LocalMemoryDetailPayload{
-        .name = m.name,
-        .title = m.title,
-        .path = m.path,
-        .size = m.size,
-        .content = content,
-    };
+    defer {
+        allocator.free(outcome.payload.name);
+        allocator.free(outcome.payload.title);
+        allocator.free(outcome.payload.path);
+        allocator.free(outcome.payload.content);
+    }
+
     return res.jsonResponse(.{
         .status_code = 200,
-        .data = try std.json.Stringify.valueAlloc(allocator, LocalMemoryDetailResponse{ .memory = payload }, .{}),
+        .data = try std.json.Stringify.valueAlloc(allocator, LocalMemoryDetailResponse{ .memory = outcome.payload }, .{}),
     });
 }

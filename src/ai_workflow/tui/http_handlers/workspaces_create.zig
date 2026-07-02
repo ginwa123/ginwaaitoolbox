@@ -6,32 +6,73 @@ const process = nalarcore.helpers.process;
 const getCurrentProcessId = process.getCurrentProcessId;
 const sqlite = nalarcore.sqlite;
 
+pub const WorkspacesCreateError = error{
+    OutOfMemory,
+    InvalidJson,
+    MissingBody,
+    MissingName,
+    NameNotString,
+    DatabaseError,
+};
+
 /// POST /api/workspaces
 pub fn workspacesCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-
     const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
-    const body = req.body;
-    if (body.len == 0) {
-        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name required" }) });
-    }
-
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
-        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON" }) });
+    const result = useCase(allocator, sqlite_db, ctx.io, req.body) catch |err| {
+        const status: u16 = switch (err) {
+            error.InvalidJson, error.MissingBody, error.MissingName, error.NameNotString => 400,
+            error.DatabaseError => 500,
+            error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.InvalidJson => "Invalid JSON",
+            error.MissingBody => "name required",
+            error.MissingName => "name required",
+            error.NameNotString => "name must be a string",
+            error.DatabaseError => "Failed to create workspace",
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        });
     };
 
-    const root = parsed.value.object;
-    const name = root.get("name") orelse {
-        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name required" }) });
-    };
-    if (name != .string) {
-        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name must be a string" }) });
-    }
+    return res.jsonResponse(.{ .status_code = 201, .data = try http_response.makeWorkspaceResponse(allocator, .{
+        .id = result.id,
+        .name = result.name,
+        .created_at = null,
+        .updated_at = null,
+    }) });
+}
 
-    // Generate workspace ID
-    const ts = std.Io.Timestamp.now(ctx.io, .real);
+const WorkspacesCreateResult = struct {
+    id: []const u8,
+    name: []const u8,
+};
+
+fn useCase(
+    allocator: std.mem.Allocator,
+    sqlite_db: *sqlite.SqliteBackend,
+    io: std.Io,
+    body: []const u8,
+) WorkspacesCreateError!WorkspacesCreateResult {
+    if (body.len == 0) return error.MissingBody;
+
+    // Per nalar-http-handler-thin-wrapper-pattern.md: parseFromSliceLeaky
+    // is the correct API for per-request arena allocators.
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch {
+        return error.InvalidJson;
+    };
+    const root = parsed.object;
+    const name = root.get("name") orelse return error.MissingName;
+    if (name != .string) return error.NameNotString;
+
+    // Generate workspace ID — ts_nanos (ms) + PID-derived entropy.
+    const ts = std.Io.Timestamp.now(io, .real);
     const ts_nanos: i64 = @intCast(@divTrunc(ts.nanoseconds, 1_000_000));
     const pid = getCurrentProcessId();
     const entropy: u64 = (@as(u64, @intCast(pid)) << 32) ^ @as(u64, @intCast(ts_nanos));
@@ -45,28 +86,22 @@ pub fn workspacesCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
     const workspace_id = try std.fmt.allocPrint(allocator, "ws_{d}_{s}", .{ ts_nanos, &hex_buf });
 
     createWorkspace(allocator, sqlite_db, workspace_id, name.string) catch {
-        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to create workspace" }) });
+        return error.DatabaseError;
     };
 
-    return res.jsonResponse(.{ .status_code = 201, .data = try http_response.makeWorkspaceResponse(allocator, .{
-        .id = workspace_id,
-        .name = name.string,
-        .created_at = null,
-        .updated_at = null,
-    }) });
+    return .{ .id = workspace_id, .name = name.string };
 }
 
+/// Insert a new workspace row. Position = MAX(position) + 1 so the new
+/// workspace appears at the TOP of the list (workspaces_list.zig orders
+/// by position DESC). The COALESCE(..., -1) makes the very first
+/// workspace in an empty table get position 0 (= -1 + 1).
+/// See docs/plans/2026-06-12-workspace-drag-and-drop.md.
 fn createWorkspace(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, workspace_id: []const u8, name: []const u8) !void {
-    // Assign position = MAX(position) + 1 so the new workspace
-    // appears at the TOP of the list (workspaces_list.zig orders
-    // by position DESC). The COALESCE(..., -1) makes the very first
-    // workspace in an empty table get position 0 (= -1 + 1).
-    // See docs/plans/2026-06-12-workspace-drag-and-drop.md.
     _ = try db.exec(allocator,
         \\INSERT INTO workspaces (id, name, position, created_at, updated_at)
         \\VALUES (?, ?,
         \\    COALESCE((SELECT MAX(position) FROM workspaces), -1) + 1,
         \\    datetime('now'), datetime('now'))
-    , &.{ workspace_id, name });
+    , &[_][]const u8{ workspace_id, name });
 }
-
