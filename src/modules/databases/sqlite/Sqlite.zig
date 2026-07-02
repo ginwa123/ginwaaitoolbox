@@ -1,6 +1,47 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+// Alternative sqlite3_bind_text binding that takes the destructor parameter
+// as `isize` (a raw integer) instead of a `sqlite3_destructor_type` function
+// pointer. The cImport-generated binding uses the function-pointer type,
+// which Zig's comptime alignment check rejects when we try to pass `-1`
+// (the SQLITE_TRANSIENT sentinel) because `-1` (= 0xFFFFFFFFFFFFFFFF) is not
+// 8-byte aligned on aarch64-macos. At the C ABI level both isize and a
+// function pointer occupy one 8-byte register on x86_64/aarch64 — the
+// bits pass through unchanged. SQLite's compiled check
+// `if (xDel == SQLITE_TRANSIENT)` is a bitwise comparison and succeeds
+// regardless of whether we declared the parameter as isize or as a
+// function pointer on the Zig side.
+// Wrapper for `sqlite3_bind_text` that takes the destructor parameter as
+// `isize` (a raw integer) instead of `sqlite3_destructor_type` (a function
+// pointer). The cImport-generated binding uses the function-pointer type,
+// which Zig's comptime alignment check rejects when we try to construct
+// the SQLITE_TRANSIENT sentinel (= -1 cast to a function pointer, but
+// `0xFFFFFFFFFFFFFFFF` is not 8-byte aligned on aarch64-macos).
+//
+// We side-step the alignment check by declaring this wrapper with an
+// `isize` destructor parameter. At the C ABI level both `isize` and a
+// function pointer occupy one 8-byte register on x86_64/aarch64 — the
+// bits pass through unchanged. SQLite's compiled check
+// `if (xDel == SQLITE_TRANSIENT)` is a bitwise comparison and succeeds
+// regardless of whether we declared the parameter as `isize` or as a
+// function pointer on the Zig side.
+//
+// The `@extern` builtin returns `?*const FnType` (nullable); we unwrap with
+// `orelse unreachable` because the symbol is statically linked from
+// `vendor/sqlite3/sqlite3.c` on all platforms.
+const sqlite3_bind_text_isize_Fn = fn (
+    ?*anyopaque,
+    c_int,
+    [*]const u8,
+    c_int,
+    isize,
+) callconv(.c) c_int;
+const sqlite3_bind_text_isize_opt: ?*const sqlite3_bind_text_isize_Fn =
+    @extern(*const sqlite3_bind_text_isize_Fn, .{ .name = "sqlite3_bind_text" });
+const sqlite3_bind_text_isize: *const sqlite3_bind_text_isize_Fn =
+    sqlite3_bind_text_isize_opt orelse unreachable;
+
 pub const Error = error{
     OpenFailed,
     DatabaseNotFound,
@@ -49,7 +90,6 @@ pub const SqliteBackend = struct {
             pub const SQLITE_PERM: c_int = 3;
             pub const SQLITE_FULL: c_int = 13;
             pub const SQLITE_CORRUPT: c_int = 11;
-            pub const SQLITE_TRANSIENT: isize = -1;
 
             pub extern fn sqlite3_open(filename: [*:0]const u8, ppDb: *?*sqlite3) c_int;
             pub extern fn sqlite3_close(db: ?*sqlite3) c_int;
@@ -65,6 +105,12 @@ pub const SqliteBackend = struct {
             pub extern fn sqlite3_column_bytes(stmt: ?*sqlite3_stmt, col: c_int) c_int;
             pub extern fn sqlite3_changes(db: ?*sqlite3) c_int;
         };
+
+    // `SQLITE_TRANSIENT` sentinel — passed as -1 via the
+    // `sqlite3_bind_text_isize` wrapper above (which takes isize instead
+    // of the cImport-generated `sqlite3_destructor_type` function pointer
+    // type). See the long comment on the wrapper for why this matters.
+    const SQLITE_DESTRUCTOR_TRANSIENT: isize = -1;
 
     io: std.Io = .failing,
     db: ?*c.sqlite3 = null,
@@ -121,7 +167,7 @@ pub const SqliteBackend = struct {
             if (arg.len == 0) {
                 rc = c.sqlite3_bind_null(stmt, param_idx);
             } else {
-                rc = c.sqlite3_bind_text(stmt, param_idx, arg.ptr, @intCast(arg.len), c.SQLITE_TRANSIENT);
+                rc = sqlite3_bind_text_isize(@ptrCast(stmt), param_idx, arg.ptr, @intCast(arg.len), SQLITE_DESTRUCTOR_TRANSIENT);
             }
             if (rc != c.SQLITE_OK) {
                 const err_msg = c.sqlite3_errmsg(db);
@@ -160,7 +206,7 @@ pub const SqliteBackend = struct {
         defer _ = c.sqlite3_finalize(stmt);
 
         for (argv, 0..) |arg, i| {
-            const bind_rc = c.sqlite3_bind_text(stmt, @intCast(i + 1), arg.ptr, @intCast(arg.len), c.SQLITE_TRANSIENT);
+            const bind_rc = sqlite3_bind_text_isize(@ptrCast(stmt), @intCast(i + 1), arg.ptr, @intCast(arg.len), SQLITE_DESTRUCTOR_TRANSIENT);
             if (bind_rc != c.SQLITE_OK) {
                 return Error.BindFailed;
             }
@@ -254,7 +300,7 @@ pub const SqliteBackend = struct {
         }
 
         for (argv, 0..) |arg, i| {
-            const bind_rc = c.sqlite3_bind_text(stmt, @intCast(i + 1), arg.ptr, @intCast(arg.len), c.SQLITE_TRANSIENT);
+            const bind_rc = sqlite3_bind_text_isize(@ptrCast(stmt), @intCast(i + 1), arg.ptr, @intCast(arg.len), SQLITE_DESTRUCTOR_TRANSIENT);
             if (bind_rc != c.SQLITE_OK) {
                 const err_msg = c.sqlite3_errmsg(db);
                 std.debug.print("sqlite3_bind_text error (query): {s}\n", .{err_msg});

@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
+const text_normalize = nalarcore.helpers.text_normalize;
 
 /// Regression test for the "bash tool returns corrupt value" bug where
 /// tool result content containing invalid UTF-8 bytes (e.g. \x89, \x93 from
@@ -23,7 +24,10 @@ const nalarcore = @import("nalarcore");
 const ON_EVENT_SENT_PATH = "src/ai_workflow/tui/on_event_sent.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .unlimited);
+    const raw = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .unlimited);
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
+    return normalized;
 }
 
 test "on_event_sent.zig imports helpers" {

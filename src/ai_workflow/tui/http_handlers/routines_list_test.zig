@@ -19,6 +19,8 @@
 
 const std = @import("std");
 const testing = std.testing;
+const nalarcore = @import("nalarcore");
+const text_normalize = nalarcore.helpers.text_normalize;
 
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/routines_list.zig";
 const MOD_PATH = "src/ai_workflow/tui/http_handlers/mod.zig";
@@ -26,12 +28,15 @@ const MAIN_PATH = "src/main.zig";
 const HTTP_RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         path,
         allocator,
         .limited(256 * 1024),
     );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
+    return normalized;
 }
 
 // ─── Contract 1: handler function exists in routines_list.zig ─────────────

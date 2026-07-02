@@ -19,17 +19,26 @@
 
 const std = @import("std");
 const testing = std.testing;
+const nalarcore = @import("nalarcore");
+const text_normalize = nalarcore.helpers.text_normalize;
 
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/kanban_columns_list.zig";
 
 /// Read a source file from disk, relative to the project root.
+/// Normalizes CRLF → LF so multi-line literal needles match even when
+/// the file was checked out on Windows with autocrlf=true (see
+/// `.gitattributes` + `src/helpers/text_normalize.zig` for context).
+/// The returned buffer is owned by the caller (freed with `allocator.free`).
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         path,
         allocator,
         .limited(256 * 1024),
     );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
+    return normalized;
 }
 
 // ─── Contract 1: handler calls kanban_model.listColumns ────────────────────

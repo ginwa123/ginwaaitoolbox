@@ -714,9 +714,13 @@ test "SseManager: sendToClient removes the client on a failed write (behavioural
     const pair = try createSocketPair();
     // We close pair[0] BEFORE calling sendToClient so the write
     // fails with EPIPE — this simulates the "peer crashed" scenario
-    // that the failed-write branch must clean up.
-    _ = posix.system.close(pair[0]);
-    defer _ = posix.system.close(pair[1]);
+    // that the failed-write branch must clean up. Use the closeFd
+    // helper (which short-circuits on Windows, where sockets are HANDLE
+    // not i32) instead of posix.system.close directly — calling the
+    // latter on Windows fails to compile because posix.system.close
+    // expects `*anyopaque` (fd_t on Windows) and we're passing i32.
+    closeFd(pair[0]);
+    defer closeFd(pair[1]);
 
     const id: [16]u8 = .{ 0xAA, 0xBB, 0xCC, 0xDD } ++ .{0} ** 12;
     _ = try mgr.registerClientForTest(pair[0], id);

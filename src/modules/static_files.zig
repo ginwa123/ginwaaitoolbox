@@ -92,11 +92,14 @@ fn mimeForPath(path: []const u8) []const u8 {
 
 /// Returns true when `resolved` lives inside `root` (or equals it).
 /// Prevents the false-positive match where `/tmp/abc` is a prefix of
-/// `/tmp/abcd/...`.
+/// `/tmp/abcd/...`. Accepts both `/` and `\` as the path separator so
+/// this works on Windows (where realPath returns backslash-separated
+/// paths) AND on POSIX (where realPath returns forward-slash paths).
 fn isInsideRoot(root: []const u8, resolved: []const u8) bool {
     if (!std.mem.startsWith(u8, resolved, root)) return false;
     if (resolved.len == root.len) return true;
-    return resolved[root.len] == '/';
+    const next_char = resolved[root.len];
+    return next_char == '/' or next_char == '\\';
 }
 
 // ---------------------------------------------------------------------------
@@ -176,9 +179,16 @@ pub fn resolve(
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const n = try root_dir.realPathFile(io, rel, &path_buf);
     const resolved = try cfg.allocator.dupe(u8, path_buf[0..n]);
-    errdefer cfg.allocator.free(resolved);
 
-    if (!isInsideRoot(cfg.root_dir, resolved)) return .forbidden;
+    // Path-traversal defense: if `realPathFile` resolved to a path
+    // outside the root (e.g. via symlinks), reject as forbidden AND
+    // free the duplicated path (the errdefer above only fires on
+    // error, not on regular returns like this one — this is a
+    // classic Zig pitfall; the prior code leaked `resolved` here).
+    if (!isInsideRoot(cfg.root_dir, resolved)) {
+        cfg.allocator.free(resolved);
+        return .forbidden;
+    }
 
     return .{ .file = .{
         .abs_path = resolved,

@@ -10,3 +10,9 @@ test_main
 /.worktrees
 .nalar/tasks/
 /zig-pkg
+
+# Test artifacts (created by zig build test runs)
+test_logger_*.log
+test_logger_nested_dir/
+test_diff_view_*.txt
+test_*.log

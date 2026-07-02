@@ -22,6 +22,8 @@
 
 const std = @import("std");
 const testing = std.testing;
+const nalarcore = @import("nalarcore");
+const text_normalize = nalarcore.helpers.text_normalize;
 const show_preview = @import("show_preview.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/show_preview.zig";
@@ -29,13 +31,20 @@ const TOOL_PATH = "src/modules/agent/tools/show_preview.zig";
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 /// Read a source file from disk, relative to the project root.
+/// Normalizes CRLF → LF so multi-line literal needles match even when
+/// the file was checked out on Windows with autocrlf=true (see
+/// `.gitattributes` + `src/helpers/text_normalize.zig` for context).
+/// The returned buffer is owned by the caller (freed with `allocator.free`).
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         path,
         allocator,
         .limited(256 * 1024),
     );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
+    return normalized;
 }
 
 fn contains(haystack: []const u8, needle: []const u8) bool {

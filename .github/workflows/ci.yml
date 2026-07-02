@@ -118,8 +118,11 @@ jobs:
           esac
 
       - name: "Smoke test: version check"
+        if: matrix.target.step != '__SKIP__'
         run: ./zig-out/bin/nalar --version || true
         # The --version flag may not exist; this is a "does it run?" smoke test.
+        # Gated on the binary-build step so platforms that don't produce
+        # zig-out/bin/nalar (Windows until vcpkg lands in build.zig) skip it.
 
       - name: Upload nalar binary
         if: matrix.target.step != '__SKIP__'
