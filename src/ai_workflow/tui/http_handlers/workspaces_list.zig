@@ -19,6 +19,11 @@ pub const WorkspaceItemWithTasksResponse = struct {
 
 pub const WorkspacesListResponse = struct { workspaces: []WorkspaceWithItemsResponse };
 
+pub const WorkspacesListError = error{
+    OutOfMemory,
+    DatabaseError,
+};
+
 /// GET /api/workspaces
 /// Query params:
 ///   - is_include_items (default: "true") — when "false", skip the workspace_items
@@ -33,12 +38,25 @@ pub fn workspacesListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
-    const response = fetchWorkspacesList(allocator, sqlite_db, is_include_items) catch |err| {
-        std.log.err("Failed to fetch workspaces: {s}", .{@errorName(err)});
-        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to fetch workspaces" }) });
+    const response = useCase(allocator, sqlite_db, is_include_items) catch |err| {
+        const message: []const u8 = switch (err) {
+            error.DatabaseError => "Failed to fetch workspaces",
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{
+            .status_code = 500,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        });
     };
 
     return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, response, .{}) });
+}
+
+fn useCase(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, include_items: bool) WorkspacesListError!WorkspacesListResponse {
+    return fetchWorkspacesList(alloc, db, include_items) catch |err| {
+        std.log.err("Failed to fetch workspaces: {s}", .{@errorName(err)});
+        return error.DatabaseError;
+    };
 }
 
 fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, include_items: bool) !WorkspacesListResponse {
