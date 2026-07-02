@@ -40,9 +40,15 @@ jobs:
         # succeeds.
         os: [ubuntu-latest, windows-latest, macos-latest]
         target:
-          - { zig: x86_64-linux-gnu,       step: install:linux:system }
-          - { zig: x86_64-windows-gnu,     step: install:windows }
-          - { zig: x86_64-macos,           step: install:macos }
+          # build_args is appended to `zig build <step>`. Use `-Dlinux-libs=false`
+          # when cross-compiling FROM Linux TO another target: the dev/test config
+          # attaches `ssl`/`crypto`/`sqlite3` to `mod` on Linux hosts, which
+          # would otherwise leak into the cross-target link line (`-lsqlite3
+          # -lssl -lcrypto`) and fail with "unable to find dynamic system library"
+          # because those Linux system libs don't exist on Windows/macOS targets.
+          - { zig: x86_64-linux-gnu,       step: install:linux:system, build_args: '' }
+          - { zig: x86_64-windows-gnu,     step: install:windows,    build_args: '-Dlinux-libs=false' }
+          - { zig: x86_64-macos,           step: install:macos,      build_args: '-Dlinux-libs=false' }
         exclude:
           - os: ubuntu-latest
             target: { zig: x86_64-windows-gnu, step: install:windows }
@@ -111,7 +117,7 @@ jobs:
 
       - name: Build nalar binary
         if: matrix.target.step != '__SKIP__'
-        run: zig build ${{ matrix.target.step }}
+        run: zig build ${{ matrix.target.step }} ${{ matrix.target.build_args }}
 
       - name: Verify binary was produced
         if: matrix.target.step != '__SKIP__'

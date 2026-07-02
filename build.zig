@@ -302,20 +302,39 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    // Platform-specific link libs (added once to `mod` since both the
-    // test Compiles and the host-native exe share `mod` as root_module).
-    // See the comment block above the `mod` declaration for the cross-
-    // compile caveat (ssl/crypto leak into install:* artifacts — out of
-    // scope for the test-only CI matrix).
-    if (target.result.os.tag == .linux) {
+    // Linux-host-only link_libs (ssl/crypto/system-sqlite3). These are
+    // needed for the native Linux test build (the tests link against the
+    // real system OpenSSL + system sqlite3), but they MUST NOT be in the
+    // link line when cross-compiling (install:windows, install:macos on
+    // a Linux host) — the cross-target linker would fail with "unable to
+    // find dynamic system library" because those Linux system libs don't
+    // exist on Windows/macOS.
+    //
+    // Detection: the `-Dlinux-libs` build option. Default is `true` for
+    // native-Linux target (= native Linux tests, native Linux install),
+    // `false` for any other target (cross-compile from Linux to Windows/
+    // macOS). Pass `-Dlinux-libs=false` explicitly when cross-compiling.
+    const linux_host_is_native_target = target.result.os.tag == .linux and
+        target.result.cpu.arch == builtin.cpu.arch;
+    const add_linux_libs = b.option(
+        bool,
+        "linux-libs",
+        "Attach ssl/crypto/system-sqlite3 + /usr/include to mod for native Linux builds. Set false when cross-compiling from Linux to Windows/macOS to avoid -lssl/-lcrypto leaking into the cross-target link line.",
+    ) orelse linux_host_is_native_target;
+
+    if (add_linux_libs and target.result.os.tag == .linux) {
         mod.linkSystemLibrary("sqlite3", .{});
         mod.linkSystemLibrary("ssl", .{});
         mod.linkSystemLibrary("crypto", .{});
         mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    } else if (target.result.os.tag == .windows or target.result.os.tag == .macos) {
-        // Vendored sqlite3 amalgamation — added once to `mod` so both
-        // the test Compiles and the install:* cross-compile artifacts
-        // get sqlite3 support without system library lookup.
+    } else {
+        // The cross-compile targets (or non-Linux host builds) need the
+        // vendored sqlite3 amalgamation to satisfy sqlite3_* references
+        // that would otherwise require a system sqlite3 we can't link.
+        // Adding sqlite3.c once to `mod` makes it visible to every
+        // Compile that imports `mod` (tests, native exe, install:*).
+        // We add it unconditionally for non-Linux because the linux-libs
+        // branch uses the system sqlite3 instead.
         mod.addIncludePath(b.path("vendor/sqlite3"));
         mod.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),
