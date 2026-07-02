@@ -29,7 +29,27 @@ pub fn main(init: std.process.Init) !void {
     // into the heap-allocated `initial_llm_config_ptr` below. Shutdown
     // cleanup runs via `nalarcore.freeAllLlmConfigs(ctxParent)` at the end
     // of `main`.
-    try llm_config.validate();
+    // Was: try llm_config.validate();
+    //
+    // Now: log warnings but don't block startup. An empty/placeholder
+    // config (e.g. auto-created on first run when no config.json
+    // exists) is allowed to start the server. The server is reachable
+    // for non-LLM endpoints (workspaces, kanban, memories, etc.); LLM
+    // calls will fail naturally with a clear "empty api_key" error
+    // until the user fills in config.json.
+    //
+    // The PUT handler (`nalar_config_put.zig:234`) keeps the strict
+    // behavior — when the user actively edits their config via the UI,
+    // an empty api_key is still rejected with a 200 + error body so
+    // they can correct it.
+    if (llm_config.validate()) |_| {
+        // OK — config has all required fields.
+    } else |err| {
+        std.log.warn(
+            "Config validation: {s}. LLM calls will fail until api_key/model/base_url are populated in ~/.config/nalar/config.json.",
+            .{@errorName(err)},
+        );
+    }
 
     // Move the initial LlmConfig onto the heap so the `LlmConfigHolder`
     // can later swap pointers without owning stack memory of `main`.

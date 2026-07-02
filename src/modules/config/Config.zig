@@ -223,6 +223,26 @@ pub const LlmConfig = struct {
     /// The map owns the server-name keys and the `McpServerConfig` payloads.
     pub const McpServersMap = std.StringHashMap(McpServerConfig);
 
+    /// Initialize an `LlmConfig` from disk. When `path` is null (the
+    /// default), uses the platform-specific config path returned by
+    /// `getDefaultConfigPath` (e.g. `~/.config/nalar/config.json` on
+    /// Linux, `~/Library/Application Support/nalar/config.json` on
+    /// macOS, `%APPDATA%/nalar/config.json` on Windows).
+    ///
+    /// **Auto-init on first run**: When `path` is null AND the file at
+    /// the resolved default path does not exist, this function creates
+    /// a default config with empty placeholder values (via
+    /// `writeDefaultConfig`), logs an `info:` message, and proceeds.
+    /// The server can then start; downstream LLM calls will fail until
+    /// the user edits the placeholder values.
+    ///
+    /// **Explicit paths are NOT auto-created**: When `path` is non-null
+    /// (e.g. `--config /custom/path.json`), a missing file surfaces
+    /// `error.ConfigFileNotFound` unchanged — explicit paths are
+    /// honored literally.
+    ///
+    /// **Other errors**: permission denied, invalid JSON, parse errors
+    /// surface to the caller unchanged.
     pub fn init(allocator: std.mem.Allocator, io: std.Io, path: ?[]const u8, environment: *std.process.Environ.Map) LoadError!LlmConfig {
         const config_path = if (path) |p|
             try allocator.dupe(u8, p)
@@ -230,16 +250,42 @@ pub const LlmConfig = struct {
             try getDefaultConfigPath(allocator, environment);
         defer allocator.free(config_path);
 
-        const file = Io.Dir.openFileAbsolute(io, config_path, .{}) catch |err| {
-            std.log.err("Failed to open config file: {s} - {s}", .{ config_path, @errorName(err) });
-            return error.ConfigFileNotFound;
+        const file = Io.Dir.openFileAbsolute(io, config_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => blk: {
+                // First-run auto-init: only for the default path. An explicit
+                // path that doesn't exist is treated as a user error (they
+                // asked us to read a specific file and it's missing).
+                if (path != null) {
+                    std.log.warn("Config file not found at explicit path {s}", .{config_path});
+                    return error.ConfigFileNotFound;
+                }
+                std.log.info(
+                    "Config file not found at {s}; auto-creating with empty placeholders. Edit this file to set api_key/model/base_url.",
+                    .{config_path},
+                );
+                writeDefaultConfig(allocator, io, config_path) catch |write_err| {
+                    std.log.warn("Failed to auto-create config file {s}: {s}", .{ config_path, @errorName(write_err) });
+                    return error.ConfigFileNotFound;
+                };
+                // Retry the open. If THIS fails (e.g. permission denied on
+                // the new file), surface it as ConfigFileNotFound to match
+                // the rest of the catch arm's behavior.
+                break :blk Io.Dir.openFileAbsolute(io, config_path, .{}) catch |retry_err| {
+                    std.log.warn("Failed to open auto-created config file {s}: {s}", .{ config_path, @errorName(retry_err) });
+                    return error.ConfigFileNotFound;
+                };
+            },
+            else => {
+                std.log.warn("Failed to open config file: {s} - {s}", .{ config_path, @errorName(err) });
+                return error.ConfigFileNotFound;
+            },
         };
         defer file.close(io);
 
         var read_buffer: [4096]u8 = undefined;
         var reader = file.reader(io, &read_buffer);
         const content = reader.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch |err| {
-            std.log.err("Failed to read config file: {s}", .{@errorName(err)});
+            std.log.warn("Failed to read config file: {s}", .{@errorName(err)});
             return error.ConfigFileReadError;
         };
         defer allocator.free(content);
@@ -247,7 +293,7 @@ pub const LlmConfig = struct {
         const parsed = json.parseFromSlice(LlmConfigJson, allocator, content, .{
             .ignore_unknown_fields = true,
         }) catch |err| {
-            std.log.err("Failed to parse JSON config: {s}", .{@errorName(err)});
+            std.log.warn("Failed to parse JSON config: {s}", .{@errorName(err)});
             return error.InvalidJson;
         };
         defer parsed.deinit();
@@ -824,15 +870,15 @@ pub const LlmConfig = struct {
 
     pub fn validate(self: *const LlmConfig) LoadError!void {
         if (self.api_key.len == 0) {
-            std.log.err("Missing required field: api_key", .{});
+            std.log.warn("Missing required field: api_key", .{});
             return error.MissingRequiredField;
         }
         if (self.model.len == 0) {
-            std.log.err("Missing required field: model", .{});
+            std.log.warn("Missing required field: model", .{});
             return error.MissingRequiredField;
         }
         if (self.base_url.len == 0) {
-            std.log.err("Missing required field: base_url", .{});
+            std.log.warn("Missing required field: base_url", .{});
             return error.MissingRequiredField;
         }
     }
@@ -1060,6 +1106,76 @@ pub const LlmConfig = struct {
             .source = source,
         };
     }
+
+    /// The default `config.json` content written on first run (when no
+    /// config file exists at the platform-default path). All required
+    /// fields are present as empty strings — the user MUST edit this
+    /// file and add `api_key`, `model`, and `base_url` before LLM calls
+    /// will succeed. Optional fields are populated with their documented
+    /// defaults so a subsequent `LlmConfig.init` re-parse yields a
+    /// well-formed `LlmConfig`.
+    pub const defaultConfigJson: []const u8 =
+        \\{
+        \\  "api_key": "",
+        \\  "model": "",
+        \\  "base_url": "",
+        \\  "url_style": "openai",
+        \\  "model_compaction_size_kb": 100,
+        \\  "notify_on_complete": false
+        \\}
+    ;
+
+    /// Write `defaultConfigJson` to `path`, creating any missing parent
+    /// directories (mkdir -p semantics). Overwrites any existing file at
+    /// the path (the caller is expected to NOT call this on an
+    /// already-existing config — see `LlmConfig.init` for the auto-init
+    /// flow that gates the call on `error.ConfigFileNotFound`).
+    ///
+    /// Returns `error.ConfigDirNotFound` when the parent directory
+    /// cannot be created (e.g. permission denied, invalid path) or
+    /// `error.ConfigFileReadError` on a write failure. The caller is
+    /// expected to log the error and surface it as appropriate.
+    pub fn writeDefaultConfig(allocator: std.mem.Allocator, io: std.Io, path: []const u8) LoadError!void {
+        _ = allocator; // unused in current implementation, kept for future use
+
+        // Ensure the parent directory exists (mkdir -p semantics).
+        // std.Io.Dir.cwd().createDirPath is the project-wide pattern for
+        // "create nested dirs relative to cwd" (see Logger.zig:136,
+        // add_skill.zig:108). It handles both "dir already exists" and
+        // "dir does not exist" without error. It does NOT assert the
+        // path is absolute (unlike createDirAbsolute), so both absolute
+        // and relative parent paths work. If `dirname` returns null
+        // (e.g. `path = "config.json"` or `/config.json`), we skip this
+        // step — the file goes in the cwd (or the root, for absolute
+        // paths with no parent) directly. Note: Zig 0.16's
+        // `std.fs.path.dirname` returns either null OR a slice of
+        // length >= 1, so no inner length check is needed.
+        if (std.fs.path.dirname(path)) |parent| {
+            std.Io.Dir.cwd().createDirPath(io, parent) catch |err| {
+                std.log.warn("Failed to create config dir {s}: {s}", .{ parent, @errorName(err) });
+                return error.ConfigDirNotFound;
+            };
+        }
+
+        // Write the default config. .truncate = true means any stale
+        // file at `path` is replaced atomically by the kernel.
+        const file = Io.Dir.createFileAbsolute(io, path, .{ .truncate = true }) catch |err| {
+            std.log.warn("Failed to create config file {s}: {s}", .{ path, @errorName(err) });
+            return error.ConfigFileReadError;
+        };
+        defer file.close(io);
+
+        var write_buffer: [4096]u8 = undefined;
+        var writer = file.writer(io, &write_buffer);
+        writer.interface.writeAll(defaultConfigJson) catch |err| {
+            std.log.warn("Failed to write default config to {s}: {s}", .{ path, @errorName(err) });
+            return error.ConfigFileReadError;
+        };
+        writer.interface.flush() catch |err| {
+            std.log.warn("Failed to flush default config to {s}: {s}", .{ path, @errorName(err) });
+            return error.ConfigFileReadError;
+        };
+    }
 };
 
 /// Generate a random sub-agent name of the form
@@ -1107,14 +1223,14 @@ pub fn getDefaultConfigDir(allocator: std.mem.Allocator, environment: *std.proce
     switch (builtin.os.tag) {
         .windows => {
             const appdata = environment.get("APPDATA") orelse {
-                std.log.err("APPDATA environment variable not set", .{});
+                std.log.warn("APPDATA environment variable not set", .{});
                 return error.ConfigDirNotFound;
             };
             return std.fs.path.join(allocator, &[_][]const u8{ appdata, app_name });
         },
         .macos => {
             const home = environment.get("HOME") orelse {
-                std.log.err("HOME environment variable not set", .{});
+                std.log.warn("HOME environment variable not set", .{});
                 return error.HomeNotFound;
             };
             return std.fs.path.join(allocator, &[_][]const u8{
@@ -1126,7 +1242,7 @@ pub fn getDefaultConfigDir(allocator: std.mem.Allocator, environment: *std.proce
                 return std.fs.path.join(allocator, &[_][]const u8{ xdg_config, app_name });
             }
             const home = environment.get("HOME") orelse {
-                std.log.err("HOME environment variable not set", .{});
+                std.log.warn("HOME environment variable not set", .{});
                 return error.MissingRequiredField;
             };
             return std.fs.path.join(allocator, &[_][]const u8{ home, ".config", app_name });
