@@ -4,9 +4,10 @@
 
   Split from <WorkspaceItemTask> on 2026-07-02. The row variant moved
   to <WorkspaceItemTaskRow> (sidebar list). This file owns the modern-
-  minimalist kanban-card layout: a bordered box with optional
-  description preview, last-updated meta row, and a Jira-style
-  left-edge type accent (violet for routine, blue for memory).
+  minimalist kanban-card layout: a visible 1px gray border + card
+  background + optional description preview, last-updated meta row,
+  and a Jira-style left-edge type accent (violet for routine, blue
+  for memory). Hover swaps the gray border for a violet ring.
 
   Behavior (event payload, routine branch, drop indicator, active
   styling, pin toggle, edit/run/delete hover buttons) is shared with
@@ -168,7 +169,7 @@ const typeBadge = computed<string | null>(() => {
 
 <template>
   <button
-    class="flex flex-col gap-2 p-3 rounded-lg text-xs group/task cursor-pointer transition-all duration-200 border border-transparent hover:border-[--color-violet]/40 bg-[--semantic-card-bg] shadow-sm hover:shadow-md"
+    class="flex flex-col gap-2 p-3 rounded-lg text-xs group/task cursor-pointer transition-all duration-200 border border-[--color-border] hover:border-[--color-violet] bg-[--semantic-card-bg] shadow-sm hover:shadow-md"
     :data-task-id="task.id"
     :data-drop-indicator="dropIndicator ?? undefined"
     data-task-card
