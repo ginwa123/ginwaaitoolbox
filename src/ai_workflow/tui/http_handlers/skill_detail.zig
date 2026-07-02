@@ -19,55 +19,92 @@ pub const SkillDetail = struct {
     is_global: bool,
 };
 
+pub const SkillDetailError = error{
+    OutOfMemory,
+    SkillNotFound,
+};
+
+const SkillDetailInput = struct {
+    skill_name: []const u8,
+    io: std.Io,
+    /// Optional explicit cwd (from the request's `?cwd=` query param) for
+    /// resolving the local skills dir. When `null`, the useCase falls back
+    /// to `io`'s cwd.
+    cwd: ?[]const u8,
+    environment: ?*const std.process.Environ.Map,
+};
+
 /// GET /api/skills/:name - Get detailed skill information including full content
 /// Searches both global (~/.config/nalar/skills/) and local (.nalar/skills/) directories
 pub fn skillDetailHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    // Get skill name from path parameter
     const skill_name = req.params.get("name") orelse {
         return res.jsonResponse(.{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = "Skill name is required" }, .{}) });
     };
 
     const di = try nalarcore.getSingleton();
-    const environment = di.environment;
 
+    const result = useCase(allocator, .{
+        .skill_name = skill_name,
+        .io = ctx.io,
+        .cwd = req.query.get("cwd"),
+        .environment = di.environment,
+    }) catch |err| {
+        const message: []const u8 = switch (err) {
+            error.SkillNotFound => blk: {
+                const m = std.fmt.allocPrint(allocator, "Skill '{s}' not found", .{skill_name}) catch "Skill not found";
+                break :blk m;
+            },
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = message }, .{}) });
+    };
+
+    return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .skill = result }, .{}) });
+}
+
+fn useCase(allocator: std.mem.Allocator, input: SkillDetailInput) SkillDetailError!SkillDetail {
     // Get global and local skills paths
-    const global_path = skill_mod.get_global_skills_path_from_env(allocator, environment.?);
+    const global_path = skill_mod.get_global_skills_path_from_env(allocator, input_environment(input));
 
     // Resolve local skills path: prefer explicit cwd from query, fall back to io's cwd.
     // This lets the frontend (which knows the active session's cwd) find local skills
     // regardless of the nalar server's own working directory.
     var local_path_alloc: ?[]const u8 = null;
-
-    if (req.query.get("cwd")) |cwd| {
+    if (input.cwd) |cwd| {
         if (cwd.len > 0) {
             local_path_alloc = skill_mod.get_local_skills_path_for_dir(allocator, cwd);
         }
     }
     if (local_path_alloc == null) {
-        local_path_alloc = skill_mod.get_local_skills_path_from_io(allocator, ctx.io);
+        local_path_alloc = skill_mod.get_local_skills_path_from_io(allocator, input.io);
     }
     const local_path = local_path_alloc;
 
     // Try to find the skill in global directory first
     if (global_path) |path| {
-        if (try findSkillByName(allocator, ctx.io, path, skill_name)) |detail| {
-            return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .skill = detail }, .{}) });
+        if (try findSkillByName(allocator, input.io, path, input.skill_name)) |detail| {
+            return detail;
         }
     }
 
     // Try local directory
     if (local_path) |path| {
-        if (try findSkillByName(allocator, ctx.io, path, skill_name)) |detail| {
+        if (try findSkillByName(allocator, input.io, path, input.skill_name)) |detail| {
             var detail_with_scope = detail;
             detail_with_scope.is_global = false;
-            return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .skill = detail_with_scope }, .{}) });
+            return detail_with_scope;
         }
     }
 
-    // Skill not found
-    return res.jsonResponse(.{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = try std.fmt.allocPrint(allocator, "Skill '{s}' not found", .{skill_name}) }, .{}) });
+    return error.SkillNotFound;
+}
+
+fn input_environment(input: SkillDetailInput) *const std.process.Environ.Map {
+    // `?` unwraps the optional; matches the original behavior where the
+    // global path lookup is skipped when the singleton has no env.
+    return input.environment.?;
 }
 
 /// Find a skill by name in the given directory

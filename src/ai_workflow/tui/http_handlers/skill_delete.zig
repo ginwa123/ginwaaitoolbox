@@ -11,14 +11,37 @@ pub const SkillDeleteResponse = struct {
     error_message: ?[]const u8 = null,
 };
 
+pub const SkillDeleteError = error{
+    OutOfMemory,
+    MissingName,
+    EmptyName,
+    MissingCwdForLocal,
+    GlobalSkillsDirectoryNotFound,
+    LocalSkillsDirectoryNotFound,
+    SkillNotFound,
+    DirectoryDeletionFailed,
+};
+
+const SkillDeleteInput = struct {
+    name: []const u8,
+    is_global: bool,
+    cwd: ?[]const u8,
+    io: std.Io,
+    environment: ?*const std.process.Environ.Map,
+};
+
+const SkillDeleteResult = struct {
+    /// Pre-serialized JSON deleted_from hint string ("global" or the local
+    /// skills dir path). Caller decides how to encode it in the response.
+    deleted_from_hint: []const u8,
+};
+
 /// DELETE /api/skills?name=...&is_global=...&cwd=...
 /// Deletes a skill from either global (~/.config/nalar/skills/) or local (.nalar/skills/) directory
 pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const di = try nalarcore.getSingleton();
-    const environment = di.environment;
 
-    // Get query parameters
     const name = req.query.get("name") orelse {
         return res.jsonResponse(.{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
             .success = false,
@@ -27,108 +50,93 @@ pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         }, .{}) });
     };
 
-    if (name.len == 0) {
-        return res.jsonResponse(.{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
-            .success = false,
-            .skill_name = "",
-            .error_message = "name query parameter cannot be empty",
-        }, .{}) });
-    }
-
-    // Parse is_global parameter (default: false)
     const is_global_str = req.query.get("is_global") orelse "false";
     const is_global = std.mem.eql(u8, is_global_str, "true");
-
-    // Get optional cwd for local skills
     const cwd = req.query.get("cwd");
 
-    const io = ctx.io;
+    const result = useCase(allocator, .{
+        .name = name,
+        .is_global = is_global,
+        .cwd = cwd,
+        .io = ctx.io,
+        .environment = di.environment,
+    }) catch |err| {
+        const status: u16 = switch (err) {
+            error.MissingName, error.EmptyName, error.MissingCwdForLocal => 400,
+            error.GlobalSkillsDirectoryNotFound, error.LocalSkillsDirectoryNotFound, error.SkillNotFound => 404,
+            error.DirectoryDeletionFailed => 500,
+            error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.MissingName => "name query parameter is required",
+            error.EmptyName => "name query parameter cannot be empty",
+            error.MissingCwdForLocal => "cwd query parameter is required for local skill deletion",
+            error.GlobalSkillsDirectoryNotFound => "Global skills directory not found",
+            error.LocalSkillsDirectoryNotFound => "Local skills directory not found",
+            error.SkillNotFound => blk: {
+                const m = std.fmt.allocPrint(allocator, "Skill '{s}' not found in {s} directory", .{
+                    name,
+                    if (is_global) "global" else "local",
+                }) catch "Skill not found";
+                break :blk m;
+            },
+            error.DirectoryDeletionFailed => "Failed to delete skill directory",
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{ .status_code = status, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
+            .success = false,
+            .skill_name = name,
+            .error_message = message,
+        }, .{}) });
+    };
 
-    if (is_global) {
-        // Delete from global skills directory
-        const global_path = skill_mod.get_global_skills_path_from_env(allocator, environment.?);
+    return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
+        .success = true,
+        .skill_name = name,
+        .deleted_from = result.deleted_from_hint,
+    }, .{}) });
+}
+
+fn useCase(allocator: std.mem.Allocator, input: SkillDeleteInput) SkillDeleteError!SkillDeleteResult {
+    if (input.name.len == 0) return error.EmptyName;
+
+    if (input.is_global) {
+        const global_path = skill_mod.get_global_skills_path_from_env(allocator, input_environment(input));
         defer if (global_path) |p| allocator.free(p);
 
-        if (global_path == null) {
-            return res.jsonResponse(.{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
-                .success = false,
-                .skill_name = name,
-                .error_message = "Global skills directory not found",
-            }, .{}) });
-        }
+        if (global_path == null) return error.GlobalSkillsDirectoryNotFound;
 
-        // Find the skill folder by skill name (from YAML, not folder name)
-        const skill_dir_path = try findSkillFolderByName(allocator, io, global_path.?, name);
-        if (skill_dir_path == null) {
-            return res.jsonResponse(.{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
-                .success = false,
-                .skill_name = name,
-                .error_message = try std.fmt.allocPrint(allocator, "Skill '{s}' not found in global directory", .{name}),
-            }, .{}) });
-        }
+        const skill_dir_path = try findSkillFolderByName(allocator, input.io, global_path.?, input.name);
+        if (skill_dir_path == null) return error.SkillNotFound;
         defer allocator.free(skill_dir_path.?);
 
-        // Delete the skill directory recursively
-        std.Io.Dir.cwd().deleteTree(io, skill_dir_path.?) catch {
-            return res.jsonResponse(.{ .status_code = 500, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
-                .success = false,
-                .skill_name = name,
-                .error_message = "Failed to delete skill directory",
-            }, .{}) });
+        std.Io.Dir.cwd().deleteTree(input.io, skill_dir_path.?) catch {
+            return error.DirectoryDeletionFailed;
         };
 
-        return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
-            .success = true,
-            .skill_name = name,
-            .deleted_from = "global",
-        }, .{}) });
+        return .{ .deleted_from_hint = "global" };
     } else {
-        // Delete from local skills directory
-        if (cwd == null) {
-            return res.jsonResponse( .{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
-                .success = false,
-                .skill_name = name,
-                .error_message = "cwd query parameter is required for local skill deletion",
-            }, .{}) });
-        }
+        if (input.cwd == null) return error.MissingCwdForLocal;
 
-        const local_path = skill_mod.get_local_skills_path_for_dir(allocator, cwd.?);
+        const local_path = skill_mod.get_local_skills_path_for_dir(allocator, input.cwd.?);
         defer if (local_path) |p| allocator.free(p);
 
-        if (local_path == null) {
-            return res.jsonResponse(.{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
-                .success = false,
-                .skill_name = name,
-                .error_message = "Local skills directory not found",
-            }, .{}) });
-        }
+        if (local_path == null) return error.LocalSkillsDirectoryNotFound;
 
-        // Find the skill folder by skill name (from YAML, not folder name)
-        const skill_dir_path = try findSkillFolderByName(allocator, io, local_path.?, name);
-        if (skill_dir_path == null) {
-            return res.jsonResponse(.{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
-                .success = false,
-                .skill_name = name,
-                .error_message = try std.fmt.allocPrint(allocator, "Skill '{s}' not found in local directory", .{name}),
-            }, .{}) });
-        }
+        const skill_dir_path = try findSkillFolderByName(allocator, input.io, local_path.?, input.name);
+        if (skill_dir_path == null) return error.SkillNotFound;
         defer allocator.free(skill_dir_path.?);
 
-        // Delete the skill directory recursively
-        std.Io.Dir.cwd().deleteTree(io, skill_dir_path.?) catch {
-            return res.jsonResponse(.{ .status_code = 500, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
-                .success = false,
-                .skill_name = name,
-                .error_message = "Failed to delete skill directory",
-            }, .{}) });
+        std.Io.Dir.cwd().deleteTree(input.io, skill_dir_path.?) catch {
+            return error.DirectoryDeletionFailed;
         };
 
-        return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDeleteResponse{
-            .success = true,
-            .skill_name = name,
-            .deleted_from = local_path,
-        }, .{}) });
+        return .{ .deleted_from_hint = local_path.? };
     }
+}
+
+fn input_environment(input: SkillDeleteInput) *const std.process.Environ.Map {
+    return input.environment.?;
 }
 
 /// Find the folder path for a skill by its name from YAML frontmatter
