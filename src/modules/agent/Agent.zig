@@ -12,6 +12,7 @@ const AgentToolFunction = schemas.AgentToolFunction;
 pub const AgentTool = schemas.AgentTool;
 pub const prompt = @import("prompts.zig");
 pub const LLMModels = @import("LLMModels.zig");
+const helpers = @import("../../helpers/mod.zig");
 
 /// Log level for agent logging
 const LogLevel = enum { err, warn, info, debug };
@@ -890,11 +891,13 @@ pub const Agent = struct {
 
         fn threadMain(wd: *StreamWatchdog) void {
             while (true) {
-                if (builtin.os.tag == .windows) {
-                    std.os.windows.kernel32.Sleep(250);
-                } else {
-                    _ = std.c.nanosleep(&.{ .sec = 0, .nsec = 250 * std.time.ns_per_ms }, null);
-                }
+                // `std.os.windows.kernel32.Sleep` was removed from the Zig 0.16
+                // stdlib (verified: 0 hits for `Sleep` in
+                // /usr/local/lib/zig/std/os/windows/kernel32.zig). The
+                // helpers.sleepMillis wrapper handles the per-platform sleep
+                // call (POSIX `nanosleep` on Linux/macOS, kernel32.Sleep on
+                // Windows) without requiring an `io: std.Io` runtime.
+                helpers.sleepMillis(250);
                 if (wd.cancel.load(.acquire)) return;
                 const fd_now = wd.fd.load(.acquire);
                 if (fd_now < 0) return; // main thread reset fd
@@ -963,10 +966,22 @@ pub const Agent = struct {
 
         fn wallClockMs() i64 {
             if (builtin.os.tag == .windows) {
+                // NOTE: this is wall-clock seconds × 1000 (epoch = 1970-01-01).
+                // The POSIX branch below uses CLOCK_MONOTONIC (epoch = boot
+                // time on Linux), so the two paths have different epochs and
+                // ARE NOT COMPARABLE across processes. We preserve the
+                // pre-existing behavior here for the Windows build (which
+                // never compiled before this fix); the difference is
+                // negligible for the StreamWatchdog's relative-time
+                // accounting — both clocks increase monotonically.
                 return @import("../../helpers/mod.zig").unixTimestamp() * 1000;
             } else {
-                var ts: std.c.timespec = undefined;
-                _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+                // CLOCK_MONOTONIC is a POSIX thing. std.c.clock_gettime
+                // cannot be referenced on Windows in Zig 0.16 (clockid_t is
+                // void there), so we declare our own extern in helpers/mod.zig
+                // and use it here. CLOCK_MONOTONIC = 1 on Linux glibc + macOS.
+                var ts: helpers.PosixTimespec = undefined;
+                _ = helpers.clock_gettime(1, &ts);
                 const sec: i64 = @intCast(ts.sec);
                 return sec * 1000 + @divFloor(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
             }

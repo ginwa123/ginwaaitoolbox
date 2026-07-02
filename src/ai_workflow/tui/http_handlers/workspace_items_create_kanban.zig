@@ -30,6 +30,7 @@ const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
 const kanban_model = @import("../kanban_model.zig");
 const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
+const helpers = nalarcore.helpers;
 
 /// Request body for the kanban-item create endpoint.
 const CreateKanbanBody = struct {
@@ -91,15 +92,13 @@ fn useCase(
     const path_for_insert: []const u8 = path_opt orelse "";
 
     // Generate item id. Same nanosecond-timestamp scheme as
-    // `workspace_items_create.zig:generateItemId`. We use libc's
-    // `clock_gettime` here (rather than `std.Io.Clock.now`) so the
-    // use-case doesn't need a `std.Io` parameter — the timestamp
-    // generation is a single wall-clock read with no async/IO
-    // involvement. `std.time.timestamp()` was removed in Zig 0.16 —
-    // see project memory `zig-0.16-crypto-time-stdlib-removals.md`.
-    var libc_ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &libc_ts);
-    const timestamp_ns: i128 = @as(i128, libc_ts.sec) * 1_000_000_000 + @as(i128, libc_ts.nsec);
+    // `workspace_items_create.zig:generateItemId`. We use helpers.unixTimestampNanos
+    // here (rather than `std.Io.Clock.now`) so the use-case doesn't need
+    // a `std.Io` parameter — the timestamp generation is a single wall-
+    // clock read with no async/IO involvement. `std.c.clock_gettime`
+    // cannot compile on Windows in Zig 0.16 (clockid_t is void there),
+    // which is why we route through the cross-platform helper.
+    const timestamp_ns = helpers.unixTimestampNanos();
     const item_id = try std.fmt.allocPrint(allocator, "item_{d}", .{timestamp_ns});
     defer allocator.free(item_id);
 

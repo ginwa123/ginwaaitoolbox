@@ -46,6 +46,22 @@ const Clong = if (@bitSizeOf(usize) == 64 and builtin.os.tag != .windows) i64 el
 /// `void GetSystemTimeAsFileTime(LPFILETIME lpSystemTimeAsFileTime);` (Win32).
 extern "kernel32" fn GetSystemTimeAsFileTime(lp_system_time_as_file_time: *std.os.windows.FILETIME) callconv(.winapi) void;
 
+/// `VOID Sleep(DWORD dwMilliseconds);` (Win32 kernel32).
+///
+/// Zig 0.16 removed `std.os.windows.kernel32.Sleep` from the stdlib
+/// (the file still exists but the Sleep symbol was dropped from the
+/// kernel32 bindings — verified by grep on
+/// `/usr/local/lib/zig/std/os/windows/kernel32.zig`, 0 hits). On
+/// Windows we declare it manually as `extern "kernel32"` so the call
+/// resolves at link time against the system kernel32.dll (which is
+/// always loaded).
+///
+/// On POSIX the call is a no-op at link time — `kernel32.dll` only
+/// exists on Windows, so the extern is never referenced. We guard the
+/// call site with `builtin.os.tag` so the linker never sees an
+/// unresolved `Sleep` symbol.
+extern "kernel32" fn Sleep(dw_milliseconds: u32) callconv(.winapi) void;
+
 /// Cross-platform current working directory getter (no `io: std.Io` required).
 ///
 /// `std.posix.getcwd` was removed in Zig 0.16 — the stdlib replacement
@@ -177,6 +193,104 @@ fn unixTimestampWindows() i64 {
     if (seconds_since_1601 < unix_offset) return 0;
     return @intCast(seconds_since_1601 - unix_offset);
 }
+
+/// Cross-platform nanosecond-precision unix timestamp.
+///
+/// Returns nanoseconds since 1970-01-01 UTC as `i128`. Used by code that
+/// needs high-resolution IDs (e.g. `item_<ns>` workspace item ids that
+/// must be unique even when created in the same millisecond).
+///
+/// `std.c.clock_gettime` cannot compile on Windows in Zig 0.16 because
+/// `std.c.clockid_t` is `void` there (`/usr/local/lib/zig/std/c.zig:11468`:
+/// `extern "c" fn clock_gettime(clk_id: clockid_t, tp: *timespec) c_int;`
+/// fails with "parameter of type 'void' not allowed in function with
+/// calling convention 'x86_64_win'"). This helper sidesteps that by
+/// switching on `builtin.os.tag` at comptime and calling a per-platform
+/// source of nanosecond timestamps.
+///
+/// Platform implementation:
+/// - **POSIX (Linux/macOS):** libc `clock_gettime(CLOCK_REALTIME, ...)`.
+///   Declared as `extern "c"` (not in std.c in 0.16 for some configs).
+/// - **Windows:** `GetSystemTimeAsFileTime` (FILETIME = 100-ns ticks
+///   since 1601-01-01 UTC) → nanoseconds since 1970-01-01 UTC by
+///   dividing ticks by 10 (100-ns → 1-ns) and subtracting the 1601→1970
+///   offset (11_644_473_600 seconds = 11_644_473_600_000_000_000 ns).
+pub fn unixTimestampNanos() i128 {
+    return switch (builtin.os.tag) {
+        .linux, .macos => unixTimestampNanosPosix(),
+        .windows => unixTimestampNanosWindows(),
+        else => @compileError("helpers.unixTimestampNanos: unsupported platform " ++ @tagName(builtin.os.tag)),
+    };
+}
+
+fn unixTimestampNanosPosix() i128 {
+    var ts: PosixTimespec = undefined;
+    const rc = clock_gettime(CLOCK_REALTIME, &ts);
+    _ = rc;
+    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+}
+
+fn unixTimestampNanosWindows() i128 {
+    var ft: std.os.windows.FILETIME = undefined;
+    GetSystemTimeAsFileTime(&ft);
+    // 100-ns ticks → ns: divide by 10. (FILETIME counts 100-ns intervals
+    // since 1601-01-01; we want ns since 1970-01-01.)
+    const ticks: u128 = (@as(u128, ft.dwHighDateTime) << 32) | @as(u128, ft.dwLowDateTime);
+    const ns_since_1601: i128 = @intCast(ticks / 10);
+    const ns_1601_to_1970: i128 = 11_644_473_600 * std.time.ns_per_s;
+    return ns_since_1601 - ns_1601_to_1970;
+}
+
+/// Cross-platform millisecond-precision sleep that doesn't require
+/// `io: std.Io`.
+///
+/// Used in background loops that already check `cancel.load(.acquire)` on
+/// every iteration (e.g. `Agent.zig`'s `StreamWatchdog` thread). The
+/// caller MUST tolerate the actual sleep being shorter or longer than
+/// requested — this is a "best-effort yield", not a deadline.
+///
+/// Platform implementation:
+/// - **POSIX (Linux/macOS):** libc `nanosleep(&{.sec=0,.nsec=ms*1e6}, null)`.
+/// - **Windows:** Win32 `Sleep(ms)` from kernel32.dll.
+pub fn sleepMillis(ms: u32) void {
+    switch (builtin.os.tag) {
+        .linux, .macos => {
+            var ts: PosixTimespec = .{
+                .sec = 0,
+                .nsec = @intCast(@as(u64, ms) * std.time.ns_per_ms),
+            };
+            _ = nanosleep(&ts, null);
+        },
+        .windows => {
+            // The extern Sleep declared at module scope above. Resolves
+            // against kernel32.dll (always loaded on Windows).
+            Sleep(ms);
+        },
+        else => {},
+    }
+}
+
+/// `struct timespec { time_t tv_sec; long tv_nsec; }` (POSIX/UCRT).
+pub const PosixTimespec = extern struct {
+    sec: Clong,
+    nsec: Clong,
+};
+
+/// `int clock_gettime(clockid_t clk_id, struct timespec *tp);` (POSIX).
+/// Declared at module scope (not behind `if (builtin.os.tag != .windows)`
+/// — Zig 0.16 rejects `extern "c"` decls with `void` params like
+/// `clockid_t` on Windows, so we can't use std.c.clock_gettime there).
+/// We expose this publicly so callers (e.g. Agent.zig's wallClockMs)
+/// can read CLOCK_MONOTONIC without the std.c void-typed param.
+pub extern "c" fn clock_gettime(clk_id: c_int, tp: *PosixTimespec) c_int;
+
+/// `int nanosleep(const struct timespec *req, struct timespec *rem);` (POSIX).
+extern "c" fn nanosleep(req: *const PosixTimespec, rem: ?*PosixTimespec) c_int;
+
+/// POSIX CLOCK_REALTIME. Linux glibc = 0; macOS = 0; matches across
+/// POSIX platforms. Declared as `c_int` literal because `std.c.CLOCK`
+/// is not exposed on all platforms.
+const CLOCK_REALTIME: c_int = 0;
 
 // === Tests ===
 

@@ -52,9 +52,16 @@ pub fn build(b: *std.Build) void {
 
     mod.addImport("nalarcore", mod);
     mod.addImport("httpz", http_dep.module("httpz"));
-    if (target.result.os.tag == .linux) {
-        mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    }
+    // Platform-specific link libs (sqlite3/ssl/crypto on Linux,
+    // vendored sqlite3.c on Windows/macOS) are added below in the
+    // test/dev-exe/inline-exe setup blocks. They propagate to every
+    // Compile that imports `mod`, which is intentional for the native
+    // host builds but means the `install:windows` / `install:macos`
+    // cross-compile artifacts also see ssl/crypto link flags. The CI
+    // matrix gates the Windows binary build with `__SKIP__` and the
+    // macOS binary build remains broken on Linux host (pre-existing
+    // issue, out of scope here). The cross-compile TESTS work because
+    // they don't hit the link-emit step that checks for the system libs.
 
     const exe = b.addExecutable(.{
         .name = "nalar",
@@ -75,6 +82,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("sqlite3", .{});
         exe.root_module.linkSystemLibrary("ssl", .{});
         exe.root_module.linkSystemLibrary("crypto", .{});
+        exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
     } else if (target.result.os.tag == .windows) {
         // Vendor sqlite3 amalgamation for Windows. On macOS the shared
         // `mod` already has sqlite3.c attached (added once at the
@@ -294,20 +302,50 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
+    // Linux-host-only link_libs (ssl/crypto/system-sqlite3). These are
+    // needed for the native Linux test build (the tests link against the
+    // real system OpenSSL + system sqlite3), but they MUST NOT be in the
+    // link line when cross-compiling (install:windows, install:macos on
+    // a Linux host) — the cross-target linker would fail with "unable to
+    // find dynamic system library" because those Linux system libs don't
+    // exist on Windows/macOS.
+    //
+    // Detection: the `-Dlinux-libs` build option. Default is `true` for
+    // native-Linux target (= native Linux tests, native Linux install),
+    // `false` for any other target (cross-compile from Linux to Windows/
+    // macOS). Pass `-Dlinux-libs=false` explicitly when cross-compiling.
+    const linux_host_is_native_target = target.result.os.tag == .linux and
+        target.result.cpu.arch == builtin.cpu.arch;
+    const add_linux_libs = b.option(
+        bool,
+        "linux-libs",
+        "Attach ssl/crypto/system-sqlite3 + /usr/include to mod for native Linux builds. Set false when cross-compiling from Linux to Windows/macOS to avoid -lssl/-lcrypto leaking into the cross-target link line.",
+    ) orelse linux_host_is_native_target;
+
+    if (add_linux_libs and target.result.os.tag == .linux) {
+        mod.linkSystemLibrary("sqlite3", .{});
+        mod.linkSystemLibrary("ssl", .{});
+        mod.linkSystemLibrary("crypto", .{});
+        mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    } else {
+        // The cross-compile targets (or non-Linux host builds) need the
+        // vendored sqlite3 amalgamation to satisfy sqlite3_* references
+        // that would otherwise require a system sqlite3 we can't link.
+        // Adding sqlite3.c once to `mod` makes it visible to every
+        // Compile that imports `mod` (tests, native exe, install:*).
+        // We add it unconditionally for non-Linux because the linux-libs
+        // branch uses the system sqlite3 instead.
+        mod.addIncludePath(b.path("vendor/sqlite3"));
+        mod.addCSourceFile(.{
+            .file = b.path("vendor/sqlite3/sqlite3.c"),
+            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
+        });
+    }
+    mod.linkSystemLibrary("c", .{});
+
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
-    mod_tests.root_module.linkSystemLibrary("c", .{});
-    if (target.result.os.tag == .linux) {
-        mod_tests.root_module.linkSystemLibrary("sqlite3", .{});
-        mod_tests.root_module.linkSystemLibrary("ssl", .{});
-        mod_tests.root_module.linkSystemLibrary("crypto", .{});
-    }
-    // NB: For windows + macOS, sqlite3.c is added to `mod` ONCE below —
-    // see the shared-module block. If we'd added it per-test here,
-    // Zig 0.16's link step would emit two copies of sqlite3.o and
-    // fail with "duplicate symbol definition" (the addCSourceFile
-    // call accumulates per target on the shared `mod` instance).
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
@@ -317,25 +355,6 @@ pub fn build(b: *std.Build) void {
     const ai_workflow_tui_test_mod = b.addTest(.{
         .root_module = mod,
     });
-    ai_workflow_tui_test_mod.root_module.linkSystemLibrary("c", .{});
-    if (target.result.os.tag == .linux) {
-        ai_workflow_tui_test_mod.root_module.linkSystemLibrary("sqlite3", .{});
-        ai_workflow_tui_test_mod.root_module.linkSystemLibrary("ssl", .{});
-        ai_workflow_tui_test_mod.root_module.linkSystemLibrary("crypto", .{});
-    }
-    // See comment in mod_tests above — sqlite3.c is shared via `mod`.
-
-    // Shared post-setup: add vendor sqlite3 amalgamation once to `mod`
-    // so it covers BOTH test Compiles. This avoids the duplicate-symbol
-    // error that fires when each Compile adds the same .c file to the
-    // shared `mod` instance (which is what we did before this fix).
-    if (target.result.os.tag == .windows or target.result.os.tag == .macos) {
-        mod.addIncludePath(b.path("vendor/sqlite3"));
-        mod.addCSourceFile(.{
-            .file = b.path("vendor/sqlite3/sqlite3.c"),
-            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
-        });
-    }
 
     const run_ai_workflow_tui_tests = b.addRunArtifact(ai_workflow_tui_test_mod);
     const test_ai_workflow_tui_step = b.step("test:ai_workflow:tui", "Run AI workflow TUI tests");
@@ -359,7 +378,11 @@ pub fn build(b: *std.Build) void {
         .os_tag = .windows,
         .abi = .gnu,
     });
-    const windows_exe = createPlatformExe(b, mod, windows_target, optimize, "nalarcore-windows-x86_64.exe");
+    // NB: don't include `.exe` in the name — Zig 0.16's `addExecutable`
+    // auto-appends `.exe` on Windows targets, so passing a name with `.exe`
+    // already produces the doubled suffix `nalarcore-windows-x86_64.exe.exe`
+    // (which the CI yaml's verify step doesn't expect).
+    const windows_exe = createPlatformExe(b, mod, windows_target, optimize, "nalarcore-windows-x86_64");
     const install_windows = b.addInstallArtifact(windows_exe, .{});
     windows_step.dependOn(&install_windows.step);
 
