@@ -223,6 +223,26 @@ pub const LlmConfig = struct {
     /// The map owns the server-name keys and the `McpServerConfig` payloads.
     pub const McpServersMap = std.StringHashMap(McpServerConfig);
 
+    /// Initialize an `LlmConfig` from disk. When `path` is null (the
+    /// default), uses the platform-specific config path returned by
+    /// `getDefaultConfigPath` (e.g. `~/.config/nalar/config.json` on
+    /// Linux, `~/Library/Application Support/nalar/config.json` on
+    /// macOS, `%APPDATA%/nalar/config.json` on Windows).
+    ///
+    /// **Auto-init on first run**: When `path` is null AND the file at
+    /// the resolved default path does not exist, this function creates
+    /// a default config with empty placeholder values (via
+    /// `writeDefaultConfig`), logs an `info:` message, and proceeds.
+    /// The server can then start; downstream LLM calls will fail until
+    /// the user edits the placeholder values.
+    ///
+    /// **Explicit paths are NOT auto-created**: When `path` is non-null
+    /// (e.g. `--config /custom/path.json`), a missing file surfaces
+    /// `error.ConfigFileNotFound` unchanged — explicit paths are
+    /// honored literally.
+    ///
+    /// **Other errors**: permission denied, invalid JSON, parse errors
+    /// surface to the caller unchanged.
     pub fn init(allocator: std.mem.Allocator, io: std.Io, path: ?[]const u8, environment: *std.process.Environ.Map) LoadError!LlmConfig {
         const config_path = if (path) |p|
             try allocator.dupe(u8, p)
