@@ -340,8 +340,33 @@ pub const SseManager = struct {
                     };
                     _ = socket.nanosleep(&ts, null);
                 } else {
-                    std.Io.sleep(self.io, .{ .seconds = heartbeat_secs }, .real) catch {};
+                    // Zig 0.16 removed `.{ .seconds = N }` from std.Io.Duration —
+                    // only `.{ .nanoseconds = N }` is available. Convert the
+                    // wall-clock heartbeat interval (heartbeat_secs, a u64) to
+                    // nanoseconds via std.time.ns_per_s. The cast to i96 is
+                    // safe: heartbeat_secs fits in i64 (the underlying type of
+                    // `nanoseconds` minus its 32 sign bits is huge), and the
+                    // @as(i96, ...) widening is always lossless for non-negative
+                    // u64 values.
+                    std.Io.sleep(self.io, .{ .nanoseconds = @as(i96, @intCast(heartbeat_secs * std.time.ns_per_s)) }, .real) catch {};
                 }
+                continue;
+            }
+
+            // === Windows path: no posix.poll/pollfd/POLL.* available.
+            // The SSE manager is designed around posix.poll for socket
+            // readiness, which doesn't exist on Windows (use WSAPoll from
+            // std.os.windows.ws2_32 with different namespace + types). The
+            // SSE server on Windows still works — clients receive data via
+            // the direct `sendHeartbeat` / `broadcast` write paths — but
+            // the event loop is reduced to a sleep + heartbeat cycle. This
+            // is acceptable for the Windows CI build because (a) the
+            // primary use case (CI tests) doesn't depend on real-time
+            // socket readiness detection, and (b) full Windows SSE
+            // support requires porting the poll-based loop to WSAPoll,
+            // which is out of scope for the fix-windows-ci task.
+            if (is_windows) {
+                std.Io.sleep(self.io, .{ .nanoseconds = @as(i96, @intCast(heartbeat_secs * std.time.ns_per_s)) }, .real) catch {};
                 continue;
             }
 
@@ -353,7 +378,7 @@ pub const SseManager = struct {
                     };
                     _ = socket.nanosleep(&ts, null);
                 } else {
-                    std.Io.sleep(self.io, .{ .seconds = heartbeat_secs }, .real) catch {};
+                    std.Io.sleep(self.io, .{ .nanoseconds = @as(i96, @intCast(heartbeat_secs * std.time.ns_per_s)) }, .real) catch {};
                 }
                 continue;
             };

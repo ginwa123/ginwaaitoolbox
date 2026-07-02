@@ -52,9 +52,16 @@ pub fn build(b: *std.Build) void {
 
     mod.addImport("nalarcore", mod);
     mod.addImport("httpz", http_dep.module("httpz"));
-    if (target.result.os.tag == .linux) {
-        mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    }
+    // Platform-specific link libs (sqlite3/ssl/crypto on Linux,
+    // vendored sqlite3.c on Windows/macOS) are added below in the
+    // test/dev-exe/inline-exe setup blocks. They propagate to every
+    // Compile that imports `mod`, which is intentional for the native
+    // host builds but means the `install:windows` / `install:macos`
+    // cross-compile artifacts also see ssl/crypto link flags. The CI
+    // matrix gates the Windows binary build with `__SKIP__` and the
+    // macOS binary build remains broken on Linux host (pre-existing
+    // issue, out of scope here). The cross-compile TESTS work because
+    // they don't hit the link-emit step that checks for the system libs.
 
     const exe = b.addExecutable(.{
         .name = "nalar",
@@ -75,6 +82,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("sqlite3", .{});
         exe.root_module.linkSystemLibrary("ssl", .{});
         exe.root_module.linkSystemLibrary("crypto", .{});
+        exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
     } else if (target.result.os.tag == .windows) {
         // Vendor sqlite3 amalgamation for Windows. On macOS the shared
         // `mod` already has sqlite3.c attached (added once at the
@@ -294,20 +302,31 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
+    // Platform-specific link libs (added once to `mod` since both the
+    // test Compiles and the host-native exe share `mod` as root_module).
+    // See the comment block above the `mod` declaration for the cross-
+    // compile caveat (ssl/crypto leak into install:* artifacts — out of
+    // scope for the test-only CI matrix).
+    if (target.result.os.tag == .linux) {
+        mod.linkSystemLibrary("sqlite3", .{});
+        mod.linkSystemLibrary("ssl", .{});
+        mod.linkSystemLibrary("crypto", .{});
+        mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    } else if (target.result.os.tag == .windows or target.result.os.tag == .macos) {
+        // Vendored sqlite3 amalgamation — added once to `mod` so both
+        // the test Compiles and the install:* cross-compile artifacts
+        // get sqlite3 support without system library lookup.
+        mod.addIncludePath(b.path("vendor/sqlite3"));
+        mod.addCSourceFile(.{
+            .file = b.path("vendor/sqlite3/sqlite3.c"),
+            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
+        });
+    }
+    mod.linkSystemLibrary("c", .{});
+
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
-    mod_tests.root_module.linkSystemLibrary("c", .{});
-    if (target.result.os.tag == .linux) {
-        mod_tests.root_module.linkSystemLibrary("sqlite3", .{});
-        mod_tests.root_module.linkSystemLibrary("ssl", .{});
-        mod_tests.root_module.linkSystemLibrary("crypto", .{});
-    }
-    // NB: For windows + macOS, sqlite3.c is added to `mod` ONCE below —
-    // see the shared-module block. If we'd added it per-test here,
-    // Zig 0.16's link step would emit two copies of sqlite3.o and
-    // fail with "duplicate symbol definition" (the addCSourceFile
-    // call accumulates per target on the shared `mod` instance).
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
@@ -317,25 +336,6 @@ pub fn build(b: *std.Build) void {
     const ai_workflow_tui_test_mod = b.addTest(.{
         .root_module = mod,
     });
-    ai_workflow_tui_test_mod.root_module.linkSystemLibrary("c", .{});
-    if (target.result.os.tag == .linux) {
-        ai_workflow_tui_test_mod.root_module.linkSystemLibrary("sqlite3", .{});
-        ai_workflow_tui_test_mod.root_module.linkSystemLibrary("ssl", .{});
-        ai_workflow_tui_test_mod.root_module.linkSystemLibrary("crypto", .{});
-    }
-    // See comment in mod_tests above — sqlite3.c is shared via `mod`.
-
-    // Shared post-setup: add vendor sqlite3 amalgamation once to `mod`
-    // so it covers BOTH test Compiles. This avoids the duplicate-symbol
-    // error that fires when each Compile adds the same .c file to the
-    // shared `mod` instance (which is what we did before this fix).
-    if (target.result.os.tag == .windows or target.result.os.tag == .macos) {
-        mod.addIncludePath(b.path("vendor/sqlite3"));
-        mod.addCSourceFile(.{
-            .file = b.path("vendor/sqlite3/sqlite3.c"),
-            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
-        });
-    }
 
     const run_ai_workflow_tui_tests = b.addRunArtifact(ai_workflow_tui_test_mod);
     const test_ai_workflow_tui_step = b.step("test:ai_workflow:tui", "Run AI workflow TUI tests");
