@@ -1060,6 +1060,76 @@ pub const LlmConfig = struct {
             .source = source,
         };
     }
+
+    /// The default `config.json` content written on first run (when no
+    /// config file exists at the platform-default path). All required
+    /// fields are present as empty strings — the user MUST edit this
+    /// file and add `api_key`, `model`, and `base_url` before LLM calls
+    /// will succeed. Optional fields are populated with their documented
+    /// defaults so a subsequent `LlmConfig.init` re-parse yields a
+    /// well-formed `LlmConfig`.
+    pub const defaultConfigJson: []const u8 =
+        \\{
+        \\  "api_key": "",
+        \\  "model": "",
+        \\  "base_url": "",
+        \\  "url_style": "openai",
+        \\  "model_compaction_size_kb": 100,
+        \\  "notify_on_complete": false
+        \\}
+    ;
+
+    /// Write `defaultConfigJson` to `path`, creating any missing parent
+    /// directories (mkdir -p semantics). Overwrites any existing file at
+    /// the path (the caller is expected to NOT call this on an
+    /// already-existing config — see `LlmConfig.init` for the auto-init
+    /// flow that gates the call on `error.FileNotFound`).
+    ///
+    /// Returns `error.ConfigDirNotFound` when the parent directory
+    /// cannot be created (e.g. permission denied, invalid path) or
+    /// `error.ConfigFileReadError` on a write failure. The caller is
+    /// expected to log the error and surface it as appropriate.
+    pub fn writeDefaultConfig(allocator: std.mem.Allocator, io: std.Io, path: []const u8) LoadError!void {
+        _ = allocator; // unused in current implementation, kept for future use
+
+        // Ensure the parent directory exists (mkdir -p semantics).
+        // std.Io.Dir.cwd().createDirPath is the project-wide pattern for
+        // "create nested dirs relative to cwd" (see Logger.zig:136,
+        // add_skill.zig:108). It handles both "dir already exists" and
+        // "dir does not exist" without error. It does NOT assert the
+        // path is absolute (unlike createDirAbsolute), so both absolute
+        // and relative parent paths work. If `dirname` is null (e.g.
+        // `path = "config.json"`), we skip this step — the file goes
+        // in the cwd directly.
+        if (std.fs.path.dirname(path)) |parent| {
+            // Skip empty parent (root dir "/" or ".")
+            if (parent.len > 0) {
+                std.Io.Dir.cwd().createDirPath(io, parent) catch |err| {
+                    std.log.err("Failed to create config dir {s}: {s}", .{ parent, @errorName(err) });
+                    return error.ConfigDirNotFound;
+                };
+            }
+        }
+
+        // Write the default config. .truncate = true means any stale
+        // file at `path` is replaced atomically by the kernel.
+        const file = Io.Dir.createFileAbsolute(io, path, .{ .truncate = true }) catch |err| {
+            std.log.err("Failed to create config file {s}: {s}", .{ path, @errorName(err) });
+            return error.ConfigFileReadError;
+        };
+        defer file.close(io);
+
+        var write_buffer: [4096]u8 = undefined;
+        var writer = file.writer(io, &write_buffer);
+        writer.interface.writeAll(defaultConfigJson) catch |err| {
+            std.log.err("Failed to write default config to {s}: {s}", .{ path, @errorName(err) });
+            return error.ConfigFileReadError;
+        };
+        writer.interface.flush() catch |err| {
+            std.log.err("Failed to flush default config to {s}: {s}", .{ path, @errorName(err) });
+            return error.ConfigFileReadError;
+        };
+    }
 };
 
 /// Generate a random sub-agent name of the form

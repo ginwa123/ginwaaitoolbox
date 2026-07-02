@@ -1036,3 +1036,71 @@ test "resolveSubAgent: per-profile miss AND top-level miss -> random fallback" {
     try std.testing.expectEqualStrings("default", pair.resolved.model);
     try std.testing.expectEqualStrings("", pair.resolved.source);
 }
+
+// ---------------------------------------------------------------------------
+// Auto-init: writeDefaultConfig() bootstrap helper (Chunk 1)
+// ---------------------------------------------------------------------------
+
+test "writeDefaultConfig creates a valid JSON config file at the given path" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Get the canonical absolute path of the tmp dir.
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base_len = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const base_path = path_buf[0..base_len];
+
+    // Build an absolute path inside the tmp dir; the file does not exist yet.
+    const full_path = try std.fs.path.join(allocator, &.{ base_path, "config.json" });
+    defer allocator.free(full_path);
+
+    try LlmConfig.writeDefaultConfig(allocator, std.testing.io, full_path);
+
+    // Read it back and verify the JSON shape.
+    const file = try std.Io.Dir.openFileAbsolute(std.testing.io, full_path, .{});
+    defer file.close(std.testing.io);
+    var read_buf: [4096]u8 = undefined;
+    var reader = file.reader(std.testing.io, &read_buf);
+    const content = try reader.interface.allocRemaining(allocator, .limited(64 * 1024));
+    defer allocator.free(content);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expect(obj.get("api_key") != null);
+    try std.testing.expect(obj.get("model") != null);
+    try std.testing.expect(obj.get("base_url") != null);
+    try std.testing.expectEqualStrings("openai", obj.get("url_style").?.string);
+    try std.testing.expectEqual(@as(i64, 100), obj.get("model_compaction_size_kb").?.integer);
+    try std.testing.expectEqual(@as(bool, false), obj.get("notify_on_complete").?.bool);
+}
+
+test "writeDefaultConfig creates parent directories that do not exist" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Get the canonical absolute path of the tmp dir.
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base_len = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const base_path = path_buf[0..base_len];
+
+    // Path includes a 2-level deep parent that does NOT exist yet.
+    const nested_path = try std.fs.path.join(allocator, &.{ base_path, "deep", "nested", "config.json" });
+    defer allocator.free(nested_path);
+
+    try LlmConfig.writeDefaultConfig(allocator, std.testing.io, nested_path);
+
+    // Verify the file was written and is readable.
+    const file = try std.Io.Dir.openFileAbsolute(std.testing.io, nested_path, .{});
+    defer file.close(std.testing.io);
+    var read_buf: [4096]u8 = undefined;
+    var reader = file.reader(std.testing.io, &read_buf);
+    const content = try reader.interface.allocRemaining(allocator, .limited(64 * 1024));
+    defer allocator.free(content);
+    try std.testing.expect(content.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"api_key\": \"\"") != null);
+}
