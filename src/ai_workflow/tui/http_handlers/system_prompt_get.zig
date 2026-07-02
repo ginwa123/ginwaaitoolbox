@@ -44,6 +44,25 @@ const SystemPromptResponse = struct {
     size_bytes: u32,
 };
 
+pub const SystemPromptGetError = error{
+    OutOfMemory,
+    SessionNotFound,
+    GetMessagesFailed,
+    BuildMessagesFailed,
+    NoSystemMessageReturned,
+};
+
+const SystemPromptGetInput = struct {
+    session_id: []const u8,
+    db: *nalarcore.sqlite.SqliteBackend,
+    io: std.Io,
+};
+
+const SystemPromptGetResult = struct {
+    session_id: []const u8,
+    system_prompt: []const u8,
+};
+
 pub fn systemPromptGetHandler(
     ctx: gserverz.HttpContext,
     req: gserverz.HttpRequest,
@@ -60,38 +79,60 @@ pub fn systemPromptGetHandler(
     }
 
     const di = try nalarcore.getSingleton();
-    const sqlite_db = di.db;
-    const io = di.io;
 
+    const result = useCase(allocator, .{
+        .session_id = session_id,
+        .db = di.db,
+        .io = di.io,
+    }) catch |err| {
+        const status: u16 = switch (err) {
+            error.SessionNotFound => 404,
+            else => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.SessionNotFound => "Session not found",
+            error.GetMessagesFailed => "getMessages failed",
+            error.BuildMessagesFailed => "buildMessages failed",
+            error.NoSystemMessageReturned => "buildMessages returned no system message",
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        });
+    };
+
+    const response = SystemPromptResponse{
+        .session_id = result.session_id,
+        .system_prompt = result.system_prompt,
+        .size_bytes = @intCast(result.system_prompt.len),
+    };
+    const json_str = try std.json.Stringify.valueAlloc(allocator, response, .{});
+
+    return res.jsonResponse(.{ .status_code = 200, .data = json_str });
+}
+
+fn useCase(allocator: std.mem.Allocator, input: SystemPromptGetInput) SystemPromptGetError!SystemPromptGetResult {
     // Recover the working directory from the session row. A missing row
     // is a 404 — we cannot build a meaningful system prompt without a cwd
     // (the memory loader + workspace context both depend on it).
-    const cwd = blk: {
-        const session_row_opt = llm_history.get_session(allocator, sqlite_db, session_id) catch null;
+    const cwd_owned: ?[]u8 = blk: {
+        const session_row_opt = llm_history.get_session(allocator, input.db, input.session_id) catch null;
         if (session_row_opt) |session| {
             if (session.cwd.len > 0) {
-                break :blk try allocator.dupe(u8, session.cwd);
+                break :blk allocator.dupe(u8, session.cwd) catch null;
             }
         }
         break :blk null;
     };
-    if (cwd == null) {
-        return res.jsonResponse(.{
-            .status_code = 404,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Session not found" }),
-        });
-    }
-    const cwd_str: []const u8 = cwd.?;
+    if (cwd_owned == null) return error.SessionNotFound;
+    defer allocator.free(cwd_owned.?);
 
     // Load the DB-stored message history (same shape `workflow.zig` uses
     // before calling buildMessages). An empty history is fine — buildMessages
     // still emits the system message alone.
-    const db_messages = llm_history.getMessages(allocator, sqlite_db, session_id) catch {
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "getMessages failed" }),
-        });
-    };
+    const db_messages = llm_history.getMessages(allocator, input.db, input.session_id) catch
+        return error.GetMessagesFailed;
 
     // Mirrors workflow.zig:509's call shape: empty parent_session_id,
     // empty inherited_context, empty activeAgentContent (which falls back
@@ -106,21 +147,16 @@ pub fn systemPromptGetHandler(
     const merged_tools: []tool_models.AgentTool = &.{};
     const messages = buildMessages(
         allocator,
-        io,
-        sqlite_db,
-        cwd_str,
-        session_id,
+        input.io,
+        input.db,
+        cwd_owned.?,
+        input.session_id,
         "",
         db_messages,
         merged_tools,
         "",
         "",
-    ) catch {
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "buildMessages failed" }),
-        });
-    };
+    ) catch return error.BuildMessagesFailed;
     defer {
         for (messages) |*msg| msg.deinit(allocator);
         allocator.free(messages);
@@ -130,20 +166,11 @@ pub fn systemPromptGetHandler(
     // build_messages_for_agent_prompt.zig:131). Defensive: also check
     // the role so we never silently leak a different role's content.
     if (messages.len == 0 or messages[0].role != .system) {
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "buildMessages returned no system message" }),
-        });
+        return error.NoSystemMessageReturned;
     }
 
-    const system_prompt = messages[0].content orelse "";
-
-    const response = SystemPromptResponse{
-        .session_id = session_id,
-        .system_prompt = system_prompt,
-        .size_bytes = @intCast(system_prompt.len),
+    return .{
+        .session_id = input.session_id,
+        .system_prompt = messages[0].content orelse "",
     };
-    const json_str = try std.json.Stringify.valueAlloc(allocator, response, .{});
-
-    return res.jsonResponse(.{ .status_code = 200, .data = json_str });
 }
