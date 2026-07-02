@@ -18,6 +18,24 @@ const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
 const fire = @import("../routines/fire.zig");
 
+pub const RoutinesRunError = error{
+    OutOfMemory,
+    MissingTaskId,
+    GlobalContextNotInitialized,
+};
+
+/// Use case input. The handler builds this from the request and passes it in.
+const RoutinesRunInput = struct {
+    task_id: []const u8,
+    io: std.Io,
+};
+
+/// Use case result. Packed into the 200 OK response as
+/// `{"success":true,"session_id":"<task_id>","status":"firing"}`.
+const RoutinesRunResult = struct {
+    task_id: []const u8,
+};
+
 /// Manual fire endpoint.
 ///
 /// `POST /api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/run`
@@ -33,53 +51,55 @@ const fire = @import("../routines/fire.zig");
 ///   - any other error          → 500
 pub fn routinesRunHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const io = ctx.io;
-
     const task_id = req.params.get("task_id") orelse "";
-    if (task_id.len == 0) {
-        return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "task_id required" }),
-        });
-    }
 
-    const di = nalarcore.getSingleton() catch {
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "singleton not initialized" }),
-        });
-    };
-    const sqlite_db = di.db;
-
-    // Call the fire pipeline. Errors map to HTTP status codes:
-    //   - FireError.NotARoutine    → 404
-    //   - FireError.Disabled       → 409
-    //   - FireError.AlreadyRunning → 409
-    //   - other                    → 500
-    fire.fireRoutine(allocator, sqlite_db, di, io, task_id) catch |err| switch (err) {
-        fire.FireError.NotARoutine => return res.jsonResponse(.{
-            .status_code = 404,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "task is not a routine" }),
-        }),
-        fire.FireError.Disabled => return res.jsonResponse(.{
-            .status_code = 409,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "routine is disabled" }),
-        }),
-        fire.FireError.AlreadyRunning => return res.jsonResponse(.{
-            .status_code = 409,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "routine is already running" }),
-        }),
-        else => {
-            std.log.err("routinesRunHandler: fireRoutine failed: {s}", .{@errorName(err)});
-            return res.jsonResponse(.{
-                .status_code = 500,
-                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "fire failed" }),
-            });
-        },
+    const result = useCase(allocator, .{
+        .task_id = task_id,
+        .io = ctx.io,
+    }) catch |err| {
+        const status: u16 = switch (err) {
+            error.MissingTaskId => 400,
+            error.GlobalContextNotInitialized => 500,
+            error.RoutineNotFound => 404,
+            error.RoutineDisabled => 409,
+            error.RoutineAlreadyRunning => 409,
+            else => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.MissingTaskId => "task_id required",
+            error.GlobalContextNotInitialized => "singleton not initialized",
+            error.RoutineNotFound => "task is not a routine",
+            error.RoutineDisabled => "routine is disabled",
+            error.RoutineAlreadyRunning => "routine is already running",
+            else => "fire failed",
+        };
+        return res.jsonResponse(.{ .status_code = status, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }) });
     };
 
     return res.jsonResponse(.{
         .status_code = 200,
-        .data = try std.fmt.allocPrint(allocator, "{{\"success\":true,\"session_id\":\"{s}\",\"status\":\"firing\"}}", .{task_id}),
+        .data = try std.fmt.allocPrint(allocator, "{{\"success\":true,\"session_id\":\"{s}\",\"status\":\"firing\"}}", .{result.task_id}),
     });
+}
+
+fn useCase(allocator: std.mem.Allocator, input: RoutinesRunInput) (RoutinesRunError || fire.FireError)!RoutinesRunResult {
+    if (input.task_id.len == 0) return error.MissingTaskId;
+
+    // The handler gets the Io group via the singleton — must call
+    // `nalarcore.getSingleton()` to obtain the initialized `ContextIPCTui`
+    // (which carries the Io group via `di.group_emit_session_create`).
+    const di = nalarcore.getSingleton() catch return error.GlobalContextNotInitialized;
+    const sqlite_db = di.db;
+
+    // Call the fire pipeline. Errors map to HTTP status codes:
+    //   - FireError.NotARoutine    → 404 (task is not a routine)
+    //   - FireError.Disabled       → 409 (routine is disabled)
+    //   - FireError.AlreadyRunning → 409 (routine is already running)
+    //   - other                    → 500
+    fire.fireRoutine(allocator, sqlite_db, di, input.io, input.task_id) catch |err| {
+        std.log.err("routinesRunHandler: fireRoutine failed: {s}", .{@errorName(err)});
+        return err;
+    };
+
+    return .{ .task_id = input.task_id };
 }
