@@ -230,9 +230,35 @@ pub const LlmConfig = struct {
             try getDefaultConfigPath(allocator, environment);
         defer allocator.free(config_path);
 
-        const file = Io.Dir.openFileAbsolute(io, config_path, .{}) catch |err| {
-            std.log.err("Failed to open config file: {s} - {s}", .{ config_path, @errorName(err) });
-            return error.ConfigFileNotFound;
+        const file = Io.Dir.openFileAbsolute(io, config_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => blk: {
+                // First-run auto-init: only for the default path. An explicit
+                // path that doesn't exist is treated as a user error (they
+                // asked us to read a specific file and it's missing).
+                if (path != null) {
+                    std.log.err("Config file not found at explicit path {s}", .{config_path});
+                    return error.ConfigFileNotFound;
+                }
+                std.log.info(
+                    "Config file not found at {s}; auto-creating with empty placeholders. Edit this file to set api_key/model/base_url.",
+                    .{config_path},
+                );
+                writeDefaultConfig(allocator, io, config_path) catch |write_err| {
+                    std.log.err("Failed to auto-create config file {s}: {s}", .{ config_path, @errorName(write_err) });
+                    return error.ConfigFileNotFound;
+                };
+                // Retry the open. If THIS fails (e.g. permission denied on
+                // the new file), surface it as ConfigFileNotFound to match
+                // the rest of the catch arm's behavior.
+                break :blk Io.Dir.openFileAbsolute(io, config_path, .{}) catch |retry_err| {
+                    std.log.err("Failed to open auto-created config file {s}: {s}", .{ config_path, @errorName(retry_err) });
+                    return error.ConfigFileNotFound;
+                };
+            },
+            else => {
+                std.log.err("Failed to open config file: {s} - {s}", .{ config_path, @errorName(err) });
+                return error.ConfigFileNotFound;
+            },
         };
         defer file.close(io);
 

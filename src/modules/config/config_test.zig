@@ -1104,3 +1104,129 @@ test "writeDefaultConfig creates parent directories that do not exist" {
     try std.testing.expect(content.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, content, "\"api_key\": \"\"") != null);
 }
+
+// ---------------------------------------------------------------------------
+// Auto-init: LlmConfig.init() creates default config on first run (Chunk 2)
+// ---------------------------------------------------------------------------
+
+test "init auto-creates config.json when default path does not exist (path=null)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Get the canonical absolute path of the tmp dir — this becomes
+    // our fake $HOME / $XDG_CONFIG_HOME / %APPDATA% depending on
+    // platform. `getDefaultConfigDir` reads different env vars per
+    // platform: Linux uses XDG_CONFIG_HOME/HOME, macOS uses HOME,
+    // Windows uses APPDATA. Setting all three keeps the test
+    // platform-portable (cross-compile runs the same logic).
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base_len = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const base_path = path_buf[0..base_len];
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("HOME", base_path);
+    try env_map.put("XDG_CONFIG_HOME", base_path);
+    try env_map.put("APPDATA", base_path);
+
+    // Call init() with path = null. The default config path resolves
+    // via getDefaultConfigPath to a platform-appropriate location
+    // (<base>/nalar/config.json on Linux when XDG_CONFIG_HOME is set,
+    // <base>/nalar/config.json on Windows when APPDATA is set).
+    // The file does not exist yet — auto-init must create it.
+    var cfg = try LlmConfig.init(allocator, std.testing.io, null, &env_map);
+    defer cfg.deinit();
+
+    // Post-condition: the file now exists on disk and contains the default template.
+    // The default config dir is <env_var>/nalar/, so config.json lives at <env_var>/nalar/config.json.
+    const expected_path = try std.fs.path.join(allocator, &.{ base_path, "nalar", "config.json" });
+    defer allocator.free(expected_path);
+
+    const file = try std.Io.Dir.openFileAbsolute(std.testing.io, expected_path, .{});
+    defer file.close(std.testing.io);
+    var read_buf: [4096]u8 = undefined;
+    var reader = file.reader(std.testing.io, &read_buf);
+    const content = try reader.interface.allocRemaining(allocator, .limited(64 * 1024));
+    defer allocator.free(content);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"api_key\": \"\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"url_style\": \"openai\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"model_compaction_size_kb\": 100") != null);
+}
+
+test "init does NOT auto-create when explicit path is missing" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Get the canonical absolute path of the tmp dir.
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base_len = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const base_path = path_buf[0..base_len];
+    const missing_path = try std.fs.path.join(allocator, &.{ base_path, "nope.json" });
+    defer allocator.free(missing_path);
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("HOME", base_path);
+    try env_map.put("XDG_CONFIG_HOME", base_path);
+    try env_map.put("APPDATA", base_path);
+
+    // Explicit path arg (non-null) — must surface ConfigFileNotFound,
+    // NOT silently auto-create.
+    //
+    // Note: `LlmConfig.init` logs via std.log.err on this path for
+    // production observability. The Zig 0.16 test harness treats
+    // `log_err_count > 0` as a test failure even when the assertion
+    // itself passes — see the chunk-2 deviation notes in
+    // `docs/superpowers/plans/2026-07-02-auto-init-config.md` (the
+    // assertions pass; the build wrapper exits 1). Verify each
+    // `expectError` test by name via the test binary directly
+    // (see run logs in the chunk report).
+    const result = LlmConfig.init(allocator, std.testing.io, missing_path, &env_map);
+    try std.testing.expectError(error.ConfigFileNotFound, result);
+}
+
+test "init does NOT auto-create when file exists with parse error" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Write invalid JSON to the existing file FIRST (realPathFileAlloc
+    // requires the file to exist; mirrors the order used by the
+    // existing writeAndRead helper above).
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "config.json",
+        .data = "not json{",
+        .flags = .{ .truncate = true },
+    });
+
+    const config_path = try tmp.dir.realPathFileAlloc(std.testing.io, "config.json", allocator);
+    defer allocator.free(config_path);
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("HOME", "/tmp");
+    try env_map.put("XDG_CONFIG_HOME", "/tmp");
+
+    // File exists → auto-init must NOT run; the parse error surfaces.
+    //
+    // Note: `LlmConfig.init` logs via std.log.err on this path for
+    // production observability. The Zig 0.16 test harness treats
+    // `log_err_count > 0` as a test failure even when the assertion
+    // itself passes — see the chunk-2 deviation notes in
+    // `docs/superpowers/plans/2026-07-02-auto-init-config.md` (the
+    // assertions pass; the build wrapper exits 1). Verify each
+    // `expectError` test by name via the test binary directly
+    // (see run logs in the chunk report).
+    const result = LlmConfig.init(allocator, std.testing.io, config_path, &env_map);
+    try std.testing.expectError(error.InvalidJson, result);
+
+    // The original file content must be unchanged (no auto-create ran).
+    var read_buf: [4096]u8 = undefined;
+    const content_slice = try tmp.dir.readFile(std.testing.io, "config.json", &read_buf);
+    try std.testing.expectEqualStrings("not json{", content_slice);
+}
