@@ -1,22 +1,31 @@
 /**
  * Component tests for the per-task row in the workspace-item panel.
- * WorkspaceItemTask was extracted from WorkspaceItem.vue on 2026-06-10
- * to narrow re-render scope and isolate the per-task DOM (spinner,
- * bullet, hover buttons, click handlers) from the parent item row.
  *
- * These tests mount <WorkspaceItemTask> directly so they do NOT
+ * History:
+ *   - 2026-06-10: <WorkspaceItemTask> was extracted from
+ *     WorkspaceItem.vue to narrow re-render scope and isolate the
+ *     per-task DOM (spinner, bullet, hover buttons, click handlers)
+ *     from the parent item row.
+ *   - 2026-07-02: <WorkspaceItemTask> split into two thin
+ *     presentation components — <WorkspaceItemTaskRow> (sidebar list)
+ *     and <WorkspaceItemTaskCard> (kanban). The shared logic moved
+ *     to composables/useTaskActions.ts. These tests target the Row
+ *     component (sidebar consumers' view of the per-task row).
+ *
+ * These tests mount <WorkspaceItemTaskRow> directly so they do NOT
  * depend on WorkspaceItem's expansion state, the item-row spinner, or
- * the parent-child event wiring. The integration of <WorkspaceItemTask>
- * into <WorkspaceItem> is covered by the existing
- * workspaceItemTaskRename.spec.ts and workspaceItemTaskSpinner.spec.ts
- * files (which mount <WorkspaceItem> and assert through the parent).
+ * the parent-child event wiring. The integration of
+ * <WorkspaceItemTaskRow> into <WorkspaceItem> is covered by the
+ * existing workspaceItemTaskRename.spec.ts and
+ * workspaceItemTaskSpinner.spec.ts files (which mount <WorkspaceItem>
+ * and assert through the parent).
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { nextTick, ref, type Ref } from 'vue'
 import { mount } from '@vue/test-utils'
 
-import WorkspaceItemTask from '../components/WorkspaceItemTask.vue'
+import WorkspaceItemTaskRow from '../components/WorkspaceItemTaskRow.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
@@ -33,7 +42,7 @@ function mountTask(
 ) {
   const processingState: Ref<Record<string, boolean>> = ref({})
   const task = overrides.task ?? baseTask
-  const wrapper = mount(WorkspaceItemTask, {
+  const wrapper = mount(WorkspaceItemTaskRow, {
     props: {
       task,
       workspaceId: overrides.workspaceId ?? 'ws_1',
@@ -49,7 +58,7 @@ function mountTask(
   return { wrapper, processingState }
 }
 
-describe('WorkspaceItemTask per-task row', () => {
+describe('WorkspaceItemTaskRow per-task row', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
@@ -67,10 +76,12 @@ describe('WorkspaceItemTask per-task row', () => {
     const { wrapper } = mountTask()
     expect(wrapper.text()).toContain('Alpha task')
     expect(wrapper.findAll('[data-testid="task-spinner"]')).toHaveLength(0)
-    // NEW (change-task-to-card-kanban plan): lock in the row-variant
-    // testid so a future refactor that flips the default to 'card' is
-    // caught here — every existing sidebar consumer (WorkspaceItem.vue)
-    // depends on the implicit 'row' default being unchanged.
+    // Lock in the row-variant contract (post-2026-07-02 split):
+    // the Row component always carries data-task-row and never
+    // data-task-card. A future refactor that re-introduces a
+    // 'variant' prop or accidentally adds a data-task-card attribute
+    // would break the consumer's selection logic in KanbanColumn /
+    // drag-and-drop handlers.
     expect(wrapper.find('[data-task-row]').exists()).toBe(true)
     expect(wrapper.find('[data-task-card]').exists()).toBe(false)
     // Bullet is a span.w-1.5.h-1.5.rounded-full — at least one exists.

@@ -1,11 +1,28 @@
 /**
- * Tests for WorkspaceItemTask's `variant` prop. Verifies:
- *   - default variant is 'row' (data-task-row present, data-task-card absent)
- *   - variant='card' renders card-specific data attributes
- *   - variant='card' renders the description preview when present
- *   - variant='row' (explicit) hides the description line
- *   - The card variant preserves the existing action icons + name rendering
- *   - Static-contract guard: WorkspaceItem.vue never passes variant='card'
+ * Component tests for <WorkspaceItemTaskCard> — the bordered kanban-
+ * card variant of the per-task UI.
+ *
+ * History:
+ *   - Pre-2026-07-02: these tests lived in workspaceItemTaskVariant
+ *     .spec.ts as the "card-ux-v2" and "card-ux-v3" describe blocks.
+ *     They targeted <WorkspaceItemTask variant="card"> (the pre-split
+ *     component with a `variant` prop).
+ *   - 2026-07-02: <WorkspaceItemTask> split into
+ *     <WorkspaceItemTaskRow> + <WorkspaceItemTaskCard>. The card
+ *     variant's behavior moved to this file (renamed from
+ *     workspaceItemTaskVariant.spec.ts); the row-only tests moved
+ *     to workspaceItemTask.spec.ts. The variant prop is gone — the
+ *     component's variant is now structural (Row vs Card file).
+ *
+ * This file covers:
+ *   1. The Card component's data-attribute contract (data-task-card
+ *      always present, data-task-row never).
+ *   2. The richer card-ux-v2 layout (description preview, meta row,
+ *      last-updated time, type badge).
+ *   3. The Jira-style type-accent (card-ux-v3) left-edge stripe.
+ *   4. The static-contract invariant: WorkspaceItem.vue (the only
+ *      sidebar consumer) MUST NOT import <WorkspaceItemTaskCard> — the
+ *      sidebar list uses the Row variant; Card is kanban-only.
  *
  * Plan: docs/plans/2026-07-01-change-task-to-card-kanban.md
  */
@@ -16,16 +33,16 @@ import { ref, type Ref } from 'vue'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import WorkspaceItemTask from '../components/WorkspaceItemTask.vue'
+import WorkspaceItemTaskCard from '../components/WorkspaceItemTaskCard.vue'
 import type { Task } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
-function mountTask(
+function mountCard(
   task: Task,
-  props: Partial<{ variant: 'row' | 'card' }> = {},
+  props: Partial<{ dropIndicator: 'above' | 'below' | null }> = {},
 ) {
   const processingState: Ref<Record<string, boolean>> = ref({})
-  const wrapper = mount(WorkspaceItemTask, {
+  const wrapper = mount(WorkspaceItemTaskCard, {
     props: {
       task,
       workspaceId: 'ws_1',
@@ -37,7 +54,7 @@ function mountTask(
   return wrapper
 }
 
-describe('WorkspaceItemTask variant prop', () => {
+describe('WorkspaceItemTaskCard data-attribute contract', () => {
   let wrapper: VueWrapper | null = null
 
   beforeEach(() => {
@@ -55,68 +72,49 @@ describe('WorkspaceItemTask variant prop', () => {
     vi.restoreAllMocks()
   })
 
-  it('defaults to variant="row" when no prop is passed', () => {
-    wrapper = mountTask({ id: 't1', name: 'Alpha' })
-    expect(wrapper.find('[data-task-row]').exists()).toBe(true)
-    expect(wrapper.find('[data-task-card]').exists()).toBe(false)
+  it('always renders data-task-card (Card component contract)', () => {
+    wrapper = mountCard({ id: 't1', name: 'Alpha' })
+    expect(wrapper.find('[data-task-card]').exists()).toBe(true)
   })
 
-  it('renders data-task-card and hides data-task-row when variant="card"', () => {
-    wrapper = mountTask({ id: 't1', name: 'Alpha' }, { variant: 'card' })
-    expect(wrapper.find('[data-task-card]').exists()).toBe(true)
+  it('never renders data-task-row (Card component contract)', () => {
+    wrapper = mountCard({ id: 't1', name: 'Alpha' })
     expect(wrapper.find('[data-task-row]').exists()).toBe(false)
   })
 
-  it('accepts an explicit variant="row" prop', () => {
-    wrapper = mountTask({ id: 't1', name: 'Alpha' }, { variant: 'row' })
-    expect(wrapper.find('[data-task-row]').exists()).toBe(true)
-    expect(wrapper.find('[data-task-card]').exists()).toBe(false)
-  })
-
-  it('renders description when variant="card" and description is non-empty', () => {
-    wrapper = mountTask(
-      { id: 't1', name: 'Alpha', description: 'A note about Alpha' },
-      { variant: 'card' },
-    )
+  it('renders description when description is non-empty', () => {
+    wrapper = mountCard({ id: 't1', name: 'Alpha', description: 'A note about Alpha' })
     const desc = wrapper.find('[data-testid="task-description"]')
     expect(desc.exists()).toBe(true)
     expect(desc.text()).toBe('A note about Alpha')
   })
 
-  it('hides description when variant="row" (default), even if description is set', () => {
-    wrapper = mountTask({ id: 't1', name: 'Alpha', description: 'A note' })
+  it('hides description line when description is empty', () => {
+    wrapper = mountCard({ id: 't1', name: 'Alpha' })
     expect(wrapper.find('[data-testid="task-description"]').exists()).toBe(false)
   })
 
-  it('hides description line in card variant when description is empty', () => {
-    wrapper = mountTask({ id: 't1', name: 'Alpha' }, { variant: 'card' })
+  it('hides description line when description is undefined', () => {
+    // explicitly pass undefined — the production ref to an unset
+    // description is JS-undefined, NOT empty string.
+    wrapper = mountCard({ id: 't1', name: 'Alpha', description: undefined })
     expect(wrapper.find('[data-testid="task-description"]').exists()).toBe(false)
   })
 
-  it('hides description line in card variant when description is undefined', () => {
-    wrapper = mountTask(
-      // explicitly pass undefined — the production ref to an unset
-      // description is JS-undefined, NOT empty string.
-      { id: 't1', name: 'Alpha', description: undefined },
-      { variant: 'card' },
-    )
-    expect(wrapper.find('[data-testid="task-description"]').exists()).toBe(false)
-  })
-
-  it('renders the task name in card variant', () => {
-    wrapper = mountTask({ id: 't1', name: 'Alpha' }, { variant: 'card' })
+  it('renders the task name', () => {
+    wrapper = mountCard({ id: 't1', name: 'Alpha' })
     expect(wrapper.text()).toContain('Alpha')
   })
 
-  it('renders the pin toggle button in card variant', () => {
-    wrapper = mountTask({ id: 't1', name: 'Alpha' }, { variant: 'card' })
+  it('renders the pin toggle button', () => {
+    wrapper = mountCard({ id: 't1', name: 'Alpha' })
     expect(wrapper.find('[data-testid="task-pin-toggle"]').exists()).toBe(true)
   })
 
-  it('emits select-task when card variant is clicked', async () => {
-    wrapper = mountTask({ id: 't1', name: 'Alpha' }, { variant: 'card' })
+  it('emits selectTask when clicked', async () => {
+    wrapper = mountCard({ id: 't1', name: 'Alpha' })
     // Trigger click on the root button via the data-task-id selector
-    // (works for any variant since it is on the root <button>).
+    // (works regardless of variant since it is on the root <button>).
     await wrapper.find('[data-task-id="t1"]').trigger('click')
     expect(wrapper.emitted('selectTask')).toBeTruthy()
     expect(wrapper.emitted('selectTask')?.[0]).toEqual(['t1'])
@@ -125,11 +123,10 @@ describe('WorkspaceItemTask variant prop', () => {
 
 /**
  * Card-ux-v2 tests: the richer card layout (description with
- * line-clamp-3 + meta row with last-updated time, pinned indicator,
- * and task-type badge). Lives in the same file because it builds on
- * the variant prop.
+ * line-clamp-2 + meta row with last-updated time and task-type
+ * badge).
  */
-describe('WorkspaceItemTask card-ux-v2 (richer card layout)', () => {
+describe('WorkspaceItemTaskCard card-ux-v2 (richer card layout)', () => {
   let wrapper: VueWrapper | null = null
 
   beforeEach(() => {
@@ -148,10 +145,7 @@ describe('WorkspaceItemTask card-ux-v2 (richer card layout)', () => {
   })
 
   it('description uses line-clamp-2 (modernized) in card variant', () => {
-    wrapper = mountTask(
-      { id: 't1', name: 'Alpha', description: 'A long note' },
-      { variant: 'card' },
-    )
+    wrapper = mountCard({ id: 't1', name: 'Alpha', description: 'A long note' })
     const desc = wrapper.find('[data-testid="task-description"]')
     expect(desc.exists()).toBe(true)
     // card-ux-v2: 2-line clamp is more minimalist than the previous
@@ -163,7 +157,7 @@ describe('WorkspaceItemTask card-ux-v2 (richer card layout)', () => {
   })
 
   it('meta row is hidden when card has no meta (no time, no pin, no type badge)', () => {
-    wrapper = mountTask({ id: 't1', name: 'Alpha' }, { variant: 'card' })
+    wrapper = mountCard({ id: 't1', name: 'Alpha' })
     expect(wrapper.find('[data-testid="task-meta"]').exists()).toBe(false)
   })
 
@@ -173,10 +167,7 @@ describe('WorkspaceItemTask card-ux-v2 (richer card layout)', () => {
     // "just now" (within the < 45s threshold).
     const now = new Date('2026-07-01T12:00:00Z')
     vi.setSystemTime(now)
-    wrapper = mountTask(
-      { id: 't1', name: 'Alpha', updatedAt: now },
-      { variant: 'card' },
-    )
+    wrapper = mountCard({ id: 't1', name: 'Alpha', updatedAt: now })
     const updated = wrapper.find('[data-testid="task-meta-updated"]')
     expect(updated.exists()).toBe(true)
     expect(updated.text()).toBe('just now')
@@ -187,10 +178,7 @@ describe('WorkspaceItemTask card-ux-v2 (richer card layout)', () => {
     const now = new Date('2026-07-01T12:00:00Z')
     vi.setSystemTime(now)
     const past = new Date(now.getTime() - 5 * 60_000)
-    wrapper = mountTask(
-      { id: 't1', name: 'Alpha', updatedAt: past },
-      { variant: 'card' },
-    )
+    wrapper = mountCard({ id: 't1', name: 'Alpha', updatedAt: past })
     const updated = wrapper.find('[data-testid="task-meta-updated"]')
     expect(updated.exists()).toBe(true)
     expect(updated.text()).toBe('5m ago')
@@ -201,10 +189,7 @@ describe('WorkspaceItemTask card-ux-v2 (richer card layout)', () => {
     const now = new Date('2026-07-01T12:00:00Z')
     vi.setSystemTime(now)
     const past = new Date(now.getTime() - 3 * 60 * 60_000)
-    wrapper = mountTask(
-      { id: 't1', name: 'Alpha', updatedAt: past },
-      { variant: 'card' },
-    )
+    wrapper = mountCard({ id: 't1', name: 'Alpha', updatedAt: past })
     const updated = wrapper.find('[data-testid="task-meta-updated"]')
     expect(updated.text()).toBe('3h ago')
     vi.useRealTimers()
@@ -214,10 +199,7 @@ describe('WorkspaceItemTask card-ux-v2 (richer card layout)', () => {
     const now = new Date('2026-07-01T12:00:00Z')
     vi.setSystemTime(now)
     const past = new Date(now.getTime() - 2 * 24 * 60 * 60_000)
-    wrapper = mountTask(
-      { id: 't1', name: 'Alpha', updatedAt: past },
-      { variant: 'card' },
-    )
+    wrapper = mountCard({ id: 't1', name: 'Alpha', updatedAt: past })
     const updated = wrapper.find('[data-testid="task-meta-updated"]')
     expect(updated.text()).toBe('2d ago')
     vi.useRealTimers()
@@ -227,10 +209,7 @@ describe('WorkspaceItemTask card-ux-v2 (richer card layout)', () => {
     const now = new Date('2026-07-01T12:00:00Z')
     vi.setSystemTime(now)
     const past = new Date(now.getTime() - 24 * 60 * 60_000)
-    wrapper = mountTask(
-      { id: 't1', name: 'Alpha', updatedAt: past },
-      { variant: 'card' },
-    )
+    wrapper = mountCard({ id: 't1', name: 'Alpha', updatedAt: past })
     const updated = wrapper.find('[data-testid="task-meta-updated"]')
     expect(updated.text()).toBe('yesterday')
     vi.useRealTimers()
@@ -240,10 +219,7 @@ describe('WorkspaceItemTask card-ux-v2 (richer card layout)', () => {
     const now = new Date('2026-07-01T12:00:00Z')
     vi.setSystemTime(now)
     const created = new Date(now.getTime() - 10 * 60_000) // 10 min ago
-    wrapper = mountTask(
-      { id: 't1', name: 'Alpha', createdAt: created },
-      { variant: 'card' },
-    )
+    wrapper = mountCard({ id: 't1', name: 'Alpha', createdAt: created })
     const updated = wrapper.find('[data-testid="task-meta-updated"]')
     expect(updated.exists()).toBe(true)
     expect(updated.text()).toBe('10m ago')
@@ -251,7 +227,7 @@ describe('WorkspaceItemTask card-ux-v2 (richer card layout)', () => {
   })
 
   it('meta row is hidden when neither updatedAt nor createdAt is set', () => {
-    wrapper = mountTask({ id: 't1', name: 'Alpha' }, { variant: 'card' })
+    wrapper = mountCard({ id: 't1', name: 'Alpha' })
     expect(wrapper.find('[data-testid="task-meta-updated"]').exists()).toBe(false)
   })
 
@@ -261,10 +237,7 @@ describe('WorkspaceItemTask card-ux-v2 (richer card layout)', () => {
     // sitting right after the task name. This keeps the meta row
     // minimal while still surfacing the pinned state in a visible
     // location (the top row is the natural reading order).
-    wrapper = mountTask(
-      { id: 't1', name: 'Alpha', is_pinned: true },
-      { variant: 'card' },
-    )
+    wrapper = mountCard({ id: 't1', name: 'Alpha', is_pinned: true })
     expect(wrapper.find('[data-testid="task-pin-indicator"]').exists()).toBe(true)
     // Meta-row pin pill was REMOVED in card-ux-v2 — the top-row
     // indicator is the canonical surface for the pinned state.
@@ -272,51 +245,43 @@ describe('WorkspaceItemTask card-ux-v2 (richer card layout)', () => {
   })
 
   it('pinned indicator is absent from top row when is_pinned is false', () => {
-    wrapper = mountTask(
-      { id: 't1', name: 'Alpha', is_pinned: false },
-      { variant: 'card' },
-    )
+    wrapper = mountCard({ id: 't1', name: 'Alpha', is_pinned: false })
     expect(wrapper.find('[data-testid="task-pin-indicator"]').exists()).toBe(false)
   })
 
   it('routine type badge renders in meta row for task_type="routine"', () => {
-    wrapper = mountTask(
-      {
-        id: 't1',
-        name: 'Daily sync',
-        task_type: 'routine',
-        routine: {
-          schedule: '0 9 * * *',
-          initial_prompt: 'prompt',
-          enabled: true,
-          last_run_at: null,
-          next_run_at: '2026-07-02T09:00:00Z',
-          last_status: null,
-          last_error: null,
-        },
+    wrapper = mountCard({
+      id: 't1',
+      name: 'Daily sync',
+      task_type: 'routine',
+      routine: {
+        schedule: '0 9 * * *',
+        initial_prompt: 'prompt',
+        enabled: true,
+        last_run_at: null,
+        next_run_at: '2026-07-02T09:00:00Z',
+        last_status: null,
+        last_error: null,
       },
-      { variant: 'card' },
-    )
+    })
     const badge = wrapper.find('[data-testid="task-meta-type-routine"]')
     expect(badge.exists()).toBe(true)
     expect(badge.text()).toContain('routine')
   })
 
   it('memory type badge renders in meta row for task_type="memory"', () => {
-    wrapper = mountTask(
-      { id: 't1', name: 'project-notes', task_type: 'memory' },
-      { variant: 'card' },
-    )
+    wrapper = mountCard({
+      id: 't1',
+      name: 'project-notes',
+      task_type: 'memory',
+    })
     const badge = wrapper.find('[data-testid="task-meta-type-memory"]')
     expect(badge.exists()).toBe(true)
     expect(badge.text()).toContain('memory')
   })
 
   it('no type badge renders for standard (default) tasks', () => {
-    wrapper = mountTask(
-      { id: 't1', name: 'Standard' },
-      { variant: 'card' },
-    )
+    wrapper = mountCard({ id: 't1', name: 'Standard' })
     expect(wrapper.find('[data-testid^="task-meta-type-"]').exists()).toBe(false)
   })
 
@@ -327,46 +292,28 @@ describe('WorkspaceItemTask card-ux-v2 (richer card layout)', () => {
     const now = new Date('2026-07-01T12:00:00Z')
     vi.setSystemTime(now)
     const past = new Date(now.getTime() - 30 * 60_000) // 30m ago
-    wrapper = mountTask(
-      {
-        id: 't1',
-        name: 'All-meta',
-        updatedAt: past,
-        is_pinned: true,
-        task_type: 'routine',
-        routine: {
-          schedule: '0 9 * * *',
-          initial_prompt: 'p',
-          enabled: true,
-          last_run_at: null,
-          next_run_at: '2026-07-02T09:00:00Z',
-          last_status: null,
-          last_error: null,
-        },
+    wrapper = mountCard({
+      id: 't1',
+      name: 'All-meta',
+      updatedAt: past,
+      is_pinned: true,
+      task_type: 'routine',
+      routine: {
+        schedule: '0 9 * * *',
+        initial_prompt: 'p',
+        enabled: true,
+        last_run_at: null,
+        next_run_at: '2026-07-02T09:00:00Z',
+        last_status: null,
+        last_error: null,
       },
-      { variant: 'card' },
-    )
+    })
     expect(wrapper.find('[data-testid="task-meta-updated"]').text()).toBe('30m ago')
     expect(wrapper.find('[data-testid="task-meta-type-routine"]').exists()).toBe(true)
     // Pin indicator is in the TOP row now, not the meta row.
     expect(wrapper.find('[data-testid="task-meta-pinned"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="task-pin-indicator"]').exists()).toBe(true)
     vi.useRealTimers()
-  })
-
-  it('row variant never renders the meta row (sidebar list UX is unchanged)', () => {
-    wrapper = mountTask(
-      {
-        id: 't1',
-        name: 'Alpha',
-        updatedAt: new Date(),
-        is_pinned: true,
-        task_type: 'routine',
-      },
-      // no variant -> row (default)
-    )
-    expect(wrapper.find('[data-testid="task-meta"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="task-description"]').exists()).toBe(false)
   })
 })
 
@@ -383,7 +330,7 @@ describe('WorkspaceItemTask card-ux-v2 (richer card layout)', () => {
  * dropIndicator box-shadow (via cardBoxShadow computed) so the
  * pre-existing pinned-region drop indicator still works.
  */
-describe('WorkspaceItemTask card-ux-v3 (Jira-style type accent)', () => {
+describe('WorkspaceItemTaskCard card-ux-v3 (Jira-style type accent)', () => {
   let wrapper: VueWrapper | null = null
 
   beforeEach(() => {
@@ -401,30 +348,28 @@ describe('WorkspaceItemTask card-ux-v3 (Jira-style type accent)', () => {
     vi.restoreAllMocks()
   })
 
-  function rootStyleFor(task: Task, variant: 'row' | 'card') {
-    return mountTask(task, { variant })
+  function rootStyleFor(task: Task, dropIndicator?: 'above' | 'below' | null) {
+    const props = dropIndicator !== undefined ? { dropIndicator } : {}
+    return mountCard(task, props)
       .find('[data-task-id]')
       .attributes('style') ?? ''
   }
 
-  it('routine card in card variant has a violet left accent', () => {
-    const style = rootStyleFor(
-      {
-        id: 't1',
-        name: 'Daily sync',
-        task_type: 'routine',
-        routine: {
-          schedule: '0 9 * * *',
-          initial_prompt: 'p',
-          enabled: true,
-          last_run_at: null,
-          next_run_at: '2026-07-02T09:00:00Z',
-          last_status: null,
-          last_error: null,
-        },
+  it('routine card has a violet left accent', () => {
+    const style = rootStyleFor({
+      id: 't1',
+      name: 'Daily sync',
+      task_type: 'routine',
+      routine: {
+        schedule: '0 9 * * *',
+        initial_prompt: 'p',
+        enabled: true,
+        last_run_at: null,
+        next_run_at: '2026-07-02T09:00:00Z',
+        last_status: null,
+        last_error: null,
       },
-      'card',
-    )
+    })
     // card-ux-v4: container now uses border-transparent at idle;
     // the only visible border is the type-accent (left stripe) for
     // routine/memory tasks, plus the hover violet ring.
@@ -432,41 +377,18 @@ describe('WorkspaceItemTask card-ux-v3 (Jira-style type accent)', () => {
     expect(style).toContain('rgb(167, 139, 250)') // violet-400
   })
 
-  it('memory card in card variant has a blue left accent', () => {
-    const style = rootStyleFor(
-      { id: 't1', name: 'project-notes', task_type: 'memory' },
-      'card',
-    )
+  it('memory card has a blue left accent', () => {
+    const style = rootStyleFor({
+      id: 't1',
+      name: 'project-notes',
+      task_type: 'memory',
+    })
     expect(style).toContain('inset 3px 0 0 0')
     expect(style).toContain('rgb(96, 165, 250)') // blue-400
   })
 
-  it('standard card in card variant has NO type accent (and a transparent border)', () => {
-    const style = rootStyleFor(
-      { id: 't1', name: 'Standard' },
-      'card',
-    )
-    expect(style).not.toContain('inset 3px 0 0 0')
-  })
-
-  it('routine card in row variant has NO type accent (accent is card-only)', () => {
-    const style = rootStyleFor(
-      {
-        id: 't1',
-        name: 'Daily sync',
-        task_type: 'routine',
-        routine: {
-          schedule: '0 9 * * *',
-          initial_prompt: 'p',
-          enabled: true,
-          last_run_at: null,
-          next_run_at: '2026-07-02T09:00:00Z',
-          last_status: null,
-          last_error: null,
-        },
-      },
-      'row',
-    )
+  it('standard card has NO type accent (and a transparent border)', () => {
+    const style = rootStyleFor({ id: 't1', name: 'Standard' })
     expect(style).not.toContain('inset 3px 0 0 0')
   })
 
@@ -475,7 +397,7 @@ describe('WorkspaceItemTask card-ux-v3 (Jira-style type accent)', () => {
     // resulting box-shadow must contain BOTH inset values (the
     // drop indicator first, the type accent second). This is the
     // Jira-style layered shadow pattern.
-    wrapper = mountTask(
+    const style = rootStyleFor(
       {
         id: 't1',
         name: 'Daily sync',
@@ -490,46 +412,29 @@ describe('WorkspaceItemTask card-ux-v3 (Jira-style type accent)', () => {
           last_error: null,
         },
       },
-      { variant: 'card' },
+      'above',
     )
-    // Set the dropIndicator via a prop update (the parent's only
-    // way to set it is via Vue's prop binding; here we trigger by
-    // re-rendering with the prop set directly on the wrapper).
-    void wrapper
-    const style = rootStyleFor(
-      {
-        id: 't2',
-        name: 'Daily sync 2',
-        task_type: 'routine',
-        routine: {
-          schedule: '0 9 * * *',
-          initial_prompt: 'p',
-          enabled: true,
-          last_run_at: null,
-          next_run_at: '2026-07-02T09:00:00Z',
-          last_status: null,
-          last_error: null,
-        },
-      },
-      'card',
-    )
-    // The accent is always present in card+routine; we just
-    // confirm the layered structure is a valid CSS string.
-    expect(style).toMatch(/box-shadow:[^;]*rgb\(167,\s*139,\s*250\)/)
+    // Both layered inset values should be present in the style.
+    expect(style).toContain('inset 0 2px 0 0') // dropIndicator (above)
+    expect(style).toContain('inset 3px 0 0 0') // type accent
+    expect(style).toContain('rgb(167, 139, 250)') // violet-400 accent
   })
 })
 
 /**
- * Static-contract test: the sidebar's WorkspaceItem.vue (the only
- * non-KanbanCard consumer) MUST NOT pass a `variant` prop to its
- * <WorkspaceItemTask> instances. If someone accidentally adds
- * `:variant="'card'"` to one of those lines, this test fires.
+ * Static-contract test: WorkspaceItem.vue (the only non-KanbanCard
+ * consumer) MUST import the Row variant, not the Card. The Card is
+ * exclusively used by the kanban tree (KanbanCard → KanbanColumn).
+ * If someone accidentally swaps the import, the sidebar list would
+ * render as a kanban card and the layout would break.
  *
- * Lives in this file because it's a guard for the variant prop. If
- * the prop is ever renamed, both the implementation, the consumer
- * test, AND this contract test move together.
+ * History: pre-split, this guard asserted that WorkspaceItem.vue did
+ * NOT pass `variant="card"` to <WorkspaceItemTask>. After the split
+ * the variant prop is gone — the consumer is now structurally
+ * different (Row vs Card file). The new assertion checks the import
+ * shape instead.
  */
-describe('WorkspaceItem.vue — task variant invariant', () => {
+describe('WorkspaceItem.vue — task component invariant', () => {
   const SIDEBAR_PATH = resolve(
     __dirname,
     '..',
@@ -537,15 +442,20 @@ describe('WorkspaceItem.vue — task variant invariant', () => {
     'WorkspaceItem.vue',
   )
 
-  it('does not pass variant="card" to <WorkspaceItemTask>', () => {
+  it('does not import <WorkspaceItemTaskCard> (Card is kanban-only)', () => {
     const source = readFileSync(SIDEBAR_PATH, 'utf8')
-    // Anchored on `variant=` (not bare `variant`) so we don't trip
-    // over type defs or comments mentioning the variant concept.
-    expect(source).not.toMatch(/variant\s*=\s*['"]card['"]/)
+    // Anchored on the import-from path so we don't trip over type
+    // defs or comments mentioning the variant concept.
+    expect(source).not.toMatch(/from\s+['"].*WorkspaceItemTaskCard\.vue['"]/)
   })
 
-  it('still renders <WorkspaceItemTask> (sanity: the contract test is testing the right file)', () => {
+  it('imports <WorkspaceItemTaskRow> for the sidebar list', () => {
     const source = readFileSync(SIDEBAR_PATH, 'utf8')
-    expect(source).toContain('<WorkspaceItemTask')
+    expect(source).toMatch(/from\s+['"].*WorkspaceItemTaskRow\.vue['"]/)
+  })
+
+  it('renders <WorkspaceItemTaskRow> (sanity: the contract test is testing the right file)', () => {
+    const source = readFileSync(SIDEBAR_PATH, 'utf8')
+    expect(source).toContain('<WorkspaceItemTaskRow')
   })
 })
