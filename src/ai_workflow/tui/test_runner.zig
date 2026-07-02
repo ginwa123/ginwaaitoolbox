@@ -41,6 +41,7 @@ test {
     _ = @import("http_handlers/task_pin_test.zig");
     _ = @import("migration_051_test.zig");
     _ = @import("migration_053_test.zig");
+    _ = @import("migration_054_test.zig");
     _ = @import("kanban_model_test.zig");
     _ = @import("kanban_model_test_description.zig");
     _ = @import("http_handlers/tasks_reorder_pinned_test.zig");
@@ -55,6 +56,7 @@ test {
     _ = @import("http_handlers/kanban_columns_delete_test.zig");
     _ = @import("http_handlers/tasks_move_test.zig");
     _ = @import("http_handlers/tasks_create_kanban_test.zig");
+    _ = @import("http_handlers/tasks_create_value_alloc_test.zig");
     _ = @import("http_handlers/system_prompt_get_test.zig");
     _ = @import("http_handlers/unified_events_sse_test.zig");
     // _ = @import("session_helpers_test.zig"); // DISABLED - requires std.Io which needs Init
@@ -62,6 +64,7 @@ test {
     _ = @import("get_session_list_test.zig");
     _ = @import("transform_llm_history_to_agent_messages_test.zig");
     _ = @import("on_event_sent_sanitize_test.zig");
+    _ = @import("gitignore_vendor_sqlite3_test.zig");
     _ = @import("../../modules/agent/tools/show_preview_test.zig");
     // _ = @import("extract_base64_image_urls_test.zig"); // DISABLED - 9 failing tests (investigation shows std.testing.expectEqualStrings has a bug with literal strings)
     // _ = @import("session_db_test.zig"); // DISABLED - pre-existing test errors (see session_db_test.zig for details)

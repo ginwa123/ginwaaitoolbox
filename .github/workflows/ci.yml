@@ -99,13 +99,27 @@ jobs:
           pkg-config --modversion sqlite3
           pkg-config --modversion openssl
 
+      - name: Fetch vendored SQLite amalgamation (Windows / macOS)
+        if: runner.os != 'Linux'
+        # The amalgamation is gitignored (`/vendor/` in .gitignore) to
+        # avoid bloating the repo with ~10 MB of binary-like content. On
+        # non-Linux targets, `build.zig` compiles sqlite3.c from
+        # `vendor/sqlite3/`, so we need to fetch it before any zig build
+        # call. The script is idempotent: it skips if the files already
+        # exist (e.g., restored from a prior run's cache).
+        shell: bash
+        run: |
+          chmod +x scripts/fetch-vendor-sqlite3.sh
+          ./scripts/fetch-vendor-sqlite3.sh
+
       - name: Cache Zig build artifacts
         uses: actions/cache@v4
         with:
           path: |
             .zig-cache
             zig-out
-          key: zig-${{ runner.os }}-${{ matrix.target.zig }}-${{ hashFiles('build.zig.zon', 'build.zig') }}
+            vendor
+          key: zig-${{ runner.os }}-${{ matrix.target.zig }}-${{ hashFiles('build.zig.zon', 'build.zig', 'scripts/fetch-vendor-sqlite3.sh') }}
           restore-keys: |
             zig-${{ runner.os }}-${{ matrix.target.zig }}-
 

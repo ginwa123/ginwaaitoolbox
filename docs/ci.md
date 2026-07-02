@@ -78,6 +78,22 @@ Means the `brew install openssl@3` step didn't run before the build.
 Verify `brew --prefix openssl@3` returns a non-empty path in the
 CI log.
 
+### Windows / macOS: "unable to find file 'vendor/sqlite3/sqlite3.c'"
+
+The amalgamation is gitignored (`.gitignore: /vendor/`) to keep the
+repo small. The CI workflow runs `scripts/fetch-vendor-sqlite3.sh` on
+non-Linux runners before any `zig build` step; this downloads SQLite
+3.53.3 from `https://sqlite.org/`, verifies its SHA3-256, and extracts
+the three files into `vendor/sqlite3/`. If the step failed (network
+outage, sha3sum/python3 missing), re-run it manually:
+
+```bash
+./scripts/fetch-vendor-sqlite3.sh
+```
+
+Locally, do the same before your first `zig build test` / `zig build
+install:windows` / `zig build install:macos` on a fresh clone.
+
 ## Reading a failed matrix cell
 
 1. Click the failed cell name in the Actions run summary.
