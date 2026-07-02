@@ -1118,9 +1118,9 @@ test "init auto-creates config.json when default path does not exist (path=null)
     // Get the canonical absolute path of the tmp dir — this becomes
     // our fake $HOME / $XDG_CONFIG_HOME / %APPDATA% depending on
     // platform. `getDefaultConfigDir` reads different env vars per
-    // platform: Linux uses XDG_CONFIG_HOME/HOME, macOS uses HOME,
-    // Windows uses APPDATA. Setting all three keeps the test
-    // platform-portable (cross-compile runs the same logic).
+    // platform: Linux uses XDG_CONFIG_HOME/HOME, macOS uses HOME
+    // (under `Library/Application Support/`), Windows uses APPDATA.
+    // Setting all three keeps the test platform-portable.
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const base_len = try tmp.dir.realPath(std.testing.io, &path_buf);
     const base_path = path_buf[0..base_len];
@@ -1133,15 +1133,17 @@ test "init auto-creates config.json when default path does not exist (path=null)
 
     // Call init() with path = null. The default config path resolves
     // via getDefaultConfigPath to a platform-appropriate location
-    // (<base>/nalar/config.json on Linux when XDG_CONFIG_HOME is set,
-    // <base>/nalar/config.json on Windows when APPDATA is set).
-    // The file does not exist yet — auto-init must create it.
+    // (e.g. `<base>/.config/nalar/config.json` on Linux, `<base>/Library/Application Support/nalar/config.json`
+    // on macOS, `<base>/nalar/config.json` on Windows). The file does
+    // not exist yet — auto-init must create it.
     var cfg = try LlmConfig.init(allocator, std.testing.io, null, &env_map);
     defer cfg.deinit();
 
     // Post-condition: the file now exists on disk and contains the default template.
-    // The default config dir is <env_var>/nalar/, so config.json lives at <env_var>/nalar/config.json.
-    const expected_path = try std.fs.path.join(allocator, &.{ base_path, "nalar", "config.json" });
+    // Use getDefaultConfigPath to get the actual platform-appropriate
+    // path (instead of hardcoding one platform's layout, which broke
+    // macOS CI — see PR #68 review).
+    const expected_path = try config.getDefaultConfigPath(allocator, &env_map);
     defer allocator.free(expected_path);
 
     const file = try std.Io.Dir.openFileAbsolute(std.testing.io, expected_path, .{});
