@@ -1083,7 +1083,7 @@ pub const LlmConfig = struct {
     /// directories (mkdir -p semantics). Overwrites any existing file at
     /// the path (the caller is expected to NOT call this on an
     /// already-existing config — see `LlmConfig.init` for the auto-init
-    /// flow that gates the call on `error.FileNotFound`).
+    /// flow that gates the call on `error.ConfigFileNotFound`).
     ///
     /// Returns `error.ConfigDirNotFound` when the parent directory
     /// cannot be created (e.g. permission denied, invalid path) or
@@ -1098,17 +1098,17 @@ pub const LlmConfig = struct {
         // add_skill.zig:108). It handles both "dir already exists" and
         // "dir does not exist" without error. It does NOT assert the
         // path is absolute (unlike createDirAbsolute), so both absolute
-        // and relative parent paths work. If `dirname` is null (e.g.
-        // `path = "config.json"`), we skip this step — the file goes
-        // in the cwd directly.
+        // and relative parent paths work. If `dirname` returns null
+        // (e.g. `path = "config.json"` or `/config.json`), we skip this
+        // step — the file goes in the cwd (or the root, for absolute
+        // paths with no parent) directly. Note: Zig 0.16's
+        // `std.fs.path.dirname` returns either null OR a slice of
+        // length >= 1, so no inner length check is needed.
         if (std.fs.path.dirname(path)) |parent| {
-            // Skip empty parent (root dir "/" or ".")
-            if (parent.len > 0) {
-                std.Io.Dir.cwd().createDirPath(io, parent) catch |err| {
-                    std.log.err("Failed to create config dir {s}: {s}", .{ parent, @errorName(err) });
-                    return error.ConfigDirNotFound;
-                };
-            }
+            std.Io.Dir.cwd().createDirPath(io, parent) catch |err| {
+                std.log.err("Failed to create config dir {s}: {s}", .{ parent, @errorName(err) });
+                return error.ConfigDirNotFound;
+            };
         }
 
         // Write the default config. .truncate = true means any stale
