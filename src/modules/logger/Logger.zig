@@ -142,7 +142,28 @@ pub const Logger = struct {
 
         // Record the current end-of-file offset; this is where the next
         // write will land (via writePositionalAll in writeEntry).
-        const file_size = std.Io.File.length(file, self.io) catch 0;
+        //
+        // On Windows, `length()` falls through to `fileStat(...All)`
+        // which can briefly report `EndOfFile = 0` for a freshly-reopened
+        // file whose on-disk size hasn't propagated through the
+        // StandardInformation cache yet. Poll a few times to ride out
+        // the race; only fall back to 0 if every query reports an empty
+        // file (which is the correct answer for a truly empty file).
+        var file_size: u64 = 0;
+        var attempts: u8 = 0;
+        while (attempts < 8) : (attempts += 1) {
+            if (std.Io.File.length(file, self.io)) |sz| {
+                if (sz > 0) {
+                    file_size = sz;
+                    break;
+                }
+                // Got 0 — try again in case the cache hasn't propagated.
+                file_size = 0;
+            } else |_| {
+                file_size = 0;
+                break;
+            }
+        }
         self.current_file_size = file_size;
         self.log_file = file;
     }
