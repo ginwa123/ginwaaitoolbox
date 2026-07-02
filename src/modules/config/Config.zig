@@ -236,7 +236,7 @@ pub const LlmConfig = struct {
                 // path that doesn't exist is treated as a user error (they
                 // asked us to read a specific file and it's missing).
                 if (path != null) {
-                    std.log.err("Config file not found at explicit path {s}", .{config_path});
+                    std.log.warn("Config file not found at explicit path {s}", .{config_path});
                     return error.ConfigFileNotFound;
                 }
                 std.log.info(
@@ -244,19 +244,19 @@ pub const LlmConfig = struct {
                     .{config_path},
                 );
                 writeDefaultConfig(allocator, io, config_path) catch |write_err| {
-                    std.log.err("Failed to auto-create config file {s}: {s}", .{ config_path, @errorName(write_err) });
+                    std.log.warn("Failed to auto-create config file {s}: {s}", .{ config_path, @errorName(write_err) });
                     return error.ConfigFileNotFound;
                 };
                 // Retry the open. If THIS fails (e.g. permission denied on
                 // the new file), surface it as ConfigFileNotFound to match
                 // the rest of the catch arm's behavior.
                 break :blk Io.Dir.openFileAbsolute(io, config_path, .{}) catch |retry_err| {
-                    std.log.err("Failed to open auto-created config file {s}: {s}", .{ config_path, @errorName(retry_err) });
+                    std.log.warn("Failed to open auto-created config file {s}: {s}", .{ config_path, @errorName(retry_err) });
                     return error.ConfigFileNotFound;
                 };
             },
             else => {
-                std.log.err("Failed to open config file: {s} - {s}", .{ config_path, @errorName(err) });
+                std.log.warn("Failed to open config file: {s} - {s}", .{ config_path, @errorName(err) });
                 return error.ConfigFileNotFound;
             },
         };
@@ -265,7 +265,7 @@ pub const LlmConfig = struct {
         var read_buffer: [4096]u8 = undefined;
         var reader = file.reader(io, &read_buffer);
         const content = reader.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch |err| {
-            std.log.err("Failed to read config file: {s}", .{@errorName(err)});
+            std.log.warn("Failed to read config file: {s}", .{@errorName(err)});
             return error.ConfigFileReadError;
         };
         defer allocator.free(content);
@@ -273,7 +273,7 @@ pub const LlmConfig = struct {
         const parsed = json.parseFromSlice(LlmConfigJson, allocator, content, .{
             .ignore_unknown_fields = true,
         }) catch |err| {
-            std.log.err("Failed to parse JSON config: {s}", .{@errorName(err)});
+            std.log.warn("Failed to parse JSON config: {s}", .{@errorName(err)});
             return error.InvalidJson;
         };
         defer parsed.deinit();
@@ -850,15 +850,15 @@ pub const LlmConfig = struct {
 
     pub fn validate(self: *const LlmConfig) LoadError!void {
         if (self.api_key.len == 0) {
-            std.log.err("Missing required field: api_key", .{});
+            std.log.warn("Missing required field: api_key", .{});
             return error.MissingRequiredField;
         }
         if (self.model.len == 0) {
-            std.log.err("Missing required field: model", .{});
+            std.log.warn("Missing required field: model", .{});
             return error.MissingRequiredField;
         }
         if (self.base_url.len == 0) {
-            std.log.err("Missing required field: base_url", .{});
+            std.log.warn("Missing required field: base_url", .{});
             return error.MissingRequiredField;
         }
     }
@@ -1132,7 +1132,7 @@ pub const LlmConfig = struct {
         // length >= 1, so no inner length check is needed.
         if (std.fs.path.dirname(path)) |parent| {
             std.Io.Dir.cwd().createDirPath(io, parent) catch |err| {
-                std.log.err("Failed to create config dir {s}: {s}", .{ parent, @errorName(err) });
+                std.log.warn("Failed to create config dir {s}: {s}", .{ parent, @errorName(err) });
                 return error.ConfigDirNotFound;
             };
         }
@@ -1140,7 +1140,7 @@ pub const LlmConfig = struct {
         // Write the default config. .truncate = true means any stale
         // file at `path` is replaced atomically by the kernel.
         const file = Io.Dir.createFileAbsolute(io, path, .{ .truncate = true }) catch |err| {
-            std.log.err("Failed to create config file {s}: {s}", .{ path, @errorName(err) });
+            std.log.warn("Failed to create config file {s}: {s}", .{ path, @errorName(err) });
             return error.ConfigFileReadError;
         };
         defer file.close(io);
@@ -1148,11 +1148,11 @@ pub const LlmConfig = struct {
         var write_buffer: [4096]u8 = undefined;
         var writer = file.writer(io, &write_buffer);
         writer.interface.writeAll(defaultConfigJson) catch |err| {
-            std.log.err("Failed to write default config to {s}: {s}", .{ path, @errorName(err) });
+            std.log.warn("Failed to write default config to {s}: {s}", .{ path, @errorName(err) });
             return error.ConfigFileReadError;
         };
         writer.interface.flush() catch |err| {
-            std.log.err("Failed to flush default config to {s}: {s}", .{ path, @errorName(err) });
+            std.log.warn("Failed to flush default config to {s}: {s}", .{ path, @errorName(err) });
             return error.ConfigFileReadError;
         };
     }
@@ -1203,14 +1203,14 @@ pub fn getDefaultConfigDir(allocator: std.mem.Allocator, environment: *std.proce
     switch (builtin.os.tag) {
         .windows => {
             const appdata = environment.get("APPDATA") orelse {
-                std.log.err("APPDATA environment variable not set", .{});
+                std.log.warn("APPDATA environment variable not set", .{});
                 return error.ConfigDirNotFound;
             };
             return std.fs.path.join(allocator, &[_][]const u8{ appdata, app_name });
         },
         .macos => {
             const home = environment.get("HOME") orelse {
-                std.log.err("HOME environment variable not set", .{});
+                std.log.warn("HOME environment variable not set", .{});
                 return error.HomeNotFound;
             };
             return std.fs.path.join(allocator, &[_][]const u8{
@@ -1222,7 +1222,7 @@ pub fn getDefaultConfigDir(allocator: std.mem.Allocator, environment: *std.proce
                 return std.fs.path.join(allocator, &[_][]const u8{ xdg_config, app_name });
             }
             const home = environment.get("HOME") orelse {
-                std.log.err("HOME environment variable not set", .{});
+                std.log.warn("HOME environment variable not set", .{});
                 return error.MissingRequiredField;
             };
             return std.fs.path.join(allocator, &[_][]const u8{ home, ".config", app_name });
