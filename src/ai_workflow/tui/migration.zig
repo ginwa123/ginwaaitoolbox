@@ -1049,6 +1049,121 @@ pub const Migration053AddKanbanColumnDescription = struct {
     }
 };
 
+// ────────────────────────────────────────────────────────────────────────
+// Migration 054 — drop NOT NULL on session_queue_messages.message
+// ────────────────────────────────────────────────────────────────────────
+//
+// Why this migration exists
+// ─────────────────────────
+// Migration 018 (`Migration018CreateSessionQueueMessages`, line 247) declared
+// `message TEXT NOT NULL`, which forces the application to always pass a
+// non-empty message body. But the SqliteBackend.bind layer
+// (src/modules/databases/sqlite/Sqlite.zig:73-74) treats any empty `[]const u8`
+// as SQL NULL — see project memory `sqlite-backend-empty-slice-binds-as-null.md`.
+// So an image-only queued message (params.message = "" with params.image_urls
+// non-empty) triggers `NOT NULL constraint failed:
+// session_queue_messages.message` at INSERT time in `queueMessage`
+// (src/ai_workflow/tui/llm_history.zig:1861).
+//
+// Fix: drop the NOT NULL on `message` so image-only queued messages can be
+// inserted. Image-only queue messages are valid — they represent an attachment
+// that will be sent before any text reply. The frontend renders them correctly
+// (we already pipe-separator split on `|` in the SSE handler).
+//
+// Why the table-recreate pattern (vs `ALTER TABLE ... ALTER COLUMN ... DROP
+// NOT NULL`)
+// ─────────────────────────
+// SQLite's `DROP NOT NULL` via ALTER COLUMN is only available on non-Windows
+// builds and requires SQLite >= 3.35.0. The recreate-table pattern works on
+// every SQLite version with no platform caveats, and matches the convention
+// already used in Migration 023 (drop session_dir from llm_history) and
+// Migration 038 (drop tool_results_json). `session_queue_messages` has no
+// foreign keys into it (verified via `rg REFERENCES session_queue_messages`),
+// so the rename + recreate + copy + drop sequence is safe.
+//
+// How the up() works
+// ──────────────────
+// 1. Detect whether `image_url` column exists. Production DBs always have it
+//    (added by Migration 037). Fresh test DBs that only ran Migration 018
+//    do not. The data-copy branch picks the right column list.
+// 2. Rename the existing table out of the way.
+// 3. Recreate with `message` nullable (no NOT NULL).
+// 4. Copy all existing rows into the new table (preserving message content;
+//    image_url either maps 1:1 or defaults to NULL on DBs that pre-date M037).
+// 5. Drop the renamed table.
+// 6. Recreate the `idx_session_queue_messages_session` index.
+pub const Migration054MakeSessionQueueMessageNullable = struct {
+    pub const version: u32 = 54;
+    pub const name = "make_session_queue_messages_message_nullable";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // 1. Detect whether image_url column exists (added in Migration 037).
+        const has_image_url = blk: {
+            var q = try db.query(allocator,
+                "SELECT 1 FROM pragma_table_info('session_queue_messages') " ++
+                "WHERE name = 'image_url' LIMIT 1",
+                &[_][]const u8{},
+            );
+            defer q.deinit();
+            if (try q.next()) |row| {
+                defer row.deinit(allocator);
+                break :blk true;
+            }
+            break :blk false;
+        };
+
+        // 2. Rename existing table out of the way.
+        try db.exec(allocator,
+            "ALTER TABLE session_queue_messages " ++
+            "RENAME TO _session_queue_messages_old",
+            &[_][]const u8{},
+        );
+
+        // 3. Recreate with `message` nullable (the actual fix).
+        try db.exec(allocator,
+            \\CREATE TABLE session_queue_messages (
+            \\    id TEXT NOT NULL,
+            \\    session_id TEXT NOT NULL,
+            \\    message TEXT,
+            \\    image_url TEXT,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            \\)
+        , &[_][]const u8{});
+
+        // 4. Copy all existing rows. The image_url column defaults to NULL
+        //    on DBs that pre-date Migration 037 (which is harmless — the
+        //    application treats NULL and "" identically on read).
+        if (has_image_url) {
+            try db.exec(allocator,
+                \\INSERT INTO session_queue_messages
+                \\  (id, session_id, message, image_url, created_at)
+                \\SELECT id, session_id, message, image_url, created_at
+                \\  FROM _session_queue_messages_old
+            , &[_][]const u8{});
+        } else {
+            try db.exec(allocator,
+                \\INSERT INTO session_queue_messages
+                \\  (id, session_id, message, created_at)
+                \\SELECT id, session_id, message, created_at
+                \\  FROM _session_queue_messages_old
+            , &[_][]const u8{});
+        }
+
+        // 5. Drop the renamed table.
+        try db.exec(allocator,
+            "DROP TABLE _session_queue_messages_old",
+            &[_][]const u8{},
+        );
+
+        // 6. Recreate the index Migration 018 added.
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_session_queue_messages_session " ++
+            "ON session_queue_messages(session_id)",
+            &[_][]const u8{},
+        );
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -1153,6 +1268,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration051AddKanban.version, .name = Migration051AddKanban.name, .up = Migration051AddKanban.up },
     .{ .version = Migration052DropSessionIdFromWorkspaceItemTasks.version, .name = Migration052DropSessionIdFromWorkspaceItemTasks.name, .up = Migration052DropSessionIdFromWorkspaceItemTasks.up },
     .{ .version = Migration053AddKanbanColumnDescription.version, .name = Migration053AddKanbanColumnDescription.name, .up = Migration053AddKanbanColumnDescription.up },
+    .{ .version = Migration054MakeSessionQueueMessageNullable.version, .name = Migration054MakeSessionQueueMessageNullable.name, .up = Migration054MakeSessionQueueMessageNullable.up },
 };
 
 /// Register all migrations with a MigrationManager
