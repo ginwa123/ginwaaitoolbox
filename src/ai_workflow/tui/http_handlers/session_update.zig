@@ -22,6 +22,26 @@ pub const ResponseSessionUpdate = struct {
     selected_profile_model: []const u8,
 };
 
+pub const SessionUpdateError = error{
+    OutOfMemory,
+    InvalidJson,
+    SessionNotFound,
+    UpdateFailed,
+};
+
+const SessionUpdateInput = struct {
+    session_id: []const u8,
+    body: RequestSessionUpdate,
+    db: *root_mod.sqlite.SqliteBackend,
+};
+
+const SessionUpdateResult = struct {
+    id: []const u8,
+    name: []const u8,
+    status: []const u8,
+    selected_profile_model: []const u8,
+};
+
 /// PUT /api/session/:session_id
 /// PUT /api/llm/session/:session_id
 ///
@@ -30,10 +50,10 @@ pub const ResponseSessionUpdate = struct {
 ///   - name: new session name (empty/null = unchanged)
 pub fn sessionUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
+
     const session_id = req.params.get("session_id") orelse {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
     };
-
     if (session_id.len == 0) {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
     }
@@ -44,30 +64,60 @@ pub fn sessionUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = @errorName(err) }) });
     };
 
-    // Get the singleton DB handle
     const di = try root_mod.getSingleton();
-    const sqlite_db = di.db;
 
+    const result = useCase(allocator, .{
+        .session_id = session_id,
+        .body = parsed,
+        .db = di.db,
+    }) catch |err| {
+        const status: u16 = switch (err) {
+            error.SessionNotFound => 404,
+            error.InvalidJson => 400,
+            else => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.SessionNotFound => "session not found",
+            error.InvalidJson => "Invalid JSON",
+            error.UpdateFailed => "Failed to update session",
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{ .status_code = status, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }) });
+    };
+
+    const data = try http_response.makeSessionUpdateResponse(allocator, .{
+        .id = result.id,
+        .name = result.name,
+        .status = result.status,
+        .selected_profile_model = result.selected_profile_model,
+    });
+
+    return res.jsonResponse(.{ .status_code = 200, .data = data });
+}
+
+fn useCase(allocator: std.mem.Allocator, input: SessionUpdateInput) SessionUpdateError!SessionUpdateResult {
     // Update selected_profile_model (always — even if empty, to allow clearing)
-    try llm_history.updateSessionSelectedProfileModel(allocator, sqlite_db, session_id, parsed.selected_profile_model);
+    llm_history.updateSessionSelectedProfileModel(allocator, input.db, input.session_id, input.body.selected_profile_model) catch {
+        return error.UpdateFailed;
+    };
 
     // Optionally update name
-    if (parsed.name.len > 0) {
-        try llm_history.updateSessionName(allocator, sqlite_db, session_id, parsed.name);
+    if (input.body.name.len > 0) {
+        llm_history.updateSessionName(allocator, input.db, input.session_id, input.body.name) catch {
+            return error.UpdateFailed;
+        };
     }
 
     // Re-read for the response
-    const session = (try llm_history.getSession(allocator, sqlite_db, session_id)) orelse {
-        return res.jsonResponse(.{ .status_code = 404, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "session not found" }) });
-    };
+    const session = (llm_history.getSession(allocator, input.db, input.session_id) catch {
+        return error.UpdateFailed;
+    }) orelse return error.SessionNotFound;
     defer session.deinit(allocator);
 
-    const data = try http_response.makeSessionUpdateResponse(allocator, .{
+    return .{
         .id = session.id,
         .name = session.name,
         .status = session.status,
         .selected_profile_model = session.selected_profile_model,
-    });
-
-    return res.jsonResponse(.{ .status_code = 200, .data = data });
+    };
 }
