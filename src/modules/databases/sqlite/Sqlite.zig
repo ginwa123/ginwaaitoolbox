@@ -76,7 +76,7 @@ pub const Error = error{
 /// lazily because the struct field of the same name is referenced only
 /// when SqliteBackend is actually used.
 pub const SqliteBackend = struct {
-    const c = if (builtin.os.tag != .windows)
+    const c = if (builtin.os.tag == .linux)
         @cImport(@cInclude("sqlite3.h"))
     else
         struct {
