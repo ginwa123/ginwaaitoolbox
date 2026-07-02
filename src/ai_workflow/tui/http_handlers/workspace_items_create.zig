@@ -2,11 +2,87 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 
+pub const WorkspaceItemsCreateError = error{
+    OutOfMemory,
+    InvalidJson,
+    MissingBody,
+    MissingName,
+    NameNotString,
+    MissingPath,
+    PathNotString,
+    DatabaseError,
+};
+
 /// Generate a unique item ID
 fn generateItemId(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     const ts = std.Io.Clock.now(.real, io);
     const timestamp_ns = ts.toNanoseconds();
     return std.fmt.allocPrint(allocator, "item_{d}", .{timestamp_ns});
+}
+
+const WorkspaceItemsCreateResult = struct {
+    id: []const u8,
+    workspace_id: []const u8,
+    item_type: []const u8,
+    name: []const u8,
+    path: []const u8,
+};
+
+fn useCase(
+    allocator: std.mem.Allocator,
+    sqlite_db: *nalarcore.sqlite.SqliteBackend,
+    io: std.Io,
+    workspace_id: []const u8,
+    body: []const u8,
+) WorkspaceItemsCreateError!WorkspaceItemsCreateResult {
+    if (body.len == 0) return error.MissingBody;
+
+    // Per nalar-http-handler-thin-wrapper-pattern.md: parseFromSliceLeaky
+    // is the correct API for per-request arena allocators.
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch {
+        return error.InvalidJson;
+    };
+    const root = parsed.object;
+
+    const name_val = root.get("name") orelse return error.MissingName;
+    if (name_val != .string) return error.NameNotString;
+    const name = name_val.string;
+
+    const path_val = root.get("path") orelse return error.MissingPath;
+    if (path_val != .string) return error.PathNotString;
+    const path = path_val.string;
+
+    var item_type: []const u8 = "folder";
+    if (root.get("item_type")) |type_val| {
+        if (type_val == .string) {
+            item_type = type_val.string;
+        }
+    }
+
+    const item_id = generateItemId(allocator, io) catch return error.OutOfMemory;
+
+    // Insert with timestamps, item_type, name, path, AND a fresh
+    // `position` value. The position is computed as
+    // `COALESCE(MAX(position), -1) + 1` scoped to the workspace —
+    // the COALESCE handles the empty-workspace case (no rows →
+    // MAX is NULL → -1 → position 0). The new item appears at the
+    // top of the expanded workspace (ORDER BY position DESC puts
+    // the highest position first). The drag-reorder endpoint can
+    // later reassign these values. `workspace_id` is bound twice
+    // in the args tuple: once for the column, once for the
+    // correlated subquery.
+    sqlite_db.exec(allocator,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1, datetime('now'), datetime('now'))",
+        &[_][]const u8{ item_id, workspace_id, item_type, name, path, workspace_id },
+    ) catch return error.DatabaseError;
+
+    return .{
+        .id = item_id,
+        .workspace_id = workspace_id,
+        .item_type = item_type,
+        .name = name,
+        .path = path,
+    };
 }
 
 /// POST /api/workspaces/:workspace_id/items - Create a new workspace item
@@ -21,66 +97,34 @@ pub fn workspaceItemsCreateHandler(ctx: gserverz.HttpContext, req: gserverz.Http
         return res.jsonResponse(.{ .status_code = 400, .data = "{\"error\":\"workspace_id required\"" });
     }
 
-    const body = req.body;
-    if (body.len == 0) {
-        return res.jsonResponse(.{ .status_code = 400, .data = "{\"error\":\"request body required\"" });
-    }
-
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
-        return res.jsonResponse(.{ .status_code = 400, .data = "{\"error\":\"Invalid JSON\"" });
-    };
-    defer parsed.deinit();
-
-    const root = parsed.value.object;
-
-    // Extract name (required)
-    const name_val = root.get("name") orelse {
-        return res.jsonResponse(.{ .status_code = 400, .data = "{\"error\":\"name required\"" });
-    };
-    if (name_val != .string) {
-        return res.jsonResponse(.{ .status_code = 400, .data = "{\"error\":\"name must be a string\"" });
-    }
-    const name = name_val.string;
-
-    // Extract path (required)
-    const path_val = root.get("path") orelse {
-        return res.jsonResponse(.{ .status_code = 400, .data = "{\"error\":\"path required\"" });
-    };
-    if (path_val != .string) {
-        return res.jsonResponse(.{ .status_code = 400, .data = "{\"error\":\"path must be a string\"" });
-    }
-    const path = path_val.string;
-
-    // Extract item_type (optional, default to "folder")
-    var item_type: []const u8 = "folder";
-    if (root.get("item_type")) |type_val| {
-        if (type_val == .string) {
-            item_type = type_val.string;
-        }
-    }
-
-    const item_id = try generateItemId(allocator, ctx.io);
-
-    // Insert with timestamps, item_type, name, path, AND a fresh
-    // `position` value. The position is computed as
-    // `COALESCE(MAX(position), -1) + 1` scoped to the workspace —
-    // the COALESCE handles the empty-workspace case (no rows →
-    // MAX is NULL → -1 → position 0). The new item appears at the
-    // top of the expanded workspace (ORDER BY position DESC puts
-    // the highest position first). The drag-reorder endpoint can
-    // later reassign these values. `workspace_id` is bound twice
-    // in the args tuple: once for the column, once for the
-    // correlated subquery.
-    sqlite_db.exec(allocator, "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1, datetime('now'), datetime('now'))", &.{ item_id, workspace_id, item_type, name, path, workspace_id }) catch {
-        return res.jsonResponse(.{ .status_code = 500, .data = "{\"error\":\"Failed to create workspace item\"" });
+    const result = useCase(allocator, sqlite_db, ctx.io, workspace_id, req.body) catch |err| {
+        const status: u16 = switch (err) {
+            error.InvalidJson, error.MissingBody,
+            error.MissingName, error.NameNotString,
+            error.MissingPath, error.PathNotString => 400,
+            error.DatabaseError, error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.InvalidJson => "Invalid JSON",
+            error.MissingBody => "request body required",
+            error.MissingName => "name required",
+            error.NameNotString => "name must be a string",
+            error.MissingPath => "path required",
+            error.PathNotString => "path must be a string",
+            error.DatabaseError => "Failed to create workspace item",
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try std.fmt.allocPrint(allocator, "{{\"error\":\"{s}\"}}", .{message}),
+        });
     };
 
     return res.jsonResponse(.{ .status_code = 201, .data = try std.fmt.allocPrint(allocator, "{{\"id\":\"{s}\",\"workspace_id\":\"{s}\",\"item_type\":\"{s}\",\"name\":\"{s}\",\"path\":\"{s}\"}}", .{
-        item_id,
-        workspace_id,
-        item_type,
-        name,
-        path,
+        result.id,
+        result.workspace_id,
+        result.item_type,
+        result.name,
+        result.path,
     }) });
 }
-

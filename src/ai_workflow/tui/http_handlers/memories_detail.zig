@@ -1,17 +1,32 @@
+//! `GET /api/memories/:name` — read a global memory file's content + metadata.
+//!
+//! Layered as:
+//!   - `useCase` — validates the `:name`, resolves the environment,
+//!     reads the file, re-lists to derive `title/path/size`, and
+//!     returns a heap-owned `MemoryDetailPayload`.
+//!   - `memoryDetailHandler` — thin orchestrator: parses `:name`
+//!     path param, calls `useCase`, maps errors to status codes,
+//!     builds the JSON response.
+//!
+//! Preserves the static-contract assertions in `memories_crud_test.zig`:
+//!   - `getSingleton` + `500` + `Missing environment` substring checks
+//!   - `params.get("name")` + `400` substring checks
+//!   - `readMemoryFile` + `listAllMemories` helper call substring checks
+//!   - `isValidMemoryName` validation substring check
+//!   - `std.json.Stringify.valueAlloc` + `content` field substring checks
+
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const memories_mod = nalarcore.memories;
 const http_response = @import("http_response.zig");
 
-/// Response shape for `GET /api/memories/:name`.
+/// Response payload for `GET /api/memories/:name`.
 ///
-/// `memory` is non-null on success; `error_message` is non-null on
-/// 4xx/5xx. Uses `std.json.Stringify.valueAlloc` (see `task_create.zig`,
-/// `skill_detail.zig`) so `content` is JSON-escaped automatically — do
-/// not hand-roll JSON for the body, it can break on memories that
-/// contain `"` or backslash.
-const MemoryDetailPayload = struct {
+/// `content` is JSON-escaped automatically by
+/// `std.json.Stringify.valueAlloc` — do not hand-roll JSON for the
+/// body, it can break on memories that contain `"` or backslash.
+pub const MemoryDetailPayload = struct {
     name: []const u8,
     title: []const u8,
     path: []const u8,
@@ -19,18 +34,127 @@ const MemoryDetailPayload = struct {
     content: []const u8,
 };
 
+/// Domain-level error set for `useCase`. Each variant maps to a
+/// distinct HTTP status code via two exhaustive switches in the
+/// handler.
+pub const MemoryDetailError = error{
+    /// `getSingleton()` failed — server not initialised.
+    ServerNotInitialized,
+    /// Singleton has no environment (server constructed without env).
+    /// Maps to 500 with the "Missing environment" message.
+    MissingEnvironment,
+    /// `:name` path param was missing or empty.
+    NameRequired,
+    /// The name failed `isValidMemoryName` (path-traversal or non-md).
+    InvalidName,
+    /// The file does not exist on disk (or the re-list did not see it).
+    NotFound,
+    /// `allocator.dupe` failed while building the heap-owned payload.
+    OutOfMemory,
+};
+
+/// Inputs to the detail use-case.
+pub const MemoryDetailInput = struct {
+    name: []const u8,
+};
+
+/// Output of the detail use-case. The slice fields are HEAP-OWNED
+/// by the use-case (duplicated from `listAllMemories` +
+/// `readMemoryFile` so they survive the internal `freeMemoriesList`
+/// and `allocator.free(content)` defers). The handler is responsible
+/// for freeing them — typically a `defer` block in the handler does
+/// per-field `allocator.free(output.payload.content)` etc.
+pub const MemoryDetailOutput = struct {
+    payload: MemoryDetailPayload,
+};
+
+// =====================================================================
+// Use case
+// =====================================================================
+
+/// Read a global memory file's content and metadata.
+///
+/// Steps:
+///   1. Get the singleton + env.
+///   2. Validate `name` (non-empty + `isValidMemoryName`).
+///   3. Read the file via `readMemoryFile`. File not found → 404.
+///   4. Re-list via `listAllMemories` to derive `title/path/size`.
+///   5. Locate the entry by name. Missing → 404 (defensive).
+///   6. Duplicate the matched slices so the output survives internal
+///      `free` defers.
+fn useCase(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    input: MemoryDetailInput,
+) MemoryDetailError!MemoryDetailOutput {
+    const di = nalarcore.getSingleton() catch return error.ServerNotInitialized;
+    const environment = di.environment orelse return error.MissingEnvironment;
+
+    if (input.name.len == 0) return error.NameRequired;
+    if (!memories_mod.isValidMemoryName(input.name)) return error.InvalidName;
+
+    const content = memories_mod.readMemoryFile(allocator, io, environment, input.name) orelse {
+        return error.NotFound;
+    };
+    defer allocator.free(content);
+
+    // Re-list for title/path/size. The re-list is cheap (single
+    // `openDir` + iterate) and avoids re-parsing the file to extract
+    // the title (readMemoryFile returns raw bytes).
+    const list = memories_mod.listAllMemories(allocator, io, environment);
+    defer memories_mod.freeMemoriesList(allocator, list);
+
+    var found: ?memories_mod.MemoryInfo = null;
+    for (list) |m| {
+        if (std.mem.eql(u8, m.name, input.name)) {
+            found = m;
+            break;
+        }
+    }
+    const m = found orelse {
+        // Defensive: the file existed at read time but the re-list
+        // does not see it. Treat as not-found rather than 200/empty.
+        return error.NotFound;
+    };
+
+    // Duplicate the matched slices + content so the output survives
+    // the `free` defers above. `errdefer` reverts each successful
+    // dupe if a later dupe fails (the partial state would otherwise
+    // leak — the dupes are on `allocator`, which may or may not be
+    // an arena).
+    var duped_name: ?[]u8 = null;
+    var duped_title: ?[]u8 = null;
+    var duped_path: ?[]u8 = null;
+    var duped_content: ?[]u8 = null;
+    errdefer {
+        if (duped_name) |v| allocator.free(v);
+        if (duped_title) |v| allocator.free(v);
+        if (duped_path) |v| allocator.free(v);
+        if (duped_content) |v| allocator.free(v);
+    }
+    duped_name = try allocator.dupe(u8, m.name);
+    duped_title = try allocator.dupe(u8, m.title);
+    duped_path = try allocator.dupe(u8, m.path);
+    duped_content = try allocator.dupe(u8, content);
+
+    return .{ .payload = .{
+        .name = duped_name.?,
+        .title = duped_title.?,
+        .path = duped_path.?,
+        .size = m.size,
+        .content = duped_content.?,
+    } };
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
 const MemoryDetailResponse = struct {
     memory: ?MemoryDetailPayload = null,
     error_message: ?[]const u8 = null,
 };
 
-/// GET /api/memories/:name
-///
-/// On success: 200 with `{"memory":{"name","title","path","size","content"}}`.
-/// Errors:
-///   - 500  missing environment
-///   - 400  missing `:name` path parameter
-///   - 404  the file does not exist (or its name fails validation)
 pub fn memoryDetailHandler(
     ctx: gserverz.HttpContext,
     req: gserverz.HttpRequest,
@@ -38,77 +162,50 @@ pub fn memoryDetailHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
-    const environment = di.environment orelse {
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing environment" }),
-        });
-    };
-
     const name = req.params.get("name") orelse {
         return res.jsonResponse(.{
             .status_code = 400,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing :name" }),
         });
     };
-    if (name.len == 0) {
-        return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing :name" }),
-        });
-    }
 
-    // Reject path separators / `..` early. `readMemoryFile` would also
-    // return null for these names, but we want a 400 (client error),
-    // not a 404 (not found). `isValidMemoryName` lives in
-    // `src/modules/agent/tools/memories.zig` and is `pub`.
-    if (!memories_mod.isValidMemoryName(name)) {
+    const outcome = useCase(allocator, ctx.io, .{ .name = name }) catch |err| {
+        // Exhaustive mapping — adding a new MemoryDetailError variant
+        // will fail to compile here (intentional). No `else` prong.
+        const status: u16 = switch (err) {
+            error.ServerNotInitialized => 500,
+            error.MissingEnvironment => 500,
+            error.NameRequired => 400,
+            error.InvalidName => 400,
+            error.NotFound => 404,
+            error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.ServerNotInitialized => "Server not initialized",
+            error.MissingEnvironment => "Missing environment",
+            error.NameRequired => "Missing :name",
+            error.InvalidName => "Invalid memory name",
+            error.NotFound => "Memory not found",
+            error.OutOfMemory => "Out of memory",
+        };
         return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid memory name" }),
-        });
-    }
-
-    const content = memories_mod.readMemoryFile(allocator, ctx.io, environment, name) orelse {
-        return res.jsonResponse(.{
-            .status_code = 404,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Memory not found" }),
-        });
-    };
-    defer allocator.free(content);
-
-    // Look up title/path/size via a fresh list. The re-list is cheap
-    // (a single `openDir` + iterate) and avoids re-parsing the file
-    // to extract the title — `readMemoryFile` returns raw bytes.
-    const list = memories_mod.listAllMemories(allocator, ctx.io, environment);
-    defer memories_mod.freeMemoriesList(allocator, list);
-
-    var found: ?memories_mod.MemoryInfo = null;
-    for (list) |m| {
-        if (std.mem.eql(u8, m.name, name)) {
-            found = m;
-            break;
-        }
-    }
-    const m = found orelse {
-        // Defensive: the file existed at read time but the re-list does
-        // not see it. Treat as not-found rather than 200/empty.
-        return res.jsonResponse(.{
-            .status_code = 404,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Memory not found" }),
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
         });
     };
 
-    const payload = MemoryDetailPayload{
-        .name = m.name,
-        .title = m.title,
-        .path = m.path,
-        .size = m.size,
-        .content = content,
-    };
+    // Free the useCase's heap-owned slices. On the per-request arena
+    // this is a no-op (the arena reaps at request end) but the
+    // explicit frees are defensive + document ownership.
+    defer {
+        allocator.free(outcome.payload.name);
+        allocator.free(outcome.payload.title);
+        allocator.free(outcome.payload.path);
+        allocator.free(outcome.payload.content);
+    }
+
     return res.jsonResponse(.{
         .status_code = 200,
-        .data = try std.json.Stringify.valueAlloc(allocator, MemoryDetailResponse{ .memory = payload }, .{}),
+        .data = try std.json.Stringify.valueAlloc(allocator, MemoryDetailResponse{ .memory = outcome.payload }, .{}),
     });
 }

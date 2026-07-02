@@ -445,13 +445,13 @@ fn readConfigFile(allocator: std.mem.Allocator, io: std.Io, config_path: []const
 /// The parsed struct's strings are independent allocations; ownership
 /// transfers to the caller (use `deinit` to free them).
 fn parseConfigJson(allocator: std.mem.Allocator, content: []const u8) !NalarConfigJsonForDelete {
-    const parsed = std.json.parseFromSlice(NalarConfigJsonForDelete, allocator, content, .{
+    const parsed = std.json.parseFromSliceLeaky(NalarConfigJsonForDelete, allocator, content, .{
         .ignore_unknown_fields = true,
     }) catch |err| {
         std.log.err("DELETE /api/config/nalar/profiles: failed to parse config: {s}", .{@errorName(err)});
         return err;
     };
-    return parsed.value;
+    return parsed;
 }
 
 /// Was the named profile the currently-active one? The use-case

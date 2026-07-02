@@ -1,10 +1,26 @@
+//! `GET /api/sessions/to-client-ids` — map every active session to
+//! the SSE client IDs currently listening on it.
+//!
+//! Layered as `useCase` (resolve singleton + acquire lock + walk the
+//! session→client-ids map + hex-encode each [16]u8 client id + build
+//! JSON) and a thin handler that maps errors to status codes.
+
 const std = @import("std");
-const root_mod = @import("nalarcore");
+const nalarcore = @import("nalarcore");
+const gserverz = nalarcore.gserverz;
 
-const gserverz = root_mod.gserverz;
-const http_response = root_mod.http_response;
+pub const SessionToClientIdsError = error{
+    ServerContextNotInitialized,
+    /// `std.json.Stringify.valueAlloc` returns `error{Canceled}` on
+    /// the Io runtime. Effectively unreachable on the per-request
+    /// arena, but the type system requires the variant.
+    Canceled,
+    /// `std.json.Stringify.valueAlloc` returns `error{OutOfMemory}`.
+    /// Same as above — unreachable on arena, required by the
+    /// type system.
+    OutOfMemory,
+};
 
-/// Response structure for session to client IDs mapping
 pub const SessionToClientIdsEntry = struct {
     session_id: []const u8,
     client_ids: []const []const u8,
@@ -16,7 +32,13 @@ pub const SessionToClientIdsResponse = struct {
     total_clients: u32,
 };
 
-/// Convert a [16]u8 client ID to a hex string
+pub const SessionToClientIdsResult = []const u8; // pre-serialized JSON
+
+// =====================================================================
+// Use case
+// =====================================================================
+
+/// Convert a [16]u8 client ID to a 32-char lowercase hex string.
 fn clientIdToHex(client_id: [16]u8, allocator: std.mem.Allocator) ![]u8 {
     const hex_chars = "0123456789abcdef";
     const result = try allocator.alloc(u8, 32);
@@ -27,22 +49,19 @@ fn clientIdToHex(client_id: [16]u8, allocator: std.mem.Allocator) ![]u8 {
     return result;
 }
 
-/// Handler to get all session to client IDs mappings
-pub fn sessionToClientIdsHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
-    const allocator = ctx.allocator;
-    _ = req;
+fn useCase(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+) SessionToClientIdsError!SessionToClientIdsResult {
+    const di = nalarcore.getSingleton() catch return error.ServerContextNotInitialized;
 
-    const di = root_mod.getSingleton() catch {
-        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server context not initialized" }) });
-    };
-
-    const io = di.io;
-
-    // Acquire lock to read session_to_client_ids
+    // Acquire the session_map_lock to safely read the shared map.
     try di.session_map_lock.lock(io);
     defer di.session_map_lock.unlock(io);
 
-    var entries = std.ArrayListUnmanaged(SessionToClientIdsEntry){.items = &.{}, .capacity = 0};
+    var entries = std.ArrayListUnmanaged(SessionToClientIdsEntry){ .items = &.{}, .capacity = 0 };
+    errdefer entries.deinit(allocator);
+
     var total_clients: u32 = 0;
 
     var it = di.session_to_client_ids.iterator();
@@ -50,8 +69,8 @@ pub fn sessionToClientIdsHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRe
         const session_id = entry.key_ptr.*;
         const client_list = entry.value_ptr.*;
 
-        // Allocate space for client ID hex strings
-        var client_id_hexes = std.ArrayListUnmanaged([]const u8){.items = &.{}, .capacity = 0};
+        var client_id_hexes = std.ArrayListUnmanaged([]const u8){ .items = &.{}, .capacity = 0 };
+        errdefer client_id_hexes.deinit(allocator);
 
         for (client_list.items) |client_id| {
             const hex_str = try clientIdToHex(client_id, allocator);
@@ -65,13 +84,42 @@ pub fn sessionToClientIdsHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRe
         });
     }
 
-    // Build response
     const response_data = SessionToClientIdsResponse{
         .sessions = entries.items,
         .total_sessions = @as(u32, @intCast(entries.items.len)),
         .total_clients = total_clients,
     };
-    const response = try std.json.Stringify.valueAlloc(allocator, response_data, .{});
+    return try std.json.Stringify.valueAlloc(allocator, response_data, .{});
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
+pub fn sessionToClientIdsHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    res: gserverz.HttpResponse,
+) !gserverz.HttpResponse {
+    _ = req;
+    const allocator = ctx.allocator;
+
+    const response = useCase(allocator, ctx.io) catch |err| {
+        const status: u16 = switch (err) {
+            error.ServerContextNotInitialized => 500,
+            error.Canceled => 500,
+            error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.ServerContextNotInitialized => "Server context not initialized",
+            error.Canceled => "Io operation canceled",
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try nalarcore.http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        });
+    };
 
     return res.jsonResponse(.{ .status_code = 200, .data = response });
 }

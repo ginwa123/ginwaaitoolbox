@@ -58,7 +58,7 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     };
 
     // Parse and return the config
-    const parsed = std.json.parseFromSlice(ConfigJson, allocator, content, .{
+    const parsed = std.json.parseFromSliceLeaky(ConfigJson, allocator, content, .{
         .ignore_unknown_fields = true,
     }) catch |err| {
         std.log.err("Failed to parse config: {s}", .{@errorName(err)});
@@ -68,7 +68,7 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         });
     };
 
-    const cfg = parsed.value;
+    const cfg = parsed;
 
     // Build the typed sub_agents response from the typed parse target.
     // `cfg.sub_agents` is borrowed from `parsed` (zero-copy view into

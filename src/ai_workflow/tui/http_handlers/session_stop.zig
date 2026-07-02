@@ -1,16 +1,48 @@
+//! Stop/cancel an LLM session by setting the `cancelled` flag in the DB.
+//!
+//! The workflow's loop checks this flag and breaks out, stopping the
+//! async IO.
+//!
+//! Layered as `useCase` (cancel in DB) and a thin handler that maps
+//! the outcome + errors to status codes / JSON.
+
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const http_response = @import("http_response.zig");
 const gserverz = nalarcore.gserverz;
 const llm_history = nalarcore.llm_history;
 
-/// Stop/cancel an LLM session by setting the cancelled flag in the database.
-/// The workflow's loop will check this flag and break out, stopping the async IO.
-pub fn sessionStopHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+pub const SessionStopError = error{
+    MissingSessionId,
+    CancelFailed,
+    GlobalContextNotInitialized,
+};
+
+// =====================================================================
+// Use case
+// =====================================================================
+
+fn useCase(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    session_id: []const u8,
+) SessionStopError!void {
+    llm_history.cancelSession(allocator, db, session_id) catch return error.CancelFailed;
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
+pub fn sessionStopHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    res: gserverz.HttpResponse,
+) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
+
     const di = try nalarcore.getSingleton();
 
-    // Extract session_id from URL path parameter ":session"
     const session_id = req.params.get("session") orelse {
         return res.jsonResponse(.{
             .status_code = 400,
@@ -18,15 +50,27 @@ pub fn sessionStopHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         });
     };
 
-    // Cancel the session in the database (sets cancelled = 1)
-    llm_history.cancelSession(allocator, di.db, session_id) catch |err| {
+    useCase(allocator, di.db, session_id) catch |err| {
+        const status: u16 = switch (err) {
+            error.MissingSessionId => 400,
+            error.CancelFailed, error.GlobalContextNotInitialized => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.MissingSessionId => "Missing session_id path parameter",
+            error.CancelFailed => @errorName(err),
+            error.GlobalContextNotInitialized => "Global context not initialized",
+        };
         return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = @errorName(err) }),
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
         });
     };
 
-    const success_json = try std.fmt.allocPrint(allocator, "{{\"success\":true,\"session_id\":\"{s}\"}}", .{session_id});
+    const success_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"success\":true,\"session_id\":\"{s}\"}}",
+        .{session_id},
+    );
     return res.jsonResponse(.{
         .status_code = 200,
         .data = success_json,

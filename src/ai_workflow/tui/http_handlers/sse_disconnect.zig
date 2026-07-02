@@ -1,21 +1,76 @@
-const std = @import("std");
-const nalar_core = @import("nalarcore");
-const gserverz = nalar_core.gserverz;
+//! Notify server that the client is disconnecting from an SSE stream.
+//!
+//! This removes ALL SSE connections for the session (forceful
+//! disconnect of the entire session).
+//!
+//! Layered as `useCase` (resolve server + remove session) and a thin
+//! handler that maps the outcome + errors to status codes / JSON.
 
-/// Notify server that client is disconnecting from SSE stream
-/// This removes ALL SSE connections for the session (forceful disconnect of entire session)
-pub fn sseDisconnectHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+const std = @import("std");
+const nalarcore = @import("nalarcore");
+const gserverz = nalarcore.gserverz;
+
+pub const SseDisconnectError = error{
+    ServerNotAvailable,
+};
+
+/// Outcome of the SSE-disconnect use-case. The `removed_clients`
+/// field carries the count of connections that were closed — the
+/// handler surfaces it in the response so the frontend can log
+/// "removed N stale connections" without a follow-up query.
+pub const SseDisconnectResult = struct {
+    removed_clients: u32,
+};
+
+// =====================================================================
+// Use case
+// =====================================================================
+
+fn useCase(session_id: []const u8) SseDisconnectError!SseDisconnectResult {
+    const server = gserverz.global_server orelse return error.ServerNotAvailable;
+    const removed_count = server.sse_manager.removeSession(session_id);
+    std.log.info("SSE: Session {s} disconnected, {d} client(s) removed", .{ session_id, removed_count });
+    return .{ .removed_clients = removed_count };
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
+/// Notify server that client is disconnecting from SSE stream.
+pub fn sseDisconnectHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    res: gserverz.HttpResponse,
+) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const session_id = req.path_param("session_id") orelse {
-        return res.jsonResponse(.{ .status_code = 400, .data = "{\"error\":\"Missing session_id\"}" });
+
+    // Per `nalar-http-handler-thin-wrapper-pattern`, use
+    // `req.params.get` rather than the (non-existent) `path_param`.
+    const session_id = req.params.get("session_id") orelse {
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = "{\"error\":\"Missing session_id\"}",
+        });
     };
 
-    if (gserverz.global_server) |server| {
-        const removed_count = server.sse_manager.removeSession(session_id);
-        std.log.info("SSE: Session {s} disconnected, {d} client(s) removed", .{ session_id, removed_count });
-        const body = try std.fmt.allocPrint(allocator, "{{\"status\":\"disconnected\",\"removed_clients\":{d}}}", .{removed_count});
-        return res.jsonResponse(.{ .status_code = 200, .data = body });
-    }
+    const outcome = useCase(session_id) catch |err| {
+        const status: u16 = switch (err) {
+            error.ServerNotAvailable => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.ServerNotAvailable => "Server not available",
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try std.fmt.allocPrint(allocator, "{{\"error\":\"{s}\"}}", .{message}),
+        });
+    };
 
-    return res.jsonResponse(.{ .status_code = 500, .data = "{\"error\":\"Server not available\"}" });
+    const body = try std.fmt.allocPrint(
+        allocator,
+        "{{\"status\":\"disconnected\",\"removed_clients\":{d}}}",
+        .{outcome.removed_clients},
+    );
+    return res.jsonResponse(.{ .status_code = 200, .data = body });
 }

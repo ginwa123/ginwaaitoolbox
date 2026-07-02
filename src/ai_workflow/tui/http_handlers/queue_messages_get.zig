@@ -1,61 +1,112 @@
+//! `GET /api/queue_messages/:session_id` — read all queued messages
+//! for a session, oldest first.
+//!
+//! Layered as `useCase` (resolve singleton + DB query + build JSON)
+//! and a thin handler that maps errors to status codes.
+
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalar_core = @import("nalarcore");
-const gserverz = nalar_core.gserverz;
-const logger = nalar_core.logger;
+const nalarcore = @import("nalarcore");
+const gserverz = nalarcore.gserverz;
 
-/// Queue message entry structure
+pub const QueueMessagesError = error{
+    MissingSessionId,
+    GlobalContextNotInitialized,
+    QueryFailed,
+    /// `allocator.dupe` returned no memory. In production the
+    /// per-request arena makes this unreachable but the type
+    /// system requires the variant so `try allocator.dupe`
+    /// propagates a typed error.
+    OutOfMemory,
+};
+
 pub const QueueMessageEntry = struct {
     id: []const u8,
     message: []const u8,
 };
 
-/// Response structure for queue messages
 pub const QueueMessagesResponse = struct {
     messages: []QueueMessageEntry,
     count: usize,
 };
 
-/// GET handler for queue messages - retrieves all queued messages for a session
-pub fn queueMessagesGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
-    const allocator = ctx.allocator;
+pub const QueueMessagesResult = []const u8; // pre-serialized JSON
 
-    const session_id = req.params.get("session_id") orelse {
-        const err_resp = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" });
-        return res.jsonResponse(.{ .status_code = 400, .data = err_resp });
-    };
+// =====================================================================
+// Use case
+// =====================================================================
 
-    const di = nalar_core.getSingleton() catch {
-        const err_resp = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" });
-        return res.jsonResponse(.{ .status_code = 500, .data = err_resp });
-    };
-
-    const db = di.db;
-
-    // Query all queued messages for this session
+fn useCase(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    session_id: []const u8,
+) QueueMessagesError!QueueMessagesResult {
     const select_sql = "SELECT id, message FROM session_queue_messages WHERE session_id = ? ORDER BY created_at ASC";
-    var rows = db.query(allocator, select_sql, &.{session_id}) catch {
-        const err_resp = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Database query failed" });
-        return res.jsonResponse(.{ .status_code = 500, .data = err_resp });
-    };
+    var rows = db.query(allocator, select_sql, &.{session_id}) catch return error.QueryFailed;
 
     var messages = std.ArrayList(QueueMessageEntry).empty;
+    errdefer messages.deinit(allocator);
 
     while (true) {
         const row_opt = rows.next() catch break;
         const row = row_opt orelse break;
 
-        const id = try allocator.dupe(u8, row.values[0]);
-        const msg = try allocator.dupe(u8, row.values[1]);
-        try messages.append(allocator, .{ .id = id, .message = msg });
+        try messages.append(allocator, .{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .message = try allocator.dupe(u8, row.values[1]),
+        });
     }
 
     const response = QueueMessagesResponse{
         .messages = try messages.toOwnedSlice(allocator),
         .count = messages.items.len,
     };
+    return try std.json.Stringify.valueAlloc(allocator, response, .{});
+}
 
-    const json_str = try std.json.Stringify.valueAlloc(allocator, response, .{});
+// =====================================================================
+// Handler
+// =====================================================================
+
+pub fn queueMessagesGetHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    res: gserverz.HttpResponse,
+) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+
+    const session_id = req.params.get("session_id") orelse {
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }),
+        });
+    };
+
+    const di = nalarcore.getSingleton() catch {
+        return res.jsonResponse(.{
+            .status_code = 500,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }),
+        });
+    };
+
+    const json_str = useCase(allocator, di.db, session_id) catch |err| {
+        const status: u16 = switch (err) {
+            error.MissingSessionId => 400,
+            error.GlobalContextNotInitialized => 500,
+            error.QueryFailed => 500,
+            error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.MissingSessionId => "Missing session_id",
+            error.GlobalContextNotInitialized => "Server not initialized",
+            error.QueryFailed => "Database query failed",
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        });
+    };
 
     return res.jsonResponse(.{ .status_code = 200, .data = json_str });
 }
