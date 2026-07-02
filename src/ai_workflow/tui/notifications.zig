@@ -50,9 +50,9 @@ pub fn buildCommand(allocator: std.mem.Allocator, title: []const u8, body: []con
             // caller is responsible for keeping the strings ASCII-clean
             // for this MVP. (A future enhancement can add full escaping.)
             const title_esc = try escapeAppleScript(allocator, title);
-            errdefer allocator.free(title_esc);
+            defer allocator.free(title_esc);
             const body_esc = try escapeAppleScript(allocator, truncated);
-            errdefer allocator.free(body_esc);
+            defer allocator.free(body_esc);
             const script = try std.fmt.allocPrint(
                 allocator,
                 "display notification \"{s}\" with title \"{s}\"",
@@ -62,6 +62,10 @@ pub fn buildCommand(allocator: std.mem.Allocator, title: []const u8, body: []con
             try args.append(allocator, try allocator.dupe(u8, "osascript"));
             try args.append(allocator, try allocator.dupe(u8, "-e"));
             try args.append(allocator, script);
+            // `truncated` was consumed by escapeAppleScript (which copies)
+            // and the errdefer only fires on error. Free it now since we're
+            // about to return successfully.
+            allocator.free(truncated);
         },
         .windows => {
             // PowerShell stub: uses MessageBox (a blocking modal) instead
