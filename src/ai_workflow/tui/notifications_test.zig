@@ -97,14 +97,41 @@ test "buildCommand truncates body longer than 140 chars" {
         for (cmd) |arg| allocator.free(arg);
         allocator.free(cmd);
     }
-    // Every argv item should be at most ~200 chars (some platforms wrap).
+    // Every argv item should be bounded by the platform's argv-item length
+    // limit. Linux notify-send takes 4 short args (< 200 chars). macOS
+    // osascript takes a single -e script that includes the body, so the
+    // script length is "display notification \"...\" with title \"T\"" ≈
+    // 200 + body_len. Windows PowerShell takes a single -Command script
+    // that embeds the body via format string — the script is the
+    // longest (≈ 175 + title + body_len ≈ 316 with title="T" and
+    // body_len=140). 400 chars is comfortably above all of these.
+    const max_arg_len: usize = if (builtin.os.tag == .windows) 400 else 350;
     for (cmd) |arg| {
-        try testing.expect(arg.len <= 200);
+        try testing.expect(arg.len <= max_arg_len);
     }
-    // The body should be the last item and end with the ellipsis.
-    const body_arg = cmd[cmd.len - 1];
-    try testing.expectEqual(@as(usize, 140), body_arg.len);
-    try testing.expect(std.mem.endsWith(u8, body_arg, "…"));
+    // The body (truncated to 140 chars + ellipsis "…") should be present
+    // in the command's output. On Linux/macOS the body is a separate argv
+    // item; on Windows it's embedded in the PowerShell script. We check
+    // for its presence across the entire command (concatenated) so the
+    // assertion works on every platform.
+    var all_args: std.ArrayList(u8) = .empty;
+    defer all_args.deinit(allocator);
+    for (cmd) |arg| {
+        try all_args.appendSlice(allocator, arg);
+        try all_args.append(allocator, '\n');
+    }
+    // The body should appear in the rendered command as 137 'x' chars
+    // (MAX_BODY_LEN=140 minus ellipsis_len=3) followed by the ellipsis.
+    // This confirms truncation kicked in and the body was correctly
+    // embedded in the command.
+    var expected_body_buf: [notifications.MAX_BODY_LEN]u8 = undefined;
+    @memset(expected_body_buf[0 .. notifications.MAX_BODY_LEN - 3], 'x');
+    @memcpy(
+        expected_body_buf[notifications.MAX_BODY_LEN - 3 ..][0..3],
+        "…",
+    );
+    const expected_body_substr: []const u8 = &expected_body_buf;
+    try testing.expect(std.mem.indexOf(u8, all_args.items, expected_body_substr) != null);
 }
 
 // ---------------------------------------------------------------------------

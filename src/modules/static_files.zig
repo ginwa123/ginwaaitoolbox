@@ -92,11 +92,14 @@ fn mimeForPath(path: []const u8) []const u8 {
 
 /// Returns true when `resolved` lives inside `root` (or equals it).
 /// Prevents the false-positive match where `/tmp/abc` is a prefix of
-/// `/tmp/abcd/...`.
+/// `/tmp/abcd/...`. Accepts both `/` and `\` as the path separator so
+/// this works on Windows (where realPath returns backslash-separated
+/// paths) AND on POSIX (where realPath returns forward-slash paths).
 fn isInsideRoot(root: []const u8, resolved: []const u8) bool {
     if (!std.mem.startsWith(u8, resolved, root)) return false;
     if (resolved.len == root.len) return true;
-    return resolved[root.len] == '/';
+    const next_char = resolved[root.len];
+    return next_char == '/' or next_char == '\\';
 }
 
 // ---------------------------------------------------------------------------

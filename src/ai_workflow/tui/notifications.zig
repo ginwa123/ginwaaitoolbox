@@ -5,7 +5,7 @@ const log = std.log.scoped(.notifications);
 /// Maximum characters of the body we pass to the OS. notify-send and friends
 /// don't have a hard limit, but very long bodies look bad in toast UIs and
 /// are truncated visually anyway. 140 chars is roughly 2 sentences.
-const MAX_BODY_LEN: usize = 140;
+pub const MAX_BODY_LEN: usize = 140;
 
 pub const NotifyError = error{
     /// The OS notification binary is not installed (e.g. notify-send on a
@@ -80,6 +80,10 @@ pub fn buildCommand(allocator: std.mem.Allocator, title: []const u8, body: []con
             try args.append(allocator, try allocator.dupe(u8, "-NoProfile"));
             try args.append(allocator, try allocator.dupe(u8, "-Command"));
             try args.append(allocator, script);
+            // `truncated` was consumed by allocPrint (which copies); free
+            // it now since the errdefer only fires on error and we're
+            // about to return successfully.
+            allocator.free(truncated);
         },
         else => {
             log.warn("notifications: unsupported OS {s}; skipping", .{@tagName(builtin.os.tag)});

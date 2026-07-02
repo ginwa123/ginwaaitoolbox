@@ -85,7 +85,7 @@ test "Logger color formatter - no memory leak" {
 
 test "Logger file output - no memory leak" {
     const allocator = std.testing.allocator;
-    const test_log_path = "/tmp/test_logger_output.log";
+    const test_log_path = "./test_logger_output.log";
 
     var logger_inst = Logger.init(allocator, std.testing.io, .{
         .min_level = .info,
@@ -101,7 +101,7 @@ test "Logger file output - no memory leak" {
 
 test "Logger file rotation - no memory leak" {
     const allocator = std.testing.allocator;
-    const test_log_path = "/tmp/test_logger_rotation.log";
+    const test_log_path = "./test_logger_rotation.log";
 
     var logger_inst = Logger.init(allocator, std.testing.io, .{
         .min_level = .info,
@@ -121,7 +121,7 @@ test "Logger file rotation - no memory leak" {
 
 test "Logger both output mode - no memory leak" {
     const allocator = std.testing.allocator;
-    const test_log_path = "/tmp/test_logger_both.log";
+    const test_log_path = "./test_logger_both.log";
 
     var logger_inst = Logger.init(allocator, std.testing.io, .{
         .min_level = .info,
@@ -137,7 +137,7 @@ test "Logger both output mode - no memory leak" {
 
 test "Logger directory creation - no memory leak" {
     const allocator = std.testing.allocator;
-    const test_dir = "/tmp/test_logger_nested_dir";
+    const test_dir = "./test_logger_nested_dir";
     const test_log_path = test_dir ++ "/nested/log.txt";
 
     var logger_inst = Logger.init(allocator, std.testing.io, .{
@@ -154,7 +154,7 @@ test "Logger directory creation - no memory leak" {
 
 test "Logger appends across restarts - no memory leak" {
     const allocator = std.testing.allocator;
-    const test_log_path = "/tmp/test_logger_append_leak.log";
+    const test_log_path = "./test_logger_append_leak.log";
 
     std.Io.Dir.cwd().deleteFile(std.testing.io, test_log_path) catch {};
 

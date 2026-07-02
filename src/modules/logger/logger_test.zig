@@ -119,7 +119,7 @@ test "LogLevel ordering" {
 
 test "Logger file output creates file and writes logs" {
     const allocator = std.testing.allocator;
-    const test_log_path = "/tmp/test_logger_output.log";
+    const test_log_path = "./test_logger_output.log";
 
     // Clean up any existing file
     std.Io.Dir.cwd().deleteFile(std.testing.io, test_log_path) catch {};
@@ -146,7 +146,7 @@ test "Logger file output creates file and writes logs" {
 
 test "Logger file rotation at size limit" {
     const allocator = std.testing.allocator;
-    const test_log_path = "/tmp/test_logger_rotation.log";
+    const test_log_path = "./test_logger_rotation.log";
 
     // Clean up any existing file
     std.Io.Dir.cwd().deleteFile(std.testing.io, test_log_path) catch {};
@@ -177,7 +177,7 @@ test "Logger file rotation at size limit" {
 
 test "Logger both output mode writes to stdout and file" {
     const allocator = std.testing.allocator;
-    const test_log_path = "/tmp/test_logger_both.log";
+    const test_log_path = "./test_logger_both.log";
 
     // Clean up any existing file
     std.Io.Dir.cwd().deleteFile(std.testing.io, test_log_path) catch {};
@@ -204,7 +204,7 @@ test "Logger both output mode writes to stdout and file" {
 
 test "Logger directory creation for log file" {
     const allocator = std.testing.allocator;
-    const test_dir = "/tmp/test_logger_nested_dir";
+    const test_dir = "./test_logger_nested_dir";
     const test_log_path = test_dir ++ "/nested/log.txt";
 
     // Clean up any existing directory
@@ -254,7 +254,7 @@ fn readEntireFile(io: std.Io, path: []const u8, buf: []u8) !usize {
 
 test "Logger file rotation keeps recent messages and writes cleanly" {
     const allocator = std.testing.allocator;
-    const test_log_path = "/tmp/test_logger_rotation_content.log";
+    const test_log_path = "./test_logger_rotation_content.log";
 
     std.Io.Dir.cwd().deleteFile(std.testing.io, test_log_path) catch {};
 
@@ -323,7 +323,7 @@ test "Logger file rotation keeps recent messages and writes cleanly" {
 
 test "Logger appends to existing file across process restarts" {
     const allocator = std.testing.allocator;
-    const test_log_path = "/tmp/test_logger_append_restart.log";
+    const test_log_path = "./test_logger_append_restart.log";
 
     std.Io.Dir.cwd().deleteFile(std.testing.io, test_log_path) catch {};
 
