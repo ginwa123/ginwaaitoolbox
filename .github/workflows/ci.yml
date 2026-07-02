@@ -27,20 +27,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Chunks 2-4: extended from Linux-only to Linux + Windows + macOS.
-        # Windows uses __SKIP__ placeholder because the binary build
-        # requires vcpkg wiring in build.zig (out of scope for this plan;
-        # tests only run on Windows for now). macOS builds Intel only
-        # (install:macos). The exclude block filters the full cross-product
-        # (3 OSes x 3 targets = 9 cells) down to the 3 native-target cells.
+        # Cross-platform CI matrix. Each cell runs the native-target build
+        # on the corresponding OS:
+        #   - ubuntu-latest       → install:linux:system (native Linux build)
+        #   - windows-latest      → install:windows    (native Windows build)
+        #   - macos-latest        → install:macos      (native macOS build)
+        # The exclude block filters the full cross-product (3 OSes × 3 targets
+        # = 9 cells) down to the 3 native-target cells. The Windows build is
+        # gated on `ssl/crypto cross-compile fix` being merged — see build.zig
+        # for the status. The dev_release builds (with separate steps) are
+        # exercised only where the test compile + native-build matrix cell
+        # succeeds.
         os: [ubuntu-latest, windows-latest, macos-latest]
         target:
           - { zig: x86_64-linux-gnu,       step: install:linux:system }
-          - { zig: x86_64-windows-gnu,     step: __SKIP__ }
+          - { zig: x86_64-windows-gnu,     step: install:windows }
           - { zig: x86_64-macos,           step: install:macos }
         exclude:
           - os: ubuntu-latest
-            target: { zig: x86_64-windows-gnu, step: __SKIP__ }
+            target: { zig: x86_64-windows-gnu, step: install:windows }
           - os: ubuntu-latest
             target: { zig: x86_64-macos, step: install:macos }
           - os: windows-latest
@@ -50,7 +55,7 @@ jobs:
           - os: macos-latest
             target: { zig: x86_64-linux-gnu, step: install:linux:system }
           - os: macos-latest
-            target: { zig: x86_64-windows-gnu, step: __SKIP__ }
+            target: { zig: x86_64-windows-gnu, step: install:windows }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
