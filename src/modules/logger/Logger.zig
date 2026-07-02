@@ -143,27 +143,17 @@ pub const Logger = struct {
         // Record the current end-of-file offset; this is where the next
         // write will land (via writePositionalAll in writeEntry).
         //
-        // On Windows, `length()` falls through to `fileStat(...All)`
-        // which can briefly report `EndOfFile = 0` for a freshly-reopened
-        // file whose on-disk size hasn't propagated through the
-        // StandardInformation cache yet. Poll a few times to ride out
-        // the race; only fall back to 0 if every query reports an empty
-        // file (which is the correct answer for a truly empty file).
-        var file_size: u64 = 0;
-        var attempts: u8 = 0;
-        while (attempts < 8) : (attempts += 1) {
-            if (std.Io.File.length(file, self.io)) |sz| {
-                if (sz > 0) {
-                    file_size = sz;
-                    break;
-                }
-                // Got 0 — try again in case the cache hasn't propagated.
-                file_size = 0;
-            } else |_| {
-                file_size = 0;
-                break;
-            }
-        }
+        // Use `Dir.statFile(...)` (path-based stat) instead of
+        // `File.length(...)` (handle-based). On Windows, handle-based
+        // `length()` uses `NtQueryInformationFile(...All)` whose
+        // `StandardInformation.EndOfFile` can be stale (0) for a handle
+        // that was just opened on an existing file. Path-based stat goes
+        // through `dirStatFile`, which on Windows uses
+        // `NtQueryFullAttributesFile` (uncached on-disk size).
+        const file_size: u64 = stat: {
+            const s = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch break :stat 0;
+            break :stat s.size;
+        };
         self.current_file_size = file_size;
         self.log_file = file;
     }
