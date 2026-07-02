@@ -378,7 +378,11 @@ pub fn build(b: *std.Build) void {
         .os_tag = .windows,
         .abi = .gnu,
     });
-    const windows_exe = createPlatformExe(b, mod, windows_target, optimize, "nalarcore-windows-x86_64.exe");
+    // NB: don't include `.exe` in the name — Zig 0.16's `addExecutable`
+    // auto-appends `.exe` on Windows targets, so passing a name with `.exe`
+    // already produces the doubled suffix `nalarcore-windows-x86_64.exe.exe`
+    // (which the CI yaml's verify step doesn't expect).
+    const windows_exe = createPlatformExe(b, mod, windows_target, optimize, "nalarcore-windows-x86_64");
     const install_windows = b.addInstallArtifact(windows_exe, .{});
     windows_step.dependOn(&install_windows.step);
 
