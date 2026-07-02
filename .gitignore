@@ -11,6 +11,17 @@ test_main
 .nalar/tasks/
 /zig-pkg
 
+# Vendored C sources — fetched on demand by scripts/fetch-vendor-sqlite3.sh
+# instead of committed to the repo. The amalgamation is ~10 MB of binary-like
+# data that bloats git clones and has no diffable content (only version
+# bumps). For non-Linux targets (Windows, macOS, cross-compile from Linux),
+# the build.zig references vendor/sqlite3/sqlite3.c directly — the fetch
+# script restores it on demand before the first zig build call.
+#
+# To regenerate after bumping SQLite: delete vendor/sqlite3/ and re-run
+# `scripts/fetch-vendor-sqlite3.sh`.
+/vendor/
+
 # Test artifacts (created by zig build test runs)
 test_logger_*.log
 test_logger_nested_dir/
