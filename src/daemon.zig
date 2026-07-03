@@ -22,6 +22,7 @@ pub const DaemonError = error{
     ForkFailed,
     SessionFailed,
     OpenLogFailed,
+    PathTooLong,
 };
 
 /// POSIX daemonization: double-fork + setsid. After this returns, the
@@ -65,19 +66,25 @@ pub fn redirectStdioToLog(log_path: []const u8) !void {
         @compileError("redirectStdioToLog is POSIX-only");
     }
 
+    // NUL-terminated copy of log_path for the open syscall.
+    var log_path_z: [std.fs.max_path_bytes:0]u8 = undefined;
+    if (log_path.len >= log_path_z.len) return error.PathTooLong;
+    @memcpy(log_path_z[0..log_path.len], log_path);
+    log_path_z[log_path.len] = 0;
+
     // stdin → /dev/null
-    const devnull_fd = std.os.linux.open("/dev/null", .{ .ACCMODE = .RDONLY }, 0);
+    const devnull_fd: i32 = @intCast(std.os.linux.open("/dev/null", .{ .ACCMODE = .RDONLY }, 0));
     if (devnull_fd >= 0) {
         _ = std.os.linux.dup2(devnull_fd, 0);
         _ = std.os.linux.close(devnull_fd);
     }
 
     // stdout/stderr → log_path (append).
-    const log_fd = std.os.linux.open(log_path, .{
+    const log_fd: i32 = @intCast(std.os.linux.open(&log_path_z, .{
         .ACCMODE = .WRONLY,
         .CREAT = true,
         .APPEND = true,
-    }, 0o644);
+    }, 0o644));
     if (log_fd < 0) return error.OpenLogFailed;
     _ = std.os.linux.dup2(log_fd, 1);
     _ = std.os.linux.dup2(log_fd, 2);

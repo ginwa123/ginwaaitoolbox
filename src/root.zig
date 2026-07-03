@@ -403,6 +403,13 @@ pub const search_tool = @import("modules/agent/tools/search.zig");
 pub const semantic_search = @import("modules/agent/tools/semantic_search.zig");
 pub const text_replace_tool = @import("modules/agent/tools/text_replace.zig");
 pub const cronjob = @import("modules/cronjob/mod.zig");
+
+// Decoupled nalar-service (Chunk 3) — re-export the service plumbing so
+// main.zig and other internal callers can `@import("nalarcore").service_*`.
+pub const state_file = @import("state_file.zig");
+pub const daemon = @import("daemon.zig");
+pub const signal_handlers = @import("signal_handlers.zig");
+pub const main_service = @import("main_service.zig");
 pub const helpers = @import("helpers/mod.zig");
 pub const kerjabot_get_session = @import("ai_workflow/tui/llm_history.zig");
 pub const kerjabot_create_session = @import("ai_workflow/tui/llm_history.zig");
