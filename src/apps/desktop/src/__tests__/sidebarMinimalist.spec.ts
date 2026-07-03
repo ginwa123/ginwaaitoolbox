@@ -168,7 +168,7 @@ describe('WorkspaceList.vue minimalist rewrite', () => {
   it('Add Item dropdown has no emoji icons (plain text labels only)', () => {
     // The pre-minimalist dropdown had <span class="text-base">📁</span>
     // etc. The minimalist version uses plain text "Add Project" /
-    // "Add Kanban" / "Add Memory" buttons.
+    // "Add Kanban" buttons. (Add Memory was removed 2026-07-04.)
     if (source.includes('aria-hidden="true">📁')) {
       throw new Error(
         'WorkspaceList.vue Add Item dropdown still has the 📁 emoji. Plain text only.',

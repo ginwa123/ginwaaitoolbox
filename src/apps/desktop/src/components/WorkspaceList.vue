@@ -590,8 +590,10 @@ const handleItemDragEnd = () => {
           <!-- Add Item Button. Minimal: bare text "+ Add Item" with
                a subtle opacity transition on hover. NO SVG, NO
                dashed border, NO icons in the dropdown menu — just
-               text labels for "Add Project", "Add Kanban", and
-               "Add Memory". -->
+               text labels for "Add Project" and "Add Kanban".
+               (Add Memory was removed in 2026-07-04 — memory
+               features remain available as task_type='memory'
+               inside items via AddTaskPickerDialog.) -->
           <li class="group/workspace relative" data-workspace-menu>
             <button
               @click.stop="toggleAddMenu(workspace.id)"
@@ -623,15 +625,6 @@ const handleItemDragEnd = () => {
                   style="color: var(--semantic-text);"
                 >
                   Add Kanban
-                </button>
-              </li>
-              <li>
-                <button
-                  @click="handleAddItem(workspace.id, 'memory')"
-                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
-                  style="color: var(--semantic-text);"
-                >
-                  Add Memory
                 </button>
               </li>
             </ul>
