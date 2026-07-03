@@ -18,6 +18,8 @@ const socket = posix.system;
 
 /// Winsock extern declarations for Windows
 const winsock = if (builtin.os.tag == .windows) struct {
+    extern "ws2_32" fn WSAStartup(wVersionRequested: c_ushort, wsaData: *WSADATA) callconv(.c) c_int;
+    extern "ws2_32" fn WSACleanup() callconv(.c) c_int;
     extern "ws2_32" fn socket(domain: c_uint, sock_type: c_uint, protocol: c_uint) callconv(.c) c_int;
     extern "ws2_32" fn closesocket(sockfd: c_int) callconv(.c) c_int;
     extern "ws2_32" fn shutdown(sockfd: c_int, how: c_int) callconv(.c) c_int;
@@ -28,7 +30,45 @@ const winsock = if (builtin.os.tag == .windows) struct {
     extern "ws2_32" fn send(sockfd: c_int, buf: ?*const anyopaque, len: c_int, flags: c_int) callconv(.c) c_int;
     extern "ws2_32" fn setsockopt(sockfd: c_int, level: c_int, optname: c_int, optval: ?*const anyopaque, optlen: c_int) callconv(.c) c_int;
     extern "ws2_32" fn getpeername(sockfd: c_int, addr: ?*anyopaque, addrlen: ?*c_int) callconv(.c) c_int;
+
+    /// WSADATA struct passed to WSAStartup. 400 bytes is the canonical
+    /// size per Winsock 2 docs; the contents are intentionally ignored
+    /// (we just need the call to succeed so the winsock runtime is
+    /// available for subsequent socket() calls).
+    const WSADATA = [400]u8;
 } else struct {};
+
+/// Winsock must be initialised with WSAStartup() before any other
+/// winsock function call. Without this call, `socket()` returns
+/// `INVALID_SOCKET` (WSAEINPROGRESS / WSANOTINITIALISED) on every
+/// invocation. The runtime keeps an internal ref count, so calling
+/// WSAStartup multiple times is safe as long as each call is paired
+/// with a matching WSACleanup(). The ref-counted behaviour makes the
+/// lazy-init pattern safe — every `createSocket()` calls it, but
+/// the winsock DLL is only loaded once.
+///
+/// This block is a no-op on non-Windows targets.
+var wsa_init_lock: std.atomic.Mutex = .unlocked;
+var wsa_initialized: bool = false;
+
+fn ensureWinsockInitialized() void {
+    if (wsa_initialized) return;
+    while (!wsa_init_lock.tryLock()) std.atomic.spinLoopHint();
+    defer wsa_init_lock.unlock();
+    if (wsa_initialized) return;
+    var wsa_data: winsock.WSADATA = undefined;
+    // MAKEWORD(2, 2) = 0x0202 — request Winsock 2.2 (the highest version
+    // every Windows version since Windows 98 supports). Winsock 2 is the
+    // API surface this file relies on (WSASocket/setsockopt with the
+    // SOL_SOCKET/SO_REUSEADDR constants).
+    const version: c_ushort = (2 << 8) | 2;
+    const rc = winsock.WSAStartup(version, &wsa_data);
+    if (rc != 0) {
+        std.log.err("WSAStartup failed with rc={d}", .{rc});
+        return;
+    }
+    wsa_initialized = true;
+}
 
 fn closeFd(fd: SocketFd) void {
     if (builtin.os.tag == .windows) {
@@ -94,6 +134,7 @@ pub const Address = struct {
 
     fn createSocket() !SocketFd {
         if (builtin.os.tag == .windows) {
+            ensureWinsockInitialized();
             const fd = winsock.socket(@intCast(AF_INET), @intCast(SOCK_STREAM), @intCast(IPPROTO_TCP));
             if (fd < 0) return error.SocketCreationFailed;
             return fd;
