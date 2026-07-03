@@ -38,7 +38,10 @@ jobs:
         # for the status. The dev_release builds (with separate steps) are
         # exercised only where the test compile + native-build matrix cell
         # succeeds.
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os:
+        - [self-hosted, linux]
+        - [self-hosted, windows]
+        - [self-hosted, macos]
         target:
           # build_args is appended to `zig build <step>`. Use `-Dlinux-libs=false`
           # when cross-compiling FROM Linux TO another target: the dev/test config
@@ -50,17 +53,17 @@ jobs:
           - { zig: x86_64-windows-gnu,     step: install:windows,    build_args: '-Dlinux-libs=false' }
           - { zig: x86_64-macos,           step: install:macos,      build_args: '-Dlinux-libs=false' }
         exclude:
-          - os: ubuntu-latest
+          - os: [self-hosted, linux]
             target: { zig: x86_64-windows-gnu, step: install:windows }
-          - os: ubuntu-latest
+          - os: [self-hosted, linux]
             target: { zig: x86_64-macos, step: install:macos }
-          - os: windows-latest
+          - os: [self-hosted, windows]
             target: { zig: x86_64-linux-gnu, step: install:linux:system }
-          - os: windows-latest
+          - os: [self-hosted, windows]
             target: { zig: x86_64-macos, step: install:macos }
-          - os: macos-latest
+          - os: [self-hosted, macos]
             target: { zig: x86_64-linux-gnu, step: install:linux:system }
-          - os: macos-latest
+          - os: [self-hosted, macos]
             target: { zig: x86_64-windows-gnu, step: install:windows }
     steps:
       - name: Checkout
@@ -246,7 +249,9 @@ jobs:
 
   frontend:
     name: frontend
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - linux
     steps:
       - name: Checkout
         uses: actions/checkout@v4
