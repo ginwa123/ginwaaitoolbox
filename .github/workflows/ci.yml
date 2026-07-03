@@ -47,11 +47,14 @@ jobs:
           # because those Linux system libs don't exist on macOS targets.
           - { zig: x86_64-linux-gnu,       step: install:linux:system, build_args: '' }
           # macOS runner is Apple Silicon (ARM64), so the native target is
-          # aarch64-macos, not x86_64-macos.
-          - { zig: aarch64-macos,          step: install:macos,      build_args: '-Dlinux-libs=false' }
+          # aarch64-macos. Use `install:macos-arm` (NOT `install:macos`,
+          # which hardcodes x86_64-macos in build.zig and produces an
+          # x86_64 binary that the ARM64 runner rejects with "Bad CPU
+          # type in executable").
+          - { zig: aarch64-macos,          step: install:macos-arm,  build_args: '-Dlinux-libs=false' }
         exclude:
           - os: [self-hosted, Linux, X64]
-            target: { zig: aarch64-macos, step: install:macos }
+            target: { zig: aarch64-macos, step: install:macos-arm }
           - os: [self-hosted, macOS, ARM64]
             target: { zig: x86_64-linux-gnu, step: install:linux:system }
     steps:
@@ -70,8 +73,17 @@ jobs:
         # base-devel provides the C toolchain, pkgconf provides
         # pkg-config, and openssl/sqlite provide the dev headers + libs
         # that build.zig links against.
+        #
+        # Resource optimization: NO `pacman -Syu` (full system upgrade).
+        # The self-hosted runner is persistent — packages installed on
+        # one run stay installed for the next. `pacman -S --needed` is
+        # idempotent and skips the network round-trip when packages are
+        # already current. A full upgrade would re-download every package
+        # in the system (~1 GB) on every CI run for no functional benefit.
+        # If the runner image ever needs updating, run `pacman -Syu` once
+        # on the runner host (out of band) and the --needed flag below
+        # will pick it up.
         run: |
-          pacman -Syu --noconfirm
           pacman -S --needed --noconfirm \
             base-devel \
             openssl \
@@ -80,24 +92,50 @@ jobs:
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
+        # Resource optimization: NO `brew update` (formula DB refresh).
+        # `brew install` is already idempotent (skips packages already at
+        # the requested version), but `brew update` re-downloads the
+        # entire homebrew/core and homebrew/bottle formulae manifests on
+        # every CI run (~30 MB and several seconds of network I/O).
+        # HOMEBREW_NO_AUTO_UPDATE=1 makes brew skip the auto-update check
+        # on every command. If a formula needs a version bump, bump it
+        # explicitly in this `brew install` line.
+        #
+        # pkg-config is needed by the "Show toolchain versions" diagnostic
+        # step. It is NOT a dependency of the actual build (build.zig uses
+        # the vendored sqlite3 amalgamation and links ssl/crypto only on
+        # Linux), but the diagnostic step below invokes
+        # `pkg-config --modversion sqlite3/openssl` for parity with Linux.
+        # macOS GitHub Actions runner images do NOT ship pkg-config.
+        #
+        # openssl@3 is keg-only; export paths explicitly so pkg-config
+        # and the Zig build can find it. These lines are idempotent
+        # (--prefix returns the same value whether or not the package
+        # was just installed).
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
         run: |
-          brew update
-          brew install openssl@3
-          # openssl@3 is keg-only; export paths explicitly so pkg-config
-          # and the Zig build can find it.
+          brew install pkg-config openssl@3
           echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
           echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
 
       - name: Show toolchain versions
+        # All `pkg-config` queries are wrapped in `|| echo "<not installed>"`
+        # because the macOS build uses the vendored sqlite3 amalgamation and
+        # does NOT link system openssl (build.zig's macOS branch in
+        # createPlatformExe / mod branch is a no-op for ssl/crypto/system-
+        # sqlite3). So on macOS these queries will legitimately return
+        # "not installed" — the diagnostic step should report that and let
+        # the build proceed, NOT fail.
         run: |
           zig version
           cc --version | head -n 1
-          pkg-config --modversion sqlite3
-          pkg-config --modversion openssl
+          pkg-config --modversion sqlite3 2>/dev/null || echo "sqlite3.pc: not installed (vendored amalgamation is used on macOS)"
+          pkg-config --modversion openssl  2>/dev/null || echo "openssl.pc:  not installed (not linked on macOS)"
 
-      - name: Fetch vendored SQLite amalgamation (macOS)
-        if: runner.os == 'macOS'
+      - name: Fetch vendored SQLite amalgamation (non-Linux)
+        if: runner.os != 'Linux'
         # The amalgamation is gitignored (`/vendor/` in .gitignore) to
         # avoid bloating the repo with ~10 MB of binary-like content. On
         # macOS, `build.zig` compiles sqlite3.c from `vendor/sqlite3/`, so
