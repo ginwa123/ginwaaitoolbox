@@ -459,3 +459,131 @@ describe('WorkspaceItem.vue — task component invariant', () => {
     expect(source).toContain('<WorkspaceItemTaskRow')
   })
 })
+
+/**
+ * card-ux-v6 tests: the 3D layered-shadow card (replaces the v5
+ * visible border). The card now uses a layered box-shadow for
+ * depth — outer drop shadow + inset bevel highlight — instead of a
+ * 1px gray border. The card root also carries `w-full` so every
+ * card in a column has the same width regardless of content length
+ * (constant-width contract).
+ *
+ * History: card-ux-v4 had `border border-transparent` (cards
+ * disappeared into the column); card-ux-v5 added a visible 1px
+ * gray border (working, but the user wanted a 3D look); card-ux-v6
+ * replaces the border with shadow to get the "card floating on
+ * the board" feel without a hard outline.
+ */
+describe('WorkspaceItemTaskCard card-ux-v6 (3D shadow + constant width)', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: makeLocalStorageStub(),
+      writable: true,
+      configurable: true,
+    })
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    vi.restoreAllMocks()
+  })
+
+  it('card root has w-full class (constant-width contract)', () => {
+    // Without w-full, the <button> would default to inline-block and
+    // size to its content. With w-full every card spans the full
+    // width of the parent column's cards area, regardless of how
+    // long the task name is.
+    wrapper = mountCard({ id: 't1', name: 'A short task' })
+    expect(wrapper.find('[data-task-card]').classes()).toContain('w-full')
+
+    // Even with a very long title, width stays constant (truncate
+    // handles the text overflow).
+    const longWrapper = mountCard({
+      id: 't2',
+      name: 'a-very-long-task-name-that-would-normally-blow-out-the-width',
+    })
+    expect(longWrapper.find('[data-task-card]').classes()).toContain('w-full')
+  })
+
+  it('card root does NOT carry a 1px border (v6 replaces border with shadow)', () => {
+    // Regression guard: card-ux-v6 deliberately removed the visible
+    // border. A future refactor that re-adds `border` (e.g.
+    // copy-paste from v5) would fail this test.
+    wrapper = mountCard({ id: 't1', name: 'Alpha' })
+    const classes = wrapper.find('[data-task-card]').classes()
+    expect(classes).not.toContain('border')
+    expect(classes).not.toContain('border-[--color-border]')
+  })
+
+  it('card has a 3D layered box-shadow at idle (outer drop + inset bevel)', () => {
+    wrapper = mountCard({ id: 't1', name: 'Alpha' })
+    const style = wrapper.find('[data-task-card]').attributes('style') ?? ''
+    // Outer drop shadow — the "lift" off the column.
+    expect(style).toContain('0 1px 3px 0 rgba(0, 0, 0, 0.5)')
+    // Second drop shadow for the soft halo.
+    expect(style).toContain('0 1px 2px -1px rgba(0, 0, 0, 0.4)')
+    // Inset 1px bevel highlight — the "edge of the card" without
+    // a hard outline. White at 6% opacity is enough to read as a
+    // bevel in dark mode without becoming a visible line.
+    expect(style).toContain('inset 0 0 0 1px rgba(255, 255, 255, 0.06)')
+  })
+
+  it('card has a card-bg color at idle (paired with the shadow for the 3D surface)', () => {
+    // Without a card-bg, the v6 shadow would float on the column
+    // bg with no surface to "lift off of". Setting backgroundColor
+    // to --semantic-card-bg at idle gives the card a tangible
+    // surface for the shadow to render against.
+    wrapper = mountCard({ id: 't1', name: 'Alpha' })
+    const style = wrapper.find('[data-task-card]').attributes('style') ?? ''
+    expect(style).toContain('--semantic-card-bg')
+  })
+
+  it('card swaps to the hover shadow when mouseenter fires', async () => {
+    wrapper = mountCard({ id: 't1', name: 'Alpha' })
+    const card = wrapper.find('[data-task-card]')
+
+    // Idle: base shadow with `0 1px 3px 0 rgba(0, 0, 0, 0.5)`.
+    expect(card.attributes('style') ?? '').toContain('0 1px 3px 0 rgba(0, 0, 0, 0.5)')
+
+    // Hover: bigger outer drop shadow `0 4px 6px -1px rgba(0, 0, 0, 0.55)`.
+    await card.trigger('mouseenter')
+    expect(card.attributes('style') ?? '').toContain('0 4px 6px -1px rgba(0, 0, 0, 0.55)')
+    // And the brighter bevel highlight (0.10 vs 0.06).
+    expect(card.attributes('style') ?? '').toContain('inset 0 0 0 1px rgba(255, 255, 255, 0.1)')
+
+    // Mouseleave: back to base.
+    await card.trigger('mouseleave')
+    expect(card.attributes('style') ?? '').toContain('0 1px 3px 0 rgba(0, 0, 0, 0.5)')
+  })
+
+  it('3D shadow coexists with the Jira-style type accent (routine card)', () => {
+    // The v6 base shadow must layer cleanly with the v3 type
+    // accent — they're both box-shadows on the same element, so
+    // they stack via the multi-value comma syntax. Routine cards
+    // should show BOTH the outer drop shadow AND the violet left
+    // stripe.
+    wrapper = mountCard({
+      id: 't1',
+      name: 'Daily sync',
+      task_type: 'routine',
+      routine: {
+        schedule: '0 9 * * *',
+        initial_prompt: 'p',
+        enabled: true,
+        last_run_at: null,
+        next_run_at: '2026-07-02T09:00:00Z',
+        last_status: null,
+        last_error: null,
+      },
+    })
+    const style = wrapper.find('[data-task-card]').attributes('style') ?? ''
+    // 3D base shadow.
+    expect(style).toContain('0 1px 3px 0 rgba(0, 0, 0, 0.5)')
+    // Jira-style violet left stripe (type accent).
+    expect(style).toContain('inset 3px 0 0 0 rgb(167, 139, 250)')
+  })
+})

@@ -71,7 +71,7 @@ const {
 // tasks get a violet stripe; memory tasks get a blue stripe.
 // Implemented as an inset box-shadow so it doesn't affect the card's
 // layout (no width change) and stacks naturally with the
-// dropIndicator box-shadow.
+// dropIndicator box-shadow and the v6 3D base shadow.
 //
 // Returns a string suitable for use as the `boxShadow` CSS value,
 // or `''` for the no-stripe case (the caller's `||` chain keeps
@@ -83,15 +83,53 @@ function typeAccentShadow(): string {
   return ''
 }
 
-// Combined box-shadow for the card. Layered values: type accent
-// (Jira-style left stripe) + drop indicator (yellow line for
-// pinned-region drag).
+// (card-ux-v6) Replaces the v5 visible 1px border with a layered
+// 3D box-shadow. Three layers compose the "card floating on the
+// board" feel without a hard outline:
+//
+//   1. Outer drop shadow at idle   — soft 1+2px offset, dark rgba,
+//      lifts the card off the column visually. Hover swaps to a
+//      bigger 4+2px shadow with brighter bevel for a "picking
+//      up the card" feel.
+//   2. Inset 1px bevel highlight   — low-opacity white stroke that
+//      simulates a beveled edge in dark mode. Visible without a
+//      harsh line; without it the card looks flat against the
+//      dark column.
+//   3. (Composed in cardBoxShadow below) Type accent + dropIndicator
+//      inset shadows sit on TOP of the 3D base to keep the Jira-style
+//      left stripe and the pinned-region drag line working
+//      unchanged.
+//
+// CSS box-shadow stacking: FIRST value drawn on top. Outer shadows
+// come first (they're the dominant visual), inset accents last.
+const baseCardShadow =
+  '0 1px 3px 0 rgba(0, 0, 0, 0.5), ' +
+  '0 1px 2px -1px rgba(0, 0, 0, 0.4), ' +
+  'inset 0 0 0 1px rgba(255, 255, 255, 0.06)'
+
+const hoverCardShadow =
+  '0 4px 6px -1px rgba(0, 0, 0, 0.55), ' +
+  '0 2px 4px -2px rgba(0, 0, 0, 0.4), ' +
+  'inset 0 0 0 1px rgba(255, 255, 255, 0.1)'
+
+// Local hover state — drives the shadow transition. Pure UX, no
+// business logic.
+const isHovered = ref(false)
+
+// Combined box-shadow for the card. Layered values, in CSS stacking
+// order (first on top): 3D base + Jira-style type accent (left
+// stripe) + yellow drop indicator (pinned-region drag).
+//
+// On hover the 3D base swaps to its hover variant; transition-shadow
+// in the template class animates the swap smoothly.
 const cardBoxShadow = computed<string>(() => {
   const accent = typeAccentShadow()
   const drop = dropIndicatorBoxShadow.value
-  if (accent && drop && drop !== 'none') return `${drop}, ${accent}`
-  if (accent) return accent
-  return drop
+  const base = isHovered.value ? hoverCardShadow : baseCardShadow
+  const layers: string[] = [base]
+  if (accent) layers.push(accent)
+  if (drop && drop !== 'none') layers.push(drop)
+  return layers.join(', ')
 })
 
 // Human-readable "time since" formatter for the meta row. Accepts:
@@ -169,16 +207,18 @@ const typeBadge = computed<string | null>(() => {
 
 <template>
   <button
-    class="flex flex-col gap-2 p-3 rounded-lg text-xs group/task cursor-pointer transition-all duration-200 border border-[--color-border] hover:border-[--color-violet] bg-[--semantic-card-bg] shadow-sm hover:shadow-md"
+    class="flex flex-col gap-2 p-3 w-full rounded-lg text-xs group/task cursor-pointer transition-shadow duration-200"
     :data-task-id="task.id"
     :data-drop-indicator="dropIndicator ?? undefined"
     data-task-card
     :style="{
       color: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : 'var(--semantic-text)',
-      backgroundColor: workspacesStore.activeTaskId === task.id ? 'var(--semantic-active-bg)' : 'transparent',
+      backgroundColor: workspacesStore.activeTaskId === task.id ? 'var(--semantic-active-bg)' : 'var(--semantic-card-bg)',
       boxShadow: cardBoxShadow,
     }"
     @click="handleSelectTask"
+    @mouseenter="isHovered = true"
+    @mouseleave="isHovered = false"
   >
     <!-- Top row. A more modern, minimalist layout — title is the
          hero, icons are subtle. The bullet/dot is hidden in card
