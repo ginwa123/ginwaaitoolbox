@@ -90,6 +90,7 @@ pub const CallbackAiWorkerFlow = struct {
                 .parent_session_id = session_id,
                 .is_input = true,
                 .is_output = false,
+                .is_feed_to_llm = false,
             }) catch {};
 
             const session_skills_err = llm_history.getSessionSkills(allocator, db, session_id) catch null;
@@ -511,7 +512,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
         try messagesLists.appendSlice(allocator, initialMessages);
 
-        const is_do_compaction = try maybeCompactMessagesNew(allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger);
+        const is_do_compaction = try maybeCompactMessagesNew(allocator, total_tokens, effective_model, false, messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger);
         if (is_do_compaction) {
             continue;
         }
@@ -849,7 +850,7 @@ pub fn maybeCompactMessagesNew(
     total_tokens: u32,
     model: []const u8,
     force: bool,
-    messages: *std.ArrayList(agent.AgentMessage),
+    messages: std.ArrayList(agent.AgentMessage),
     api_key: []const u8,
     base_url: []const u8,
     cwd: []const u8,
@@ -878,7 +879,7 @@ pub fn maybeCompactMessagesNew(
     // compactMessageInMemoryNew consumes the old list and returns the compacted one.
     // Replace the caller's list in place so the next loop iteration sees the
     // compacted messages.
-     _ = try compactMessageInMemoryNew(allocator, messages.*, compacted_xml, session_id, model, cwd, db, io, logger);
+     _ = try compactMessageInMemoryNew(allocator, messages, compacted_xml, session_id, model, cwd, db, io, logger);
     return true;
 }
 

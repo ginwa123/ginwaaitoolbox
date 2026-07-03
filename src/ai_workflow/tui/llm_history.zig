@@ -1000,6 +1000,7 @@ pub const SaveMessageInput = struct {
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
     image_urls: ?[][]const u8 = null,
+    is_feed_to_llm: bool = true,
 };
 
 pub fn saveMessage(
@@ -1031,7 +1032,40 @@ pub fn saveMessage(
     }
     defer if (toolCallsOwned) |tcj| allocator.free(tcj);
 
-    const sql = "INSERT INTO llm_history (id, session_id, model, response_content, finish_reason, role, tool_calls_json, tool_call_id, reasoning_content, is_feed_to_llm, agent, loop_index, temperature, is_thinking, created_at, parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens, is_input, is_output, tool_name, diffview_before, diffview_after, image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    const sql =
+        \\INSERT INTO llm_history (
+        \\    id,
+        \\    session_id,
+        \\    model,
+        \\    response_content,
+        \\    finish_reason,
+        \\    role,
+        \\    tool_calls_json,
+        \\    tool_call_id,
+        \\    reasoning_content,
+        \\    is_feed_to_llm,
+        \\    agent,
+        \\    loop_index,
+        \\    temperature,
+        \\    is_thinking,
+        \\    created_at,
+        \\    parent_session_id,
+        \\    parent_id,
+        \\    prompt_tokens,
+        \\    completion_tokens,
+        \\    total_tokens,
+        \\    is_input,
+        \\    is_output,
+        \\    tool_name,
+        \\    diffview_before,
+        \\    diffview_after,
+        \\    image_url
+        \\) VALUES (
+        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        \\    ?, ?, ?, ?, ?, ?
+        \\)
+    ;
 
     const copy_session_id = try allocator.dupe(u8, input.session_id);
     defer allocator.free(copy_session_id);
@@ -1073,6 +1107,9 @@ pub fn saveMessage(
     const copy_diffview_after = try allocator.dupe(u8, input.diffview_after orelse "");
     defer allocator.free(copy_diffview_after);
 
+    const copy_is_feed_to_llm = try allocator.dupe(u8, if (input.is_feed_to_llm) "1" else "0");
+    defer allocator.free(copy_is_feed_to_llm);
+
     // Join multiple image URLs with || delimiter
     var image_urls_str: []const u8 = "";
     var copy_image_urls: ?[]u8 = null;
@@ -1090,7 +1127,7 @@ pub fn saveMessage(
     }
     defer if (copy_image_urls) |c| allocator.free(c);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_agent, copy_is_feed_to_llm, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
 
     try db.exec(allocator, sql, sqlArgs);
 
