@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, computed } from 'vue'
+import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue'
 import * as api from '../api'
 import FilePreview from './FilePreview.vue'
 
@@ -44,6 +44,11 @@ let fileDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 // File input ref for native file selection
 const nativeFileInput = ref<HTMLInputElement | null>(null)
+
+// Textarea ref for the document-level paste handler to scope intercepts
+// to our textarea only — so we don't swallow paste events from sibling
+// inputs (other chat tabs, search fields, etc.).
+const chatTextareaRef = ref<HTMLTextAreaElement | null>(null)
 
 // Pre-fill input when initialMessage is provided (after inputText is declared)
 if (props.initialMessage) {
@@ -126,37 +131,131 @@ const handleNativeFileSelect = (event: Event) => {
   target.value = ''
 }
 
-// Handle paste event - attach pasted images as file attachments (Ctrl/Cmd+V)
-const handlePaste = (e: ClipboardEvent) => {
+// Handle paste event — attach pasted images as file attachments (Ctrl/Cmd+V).
+//
+// Chromium / Firefox: `e.clipboardData.items` natively contains file items,
+// so the standard sync loop below is enough.
+//
+// WebKitGTK (and WKWebView on some macOS releases): even with
+// `javascript_can_access_clipboard=true`, the `<textarea>` paste event
+// filters out non-text items from `clipboardData.items`. The paste event
+// still fires with `clipboardData` present but `items` and `files` empty,
+// so the loop below silently no-ops and the screenshot the user pasted
+// vanishes. nalar-desktop uses WebKitGTK on Linux, which is why the same
+// `FileInput` code works in `bun dev` (Chrome) but not in
+// `nalar-desktop` (WebKitGTK).
+//
+// The fix: after the sync `clipboardData.items` loop, if no files were
+// attached AND `navigator.clipboard.read()` is available, use the async
+// Clipboard API to read the actual clipboard contents. That call bypasses
+// the element-level filter because it reads the system clipboard directly,
+// which is what we want.
+const handlePaste = async (e: ClipboardEvent) => {
+  // Scope: this listener is attached at document level (see onMounted
+  // below), so we get every paste on the page. Only intercept paste when
+  // it originated in OUR textarea — sibling input components (other chat
+  // tabs, search fields, etc.) keep their native paste behavior.
+  if (e.target !== chatTextareaRef.value) return
+
   const items = e.clipboardData?.items
-  if (!items || items.length === 0) return
-
   let pastedImageCount = 0
-  for (const item of items) {
-    if (item.kind !== 'file') continue
-    // Only accept images (matches the paperclip flow)
-    if (!item.type.startsWith('image/')) continue
-    const file = item.getAsFile()
-    if (!file) continue
 
-    // Browsers often leave `file.name` empty for clipboard images; give it
-    // a sensible name + extension so FilePreview's tooltip is readable.
-    if (!file.name) {
-      const ext = item.type.split('/')[1] ?? 'png'
-      const renamed = new File([file], `pasted-image-${Date.now()}.${ext}`, { type: item.type })
-      addImageFile(renamed)
-    } else {
-      addImageFile(file)
+  // Strategy 1: clipboardData.items (works in Chrome, Firefox, and WebKit
+  // variants where the focused element permits file pastes — e.g.
+  // contenteditable divs).
+  if (items && items.length > 0) {
+    for (const item of items) {
+      if (item.kind !== 'file') continue
+      // Only accept images (matches the paperclip flow)
+      if (!item.type.startsWith('image/')) continue
+      const file = item.getAsFile()
+      if (!file) continue
+
+      // Browsers often leave `file.name` empty for clipboard images; give it
+      // a sensible name + extension so FilePreview's tooltip is readable.
+      if (!file.name) {
+        const ext = item.type.split('/')[1] ?? 'png'
+        const renamed = new File([file], `pasted-image-${Date.now()}.${ext}`, { type: item.type })
+        addImageFile(renamed)
+      } else {
+        addImageFile(file)
+      }
+      pastedImageCount++
     }
-    pastedImageCount++
+  }
+
+  // Strategy 2: WebKitGTK <textarea> filter workaround. If the sync path
+  // found no files AND the async Clipboard API is available, use it to read
+  // the actual clipboard contents (bypassing the element-level filter).
+  // This is silently skipped in browsers without `navigator.clipboard.read`
+  // (very old Chromium), and silently no-ops if the user denies the
+  // permission prompt the API raises in some configurations.
+  if (pastedImageCount === 0 && navigator.clipboard?.read) {
+    try {
+      const clipboardItems = await navigator.clipboard.read()
+      for (const ci of clipboardItems) {
+        for (const type of ci.types) {
+          if (!type.startsWith('image/')) continue
+          const blob = await ci.getType(type)
+          const ext = type.split('/')[1] ?? 'png'
+          const file = new File(
+            [blob],
+            `pasted-image-${Date.now()}.${ext}`,
+            { type },
+          )
+          addImageFile(file)
+          pastedImageCount++
+        }
+      }
+    } catch (err) {
+      // Permission denied, clipboard unavailable, or no images present.
+      // Silent fall-through — the user can still type and send text.
+      // eslint-disable-next-line no-console
+      console.debug(
+        '[paste] navigator.clipboard.read() fallback skipped:',
+        err instanceof Error ? err.message : err,
+      )
+    }
   }
 
   // If we attached at least one image, suppress the default text paste so
   // the textarea doesn't get a multi-MB `data:image/png;base64,…` string.
+  // NOTE: by the time the async fallback (Strategy 2) resolves, the browser's
+  // default paste action has already run synchronously, so `preventDefault()`
+  // here can't undo it. In the WebKitGTK image-only paste case, the default
+  // action would have been a no-op (items is empty), so this is a no-op too.
+  // The rarer text+image case loses the text (because WebKitGTK filtered out
+  // both text and image items from the paste event); we accept that
+  // regression in v1 — text+image paste is uncommon and the workaround
+  // would require either a contenteditable refactor or intercepting the
+  // keydown event before the browser's paste handler runs.
   if (pastedImageCount > 0) {
     e.preventDefault()
   }
 }
+
+// Register the document-level capture-phase paste listener on mount and
+// unregister on unmount.
+//
+// Why document-level (capture phase) instead of `@paste` on the <textarea>?
+// The WebKitGTK filter operates on the focused element when it constructs
+// `ClipboardEvent.clipboardData` — it does NOT matter where the listener is
+// attached (capture phase at document, bubbling phase at document, or
+// directly on the textarea all see the same filtered data). The reason we
+// move to document-level here is consistency: the handler is mounted once
+// at component lifecycle and uses `e.target` to scope intercepts to our
+// textarea, so sibling input components (other chat tabs, global search
+// boxes) keep their native paste behavior. Capture phase runs before the
+// browser's own default-handler in the bubble phase, giving us the option
+// to preventDefault sync before the fallback async read decides whether
+// images were attached.
+onMounted(() => {
+  document.addEventListener('paste', handlePaste, true)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('paste', handlePaste, true)
+})
 
 
 
@@ -485,7 +584,7 @@ const sendMessage = () => {
         </div>
       </div>
 
-      <textarea v-model="inputText" placeholder="Type a message... (@ to search files)"
+      <textarea ref="chatTextareaRef" v-model="inputText" placeholder="Type a message... (@ to search files)"
         class="flex-1 px-4 py-3 rounded-xl text-sm outline-none transition-all duration-200 resize-none"
         style="
           background-color: var(--semantic-card-bg);
@@ -494,8 +593,7 @@ const sendMessage = () => {
           height: 48px;
           max-height: 200px;
           overflow-y: auto;
-        " @keydown="handleKeydown" @input="autoResize" @click="autoResize" @blur="updateCursorPos"
-        @paste="handlePaste"></textarea>
+        " @keydown="handleKeydown" @input="autoResize" @click="autoResize" @blur="updateCursorPos"></textarea>
       <!-- Native file picker button -->
       <button type="button" @click="triggerFilePicker"
         class="px-3 py-3 rounded-xl text-sm transition-all duration-200 border flex items-center gap-1"
