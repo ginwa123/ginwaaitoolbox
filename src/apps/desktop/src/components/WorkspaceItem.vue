@@ -2,7 +2,7 @@
 import { computed, inject, ref, type Ref } from 'vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import type { WorkspaceItem } from '../stores/workspaces'
-import WorkspaceItemTask from './WorkspaceItemTask.vue'
+import WorkspaceItemTaskRow from './WorkspaceItemTaskRow.vue'
 
 const workspacesStore = useWorkspacesStore()
 
@@ -33,7 +33,7 @@ const emit = defineEmits<{
   delete: [item: WorkspaceItem]
   addTask: [item: WorkspaceItem]
   // The three task-level events are emitted by the child
-  // <WorkspaceItemTask> and re-emitted verbatim up to WorkspaceList.
+  // <WorkspaceItemTaskRow> and re-emitted verbatim up to WorkspaceList.
   // WorkspaceList's contract with Sidebar is unchanged; this is a
   // pure pass-through (see handleSelectTask / handleDeleteTask /
   // handleRenameTask below).
@@ -41,7 +41,7 @@ const emit = defineEmits<{
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   // NEW (Chunk 7 of task-routines plan): the routine-task branch
-  // in WorkspaceItemTask emits these on the routine's pencil and
+  // in WorkspaceItemTaskRow emits these on the routine's pencil and
   // the Run Now button. We re-emit verbatim up to WorkspaceList,
   // same as the standard-task events above.
   editRoutine: [workspaceId: string, itemId: string, taskId: string]
@@ -50,7 +50,7 @@ const emit = defineEmits<{
   // item. WorkspaceList forwards the event to Sidebar, which calls
   // workspacesStore.loadMoreTasks. See Design Note 6 in
   // docs/plans/2026-06-10-workspace-item-task-pagination.md — the
-  // button lives here (not in WorkspaceItemTask.vue) because it is
+  // button lives here (not in WorkspaceItemTaskRow.vue) because it is
   // a sibling of the per-task list, not a property of any individual
   // task.
   loadMoreTasks: [workspaceId: string, itemId: string]
@@ -111,7 +111,7 @@ const handleAddTask = (event: Event) => {
   emit('addTask', props.item)
 }
 
-// Pass-through handlers: <WorkspaceItemTask> emits these three events
+// Pass-through handlers: <WorkspaceItemTaskRow> emits these three events
 // with the full payload (workspaceId, itemId, taskId, currentName), and
 // we forward them up to <WorkspaceList> verbatim. The signatures match
 // the existing WorkspaceList / Sidebar contract — see the pre-split
@@ -139,7 +139,7 @@ const handleRenameTask = (
 }
 
 // NEW (Chunk 7 of task-routines plan): pass-through for the
-// routine-task events emitted by <WorkspaceItemTask>. Same
+// routine-task events emitted by <WorkspaceItemTaskRow>. Same
 // pure-forwarding pattern as the standard-task handlers above;
 // WorkspaceList will re-emit these to Sidebar which calls the
 // store action and opens EditRoutineDialog.
@@ -171,7 +171,7 @@ const handleLoadMoreTasks = (event: Event) => {
 }
 
 // NEW (pinned-tasks feature): pin/unpin forwarded from
-// <WorkspaceItemTask>. WorkspaceList re-emits these to Sidebar.
+// <WorkspaceItemTaskRow>. WorkspaceList re-emits these to Sidebar.
 const handlePinTask = (
   workspaceId: string,
   itemId: string,
@@ -190,7 +190,7 @@ const handleReorderPinnedTasks = (orderedIds: string[]) => {
 }
 
 // Capture the dragged task's id from the data-task-id attribute on
-// the row's root button (added in WorkspaceItemTask.vue). The
+// the row's root button (added in WorkspaceItemTaskRow.vue). The
 // pinned region uses event delegation — the dragstart bubbles
 // from the row to the region, which calls closest('[data-task-id]')
 // to find the source.
@@ -227,7 +227,7 @@ const dragOverTaskId = ref<string | null>(null)
 const dragInsertBefore = ref(false) // true = insert before the target row
 
 // Per-row drop indicator: 'above' | 'below' | null. Returned to
-// the v-for as the `drop-indicator` prop on each WorkspaceItemTask
+// the v-for as the `drop-indicator` prop on each WorkspaceItemTaskRow
 // so the row can render a 2px yellow border on the appropriate
 // edge. Centralizing the conditional in one place keeps the
 // template terse and makes the indicator state easy to assert on
@@ -449,7 +449,7 @@ const handlePinnedDrop = (event: DragEvent) => {
       </div>
 
       <!-- Tasks List (shown when expanded - allows multiple). Per-task
-           row lives in <WorkspaceItemTask> (extracted 2026-06-10);
+           row lives in <WorkspaceItemTaskRow> (extracted 2026-06-10);
            events bubble up via the pass-through handlers in the
            <script setup> block. -->
       <div v-if="isExpanded && item.tasks && item.tasks.length > 0" class="ml-8 mt-1.5 space-y-0.5 pl-2 border-l border-[--color-border]/30">
@@ -469,7 +469,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           @dragleave="handlePinnedDragLeave"
           @dragstart="handlePinnedDragStart"
         >
-          <WorkspaceItemTask
+          <WorkspaceItemTaskRow
             v-for="task in item.tasks.filter((t) => t.is_pinned)"
             :key="task.id"
             :task="task"
@@ -488,7 +488,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           />
         </div>
         <!-- Unpinned region: regular order, no drag. -->
-        <WorkspaceItemTask
+        <WorkspaceItemTaskRow
           v-for="task in item.tasks.filter((t) => !t.is_pinned)"
           :key="task.id"
           :task="task"

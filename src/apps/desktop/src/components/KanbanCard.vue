@@ -1,8 +1,8 @@
 <!--
   KanbanCard — a single draggable card on a kanban column.
 
-  Wraps the existing <WorkspaceItemTask> with a draggable div that
-  sets the kanban-specific MIME type on dragstart, so the
+  Wraps the existing <WorkspaceItemTaskCard> with a draggable div
+  that sets the kanban-specific MIME type on dragstart, so the
   <KanbanColumn> drop zone can read it back on drop and emit
   `move-task`. We deliberately use a dedicated MIME type
   (`application/x-kanban-task-id`) instead of `text/plain` so the
@@ -11,25 +11,27 @@
   uses `application/x-pinned-task-id`). See WorkspaceItem.vue:204
   and WorkspaceList.vue:336 for the same pattern.
 
-  Why wrap rather than re-render: <WorkspaceItemTask> already owns
-  the per-task UI (icon, name, action buttons, routine vs. standard
-  branch). Re-rendering its internals would duplicate logic and
-  diverge from the sidebar list view over time. The wrap approach
-  keeps a single source of truth for the per-task row.
+  Why wrap rather than re-render: <WorkspaceItemTaskCard> already
+  owns the per-task card UI (icon, name, action buttons, routine vs.
+  standard branch, description preview, meta row). Re-rendering its
+  internals would duplicate logic and diverge from the sidebar list
+  view over time. The wrap approach keeps a single source of truth
+  for the per-task row.
 
   Public API:
     props:  task (Task), workspaceId (string), itemId (string)
     emits:  dragstart (taskId), dragend ()
-            — all events emitted by WorkspaceItemTask are re-emitted
-              verbatim to the host (KanbanColumn / KanbanView) so the
-              kanban tree can route them to the store actions.
+            — all events emitted by WorkspaceItemTaskCard are
+              re-emitted verbatim to the host (KanbanColumn /
+              KanbanView) so the kanban tree can route them to the
+              store actions.
 
   Visual: A slight dim + slight tilt on drag for clear feedback
   (the source <KanbanColumn> also fades the source card via its
   own dim state if we choose to add that in the future).
 -->
 <script setup lang="ts">
-import WorkspaceItemTask from './WorkspaceItemTask.vue'
+import WorkspaceItemTaskCard from './WorkspaceItemTaskCard.vue'
 import type { Task, WorkspaceItem } from '../stores/workspaces'
 
 const props = defineProps<{
@@ -37,16 +39,16 @@ const props = defineProps<{
   workspaceId: string
   itemId: string
   // Optional: the parent WorkspaceItem (for forwarded events from
-  // <WorkspaceItemTask> that need the full item context — currently
-  // unused, but accepted for forward compatibility if a future
-  // routine-task action needs the item.path).
+  // <WorkspaceItemTaskCard> that need the full item context —
+  // currently unused, but accepted for forward compatibility if a
+  // future routine-task action needs the item.path).
   item?: WorkspaceItem
 }>()
 
 const emit = defineEmits<{
   dragstart: [taskId: string]
   dragend: []
-  // Pass-through events from <WorkspaceItemTask>.
+  // Pass-through events from <WorkspaceItemTaskCard>.
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
@@ -81,11 +83,10 @@ const handleDragEnd = () => {
     @dragstart="handleDragStart"
     @dragend="handleDragEnd"
   >
-    <WorkspaceItemTask
+    <WorkspaceItemTaskCard
       :task="task"
       :workspace-id="workspaceId"
       :item-id="itemId"
-      variant="card"
       @select-task="(id) => emit('selectTask', id)"
       @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
       @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"

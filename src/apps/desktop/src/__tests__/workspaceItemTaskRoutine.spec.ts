@@ -1,5 +1,5 @@
 /**
- * Tests for the routine-task branch of WorkspaceItemTask.
+ * Tests for the routine-task branch of the per-task row.
  *
  * When `task.task_type === 'routine'`, the row renders a clock
  * icon (instead of the bullet), a "Run now" play-icon button on
@@ -12,13 +12,24 @@
  * The parent (WorkspaceItem → Sidebar) is responsible for calling
  * the store action and routing. We test the emit only; the
  * end-to-end flow is in Task 7.5.
+ *
+ * History:
+ *   - These tests previously targeted <WorkspaceItemTask> (the
+ *     pre-split single component with a `variant` prop). After the
+ *     2026-07-02 split, the routine branch lives in
+ *     <WorkspaceItemTaskRow> (sidebar list) and <WorkspaceItemTaskCard>
+ *     (kanban). The shared logic is in composables/useTaskActions.ts.
+ *     These tests target the Row component because routines are
+ *     primarily managed from the sidebar list; the Card component
+ *     uses the same routine branch and is covered indirectly by
+ *     workspaceItemTaskCard.spec.ts.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { nextTick, ref, type Ref } from 'vue'
 import { mount } from '@vue/test-utils'
 
-import WorkspaceItemTask from '../components/WorkspaceItemTask.vue'
+import WorkspaceItemTaskRow from '../components/WorkspaceItemTaskRow.vue'
 import type { RoutineMeta, Task } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
@@ -51,14 +62,14 @@ function mountTask(
   itemId = 'item_1',
 ) {
   const processingState: Ref<Record<string, boolean>> = ref({})
-  const wrapper = mount(WorkspaceItemTask, {
+  const wrapper = mount(WorkspaceItemTaskRow, {
     props: { task, workspaceId, itemId },
     global: { provide: { processingState } },
   })
   return { wrapper, processingState }
 }
 
-describe('WorkspaceItemTask — routine branch', () => {
+describe('WorkspaceItemTaskRow — routine branch', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
