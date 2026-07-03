@@ -40,6 +40,7 @@ test {
     _ = @import("http_handlers/workspace_items_reorder_test.zig");
     _ = @import("http_handlers/task_pin_test.zig");
     _ = @import("migration_051_test.zig");
+    _ = @import("migration_009_test.zig");
     _ = @import("migration_053_test.zig");
     _ = @import("migration_054_test.zig");
     _ = @import("kanban_model_test.zig");

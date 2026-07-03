@@ -84,8 +84,25 @@ pub const Address = struct {
             const rc = winsock.setsockopt(sock_fd, 0xffff, 4, &opt, @sizeOf(c_int));
             if (rc != 0) return error.SetSockOptFailed;
         } else {
+            // Use the OS-correct SOL_SOCKET / SO_REUSEADDR constants from
+            // std.posix (which routes to std.os.<platform>.SO). The previous
+            // hardcoded `1, 2` happened to be `SOL_SOCKET, SO_DEBUG` on
+            // Linux (silently succeeded — DEBUG is a benign no-op-ish
+            // option) but was `SOL_SOCKET, SO_TYPE` on macOS, which is an
+            // invalid direction on a listen socket and triggers an
+            // `INVAL` in `posix.setsockopt`'s switch — the `unreachable`
+            // arm crashes the process during GinwaServer.init().
+            //
+            // sys/socket.h SOL_SOCKET = 1 on Linux and 0xffff on macOS;
+            // SO_REUSEADDR = 0x0004 on both. Using the standard library's
+            // os-tagged aliases keeps both platforms correct.
             const opt: i32 = 1;
-            try posix.setsockopt(sock_fd, 1, 2, std.mem.asBytes(&opt));
+            try posix.setsockopt(
+                sock_fd,
+                @intCast(posix.SOL.SOCKET),
+                @intCast(posix.SO.REUSEADDR),
+                std.mem.asBytes(&opt),
+            );
         }
     }
 

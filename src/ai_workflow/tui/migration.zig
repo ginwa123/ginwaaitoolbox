@@ -103,7 +103,12 @@ pub const Migration009RemoveCreatedColumn = struct {
         // Rename old table
         try db.exec(allocator, "ALTER TABLE llm_history RENAME TO llm_history_old", &[_][]const u8{});
 
-        // Create new table without created column and with DATETIME created_at
+        // Create new table with `created_at` (the column this migration
+        // was supposed to consolidate). Columns added by later migrations
+        // (e.g. `temperature` / `is_thinking` from migration 011) MUST
+        // NOT be inlined here — that forward-projects the schema and
+        // causes a "duplicate column name" error when those migrations
+        // later try to `ALTER TABLE ... ADD COLUMN` on a fresh DB.
         try db.exec(allocator,
             \\CREATE TABLE IF NOT EXISTS llm_history (
             \\    id TEXT PRIMARY KEY,
@@ -121,23 +126,44 @@ pub const Migration009RemoveCreatedColumn = struct {
             \\    is_feed_to_llm INTEGER DEFAULT 1,
             \\    agent TEXT DEFAULT 'Agent',
             \\    session_name TEXT,
-            \\    loop_index INTEGER DEFAULT 0,
-            \\    temperature REAL DEFAULT 0.2,
-            \\    is_thinking INTEGER DEFAULT 0
+            \\    loop_index INTEGER DEFAULT 0
             \\)
         , &[_][]const u8{});
 
-        // Copy data from old table, converting created to created_at
+        // Copy data from old table.
+        //
+        // NOTE on `created_at`: this migration's rename-and-copy dance
+        // assumes the old table had a `created` column to convert into
+        // `created_at`, but Migration 001 has always created
+        // `llm_history` with `created_at` directly (no historical
+        // `created` column ever existed in this codebase). Reading
+        // `created` from `llm_history_old` therefore crashes the
+        // migration on a fresh DB:
+        //
+        //   sqlite3_prepare_v2 error: no such column: created
+        //
+        // We use `COALESCE(created_at, CURRENT_TIMESTAMP)` instead. On
+        // the (only) schema that actually exists, `created_at` is the
+        // column on `llm_history_old`; the COALESCE fallback guards
+        // against the (hypothetical) empty-table case where every
+        // column is NULL — there are no rows to copy, but the function
+        // still needs a well-typed projection.
+        //
+        // Columns added by later migrations (`temperature`,
+        // `is_thinking` from migration 011; etc.) MUST NOT appear in
+        // the INSERT column list or the SELECT projection — they're
+        // not on `llm_history_old` (only added by their own migrations)
+        // and the new `llm_history` no longer declares them either.
         try db.exec(allocator,
             \\INSERT INTO llm_history (id, session_id, model, response_content, tool_calls_json,
             \\    tool_results_json, finish_reason, usage_json, created_at, role,
-            \\    reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index, temperature, is_thinking)
+            \\    reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index)
             \\SELECT id, session_id, model, response_content, tool_calls_json,
             \\    tool_results_json, finish_reason, usage_json,
-            \\    datetime(CAST(created AS INTEGER), 'unixepoch'),
+            \\    COALESCE(created_at, CURRENT_TIMESTAMP),
             \\    COALESCE(role, 'assistant'), reasoning_content, session_dir,
             \\    COALESCE(is_feed_to_llm, 1), COALESCE(agent, 'Agent'),
-            \\    session_name, COALESCE(loop_index, 0), 0.2, 0
+            \\    session_name, COALESCE(loop_index, 0)
             \\FROM llm_history_old
         , &[_][]const u8{});
 
@@ -287,9 +313,17 @@ pub const Migration020AddWorkerExtraFields = struct {
     pub const name = "add_worker_extra_fields";
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE worker ADD COLUMN IF NOT EXISTS working_directory TEXT", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE worker ADD COLUMN IF NOT EXISTS last_activity INTEGER DEFAULT (strftime('%s', 'now'))", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE worker ADD COLUMN IF NOT EXISTS last_activity_description TEXT", &[_][]const u8{});
+        // These columns are already part of migration 019's CREATE TABLE
+        // (the canonical `worker` schema), so fresh-DB users would
+        // crash with "duplicate column name" if we ran the ADD COLUMN
+        // unconditionally. SQLite also doesn't support
+        // `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` (the syntax errors
+        // out at prepare time — see sqlite3_prepare_v2: "near
+        // 'EXISTS': syntax error"), so we wrap each ADD COLUMN in a
+        // pragma_table_info check.
+        try addColumnIfMissing(db, allocator, "worker", "working_directory", "working_directory TEXT");
+        try addColumnIfMissing(db, allocator, "worker", "last_activity", "last_activity INTEGER DEFAULT (strftime('%s', 'now'))");
+        try addColumnIfMissing(db, allocator, "worker", "last_activity_description", "last_activity_description TEXT");
     }
 };
 
@@ -1001,10 +1035,14 @@ pub const Migration052DropSessionIdFromWorkspaceItemTasks = struct {
         //
         // Schema before: workspace_item_tasks (..., session_id TEXT, ...)
         // Schema after:  workspace_item_tasks (...,                  ...)
-        try db.exec(allocator,
-            "ALTER TABLE workspace_item_tasks DROP COLUMN session_id",
-            &[_][]const u8{},
-        );
+        //
+        // `dropColumnIfExists` (not raw `DROP COLUMN`) because the
+        // canonical migration 034 schema no longer declares
+        // `session_id` (it was a redundant column — `task.id` IS the
+        // session id). For fresh-DB users the column never exists, so
+        // the raw `DROP COLUMN` would crash with "no such column:
+        // session_id".
+        try dropColumnIfExists(db, allocator, "workspace_item_tasks", "session_id");
         // The session_id index (created in Migration 034) is now
         // unused and would just slow writes down. Drop it.
         try db.exec(allocator,
@@ -1214,6 +1252,86 @@ pub const MigrationManager = struct {
         self.migrations.deinit(self.allocator);
     }
 };
+
+/// Add a column to a table if it doesn't already exist.
+///
+/// SQLite's `ALTER TABLE ... ADD COLUMN` does NOT support
+/// `IF NOT EXISTS` (it errors at prepare time with
+/// "near 'EXISTS': syntax error"). This helper works around that by
+/// checking `pragma_table_info('<table>')` first.
+///
+/// Used by migrations that need to add a column to a table which may
+/// have been created by a newer migration (e.g. migration 020 adds
+/// columns that migration 019's CREATE TABLE already declares — for
+/// fresh-DB users, those columns are already there, and the helper
+/// makes the ADD COLUMN a no-op).
+///
+/// `definition` is the full `ADD COLUMN` clause AFTER the
+/// `ALTER TABLE <table>` prefix, e.g.
+/// `"working_directory TEXT"`. (Keeping the column name in the
+/// definition is intentional — the SQLite parser requires it, and
+/// `definition` is provided by the caller who already knows the
+/// full DDL line.)
+pub fn addColumnIfMissing(
+    db: *SqliteBackend,
+    allocator: std.mem.Allocator,
+    table: []const u8,
+    column: []const u8,
+    definition: []const u8,
+) !void {
+    // Stack-buffer the two SQL strings. Both are tiny — a few dozen
+    // bytes each. Avoiding the heap keeps the helper zero-alloc and
+    // safe to call from any migration.
+    var check_buf: [256]u8 = undefined;
+    const check_sql = std.fmt.bufPrint(
+        &check_buf,
+        "SELECT 1 FROM pragma_table_info('{s}') WHERE name = '{s}'",
+        .{ table, column },
+    ) catch return error.BufferTooSmall;
+    var q = try db.query(allocator, check_sql, &.{});
+    defer q.deinit();
+    if ((try q.next()) != null) return; // column already exists — no-op.
+
+    var ddl_buf: [256]u8 = undefined;
+    const ddl = std.fmt.bufPrint(
+        &ddl_buf,
+        "ALTER TABLE {s} ADD COLUMN {s}",
+        .{ table, definition },
+    ) catch return error.BufferTooSmall;
+    try db.exec(allocator, ddl, &.{});
+}
+
+/// Drop a column from a table if it exists. SQLite's
+/// `ALTER TABLE ... DROP COLUMN` errors with "no such column: X" if
+/// the column was never there (which is the case for fresh-DB users
+/// when an earlier migration had been edited to remove a redundant
+/// column from its CREATE TABLE). This helper makes the DROP a
+/// no-op for fresh-DB users while still removing the column for
+/// legacy users who do have it.
+pub fn dropColumnIfExists(
+    db: *SqliteBackend,
+    allocator: std.mem.Allocator,
+    table: []const u8,
+    column: []const u8,
+) !void {
+    var check_buf: [256]u8 = undefined;
+    const check_sql = std.fmt.bufPrint(
+        &check_buf,
+        "SELECT 1 FROM pragma_table_info('{s}') WHERE name = '{s}'",
+        .{ table, column },
+    ) catch return error.BufferTooSmall;
+    var q = try db.query(allocator, check_sql, &.{});
+    defer q.deinit();
+    if ((try q.next()) == null) return; // column doesn't exist — no-op.
+
+    var ddl_buf: [256]u8 = undefined;
+    const ddl = std.fmt.bufPrint(
+        &ddl_buf,
+        "ALTER TABLE {s} DROP COLUMN {s}",
+        .{ table, column },
+    ) catch return error.BufferTooSmall;
+    try db.exec(allocator, ddl, &.{});
+}
 
 /// All available migrations - add new migrations to this slice
 pub const allMigrations: []const Migration = &.{
