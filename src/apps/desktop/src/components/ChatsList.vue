@@ -357,7 +357,14 @@ defineExpose({
         : { height: 'auto', minHeight: '0' }
     "
   >
-    <!-- Header with expand/collapse toggle -->
+    <!-- Header with expand/collapse toggle. Contract protected by
+         sidebarSpacing.spec.ts — the exact class string below is
+         grep-matched: 'class="px-3 py-2.5 flex items-center gap-2
+         w-full text-left hover:opacity-70 transition-opacity shrink-0
+         border-b border-[--color-border]/40"'. Inside the header:
+         a single chevron + the section title; the trailing sort and
+         "+ new chat" controls use bare text (no SVG, no decoration)
+         for a minimal typographic feel. -->
     <button
       class="px-3 py-2.5 flex items-center gap-2 w-full text-left hover:opacity-70 transition-opacity shrink-0 border-b border-[--color-border]/40"
       @click="toggleNavSection"
@@ -374,23 +381,25 @@ defineExpose({
         >Chats</span
       >
       <div class="flex items-center gap-1 ml-auto" v-if="sidebarStore.navExpanded">
-        <select
-          v-model="chatsSortDirection"
-          @change="loadChats"
-          @click.stop
-          class="text-xs px-1.5 py-0.5 rounded cursor-pointer"
-          style="background: var(--semantic-card-bg); color: var(--semantic-text-dim); border: none"
+        <button
+          @click.stop="chatsSortDirection = chatsSortDirection === 'desc' ? 'asc' : 'desc'; loadChats()"
+          :title="chatsSortDirection === 'desc' ? 'Newest first (click to flip)' : 'Oldest first (click to flip)'"
+          :aria-label="chatsSortDirection === 'desc' ? 'Sort: newest first' : 'Sort: oldest first'"
+          data-testid="chats-sort-toggle"
+          class="text-xs font-medium transition-opacity duration-150 hover:opacity-100"
+          style="color: var(--semantic-text-dim); opacity: 0.7;"
         >
-          <option value="desc">↓</option>
-          <option value="asc">↑</option>
-        </select>
+          {{ chatsSortDirection === 'desc' ? '↓' : '↑' }}
+        </button>
         <button
           @click.stop="createChat"
-          class="w-5 h-5 rounded flex items-center justify-center transition-colors hover:opacity-70"
-          style="color: var(--semantic-text-dim)"
+          class="text-xs font-medium transition-opacity duration-150 hover:opacity-100"
+          style="color: var(--semantic-text-dim); opacity: 0.7;"
           title="New Chat"
+          aria-label="New Chat"
+          data-testid="chats-new-chat-button"
         >
-          <span class="text-sm">+</span>
+          +
         </button>
       </div>
     </button>
@@ -447,17 +456,11 @@ defineExpose({
             <button
               v-if="item.id !== 'chat'"
               @click.stop="confirmDeleteChat(item.id)"
-              class="w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover/chat:opacity-100 transition-opacity hover:text-red-400 shrink-0"
+              class="w-5 h-5 rounded text-sm leading-none flex items-center justify-center opacity-0 group-hover/chat:opacity-100 transition-opacity hover:text-red-400 shrink-0"
               style="color: var(--semantic-text-dim)"
+              title="Delete chat"
             >
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              </svg>
+              ×
             </button>
           </button>
         </template>
@@ -483,16 +486,20 @@ defineExpose({
     </div>
   </div>
 
-  <!-- Collapsed Chats Button -->
-  <div v-else class="mb-3 shrink-0">
+  <!-- Collapsed Chats Button. Bare text "+" with a thin border,
+       matching the collapsed workspace tile style for visual
+       consistency. NO chat-bubble SVG — the user wants minimal,
+       icon-free design. Hover just darkens the text color. -->
+  <div v-else class="mb-2 shrink-0">
     <button
       @click="createChat"
-      class="w-full h-10 rounded-lg flex items-center justify-center transition-colors hover:opacity-80"
-      style="color: var(--semantic-text-muted)"
+      data-testid="collapsed-new-chat-button"
+      title="New Chat"
+      aria-label="New Chat"
+      class="w-9 h-9 rounded-md flex items-center justify-center text-sm transition-colors duration-150 hover:text-[--semantic-text]"
+      style="color: var(--semantic-text-dim);"
     >
-      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-      </svg>
+      +
     </button>
   </div>
 </template>

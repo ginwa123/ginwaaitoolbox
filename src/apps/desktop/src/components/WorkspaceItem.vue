@@ -386,14 +386,18 @@ const handlePinnedDrop = (event: DragEvent) => {
               style="border-color: var(--color-yellow); border-top-color: transparent"
             ></div>
           </span>
-          <!-- Chevron icon (expand/collapse) -->
-          <svg
-            class="w-4 h-4 shrink-0 transition-transform duration-200"
-            :class="{ '-rotate-90': !isExpanded }"
-            fill="none" viewBox="0 0 24 24" stroke="currentColor"
-          >
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-          </svg>
+          <!-- Chevron glyph (expand/collapse). Unicode right-pointing
+               caret rotated -90° when expanded, matching the
+               WorkspaceList chevron style for visual consistency.
+               data-testid="item-row-chevron" so tests can verify
+               DOM-order position relative to the spinner (was an
+               SVG path before the minimalist-rewrite). -->
+          <span
+            class="text-xs shrink-0 transition-transform duration-200"
+            data-testid="item-row-chevron"
+            :style="{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
+            aria-hidden="true"
+          >▶</span>
           <!-- Item Name -->
           <span class="truncate">{{ item.name }}</span>
           <!-- Loading spinner (folder contents fetching — independent
@@ -426,24 +430,23 @@ const handlePinnedDrop = (event: DragEvent) => {
         <template v-if="item.item_type !== 'kanban'">
           <button
             @click="handleAddTask"
-            class="w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/item:opacity-100 transition-opacity duration-200 hover:text-green-400"
+            class="w-5 h-5 text-sm leading-none flex items-center justify-center rounded opacity-0 group-hover/item:opacity-100 transition-opacity duration-150 hover:text-green-400"
             style="color: var(--semantic-text-dim);"
             title="Add Task"
+            aria-label="Add Task"
           >
-            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-            </svg>
+            +
           </button>
-          <!-- Delete Item Button (show on hover) -->
+          <!-- Delete Item Button (show on hover). Unicode × glyph
+               instead of SVG. -->
           <button
             @click="handleDelete"
-            class="w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/item:opacity-100 transition-opacity duration-200 hover:text-red-400"
+            class="w-5 h-5 text-sm leading-none flex items-center justify-center rounded opacity-0 group-hover/item:opacity-100 transition-opacity duration-150 hover:text-red-400"
             style="color: var(--semantic-text-dim);"
             title="Delete Item"
+            aria-label="Delete Item"
           >
-            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
+            ×
           </button>
         </template>
       </div>

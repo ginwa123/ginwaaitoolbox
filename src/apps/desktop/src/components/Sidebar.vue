@@ -53,6 +53,36 @@ const updateChatId = (oldId: string, newId: string) => {
   }
 }
 
+// Compute a 1–2 letter monogram for a workspace, used by the
+// collapsed-state tile (no icons). Algorithm:
+//   1. Strip non-alphanumeric chars
+//   2. Take the first letter; if a word boundary appears within the
+//      first 5 letters, use that second letter as well (e.g.
+//      "agentic_coding_zig" → "A", "my project" → "M" + "P" → "MP",
+//      "wonderful" → "W").
+//   3. Uppercase and clamp to ≤ 2 chars.
+//
+// Falls back to `?` if the name is empty/whitespace-only (defensive —
+// the workspace store validates names server-side, but a future
+// client-only flow could produce an empty name).
+const workspaceMonogram = (name: string): string => {
+  const cleaned = name.replace(/[^a-zA-Z0-9]/g, '')
+  if (cleaned.length === 0) return '?'
+  const head = cleaned[0]?.toUpperCase() ?? '?'
+  if (cleaned.length < 2) return head
+  // Look for the next word-boundary character within the first 6 chars
+  // of the *original* name (not the cleaned one — we want to detect
+  // space/underscore/hyphen transitions, not stripped chars).
+  for (let i = 1; i < Math.min(name.length, 6); i++) {
+    const ch = name[i]
+    const prev = name[i - 1]
+    if (ch && /[a-zA-Z0-9]/.test(ch) && prev && /[^a-zA-Z0-9]/.test(prev)) {
+      return head + ch.toUpperCase()
+    }
+  }
+  return head
+}
+
 // Expose method to open the Add Task picker dialog. Called by
 // AppLayout's <KanbanView> when the user clicks "+" on a kanban
 // column (the kanban now lives in the main content area, not in the
@@ -964,47 +994,63 @@ defineExpose({
       @mousedown="startResize"
     />
 
-    <!-- Collapse Button -->
+    <!-- Collapse/Expand Button. A minimal chevron-only button — no
+         shadow, no scale on hover, just a thin border that matches
+         the sidebar's typographic treatment. The chevron points in
+         the *target* direction (left when expanded, right when
+         collapsed) so the click intent reads at a glance. -->
     <button
       @click="toggleCollapse"
-      class="absolute -right-3 top-20 z-20 w-6 h-6 rounded-full flex items-center justify-center transition-all duration-200 hover:scale-110"
-      style="background: var(--semantic-card-bg); border: 1px solid var(--color-border); box-shadow: 0 2px 8px rgba(0,0,0,0.15);"
+      data-testid="sidebar-collapse-toggle"
+      class="absolute -right-2.5 top-16 z-20 w-5 h-5 rounded flex items-center justify-center transition-colors duration-150"
+      style="background: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+      :title="isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+      :aria-label="isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
     >
       <svg
-        class="w-3 h-3 transition-transform duration-200"
-        :style="{ transform: isCollapsed ? 'rotate(0deg)' : 'rotate(180deg)' }"
-        style="color: var(--semantic-text-muted);"
+        class="w-3 h-3 transition-transform duration-150"
+        :style="{ color: 'var(--semantic-text-dim)', transform: isCollapsed ? 'rotate(180deg)' : 'rotate(0deg)' }"
         fill="none" viewBox="0 0 24 24" stroke="currentColor"
       >
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
       </svg>
     </button>
 
-    <!-- Header -->
+    <!-- Header. Minimal text-driven header — no logo gradient
+         pill, no decorative sub-label. Two layouts: collapsed shows
+         a thin monogram "N" character; expanded shows "Nalar" word
+         + a small settings chevron. The thin border-bottom keeps
+         the section boundary visible without any visual heaviness. -->
     <div
-      class="h-14 flex items-center shrink-0"
+      class="h-12 flex items-center shrink-0"
       :class="isCollapsed ? 'justify-center px-0' : 'px-4 justify-between'"
       style="border-bottom: 1px solid var(--color-border);"
     >
-      <div v-if="!isCollapsed" class="flex items-center gap-2">
-        <div class="w-7 h-7 rounded-lg flex items-center justify-center" style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue));">
-          <span class="text-xs font-bold" style="color: var(--color-bg);">N</span>
-        </div>
-        <span class="text-base font-semibold" style="color: var(--semantic-text);">Nalar</span>
+      <div
+        v-if="!isCollapsed"
+        class="flex items-center gap-2"
+        data-testid="sidebar-header-expanded"
+      >
+        <span class="text-sm font-semibold tracking-tight" style="color: var(--semantic-text);">Nalar</span>
       </div>
-      <div v-else class="w-8 h-8 rounded-lg flex items-center justify-center" style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue));">
-        <span class="text-sm font-bold" style="color: var(--color-bg);">N</span>
-      </div>
+      <span
+        v-else
+        class="text-sm font-semibold tracking-tight"
+        style="color: var(--semantic-text);"
+        title="Nalar"
+        aria-label="Nalar"
+        data-testid="sidebar-header-collapsed"
+      >N</span>
       <button
         v-if="!isCollapsed"
         @click="goToSettings"
-        class="w-8 h-8 rounded-lg flex items-center justify-center transition-colors hover:opacity-70"
-        style="color: var(--semantic-text-muted);"
+        class="text-xs font-medium transition-colors duration-150 hover:text-[--semantic-text]"
+        style="color: var(--semantic-text-dim);"
+        title="Settings"
+        aria-label="Settings"
+        data-testid="sidebar-settings-button"
       >
-        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-        </svg>
+        Settings
       </button>
     </div>
 
@@ -1043,26 +1089,41 @@ defineExpose({
           @pin-task="handlePinTask"
           @reorder-pinned-tasks="handleReorderPinnedTasks"
         />
-        <!-- Collapsed workspaces -->
-        <div v-else class="space-y-0.5">
+        <!-- Collapsed workspaces: minimal text-driven monograms.
+             Each workspace is rendered as a 1-2 letter monogram
+             (first letters of the workspace name) in a thin-bordered
+             rounded square. NO folder/emoji icons — the monogram is
+             pure typography on a neutral background. The ACTIVE
+             workspace (workspace.expanded === true) gets a 2px
+             violet left accent bar (matching the active row
+             treatment used elsewhere in the sidebar) so the user
+             can glance to find which workspace is open without
+             needing labels. Tooltips show the full workspace name
+             on hover so labels aren't lost. -->
+        <div v-else class="flex flex-col items-center gap-1 py-1">
           <button
             v-for="workspace in workspacesStore.workspaces"
             :key="workspace.id"
             @click="handleToggleWorkspace(workspace.id)"
-            class="w-full h-10 rounded-lg flex items-center justify-center transition-colors"
-            :style="workspace.expanded ? 'background: var(--semantic-active-bg);' : ''"
+            data-testid="collapsed-workspace-button"
+            class="relative w-9 h-9 rounded-md flex items-center justify-center text-xs font-semibold tracking-tight transition-colors duration-150"
+            :style="workspace.expanded
+              ? 'background: transparent; color: var(--semantic-active-text); border: 1px solid var(--color-border); box-shadow: inset 2px 0 0 0 var(--semantic-active-text);'
+              : 'background: transparent; color: var(--semantic-text-dim); border: 1px solid var(--color-border);'"
             :title="workspace.name"
+            :aria-label="`Open workspace ${workspace.name}`"
           >
-            <span class="text-base">{{ workspace.icon }}</span>
+            {{ workspaceMonogram(workspace.name) }}
           </button>
           <button
             @click="handleAddWorkspace"
-            class="w-full h-10 rounded-lg flex items-center justify-center transition-colors hover:opacity-70"
+            data-testid="collapsed-add-workspace-button"
+            class="w-9 h-9 rounded-md flex items-center justify-center text-sm transition-colors duration-150 hover:text-[--semantic-text]"
             style="color: var(--semantic-text-dim);"
+            title="Add Workspace"
+            aria-label="Add Workspace"
           >
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-            </svg>
+            +
           </button>
         </div>
       </div>

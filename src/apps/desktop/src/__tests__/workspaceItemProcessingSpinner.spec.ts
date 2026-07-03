@@ -168,13 +168,19 @@ describe('WorkspaceItem item-row processing spinner', () => {
     // The visual contract: the processing spinner must be the
     // leftmost element on the row, matching the chat-list and
     // per-task-row pattern. The chevron sits to its right.
+    //
+    // After the minimalist sidebar rewrite (2026-07-02), the
+    // chevron is a unicode ▶ glyph inside a <span
+    // data-testid="item-row-chevron"> — NOT an SVG path. The test
+    // now keys off the testid instead of the path string, since
+    // the chevron is no longer an SVG.
     const { wrapper, processingState } = mountWorkspaceItem()
     processingState.value = { task_alpha: true }
     await nextTick()
     const row = wrapper.find('button')
     const html = row.html()
     const spinnerIdx = html.indexOf('item-processing-spinner')
-    const chevronIdx = html.indexOf('M19 9l-7 7-7-7') // chevron path
+    const chevronIdx = html.indexOf('item-row-chevron')
     expect(spinnerIdx).toBeGreaterThan(-1)
     expect(chevronIdx).toBeGreaterThan(-1)
     expect(spinnerIdx).toBeLessThan(chevronIdx)

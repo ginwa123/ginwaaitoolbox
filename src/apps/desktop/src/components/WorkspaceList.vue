@@ -415,7 +415,11 @@ const handleItemDragEnd = () => {
 
 <template>
   <div class="space-y-1 h-full flex flex-col">
-    <!-- Section Header - Clickable to collapse/expand -->
+    <!-- Section Header - Clickable to collapse/expand. Minimal
+         text-driven header: chevron + uppercase section title on
+         the left, "+ Add Workspace" as bare text on the right.
+         No SVG icons, no card background, no shadow — just
+         typography and a subtle hover tint. -->
     <button
       class="px-3 py-2 flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity shrink-0 w-full text-left"
       @click="toggleWorkspacesSection"
@@ -429,17 +433,17 @@ const handleItemDragEnd = () => {
         class="text-xs font-semibold uppercase tracking-wider"
         style="color: var(--semantic-text-dim);"
       >Workspaces</span>
-      <div class="flex items-center gap-2 ml-auto">
-        <button
-          v-if="sidebarStore.workspacesExpanded"
-          @click.stop="$emit('addWorkspace')"
-          class="w-5 h-5 rounded flex items-center justify-center transition-colors duration-200 hover:opacity-80"
-          style="color: var(--semantic-text-dim);"
-          title="Add Workspace"
-        >
-          <span class="text-sm">+</span>
-        </button>
-      </div>
+      <button
+        v-if="sidebarStore.workspacesExpanded"
+        @click.stop="$emit('addWorkspace')"
+        class="ml-auto text-xs font-medium transition-opacity duration-150 hover:opacity-100"
+        style="color: var(--semantic-text-dim); opacity: 0.7;"
+        title="Add Workspace"
+        aria-label="Add Workspace"
+        data-testid="workspaces-add-workspace-button"
+      >
+        +
+      </button>
     </button>
 
     <!-- Scrollable Workspace Groups Container -->
@@ -514,39 +518,39 @@ const handleItemDragEnd = () => {
             class="text-xs transition-transform duration-200 w-4 flex justify-center"
             :style="{ transform: workspace.expanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
           >▶</span>
-          <!-- Workspace Name -->
+          <!-- Workspace Name (no icon — the chevron alone signals the
+               row, and the count badge signals magnitude) -->
           <span class="flex-1 text-left font-medium truncate">{{ workspace.name }}</span>
           <!-- Item Count Badge -->
           <span
             v-if="workspace.items.length > 0"
-            class="text-xs px-1.5 py-0.5 rounded-full"
+            class="text-xs opacity-70 shrink-0"
             data-testid="workspace-count-badge"
-            style="background-color: var(--color-bg-p1); color: var(--semantic-text-dim);"
+            style="color: var(--semantic-text-dim);"
           >
             {{ workspace.items.length }}
           </span>
         </button>
-        <!-- Rename Workspace Button -->
+        <!-- Rename Workspace Button. Unicode pencil glyph (✎) instead
+             of an SVG path. Still a tiny hover-only control. -->
         <button
           @click.stop="handleRenameWorkspace(workspace.id, workspace.name)"
-          class="w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/workspace:opacity-100 transition-opacity duration-200 hover:text-blue-400 mr-1"
+          class="w-5 h-5 text-xs leading-none flex items-center justify-center rounded opacity-0 group-hover/workspace:opacity-100 transition-opacity duration-150 hover:text-[--semantic-text] mr-1"
           style="color: var(--semantic-text-dim);"
           title="Rename Workspace"
+          aria-label="Rename Workspace"
         >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-          </svg>
+          ✎
         </button>
         <!-- Delete Workspace Button -->
         <button
           @click="handleDeleteWorkspace(workspace.id)"
-          class="w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/workspace:opacity-100 transition-opacity duration-200 hover:text-red-400 mr-1"
+          class="w-5 h-5 text-sm leading-none flex items-center justify-center rounded opacity-0 group-hover/workspace:opacity-100 transition-opacity duration-150 hover:text-red-400 mr-1"
           style="color: var(--semantic-text-dim);"
           title="Delete Workspace"
+          aria-label="Delete Workspace"
         >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-          </svg>
+          ×
         </button>
       </div>
 
@@ -583,38 +587,51 @@ const handleItemDragEnd = () => {
             @pin-task="(ws, item, task, isPinned) => emit('pinTask', ws, item, task, isPinned)"
             @reorder-pinned-tasks="(ws, item, orderedIds) => emit('reorderPinnedTasks', ws, item, orderedIds)"
           />
-          <!-- Add Item Button -->
+          <!-- Add Item Button. Minimal: bare text "+ Add Item" with
+               a subtle opacity transition on hover. NO SVG, NO
+               dashed border, NO icons in the dropdown menu — just
+               text labels for "Add Project", "Add Kanban", and
+               "Add Memory". -->
           <li class="group/workspace relative" data-workspace-menu>
             <button
               @click.stop="toggleAddMenu(workspace.id)"
-              class="w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-all duration-200"
-              style="color: var(--semantic-text-dim);"
+              data-testid="workspace-add-item-button"
+              class="w-full text-left px-3 py-1.5 text-xs transition-opacity duration-150 hover:opacity-100"
+              style="color: var(--semantic-text-dim); opacity: 0.6;"
             >
-              <span class="opacity-50 group-hover/workspace:opacity-100 transition-opacity duration-200">+</span>
-              <span class="opacity-50 group-hover/workspace:opacity-100 transition-opacity duration-200 truncate">Add Item</span>
+              + Add Item
             </button>
             <!-- Dropdown Menu -->
             <ul
               v-if="activeAddMenu === workspace.id"
-              class="absolute left-0 top-full mt-1 py-1 rounded-md shadow-lg z-50 min-w-[140px]"
+              class="absolute left-0 top-full mt-1 py-1 rounded-md shadow-lg z-50 min-w-[160px]"
               style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
             >
               <li>
                 <button
                   @click="handleAddItem(workspace.id, 'folder')"
-                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity flex items-center gap-2"
+                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
                   style="color: var(--semantic-text);"
                 >
-                  <span>Add Project</span>
+                  Add Project
                 </button>
               </li>
               <li>
                 <button
                   @click="handleAddItem(workspace.id, 'kanban')"
-                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity flex items-center gap-2"
+                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
                   style="color: var(--semantic-text);"
                 >
-                  <span>Add Project Kanban</span>
+                  Add Kanban
+                </button>
+              </li>
+              <li>
+                <button
+                  @click="handleAddItem(workspace.id, 'memory')"
+                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
+                  style="color: var(--semantic-text);"
+                >
+                  Add Memory
                 </button>
               </li>
             </ul>
