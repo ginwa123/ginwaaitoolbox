@@ -26,44 +26,34 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Cross-platform CI matrix. Each cell runs the native-target build
-        # on the corresponding OS:
-        #   - self-hosted (Arch)  → install:linux:system (native Linux build)
-        #   - windows-latest      → install:windows    (native Windows build)
-        #   - macos-latest        → install:macos      (native macOS build)
-        # The exclude block filters the full cross-product (3 OSes × 3 targets
-        # = 9 cells) down to the 3 native-target cells. The Windows build is
-        # gated on `ssl/crypto cross-compile fix` being merged — see build.zig
-        # for the status. The dev_release builds (with separate steps) are
-        # exercised only where the test compile + native-build matrix cell
-        # succeeds.
+        # Cross-platform CI matrix, scoped to the runners we actually have:
+        #   - self-hosted, Linux, X64      → install:linux:system (native Linux build)
+        #   - self-hosted, macOS, ARM64    → install:macos        (native macOS build, Apple Silicon)
+        # There is currently no Windows self-hosted runner registered, so the
+        # Windows cell/job was removed entirely rather than left to queue
+        # forever waiting for a matching runner. Re-add it once a
+        # `[self-hosted, windows]`-labeled runner exists.
+        # The exclude block filters the full cross-product (2 OSes × 2 targets
+        # = 4 cells) down to the 2 native-target cells.
         os:
-        - [self-hosted, linux]
-        - [self-hosted, windows]
-        - [self-hosted, macos]
+        - [self-hosted, Linux, X64]
+        - [self-hosted, macOS, ARM64]
         target:
           # build_args is appended to `zig build <step>`. Use `-Dlinux-libs=false`
           # when cross-compiling FROM Linux TO another target: the dev/test config
           # attaches `ssl`/`crypto`/`sqlite3` to `mod` on Linux hosts, which
           # would otherwise leak into the cross-target link line (`-lsqlite3
           # -lssl -lcrypto`) and fail with "unable to find dynamic system library"
-          # because those Linux system libs don't exist on Windows/macOS targets.
+          # because those Linux system libs don't exist on macOS targets.
           - { zig: x86_64-linux-gnu,       step: install:linux:system, build_args: '' }
-          - { zig: x86_64-windows-gnu,     step: install:windows,    build_args: '-Dlinux-libs=false' }
-          - { zig: x86_64-macos,           step: install:macos,      build_args: '-Dlinux-libs=false' }
+          # macOS runner is Apple Silicon (ARM64), so the native target is
+          # aarch64-macos, not x86_64-macos.
+          - { zig: aarch64-macos,          step: install:macos,      build_args: '-Dlinux-libs=false' }
         exclude:
-          - os: [self-hosted, linux]
-            target: { zig: x86_64-windows-gnu, step: install:windows }
-          - os: [self-hosted, linux]
-            target: { zig: x86_64-macos, step: install:macos }
-          - os: [self-hosted, windows]
+          - os: [self-hosted, Linux, X64]
+            target: { zig: aarch64-macos, step: install:macos }
+          - os: [self-hosted, macOS, ARM64]
             target: { zig: x86_64-linux-gnu, step: install:linux:system }
-          - os: [self-hosted, windows]
-            target: { zig: x86_64-macos, step: install:macos }
-          - os: [self-hosted, macos]
-            target: { zig: x86_64-linux-gnu, step: install:linux:system }
-          - os: [self-hosted, macos]
-            target: { zig: x86_64-windows-gnu, step: install:windows }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -106,14 +96,14 @@ jobs:
           pkg-config --modversion sqlite3
           pkg-config --modversion openssl
 
-      - name: Fetch vendored SQLite amalgamation (Windows / macOS)
-        if: runner.os != 'Linux'
+      - name: Fetch vendored SQLite amalgamation (macOS)
+        if: runner.os == 'macOS'
         # The amalgamation is gitignored (`/vendor/` in .gitignore) to
         # avoid bloating the repo with ~10 MB of binary-like content. On
-        # non-Linux targets, `build.zig` compiles sqlite3.c from
-        # `vendor/sqlite3/`, so we need to fetch it before any zig build
-        # call. The script is idempotent: it skips if the files already
-        # exist (e.g., restored from a prior run's cache).
+        # macOS, `build.zig` compiles sqlite3.c from `vendor/sqlite3/`, so
+        # we need to fetch it before any zig build call. The script is
+        # idempotent: it skips if the files already exist (e.g., restored
+        # from a prior run's cache).
         shell: bash
         run: |
           chmod +x scripts/fetch-vendor-sqlite3.sh
@@ -145,16 +135,6 @@ jobs:
         run: |
           test -f zig-out/bin/nalar && echo "✓ nalar exists ($(stat -c%s zig-out/bin/nalar) bytes)"
 
-      - name: Verify binary was produced (Windows)
-        if: matrix.target.step != '__SKIP__' && runner.os == 'Windows'
-        shell: bash
-        # `shell: bash` forces Git Bash even on Windows runners, where
-        # PowerShell would otherwise choke on the POSIX shell syntax.
-        # The `$(...)` and `[ ... ]` constructs are GNU bashisms that
-        # Windows' `cmd` and PowerShell can't translate.
-        run: |
-          test -f zig-out/bin/nalarcore-windows-x86_64.exe && echo "✓ nalar.exe exists ($(stat -c%s zig-out/bin/nalarcore-windows-x86_64.exe) bytes)"
-
       - name: Verify binary was produced (macOS)
         if: matrix.target.step != '__SKIP__' && runner.os == 'macOS'
         shell: bash
@@ -164,8 +144,8 @@ jobs:
           found=$(ls zig-out/bin/nalarcore-macos-* 2>/dev/null | head -n1)
           if [ -n "$found" ]; then echo "✓ macos binary exists ($found, $(stat -f%z "$found") bytes)"; else echo "✗ macos binary missing"; exit 1; fi
 
-      - name: "Smoke test: criteria pass (Linux/macOS)"
-        if: matrix.target.step != '__SKIP__' && (runner.os == 'Linux' || runner.os == 'macOS')
+      - name: "Smoke test: criteria pass"
+        if: matrix.target.step != '__SKIP__'
         shell: bash
         # "Criteria pass" smoke test — boots the freshly-built nalar
         # binary, waits for the "Agent is ready to serve!" line
@@ -201,45 +181,6 @@ jobs:
           echo "→ smoke test: using $NALAR_BIN"
           NALAR_BIN="$NALAR_BIN" NALAR_PORT=18080 bash scripts/ci-smoke-test.sh
 
-      - name: "Smoke test: criteria pass (Windows)"
-        if: matrix.target.step != '__SKIP__' && runner.os == 'Windows'
-        shell: bash
-        # Same criteria-pass smoke test as Linux/macOS. The Windows
-        # binary uses `nalarcore-windows-x86_64.exe` instead of
-        # `nalar` — the script's first branch matches the Linux name,
-        # and the second branch picks up any `nalarcore-*` binary.
-        #
-        # Portability notes:
-        # - Git Bash on Windows runners provides `mktemp`, `curl`,
-        #   `kill`, `grep`, `date`, `stat`, `rm`, `sleep`, `wait` —
-        #   all POSIX utilities the script uses. The script's
-        #   `kill -TERM` falls back to Windows `TerminateProcess`
-        #   (forceful exit) since Windows has no signal mechanism,
-        #   which is the right semantics for "the process is hung
-        #   after graceful shutdown — kill it now".
-        # - `GinwaServer.shutdown()` (src/modules/custom_http_server/
-        #   src/http_server.zig:535) was extended to also call
-        #   `shutdown(sock, SHUT_RDWR)` on the listener fd, so the
-        #   blocking `accept()` returns immediately. Without this,
-        #   the listen loop would stay parked in accept() on
-        #   Windows (no SIGTERM to break it out via EINTR) and the
-        #   graceful shutdown step would always time out.
-        # - The /test/shutdown endpoint (src/ai_workflow/tui/
-        #   http_handlers/shutdown.zig) is platform-independent and
-        #   works on Windows.
-        run: |
-          set -u
-          if [ -x "zig-out/bin/nalar" ]; then
-            NALAR_BIN="./zig-out/bin/nalar"
-          elif [ -x "zig-out/bin/$(ls zig-out/bin/nalarcore-* 2>/dev/null | head -n1 | sed 's:.*/::')" ]; then
-            NALAR_BIN="./zig-out/bin/$(ls zig-out/bin/nalarcore-* 2>/dev/null | head -n1 | sed 's:.*/::')"
-          else
-            echo "✗ smoke test: no nalar binary to test" >&2
-            exit 1
-          fi
-          echo "→ smoke test: using $NALAR_BIN"
-          NALAR_BIN="$NALAR_BIN" NALAR_PORT=18080 bash scripts/ci-smoke-test.sh
-
       - name: Upload nalar binary
         if: matrix.target.step != '__SKIP__'
         uses: actions/upload-artifact@v4
@@ -247,15 +188,14 @@ jobs:
           name: nalar-${{ matrix.target.zig }}
           path: |
             zig-out/bin/nalar
-            zig-out/bin/nalarcore-windows-x86_64.exe
-            zig-out/bin/nalarcore-macos-x86_64
+            zig-out/bin/nalarcore-macos-*
           retention-days: 14
 
   frontend:
     name: frontend
     runs-on:
       - self-hosted
-      - linux
+      - Linux
     steps:
       - name: Checkout
         uses: actions/checkout@v4
