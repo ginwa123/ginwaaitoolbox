@@ -18,8 +18,11 @@ const socket = posix.system;
 
 /// Winsock extern declarations for Windows
 const winsock = if (builtin.os.tag == .windows) struct {
+    extern "ws2_32" fn WSAStartup(wVersionRequested: c_ushort, wsaData: *WSADATA) callconv(.c) c_int;
+    extern "ws2_32" fn WSACleanup() callconv(.c) c_int;
     extern "ws2_32" fn socket(domain: c_uint, sock_type: c_uint, protocol: c_uint) callconv(.c) c_int;
     extern "ws2_32" fn closesocket(sockfd: c_int) callconv(.c) c_int;
+    extern "ws2_32" fn shutdown(sockfd: c_int, how: c_int) callconv(.c) c_int;
     extern "ws2_32" fn bind(sockfd: c_int, addr: ?*const anyopaque, addrlen: c_int) callconv(.c) c_int;
     extern "ws2_32" fn listen(sockfd: c_int, backlog: c_int) callconv(.c) c_int;
     extern "ws2_32" fn accept(sockfd: c_int, addr: ?*anyopaque, addrlen: ?*c_int) callconv(.c) c_int;
@@ -27,13 +30,76 @@ const winsock = if (builtin.os.tag == .windows) struct {
     extern "ws2_32" fn send(sockfd: c_int, buf: ?*const anyopaque, len: c_int, flags: c_int) callconv(.c) c_int;
     extern "ws2_32" fn setsockopt(sockfd: c_int, level: c_int, optname: c_int, optval: ?*const anyopaque, optlen: c_int) callconv(.c) c_int;
     extern "ws2_32" fn getpeername(sockfd: c_int, addr: ?*anyopaque, addrlen: ?*c_int) callconv(.c) c_int;
+
+    /// WSADATA struct passed to WSAStartup. 400 bytes is the canonical
+    /// size per Winsock 2 docs; the contents are intentionally ignored
+    /// (we just need the call to succeed so the winsock runtime is
+    /// available for subsequent socket() calls).
+    const WSADATA = [400]u8;
 } else struct {};
+
+/// Winsock must be initialised with WSAStartup() before any other
+/// winsock function call. Without this call, `socket()` returns
+/// `INVALID_SOCKET` (WSAEINPROGRESS / WSANOTINITIALISED) on every
+/// invocation. The runtime keeps an internal ref count, so calling
+/// WSAStartup multiple times is safe as long as each call is paired
+/// with a matching WSACleanup(). The ref-counted behaviour makes the
+/// lazy-init pattern safe — every `createSocket()` calls it, but
+/// the winsock DLL is only loaded once.
+///
+/// This block is a no-op on non-Windows targets.
+var wsa_init_lock: std.atomic.Mutex = .unlocked;
+var wsa_initialized: bool = false;
+
+fn ensureWinsockInitialized() void {
+    if (wsa_initialized) return;
+    while (!wsa_init_lock.tryLock()) std.atomic.spinLoopHint();
+    defer wsa_init_lock.unlock();
+    if (wsa_initialized) return;
+    var wsa_data: winsock.WSADATA = undefined;
+    // MAKEWORD(2, 2) = 0x0202 — request Winsock 2.2 (the highest version
+    // every Windows version since Windows 98 supports). Winsock 2 is the
+    // API surface this file relies on (WSASocket/setsockopt with the
+    // SOL_SOCKET/SO_REUSEADDR constants).
+    const version: c_ushort = (2 << 8) | 2;
+    const rc = winsock.WSAStartup(version, &wsa_data);
+    if (rc != 0) {
+        std.log.err("WSAStartup failed with rc={d}", .{rc});
+        return;
+    }
+    wsa_initialized = true;
+}
 
 fn closeFd(fd: SocketFd) void {
     if (builtin.os.tag == .windows) {
         _ = winsock.closesocket(fd);
     } else {
         _ = socket.close(fd);
+    }
+}
+
+/// Wake up a pending accept() call on the listener socket without closing
+/// the fd. `shutdown(sock, SHUT_RDWR)` makes accept() return immediately
+/// with an error on both Linux and Windows — this is the portable way to
+/// unblock a listening socket.
+///
+/// Closing the fd from another thread does NOT reliably wake up a
+/// blocked accept() on Linux (the kernel doesn't re-poll pending
+/// accepts when the fd table entry is freed), and on Windows there is
+/// no signal mechanism at all (Git Bash's `kill -TERM` calls
+/// TerminateProcess, which is forceful — it doesn't unblock accept).
+/// `shutdown(SHUT_RDWR)` works on both.
+fn shutdownListenerFd(fd: SocketFd) void {
+    // SHUT_RDWR = 2 on Linux, SD_BOTH = 2 on Windows. Both platforms
+    // define the constant as 2 (POSIX / Win32). The literal is safe
+    // because the platform-independent std.posix.SO enum is not
+    // available in this project's low-level socket path (it uses
+    // `std.posix.system` directly).
+    const SHUT_RDWR: c_int = 2;
+    if (builtin.os.tag == .windows) {
+        _ = winsock.shutdown(fd, SHUT_RDWR);
+    } else {
+        _ = socket.shutdown(fd, SHUT_RDWR);
     }
 }
 
@@ -68,6 +134,7 @@ pub const Address = struct {
 
     fn createSocket() !SocketFd {
         if (builtin.os.tag == .windows) {
+            ensureWinsockInitialized();
             const fd = winsock.socket(@intCast(AF_INET), @intCast(SOCK_STREAM), @intCast(IPPROTO_TCP));
             if (fd < 0) return error.SocketCreationFailed;
             return fd;
@@ -508,6 +575,30 @@ pub const GinwaServer = struct {
 
     pub fn shutdown(self: *GinwaServer) void {
         self.is_running = false;
+        // Unblock the listen loop's blocking accept() call so the
+        // loop notices the is_running flag flip and breaks out.
+        //
+        // Just `close(sock_fd)` is NOT enough: closing the fd in one
+        // thread does not reliably wake a `accept()` that another
+        // thread is blocked on (Linux's kernel doesn't re-poll
+        // pending accepts when the fd table entry is freed — the
+        // blocked accept stays parked). On Windows, `close()` is
+        // `closesocket()`, but Windows has no signal mechanism to
+        // break the accept either.
+        //
+        // The portable fix is `shutdown(sock, SHUT_RDWR)` — this
+        // actively closes the connection state on both Linux and
+        // Winsock, which makes any pending `accept()` return
+        // immediately with an error. We then `closeFd` to free the
+        // kernel resource.
+        //
+        // Idempotent: safe to call multiple times — a second call
+        // sees sock_fd == -1 and is a no-op.
+        if (self.address.sock_fd != -1) {
+            shutdownListenerFd(self.address.sock_fd);
+            closeFd(self.address.sock_fd);
+            self.address.sock_fd = -1;
+        }
     }
 };
 

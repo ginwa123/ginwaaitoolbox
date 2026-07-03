@@ -19,8 +19,21 @@ const Io = std.Io;
 /// platforms (this is the project's established convention — see
 /// `helpers.db_path.getDbPath` callers in `main.zig:60`).
 pub fn getDbPath(allocator: std.mem.Allocator, io: std.Io, environment: *std.process.Environ.Map) ![:0]const u8 {
-    const home = environment.get("HOME") orelse {
-        std.log.err("Failed to get HOME environment variable", .{});
+    // On POSIX systems, the canonical user-home env var is `HOME`. On
+    // Windows, Git Bash sets `HOME` (typically to %USERPROFILE%), so
+    // the POSIX path covers most cases — including the CI smoke test,
+    // which runs inside Git Bash on windows-latest runners. As a
+    // safety net for native-Windows invocations (where `HOME` may
+    // not be set), fall back to `USERPROFILE` (Windows' canonical
+    // user-home variable). Only used if HOME is missing or empty.
+    const home = blk: {
+        if (environment.get("HOME")) |h| {
+            if (h.len > 0) break :blk h;
+        }
+        if (environment.get("USERPROFILE")) |u| {
+            if (u.len > 0) break :blk u;
+        }
+        std.log.err("Failed to get HOME/USERPROFILE environment variable", .{});
         return error.FailedToGetHome;
     };
 
