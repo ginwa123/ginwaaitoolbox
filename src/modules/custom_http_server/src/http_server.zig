@@ -20,6 +20,7 @@ const socket = posix.system;
 const winsock = if (builtin.os.tag == .windows) struct {
     extern "ws2_32" fn socket(domain: c_uint, sock_type: c_uint, protocol: c_uint) callconv(.c) c_int;
     extern "ws2_32" fn closesocket(sockfd: c_int) callconv(.c) c_int;
+    extern "ws2_32" fn shutdown(sockfd: c_int, how: c_int) callconv(.c) c_int;
     extern "ws2_32" fn bind(sockfd: c_int, addr: ?*const anyopaque, addrlen: c_int) callconv(.c) c_int;
     extern "ws2_32" fn listen(sockfd: c_int, backlog: c_int) callconv(.c) c_int;
     extern "ws2_32" fn accept(sockfd: c_int, addr: ?*anyopaque, addrlen: ?*c_int) callconv(.c) c_int;
@@ -34,6 +35,31 @@ fn closeFd(fd: SocketFd) void {
         _ = winsock.closesocket(fd);
     } else {
         _ = socket.close(fd);
+    }
+}
+
+/// Wake up a pending accept() call on the listener socket without closing
+/// the fd. `shutdown(sock, SHUT_RDWR)` makes accept() return immediately
+/// with an error on both Linux and Windows — this is the portable way to
+/// unblock a listening socket.
+///
+/// Closing the fd from another thread does NOT reliably wake up a
+/// blocked accept() on Linux (the kernel doesn't re-poll pending
+/// accepts when the fd table entry is freed), and on Windows there is
+/// no signal mechanism at all (Git Bash's `kill -TERM` calls
+/// TerminateProcess, which is forceful — it doesn't unblock accept).
+/// `shutdown(SHUT_RDWR)` works on both.
+fn shutdownListenerFd(fd: SocketFd) void {
+    // SHUT_RDWR = 2 on Linux, SD_BOTH = 2 on Windows. Both platforms
+    // define the constant as 2 (POSIX / Win32). The literal is safe
+    // because the platform-independent std.posix.SO enum is not
+    // available in this project's low-level socket path (it uses
+    // `std.posix.system` directly).
+    const SHUT_RDWR: c_int = 2;
+    if (builtin.os.tag == .windows) {
+        _ = winsock.shutdown(fd, SHUT_RDWR);
+    } else {
+        _ = socket.shutdown(fd, SHUT_RDWR);
     }
 }
 
@@ -508,6 +534,30 @@ pub const GinwaServer = struct {
 
     pub fn shutdown(self: *GinwaServer) void {
         self.is_running = false;
+        // Unblock the listen loop's blocking accept() call so the
+        // loop notices the is_running flag flip and breaks out.
+        //
+        // Just `close(sock_fd)` is NOT enough: closing the fd in one
+        // thread does not reliably wake a `accept()` that another
+        // thread is blocked on (Linux's kernel doesn't re-poll
+        // pending accepts when the fd table entry is freed — the
+        // blocked accept stays parked). On Windows, `close()` is
+        // `closesocket()`, but Windows has no signal mechanism to
+        // break the accept either.
+        //
+        // The portable fix is `shutdown(sock, SHUT_RDWR)` — this
+        // actively closes the connection state on both Linux and
+        // Winsock, which makes any pending `accept()` return
+        // immediately with an error. We then `closeFd` to free the
+        // kernel resource.
+        //
+        // Idempotent: safe to call multiple times — a second call
+        // sees sock_fd == -1 and is a no-op.
+        if (self.address.sock_fd != -1) {
+            shutdownListenerFd(self.address.sock_fd);
+            closeFd(self.address.sock_fd);
+            self.address.sock_fd = -1;
+        }
     }
 };
 

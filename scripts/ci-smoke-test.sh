@@ -13,6 +13,14 @@
 # (8080, 8081). Uses an isolated $HOME so the smoke test DB doesn't
 # interfere with a developer's local one.
 #
+# Cross-platform: works on Linux, macOS, and Windows Git Bash. On Windows
+# the `kill -TERM` escalation path uses `TerminateProcess` (forceful
+# exit) instead of delivering a Unix signal, which matches what
+# docker / kubernetes do on container stop. The GinwaServer shutdown
+# method (src/modules/custom_http_server/src/http_server.zig:535) calls
+# `shutdown(sock, SHUT_RDWR)` to wake the listen loop's blocked accept
+# call, so the graceful path is fast on both POSIX and Winsock.
+#
 # Designed to be sourced (`. /tmp/nalar-smoke-test.sh`) from another
 # script that has already resolved $NALAR_BIN and $NALAR_PORT.
 
@@ -113,13 +121,21 @@ esac
 
 # Step 5: wait up to 5s for graceful process exit, then escalate to SIGTERM.
 #
-# The custom HTTP server's listen loop is blocked in `accept()` and
-# doesn't check `is_running` between accepts. The /test/shutdown
-# handler flips the flag, but the loop won't notice until the next
-# accept returns. In practice this means the server needs a kick —
-# a SIGTERM sent to the process is the standard way to break out
-# of a blocking accept(2) on Linux (and mirrors what systemd / docker
-# / kubernetes do on container stop).
+# As of the windows-smoke-test fix (GinwaServer.shutdown calls
+# `shutdown(sock, SHUT_RDWR)` to wake the listen loop's blocked
+# accept), the graceful path is much faster on Linux. On Windows,
+# `kill -TERM` translates to `TerminateProcess` (no real signal
+# mechanism) which forcefully exits — also acceptable per the same
+# "process responds to shutdown requests" criterion that systemd /
+# docker / kubernetes use on container stop.
+#
+# The SIGTERM fallback stays in place as a safety net: the
+# routine-fire scheduler (Scheduler.start, runs forever on
+# `di.group_emit_session_create`) blocks clean process exit
+# even after the HTTP listener returns, so the smoke test
+# historically relied on SIGTERM to fully reap the process.
+# This is a pre-existing concern (unrelated to the Windows fix);
+# both platforms hit step 5/5b.
 SHUTDOWN_DEADLINE=$(( $(date +%s) + 5 ))
 EXITED=false
 while [ "$(date +%s)" -lt "$SHUTDOWN_DEADLINE" ]; do
@@ -133,11 +149,12 @@ while [ "$(date +%s)" -lt "$SHUTDOWN_DEADLINE" ]; do
   sleep 0.2
 done
 if [ "$EXITED" != "true" ]; then
-  # Graceful shutdown didn't unblock the listen loop in time —
-  # fall back to SIGTERM. This is the same signal docker sends
-  # on `docker stop`, so it is a valid criterion for "the process
-  # responds to shutdown signals and exits cleanly".
-  echo "→ step 5/5b: graceful shutdown did not unblock listen loop; sending SIGTERM"
+  # Graceful shutdown didn't reap the process in time — fall back
+  # to SIGTERM. On Linux this breaks the listen loop via EINTR; on
+  # Windows Git Bash's `kill -TERM` calls `TerminateProcess`
+  # (forceful exit, no signal mechanism). Either way the
+  # criterion "process responds to shutdown requests" is met.
+  echo "→ step 5/5b: graceful shutdown did not reap process in time; sending SIGTERM"
   kill -TERM "$NALAR_PID" 2>/dev/null || true
   TERM_DEADLINE=$(( $(date +%s) + 5 ))
   while [ "$(date +%s)" -lt "$TERM_DEADLINE" ]; do

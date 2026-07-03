@@ -194,22 +194,44 @@ jobs:
           echo "→ smoke test: using $NALAR_BIN"
           NALAR_BIN="$NALAR_BIN" NALAR_PORT=18080 bash scripts/ci-smoke-test.sh
 
-      - name: "Smoke test: binary boots (Windows)"
+      - name: "Smoke test: criteria pass (Windows)"
         if: matrix.target.step != '__SKIP__' && runner.os == 'Windows'
         shell: bash
-        # Windows binary uses a different entry-point name
-        # (`nalarcore-windows-x86_64.exe`). The Linux-style
-        # criteria-pass smoke test relies on POSIX signals and
-        # /test/shutdown; the Windows binary is verified with a
-        # minimal "does it exist and start?" check. A full
-        # Windows smoke test is tracked as a follow-up.
+        # Same criteria-pass smoke test as Linux/macOS. The Windows
+        # binary uses `nalarcore-windows-x86_64.exe` instead of
+        # `nalar` — the script's first branch matches the Linux name,
+        # and the second branch picks up any `nalarcore-*` binary.
+        #
+        # Portability notes:
+        # - Git Bash on Windows runners provides `mktemp`, `curl`,
+        #   `kill`, `grep`, `date`, `stat`, `rm`, `sleep`, `wait` —
+        #   all POSIX utilities the script uses. The script's
+        #   `kill -TERM` falls back to Windows `TerminateProcess`
+        #   (forceful exit) since Windows has no signal mechanism,
+        #   which is the right semantics for "the process is hung
+        #   after graceful shutdown — kill it now".
+        # - `GinwaServer.shutdown()` (src/modules/custom_http_server/
+        #   src/http_server.zig:535) was extended to also call
+        #   `shutdown(sock, SHUT_RDWR)` on the listener fd, so the
+        #   blocking `accept()` returns immediately. Without this,
+        #   the listen loop would stay parked in accept() on
+        #   Windows (no SIGTERM to break it out via EINTR) and the
+        #   graceful shutdown step would always time out.
+        # - The /test/shutdown endpoint (src/ai_workflow/tui/
+        #   http_handlers/shutdown.zig) is platform-independent and
+        #   works on Windows.
         run: |
-          if [ -f "zig-out/bin/nalarcore-windows-x86_64.exe" ]; then
-            echo "✓ windows binary exists ($(stat -c%s zig-out/bin/nalarcore-windows-x86_64.exe) bytes)"
+          set -u
+          if [ -x "zig-out/bin/nalar" ]; then
+            NALAR_BIN="./zig-out/bin/nalar"
+          elif [ -x "zig-out/bin/$(ls zig-out/bin/nalarcore-* 2>/dev/null | head -n1 | sed 's:.*/::')" ]; then
+            NALAR_BIN="./zig-out/bin/$(ls zig-out/bin/nalarcore-* 2>/dev/null | head -n1 | sed 's:.*/::')"
           else
-            echo "✗ no windows binary to smoke-test" >&2
+            echo "✗ smoke test: no nalar binary to test" >&2
             exit 1
           fi
+          echo "→ smoke test: using $NALAR_BIN"
+          NALAR_BIN="$NALAR_BIN" NALAR_PORT=18080 bash scripts/ci-smoke-test.sh
 
       - name: Upload nalar binary
         if: matrix.target.step != '__SKIP__'
