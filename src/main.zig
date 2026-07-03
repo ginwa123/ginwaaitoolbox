@@ -377,6 +377,7 @@ pub fn main(init: std.process.Init) !void {
     _ = try event_bus.subscribe(ai_mod.ai_workflow.RunParamsNew, "ai_worker_flow", ai_mod.ai_workflow.CallbackAiWorkerFlow.callback);
     ctxParent.server.sse_manager.on_disconnect = ai_mod.handleClientDisconnect;
 
+    std.debug.print("Agent is ready to serve!\n", .{});
     try gs.listen();
 
     // Clean shutdown after listen() returns (after shutdown endpoint is called)
