@@ -134,6 +134,7 @@ pub fn serviceStart(
 
     // 1. Refuse if a live daemon is already tracked in state.json.
     if (try state_file.readStateFile(allocator, io, opts.state_path)) |existing| {
+        defer state_file.freeState(allocator, existing);
         if (daemon.pidAlive(existing.pid)) return error.AlreadyRunning;
         // Stale state (pid is dead) — remove and proceed.
         std.Io.Dir.cwd().deleteFile(io, opts.state_path) catch {};
@@ -189,6 +190,7 @@ pub fn serviceStop(
         std.log.info("nalar is not running (no state file).", .{});
         return;
     };
+    defer state_file.freeState(allocator, state);
     if (!daemon.pidAlive(state.pid)) {
         std.log.warn("Stale state file (pid {d} is dead); removing.", .{state.pid});
         std.Io.Dir.cwd().deleteFile(io, opts.state_path) catch {};
@@ -228,6 +230,7 @@ pub fn serviceStatus(
         std.log.info("status: stopped (no state file)", .{});
         return;
     };
+    defer state_file.freeState(allocator, state);
     if (!daemon.pidAlive(state.pid)) {
         std.log.warn("status: stale state (pid {d} is dead)", .{state.pid});
         return;

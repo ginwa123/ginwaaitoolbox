@@ -22,6 +22,7 @@ pub const DaemonError = error{
     ForkFailed,
     SessionFailed,
     OpenLogFailed,
+    MkdirFailed,
     PathTooLong,
 };
 
@@ -57,10 +58,41 @@ pub fn daemonizePosix() DaemonError!void {
     // Grandchild returns. Caller continues here.
 }
 
+/// Walk the parent directory chain of `path` and mkdirat each missing
+/// component (idempotent: ignores EEXIST). Used by the daemon's
+/// redirectStdioToLog to make a fresh `$HOME` work without manual
+/// `mkdir -p`. Extracted as a separate function so it can be unit-tested
+/// without the stdio redirection side effect.
+pub fn mkdirP(path: []const u8) !void {
+    if (builtin.os.tag == .windows) {
+        @compileError("mkdirP is POSIX-only");
+    }
+    const parent_dir = std.fs.path.dirname(path) orelse return;
+    if (parent_dir.len == 0) return;
+    // std.fs.path.componentIterator yields `Component{ .name, .path }` where
+    // `.path` is the CUMULATIVE path-so-far (e.g. for "/a/b/c", second
+    // component is `.name="b" .path="/a/b"`). Use `.path` directly so we
+    // don't have to reconstruct the slash-joined string ourselves.
+    var iter = std.fs.path.componentIterator(parent_dir);
+    while (iter.next()) |component| {
+        var prefix_z: [std.fs.max_path_bytes:0]u8 = undefined;
+        if (component.path.len >= prefix_z.len) return error.PathTooLong;
+        @memcpy(prefix_z[0..component.path.len], component.path);
+        prefix_z[component.path.len] = 0;
+        const rc = std.os.linux.mkdirat(std.os.linux.AT.FDCWD, &prefix_z, 0o755);
+        if (rc > std.math.maxInt(i32)) {
+            const err = std.os.linux.errno(rc);
+            if (err != .EXIST) return error.MkdirFailed;
+        }
+    }
+}
+
 /// Redirect stdin from /dev/null and stdout/stderr to a log file. Call
 /// AFTER `daemonizePosix()` returns. The log file is opened with
 /// O_CREAT|O_APPEND so multiple daemon lifetimes (restart cycles)
-/// preserve history.
+/// preserve history. Walks the parent directory chain and mkdirat's
+/// each missing component (idempotent: ignores EEXIST) so that a fresh
+/// `$HOME` (no `~/.local/share/nalar/` yet) works.
 pub fn redirectStdioToLog(log_path: []const u8) !void {
     if (builtin.os.tag == .windows) {
         @compileError("redirectStdioToLog is POSIX-only");
@@ -72,20 +104,28 @@ pub fn redirectStdioToLog(log_path: []const u8) !void {
     @memcpy(log_path_z[0..log_path.len], log_path);
     log_path_z[log_path.len] = 0;
 
-    // stdin → /dev/null
-    const devnull_fd: i32 = @intCast(std.os.linux.open("/dev/null", .{ .ACCMODE = .RDONLY }, 0));
-    if (devnull_fd >= 0) {
+    // mkdir -p the parent directory. Without this, a fresh $HOME has
+    // no ~/.local/share/nalar/ and the open() below fails.
+    try mkdirP(log_path);
+
+    // stdin → /dev/null. open returns usize; on success it fits in i32,
+    // on failure it returns -errno (a value > maxInt(i32) when cast). We
+    // check the unsigned value first to avoid an @intCast panic.
+    const devnull_rc = std.os.linux.open("/dev/null", .{ .ACCMODE = .RDONLY }, 0);
+    if (devnull_rc <= std.math.maxInt(i32)) {
+        const devnull_fd: i32 = @intCast(devnull_rc);
         _ = std.os.linux.dup2(devnull_fd, 0);
         _ = std.os.linux.close(devnull_fd);
     }
 
     // stdout/stderr → log_path (append).
-    const log_fd: i32 = @intCast(std.os.linux.open(&log_path_z, .{
+    const log_rc = std.os.linux.open(&log_path_z, .{
         .ACCMODE = .WRONLY,
         .CREAT = true,
         .APPEND = true,
-    }, 0o644));
-    if (log_fd < 0) return error.OpenLogFailed;
+    }, 0o644);
+    if (log_rc > std.math.maxInt(i32)) return error.OpenLogFailed;
+    const log_fd: i32 = @intCast(log_rc);
     _ = std.os.linux.dup2(log_fd, 1);
     _ = std.os.linux.dup2(log_fd, 2);
     _ = std.os.linux.close(log_fd);

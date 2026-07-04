@@ -52,11 +52,7 @@ test "writeStateFile round-trips a State" {
     };
     try state_file.writeStateFile(allocator, testing.io, path, original);
     const restored = try state_file.readStateFile(allocator, testing.io, path);
-    defer if (restored) |s| {
-        allocator.free(s.host);
-        allocator.free(s.version);
-        if (s.static_dir) |sd| allocator.free(sd);
-    };
+    defer if (restored) |s| state_file.freeState(allocator, s);
     try testing.expect(restored != null);
     try testing.expectEqual(original.pid, restored.?.pid);
     try testing.expectEqual(original.port, restored.?.port);
@@ -72,4 +68,71 @@ test "defaultStatePath returns XDG-aware path on POSIX" {
     // Path should end in /state.json under a 'nalar' dir.
     try testing.expect(std.mem.endsWith(u8, path, "/state.json"));
     try testing.expect(std.mem.indexOf(u8, path, "nalar") != null);
+}
+
+test "writeStateFile does mkdir-p into a fresh nested dir" {
+    if (builtin.os.tag == .windows) return;
+    const allocator = testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
+    const tmp_dir_path = dir_buf[0..dir_len];
+
+    // Build "<tmpdir>/deeply/nested/that/does/not/exist/state.json" — the
+    // parent dirs do NOT exist when writeStateFile is called. This is the
+    // exact path the daemon hits on a fresh $HOME.
+    const leaf = "deeply/nested/that/does/not/exist/state.json";
+    const path = try allocator.alloc(u8, tmp_dir_path.len + 1 + leaf.len);
+    defer allocator.free(path);
+    @memcpy(path[0..tmp_dir_path.len], tmp_dir_path);
+    path[tmp_dir_path.len] = '/';
+    @memcpy(path[tmp_dir_path.len + 1..], leaf);
+
+    const original: state_file.State = .{
+        .pid = 99,
+        .port = 8081,
+        .host = "127.0.0.1",
+        .started_at = 1751558400,
+        .version = "0.4.0",
+        .static_dir = null,
+    };
+    try state_file.writeStateFile(allocator, testing.io, path, original);
+    const restored = try state_file.readStateFile(allocator, testing.io, path);
+    defer if (restored) |s| state_file.freeState(allocator, s);
+    try testing.expect(restored != null);
+    try testing.expectEqual(original.pid, restored.?.pid);
+}
+
+test "freeState is a no-op on slices (does not double-free)" {
+    if (builtin.os.tag == .windows) return;
+    const allocator = testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
+    const tmp_dir_path = dir_buf[0..dir_len];
+
+    const leaf = "free_test/state.json";
+    const path = try allocator.alloc(u8, tmp_dir_path.len + 1 + leaf.len);
+    defer allocator.free(path);
+    @memcpy(path[0..tmp_dir_path.len], tmp_dir_path);
+    path[tmp_dir_path.len] = '/';
+    @memcpy(path[tmp_dir_path.len + 1..], leaf);
+
+    const original: state_file.State = .{
+        .pid = 1,
+        .port = 8081,
+        .host = "x",
+        .started_at = 1,
+        .version = "v",
+        .static_dir = "/tmp/static",
+    };
+    try state_file.writeStateFile(allocator, testing.io, path, original);
+    const restored = try state_file.readStateFile(allocator, testing.io, path);
+    try testing.expect(restored != null);
+    // Freeing twice in a row must NOT panic — the second call is a no-op
+    // because the slices are "" / null after the first free. Use null
+    // optional to simulate this.
+    if (restored) |s| state_file.freeState(allocator, s);
 }

@@ -84,3 +84,47 @@ test "POSIX daemonize detaches the grandchild from the original" {
     // The key invariant: PPID is no longer the original parent's PID.
     try testing.expect(child_ppid != original_ppid);
 }
+
+test "mkdirP creates all parent dirs of a fresh nested path" {
+    if (builtin.os.tag == .windows) return;
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
+
+    // Build a path under a fresh tmpdir whose nested parent dir does not
+    // exist. mkdirP must create every component without error and the
+    // leaf's parent dir must exist after the call.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
+    const tmp_dir_path = dir_buf[0..dir_len];
+
+    const leaf = "deeply/nested/that/does/not/exist/service.log";
+    const path = try testing.allocator.alloc(u8, tmp_dir_path.len + 1 + leaf.len);
+    defer testing.allocator.free(path);
+    @memcpy(path[0..tmp_dir_path.len], tmp_dir_path);
+    path[tmp_dir_path.len] = '/';
+    @memcpy(path[tmp_dir_path.len + 1..], leaf);
+
+    // Pre-condition: the deeply-nested dir does not exist.
+    var pre_z: [std.fs.max_path_bytes:0]u8 = undefined;
+    @memcpy(pre_z[0..path.len], path);
+    pre_z[path.len] = 0;
+    try testing.expect(std.c.access(&pre_z, 0) != 0);
+
+    try daemon.mkdirP(path);
+
+    // Post-condition: the deepest parent dir must now exist.
+    const parent = std.fs.path.dirname(path).?;
+    var post_z: [std.fs.max_path_bytes:0]u8 = undefined;
+    @memcpy(post_z[0..parent.len], parent);
+    post_z[parent.len] = 0;
+    try testing.expect(std.c.access(&post_z, 0) == 0);
+}
+
+test "mkdirP is idempotent on an already-existing parent dir" {
+    if (builtin.os.tag == .windows) return;
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
+    // /tmp always exists; calling mkdirP on "/tmp/anything" must not error.
+    try daemon.mkdirP("/tmp/this-is-a-mkdirP-test/service.log");
+    try daemon.mkdirP("/tmp/this-is-a-mkdirP-test/service.log");
+}

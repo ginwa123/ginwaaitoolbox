@@ -57,11 +57,7 @@ pub fn resolveAttachTarget(
 ) AttachError!AttachTarget {
     // 1. State file: read it, check the pid is alive, probe the port.
     if (try nalarcore.state_file.readStateFile(allocator, io, opts.state_path)) |state| {
-        defer {
-            allocator.free(state.host);
-            allocator.free(state.version);
-            if (state.static_dir) |sd| allocator.free(sd);
-        }
+        defer nalarcore.state_file.freeState(allocator, state);
         if (probeHealth(state.host, state.port, io)) {
             // Caller now owns state.host/version/static_dir — they
             // outlive this function. We can't pass a slice into a

@@ -82,6 +82,15 @@ pub fn readStateFile(
     return parseState(allocator, parsed) catch null;
 }
 
+/// Free slices owned by `state`. Callers that take ownership of the
+/// State returned from `readStateFile` MUST call this when done to
+/// avoid leaking `host`, `version`, and (optionally) `static_dir`.
+pub fn freeState(allocator: std.mem.Allocator, state: State) void {
+    allocator.free(state.host);
+    allocator.free(state.version);
+    if (state.static_dir) |sd| allocator.free(sd);
+}
+
 fn parseState(allocator: std.mem.Allocator, v: std.json.Value) !State {
     const obj = v.object;
     const pid_val = obj.get("pid") orelse return error.Malformed;
@@ -115,11 +124,19 @@ pub fn writeStateFile(
 ) !void {
     // 1. Serialize to a JSON string. static_dir's value is wrapped in
     //    quotes via the `{s}` formatter for strings; null is a literal.
-    const sd_field: []const u8 = if (state.static_dir) |sd|
-        try std.fmt.allocPrint(allocator, "\"{s}\"", .{sd})
-    else
-        "null";
-    defer allocator.free(sd_field);
+    //    We track ownership via `sd_owned` so the defer cleanup only
+    //    frees when we actually allocated. (`"null"` is a literal
+    //    *const [N:0]u8 pointing at static read-only memory and MUST
+    //    NOT be passed to allocator.free.)
+    const sd_field: []const u8 = sd: {
+        if (state.static_dir) |sd| {
+            const owned = try std.fmt.allocPrint(allocator, "\"{s}\"", .{sd});
+            errdefer allocator.free(owned);
+            break :sd owned;
+        }
+        break :sd "null";
+    };
+    defer if (state.static_dir != null) allocator.free(sd_field);
 
     const json = try std.fmt.allocPrint(
         allocator,
@@ -144,6 +161,29 @@ pub fn writeStateFile(
     @memcpy(path_buf[path.len..][0..4], ".tmp");
     path_buf[path.len + 4] = 0;
     const tmp_path: []const u8 = path_buf[0..path.len + 4];
+
+    // mkdir -p the parent directory of the state file (POSIX only;
+    // on Windows, %LOCALAPPDATA% always exists). This lets the daemon
+    // be the first nalar process on a fresh $HOME — no manual `mkdir
+    // -p ~/.local/state/nalar` required. We use the same
+    // componentIterator trick as daemon.zig: each yielded `.path` is the
+    // cumulative path-so-far.
+    if (builtin.os.tag != .windows) {
+        if (std.fs.path.dirname(path)) |parent_dir| {
+            var iter = std.fs.path.componentIterator(parent_dir);
+            while (iter.next()) |component| {
+                var dpath_z: [std.fs.max_path_bytes:0]u8 = undefined;
+                if (component.path.len >= dpath_z.len) return error.PathTooLong;
+                @memcpy(dpath_z[0..component.path.len], component.path);
+                dpath_z[component.path.len] = 0;
+                const rc = std.os.linux.mkdirat(std.os.linux.AT.FDCWD, &dpath_z, 0o755);
+                if (rc > std.math.maxInt(i32)) {
+                    const err = std.os.linux.errno(rc);
+                    if (err != .EXIST) return error.WriteFailed;
+                }
+            }
+        }
+    }
 
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp_path, .data = json });
     // std.Io.Dir.renameAbsolute(old_path, new_path, io) — atomic on POSIX
