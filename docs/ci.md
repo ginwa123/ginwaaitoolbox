@@ -1,134 +1,94 @@
-# CI / Build Pipeline
+# CI/CD Pipeline
 
-## Overview
+The pipeline lives at `.github/workflows/ci.yml` and runs on GitHub Actions
+self-hosted runners.
 
-The `.github/workflows/ci.yml` workflow builds and tests `nalar` (Zig backend)
-on Linux, Windows, and macOS, plus the Vue webapp on Linux. Every PR to
-`main` must pass all green matrix cells before merge.
+## What runs
 
-## Matrix cells
+A 2-cell matrix on self-hosted runners (`[self-hosted, Linux, X64]` and
+`[self-hosted, macOS, ARM64]`) — both cells run the same sequence and
+each produces the artifact native to its host platform:
 
-| Cell | OS | Zig target | Build step | Artifact |
-|------|----|----|----|----|
-| `backend (ubuntu-latest)` | Ubuntu 24.04 | x86_64-linux-gnu | `install:linux:system` | `nalar-x86_64-linux-gnu` |
-| `backend (windows-latest)` | Windows Server 2022 | x86_64-windows-gnu | (tests only) | (none yet — see below) |
-| `backend (macos-latest)` | macOS 14 (Intel) | x86_64-macos | `install:macos` | `nalar-x86_64-macos` |
-| `frontend` | Ubuntu 24.04 | n/a | `bun run build` + `bunx vitest run` | n/a |
+1. `mlugg/setup-zig@v2` — installs Zig 0.16.0
+2. Per-cell system deps:
+   - **Linux (Arch)**: `pacman -S --needed` installs `webkit2gtk-4.1`,
+     `gtk3`, `libsoup3` (the WebKitGTK runtime stack the desktop links
+     against), plus `openssl`, `sqlite`, `pkgconf`, `base-devel`.
+   - **macOS (Homebrew)**: `brew install pkg-config openssl@3` with
+     `HOMEBREW_NO_AUTO_UPDATE=1` (no `brew update` to save ~30 MB of
+     formula DB refresh per run; pkg-config is for the diagnostic step;
+     openssl@3 is keg-only so env vars are exported for the linker).
+3. **`oven-sh/setup-bun@v2`** — installs Bun 1.3.11 on both cells
+   (needed for the embedded Vue webapp build that `zig build nalar-desktop`
+   triggers via the codegen dependency chain)
+4. Caches (Bun `node_modules`, Zig build artifacts incl. the generated
+   `webapp_assets.zig`); per-cell isolation via `${{ runner.os }}` and
+   `${{ matrix.target.zig }}` keys
+5. `zig build test` — full backend test suite
+6. `zig build nalar-desktop --summary all` — produces `zig-out/bin/nalar`
+   (~58 MB on Linux; varies on macOS) and `zig-out/bin/nalar-desktop`
+   (~34 MB on Linux). The `step: install:linux:system` /
+   `step: install:macos-arm` matrix entry is the cross-target build used
+   by the smoke test path; the deliverable artifacts come from the
+   `install` step that `build_nalar_desktop.dependOn(getInstallStep())`
+   wires up at `build.zig:280`.
+7. Per-platform binary verification:
+   - **Linux**: `file ELF 64-bit LSB executable, x86-64`, `ldd | grep
+     webkit2gtk-4.1`, sane binary size (~30-60 MB).
+   - **macOS**: `file Mach-O 64-bit executable arm64`,
+     `otool -L | grep WebKit.framework + AppKit.framework`, sane size.
+8. Smoke tests:
+   - `scripts/ci-smoke-test.sh` — boots nalar service binary, hits
+     `/health`, shuts down cleanly (cross-platform; the script handles the
+     SIGTERM / `$GITHUB_ENV` differences internally).
+   - `./zig-out/bin/nalar-desktop --smoke-test` — exercises desktop binary's
+     webapp-asset extraction path (no GTK init, no display server needed
+     on either platform).
+9. Artifacts upload — `nalar-${matrix.target.zig}-<sha>` per cell, each
+   containing both `nalar` and `nalar-desktop` (14-day retention). On a
+   single commit you'll see e.g. `nalar-x86_64-linux-gnu-<sha>` AND
+   `nalar-aarch64-macos-<sha>` listed on the run page.
 
-## Why no Windows binary in CI yet?
+## What does NOT run
 
-Building the Windows binary requires linking against `sqlite3` and
-`openssl`, which on Windows means installing them via `vcpkg` or
-`chocolatey` and pointing `build.zig` at the include/lib paths. This
-is a 1-2 day follow-up plan (wire `VCPKG_ROOT` into `build.zig` +
-add a Windows build step). Until then, Windows CI verifies that
-the code **compiles** and **tests pass** on Windows — the actual
-binary build is exercised locally before release.
+- **No frontend job.** The Vue webapp is bundled into nalar-desktop via
+  `zig build codegen:webapp-assets` → `bun run build` →
+  `src/apps/desktop/dist/` → generated `webapp_assets.zig` → embedded bytes.
+  vue-tsc runs as part of `bun run build` (project convention: build is the
+  type-check). The 8 pre-existing vitest failures across 4 files are not
+  gating.
+- **No Windows cell.** PR #70's smoke-test cleanup kept the option, but no
+  self-hosted Windows runner is registered. Pre-existing compile-blockers
+  in `src/modules/agent/tools/bash_selfkill.zig` and `Agent.zig`'s
+  `apply_tcp_keepalive` are now resolved (commits `04aa8f8a` + `9ef9d5fb`);
+  remaining work to add Windows is runner-registration + `vcpkg` sysroot
+  wiring in `build.zig` (separate task).
 
-## Pre-existing test failures (non-blocking in CI)
+## Downloading artifacts
 
-`bunx vitest run` currently fails 8 tests across 4 files:
+After CI completes on a commit, the binaries land at:
+  https://github.com/ginwa123/ginwaaitoolbox/actions/runs/<run-id>/artifacts/<artifact-name>
 
-- `src/__tests__/KanbanView.spec.ts` (2 failures)
-- `src/__tests__/chatViewShowPreviewBubble.spec.ts` (1 failure)
-- `src/__tests__/previewSidePanel.spec.ts` (1 failure)
-- `src/components/tool_outputs/_shared/__tests__/DiffView.spec.ts` (4 failures)
+Or via `gh run download <run-id> --name nalar-<target>-<sha>` if `gh` CLI
+is configured.
 
-These are unrelated to the CI plan and are marked `continue-on-error: true`
-in the workflow. The `frontend` job will pass (with a warning annotation)
-even with these failures. **Follow-up task:** fix the 8 vitest failures
-and remove the `continue-on-error: true` flag from the workflow.
+The artifact for either cell contains both `nalar` and `nalar-desktop`.
+Install with `sudo scripts/install-nalar-desktop.sh` after unzipping
+(the script handles `chmod +x` + copying to `/usr/local/bin/`).
 
-## Common failures
+## Adding Windows
 
-### "unable to find dynamic system library 'ssl'" or 'sqlite3'
+Pre-existing compile-blockers are fixed (commits `04aa8f8a` + `9ef9d5fb`).
+Remaining work: register a `[self-hosted, windows]` runner, then add it
+to the matrix `os:` list. The `install:windows` build step is blocked at
+link time by missing `sqlite3` / `ssl` / `crypto` system libraries — needs
+`vcpkg` sysroot wiring in `build.zig` and is a separate task.
 
-The `apt-get install` (Ubuntu), `choco install` (Windows), or
-`brew install openssl@3` (macOS) step ran AFTER the `zig build` step.
-Check the step ordering — system deps must come BEFORE the cache
-restore step (so the system libraries are present when the cache is
-hit and the build runs).
-
-### "Error: Zig version mismatch" or build cache stale
-
-The `.zig-cache` cache key is based on `build.zig.zon` + `build.zig`.
-If you changed either, the cache misses and rebuilds from scratch.
-If you changed `httpz` (the http.zig dependency) but not `build.zig.zon`,
-the cache hits with a stale hash and the build fails with cryptic
-import errors. **Fix:** bump the cache key with a no-op edit to
-`build.zig` (add a blank line) and push.
-
-### "Permission denied" copying nalar to /usr/local/bin
-
-This is the `install:linux:system` step's `cp` to `/usr/local/bin/`.
-Expected on CI (no sudo to that path). The artifact is still produced
-at `zig-out/bin/nalar`; only the system copy fails. Not a real failure.
-
-### Windows: "@compileError(\"use std.Io instead\")"
-
-Means `std.posix.setsockopt` was called somewhere. The known site is
-`src/modules/agent/Agent.zig apply_tcp_keepalive` — this is gated
-behind `builtin.os.tag != .windows` (commit 9ef9d5fb). If you
-see this error in a NEW file, surface to user — that's a new
-cross-platform bug.
-
-### macOS: "Library not loaded: @rpath/libssl.3.dylib"
-
-Means the `brew install openssl@3` step didn't run before the build.
-Verify `brew --prefix openssl@3` returns a non-empty path in the
-CI log.
-
-### Windows / macOS: "unable to find file 'vendor/sqlite3/sqlite3.c'"
-
-The amalgamation is gitignored (`.gitignore: /vendor/`) to keep the
-repo small. The CI workflow runs `scripts/fetch-vendor-sqlite3.sh` on
-non-Linux runners before any `zig build` step; this downloads SQLite
-3.53.3 from `https://sqlite.org/`, verifies its SHA3-256, and extracts
-the three files into `vendor/sqlite3/`. If the step failed (network
-outage, sha3sum/python3 missing), re-run it manually:
+## Running the same checks locally
 
 ```bash
-./scripts/fetch-vendor-sqlite3.sh
+zig build test              # equivalent to step 5
+zig build nalar-desktop     # equivalent to step 6
+./zig-out/bin/nalar-desktop --smoke-test   # equivalent to step 8
+./scripts/ci-smoke-test.sh  # boots nalar service end-to-end
 ```
-
-Locally, do the same before your first `zig build test` / `zig build
-install:windows` / `zig build install:macos` on a fresh clone.
-
-## Reading a failed matrix cell
-
-1. Click the failed cell name in the Actions run summary.
-2. Look at the FIRST failed step (not the last — GitHub shows the
-   last failed step at the bottom; the first is the root cause).
-3. If the failure is in `Run main test suite` (`zig build test`):
-   the failing test is named in the test output. Run it locally
-   with `zig build test --summary all` and reproduce.
-4. If the failure is in `Build nalar binary`:
-   check the linker error. Most likely a system library is missing.
-5. If the failure is in `Upload nalar binary`:
-   the binary was not produced — re-check the previous step's
-   output for a silent failure.
-
-## Manually triggering the workflow
-
-Go to Actions → CI → Run workflow → select branch → Run. Useful for
-re-running after a flaky test fix without pushing a new commit.
-
-## Updating the Zig or Bun version
-
-Edit the `env:` block at the top of `ci.yml`. Bump `ZIG_VERSION`
-or `BUN_VERSION`. The next run will pick up the new version; old
-caches are automatically invalidated because the version is part
-of the cache key path (for Zig) or because Bun reinstalls node_modules
-from scratch on version bump (for Bun).
-
-## Cross-compile follow-up (out of scope)
-
-The `zig build install:windows`, `install:macos`, `install:macos-arm`
-steps in `build.zig` are cross-compile steps that do not work from
-a Linux host — they fail at link time with "unable to find dynamic
-system library 'sqlite3'" because `addLibraryPath` is not set for
-cross-target sysroots. Fixing this requires installing Windows SDKs
-(e.g. `mingw-w64`) and macOS sysroots on a Linux host, OR adding
-conditional `addLibraryPath` reads from environment variables.
-
-Follow-up plan: `docs/plans/2026-XX-XX-cross-compile-from-linux.md`.

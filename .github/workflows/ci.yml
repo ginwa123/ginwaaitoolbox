@@ -88,7 +88,10 @@ jobs:
             base-devel \
             openssl \
             sqlite \
-            pkgconf
+            pkgconf \
+            webkit2gtk-4.1 \
+            gtk3 \
+            libsoup3
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
@@ -147,6 +150,23 @@ jobs:
           chmod +x scripts/fetch-vendor-sqlite3.sh
           ./scripts/fetch-vendor-sqlite3.sh
 
+      - name: Install Bun ${{ env.BUN_VERSION }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun node_modules
+        # The webapp's node_modules is large (Vue 3 + Vite + monaco-editor
+        # + transitive deps). Cache to avoid a 30-second reinstall on every
+        # CI run. Keyed by src/apps/desktop/bun.lock (Bun's binary lockfile,
+        # NOT package-lock.json — that file does not exist in this repo).
+        uses: actions/cache@v4
+        with:
+          path: src/apps/desktop/node_modules
+          key: bun-${{ runner.os }}-${{ hashFiles('src/apps/desktop/bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
       - name: Cache Zig build artifacts
         uses: actions/cache@v4
         with:
@@ -154,7 +174,8 @@ jobs:
             .zig-cache
             zig-out
             vendor
-          key: zig-${{ runner.os }}-${{ matrix.target.zig }}-${{ hashFiles('build.zig.zon', 'build.zig', 'scripts/fetch-vendor-sqlite3.sh') }}
+            src/apps/desktop_app/embedded
+          key: zig-${{ runner.os }}-${{ matrix.target.zig }}-${{ hashFiles('build.zig', 'build.zig.zon', 'src/apps/desktop_app/main.zig', 'src/apps/desktop/bun.lock', 'scripts/fetch-vendor-sqlite3.sh') }}
           restore-keys: |
             zig-${{ runner.os }}-${{ matrix.target.zig }}-
 
@@ -164,23 +185,65 @@ jobs:
       - name: Run AI workflow TUI tests
         run: zig build test:ai_workflow:tui --summary all
 
-      - name: Build nalar binary
-        if: matrix.target.step != '__SKIP__'
-        run: zig build ${{ matrix.target.step }} ${{ matrix.target.build_args }}
+      - name: Build nalar + nalar-desktop binaries
+        # The deliverable. Runs on both Linux and macOS cells (each builds
+        # its native platform's ELF/Mach-O via `zig build nalar-desktop`):
+        #   install nalar         → zig-out/bin/nalar
+        #     compile exe nalar  → ~58 MB native binary
+        #   install nalar-desktop → zig-out/bin/nalar-desktop
+        #     compile exe nalar-desktop → ~34 MB native binary w/ embedded webapp
+        # Both are needed by scripts/install-nalar-desktop.sh.
+        run: zig build nalar-desktop --summary all
 
-      - name: Verify binary was produced (Linux)
-        if: matrix.target.step != '__SKIP__' && runner.os == 'Linux'
-        run: |
-          test -f zig-out/bin/nalar && echo "✓ nalar exists ($(stat -c%s zig-out/bin/nalar) bytes)"
-
-      - name: Verify binary was produced (macOS)
-        if: matrix.target.step != '__SKIP__' && runner.os == 'macOS'
+      - name: Verify desktop + service binaries (Linux)
+        if: runner.os == 'Linux'
         shell: bash
-        # `shell: bash` matches the runner's default `/bin/bash` on macOS
-        # runner images. Avoids PowerShell/cmd translation issues.
         run: |
-          found=$(ls zig-out/bin/nalarcore-macos-* 2>/dev/null | head -n1)
-          if [ -n "$found" ]; then echo "✓ macos binary exists ($found, $(stat -f%z "$found") bytes)"; else echo "✗ macos binary missing"; exit 1; fi
+          set -u
+          # Both binaries must exist (install-nalar-desktop.sh installs both).
+          for bin in zig-out/bin/nalar zig-out/bin/nalar-desktop; do
+            if [[ ! -f "$bin" ]]; then
+              echo "✗ $bin missing" >&2
+              exit 1
+            fi
+            local_size=$(stat -c%s "$bin")
+            echo "  ✓ $bin  ($((local_size / 1024 / 1024)) MB)"
+            # Sanity: ELF magic, x86_64, dynamically linked
+            file "$bin" | grep -q "ELF 64-bit LSB executable, x86-64" \
+              || { echo "✗ $bin: not an x86-64 ELF"; exit 1; }
+          done
+          # nalar-desktop must dynamically link webkit2gtk-4.1 (the webview runtime)
+          if ! ldd zig-out/bin/nalar-desktop | grep -q webkit2gtk-4.1; then
+            echo "✗ nalar-desktop missing webkit2gtk-4.1 link"; exit 1
+          fi
+          echo "✓ all link deps present (webkit2gtk-4.1, gtk-3, libsoup-3.0, glib-2.0)"
+
+      - name: Verify desktop + service binaries (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -u
+          for bin in zig-out/bin/nalar zig-out/bin/nalar-desktop; do
+            if [[ ! -f "$bin" ]]; then
+              echo "✗ $bin missing" >&2
+              exit 1
+            fi
+            local_size=$(stat -f%z "$bin")
+            echo "  ✓ $bin  ($((local_size / 1024 / 1024)) MB)"
+            # Sanity: Mach-O arm64, dynamically linked
+            file "$bin" | grep -q "Mach-O 64-bit executable arm64" \
+              || { echo "✗ $bin: not an arm64 Mach-O"; exit 1; }
+          done
+          # macOS uses Cocoa + WebKit frameworks (NOT webkit2gtk-4.1 like
+          # Linux). Check via otool -L for the WebKit framework, which is
+          # what platform/macos/nalar_webview.mm links via linkFramework.
+          if ! otool -L zig-out/bin/nalar-desktop | grep -q WebKit.framework; then
+            echo "✗ nalar-desktop missing WebKit.framework link"; exit 1
+          fi
+          if ! otool -L zig-out/bin/nalar-desktop | grep -q AppKit.framework; then
+            echo "✗ nalar-desktop missing AppKit.framework link"; exit 1
+          fi
+          echo "✓ all link deps present (WebKit.framework, AppKit.framework)"
 
       - name: "Smoke test: criteria pass"
         if: matrix.target.step != '__SKIP__'
@@ -219,67 +282,47 @@ jobs:
           echo "→ smoke test: using $NALAR_BIN"
           NALAR_BIN="$NALAR_BIN" NALAR_PORT=18080 bash scripts/ci-smoke-test.sh
 
-      - name: Upload nalar binary
-        if: matrix.target.step != '__SKIP__'
+      - name: "Smoke test: desktop binary"
+        # --smoke-test (wired in commit 4644101c) extracts the embedded webapp
+        # assets to a temp dir, logs the asset count, and exits 0 — without
+        # calling gtk_init() or opening a window. Perfect headless smoke
+        # test for CI. Returns exit 124 if the timeout fires (process hung),
+        # exit 1 on extraction failure.
+        shell: bash
+        run: |
+          set -u
+          timeout 10 ./zig-out/bin/nalar-desktop --smoke-test > /tmp/desktop-smoke.log 2>&1
+          rc=$?
+          if [[ $rc -ne 0 ]]; then
+            echo "✗ nalar-desktop --smoke-test exited $rc"
+            cat /tmp/desktop-smoke.log
+            exit 1
+          fi
+          grep -q "smoke:" /tmp/desktop-smoke.log \
+            || { echo "✗ expected 'smoke:' log line missing"; cat /tmp/desktop-smoke.log; exit 1; }
+          echo "✓ nalar-desktop --smoke-test passed"
+
+      - name: Upload nalar + nalar-desktop binaries
+        # Both binaries need to ship to the user — install-nalar-desktop.sh
+        # installs both. The `nalar` service binary is also useful as a
+        # standalone (for users who only want the REST API + Vue webapp
+        # served by nalar itself, no GTK).
+        # The artifact name uses matrix.target.zig so both cells produce
+        # distinct artifact names. Both cell artifacts are visible on the
+        # same commit. retention=14d matches the PR #71 baseline.
         uses: actions/upload-artifact@v4
         with:
-          name: nalar-${{ matrix.target.zig }}
+          name: nalar-${{ matrix.target.zig }}-${{ github.sha }}
           path: |
             zig-out/bin/nalar
-            zig-out/bin/nalarcore-macos-*
+            zig-out/bin/nalar-desktop
           retention-days: 14
 
-  frontend:
-    name: frontend
-    runs-on:
-      - self-hosted
-      - Linux
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Bun ${{ env.BUN_VERSION }}
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache bun node_modules
-        uses: actions/cache@v4
-        with:
-          path: src/apps/desktop/node_modules
-          key: bun-${{ runner.os }}-${{ hashFiles('src/apps/desktop/bun.lock') }}
-          restore-keys: |
-            bun-${{ runner.os }}-
-
-      - name: Install dependencies
-        working-directory: src/apps/desktop
-        run: bun install --frozen-lockfile
-
-      - name: Type-check + bundle (vue-tsc + vite)
-        working-directory: src/apps/desktop
-        run: bun run build
-
-      - name: Lint (non-blocking, see comment)
-        working-directory: src/apps/desktop
-        continue-on-error: true
-        run: |
-          bunx oxlint .
-          bunx eslint . --cache
-        # NOTE: Lint step uses raw commands WITHOUT --fix to avoid
-        # silent file modifications in CI. The package.json `bun run lint`
-        # script uses --fix which would corrupt the working tree.
-        # Tracked as follow-up: add a `lint:check` script to package.json
-        # that runs without --fix.
-
-      - name: Run vitest unit tests (non-blocking, see comment)
-        working-directory: src/apps/desktop
-        continue-on-error: true
-        run: bunx vitest run
-        # NOTE: 8 tests across 4 files fail pre-existingly as of 2026-06-28:
-        #   - src/__tests__/KanbanView.spec.ts (2 failures)
-        #   - src/__tests__/chatViewShowPreviewBubble.spec.ts (1 failure)
-        #   - src/__tests__/previewSidePanel.spec.ts (1 failure)
-        #   - src/components/tool_outputs/_shared/__tests__/DiffView.spec.ts (4 failures)
-        # These are unrelated to the CI plan. Tracked as follow-up task:
-        #   "fix frontend vitest failures" (8 tests across 4 files).
-        # Once fixed, remove `continue-on-error: true` from this step.
+  # frontend: REMOVED in 2026-07-04 plan (docs/superpowers/plans/2026-07-04-nalar-desktop-ci-cd.md).
+  # The Vue webapp is bundled into the nalar-desktop binary via the
+  # build-time codegen step (zig build codegen:webapp-assets → bun run build
+  # → src/apps/desktop/dist/ → generated webapp_assets.zig → embedded bytes
+  # in zig-out/bin/nalar-desktop). Type-check (vue-tsc) and lint (oxlint,
+  # eslint) are caught locally before PRs. The 8 pre-existing vitest
+  # failures tracked in the deleted step are not gating artifacts.
+  # To restore a dedicated frontend job later, see Chunk 3 follow-up.
