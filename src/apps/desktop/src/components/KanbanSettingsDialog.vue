@@ -53,6 +53,17 @@ const emit = defineEmits<{
    * Plan: docs/superpowers/plans/2026-06-30-edit-workspace-item-name.md
    */
   renameItem: [name: string]
+  /**
+   * Fired when the user clicks the "Copy spec from…" footer button.
+   * The host (AppLayout) opens CopyKanbanSpecDialog with the
+   * active kanban as the target. The dialog will emit `copy`
+   * back with the chosen source + mode; AppLayout delegates
+   * to workspacesStore.copyKanbanSpecFrom.
+   *
+   * Plan: docs/superpowers/plans/2026-07-04-copy-kanban-spec.md
+   *   (Chunk 4, Task 4.2)
+   */
+  copySpec: []
 }>()
 
 // ─── Add Column inline form state ────────────────────────────────────────
@@ -143,6 +154,10 @@ watch(
 
 const handleClose = () => {
   emit('close')
+}
+
+const handleCopySpec = () => {
+  emit('copySpec')
 }
 
 const handleKeydown = (event: KeyboardEvent) => {
@@ -360,6 +375,37 @@ const sortedColumns = () => {
                 </div>
               </li>
             </ul>
+          </div>
+
+          <!-- Copy spec footer (per-board "copy columns from another kanban" entry point).
+               Lives at the bottom of the dialog so the column list (the dialog's primary
+               content) stays above the fold. Clicking emits `copySpec`; the host opens
+               CopyKanbanSpecDialog over this Settings dialog (both can be open simultaneously).
+               Plan: docs/superpowers/plans/2026-07-04-copy-kanban-spec.md (Chunk 4, Task 4.2) -->
+          <div
+            class="px-5 py-3 shrink-0"
+            style="border-top: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);"
+          >
+            <button
+              type="button"
+              @click="handleCopySpec"
+              data-testid="kanban-settings-copy-spec"
+              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-opacity duration-200 hover:opacity-80"
+              style="
+                background-color: var(--semantic-card-bg);
+                border: 1px solid var(--color-border);
+                color: var(--semantic-text-muted);
+              "
+            >
+              <span aria-hidden="true">📋</span>
+              <span class="ml-1">Copy spec from…</span>
+            </button>
+            <p
+              class="text-[11px] mt-2 italic"
+              style="color: var(--semantic-text-dim);"
+            >
+              Bulk-copy column names + descriptions from another kanban in this workspace. Tasks are not copied.
+            </p>
           </div>
         </div>
       </div>
