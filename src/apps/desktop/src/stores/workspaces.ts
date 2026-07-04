@@ -812,6 +812,29 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     )
   }
 
+  // Copy the column spec from `sourceItemId` to `targetItemId`.
+  // Destructive for the target in 'replace' mode (existing columns
+  // are deleted via the backend's `deleteColumn` path which
+  // unassigns tasks). 'append' mode adds the source's columns
+  // after the target's existing MAX(position).
+  //
+  // Mirrors the `updateKanbanColumn` pattern: the backend returns
+  // the full updated board on success so the local store gets the
+  // fresh column order without a follow-up GET.
+  async function copyKanbanSpecFrom(
+    workspaceId: string,
+    targetItemId: string,
+    sourceItemId: string,
+    mode: 'replace' | 'append' = 'replace',
+  ): Promise<void> {
+    const result = await api.copyKanbanSpec(workspaceId, targetItemId, sourceItemId, mode)
+    const item = findItem(workspaceId, targetItemId)
+    if (!item) return
+    item.kanban_columns = [...result.columns].sort(
+      (a, b) => a.position - b.position,
+    )
+  }
+
   // Reorder a kanban column via drag-and-drop. The DnD handler in
   // <KanbanColumn> only knows the dragged column's id and the target
   // column's id (the column the user dropped onto); this action
@@ -1670,6 +1693,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     addKanbanItem,
     addKanbanColumn,
     updateKanbanColumn,
+    copyKanbanSpecFrom,
     deleteKanbanColumn,
     reorderKanbanColumn,
     moveTaskToColumn,
