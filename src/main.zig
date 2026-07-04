@@ -442,9 +442,36 @@ fn dispatchServiceSubcommand(
     };
     defer allocator.free(log_path);
 
-    const cmd = main_service.parseServiceSubcommand(rest.items) catch |err| {
-        std.log.err("service: {s}", .{@errorName(err)});
-        return err;
+    const cmd = main_service.parseServiceSubcommand(rest.items) catch |err| switch (err) {
+        error.UnknownSubcommand => {
+            std.log.err("unknown subcommand: {s}", .{if (rest.items.len > 0) rest.items[0] else "(none)"});
+            std.log.err("usage: nalar service {{start|stop|status|restart}} [flags]", .{});
+            std.log.err("  start    [--port PORT] [--static-dir DIR] [--no-static-dir]", .{});
+            std.log.err("  stop     [--graceful-timeout-ms MS]", .{});
+            std.log.err("  status", .{});
+            std.log.err("  restart  [--port PORT] [--graceful-timeout-ms MS] [--static-dir DIR]", .{});
+            return err;
+        },
+        error.MissingValue => {
+            // The parser reports MissingValue at the *current* position;
+            // we don't track that here — point the user at the previous
+            // argument (almost always a flag without a value).
+            const prev_arg = if (rest.items.len > 1) rest.items[rest.items.len - 2] else "(none)";
+            std.log.err("flag '{s}' requires a value", .{prev_arg});
+            return err;
+        },
+        error.InvalidPort => {
+            // The port parser catches both InvalidPort and InvalidGracefulMs;
+            // name the flag explicitly so the user knows what to fix.
+            std.log.err("--port value is not a valid u16 number: {s}", .{
+                if (rest.items.len > 2) rest.items[rest.items.len - 1] else "(missing)",
+            });
+            return err;
+        },
+        else => {
+            std.log.err("service: {s}", .{@errorName(err)});
+            return err;
+        },
     };
 
     switch (cmd) {
