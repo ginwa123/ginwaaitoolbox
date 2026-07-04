@@ -283,31 +283,24 @@ jobs:
           NALAR_BIN="$NALAR_BIN" NALAR_PORT=18080 bash scripts/ci-smoke-test.sh
 
       - name: "Smoke test: desktop binary"
-        # The desktop binary has no usable --smoke-test runtime handler
-        # yet (the CLI flag is parsed in cli.zig:154 but main.zig doesn't
-        # branch on cfg.smoke_test — see cli.zig:50, main.zig:65+).
-        # The cheapest strong smoke test that doesn't require an X server
-        # is --help, which parses args and returns 0 BEFORE touching
-        # GTK (main.zig:80-86 catches error.ShowHelp and returns).
+        # --smoke-test (wired in commit 4644101c) extracts the embedded webapp
+        # assets to a temp dir, logs the asset count, and exits 0 — without
+        # calling gtk_init() or opening a window. Perfect headless smoke
+        # test for CI. Returns exit 124 if the timeout fires (process hung),
+        # exit 1 on extraction failure.
         shell: bash
         run: |
           set -u
-          # --help exits 0 without calling gtk_init().
-          ./zig-out/bin/nalar-desktop --help > /tmp/desktop-help.txt 2>&1
+          timeout 10 ./zig-out/bin/nalar-desktop --smoke-test > /tmp/desktop-smoke.log 2>&1
           rc=$?
           if [[ $rc -ne 0 ]]; then
-            echo "✗ nalar-desktop --help exited $rc"
-            cat /tmp/desktop-help.txt
+            echo "✗ nalar-desktop --smoke-test exited $rc"
+            cat /tmp/desktop-smoke.log
             exit 1
           fi
-          # Sanity-check the help output shape
-          grep -q '^Options:' /tmp/desktop-help.txt \
-            || { echo "✗ missing 'Options:' section in help"; exit 1; }
-          grep -q '\-\-port'           /tmp/desktop-help.txt \
-            || { echo "✗ --port flag missing"; exit 1; }
-          grep -q '\-\-nalar-url'      /tmp/desktop-help.txt \
-            || { echo "✗ --nalar-url flag missing"; exit 1; }
-          echo "✓ nalar-desktop --help returns 0 with expected flags"
+          grep -q "smoke:" /tmp/desktop-smoke.log \
+            || { echo "✗ expected 'smoke:' log line missing"; cat /tmp/desktop-smoke.log; exit 1; }
+          echo "✓ nalar-desktop --smoke-test passed"
 
       - name: Upload nalar + nalar-desktop binaries
         # Both binaries need to ship to the user — install-nalar-desktop.sh
