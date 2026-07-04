@@ -14,6 +14,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const nalarcore = @import("nalarcore");
+const subprocess = @import("subprocess.zig");
 
 pub const AttachOptions = struct {
     /// Path to the nalar state file (from `state_file.defaultStatePath`).
@@ -92,8 +93,12 @@ fn probeHealth(host: []const u8, port: u16, io: std.Io) bool {
     // otherwise. The desktop's main.zig owns the actual probe impl
     // (this stub is a placeholder; tests verify the function pointer
     // works, not the wire details).
-    _ = port;
-    return false;
+    //
+    // Implementation: subprocess.waitForHealth blocks until /api/health
+    // returns 2xx (or `timeout_ms` elapses, returning error.HealthCheckTimeout).
+    // We treat timeout AND any error as "not healthy yet".
+    subprocess.waitForHealth(port, 1000, 100) catch return false;
+    return true;
 }
 
 fn autoSpawnAndWaitForHealth(
@@ -113,5 +118,12 @@ fn autoSpawnAndWaitForHealth(
     // auto-spawn flow here. For v1, callers fall back to the
     // explicit-spawn path (`subprocess.spawn` invokes `nalar service
     // start`) when no daemon is running.
+    //
+    // When opts.no_auto_start is true the caller has already returned
+    // AutoStartDisabled (resolveAttachTarget line 84), so this only
+    // runs when auto-start is requested. In v1 we don't yet have an
+    // "auto-spawn daemon" path — the desktop tells the user to run
+    // `nalar service start` themselves and returns NalarNotFound so
+    // the main.zig error path can surface a clear message.
     return error.AutoSpawnFailed;
 }

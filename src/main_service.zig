@@ -21,10 +21,24 @@ const daemon = @import("daemon.zig");
 const signal_handlers = @import("signal_handlers.zig");
 
 pub const Subcommand = union(enum) {
-    start: struct { port: u16 = 8081, no_static_dir: bool = false },
+    start: struct {
+        port: u16 = 8081,
+        no_static_dir: bool = false,
+        /// Absolute path to a static file directory to serve at `/`. When
+        /// null, the daemon serves only API endpoints (no webapp). When
+        /// set, GET requests that don't match an API route fall back to
+        /// serving files from this dir (with index.html as the dir index).
+        /// This is the path the nalar-desktop webview points at when in
+        /// "attach to user-started nalar" mode.
+        static_dir: ?[]const u8 = null,
+    },
     stop: struct { graceful_timeout_ms: u32 = 5000 },
     status: void,
-    restart: struct { port: u16 = 8081, graceful_timeout_ms: u32 = 5000 },
+    restart: struct {
+        port: u16 = 8081,
+        graceful_timeout_ms: u32 = 5000,
+        static_dir: ?[]const u8 = null,
+    },
 };
 
 pub const ParseError = error{
@@ -43,6 +57,7 @@ pub fn parseServiceSubcommand(
     if (std.mem.eql(u8, verb, "start")) {
         var port: u16 = 8081;
         var no_static_dir = false;
+        var static_dir: ?[]const u8 = null;
         var i: usize = 1;
         while (i < args.len) : (i += 1) {
             const arg = args[i];
@@ -52,9 +67,19 @@ pub fn parseServiceSubcommand(
                 port = std.fmt.parseInt(u16, args[i], 10) catch return error.InvalidPort;
             } else if (std.mem.eql(u8, arg, "--no-static-dir")) {
                 no_static_dir = true;
+            } else if (std.mem.eql(u8, arg, "--static-dir")) {
+                i += 1;
+                if (i >= args.len) return error.MissingValue;
+                static_dir = args[i];
             } else return error.UnknownSubcommand;
         }
-        return .{ .start = .{ .port = port, .no_static_dir = no_static_dir } };
+        return .{
+            .start = .{
+                .port = port,
+                .no_static_dir = no_static_dir,
+                .static_dir = static_dir,
+            },
+        };
     }
 
     if (std.mem.eql(u8, verb, "stop")) {
@@ -103,6 +128,9 @@ pub const StartError = anyerror;
 pub const StartOptions = struct {
     port: u16,
     no_static_dir: bool,
+    /// Optional absolute path to a static-dir. Passed through to
+    /// runNalarServer as `--static-dir`. See Subcommand.start.static_dir.
+    static_dir: ?[]const u8 = null,
     state_path: []const u8,
     log_path: []const u8,
     /// Injectable shutdown callback. Called from the SIGTERM signal handler
@@ -146,13 +174,16 @@ pub fn serviceStart(
     try daemon.redirectStdioToLog(opts.log_path);
 
     // 3. Write our state.json (with the just-allocated PID).
+    //    static_dir is persisted so the desktop can confirm the URL it
+    //    attached to is the same nalar that's serving files (and so a
+    //    future `service status` can show it).
     const state: state_file.State = .{
         .pid = std.c.getpid(),
         .port = opts.port,
         .host = "127.0.0.1",
         .started_at = unixTimestampSeconds(),
         .version = "0.4.0",
-        .static_dir = null,
+        .static_dir = opts.static_dir,
     };
     try state_file.writeStateFile(allocator, io, opts.state_path, state);
 
