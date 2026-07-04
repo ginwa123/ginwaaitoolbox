@@ -185,12 +185,13 @@ jobs:
       - name: Run AI workflow TUI tests
         run: zig build test:ai_workflow:tui --summary all
 
-      - name: Build nalar-desktop binary (Linux native)
-        # The deliverable. Equivalent to `zig build nalar-desktop`:
+      - name: Build nalar + nalar-desktop binaries
+        # The deliverable. Runs on both Linux and macOS cells (each builds
+        # its native platform's ELF/Mach-O via `zig build nalar-desktop`):
         #   install nalar         → zig-out/bin/nalar
-        #     compile exe nalar  → ~58 MB ELF
+        #     compile exe nalar  → ~58 MB native binary
         #   install nalar-desktop → zig-out/bin/nalar-desktop
-        #     compile exe nalar-desktop → ~34 MB ELF with embedded webapp
+        #     compile exe nalar-desktop → ~34 MB native binary w/ embedded webapp
         # Both are needed by scripts/install-nalar-desktop.sh.
         run: zig build nalar-desktop --summary all
 
