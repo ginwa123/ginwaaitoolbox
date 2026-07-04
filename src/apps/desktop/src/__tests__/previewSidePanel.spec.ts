@@ -90,14 +90,13 @@ const makePreview = (overrides: PreviewOverrides = {}) => {
 
 describe('PreviewSidePanel', () => {
   // Clear localStorage before each test so the resize-persistence
-  // tests don't see stale values from prior tests. The 12 tests
+  // tests don't see stale values from prior tests. The 14 tests
   // above don't touch localStorage but they aren't affected by
   // a clear (the panel doesn't read localStorage today).
   //
   // localStorage is undefined in some Vitest environments — guard
-  // with `vi.stubGlobal` (matches NalarBrowserInlinePreview.spec.ts:13-22
-  // and AppLayout.kanban.spec.ts:169) so this works under jsdom AND
-  // any environment that lacks the global.
+  // with `vi.stubGlobal` (matches NalarBrowserInlinePreview.spec.ts:13-22)
+  // so this works under jsdom AND any environment that lacks the global.
   beforeEach(() => {
     if (typeof localStorage === 'undefined' || typeof localStorage.getItem !== 'function') {
       const store: Record<string, string> = {}
@@ -458,6 +457,7 @@ describe('PreviewSidePanel', () => {
     expect(stored).not.toBeNull()
     const parsed = parseInt(stored!, 10)
     expect(parsed).toBeGreaterThanOrEqual(240)
+    // Strict < (not <=) so a drag with zero net displacement fails — guards against the persist handler firing on every mousedown regardless of mousemove.
     expect(parsed).toBeLessThan(480)
   })
 
