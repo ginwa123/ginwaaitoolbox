@@ -86,6 +86,21 @@ pub fn main(init: std.process.Init) !void {
     };
     defer cfg.deinit(allocator);
 
+    // Headless smoke test (Chunk 2.1): bypass both spawn and webview paths
+    // entirely. WebKitGTK cannot initialise without a display server, so the
+    // best we can do on a CI runner is verify the binary loads, parses CLI,
+    // extracts webapp assets to a temp dir, and exits 0 cleanly. CI invokes
+    // this via `./zig-out/bin/nalar-desktop --smoke-test` after build.
+    if (cfg.smoke_test) {
+        const webapp_dir = extraction.extract(allocator, webapp_assets.assets) catch |err| {
+            std.log.err("smoke: asset extraction failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        defer extraction.cleanup(allocator, webapp_dir);
+        std.log.info("smoke: extracted {d} assets to {s}", .{ webapp_assets.assets.len, webapp_dir });
+        return;
+    }
+
     // 1b. Connect mode (--nalar-url): skip the entire spawn path. The
     // user has their own nalar running and we just point the webview at
     // it. --port and --nalar-path are ignored. Asset extraction is also
