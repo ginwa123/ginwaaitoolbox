@@ -35,6 +35,14 @@ const builtin = @import("builtin");
 /// comptime (one `pub const assets: []const Asset` slice for the
 /// whole app). At runtime, `extract()` walks this list and writes
 /// each entry to disk under a per-pid subdir of the system temp.
+///
+/// NOTE: `AssetEntry` is structurally identical to the generated
+/// `webapp_assets.Asset` but is a *nominal-distinct* Zig type
+/// (per the project memory `zig-anonymous-struct-type-identity`).
+/// Callers must pass the right struct literal — easiest path is to
+/// import `webapp_assets.Asset` directly and rely on Zig's structural
+/// matching. We do NOT re-export here because `extraction` shouldn't
+/// depend on the `embedded` module's generated file path.
 pub const AssetEntry = struct {
     /// Path as served by the webserver, e.g. "/index.html" or
     /// "/assets/app.js". Must start with "/"; the leading slash is
@@ -50,11 +58,18 @@ pub const AssetEntry = struct {
 /// the absolute path of the temp dir. The caller MUST call
 /// `cleanup(allocator, dir)` on shutdown.
 ///
+/// The assets parameter is `anytype` so callers can pass either
+/// `extraction.AssetEntry` (the canonical type) or the generated
+/// `webapp_assets.Asset` (structurally identical but nominally
+/// distinct — see project memory `zig-anonymous-struct-type-identity`).
+/// The element type must have `path: []const u8`, `content: []const u8`,
+/// and `mime: []const u8` fields, accessed via the helper below.
+///
 /// On error, the partially-created temp dir is removed before the
 /// error propagates (best-effort — `deleteTree` errors during
 /// error-path cleanup are swallowed since we can't do anything with
 /// them).
-pub fn extract(allocator: std.mem.Allocator, assets: []const AssetEntry) ![]u8 {
+pub fn extract(allocator: std.mem.Allocator, assets: anytype) ![]u8 {
     const tmp_base = tmpDirBase(allocator);
     defer allocator.free(tmp_base);
 

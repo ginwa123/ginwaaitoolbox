@@ -65,7 +65,7 @@ test {
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
-    _ = init.environ_map;
+    // init.environ_map is used below (read PATH for attach.zig's auto-spawn).
 
     // 1. Parse CLI args. `init.minimal.args` is a `process.Args` iterator
     // in Zig 0.16 (not a slice), so we materialize it into an ArrayList.
@@ -103,7 +103,32 @@ pub fn main(init: std.process.Init) !void {
 
     // ATTACH MODE (default + new behavior).
     //
-    // 1. Resolve the attach target via attach.zig: probe state file
+    // 1. Extract the embedded webapp assets to a per-pid temp dir.
+    //    Even if the user already has a nalar running, the desktop
+    //    owns the webapp and we want the next auto-spawn to be able
+    //    to serve it via `--static-dir`. If we end up attaching to
+    //    an existing nalar (no auto-spawn), the extracted dir goes
+    //    unused and is cleaned up at process exit.
+    //
+    //    NOTE: when the auto-spawn path fires, the spawned nalar
+    //    outlives the desktop (architectural commitment: closing the
+    //    window does NOT stop nalar). The temp dir becomes part of
+    //    nalar's runtime state, so we LEAK the path on auto-spawn
+    //    success — the OS will clean it up at next reboot. The leak
+    //    is bounded (one dir per process) and the temp name includes
+    //    the PID, so it's discoverable in `/tmp` if debugging is
+    //    ever needed. A future improvement is to register the dir
+    //    with a `nalar service register-static-dir <path>` call so
+    //    the user can clean it up via `service stop`.
+    const webapp_dir = extraction.extract(allocator, webapp_assets.assets) catch |err| {
+        std.log.err("Failed to extract webapp assets to temp dir: {s}", .{@errorName(err)});
+        return err;
+    };
+    defer extraction.cleanup(allocator, webapp_dir);
+
+
+
+    // 2. Resolve the attach target via attach.zig: probe state file
     //    → health → connect. If nalar isn't running and --no-auto-start
     //    was passed, surface an actionable error.
     const state_path = nalarcore.state_file.defaultStatePath(allocator) catch |err| {
@@ -112,14 +137,44 @@ pub fn main(init: std.process.Init) !void {
     };
     defer allocator.free(state_path);
 
+    // Resolve the desktop's own exe path for attach.zig's "next to self"
+    // nalar lookup (auto-spawn path only). Best-effort: on platforms
+    // without /proc/self/exe, fall back to "." and let the auto-spawn
+    // path skip the "next to self" check.
+    const self_exe_owned = path_resolve.selfExePath(allocator) catch ".";
+    defer if (!std.mem.eql(u8, self_exe_owned, ".")) allocator.free(self_exe_owned);
+
+    // PATH env (for the auto-spawn fallback when --nalar-path is unset
+    // and nalar isn't next to the desktop binary).
+    //
+    // NOTE: `init.environ_map.get(key)` returns a `[]const u8` slice
+    // that points into the Environ map's INTERNAL storage (a borrow,
+    // not an owned allocation). We MUST NOT call `allocator.free` on
+    // it — that's the double-free the smoke test caught. The `[]const u8`
+    // has the same lifetime as `init.environ_map` (the entire process),
+    // which is fine for our use.
+    const path_env = init.environ_map.get("PATH") orelse "";
+
     const attach_target = attach.resolveAttachTarget(allocator, io, .{
         .state_path = state_path,
         .default_port = if (cfg.attach_port == 0) 8081 else cfg.attach_port,
         .no_auto_start = cfg.no_auto_start,
+        .nalar_path = cfg.nalar_path,
+        .self_exe_path = self_exe_owned,
+        .path_env = path_env,
+        .static_dir = webapp_dir,
     }) catch |err| switch (err) {
         error.AutoStartDisabled => {
             std.log.err("nalar is not running.", .{});
             std.log.err("Run `nalar service start` in a terminal first, then re-open the desktop.", .{});
+            return err;
+        },
+        error.NalarNotFound => {
+            // Already logged from attach.zig with hints; just exit cleanly.
+            return err;
+        },
+        error.AutoSpawnFailed => {
+            // Already logged from attach.zig with hints; just exit cleanly.
             return err;
         },
         else => return err,
