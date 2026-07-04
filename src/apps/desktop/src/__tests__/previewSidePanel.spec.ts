@@ -90,7 +90,7 @@ const makePreview = (overrides: PreviewOverrides = {}) => {
 
 describe('PreviewSidePanel', () => {
   // Clear localStorage before each test so the resize-persistence
-  // tests don't see stale values from prior tests. The 14 tests
+  // tests don't see stale values from prior tests. The 15 tests
   // above don't touch localStorage but they aren't affected by
   // a clear (the panel doesn't read localStorage today).
   //
