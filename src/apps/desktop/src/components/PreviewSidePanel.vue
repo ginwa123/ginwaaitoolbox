@@ -241,7 +241,7 @@ const dismiss = () => { emit('dismiss') }
 <template>
   <div
     v-if="previews.length > 0"
-    class="preview-side-panel flex flex-col border-l border-[var(--color-border)] bg-[var(--semantic-bg)] transition-all duration-200"
+    class="preview-side-panel relative flex flex-col border-l border-[var(--color-border)] bg-[var(--semantic-bg)] transition-all duration-200"
     :class="isCollapsed ? 'w-8' : 'shrink-0'"
     :style="isCollapsed ? undefined : { width: localWidth + 'px' }"
     data-testid="preview-side-panel"
@@ -259,6 +259,20 @@ const dismiss = () => { emit('dismiss') }
         <span class="text-[0.65rem] text-[var(--semantic-text-muted)]">{{ activeIndex + 1 }} of {{ previews.length }}</span>
         <button class="px-1 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] hover:text-red-500" title="Dismiss panel" @click="toggleCollapse">&#10005;</button>
       </div>
+      <!--
+        Resize handle: 1px-wide vertical bar on the LEFT edge of the
+        panel (panel is on the right; handle on left → dragging left
+        grows the panel). Colors match RightSidebar.vue:208-211:
+        transparent at rest, violet @ 30% on hover, violet @ 50%
+        during active drag. Hidden when collapsed (nothing to drag).
+      -->
+      <div
+        v-if="!isCollapsed"
+        data-testid="preview-resize-handle"
+        class="absolute top-0 left-0 h-full w-1 cursor-ew-resize z-10 transition-colors"
+        :class="isResizing ? 'bg-[var(--color-violet)]/50' : 'bg-transparent hover:bg-[var(--color-violet)]/30'"
+        @mousedown="startResize"
+      />
       <div v-if="previews.length > 1" class="flex flex-wrap gap-1 px-2 py-1 border-b border-[var(--color-border)] bg-black/[0.02]">
         <button
           v-for="(p, i) in previews"
