@@ -318,6 +318,11 @@ pub fn deleteColumn(
 /// and the consequence of an interrupted copy (target emptied, source
 /// not yet copied) is recoverable by re-running the endpoint.
 ///
+/// Self-copy (`source_item_id == target_item_id`) is undefined:
+/// the function deletes the target's columns (which IS the source)
+/// before copying from the (now-empty) source. The HTTP handler
+/// rejects this case before reaching the helper.
+///
 /// Both `workspace_item_id` arguments are validated by the caller
 /// (HTTP handler); this helper assumes they exist in the
 /// `workspace_items` table.
@@ -339,6 +344,15 @@ pub fn replaceColumnsWith(
     // per-id DELETEs that would race against the open cursor), then
     // call `deleteColumn` per id so the task-unassign semantics stay
     // consistent with the per-column delete handler.
+    //
+    // Ownership: `target_column_ids` is built with an `errdefer` for
+    // OOM-during-append safety, then `toOwnedSlice` transfers the
+    // heap-owned ids to `owned_ids` BEFORE the per-id DELETE loop.
+    // This pattern (mirrors `listColumns` above) makes the errdefer a
+    // no-op on the success path and isolates the cleanup: a failure
+    // inside `deleteColumn` (e.g. the source item being deleted under
+    // us) surfaces the error while `owned_ids` is still freed exactly
+    // once by the defer.
     {
         var existing = try db.query(allocator,
             \\SELECT kc.id FROM kanban_columns kc WHERE kc.workspace_item_id = ?
@@ -353,11 +367,12 @@ pub fn replaceColumnsWith(
             defer row.deinit(allocator);
             try target_column_ids.append(allocator, try allocator.dupe(u8, row.values[0]));
         }
+        const owned_ids = try target_column_ids.toOwnedSlice(allocator);
         defer {
-            for (target_column_ids.items) |id| allocator.free(id);
-            target_column_ids.deinit(allocator);
+            for (owned_ids) |id| allocator.free(id);
+            allocator.free(owned_ids);
         }
-        for (target_column_ids.items) |col_id| {
+        for (owned_ids) |col_id| {
             try deleteColumn(allocator, db, target_item_id, col_id);
         }
     }

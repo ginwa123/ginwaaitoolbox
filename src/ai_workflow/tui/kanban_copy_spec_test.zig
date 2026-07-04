@@ -157,10 +157,11 @@ test "replaceColumnsWith unassigns tasks on the deleted target columns" {
     defer ctx.db.deinit();
 
     try seedColumn(alloc, &ctx.db, "wi_src", "todo", "", 0);
-    // We need the legacy column's id to assign a task to it before
-    // the replace happens, so we capture it here (and free it after
-    // the SELECT — the row deinit in the SELECT would otherwise be
-    // a use-after-free of a heap-allocated id we no longer own).
+    // Capture the legacy column id before the replace — we'll verify
+    // the task referencing it was unassigned. addColumn returns a
+    // heap-allocated id that we must free (see seedColumn's doc on
+    // why an explicit `defer alloc.free` is needed for the returned
+    // id to avoid a leak).
     const legacy_id = try kanban_model.addColumn(alloc, &ctx.db, "wi_tgt", "legacy", "", 0);
     defer alloc.free(legacy_id);
 
@@ -174,7 +175,7 @@ test "replaceColumnsWith unassigns tasks on the deleted target columns" {
     // Verify the task was unassigned (kanban_column_id NULL → empty
     // string from COALESCE in the SELECT).
     var q = try ctx.db.query(alloc,
-        "SELECT COALESCE(kanban_column_id, '') FROM workspace_item_tasks WHERE id = 'task_1'",
+        "SELECT COALESCE(t.kanban_column_id, '') FROM workspace_item_tasks t WHERE t.id = 'task_1'",
         &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
@@ -200,4 +201,62 @@ test "replaceColumnsWith with empty source empties the target" {
     const cols = try kanban_model.listColumns(alloc, &ctx.db, "wi_tgt");
     defer kanban_model.freeColumns(alloc, cols);
     try testing.expectEqual(@as(usize, 0), cols.len);
+}
+
+// Static regression test: `replaceColumnsWith` must use the
+// `toOwnedSlice` ownership-transfer pattern (mirrors `listColumns`'s
+// errdefer-only model) so the errdefer+defer double-cleanup of
+// `target_column_ids` cannot fire on the error path. The pre-fix
+// code at kanban_model.zig:346-360 had BOTH `errdefer` AND `defer`
+// blocks freeing the same `target_column_ids.items`. Under Zig's LIFO
+// defer semantics, the second cleanup fires first → iterates freed
+// memory → heap-use-after-free + double `deinit` panic. This test
+// reads the model file source and asserts the `toOwnedSlice`
+// ownership-transfer call is present inside the function body.
+test "replaceColumnsWith uses toOwnedSlice pattern (no double-free)" {
+    const allocator = testing.allocator;
+    const source = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "src/ai_workflow/tui/kanban_model.zig",
+        allocator,
+        .limited(256 * 1024),
+    );
+    defer allocator.free(source);
+
+    // Locate the function body: from `pub fn replaceColumnsWith`
+    // to the next `\npub fn ` (or EOF).
+    const fn_start_marker = "pub fn replaceColumnsWith";
+    const fn_start = std.mem.indexOf(u8, source, fn_start_marker) orelse {
+        std.debug.print(
+            "\n!! replaceColumnsWith function not found in kanban_model.zig !!\n",
+            .{},
+        );
+        return error.FnNotFound;
+    };
+    var fn_end: usize = source.len;
+    if (std.mem.indexOfPos(u8, source, fn_start + fn_start_marker.len, "\npub fn ")) |p| {
+        fn_end = p;
+    }
+    const fn_body = source[fn_start..fn_end];
+
+    // The contract: the function must transfer ownership of the
+    // target_column_ids list to an owned slice via `toOwnedSlice`
+    // BEFORE the deleteColumn loop, so the errdefer becomes a no-op
+    // on the success path. Without this, the LIFO defer+errdefer
+    // double-cleanup triggers a heap-use-after-free.
+    if (std.mem.indexOf(u8, fn_body, "toOwnedSlice") == null) {
+        std.debug.print(
+            "\n!! replaceColumnsWith does not use toOwnedSlice !!\n" ++
+                "   The double-free bug at kanban_model.zig:346-360 is back.\n" ++
+                "   Fix pattern (mirror listColumns at kanban_model.zig:70-95):\n" ++
+                "     1. Keep the existing `errdefer` block (handles OOM mid-loop).\n" ++
+                "     2. After the rows are appended, transfer ownership:\n" ++
+                "          const owned_ids = try target_column_ids.toOwnedSlice(allocator);\n" ++
+                "          defer for (owned_ids) |id| allocator.free(id);\n" ++
+                "     3. Iterate `owned_ids` (not `target_column_ids.items`) in the loop.\n" ++
+                "   See docs/superpowers/plans/2026-07-04-copy-kanban-spec.md.\n",
+            .{},
+        );
+        return error.DoubleFreeReintroduced;
+    }
 }
