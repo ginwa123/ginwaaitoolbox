@@ -27,6 +27,13 @@ pub const Config = struct {
     /// nalar you started by hand). `--port` and `--nalar-path` are ignored
     /// in this mode.
     nalar_url: ?[]const u8 = null,
+    /// Decoupled-service mode (added in 2026-07): when no `nalar` daemon
+    /// is running, refuse to auto-spawn one and surface an actionable
+    /// error instead. Default: false (auto-spawn is the default).
+    no_auto_start: bool = false,
+    /// Override the port used by the probe / auto-spawn fallback.
+    /// 0 = use the state file's port, or 8081 if no state file.
+    attach_port: u16 = 0,
     /// Window dimensions.
     window_width: u32 = 1280,
     window_height: u32 = 800,
@@ -146,6 +153,12 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) CliError!Co
             cfg.icon_path = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "--smoke-test")) {
             cfg.smoke_test = true;
+        } else if (std.mem.eql(u8, arg, "--no-auto-start")) {
+            cfg.no_auto_start = true;
+        } else if (std.mem.eql(u8, arg, "--attach-port")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            cfg.attach_port = std.fmt.parseInt(u16, args[i], 10) catch return error.InvalidPort;
         } else if (std.mem.eql(u8, arg, "--devtools")) {
             cfg.enable_devtools = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {

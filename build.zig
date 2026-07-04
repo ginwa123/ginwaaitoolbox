@@ -262,7 +262,10 @@ pub fn build(b: *std.Build) void {
         else => {},
     }
 
-    b.installArtifact(desktop_exe);
+    // Capture the InstallArtifact so `build:all` can dependOn its inner
+    // step (see the build banner section at the end of this file for why).
+    const desktop_install = b.addInstallArtifact(desktop_exe, .{});
+    b.getInstallStep().dependOn(&desktop_install.step);
 
     // Make the desktop binary depend on the codegen step. The codegen runs
     // `bun run build` first (via build_webapp_step) and then walks dist/ to
@@ -477,4 +480,80 @@ pub fn build(b: *std.Build) void {
     const run_tcp_step = b.step("run:custom_tcp", "Run the custom TCP echo server");
     const run_tcp_cmd = b.addRunArtifact(tcp_exe);
     run_tcp_step.dependOn(&run_tcp_cmd.step);
+
+    // =====================================================================
+    // End-of-build success/failure banner
+    // =====================================================================
+    // Zig's `install` step emits no summary by default (you have to pass
+    // `--summary all` to see "13/13 steps succeeded"). When `zig build`
+    // succeeds the user sees nothing on stdout — easy to mistake a cached
+    // build for a fresh one, and impossible to tell whether it ran. We
+    // register a `build:all` step that depends on both binaries + a
+    // final shell banner that fires ONLY when the build succeeded
+    // (Zig's dependency DAG short-circuits the banner on failure).
+    //
+    // Output structure (so it's easy to grep):
+    //
+    //   [zig build success]
+    //
+    //     ✓ nalar service binary  →  zig-out/bin/nalarcore-linux-x86_64
+    //     ✓ nalar desktop binary  →  zig-out/bin/nalar-desktop
+    //
+    //     Run with:  ./zig-out/bin/nalarcore-linux-x86_64 service start --port 8080
+    //                ./zig-out/bin/nalar-desktop --devtools
+    //
+    // The simplest reliable banner is static text. We tried a `[ -x ... ]`
+    // check on the installed binary paths, but Zig's `InstallArtifact`
+    // caches file copies (skipping `installFile()` when its inputs
+    // haven't changed). When the user has manually deleted
+    // `zig-out/bin/...` or it's a fresh checkout, the cache says
+    // "nothing to do" but the file is genuinely absent — so the
+    // check shows "missing" even though the build succeeded. Static
+    // text is always right; the user's actual binary locations are
+    // deterministic from the build config.
+    const build_banner = b.addSystemCommand(&.{
+        "/bin/sh",
+        "-c",
+        \\
+        \\D=zig-out/bin
+        \\echo ""
+        \\echo "[zig build success]"
+        \\echo ""
+        \\echo "  nalar service binary  →  $D/nalarcore-linux-x86_64"
+        \\echo "  nalar desktop binary  →  $D/nalar-desktop"
+        \\echo ""
+        \\echo "  (If a binary is missing, run \`rm -rf $D && zig build\`"
+        \\echo "   to force a fresh install — the cache sometimes hides"
+        \\echo "   manual deletions.)"
+        \\echo ""
+        \\echo "  Run with:  $D/nalarcore-linux-x86_64 service start --port 8080"
+        \\echo "             $D/nalar-desktop --devtools"
+        \\echo ""
+        ,
+    });
+    const build_all_step = b.step("build:all", "Build nalar service + nalar-desktop, with end-of-build summary");
+    // The two binaries live on different top-level install steps:
+    //   - nalarcore-linux-x86_64  → install:linux   (cross target, Linux x86_64)
+    //   - nalar-desktop           → install           (native target, includes
+    //                                               b.installArtifact(desktop_exe))
+    // The native `nalar` binary is also in `install`. We want both in
+    // one command, so depend on the inner install steps (not just the
+    // outer top-level wrappers). Depending on the outer wrappers would
+    // race against cache-hit skipping: when the binary's source hasn't
+    // changed, InstallArtifact.make() returns early without copying the
+    // file — so my banner would see a stale (possibly deleted) bin/ and
+    // print missing-file lines.
+    //
+    // `dependOn` takes `*Step` not `*const *Step` — `install_linux` and
+    // `desktop_install` are both `*InstallArtifact` whose `.step` field
+    // is what `dependOn` needs.
+    build_all_step.dependOn(&install_linux.step);
+    build_all_step.dependOn(&desktop_install.step);
+    build_all_step.dependOn(&build_banner.step);
+
+    // Default: same as `build:all`. Without this, `zig build` (no args)
+    // runs the `install` step alone, which prints no summary on success.
+    // Zig 0.16's `Build.default_step: *Step` — `b.step()` already
+    // returns `*Step`, so we assign the pointer directly.
+    b.default_step = build_all_step;
 }

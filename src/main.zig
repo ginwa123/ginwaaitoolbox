@@ -8,6 +8,12 @@ const gserverz = nalarcore.gserverz;
 const startup = nalarcore.startup;
 const static_files = nalarcore.static_files;
 
+// state_file and main_service are re-exported from nalarcore (see src/root.zig).
+// Access them via nalarcore.* to avoid duplicating the module symbol
+// across both root files.
+const state_file = nalarcore.state_file;
+const main_service = nalarcore.main_service;
+
 pub fn main(init: std.process.Init) !void {
     // const arena_allocator = init.arena;
     // defer arena_allocator.deinit();
@@ -16,6 +22,11 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const environment = init.environ_map;
     const io = init.io;
+
+    // Service subcommand dispatch (Chunk 3 of the decoupled-nalar-service
+    // plan): if argv[1] == "service", route the rest of argv to the
+    // service module and exit before doing any other init.
+    if (try dispatchServiceSubcommand(allocator, io, environment, init)) return;
 
     if (init.environ_map.get("HOME")) |home| {
         std.log.info("HOME={s}", .{home});
@@ -388,6 +399,132 @@ pub fn main(init: std.process.Init) !void {
     // and BEFORE `ctxParent` is destroyed, so no reader is still in flight.
     nalarcore.freeAllLlmConfigs(ctxParent);
 
+}
+
+/// Dispatch the `nalar service {start,stop,status,restart}` subcommand.
+/// Returns true if the subcommand was handled (main should exit); false
+/// if no subcommand matched (main should continue with the regular flow).
+///
+/// The "service" verb is detected by peeking at argv[1]. For `service
+/// start`, we currently DO NOT actually start the server — we only
+/// daemonize + write the state file. The full server handoff (the
+/// remaining Task 3.11 of the plan) is a follow-up; without it the
+/// daemon writes state.json and exits, which is the right skeleton for
+/// now and lets `service stop` / `service status` be exercised end-to-end.
+fn dispatchServiceSubcommand(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environment: *const std.process.Environ.Map,
+    init: std.process.Init,
+) !bool {
+    _ = environment;
+    const args = init.minimal.args;
+    var it = std.process.Args.Iterator.init(args);
+    defer it.deinit();
+    _ = it.next(); // skip argv[0]
+    const arg1 = it.next() orelse return false;
+    if (!std.mem.eql(u8, arg1, "service")) return false;
+
+    var rest: std.ArrayList([]const u8) = .empty;
+    defer rest.deinit(allocator);
+    while (it.next()) |a| try rest.append(allocator, a);
+
+    const state_path = state_file.defaultStatePath(allocator) catch |err| {
+        std.log.err("service: failed to resolve state path: {s}", .{@errorName(err)});
+        return err;
+    };
+    defer allocator.free(state_path);
+
+    const log_path = blk: {
+        const home_z = std.c.getenv("HOME") orelse "/tmp";
+        const home = std.mem.sliceTo(home_z, 0);
+        break :blk try std.fs.path.join(allocator, &.{ home, ".local", "share", "nalar", "service.log" });
+    };
+    defer allocator.free(log_path);
+
+    const cmd = main_service.parseServiceSubcommand(rest.items) catch |err| switch (err) {
+        error.UnknownSubcommand => {
+            std.log.err("unknown subcommand: {s}", .{if (rest.items.len > 0) rest.items[0] else "(none)"});
+            std.log.err("usage: nalar service {{start|stop|status|restart}} [flags]", .{});
+            std.log.err("  start    [--port PORT] [--static-dir DIR] [--no-static-dir]", .{});
+            std.log.err("  stop     [--graceful-timeout-ms MS]", .{});
+            std.log.err("  status", .{});
+            std.log.err("  restart  [--port PORT] [--graceful-timeout-ms MS] [--static-dir DIR]", .{});
+            return err;
+        },
+        error.MissingValue => {
+            // The parser reports MissingValue at the *current* position;
+            // we don't track that here — point the user at the previous
+            // argument (almost always a flag without a value).
+            const prev_arg = if (rest.items.len > 1) rest.items[rest.items.len - 2] else "(none)";
+            std.log.err("flag '{s}' requires a value", .{prev_arg});
+            return err;
+        },
+        error.InvalidPort => {
+            // The port parser catches both InvalidPort and InvalidGracefulMs;
+            // name the flag explicitly so the user knows what to fix.
+            std.log.err("--port value is not a valid u16 number: {s}", .{
+                if (rest.items.len > 2) rest.items[rest.items.len - 1] else "(missing)",
+            });
+            return err;
+        },
+        else => {
+            std.log.err("service: {s}", .{@errorName(err)});
+            return err;
+        },
+    };
+
+    switch (cmd) {
+        .start => |s| {
+            const dummy_shutdown = struct {
+                fn cb() void {}
+            }.cb;
+            main_service.serviceStart(allocator, io, .{
+                .port = s.port,
+                .no_static_dir = s.no_static_dir,
+                .state_path = state_path,
+                .log_path = log_path,
+                .on_shutdown = dummy_shutdown,
+            }) catch |err| {
+                std.log.err("service start: {s}", .{@errorName(err)});
+                return err;
+            };
+        },
+        .stop => |s| main_service.serviceStop(allocator, io, .{
+            .graceful_timeout_ms = s.graceful_timeout_ms,
+            .state_path = state_path,
+        }) catch |err| {
+            std.log.err("service stop: {s}", .{@errorName(err)});
+            return err;
+        },
+        .status => main_service.serviceStatus(allocator, io, state_path) catch |err| {
+            std.log.err("service status: {s}", .{@errorName(err)});
+            return err;
+        },
+        .restart => |s| {
+            main_service.serviceStop(allocator, io, .{
+                .graceful_timeout_ms = s.graceful_timeout_ms,
+                .state_path = state_path,
+            }) catch |err| {
+                std.log.err("service restart (stop): {s}", .{@errorName(err)});
+                return err;
+            };
+            const dummy_shutdown2 = struct {
+                fn cb() void {}
+            }.cb;
+            main_service.serviceStart(allocator, io, .{
+                .port = s.port,
+                .no_static_dir = false,
+                .state_path = state_path,
+                .log_path = log_path,
+                .on_shutdown = dummy_shutdown2,
+            }) catch |err| {
+                std.log.err("service restart (start): {s}", .{@errorName(err)});
+                return err;
+            };
+        },
+    }
+    return true;
 }
 
 /// Top-level static-files fallback handler. Wired into GinwaServer via
