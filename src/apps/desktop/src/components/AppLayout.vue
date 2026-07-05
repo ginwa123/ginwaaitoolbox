@@ -518,13 +518,16 @@ const handleCloseTaskView = () => {
 // and listening on `document` is the only way to catch every move).
 //
 // Bounds rationale:
-//   - MIN 280px: kanban columns become unreadable below this (the
-//     column card itself is ~240px wide plus padding, and the
-//     "+ Add" footer needs another ~40px).
+//   - MIN 0px: the user can collapse the kanban column entirely,
+//     letting the chat view absorb the full main area. The 1px
+//     resize handle stays grabbable at width=0, so the kanban can
+//     be brought back by dragging right. (Floor was previously
+//     280px to keep kanban columns readable; user feedback
+//     2026-07-04 preferred unbounded.)
 //   - MAX 720px: beyond this the chatview shrinks to <30% of the
 //     main area on typical 1080p+ displays, making the chat feel
 //     cramped. The chat needs at least 480px to be usable.
-const KANBAN_MIN_WIDTH = 280
+const KANBAN_MIN_WIDTH = 0
 const KANBAN_MAX_WIDTH = 720
 const KANBAN_DEFAULT_WIDTH = 40 // % of main area, used when no localStorage value exists
 const KANBAN_WIDTH_STORAGE_KEY = 'kanban-column-width'

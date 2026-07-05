@@ -431,8 +431,60 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
     // since nothing is laid out), so we only assert the
     // clamp + integer-ness, not a specific number.
     const parsed = parseInt(stored!, 10)
-    expect(parsed).toBeGreaterThanOrEqual(280)
+    // Since 2026-07-04 (kanban-min-width-zero) the floor is 0, not 280.
+    // The user can drag the kanban column all the way to 0 width; the
+    // 1px resize handle remains grabbable so it can be brought back.
+    expect(parsed).toBeGreaterThanOrEqual(0)
     expect(parsed).toBeLessThanOrEqual(720)
+    wrapper.unmount()
+  })
+
+  // Since 2026-07-04 (kanban-min-width-zero): KANBAN_MIN_WIDTH is 0, so the
+  // user can drag the kanban column all the way to width=0. Verify the
+  // floor is correctly applied when the persisted value is below the OLD
+  // floor (would have been clamped to 280) but is now allowed.
+  it('allows the kanban column to be resized all the way to 0 (kanban-min-width-zero)', async () => {
+    // Pre-seed localStorage to a known starting width so the math is
+    // deterministic (jsdom's getBoundingClientRect returns 0 for the
+    // rendered kanban, which would otherwise start the drag from the
+    // fallback value of 400 — see AppLayout.vue:560-566).
+    localStorage.setItem('kanban-column-width', '500')
+    const kanban = makeKanbanItem({
+      tasks: [makeTask({ kanban_column_id: 'col_todo' })],
+    })
+    useRouteMock.mockReturnValue({
+      query: { view: 'task', task: TASK_ID } as Record<string, string>,
+      path: '/app',
+      fullPath: `/app?view=task&task=${TASK_ID}`,
+    } as any)
+    const wrapper = mountAppLayout([
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace,
+    ])
+    const ws = useWorkspacesStore()
+    ws.setActiveWorkspaceItem(KANBAN_ID)
+    ws.setActiveTask(TASK_ID)
+    await nextTick()
+    const handle = wrapper.find('[data-testid="kanban-resize-handle"]')
+    expect(handle.exists()).toBe(true)
+    // Drag the handle FAR to the LEFT (negative deltaX → kanban
+    // shrinks). The clamp at KANBAN_MIN_WIDTH = 0 must kick in.
+    //
+    // Drag math: startWidth = 500 (from localStorage), clientX goes
+    // 700 → 100 (deltaX = -600), newWidth = max(0, min(720, 500 - 600))
+    //                                              = max(0, min(720, -100))
+    //                                              = max(0, -100)
+    //                                              = 0
+    await handle.trigger('mousedown', { clientX: 700 })
+    document.body.dispatchEvent(
+      new MouseEvent('mousemove', { clientX: 100, bubbles: true }),
+    )
+    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    await nextTick()
+    const stored = localStorage.getItem('kanban-column-width')
+    expect(stored).not.toBeNull()
+    const parsed = parseInt(stored!, 10)
+    // New floor (was 280, now 0):
+    expect(parsed).toBe(0)
     wrapper.unmount()
   })
 
