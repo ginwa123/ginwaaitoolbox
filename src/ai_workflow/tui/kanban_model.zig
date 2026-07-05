@@ -305,6 +305,151 @@ pub fn deleteColumn(
         &.{column_id});
 }
 
+/// Replace the target kanban's columns with copies of the source
+/// kanban's columns. The target's existing columns are deleted (tasks
+/// assigned to them get `kanban_column_id = NULL` per the existing
+/// `deleteColumn` contract); the source's columns are then inserted
+/// on the target with positions 0..N-1 matching the source's order.
+///
+/// Used by the `POST /kanban/copy_spec_from` endpoint (Chunk 2 of
+/// the copy-kanban plan) in "Replace" mode. The destructive delete
+/// + insert sequence is performed in three SQL statements without an
+/// explicit transaction wrapper — SQLite auto-commits each statement,
+/// and the consequence of an interrupted copy (target emptied, source
+/// not yet copied) is recoverable by re-running the endpoint.
+///
+/// Self-copy (`source_item_id == target_item_id`) is undefined:
+/// the function deletes the target's columns (which IS the source)
+/// before copying from the (now-empty) source. The HTTP handler
+/// rejects this case before reaching the helper.
+///
+/// Both `workspace_item_id` arguments are validated by the caller
+/// (HTTP handler); this helper assumes they exist in the
+/// `workspace_items` table.
+///
+/// SQL convention: every inner-table reference is aliased (`kc`) per
+/// the project memory `nalar-sql-alias-tables.md`.
+pub fn replaceColumnsWith(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    source_item_id: []const u8,
+    target_item_id: []const u8,
+) !void {
+    // Step 1: Fetch the source's columns (ordered by position ASC).
+    const source_cols = try listColumns(allocator, db, source_item_id);
+    defer freeColumns(allocator, source_cols);
+
+    // Step 2: Delete every existing column on the target. We collect
+    // the ids first (so we don't hold the query open while doing
+    // per-id DELETEs that would race against the open cursor), then
+    // call `deleteColumn` per id so the task-unassign semantics stay
+    // consistent with the per-column delete handler.
+    //
+    // Ownership: `target_column_ids` is built with an `errdefer` for
+    // OOM-during-append safety, then `toOwnedSlice` transfers the
+    // heap-owned ids to `owned_ids` BEFORE the per-id DELETE loop.
+    // This pattern (mirrors `listColumns` above) makes the errdefer a
+    // no-op on the success path and isolates the cleanup: a failure
+    // inside `deleteColumn` (e.g. the source item being deleted under
+    // us) surfaces the error while `owned_ids` is still freed exactly
+    // once by the defer.
+    {
+        var existing = try db.query(allocator,
+            \\SELECT kc.id FROM kanban_columns kc WHERE kc.workspace_item_id = ?
+        , &.{target_item_id});
+        defer existing.deinit();
+        var target_column_ids = std.ArrayList([]u8).empty;
+        errdefer {
+            for (target_column_ids.items) |id| allocator.free(id);
+            target_column_ids.deinit(allocator);
+        }
+        while (try existing.next()) |row| {
+            defer row.deinit(allocator);
+            try target_column_ids.append(allocator, try allocator.dupe(u8, row.values[0]));
+        }
+        const owned_ids = try target_column_ids.toOwnedSlice(allocator);
+        defer {
+            for (owned_ids) |id| allocator.free(id);
+            allocator.free(owned_ids);
+        }
+        for (owned_ids) |col_id| {
+            try deleteColumn(allocator, db, target_item_id, col_id);
+        }
+    }
+
+    // Step 3: Copy each source column to the target with position 0..N-1.
+    for (source_cols, 0..) |col, idx| {
+        // addColumn returns a heap-owned id that the caller MUST
+        // free. We don't surface the id (the caller doesn't need
+        // it) so we free it immediately — mirrors `seedDefaultColumns`.
+        const new_id = try addColumn(
+            allocator,
+            db,
+            target_item_id,
+            col.name,
+            col.description,
+            @intCast(idx),
+        );
+        defer allocator.free(new_id);
+    }
+}
+
+/// Append copies of the source kanban's columns to the end of the
+/// target kanban's column sequence. Unlike `replaceColumnsWith`, this
+/// does NOT delete the target's existing columns — they keep their
+/// positions 0..M-1 and the source's columns are appended at
+/// M, M+1, M+2, … (where M is the target's MAX(position) + 1).
+///
+/// Used by the `POST /kanban/copy_spec_from` endpoint in "Append"
+/// mode. Like `replaceColumnsWith`, no transaction wrapper is used
+/// — SQLite auto-commits each INSERT. The append-only semantics mean
+/// partial failures leave a few extra columns at the end of the
+/// target, which the user can manually delete.
+///
+/// SQL convention: every inner-table reference is aliased (`kc`) per
+/// the project memory `nalar-sql-alias-tables.md`.
+pub fn appendColumnsFrom(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    source_item_id: []const u8,
+    target_item_id: []const u8,
+) !void {
+    const source_cols = try listColumns(allocator, db, source_item_id);
+    defer freeColumns(allocator, source_cols);
+
+    // Compute MAX(position) + 1 across the target's columns. The
+    // COALESCE handles the empty-target case (no rows → MAX is
+    // NULL → -1 → start_pos 0).
+    var start_pos: i64 = 0;
+    {
+        var q = try db.query(allocator,
+            \\
+            \\SELECT COALESCE(MAX(kc.position), -1) + 1
+            \\FROM kanban_columns kc
+            \\WHERE kc.workspace_item_id = ?
+        , &.{target_item_id});
+        defer q.deinit();
+        if (try q.next()) |row| {
+            defer row.deinit(allocator);
+            start_pos = std.fmt.parseInt(i64, row.values[0], 10) catch 0;
+        }
+    }
+
+    for (source_cols, 0..) |col, offset| {
+        // addColumn returns a heap-owned id that the caller MUST
+        // free (mirrors seedDefaultColumns + replaceColumnsWith).
+        const new_id = try addColumn(
+            allocator,
+            db,
+            target_item_id,
+            col.name,
+            col.description,
+            start_pos + @as(i64, @intCast(offset)),
+        );
+        defer allocator.free(new_id);
+    }
+}
+
 /// Count how many tasks currently reference `column_id` as their
 /// `kanban_column_id`. Used by `kanbanColumnsDeleteHandler` to refuse
 /// deletion when the column still has tasks (the user must move them

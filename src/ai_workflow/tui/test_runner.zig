@@ -45,6 +45,7 @@ test {
     _ = @import("migration_054_test.zig");
     _ = @import("kanban_model_test.zig");
     _ = @import("kanban_model_test_description.zig");
+    _ = @import("kanban_copy_spec_test.zig");
     _ = @import("http_handlers/tasks_reorder_pinned_test.zig");
     _ = @import("http_handlers/git_worktree_info_test.zig");
     _ = @import("http_handlers/git_pr_create_test.zig");
@@ -55,6 +56,7 @@ test {
     _ = @import("http_handlers/kanban_columns_create_test.zig");
     _ = @import("http_handlers/kanban_columns_update_test.zig");
     _ = @import("http_handlers/kanban_columns_delete_test.zig");
+    _ = @import("http_handlers/kanban_copy_spec_test.zig");
     _ = @import("http_handlers/tasks_move_test.zig");
     _ = @import("http_handlers/tasks_create_kanban_test.zig");
     _ = @import("http_handlers/tasks_create_value_alloc_test.zig");

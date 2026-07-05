@@ -1065,6 +1065,41 @@ export async function addKanbanColumn(
 }
 
 /**
+ * Copy a kanban's column spec (names + descriptions, preserving
+ * order) from a source kanban to a target kanban. Tasks are NOT
+ * copied — only the column "template". Destructive for the target:
+ * in `replace` mode, the target's existing columns are deleted
+ * (with task unassignment) and replaced with copies of the
+ * source's. In `append` mode, the source's columns are appended
+ * after the target's existing MAX(position).
+ *
+ * Returns the target's new full column list `{columns, count}`
+ * (same envelope as `listKanbanColumns`). The frontend replaces
+ * its local `kanban_columns` array with this list in one round
+ * trip — backend's atomic emit/replace pattern matches every
+ * other kanban mutation endpoint.
+ *
+ * POST /api/workspaces/:workspaceId/items/:itemId/kanban/copy_spec_from/:sourceItemId
+ *
+ * Plan: docs/superpowers/plans/2026-07-04-copy-kanban-spec.md
+ *   (Chunk 3, Task 3.1)
+ */
+export async function copyKanbanSpec(
+  workspaceId: string,
+  targetItemId: string,
+  sourceItemId: string,
+  mode: 'replace' | 'append' = 'replace',
+): Promise<{ columns: KanbanColumn[]; count: number }> {
+  return await apiFetch<{ columns: KanbanColumn[]; count: number }>(
+    `/workspaces/${workspaceId}/items/${targetItemId}/kanban/copy_spec_from/${sourceItemId}`,
+    {
+      method: 'POST',
+      body: { mode },
+    },
+  )
+}
+
+/**
  * Patch a kanban column. Both `name` and `position` are optional;
  * pass only the fields you want to change. The backend applies the
  * patch and re-numbers sibling positions when `position` changes.

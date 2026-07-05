@@ -14,6 +14,7 @@ import SseStatusBadge from './SseStatusBadge.vue'
 import KanbanView from './KanbanView.vue'
 import KanbanColumnEditor from './KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './KanbanSettingsDialog.vue'
+import CopyKanbanSpecDialog from './CopyKanbanSpecDialog.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
@@ -787,6 +788,38 @@ const handleKanbanSettingsDeleteColumn = (columnId: string) => {
   void workspacesStore.deleteKanbanColumn(ws.id, activeWorkspaceItem.value.id, columnId)
 }
 
+// ─── CopyKanbanSpecDialog ────────────────────────────────────────────────
+//
+// Per-board "copy columns from another kanban" flow. Triggered by
+// the "Copy spec…" footer button in KanbanSettingsDialog. The
+// dialog itself is a modal with a source picker + Replace/Append
+// radio; this handler delegates to workspacesStore.copyKanbanSpecFrom
+// which calls POST /kanban/copy_spec_from and refreshes the target's
+// local kanban_columns from the backend's response.
+const showCopyKanbanSpecDialog = ref(false)
+
+const handleOpenCopyKanbanSpec = () => {
+  showCopyKanbanSpecDialog.value = true
+}
+
+const handleCloseCopyKanbanSpec = () => {
+  showCopyKanbanSpecDialog.value = false
+}
+
+const handleCopyKanbanSpec = (sourceItemId: string, mode: 'replace' | 'append') => {
+  if (!activeWorkspaceItem.value || !activeWorkspace.value) return
+  void workspacesStore
+    .copyKanbanSpecFrom(
+      activeWorkspace.value.id,
+      activeWorkspaceItem.value.id,
+      sourceItemId,
+      mode,
+    )
+    .then(() => {
+      showCopyKanbanSpecDialog.value = false
+    })
+}
+
 // + Add on a column: open the standard chat dialog directly
 // (skipping the AddTaskPickerDialog). Kanban cards are always
 // standard chats — the column is a workflow stage, not a task-type
@@ -1485,6 +1518,25 @@ watch(chatSessionCwd, (newCwd) => {
       @edit-column="handleKanbanSettingsEditColumn"
       @delete-column="handleKanbanSettingsDeleteColumn"
       @rename-item="handleKanbanRenameItem"
+      @copy-spec="handleOpenCopyKanbanSpec"
+    />
+
+    <!--
+      CopyKanbanSpecDialog — source picker + Replace/Append radio for
+      bulk-copying column spec from another kanban. Mounted as a SIBLING
+      of <KanbanSettingsDialog> (not nested) so a user can stack them:
+      Settings dialog under, picker over, both visible at once. The picker
+      filters out the active kanban as a source (CopyKanbanSpecDialog's
+      `availableSources` computed).
+      Plan: docs/superpowers/plans/2026-07-04-copy-kanban-spec.md
+        (Chunk 4, Task 4.3)
+    -->
+    <CopyKanbanSpecDialog
+      :show="showCopyKanbanSpecDialog"
+      :workspace-id="activeWorkspace?.id ?? ''"
+      :target-item-id="activeWorkspaceItem?.id ?? ''"
+      @close="handleCloseCopyKanbanSpec"
+      @copy="handleCopyKanbanSpec"
     />
   </div>
 </template>

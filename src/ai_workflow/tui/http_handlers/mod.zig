@@ -55,6 +55,11 @@ pub const kanbanColumnsListHandler = @import("kanban_columns_list.zig").kanbanCo
 pub const kanbanColumnsCreateHandler = @import("kanban_columns_create.zig").kanbanColumnsCreateHandler;
 pub const kanbanColumnsUpdateHandler = @import("kanban_columns_update.zig").kanbanColumnsUpdateHandler;
 pub const kanbanColumnsDeleteHandler = @import("kanban_columns_delete.zig").kanbanColumnsDeleteHandler;
+// Copy a kanban's column spec (names + descriptions, preserving order)
+// from a source kanban to a target kanban. Tasks are NOT copied.
+// Body: `{mode: "replace" | "append"}`. See plan
+// docs/superpowers/plans/2026-07-04-copy-kanban-spec.md (Chunk 2).
+pub const kanbanCopySpecHandler = @import("kanban_copy_spec.zig").kanbanCopySpecHandler;
 pub const tasksMoveHandler = @import("tasks_move.zig").tasksMoveHandler;
 pub const tasksListHandler = @import("tasks_list.zig").tasksListHandler;
 pub const tasksCreateHandler = @import("task_create.zig").tasksCreateHandler;
