@@ -13,7 +13,7 @@
  * The data-testid selectors come from the component's template attributes.
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import PreviewSidePanel from '../components/PreviewSidePanel.vue'
@@ -89,6 +89,30 @@ const makePreview = (overrides: PreviewOverrides = {}) => {
 }
 
 describe('PreviewSidePanel', () => {
+  // Clear localStorage before each test so the resize-persistence
+  // tests don't see stale values from prior tests. The 15 tests
+  // above don't touch localStorage but they aren't affected by
+  // a clear (the panel doesn't read localStorage today).
+  //
+  // localStorage is undefined in some Vitest environments — guard
+  // with `vi.stubGlobal` (matches NalarBrowserInlinePreview.spec.ts:13-22)
+  // so this works under jsdom AND any environment that lacks the global.
+  beforeEach(() => {
+    if (typeof localStorage === 'undefined' || typeof localStorage.getItem !== 'function') {
+      const store: Record<string, string> = {}
+      vi.stubGlobal('localStorage', {
+        getItem: (k: string) => (k in store ? store[k] : null),
+        setItem: (k: string, v: string) => { store[k] = String(v) },
+        removeItem: (k: string) => { delete store[k] },
+        clear: () => { for (const k in store) delete store[k] },
+        key: () => null,
+        length: 0,
+      } as Storage)
+    } else {
+      localStorage.clear()
+    }
+  })
+
   it('renders nothing when previews array is empty', () => {
     const wrapper = mount(PreviewSidePanel, { props: { previews: [] } })
     expect(wrapper.find('[data-testid="preview-side-panel"]').exists()).toBe(false)
@@ -370,5 +394,99 @@ describe('PreviewSidePanel', () => {
     await nextTick()
     // Same preview still shown
     expect(wrapper.text()).toContain('markdown')
+  })
+
+  // ─── Resize behavior (preview-panel-resize design) ─────────────────────
+  //
+  // These 5 tests cover the self-contained resize interaction:
+  //   - Default 480px width when no localStorage value
+  //   - Load from localStorage on mount
+  //   - Persist to localStorage on drag release
+  //   - Clamp at MIN_WIDTH = 240 when dragged past the bound
+  //   - Hide the resize handle when the panel is collapsed
+  //
+  // Pattern follows AppLayout.kanban.spec.ts:384-468 (kanban column
+  // resize persistence test). Dispatch mousemove/mouseup on
+  // document.body (jsdom's closest proxy to `document`).
+  //
+  // The current (pre-implementation) code uses Tailwind `w-[480px]`
+  // for the width, NOT an inline `style.width`, so these tests all
+  // FAIL on current code:
+  //   - Tests 1, 2, 4 read `style.width` which is "" on current code
+  //   - Test 3 reads localStorage which is "" on current code (no persist)
+  //   - Test 5 looks for `[data-testid="preview-resize-handle"]` which
+  //     doesn't exist on current code
+
+  it('uses 480px default width when no localStorage value exists', () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: { previews: [makePreview()] },
+    })
+    const panel = wrapper.find('[data-testid="preview-side-panel"]')
+    expect(panel.exists()).toBe(true)
+    expect((panel.element as HTMLElement).style.width).toBe('480px')
+  })
+
+  it('loads width from localStorage on mount', () => {
+    localStorage.setItem('nalar-preview-panel-width', '600')
+    const wrapper = mount(PreviewSidePanel, {
+      props: { previews: [makePreview()] },
+    })
+    const panel = wrapper.find('[data-testid="preview-side-panel"]')
+    expect((panel.element as HTMLElement).style.width).toBe('600px')
+  })
+
+  it('persists the new width to localStorage on drag release', async () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: { previews: [makePreview()] },
+    })
+    const handle = wrapper.find('[data-testid="preview-resize-handle"]')
+    expect(handle.exists()).toBe(true)
+    // mousedown at clientX=500 sets startX=500, startWidth=480 (default).
+    // mousemove at clientX=700 (cursor moved RIGHT by 200px): the panel
+    // is on the right, handle is on the LEFT edge, so moving the
+    // cursor RIGHT shrinks the panel. delta = startX - clientX = -200,
+    // newWidth = max(240, 480 + (-200)) = 280. Assert that stored
+    // value is in [240, 480) — clamped and shrank from default.
+    await handle.trigger('mousedown', { clientX: 500 })
+    document.body.dispatchEvent(
+      new MouseEvent('mousemove', { clientX: 700, bubbles: true }),
+    )
+    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    await nextTick()
+    const stored = localStorage.getItem('nalar-preview-panel-width')
+    expect(stored).not.toBeNull()
+    const parsed = parseInt(stored!, 10)
+    expect(parsed).toBeGreaterThanOrEqual(240)
+    // Strict < (not <=) so a drag with zero net displacement fails — guards against the persist handler firing on every mousedown regardless of mousemove.
+    expect(parsed).toBeLessThan(480)
+  })
+
+  it('clamps the width at MIN_WIDTH = 240 when dragged past the bound', async () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: { previews: [makePreview()] },
+    })
+    const handle = wrapper.find('[data-testid="preview-resize-handle"]')
+    // Drag the cursor far right (clientX 500 -> 5000 = +4500px right).
+    // The handle's drag math would produce newWidth = 480 - 4500 = -4020,
+    // which must clamp to MIN_WIDTH = 240. The clamp also gets persisted.
+    await handle.trigger('mousedown', { clientX: 500 })
+    document.body.dispatchEvent(
+      new MouseEvent('mousemove', { clientX: 5000, bubbles: true }),
+    )
+    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    await nextTick()
+    const panel = wrapper.find('[data-testid="preview-side-panel"]')
+    expect((panel.element as HTMLElement).style.width).toBe('240px')
+    expect(localStorage.getItem('nalar-preview-panel-width')).toBe('240')
+  })
+
+  it('hides the resize handle when the panel is collapsed', async () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: { previews: [makePreview()] },
+    })
+    expect(wrapper.find('[data-testid="preview-resize-handle"]').exists()).toBe(true)
+    await wrapper.find('button[title="Collapse panel"]').trigger('click')
+    await nextTick()
+    expect(wrapper.find('[data-testid="preview-resize-handle"]').exists()).toBe(false)
   })
 })

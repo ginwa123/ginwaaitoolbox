@@ -2829,10 +2829,12 @@ const compactSession = async () => {
       the outer `flex h-full w-full` wrapper as a sibling of both
       the main chat column (above) and `SubAgentPeekPanel` (also
       here). The panel manages its own width via `w-8` (collapsed
-      tab) / `w-[480px]` (expanded) — adding `flex-1` would let it
-      grow and crowd out the messages. The `v-if="!previewPanelDismissed"`
-      stays mounted only until the user clicks ✕ (or a new preview
-      arrives, which the watcher above clears).
+      tab) / inline `style.width = localWidth + 'px'` (expanded,
+      persisted to localStorage as `nalar-preview-panel-width`)
+      — adding `flex-1` would let it grow and crowd out the messages.
+      The `v-if="!previewPanelDismissed"` stays mounted only until
+      the user clicks ✕ (or a new preview arrives, which the
+      watcher above clears).
     -->
     <PreviewSidePanel
       v-if="!previewPanelDismissed"

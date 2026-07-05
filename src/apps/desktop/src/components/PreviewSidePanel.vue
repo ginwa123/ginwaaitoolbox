@@ -1,7 +1,97 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onUnmounted } from 'vue'
 import { marked } from 'marked'
 import { tryUnwrapToolOutput } from '@/helpers/unwrapToolOutput'
+
+// ─── Resize state (preview-panel-resize design) ─────────────────────────
+//
+// Self-contained resize: the component owns its width state + drag
+// listeners + localStorage persistence. No parent (ChatView.vue)
+// coordination needed. Mirrors the RightSidebar.vue resize pattern
+// (src/apps/desktop/src/components/RightSidebar.vue:20-64).
+//
+// Bounds rationale:
+//   - MIN 240: below this, markdown/code content becomes unreadable
+//     and the tab strip / header overlap. Matches RightSidebar's 200
+//     floor + a small margin for the header.
+//   - NO UPPER BOUND: user explicitly requested "full screen" —
+//     the panel can grow to fill the entire viewport. The chat column
+//     (flex-1 min-w-0) absorbs the rest and shrinks to 0; the user
+//     recovers via the existing chevron collapse button.
+const MIN_PREVIEW_WIDTH = 240
+const DEFAULT_PREVIEW_WIDTH = 480
+const PREVIEW_WIDTH_STORAGE_KEY = 'nalar-preview-panel-width'
+
+const loadPreviewPanelWidth = (): number => {
+  if (typeof localStorage === 'undefined') return DEFAULT_PREVIEW_WIDTH
+  const saved = localStorage.getItem(PREVIEW_WIDTH_STORAGE_KEY)
+  if (saved === null) return DEFAULT_PREVIEW_WIDTH
+  const parsed = parseInt(saved, 10)
+  if (isNaN(parsed) || parsed < MIN_PREVIEW_WIDTH) return DEFAULT_PREVIEW_WIDTH
+  return parsed
+}
+
+const savePreviewPanelWidth = (width: number) => {
+  if (typeof localStorage === 'undefined') return
+  try {
+    localStorage.setItem(PREVIEW_WIDTH_STORAGE_KEY, String(width))
+  } catch {
+    // localStorage may throw in private-mode or quota-exceeded
+    // scenarios; silently ignore so the in-memory drag still works.
+    // Matches AppLayout.vue:599-603 (kanban-column resize pattern).
+  }
+}
+
+const localWidth = ref(loadPreviewPanelWidth())
+
+// Resize interaction state. The drag math is the standard
+// `startWidth + (startX - clientX)` formula — moving the cursor
+// LEFT grows the panel (panel is on the right, handle on left edge).
+const isResizing = ref(false)
+const resizeStartX = ref(0)
+const resizeStartWidth = ref(0)
+
+const startResize = (e: MouseEvent) => {
+  isResizing.value = true
+  resizeStartX.value = e.clientX
+  resizeStartWidth.value = localWidth.value
+  // Document-level listeners — NOT on the handle — so a fast drag
+  // doesn't outrun the handle. Pattern matches Sidebar.vue:200-225
+  // and AppLayout.vue:552-604 (kanban-column resize).
+  document.addEventListener('mousemove', handleResize)
+  document.addEventListener('mouseup', stopResize)
+  document.body.style.cursor = 'ew-resize'
+  document.body.style.userSelect = 'none'
+}
+
+const handleResize = (e: MouseEvent) => {
+  if (!isResizing.value) return
+  const delta = resizeStartX.value - e.clientX
+  // No upper clamp — user wants "full screen". Only floor at MIN.
+  const newWidth = Math.max(MIN_PREVIEW_WIDTH, resizeStartWidth.value + delta)
+  localWidth.value = newWidth
+}
+
+const stopResize = () => {
+  if (!isResizing.value) return
+  isResizing.value = false
+  document.removeEventListener('mousemove', handleResize)
+  document.removeEventListener('mouseup', stopResize)
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+  // Persist on release (not during drag — dragging fires 60+ events/sec
+  // and localStorage.setItem is synchronous + slow enough to noticeably
+  // drag the resize interaction). One write per gesture. Matches
+  // AppLayout.vue:585-604.
+  savePreviewPanelWidth(localWidth.value)
+}
+
+// Cleanup: remove listeners even if a drag is mid-gesture (e.g. user
+// navigates away mid-drag). Prevents orphan document listeners.
+// Matches Sidebar.vue:227-229.
+onUnmounted(() => {
+  stopResize()
+})
 
 interface PreviewItem {
   id: string
@@ -151,8 +241,9 @@ const dismiss = () => { emit('dismiss') }
 <template>
   <div
     v-if="previews.length > 0"
-    class="preview-side-panel flex flex-col border-l border-[var(--color-border)] bg-[var(--semantic-bg)] transition-all duration-200"
-    :class="isCollapsed ? 'w-8' : 'w-[480px]'"
+    class="preview-side-panel relative flex flex-col border-l border-[var(--color-border)] bg-[var(--semantic-bg)] transition-all duration-200"
+    :class="isCollapsed ? 'w-8' : 'shrink-0'"
+    :style="isCollapsed ? undefined : { width: localWidth + 'px' }"
     data-testid="preview-side-panel"
   >
     <div v-if="isCollapsed" class="flex-1 flex flex-col items-center justify-start pt-4 gap-2">
@@ -168,6 +259,20 @@ const dismiss = () => { emit('dismiss') }
         <span class="text-[0.65rem] text-[var(--semantic-text-muted)]">{{ activeIndex + 1 }} of {{ previews.length }}</span>
         <button class="px-1 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] hover:text-red-500" title="Dismiss panel" @click="toggleCollapse">&#10005;</button>
       </div>
+      <!--
+        Resize handle: 1px-wide vertical bar on the LEFT edge of the
+        panel (panel is on the right; handle on left → dragging left
+        grows the panel). Colors match RightSidebar.vue:208-211:
+        transparent at rest, violet @ 30% on hover, violet @ 50%
+        during active drag. Hidden when collapsed (nothing to drag).
+      -->
+      <div
+        v-if="!isCollapsed"
+        data-testid="preview-resize-handle"
+        class="absolute top-0 left-0 h-full w-1 cursor-ew-resize z-10 transition-colors"
+        :class="isResizing ? 'bg-[var(--color-violet)]/50' : 'bg-transparent hover:bg-[var(--color-violet)]/30'"
+        @mousedown="startResize"
+      />
       <div v-if="previews.length > 1" class="flex flex-wrap gap-1 px-2 py-1 border-b border-[var(--color-border)] bg-black/[0.02]">
         <button
           v-for="(p, i) in previews"
