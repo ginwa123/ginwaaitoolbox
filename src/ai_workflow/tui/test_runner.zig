@@ -46,6 +46,7 @@ test {
     _ = @import("migration_055_test.zig");
     _ = @import("kanban_model_test.zig");
     _ = @import("kanban_model_test_description.zig");
+    _ = @import("design_model_test.zig");
     _ = @import("kanban_copy_spec_test.zig");
     _ = @import("http_handlers/tasks_reorder_pinned_test.zig");
     _ = @import("http_handlers/git_worktree_info_test.zig");

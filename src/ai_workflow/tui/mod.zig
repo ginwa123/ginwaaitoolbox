@@ -12,6 +12,7 @@ pub const active_loops = @import("ActiveLoops.zig").ActiveLoops;
 pub const routines = @import("routines/mod.zig");
 pub const startup = @import("startup.zig");
 pub const kanban_model = @import("kanban_model.zig");
+pub const design_model = @import("design_model.zig");
 
 // Re-export workspace functions from llm_history for backward compatibility
 pub const workspace_items = llm_history;
