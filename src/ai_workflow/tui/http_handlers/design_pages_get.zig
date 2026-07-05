@@ -37,7 +37,7 @@ pub fn designPagesGetHandler(
     }
 
     const di = try nalarcore.getSingleton();
-    const page = design_model.getPage(allocator, &di.db, page_id) catch |err| switch (err) {
+    const page = design_model.getPage(allocator, di.db, page_id) catch |err| switch (err) {
         error.PageNotFound => return res.jsonResponse(.{
             .status_code = 404,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Page not found" }),

@@ -29,7 +29,7 @@ pub fn designPagesListHandler(
     }
 
     const di = try nalarcore.getSingleton();
-    const pages = design_model.listPages(allocator, &di.db, item_id) catch {
+    const pages = design_model.listPages(allocator, di.db, item_id) catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to list design pages" }),

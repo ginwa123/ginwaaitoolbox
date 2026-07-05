@@ -70,7 +70,7 @@ pub fn designPagesUpdateHandler(
     }
 
     const di = try nalarcore.getSingleton();
-    const updated = design_model.updatePageHtml(allocator, &di.db, page_id, parsed.html) catch {
+    const updated = design_model.updatePageHtml(allocator, di.db, page_id, parsed.html) catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to update design page" }),
@@ -85,7 +85,7 @@ pub fn designPagesUpdateHandler(
 
     // Re-fetch so we can emit the SSE event with the persisted row
     // (the model just rewrote it; updated_at was bumped by SQLite).
-    const page = design_model.getPage(allocator, &di.db, page_id) catch {
+    const page = design_model.getPage(allocator, di.db, page_id) catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to refetch updated page" }),

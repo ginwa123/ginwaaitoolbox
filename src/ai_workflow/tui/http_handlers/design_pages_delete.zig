@@ -43,7 +43,7 @@ pub fn designPagesDeleteHandler(
     // skip the lookup and treat the request as a no-op.
     var page_name_buf: [256]u8 = undefined;
     var page_name: []const u8 = "";
-    if (design_model.getPage(allocator, &di.db, page_id)) |page| {
+    if (design_model.getPage(allocator, di.db, page_id)) |page| {
         defer design_model.freePageFull(allocator, page);
         const len = @min(page.name.len, page_name_buf.len);
         @memcpy(page_name_buf[0..len], page.name[0..len]);
@@ -65,7 +65,7 @@ pub fn designPagesDeleteHandler(
         }),
     }
 
-    design_model.deletePage(allocator, &di.db, page_id) catch {
+    _ = design_model.deletePage(allocator, di.db, page_id) catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to delete design page" }),
