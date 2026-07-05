@@ -987,6 +987,126 @@ export async function createKanban(
 }
 
 /**
+ * Design Mode (item_type='design') API — a chat-driven HTML canvas
+ * where the LLM writes full HTML documents via `set_design_page`,
+ * and the canvas renders them in a sandboxed iframe.
+ *
+ * Each design item holds N named HTML pages; the page list endpoint
+ * excludes the html body for size (the active page is lazy-loaded
+ * on demand via `getDesignPage`).
+ *
+ * Plan: docs/superpowers/plans/2026-07-05-design-mode.md (Chunk 4).
+ */
+
+/** One page summary row — excludes html (lazy-loaded on demand). */
+export interface DesignPageSummary {
+  id: string
+  name: string
+  position: number
+  created_at: string
+  updated_at: string
+}
+
+/** Full page row — includes html. Returned by `getDesignPage`. */
+export interface DesignPageFull extends DesignPageSummary {
+  html: string
+}
+
+/**
+ * Create a new design workspace item. Returns the new `WorkspaceItem`
+ * (with `item_type === 'design'`) and an empty pages array (the
+ * LLM adds pages via `set_design_page`).
+ *
+ * POST /api/workspaces/:workspaceId/items/design
+ */
+export async function createDesign(
+  workspaceId: string,
+  name: string,
+): Promise<WorkspaceItem> {
+  return await apiFetch<WorkspaceItem>(
+    `/workspaces/${workspaceId}/items/design`,
+    {
+      method: 'POST',
+      body: { name },
+    },
+  )
+}
+
+/**
+ * List the pages of a design item, ordered by position. Excludes the
+ * html field — the tab strip only needs `name + position`. The active
+ * page's html is fetched via `getDesignPage` when its tab is clicked.
+ *
+ * GET /api/workspaces/:workspaceId/items/:itemId/design/pages
+ */
+export async function listDesignPages(
+  workspaceId: string,
+  itemId: string,
+): Promise<DesignPageSummary[]> {
+  return await apiFetch<DesignPageSummary[]>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages`,
+    { method: 'GET' },
+  )
+}
+
+/**
+ * Fetch one design page including its full html body. Used by
+ * DesignView when the user clicks a tab.
+ *
+ * GET /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId
+ */
+export async function getDesignPage(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+): Promise<DesignPageFull> {
+  return await apiFetch<DesignPageFull>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}`,
+    { method: 'GET' },
+  )
+}
+
+/**
+ * Replace a design page's html body. Returns the updated page row.
+ * Backend also emits a `design_page_updated` SSE event so other
+ * connected clients refresh their open canvas.
+ *
+ * PUT /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId
+ */
+export async function updateDesignPage(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  html: string,
+): Promise<DesignPageFull> {
+  return await apiFetch<DesignPageFull>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}`,
+    {
+      method: 'PUT',
+      body: { html },
+    },
+  )
+}
+
+/**
+ * Delete a design page. Idempotent — returns `{deleted: true}` on
+ * success and `{deleted: false}` if the page was already missing.
+ * Backend also emits a `design_page_deleted` SSE event.
+ *
+ * DELETE /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId
+ */
+export async function deleteDesignPage(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+): Promise<{ deleted: boolean; page_id: string }> {
+  return await apiFetch<{ deleted: boolean; page_id: string }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}`,
+    { method: 'DELETE' },
+  )
+}
+
+/**
  * Update a workspace item. Supports partial updates — pass only
  * the fields you want to change.
  *

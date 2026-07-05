@@ -50,6 +50,10 @@ export interface WorkspaceItem {
   // type-checking — see the nalar-frontend-task-literal-typing-rule
   // memory.
   kanban_columns?: KanbanColumn[]
+  // NEW (Chunk 4 of design-mode plan). Populated for
+  // `item_type === 'design'` items. Same "optional so legacy literals
+  // keep type-checking" rationale as kanban_columns.
+  design_pages?: api.DesignPageSummary[]
 }
 
 export interface Workspace {
@@ -642,6 +646,38 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       return item.id
     } catch (err) {
       console.error('[workspacesStore.addKanbanItem] API call failed:', err)
+      return undefined
+    }
+  }
+
+  // Create a new design workspace item (item_type='design'). Unlike
+  // kanban, design items don't bind to a folder — the LLM writes
+  // pure HTML that renders in a sandboxed iframe; there is no cwd.
+  // The new item starts with an empty pages array; the LLM adds
+  // pages via the `set_design_page` tool. Returns the new item id.
+  async function addDesignItem(
+    workspaceId: string,
+    name: string,
+  ): Promise<string | undefined> {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return undefined
+    try {
+      const newItem = await api.createDesign(workspaceId, name)
+      const expandedItems = loadExpandedItems()
+      workspace.items.push({
+        ...newItem,
+        design_pages: [],
+        expanded: expandedItems.has(newItem.id),
+      })
+      if (!workspace.expanded) {
+        workspace.expanded = true
+        const expandedWorkspaces = loadExpandedWorkspaces()
+        expandedWorkspaces.add(workspace.id)
+        saveExpandedWorkspaces(expandedWorkspaces)
+      }
+      return newItem.id
+    } catch (err) {
+      console.error('[workspacesStore.addDesignItem] API call failed:', err)
       return undefined
     }
   }
@@ -1691,6 +1727,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     pinTask,
     reorderPinnedTasks,
     addKanbanItem,
+    addDesignItem,
     addKanbanColumn,
     updateKanbanColumn,
     copyKanbanSpecFrom,
