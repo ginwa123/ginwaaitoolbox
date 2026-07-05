@@ -12,93 +12,82 @@
 //!   - 413 html > 5 MB
 //!   - 500 DB failure
 //!
+//! Layered as `useCase` (validate + size check + update + refetch +
+//! emit SSE + return JSON) and a thin handler that maps the outcome
+//! + errors to status codes.
+//!
 //! Plan: docs/superpowers/plans/2026-07-05-design-mode.md (Chunk 2,
 //! Task 2.5).
 
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
-const http_response = @import("http_response.zig");
 const design_model = @import("../design_model.zig");
 const on_event_sent_design = nalarcore.ai_mod.on_event_sent_design;
 
 /// 5 MB hard cap on page HTML size. The frontend's textarea + the
 /// LLM tool rarely produce more than ~200 KB; this guards against
 /// pathological inputs (huge base64 blobs pasted by mistake).
-const MAX_HTML_BYTES: usize = 5 * 1024 * 1024;
+pub const MAX_HTML_BYTES: usize = 5 * 1024 * 1024;
 
 const UpdatePageBody = struct {
     html: []const u8,
 };
 
-pub fn designPagesUpdateHandler(
-    ctx: gserverz.HttpContext,
-    req: gserverz.HttpRequest,
-    res: gserverz.HttpResponse,
-) !gserverz.HttpResponse {
-    const allocator = ctx.allocator;
+pub const DesignPagesUpdateError = error{
+    WorkspaceIdRequired,
+    ItemIdRequired,
+    PageIdRequired,
+    MissingBody,
+    InvalidJson,
+    HtmlTooLarge,
+    PageNotFound,
+    UpdateFailed,
+    RefetchFailed,
+    /// `valueAlloc` for the JSON response can fail with OOM on the
+    /// per-request arena. The arena reaps the failure memory, but
+    /// the type system requires the variant in the error set.
+    OutOfMemory,
+};
 
-    const workspace_id = req.params.get("workspace_id") orelse "";
-    const item_id = req.params.get("item_id") orelse "";
-    const page_id = req.params.get("page_id") orelse "";
-    if (workspace_id.len == 0 or item_id.len == 0 or page_id.len == 0) {
-        return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "workspace_id, item_id, and page_id required" }),
-        });
-    }
+pub const DesignPagesUpdateInput = struct {
+    workspace_id: []const u8,
+    item_id: []const u8,
+    page_id: []const u8,
+    body: UpdatePageBody,
+};
 
-    if (req.body.len == 0) {
-        return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Request body required" }),
-        });
-    }
+pub const DesignPagesUpdateResult = []const u8; // pre-serialized JSON
 
-    const parsed = std.json.parseFromSliceLeaky(UpdatePageBody, allocator, req.body, .{}) catch {
-        return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON body" }),
-        });
-    };
+// =====================================================================
+// Use case
+// =====================================================================
 
-    if (parsed.html.len > MAX_HTML_BYTES) {
-        return res.jsonResponse(.{
-            .status_code = 413,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "html exceeds maximum size of 5 MB" }),
-        });
-    }
+fn useCase(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    input: DesignPagesUpdateInput,
+) DesignPagesUpdateError!DesignPagesUpdateResult {
+    if (input.workspace_id.len == 0) return error.WorkspaceIdRequired;
+    if (input.item_id.len == 0) return error.ItemIdRequired;
+    if (input.page_id.len == 0) return error.PageIdRequired;
 
-    const di = try nalarcore.getSingleton();
-    const updated = design_model.updatePageHtml(allocator, di.db, page_id, parsed.html) catch {
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to update design page" }),
-        });
-    };
-    if (!updated) {
-        return res.jsonResponse(.{
-            .status_code = 404,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Page not found" }),
-        });
-    }
+    if (input.body.html.len > MAX_HTML_BYTES) return error.HtmlTooLarge;
+
+    const updated = design_model.updatePageHtml(allocator, db, input.page_id, input.body.html) catch return error.UpdateFailed;
+    if (!updated) return error.PageNotFound;
 
     // Re-fetch so we can emit the SSE event with the persisted row
     // (the model just rewrote it; updated_at was bumped by SQLite).
-    const page = design_model.getPage(allocator, di.db, page_id) catch {
-        return res.jsonResponse(.{
-            .status_code = 500,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to refetch updated page" }),
-        });
-    };
+    const page = design_model.getPage(allocator, db, input.page_id) catch return error.RefetchFailed;
     defer design_model.freePageFull(allocator, page);
 
     // Fire-and-forget SSE event. Logs + swallows failures so the
     // HTTP 200 still succeeds even if no client is subscribed.
     on_event_sent_design.onEventSendDesignPageUpdated(allocator, .{
         .action = "updated",
-        .workspace_id = workspace_id,
-        .item_id = item_id,
+        .workspace_id = input.workspace_id,
+        .item_id = input.item_id,
         .page = .{
             .id = page.id,
             .workspace_item_id = page.workspace_item_id,
@@ -110,8 +99,83 @@ pub fn designPagesUpdateHandler(
         },
     });
 
+    return std.json.Stringify.valueAlloc(allocator, page, .{}) catch return error.OutOfMemory;
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
+pub fn designPagesUpdateHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    res: gserverz.HttpResponse,
+) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+
+    const workspace_id = req.params.get("workspace_id") orelse "";
+    const item_id = req.params.get("item_id") orelse "";
+    const page_id = req.params.get("page_id") orelse "";
+
+    if (req.body.len == 0) {
+        const http_response = @import("http_response.zig");
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Request body required" }),
+        });
+    }
+
+    // Parse the body. The per-request arena owns the parsed result;
+    // no explicit deinit needed (see project memory
+    // `custom-http-server-per-request-arena`).
+    const parsed = std.json.parseFromSliceLeaky(UpdatePageBody, allocator, req.body, .{}) catch {
+        const http_response = @import("http_response.zig");
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON body" }),
+        });
+    };
+
+    const di = try nalarcore.getSingleton();
+    const data = useCase(allocator, di.db, .{
+        .workspace_id = workspace_id,
+        .item_id = item_id,
+        .page_id = page_id,
+        .body = parsed,
+    }) catch |err| {
+        const status: u16 = switch (err) {
+            error.WorkspaceIdRequired => 400,
+            error.ItemIdRequired => 400,
+            error.PageIdRequired => 400,
+            error.MissingBody => 400,
+            error.InvalidJson => 400,
+            error.HtmlTooLarge => 413,
+            error.PageNotFound => 404,
+            error.UpdateFailed => 500,
+            error.RefetchFailed => 500,
+            error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.WorkspaceIdRequired => "workspace_id required",
+            error.ItemIdRequired => "item_id required",
+            error.PageIdRequired => "page_id required",
+            error.MissingBody => "Request body required",
+            error.InvalidJson => "Invalid JSON body",
+            error.HtmlTooLarge => "html exceeds maximum size of 5 MB",
+            error.PageNotFound => "Page not found",
+            error.UpdateFailed => "Failed to update design page",
+            error.RefetchFailed => "Failed to refetch updated page",
+            error.OutOfMemory => "Out of memory",
+        };
+        const http_response = @import("http_response.zig");
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        });
+    };
+
     return res.jsonResponse(.{
         .status_code = 200,
-        .data = try std.json.Stringify.valueAlloc(allocator, page, .{}),
+        .data = data,
     });
 }

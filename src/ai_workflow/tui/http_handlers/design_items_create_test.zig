@@ -54,12 +54,19 @@ test "design_items_create handler parses body with parseFromSliceLeaky" {
         );
         return error.ParseFromSliceLeakyMissing;
     }
-    // The handler must extract the `name` field (e.g. `parsed.name`)
-    // and pass it to the INSERT.
-    if (std.mem.indexOf(u8, source, "parsed.name") == null) {
+    // The handler must extract the `name` field from the parsed body
+    // and pass it to the useCase. The useCase is responsible for
+    // validating non-empty and forwarding to the INSERT. Two
+    // substrings cover both the pre- and post-`useCase`-split shapes:
+    //   - `parsed.name` (pre-split: handler reads .name directly)
+    //   - `input.body.name` (post-split: useCase reads via the input)
+    if (std.mem.indexOf(u8, source, "parsed.name") == null and
+        std.mem.indexOf(u8, source, "input.body.name") == null)
+    {
         std.debug.print(
             "\n!! {s} does not extract .name from the parsed body !!\n" ++
-                "   The handler must reference `parsed.name` for the new design item.\n",
+                "   The handler/useCase must reference either `parsed.name`\n" ++
+                "   or `input.body.name` for the new design item.\n",
             .{HANDLER_PATH},
         );
         return error.NameExtractionMissing;
