@@ -417,13 +417,20 @@ const handleCloseAddKanbanDialog = () => {
   showAddKanbanDialog.value = false
 }
 
-// Create a new design workspace item (item_type='design'). Pure HTML
-// canvas — no folder picker; the LLM populates pages via
-// `set_design_page`. Same pattern as handleCreateKanban but simpler
-// (no path, no columns to seed).
-const handleCreateDesign = async (name: string) => {
+// Create a new design workspace item (item_type='design'). Mirrors
+// `handleCreateKanban`: the AddDesignDialog collects BOTH a name
+// and a project-root path, and we forward the path to the store
+// so it lands in `workspace_items.path` (the cwd for any chat
+// session the user later opens from this design's tasks). The
+// path is required for the same reason as kanban: every chat
+// session needs a cwd for git/file tools.
+const handleCreateDesign = async (name: string, path: string) => {
   if (addItemTargetWorkspaceId.value) {
-    await workspacesStore.addDesignItem(addItemTargetWorkspaceId.value, name)
+    await workspacesStore.addDesignItem(
+      addItemTargetWorkspaceId.value,
+      name,
+      path,
+    )
   }
   showAddDesignDialog.value = false
 }

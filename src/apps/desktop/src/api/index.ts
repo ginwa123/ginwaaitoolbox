@@ -1017,17 +1017,26 @@ export interface DesignPageFull extends DesignPageSummary {
  * (with `item_type === 'design'`) and an empty pages array (the
  * LLM adds pages via `set_design_page`).
  *
+ * `path` is the on-disk project root for any chat session the user
+ * later opens from this design's tasks. Mirrors `createKanban`'s
+ * path contract — required by the AddDesignDialog (the user must
+ * pick a folder before submitting). Pass an empty string to skip
+ * the field (the backend maps `''` → `NULL` via the project
+ * `SqliteBackend.exec` convention documented in
+ * `nalar-sqlite-backend-empty-slice-binds-as-null.md`).
+ *
  * POST /api/workspaces/:workspaceId/items/design
  */
 export async function createDesign(
   workspaceId: string,
   name: string,
+  path?: string,
 ): Promise<WorkspaceItem> {
   return await apiFetch<WorkspaceItem>(
     `/workspaces/${workspaceId}/items/design`,
     {
       method: 'POST',
-      body: { name },
+      body: { name, path: path ?? '' },
     },
   )
 }

@@ -80,16 +80,42 @@ if [ -z "$WS_ID" ] || [ "$WS_ID" = "null" ]; then
     exit 1
 fi
 
-# 2. Create a design item.
+# 2. Create a design item. The path field is REQUIRED (mirrors
+# kanban — the AddDesignDialog enforces it in the UI; the useCase
+# enforces it again for non-HTTP callers). Use a path that
+# definitely exists on disk so the INSERT succeeds; the handler
+# stores it in `workspace_items.path` and the response echoes it
+# back. Verify the round-trip via jq.
+DESIGN_PATH="/tmp"
+if [ ! -d "$DESIGN_PATH" ]; then DESIGN_PATH="/"; fi
 DESIGN_RESPONSE=$(curl -sf -X POST "http://$HOST:$PORT/api/workspaces/$WS_ID/items/design" \
     -H 'content-type: application/json' \
-    -d '{"name":"My Design"}')
+    -d "{\"name\":\"My Design\",\"path\":\"$DESIGN_PATH\"}")
 ITEM_ID=$(echo "$DESIGN_RESPONSE" | jq -r .id)
+DESIGN_PATH_ECHO=$(echo "$DESIGN_RESPONSE" | jq -r .path)
 if [ -z "$ITEM_ID" ] || [ "$ITEM_ID" = "null" ]; then
     echo "design-mode-smoke: design item create failed: $DESIGN_RESPONSE" >&2
     exit 1
 fi
-echo "  workspace_id=$WS_ID  design_item_id=$ITEM_ID"
+if [ "$DESIGN_PATH_ECHO" != "$DESIGN_PATH" ]; then
+    echo "design-mode-smoke: path round-trip failed: sent=$DESIGN_PATH echoed=$DESIGN_PATH_ECHO" >&2
+    exit 1
+fi
+echo "  workspace_id=$WS_ID  design_item_id=$ITEM_ID  path=$DESIGN_PATH_ECHO"
+
+# 2b. Verify the backend REJECTS a missing path with 400. This
+# guards against a regression where the useCase drops the
+# PathRequired check (the frontend dialog disables the submit
+# button on empty path, but a non-HTTP caller might bypass the
+# dialog).
+NO_PATH_RESPONSE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    "http://$HOST:$PORT/api/workspaces/$WS_ID/items/design" \
+    -H 'content-type: application/json' \
+    -d '{"name":"No Path"}')
+if [ "$NO_PATH_RESPONSE" != "400" ]; then
+    echo "design-mode-smoke: expected 400 for missing path, got $NO_PATH_RESPONSE" >&2
+    exit 1
+fi
 
 # 3. PUT a page (set_design_page via HTTP — also exercises the SSE emit
 # path; we just verify the HTTP response).

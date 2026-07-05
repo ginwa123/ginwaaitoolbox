@@ -38,17 +38,18 @@ describe('design-mode API functions', () => {
     globalThis.fetch = vi.fn()
   })
 
-  it('createDesign POSTs to /items/design with the name', async () => {
+  it('createDesign POSTs to /items/design with the name and path', async () => {
     mockFetchOnce(201, {
       id: 'item_design_1',
       workspace_id: 'ws_1',
       item_type: 'design',
       name: 'My Design',
+      path: '/home/user/projects/auth-ui',
       position: 0,
       pages: [],
     })
 
-    const item = await createDesign('ws_1', 'My Design')
+    const item = await createDesign('ws_1', 'My Design', '/home/user/projects/auth-ui')
 
     expect(fetch).toHaveBeenCalledTimes(1)
     const call = vi.mocked(fetch).mock.calls[0]! as [string, RequestInit | undefined];
@@ -56,9 +57,35 @@ describe('design-mode API functions', () => {
     const init: RequestInit = call[1] ?? {};
     expect(url).toBe('/api/workspaces/ws_1/items/design')
     expect(init.method).toBe('POST')
-    expect(JSON.parse(init.body as string)).toEqual({ name: 'My Design' })
+    expect(JSON.parse(init.body as string)).toEqual({
+      name: 'My Design',
+      path: '/home/user/projects/auth-ui',
+    })
     expect(item.id).toBe('item_design_1')
     expect(item.item_type).toBe('design')
+    expect(item.path).toBe('/home/user/projects/auth-ui')
+  })
+
+  it('createDesign defaults path to "" when omitted', async () => {
+    // The useCase rejects "" with 400 PathRequired, but the API
+    // wrapper still sends the empty-string default (so the wire
+    // format is consistent and the backend can do the rejection).
+    // This test pins the wire-format contract for callers that
+    // don't yet have a path (e.g. a future "scratch canvas" mode).
+    mockFetchOnce(201, {
+      id: 'item_design_2',
+      workspace_id: 'ws_1',
+      item_type: 'design',
+      name: 'Scratch',
+      position: 0,
+      pages: [],
+    })
+
+    await createDesign('ws_1', 'Scratch')
+
+    const call = vi.mocked(fetch).mock.calls[0]! as [string, RequestInit | undefined];
+    const init: RequestInit = call[1] ?? {};
+    expect(JSON.parse(init.body as string)).toEqual({ name: 'Scratch', path: '' })
   })
 
   it('listDesignPages GETs the page summary list (no html)', async () => {

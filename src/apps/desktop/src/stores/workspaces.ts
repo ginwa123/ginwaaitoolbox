@@ -650,19 +650,22 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
-  // Create a new design workspace item (item_type='design'). Unlike
-  // kanban, design items don't bind to a folder — the LLM writes
-  // pure HTML that renders in a sandboxed iframe; there is no cwd.
-  // The new item starts with an empty pages array; the LLM adds
-  // pages via the `set_design_page` tool. Returns the new item id.
+  // Create a new design workspace item (item_type='design'). Mirrors
+  // `addKanbanItem`: the user picks a project-root path in the
+  // AddDesignDialog and we forward it to the API so it lands in
+  // `workspace_items.path` (the cwd for any chat session the user
+  // later opens from this design's tasks). The new item starts with
+  // an empty pages array; the LLM adds pages via the
+  // `set_design_page` tool. Returns the new item id.
   async function addDesignItem(
     workspaceId: string,
     name: string,
+    path: string,
   ): Promise<string | undefined> {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
     if (!workspace) return undefined
     try {
-      const newItem = await api.createDesign(workspaceId, name)
+      const newItem = await api.createDesign(workspaceId, name, path)
       const expandedItems = loadExpandedItems()
       workspace.items.push({
         ...newItem,

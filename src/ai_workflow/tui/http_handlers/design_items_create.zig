@@ -25,8 +25,18 @@ const gserverz = nalarcore.gserverz;
 const helpers = nalarcore.helpers;
 
 /// Request body for the design-item create endpoint.
+///
+/// `path` is the on-disk project root for any chat session the user
+/// later opens from this design's tasks. Mirrors the kanban create
+/// contract: the AddDesignDialog requires a path (the user picks a
+/// folder before submitting). Optional in the wire format for
+/// forward-compat with a "scratch canvas" mode (a future enhancement
+/// that would make path-less designs valid); the useCase currently
+/// rejects `""` to match the kanban behavior (every chat session
+/// needs a cwd for git/file tools).
 const CreateDesignBody = struct {
     name: []const u8,
+    path: []const u8 = "",
 };
 
 /// Response body for the design-item create endpoint.
@@ -35,12 +45,19 @@ const CreateDesignBody = struct {
 /// by the INSERT's correlated subquery as `COALESCE(MAX(position), -1) +
 /// 1`); the useCase returns 0 here because `valueAlloc` produces the
 /// JSON and the frontend re-fetches positions on its next list call.
-/// `pages` is always `[]` on creation (zero pages seeded).
+/// `path` echoes the input path (or `""` when the row was created
+/// path-less via the empty-string → NULL convention). `pages` is
+/// always `[]` on creation (zero pages seeded).
 pub const DesignItemsCreateResponse = struct {
     id: []const u8,
     workspace_id: []const u8,
     item_type: []const u8,
     name: []const u8,
+    /// On-disk project root (the cwd for any chat session opened
+    /// from this design's tasks). Mirrors the kanban create
+    /// contract. Echoes the input value; `""` when the body omitted
+    /// `path` (or sent `""`).
+    path: []const u8 = "",
     /// Always `0` on the create response — the INSERT's computed
     /// position isn't returned by `db.exec` and the frontend refreshes
     /// the list when it needs accurate positions.
@@ -55,6 +72,11 @@ pub const DesignItemsCreateError = error{
     MissingBody,
     InvalidJson,
     NameRequired,
+    /// Mirrors `kanban_model.AddKanbanError.PathRequired`. The
+    /// AddDesignDialog requires a path (the user picks a folder
+    /// before submitting); the useCase maps an empty `path` to
+    /// this 400 variant for symmetry with kanban.
+    PathRequired,
     CreateFailed,
     /// `valueAlloc` for the JSON response can fail with OOM on the
     /// per-request arena. The arena reaps the failure memory, but
@@ -80,6 +102,12 @@ fn useCase(
 ) DesignItemsCreateError!DesignItemsCreateResult {
     if (input.workspace_id.len == 0) return error.WorkspaceIdRequired;
     if (input.body.name.len == 0) return error.NameRequired;
+    // Mirrors `workspace_items_create_kanban.zig` — the path is
+    // required because every chat session opened from this design's
+    // tasks needs a cwd for git/file tools. AddDesignDialog enforces
+    // this in the UI (the Add button is disabled until a folder is
+    // picked); the useCase enforces it again for non-HTTP callers.
+    if (input.body.path.len == 0) return error.PathRequired;
 
     // Generate the item id. Same nanosecond-timestamp scheme as
     // `workspace_items_create_kanban.zig` and `workspace_items_create.zig`.
@@ -92,10 +120,17 @@ fn useCase(
     // endpoint's path). `position` is `COALESCE(MAX(position), -1) + 1`
     // within this workspace, computed by the correlated subquery
     // (mirrors the kanban pattern in `workspace_items_create_kanban.zig`).
+    //
+    // `path` is bound positionally — `SqliteBackend.exec` accepts
+    // a `[]const u8` and the `workspace_items.path` column is
+    // `TEXT NOT NULL` (i.e. NOT NULL with no default per the
+    // original migration; the kanban create handler uses the same
+    // positional bind). The empty path was already rejected above
+    // (`PathRequired`), so we always have a non-empty slice here.
     db.exec(allocator,
         "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position, created_at, updated_at) " ++
-        "VALUES (?, ?, 'design', ?, NULL, COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1, datetime('now'), datetime('now'))",
-        &.{ item_id, input.workspace_id, input.body.name, input.workspace_id },
+        "VALUES (?, ?, 'design', ?, ?, COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1, datetime('now'), datetime('now'))",
+        &.{ item_id, input.workspace_id, input.body.name, input.body.path, input.workspace_id },
     ) catch return error.CreateFailed;
 
     return std.json.Stringify.valueAlloc(
@@ -105,6 +140,7 @@ fn useCase(
             .workspace_id = input.workspace_id,
             .item_type = "design",
             .name = input.body.name,
+            .path = input.body.path,
             // .position and .pages use their default values from the
             // struct definition (0 and empty slice).
         },
@@ -157,6 +193,7 @@ pub fn designItemsCreateHandler(
             error.MissingBody => 400,
             error.InvalidJson => 400,
             error.NameRequired => 400,
+            error.PathRequired => 400,
             error.CreateFailed => 500,
             error.OutOfMemory => 500,
         };
@@ -165,6 +202,7 @@ pub fn designItemsCreateHandler(
             error.MissingBody => "Request body required",
             error.InvalidJson => "Invalid JSON body",
             error.NameRequired => "name is required",
+            error.PathRequired => "path is required (project root for chat sessions)",
             error.CreateFailed => "Failed to create design item",
             error.OutOfMemory => "Out of memory",
         };
