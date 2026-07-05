@@ -58,6 +58,7 @@ pub const workspaceItemsCreateKanbanHandler = @import("workspace_items_create_ka
 // See docs/superpowers/plans/2026-07-05-design-mode.md (Chunk 2).
 pub const designItemsCreateHandler = @import("design_items_create.zig").designItemsCreateHandler;
 pub const designPagesListHandler = @import("design_pages_list.zig").designPagesListHandler;
+pub const designPagesGetHandler = @import("design_pages_get.zig").designPagesGetHandler;
 
 // Kanban column CRUD handlers (item_type='kanban' sub-resources).
 // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).
