@@ -64,8 +64,6 @@ test "session lifecycle - client disconnect with session cleanup" {
     // // If we remove here, bad_session_id becomes invalid!
     // _ = session_map.remove(session_id);
     // std.debug.print("Using bad_session_id: {s}\n", .{bad_session_id.?}); // CRASH!
-    
-    std.debug.print("Session lifecycle test passed!\n", .{});
 }
 
 test "registerSessionClient and unregisterSessionClient round-trip" {
@@ -123,8 +121,6 @@ test "registerSessionClient and unregisterSessionClient round-trip" {
     
     // Verify session is gone
     try std.testing.expect(!session_map.contains(session_id));
-
-    std.debug.print("Round-trip test passed!\n", .{});
 }
 
 // ----------------------------------------------------------------------------
