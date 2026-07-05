@@ -1333,6 +1333,90 @@ pub fn dropColumnIfExists(
     try db.exec(allocator, ddl, &.{});
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Migration 055 — add design_pages table
+// ────────────────────────────────────────────────────────────────────────
+//
+// Why this migration exists
+// ──────────────────────────
+// The Design Mode feature (HTML canvas workspace item, item_type='design')
+// needs a per-item store for N named HTML pages (e.g. "Login", "Dashboard",
+// "Settings"). Each page has an editable html body that the LLM tool
+// `set_design_page(item_id, page_name, html)` populates — and the same
+// tool is idempotent on (workspace_item_id, name) so a chat re-run with
+// the same page name overwrites the existing row's html in place.
+//
+// Schema
+// ───────
+// CREATE TABLE design_pages (
+//     id TEXT PRIMARY KEY,                          -- "page_<nanos>"
+//     workspace_item_id TEXT NOT NULL,              -- FK to workspace_items.id
+//     name TEXT NOT NULL DEFAULT '',                -- human label ("Login")
+//     html TEXT NOT NULL DEFAULT '',                -- the actual HTML body
+//     position INTEGER NOT NULL DEFAULT 0,          -- tab-strip order
+//     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
+// )
+//
+// Plus two indexes:
+//   - UNIQUE (workspace_item_id, name) — enables INSERT ... ON CONFLICT
+//     for the idempotent `set_design_page` tool (avoids a SELECT-then-INSERT
+//     race that could double-create a page).
+//   - (workspace_item_id, position) — keeps listPages's
+//     `ORDER BY position ASC` cheap as items accumulate pages.
+//
+// Why NOT NULL with DEFAULT '' (vs nullable)
+// ─────────────────────────────────────────
+// Mirrors the project convention for short text fields with a "no value"
+// sentinel. The application layer always reads these as `[]const u8`
+// (never `?[]const u8`), so a nullable column would force COALESCE on
+// every SELECT and NULL-handling on every INSERT.
+//
+// Why ANALYZE at the end
+// ───────────────────────
+// New indexes need fresh sqlite_stat1 entries for the query planner to
+// recognize them — without ANALYZE, the planner's statistics are stale
+// and the new indexes may be ignored. Mirrors the
+// ANALYZE-after-DDL pattern used by Migrations 041/042/043/048/049/
+// 050/051/052/053/054.
+//
+// Plan: docs/superpowers/plans/2026-07-05-design-mode.md (Chunk 1)
+pub const Migration055AddDesignPages = struct {
+    pub const version: u32 = 55;
+    pub const name = "add_design_pages";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS design_pages (
+            \\    id TEXT PRIMARY KEY,
+            \\    workspace_item_id TEXT NOT NULL,
+            \\    name TEXT NOT NULL DEFAULT '',
+            \\    html TEXT NOT NULL DEFAULT '',
+            \\    position INTEGER NOT NULL DEFAULT 0,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_design_pages_item_name " ++
+            "ON design_pages(workspace_item_id, name)",
+            &[_][]const u8{},
+        );
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_design_pages_item_position " ++
+            "ON design_pages(workspace_item_id, position)",
+            &[_][]const u8{},
+        );
+        // ANALYZE so the query planner sees the new indexes on
+        // pre-existing databases (mirrors the ANALYZE-after-DDL
+        // pattern used by Migrations 041/042/043/048/049/050/051/
+        // 052/053/054).
+        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
+    }
+};
+
 /// All available migrations - add new migrations to this slice
 pub const allMigrations: []const Migration = &.{
     .{ .version = Migration001CreateLLMHistory.version, .name = Migration001CreateLLMHistory.name, .up = Migration001CreateLLMHistory.up },
@@ -1387,6 +1471,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration052DropSessionIdFromWorkspaceItemTasks.version, .name = Migration052DropSessionIdFromWorkspaceItemTasks.name, .up = Migration052DropSessionIdFromWorkspaceItemTasks.up },
     .{ .version = Migration053AddKanbanColumnDescription.version, .name = Migration053AddKanbanColumnDescription.name, .up = Migration053AddKanbanColumnDescription.up },
     .{ .version = Migration054MakeSessionQueueMessageNullable.version, .name = Migration054MakeSessionQueueMessageNullable.name, .up = Migration054MakeSessionQueueMessageNullable.up },
+    .{ .version = Migration055AddDesignPages.version, .name = Migration055AddDesignPages.name, .up = Migration055AddDesignPages.up },
 };
 
 /// Register all migrations with a MigrationManager
