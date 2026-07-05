@@ -51,7 +51,9 @@ describe('design-mode API functions', () => {
     const item = await createDesign('ws_1', 'My Design')
 
     expect(fetch).toHaveBeenCalledTimes(1)
-    const [url, init] = vi.mocked(fetch).mock.calls[0]!
+    const call = vi.mocked(fetch).mock.calls[0]! as [string, RequestInit | undefined];
+    const url = call[0];
+    const init: RequestInit = call[1] ?? {};
     expect(url).toBe('/api/workspaces/ws_1/items/design')
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual({ name: 'My Design' })
@@ -68,11 +70,13 @@ describe('design-mode API functions', () => {
     const pages = await listDesignPages('ws_1', 'item_design_1')
 
     expect(fetch).toHaveBeenCalledTimes(1)
-    const [url, init] = vi.mocked(fetch).mock.calls[0]!
+    const call = vi.mocked(fetch).mock.calls[0]! as [string, RequestInit | undefined];
+    const url = call[0];
+    const init: RequestInit = call[1] ?? {};
     expect(url).toBe('/api/workspaces/ws_1/items/item_design_1/design/pages')
     expect(init.method).toBe('GET')
     expect(pages).toHaveLength(2)
-    expect(pages[0].name).toBe('Login')
+    expect(pages[0]?.name).toBe('Login')
   })
 
   it('getDesignPage GETs the single page including html', async () => {
@@ -88,7 +92,9 @@ describe('design-mode API functions', () => {
     const page = await getDesignPage('ws_1', 'item_design_1', 'page_1')
 
     expect(fetch).toHaveBeenCalledTimes(1)
-    const [url, init] = vi.mocked(fetch).mock.calls[0]!
+    const call = vi.mocked(fetch).mock.calls[0]! as [string, RequestInit | undefined];
+    const url = call[0];
+    const init: RequestInit = call[1] ?? {};
     expect(url).toBe('/api/workspaces/ws_1/items/item_design_1/design/pages/page_1')
     expect(init.method).toBe('GET')
     expect(page.html).toBe('<!doctype html><h1>Login</h1>')
@@ -112,7 +118,9 @@ describe('design-mode API functions', () => {
     )
 
     expect(fetch).toHaveBeenCalledTimes(1)
-    const [url, init] = vi.mocked(fetch).mock.calls[0]!
+    const call = vi.mocked(fetch).mock.calls[0]! as [string, RequestInit | undefined];
+    const url = call[0];
+    const init: RequestInit = call[1] ?? {};
     expect(url).toBe('/api/workspaces/ws_1/items/item_design_1/design/pages/page_1')
     expect(init.method).toBe('PUT')
     expect(JSON.parse(init.body as string)).toEqual({
@@ -127,7 +135,9 @@ describe('design-mode API functions', () => {
     const result = await deleteDesignPage('ws_1', 'item_design_1', 'page_1')
 
     expect(fetch).toHaveBeenCalledTimes(1)
-    const [url, init] = vi.mocked(fetch).mock.calls[0]!
+    const call = vi.mocked(fetch).mock.calls[0]! as [string, RequestInit | undefined];
+    const url = call[0];
+    const init: RequestInit = call[1] ?? {};
     expect(url).toBe('/api/workspaces/ws_1/items/item_design_1/design/pages/page_1')
     expect(init.method).toBe('DELETE')
     expect(result.deleted).toBe(true)

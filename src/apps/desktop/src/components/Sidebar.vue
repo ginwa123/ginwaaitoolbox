@@ -11,6 +11,7 @@ import RenameWorkspaceModal from './RenameWorkspaceModal.vue'
 import RenameTaskModal from './RenameTaskModal.vue'
 import AddItemDialog from './AddItemDialog.vue'
 import AddKanbanDialog from './AddKanbanDialog.vue'
+import AddDesignDialog from './AddDesignDialog.vue'
 import AddMemoryDialog from './AddMemoryDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import AddTaskDialog from './AddTaskDialog.vue'
@@ -132,6 +133,7 @@ const addItemTargetWorkspaceId = ref<string | null>(null)
 // Reuses `addItemTargetWorkspaceId` as the target workspace (the
 // kanban item is created in that workspace, same as folder/memory).
 const showAddKanbanDialog = ref(false)
+const showAddDesignDialog = ref(false)
 const showAddMemoryDialog = ref(false)
 const addMemoryTargetWorkspaceId = ref<string | null>(null)
 const showDeleteConfirm = ref(false)
@@ -375,6 +377,7 @@ const handleAddItem = (workspaceId: string, itemType: string) => {
   addItemTargetWorkspaceId.value = workspaceId
   if (itemType === 'folder') showAddItemDialog.value = true
   if (itemType === 'kanban') showAddKanbanDialog.value = true
+  if (itemType === 'design') showAddDesignDialog.value = true
   if (itemType === 'memory') {
     addMemoryTargetWorkspaceId.value = workspaceId
     showAddMemoryDialog.value = true
@@ -412,6 +415,21 @@ const handleCreateKanban = async (name: string, path: string) => {
 
 const handleCloseAddKanbanDialog = () => {
   showAddKanbanDialog.value = false
+}
+
+// Create a new design workspace item (item_type='design'). Pure HTML
+// canvas — no folder picker; the LLM populates pages via
+// `set_design_page`. Same pattern as handleCreateKanban but simpler
+// (no path, no columns to seed).
+const handleCreateDesign = async (name: string) => {
+  if (addItemTargetWorkspaceId.value) {
+    await workspacesStore.addDesignItem(addItemTargetWorkspaceId.value, name)
+  }
+  showAddDesignDialog.value = false
+}
+
+const handleCloseAddDesignDialog = () => {
+  showAddDesignDialog.value = false
 }
 
 /**
@@ -1135,6 +1153,7 @@ defineExpose({
     <RenameTaskModal :show="showRenameTaskModal" :current-name="renameTargetTaskName" @close="handleCloseTaskRenameModal" @rename="handleConfirmTaskRename" />
     <AddItemDialog :show="showAddItemDialog" @close="handleCloseAddItemDialog" @create="handleCreateItem" />
     <AddKanbanDialog :show="showAddKanbanDialog" @close="handleCloseAddKanbanDialog" @create="handleCreateKanban" />
+    <AddDesignDialog :show="showAddDesignDialog" @close="handleCloseAddDesignDialog" @create="handleCreateDesign" />
     <AddMemoryDialog
       :show="showAddMemoryDialog"
       :cwd="addMemoryTargetWorkspaceId ? resolveCwdForMemory(addMemoryTargetWorkspaceId) : ''"

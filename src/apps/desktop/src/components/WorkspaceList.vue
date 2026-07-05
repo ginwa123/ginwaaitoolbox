@@ -627,6 +627,15 @@ const handleItemDragEnd = () => {
                   Add Kanban
                 </button>
               </li>
+              <li>
+                <button
+                  @click="handleAddItem(workspace.id, 'design')"
+                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
+                  style="color: var(--semantic-text);"
+                >
+                  Add Design
+                </button>
+              </li>
             </ul>
           </li>
         </ul>
