@@ -518,13 +518,16 @@ const handleCloseTaskView = () => {
 // and listening on `document` is the only way to catch every move).
 //
 // Bounds rationale:
-//   - MIN 280px: kanban columns become unreadable below this (the
-//     column card itself is ~240px wide plus padding, and the
-//     "+ Add" footer needs another ~40px).
+//   - MIN 0px: the user can collapse the kanban column entirely,
+//     letting the chat view absorb the full main area. The 1px
+//     resize handle stays grabbable at width=0 so the kanban can
+//     be brought back by dragging right. (Floor was previously
+//     280px to keep kanban columns readable; user feedback
+//     2026-07-04 preferred unbounded.)
 //   - MAX 720px: beyond this the chatview shrinks to <30% of the
 //     main area on typical 1080p+ displays, making the chat feel
 //     cramped. The chat needs at least 480px to be usable.
-const KANBAN_MIN_WIDTH = 280
+const KANBAN_MIN_WIDTH = 0
 const KANBAN_MAX_WIDTH = 720
 const KANBAN_DEFAULT_WIDTH = 40 // % of main area, used when no localStorage value exists
 const KANBAN_WIDTH_STORAGE_KEY = 'kanban-column-width'
@@ -1240,24 +1243,26 @@ watch(chatSessionCwd, (newCwd) => {
           tracks correctly.
         -->
         <div
-          class="shrink-0 w-1 cursor-col-resize relative"
-          :class="{ 'opacity-100': isKanbanResizing }"
-          :style="{
-            backgroundColor: isKanbanResizing ? 'var(--color-violet)' : 'var(--color-border)',
-          }"
+          class="shrink-0 w-2 cursor-col-resize relative flex items-center justify-center bg-[var(--color-violet)]/15 hover:bg-[var(--color-violet)]/40 transition-colors"
+          :class="isKanbanResizing ? '!bg-[var(--color-violet)]/60' : ''"
           data-kanban-resize-handle
           data-testid="kanban-resize-handle"
+          title="Drag to resize"
           @mousedown="startKanbanResize"
-          @mouseenter="
-            (e) => ((e.currentTarget as HTMLElement).style.backgroundColor = 'var(--color-violet)')
-          "
-          @mouseleave="
-            (e) => {
-              if (!isKanbanResizing)
-                (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--color-border)'
-            }
-          "
-        ></div>
+        >
+          <svg
+            width="14"
+            height="2"
+            viewBox="0 0 14 2"
+            fill="currentColor"
+            class="text-[var(--color-violet)] opacity-70"
+            aria-hidden="true"
+          >
+            <circle cx="3" cy="1" r="1" />
+            <circle cx="7" cy="1" r="1" />
+            <circle cx="11" cy="1" r="1" />
+          </svg>
+        </div>
         <div class="flex-1 flex flex-col h-full min-w-0 min-h-0">
           <ChatView
             :key="'task-' + activeTask.id"
