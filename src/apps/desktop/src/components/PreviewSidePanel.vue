@@ -260,19 +260,36 @@ const dismiss = () => { emit('dismiss') }
         <button class="px-1 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] hover:text-red-500" title="Dismiss panel" @click="toggleCollapse">&#10005;</button>
       </div>
       <!--
-        Resize handle: 1px-wide vertical bar on the LEFT edge of the
-        panel (panel is on the right; handle on left → dragging left
-        grows the panel). Colors match RightSidebar.vue:208-211:
-        transparent at rest, violet @ 30% on hover, violet @ 50%
-        during active drag. Hidden when collapsed (nothing to drag).
+        Resize handle: 8px-wide vertical bar (was 1px — resize-handles-visible)
+        on the LEFT edge of the panel (panel is on the right; handle on
+        left → dragging left grows the panel). The persistent violet @ 15%
+        tint at rest + the centered 3-dot grip icon make the handle
+        discoverable so users actually find it (the original 1px
+        transparent-at-rest handle was easy to miss). Hover @ 40%,
+        dragging @ 60%. Mirrors the kanban→chat handle's visibility
+        pattern in AppLayout.vue (also updated in this PR).
       -->
       <div
         v-if="!isCollapsed"
         data-testid="preview-resize-handle"
-        class="absolute top-0 left-0 h-full w-1 cursor-ew-resize z-10 transition-colors"
-        :class="isResizing ? 'bg-[var(--color-violet)]/50' : 'bg-transparent hover:bg-[var(--color-violet)]/30'"
+        class="absolute top-0 left-0 h-full w-2 cursor-ew-resize z-10 transition-colors flex items-center justify-center bg-[var(--color-violet)]/15 hover:bg-[var(--color-violet)]/40"
+        :class="isResizing ? '!bg-[var(--color-violet)]/60' : ''"
         @mousedown="startResize"
-      />
+        title="Drag to resize"
+      >
+        <svg
+          width="2"
+          height="14"
+          viewBox="0 0 2 14"
+          fill="currentColor"
+          class="text-[var(--color-violet)] opacity-70"
+          aria-hidden="true"
+        >
+          <circle cx="1" cy="3" r="1" />
+          <circle cx="1" cy="7" r="1" />
+          <circle cx="1" cy="11" r="1" />
+        </svg>
+      </div>
       <div v-if="previews.length > 1" class="flex flex-wrap gap-1 px-2 py-1 border-b border-[var(--color-border)] bg-black/[0.02]">
         <button
           v-for="(p, i) in previews"

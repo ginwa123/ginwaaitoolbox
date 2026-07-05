@@ -1243,24 +1243,26 @@ watch(chatSessionCwd, (newCwd) => {
           tracks correctly.
         -->
         <div
-          class="shrink-0 w-1 cursor-col-resize relative"
-          :class="{ 'opacity-100': isKanbanResizing }"
-          :style="{
-            backgroundColor: isKanbanResizing ? 'var(--color-violet)' : 'var(--color-border)',
-          }"
+          class="shrink-0 w-2 cursor-col-resize relative flex items-center justify-center bg-[var(--color-violet)]/15 hover:bg-[var(--color-violet)]/40 transition-colors"
+          :class="isKanbanResizing ? '!bg-[var(--color-violet)]/60' : ''"
           data-kanban-resize-handle
           data-testid="kanban-resize-handle"
+          title="Drag to resize"
           @mousedown="startKanbanResize"
-          @mouseenter="
-            (e) => ((e.currentTarget as HTMLElement).style.backgroundColor = 'var(--color-violet)')
-          "
-          @mouseleave="
-            (e) => {
-              if (!isKanbanResizing)
-                (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--color-border)'
-            }
-          "
-        ></div>
+        >
+          <svg
+            width="14"
+            height="2"
+            viewBox="0 0 14 2"
+            fill="currentColor"
+            class="text-[var(--color-violet)] opacity-70"
+            aria-hidden="true"
+          >
+            <circle cx="3" cy="1" r="1" />
+            <circle cx="7" cy="1" r="1" />
+            <circle cx="11" cy="1" r="1" />
+          </svg>
+        </div>
         <div class="flex-1 flex flex-col h-full min-w-0 min-h-0">
           <ChatView
             :key="'task-' + activeTask.id"
