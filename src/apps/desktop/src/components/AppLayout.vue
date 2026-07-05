@@ -12,6 +12,7 @@ import CodeEditor from './CodeEditor.vue'
 import NotificationContainer from './NotificationContainer.vue'
 import SseStatusBadge from './SseStatusBadge.vue'
 import KanbanView from './KanbanView.vue'
+import DesignView from './DesignView.vue'
 import KanbanColumnEditor from './KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './KanbanSettingsDialog.vue'
 import CopyKanbanSpecDialog from './CopyKanbanSpecDialog.vue'
@@ -1354,6 +1355,15 @@ watch(chatSessionCwd, (newCwd) => {
         @pin-task="handleKanbanPinTask"
         @open-settings="handleOpenKanbanSettings"
         @rename-item="handleKanbanRenameItem"
+      />
+      <!-- Design Mode: HTML canvas (item_type='design') — pure preview,
+           no source editor. The LLM populates pages via set_design_page.
+           Plan: docs/superpowers/plans/2026-07-05-design-mode.md. -->
+      <DesignView
+        v-else-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'design'"
+        :key="'design-' + activeWorkspaceItem.id"
+        :item="activeWorkspaceItem"
+        :workspace-id="activeWorkspace?.id ?? ''"
       />
       <ChatView
         v-else-if="activeChatId.startsWith('chat-')"
