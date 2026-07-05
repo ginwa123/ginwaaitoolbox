@@ -123,20 +123,27 @@ pub fn redirectStdioToLog(log_path: []const u8) !void {
     // stdin → /dev/null. std.c.open returns fd_t (i32) on success,
     // -1 on failure (with errno set). We discard the error here —
     // a missing /dev/null is "weird but not fatal" for the daemon.
-    const devnull_fd: std.c.fd_t = std.c.open("/dev/null", .{ .ACCMODE = .RDONLY }, 0);
+    //
+    // The mode argument must be explicitly typed to std.c.mode_t because
+    // std.c.open is variadic (libc `int open(const char*, int, ...)`);
+    // Zig 0.16 rejects bare integer literals in variadic positions.
+    const devnull_fd: std.c.fd_t = std.c.open(
+        "/dev/null",
+        .{ .ACCMODE = .RDONLY },
+        @as(std.c.mode_t, 0),
+    );
     if (devnull_fd >= 0) {
         _ = std.c.dup2(devnull_fd, 0);
         _ = std.c.close(devnull_fd);
     }
 
-    // stdout/stderr → log_path (append). Use the cross-platform std.c.O
-    // packed struct (same field names as std.os.linux.O: ACCMODE, CREAT,
-    // APPEND) which compiles identically on Linux and macOS via libc.
+    // stdout/stderr → log_path (append). Same variadic-mode requirement
+    // as above — cast 0o644 to std.c.mode_t explicitly.
     const log_fd: std.c.fd_t = std.c.open(&log_path_z, .{
         .ACCMODE = .WRONLY,
         .CREAT = true,
         .APPEND = true,
-    }, 0o644);
+    }, @as(std.c.mode_t, 0o644));
     if (log_fd < 0) return error.OpenLogFailed;
     _ = std.c.dup2(log_fd, 1);
     _ = std.c.dup2(log_fd, 2);
