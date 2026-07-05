@@ -7,13 +7,12 @@
 //
 // Zig 0.16 API notes:
 //   * std.c.pipe(&pipe_fds) returns 0 on success; -1 on error.
-//   * std.os.linux.fork returns the new child's PID in the parent,
-//     0 in the child, or -1 (cast to usize) on error.
+//   * std.c.fork returns the new child's PID (c_int) in the parent,
+//     0 in the child, or -1 on error.
 //   * std.c.kill(pid, 0) returns 0 on success, -1 (with errno) on
 //     failure. We use it for the "is process alive" check.
-//   * std.os.linux.write / read / close are raw syscalls returning
-//     a signed value; positive = bytes transferred, -1 (with errno)
-//     on error.
+//   * std.c.write / read / close are libc wrappers returning
+//     isize / c_int; -1 (with errno) on error.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -48,17 +47,17 @@ test "POSIX daemonize detaches the grandchild from the original" {
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
 
     // Setup a pipe for parent → grandchild communication.
-    var pipe_fds: [2]i32 = undefined;
+    var pipe_fds: [2]std.c.fd_t = undefined;
     if (std.c.pipe(&pipe_fds) != 0) return error.PipeFailed;
 
     const original_ppid = std.c.getpid();
-    const pid = std.os.linux.fork();
+    const pid = std.c.fork();
     if (pid == 0) {
         // Child 1 (will become session leader then exit).
-        _ = std.os.linux.close(pipe_fds[0]);
-        if (std.os.linux.setsid() < 0) std.process.exit(1);
+        _ = std.c.close(pipe_fds[0]);
+        if (std.c.setsid() < 0) std.process.exit(1);
 
-        const pid2 = std.os.linux.fork();
+        const pid2 = std.c.fork();
         if (pid2 != 0) std.process.exit(0); // child 1 exits
 
         // Grandchild — write the new PPID back to parent.
@@ -69,14 +68,13 @@ test "POSIX daemonize detaches the grandchild from the original" {
         std.process.exit(0);
     }
     // Parent reads the grandchild's PPID.
-    _ = std.os.linux.close(pipe_fds[1]);
+    _ = std.c.close(pipe_fds[1]);
     var ppid_buf: [@sizeOf(c_int)]u8 = undefined;
     _ = std.c.read(pipe_fds[0], @ptrCast(&ppid_buf), ppid_buf.len);
-    _ = std.os.linux.close(pipe_fds[0]);
-    // std.os.linux.waitpid in Zig 0.16 takes (pid: pid_t, status: *u32, flags: u32).
-    // Returns usize (the syscall result); cast to i32 to discard cleanly.
-    var wait_status: u32 = 0;
-    _ = std.os.linux.waitpid(@intCast(pid), &wait_status, 0);
+    _ = std.c.close(pipe_fds[0]);
+    // std.c.waitpid takes (pid: pid_t, status: ?*c_int, options: c_int).
+    // The status pointer is optional — pass null to discard exit status.
+    _ = std.c.waitpid(pid, null, 0);
 
     const child_ppid = std.mem.readInt(c_int, &ppid_buf, std.builtin.Endian.little);
     // After double-fork, the grandchild's PPID is either 1 (init) or
