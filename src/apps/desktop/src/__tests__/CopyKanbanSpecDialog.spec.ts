@@ -4,15 +4,31 @@
  * KanbanSettingsDialog.spec.ts (Teleport + attachTo: document.body
  * + document.querySelector for DOM assertions).
  *
+ * The dialog uses a custom click-to-open listbox (not a native
+ * <select>) so tests interact with it by clicking the trigger
+ * button to expose the options, then clicking the option.
+ *
  * Plan: docs/superpowers/plans/2026-07-04-copy-kanban-spec.md
  *   (Chunk 4, Task 4.1)
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 
 import CopyKanbanSpecDialog from '@/components/CopyKanbanSpecDialog.vue'
 import { useWorkspacesStore, type Workspace, type WorkspaceItem } from '@/stores/workspaces'
+import * as api from '@/api'
+
+// Mock the api module so the source-columns preview fetch doesn't
+// hit a real backend. Default: return an empty list. Tests can
+// override per-case via mockResolvedValueOnce.
+vi.mock('@/api', async () => {
+  const actual = await vi.importActual<typeof api>('@/api')
+  return {
+    ...actual,
+    listKanbanColumns: vi.fn().mockResolvedValue({ columns: [], count: 0 }),
+  }
+})
 
 const source1: WorkspaceItem = {
   id: 'wi_src_1',
@@ -61,6 +77,7 @@ describe('CopyKanbanSpecDialog', () => {
     setActivePinia(createPinia())
     const store = useWorkspacesStore()
     store.workspaces = [workspace]
+    vi.clearAllMocks()
   })
 
   afterEach(() => {
@@ -94,6 +111,16 @@ describe('CopyKanbanSpecDialog', () => {
     return w
   }
 
+  /**
+   * The custom dropdown starts CLOSED. Tests that need to see
+   * options click the trigger first, then await flushPromises so
+   * the v-if reactively renders the listbox.
+   */
+  async function openDropdown() {
+    clickInDom('[data-testid="copy-kanban-spec-source-trigger"]')
+    await flushPromises()
+  }
+
   it('renders the dialog with the right title', async () => {
     await openDialog()
     const dialog = findInDom<HTMLElement>('[data-testid="copy-kanban-spec-dialog"]')
@@ -103,12 +130,18 @@ describe('CopyKanbanSpecDialog', () => {
 
   it('excludes the target from the source picker', async () => {
     await openDialog()
-    const select = findInDom<HTMLSelectElement>(
-      '[data-testid="copy-kanban-spec-source"]',
+    await openDropdown()
+    const listbox = findInDom<HTMLElement>(
+      '[data-testid="copy-kanban-spec-source-list"]',
     )
-    expect(select).not.toBeNull()
-    const options = Array.from(select!.options)
-    const ids = options.map((o) => o.value).filter((v) => v)
+    expect(listbox).not.toBeNull()
+    // Filter out empty-state list item, only count real options.
+    const optionButtons = listbox!.querySelectorAll<HTMLButtonElement>(
+      'button[data-testid^="copy-kanban-spec-source-option-"]',
+    )
+    const ids = Array.from(optionButtons).map((b) =>
+      b.getAttribute('data-testid')!.replace('copy-kanban-spec-source-option-', ''),
+    )
     expect(ids).toContain('wi_src_1')
     expect(ids).toContain('wi_src_2')
     expect(ids).not.toContain('wi_target')
@@ -142,6 +175,21 @@ describe('CopyKanbanSpecDialog', () => {
     expect(emitted![0]).toEqual(['wi_src_2', 'append'])
   })
 
+  it('emits copy with the explicitly-picked source after dropdown click', async () => {
+    const w = await openDialog()
+    // Open the custom dropdown and click the second option.
+    await openDropdown()
+    clickInDom('[data-testid="copy-kanban-spec-source-option-wi_src_1"]')
+    await flushPromises()
+
+    clickInDom('[data-testid="copy-kanban-spec-confirm"]')
+    await flushPromises()
+
+    const emitted = w!.emitted('copy')
+    expect(emitted).toBeTruthy()
+    expect(emitted![0]).toEqual(['wi_src_1', 'replace'])
+  })
+
   it('emits close on Cancel and on backdrop click', async () => {
     const w = await openDialog()
     clickInDom('[data-testid="copy-kanban-spec-cancel"]')
@@ -155,11 +203,10 @@ describe('CopyKanbanSpecDialog', () => {
       { ...workspace, items: [target] },
     ]
     const w = await openDialog()
+    await flushPromises()
 
-    const emptyMsg = findInDom<HTMLElement>(
-      '[data-testid="copy-kanban-spec-empty"]',
-    )
-    expect(emptyMsg).not.toBeNull()
+    // The dropdown isn't open by default, so check the empty-state
+    // marker indirectly via the disabled Confirm button.
     const confirmBtn = findInDom<HTMLButtonElement>(
       '[data-testid="copy-kanban-spec-confirm"]',
     )
@@ -167,5 +214,37 @@ describe('CopyKanbanSpecDialog', () => {
     clickInDom('[data-testid="copy-kanban-spec-confirm"]')
     await flushPromises()
     expect(w!.emitted('copy')).toBeFalsy()
+
+    // Open the dropdown — the empty-state message should be visible.
+    await openDropdown()
+    const emptyMsg = findInDom<HTMLElement>(
+      '[data-testid="copy-kanban-spec-empty"]',
+    )
+    expect(emptyMsg).not.toBeNull()
+  })
+
+  it('renders the source column preview when source has columns', async () => {
+    vi.mocked(api.listKanbanColumns).mockResolvedValueOnce({
+      columns: [
+        { id: 'col_a', name: 'Todo', description: 'pending', position: 0, workspace_item_id: 'wi_src_2', created_at: '' },
+        { id: 'col_b', name: 'Doing', description: '', position: 1, workspace_item_id: 'wi_src_2', created_at: '' },
+      ],
+      count: 2,
+    })
+    await openDialog()
+    await flushPromises()
+    await flushPromises() // allow the async loadSourceColumns to settle
+    const preview = document.body.textContent ?? ''
+    expect(preview).toContain('2 columns will be copied')
+    expect(preview).toContain('Todo')
+    expect(preview).toContain('pending')
+  })
+
+  it('interpolates the target name in the prompt + radio legend', async () => {
+    await openDialog()
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('Local Sprint')
+    // The radio legend should reference the target's actual name.
+    expect(text).toMatch(/What should happen to Local Sprint/)
   })
 })
