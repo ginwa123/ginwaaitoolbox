@@ -45,14 +45,16 @@ trap cleanup EXIT
 "$BIN" --port "$PORT" > "$LOG" 2>&1 &
 NALAR_PID=$!
 
-# Wait for /api/health.
+# Wait for /health (the actual nalar health endpoint; /api/health
+# does not exist — the only GinwaServer route for health is
+# `gs.router.get("/health", ...)` in src/main.zig:306).
 for _ in $(seq 1 40); do
-    if curl -sf "http://$HOST:$PORT/api/health" >/dev/null 2>&1; then
+    if curl -sf "http://$HOST:$PORT/health" >/dev/null 2>&1; then
         break
     fi
     sleep 0.5
 done
-if ! curl -sf "http://$HOST:$PORT/api/health" >/dev/null 2>&1; then
+if ! curl -sf "http://$HOST:$PORT/health" >/dev/null 2>&1; then
     echo "design-mode-smoke: server failed to boot (see $LOG)" >&2
     tail -n 50 "$LOG" >&2 || true
     exit 1
