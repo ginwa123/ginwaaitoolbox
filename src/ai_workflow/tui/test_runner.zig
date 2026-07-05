@@ -63,6 +63,7 @@ test {
     _ = @import("http_handlers/design_pages_list_test.zig");
     _ = @import("http_handlers/design_pages_get_test.zig");
     _ = @import("http_handlers/design_pages_update_test.zig");
+    _ = @import("http_handlers/design_pages_delete_test.zig");
     _ = @import("http_handlers/tasks_move_test.zig");
     _ = @import("http_handlers/tasks_create_kanban_test.zig");
     _ = @import("http_handlers/tasks_create_value_alloc_test.zig");
