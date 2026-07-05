@@ -49,6 +49,15 @@ pub const workspaceItemsReorderHandler = @import("workspace_items_reorder.zig").
 pub const workspaceItemsDeleteHandler = @import("workspace_items_delete.zig").workspaceItemsDeleteHandler;
 pub const workspaceItemsCreateKanbanHandler = @import("workspace_items_create_kanban.zig").workspaceItemsCreateKanbanHandler;
 
+// Design item endpoints (item_type='design' — HTML canvas).
+//   POST   /items/design                       — create a design item
+//   GET    /items/:item_id/design/pages        — list pages (excludes html)
+//   GET    /items/:item_id/design/pages/:pid   — fetch one page (with html)
+//   PUT    /items/:item_id/design/pages/:pid   — replace page html, emits SSE
+//   DELETE /items/:item_id/design/pages/:pid   — delete page, emits SSE
+// See docs/superpowers/plans/2026-07-05-design-mode.md (Chunk 2).
+pub const designItemsCreateHandler = @import("design_items_create.zig").designItemsCreateHandler;
+
 // Kanban column CRUD handlers (item_type='kanban' sub-resources).
 // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).
 pub const kanbanColumnsListHandler = @import("kanban_columns_list.zig").kanbanColumnsListHandler;
