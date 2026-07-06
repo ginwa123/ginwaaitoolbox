@@ -361,6 +361,18 @@ pub fn build_agent_prompt(
     /// section so the agent sees "you are on a kanban" framing
     /// before the tool listing.
     kanbanStatusContent: []const u8,
+    /// Pre-rendered "Design Canvas" markdown block, built by
+    /// `BuildDesignCanvasPrompt(allocator, db, session_id)` in
+    /// `build_messages_for_agent_prompt.zig`. Empty string means "the
+    /// session is not on a design canvas" (the section is silently
+    /// omitted). The block already includes its `## Design Canvas`
+    /// header. Rendered right after the Kanban Status Tracking
+    /// section so the agent sees "you are on a design canvas" framing
+    /// before the tool listing. Only ONE of `kanbanStatusContent` or
+    /// `designStatusContent` is non-empty per session — the parent's
+    /// `item_type` is mutually exclusive (a session is on either a
+    /// kanban OR a design OR neither, never both).
+    designStatusContent: []const u8,
 ) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
@@ -482,6 +494,18 @@ pub fn build_agent_prompt(
     // `BuildKanbanStatusPrompt`); we just append it verbatim.
     if (kanbanStatusContent.len > 0) {
         try result.appendSlice(allocator, kanbanStatusContent);
+    }
+
+    // Design canvas status — instructs the agent that the session
+    // is on an HTML canvas and lists the design tools + the existing
+    // pages. Rendered right after the Kanban status block so both
+    // dynamically-built status sections cluster together before the
+    // tool listing. Mutually exclusive with kanban (the parent's
+    // item_type is either/kanban OR /design OR neither). Block
+    // already includes its `## Design Canvas` header (built by
+    // `BuildDesignCanvasPrompt`); we just append it verbatim.
+    if (designStatusContent.len > 0) {
+        try result.appendSlice(allocator, designStatusContent);
     }
 
     // OS info.

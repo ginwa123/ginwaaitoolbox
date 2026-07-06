@@ -51,6 +51,7 @@ test "build_agent_prompt with no environment: no Global Knowledge section" {
         "",
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -106,6 +107,7 @@ test "build_agent_prompt loads memory files into Global Knowledge section" {
         "",
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -143,6 +145,7 @@ test "build_agent_prompt: empty memories dir, no Global Knowledge section" {
         &tools,
         "",
         &env,
+        "",
         "",
         "",
         "",
@@ -234,6 +237,7 @@ test "build_agent_prompt lists global and local skills in Available Skills secti
         "",
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -321,6 +325,7 @@ test "build_agent_prompt Available Skills section includes absolute file path an
         "",
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -396,6 +401,7 @@ test "build_agent_prompt omits Available Skills section when list_skills tool is
         "",
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -423,6 +429,7 @@ test "build_agent_prompt silently skips Available Skills when env is null" {
         &tools,
         "",
         null, // ← env is null
+        "",
         "",
         "",
         "",
@@ -474,6 +481,7 @@ test "build_agent_prompt injects Local Knowledge section from <cwd>/.nalar/memor
         &tools,
         "",
         null, // env is null — only local knowledge should be present
+        "",
         "",
         "",
         "",
@@ -560,6 +568,7 @@ test "build_agent_prompt renders Local and Global Knowledge together when both e
         "",
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -607,6 +616,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories does n
         "",
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -632,6 +642,7 @@ test "build_agent_prompt omits Local Knowledge when cwd is empty" {
         &tools,
         "",
         null,
+        "",
         "",
         "",
         "",
@@ -675,6 +686,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories has no
         &tools,
         "",
         null,
+        "",
         "",
         "",
         "",
@@ -815,6 +827,7 @@ test "build_agent_prompt with sub_agents_listing: section is rendered when non-e
         sub_agents_listing,
         "",
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -839,6 +852,7 @@ test "build_agent_prompt with sub_agents_listing: section is omitted when empty"
         "",
         null,
         "", // empty sub_agents_listing
+        "",
         "",
         "",
     );
@@ -898,6 +912,7 @@ test "build_agent_prompt renders Kanban Status Tracking when section is non-empt
         "",
         "",
         kanban_block,
+        "",
     );
     defer alloc.free(prompt);
 
@@ -929,6 +944,7 @@ test "build_agent_prompt omits Kanban Status Tracking when section is empty" {
         "",
         "",
         "", // empty kanbanStatusContent
+        "", // empty designStatusContent
     );
     defer alloc.free(prompt);
 
@@ -1471,6 +1487,7 @@ test "build_agent_prompt renders Workspace Context when section is non-empty" {
         "",
         workspaceContext,
         "",
+        "",
     );
     defer alloc.free(prompt);
 
@@ -1523,6 +1540,7 @@ test "build_agent_prompt omits Workspace Context when section is empty" {
         null,
         "",
         "", // empty workspaceContext
+        "",
         "",
     );
     defer alloc.free(prompt);

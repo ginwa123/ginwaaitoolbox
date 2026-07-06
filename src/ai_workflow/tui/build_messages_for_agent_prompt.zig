@@ -104,7 +104,15 @@ pub fn buildMessages(
     const kanbanStatusContent = try BuildKanbanStatusPrompt(allocator, db, session_id);
     defer allocator.free(kanbanStatusContent);
 
-    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment, sub_agents_listing, workspaceContext, kanbanStatusContent);
+    // Design canvas status — placeholder empty for now until
+    // `BuildDesignCanvasPrompt` lands in a follow-up chunk. Empty
+    // string means "session is not on a design canvas" so the
+    // `## Design Canvas` section is silently omitted by
+    // `build_agent_prompt` (same graceful-skip pattern as
+    // `kanbanStatusContent` when empty).
+    const designStatusContent: []const u8 = "";
+
+    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment, sub_agents_listing, workspaceContext, kanbanStatusContent, designStatusContent);
 
     // Render inherited parent conversation history (if requested) and append
     // it to the system prompt as a labelled, read-only block.
