@@ -37,7 +37,7 @@ pub const CallbackAiWorkerFlow = struct {
         const cwd = data.cwd;
 
         runAgenticMultiStepnew(di, data) catch |err| {
-            logger.errFmt("[{s}] Failed to run agentic workflow: {s}\n", .{ keyword, err });
+            logger.errFmt("[{s}] Failed to run agentic workflow: {s}\n", .{ keyword, @errorName(err) });
             llm_history.deleteWorkerBySessionId(allocator, db, session_id) catch |error_sqlite| {
                 logger.errFmt("[{s}] Failed to delete worker: {s}\n", .{ keyword, @errorName(error_sqlite) });
             };
