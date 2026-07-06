@@ -36,3 +36,23 @@ pub fn isDoCompact(token_count: u32, max_capicity_token: u32) bool {
     const threshold = max_capicity_token * 8 / 10; // 80%
     return token_count >= threshold;
 }
+
+/// Resolve the effective max-context-window in tokens for `model_name`,
+/// honoring an optional config override. When `override_capacity` is
+/// `null`, falls through to `getModelTokenCount(model_name)`. When
+/// non-null, the override value wins (regardless of which model is
+/// being used — the override is per-config, not per-model).
+pub fn resolveMaxCapacity(model_name: []const u8, override_capacity: ?u32) u32 {
+    return override_capacity orelse getModelTokenCount(model_name);
+}
+
+/// Decide whether `token_count` should trigger compaction given a
+/// `max_capacity` (in tokens) and a `threshold_percent` (0-100).
+/// Equivalent to `token_count >= max_capacity * threshold_percent / 100`.
+/// When `threshold_percent` is null, defaults to 80 (the historical
+/// value baked into `isDoCompact`).
+pub fn shouldCompact(token_count: u32, max_capacity: u32, threshold_percent: ?u8) bool {
+    const pct: u32 = threshold_percent orelse 80;
+    const threshold = max_capacity * pct / 100;
+    return token_count >= threshold;
+}

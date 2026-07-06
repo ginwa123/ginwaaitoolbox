@@ -3,8 +3,10 @@ const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 
 const LLMModels = @import("LLMModels.zig");
-const get_model_token_count = LLMModels.get_model_token_count;
-const is_do_compact = LLMModels.is_do_compact;
+const get_model_token_count = LLMModels.getModelTokenCount;
+const is_do_compact = LLMModels.isDoCompact;
+const resolve_max_capacity = LLMModels.resolveMaxCapacity;
+const should_compact = LLMModels.shouldCompact;
 const MINIMAX_2_7 = LLMModels.MINIMAX_2_7;
 
 // ============================================================================
@@ -94,4 +96,50 @@ test "is_do_compact threshold calculation is integer-accurate" {
     try expect(!is_do_compact(1, max_capacity)); // Below threshold
     try expect(is_do_compact(2, max_capacity)); // At threshold
     try expect(is_do_compact(3, max_capacity)); // Above threshold
+}
+
+// ============================================================================
+// resolve_max_capacity Tests
+// ============================================================================
+
+test "resolve_max_capacity returns override when set" {
+    try expectEqual(@as(u32, 128000), resolve_max_capacity("MiniMax-M3", 128000));
+    try expectEqual(@as(u32, 128000), resolve_max_capacity("Unknown", 128000));
+}
+
+test "resolve_max_capacity falls back to getModelTokenCount when override is null" {
+    try expectEqual(@as(u32, 500000), resolve_max_capacity("MiniMax-M3", null));
+    try expectEqual(@as(u32, 200000), resolve_max_capacity("MiniMax-M2.7", null));
+    try expectEqual(@as(u32, 200000), resolve_max_capacity("Unknown", null));
+}
+
+// ============================================================================
+// should_compact Tests
+// ============================================================================
+
+test "should_compact with custom threshold_percent" {
+    // 50% of 200k = 100k threshold
+    try expect(!should_compact(99_999, 200_000, 50));
+    try expect(should_compact(100_000, 200_000, 50));
+    try expect(should_compact(200_000, 200_000, 50));
+}
+
+test "should_compact with null threshold_percent defaults to 80%" {
+    try expect(!should_compact(159_999, 200_000, null));
+    try expect(should_compact(160_000, 200_000, null));
+    try expect(should_compact(250_000, 200_000, null));
+}
+
+test "should_compact with threshold_percent=0 never triggers" {
+    // 0% threshold = never compact (token_count >= 0 always, but *0/100 = 0)
+    try expect(should_compact(0, 200_000, 0));
+    try expect(should_compact(1, 200_000, 0));
+    try expect(should_compact(1_000_000, 200_000, 0));
+}
+
+test "should_compact with threshold_percent=100 always triggers (unless token_count is 0)" {
+    // 100% threshold = token_count >= max_capacity
+    try expect(!should_compact(99, 100, 100));
+    try expect(should_compact(100, 100, 100));
+    try expect(should_compact(101, 100, 100));
 }
