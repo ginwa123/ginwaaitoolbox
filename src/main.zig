@@ -373,10 +373,11 @@ pub fn main(init: std.process.Init) !void {
     //   DELETE /items/:item_id/design/pages/:pid      — delete page, emits design_page_deleted SSE
     // See docs/superpowers/plans/2026-07-05-design-mode.md (Chunk 2, Task 2.7).
     try gs.router.post("/api/workspaces/:workspace_id/items/design", ai_mod.http_handlers.designItemsCreateHandler);
-    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/design/pages", ai_mod.http_handlers.designPagesListHandler);
-    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id", ai_mod.http_handlers.designPagesGetHandler);
-    try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id", ai_mod.http_handlers.designPagesUpdateHandler);
-    try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id", ai_mod.http_handlers.designPagesDeleteHandler);
+    // NOTE: the 4 design_pages_*Handler routes (LIST/GET/PUT/DELETE)
+    // were removed along with their handler files in the design-fs-rewrite
+    // (Chunk 1 of 2026-07-06-design-fs-rewrite.md). Chunk 2 of the same
+    // plan re-introduces them against the new file-backed design_model
+    // API. Re-add here when Chunk 2 lands.
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsListHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsCreateHandler);
     try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id", ai_mod.http_handlers.kanbanColumnsUpdateHandler);

@@ -1290,7 +1290,14 @@ pub fn addColumnIfMissing(
     ) catch return error.BufferTooSmall;
     var q = try db.query(allocator, check_sql, &.{});
     defer q.deinit();
-    if ((try q.next()) != null) return; // column already exists — no-op.
+    if ((try q.next())) |row| {
+        // The row owns its `values` slices; deinit frees them.
+        // Without this call we leak one row.values array + N column
+        // strings per call, which surfaces as 35 leaks when Migration055
+        // invokes `addColumnIfMissing` 4 times in a row.
+        defer row.deinit(allocator);
+        return; // column already exists — no-op.
+    }
 
     var ddl_buf: [256]u8 = undefined;
     const ddl = std.fmt.bufPrint(
@@ -1322,29 +1329,38 @@ pub fn dropColumnIfExists(
     ) catch return error.BufferTooSmall;
     var q = try db.query(allocator, check_sql, &.{});
     defer q.deinit();
-    if ((try q.next()) == null) return; // column doesn't exist — no-op.
-
-    var ddl_buf: [256]u8 = undefined;
-    const ddl = std.fmt.bufPrint(
-        &ddl_buf,
-        "ALTER TABLE {s} DROP COLUMN {s}",
-        .{ table, column },
-    ) catch return error.BufferTooSmall;
-    try db.exec(allocator, ddl, &.{});
+    if ((try q.next())) |row| {
+        // Same ownership pattern as addColumnIfMissing: the row owns
+        // its `values` slices; deinit frees them.
+        defer row.deinit(allocator);
+        var ddl_buf: [256]u8 = undefined;
+        const ddl = std.fmt.bufPrint(
+            &ddl_buf,
+            "ALTER TABLE {s} DROP COLUMN {s}",
+            .{ table, column },
+        ) catch return error.BufferTooSmall;
+        try db.exec(allocator, ddl, &.{});
+        return;
+    }
+    // column doesn't exist — no-op.
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// Migration 055 — add design_pages table
+// Migration 055 — add design_pages + design_page_elements tables
 // ────────────────────────────────────────────────────────────────────────
 //
 // Why this migration exists
 // ──────────────────────────
 // The Design Mode feature (HTML canvas workspace item, item_type='design')
-// needs a per-item store for N named HTML pages (e.g. "Login", "Dashboard",
-// "Settings"). Each page has an editable html body that the LLM tool
-// `set_design_page(item_id, page_name, html)` populates — and the same
-// tool is idempotent on (workspace_item_id, name) so a chat re-run with
-// the same page name overwrites the existing row's html in place.
+// needs a per-item store for N named pages (e.g. "Login", "Dashboard",
+// "Settings"). v5 of the plan (Chunk 1) splits the page body into N
+// positioned `DesignPageElement` rows; the page itself becomes a pure
+// metadata container (`width`/`height`/`x`/`y`) and each element
+// stores its HTML body on disk at
+// `<workspace_item.path>/.nalar/design/<page_name>/<sanitized>.html`.
+//
+// The DB holds only metadata. The actual HTML bytes live on disk
+// (file_path is a relative path inside workspace_item.path).
 //
 // Schema
 // ───────
@@ -1352,26 +1368,47 @@ pub fn dropColumnIfExists(
 //     id TEXT PRIMARY KEY,                          -- "page_<nanos>"
 //     workspace_item_id TEXT NOT NULL,              -- FK to workspace_items.id
 //     name TEXT NOT NULL DEFAULT '',                -- human label ("Login")
-//     html TEXT NOT NULL DEFAULT '',                -- the actual HTML body
+//     width INTEGER NOT NULL DEFAULT 1440,          -- canvas width in px
+//     height INTEGER NOT NULL DEFAULT 1024,         -- canvas height in px
+//     x INTEGER NOT NULL DEFAULT 0,                -- canvas x offset
+//     y INTEGER NOT NULL DEFAULT 0,                -- canvas y offset
 //     position INTEGER NOT NULL DEFAULT 0,          -- tab-strip order
 //     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 //     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 //     FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
 // )
 //
-// Plus two indexes:
-//   - UNIQUE (workspace_item_id, name) — enables INSERT ... ON CONFLICT
-//     for the idempotent `set_design_page` tool (avoids a SELECT-then-INSERT
-//     race that could double-create a page).
-//   - (workspace_item_id, position) — keeps listPages's
-//     `ORDER BY position ASC` cheap as items accumulate pages.
+// CREATE TABLE design_page_elements (
+//     id TEXT PRIMARY KEY,                          -- "elem_<nanos>"
+//     page_id TEXT NOT NULL,                        -- FK to design_pages.id
+//     name TEXT NOT NULL DEFAULT '',
+//     file_path TEXT NOT NULL DEFAULT '',           -- relative to workspace_item.path
+//     x INTEGER NOT NULL DEFAULT 0,
+//     y INTEGER NOT NULL DEFAULT 0,
+//     width INTEGER NOT NULL DEFAULT 375,
+//     height INTEGER NOT NULL DEFAULT 667,
+//     z_index INTEGER NOT NULL DEFAULT 0,
+//     position INTEGER NOT NULL DEFAULT 0,          -- order within z_index
+//     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE
+// )
 //
-// Why NOT NULL with DEFAULT '' (vs nullable)
-// ─────────────────────────────────────────
-// Mirrors the project convention for short text fields with a "no value"
-// sentinel. The application layer always reads these as `[]const u8`
-// (never `?[]const u8`), so a nullable column would force COALESCE on
-// every SELECT and NULL-handling on every INSERT.
+// Indexes:
+//   - UNIQUE design_pages(workspace_item_id, name) — enables INSERT ... ON CONFLICT
+//     for the idempotent `addPage` use case.
+//   - design_pages(workspace_item_id, position) — keeps listPages fast.
+//   - design_page_elements(page_id, z_index, position) — supports
+//     `listElements ORDER BY z_index ASC, position ASC`.
+//
+// Upgrade path from v1
+// ────────────────────
+// Some users may already have the original v1 schema (with `html` and
+// `file_path` columns on `design_pages`) installed. The migration
+// drops those legacy columns + adds the 4 new position columns. Both
+// paths (fresh DB and upgrade) must work; the `dropColumnIfExists` /
+// `addColumnIfMissing` helpers make both code paths no-ops when the
+// column state already matches.
 //
 // Why ANALYZE at the end
 // ───────────────────────
@@ -1382,23 +1419,68 @@ pub fn dropColumnIfExists(
 // 050/051/052/053/054.
 //
 // Plan: docs/superpowers/plans/2026-07-05-design-mode.md (Chunk 1)
-pub const Migration055AddDesignPages = struct {
+pub const Migration055AddDesignPagesAndElements = struct {
     pub const version: u32 = 55;
-    pub const name = "add_design_pages";
+    pub const name = "add_design_pages_and_elements";
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // CREATE design_pages (fresh-DB path). On a legacy DB that
+        // already has the v1 table, this is a no-op (CREATE TABLE IF
+        // NOT EXISTS).
         try db.exec(allocator,
             \\CREATE TABLE IF NOT EXISTS design_pages (
             \\    id TEXT PRIMARY KEY,
             \\    workspace_item_id TEXT NOT NULL,
             \\    name TEXT NOT NULL DEFAULT '',
-            \\    html TEXT NOT NULL DEFAULT '',
+            \\    width INTEGER NOT NULL DEFAULT 1440,
+            \\    height INTEGER NOT NULL DEFAULT 1024,
+            \\    x INTEGER NOT NULL DEFAULT 0,
+            \\    y INTEGER NOT NULL DEFAULT 0,
             \\    position INTEGER NOT NULL DEFAULT 0,
             \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
             \\)
         , &[_][]const u8{});
+
+        // Upgrade path: drop the legacy `html` and `file_path` columns
+        // if present (SQLite 3.35+ supports DROP COLUMN). Both are
+        // no-ops for fresh-DB users. SQLite 3.53.3 (vendored on
+        // Windows/macOS, system on Linux) supports both ALTER forms.
+        try dropColumnIfExists(db, allocator, "design_pages", "html");
+        try dropColumnIfExists(db, allocator, "design_pages", "file_path");
+
+        // Ensure the 4 new position columns exist. On fresh DBs the
+        // CREATE TABLE above already declares them with the same
+        // defaults, so these are no-ops; on legacy DBs they're new
+        // columns being backfilled with sensible defaults.
+        try addColumnIfMissing(db, allocator, "design_pages", "width", "width INTEGER NOT NULL DEFAULT 1440");
+        try addColumnIfMissing(db, allocator, "design_pages", "height", "height INTEGER NOT NULL DEFAULT 1024");
+        try addColumnIfMissing(db, allocator, "design_pages", "x", "x INTEGER NOT NULL DEFAULT 0");
+        try addColumnIfMissing(db, allocator, "design_pages", "y", "y INTEGER NOT NULL DEFAULT 0");
+
+        // CREATE design_page_elements (new in v5). Always new — no
+        // upgrade path needed.
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS design_page_elements (
+            \\    id TEXT PRIMARY KEY,
+            \\    page_id TEXT NOT NULL,
+            \\    name TEXT NOT NULL DEFAULT '',
+            \\    file_path TEXT NOT NULL DEFAULT '',
+            \\    x INTEGER NOT NULL DEFAULT 0,
+            \\    y INTEGER NOT NULL DEFAULT 0,
+            \\    width INTEGER NOT NULL DEFAULT 375,
+            \\    height INTEGER NOT NULL DEFAULT 667,
+            \\    z_index INTEGER NOT NULL DEFAULT 0,
+            \\    position INTEGER NOT NULL DEFAULT 0,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+
+        // Indexes. CREATE [UNIQUE] INDEX IF NOT EXISTS — all safe to
+        // re-run.
         try db.exec(allocator,
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_design_pages_item_name " ++
             "ON design_pages(workspace_item_id, name)",
@@ -1409,6 +1491,12 @@ pub const Migration055AddDesignPages = struct {
             "ON design_pages(workspace_item_id, position)",
             &[_][]const u8{},
         );
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_design_page_elements_page_z_pos " ++
+            "ON design_page_elements(page_id, z_index, position)",
+            &[_][]const u8{},
+        );
+
         // ANALYZE so the query planner sees the new indexes on
         // pre-existing databases (mirrors the ANALYZE-after-DDL
         // pattern used by Migrations 041/042/043/048/049/050/051/
@@ -1471,7 +1559,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration052DropSessionIdFromWorkspaceItemTasks.version, .name = Migration052DropSessionIdFromWorkspaceItemTasks.name, .up = Migration052DropSessionIdFromWorkspaceItemTasks.up },
     .{ .version = Migration053AddKanbanColumnDescription.version, .name = Migration053AddKanbanColumnDescription.name, .up = Migration053AddKanbanColumnDescription.up },
     .{ .version = Migration054MakeSessionQueueMessageNullable.version, .name = Migration054MakeSessionQueueMessageNullable.name, .up = Migration054MakeSessionQueueMessageNullable.up },
-    .{ .version = Migration055AddDesignPages.version, .name = Migration055AddDesignPages.name, .up = Migration055AddDesignPages.up },
+    .{ .version = Migration055AddDesignPagesAndElements.version, .name = Migration055AddDesignPagesAndElements.name, .up = Migration055AddDesignPagesAndElements.up },
 };
 
 /// Register all migrations with a MigrationManager

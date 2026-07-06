@@ -60,10 +60,11 @@ test {
     _ = @import("http_handlers/kanban_columns_delete_test.zig");
     _ = @import("http_handlers/kanban_copy_spec_test.zig");
     _ = @import("http_handlers/design_items_create_test.zig");
-    _ = @import("http_handlers/design_pages_list_test.zig");
-    _ = @import("http_handlers/design_pages_get_test.zig");
-    _ = @import("http_handlers/design_pages_update_test.zig");
-    _ = @import("http_handlers/design_pages_delete_test.zig");
+    // The 4 design_pages_*_test.zig files (list / get / update / delete)
+    // were removed along with their handler files in the design-fs-rewrite
+    // (chunk 1 of `2026-07-05-design-mode.md`). Chunk 2 of the same plan
+    // will rewrite the handlers against the new file-backed
+    // `design_model` API and re-add these static-contract tests.
     _ = @import("http_handlers/tasks_move_test.zig");
     _ = @import("http_handlers/tasks_create_kanban_test.zig");
     _ = @import("http_handlers/tasks_create_value_alloc_test.zig");
@@ -77,7 +78,10 @@ test {
     _ = @import("on_event_sent_design_test.zig");
     _ = @import("gitignore_vendor_sqlite3_test.zig");
     _ = @import("../../modules/agent/tools/show_preview_test.zig");
-    _ = @import("../../modules/agent/tools/design_tools_test.zig");
+    // modules/agent/tools/design_tools_test.zig was removed along with the
+    // design_tools.zig it tested (chunk 1 of the design-fs-rewrite,
+    // `2026-07-05-design-mode.md`). Chunk 3 of the same plan will
+    // re-introduce both against the new file-backed design_model API.
     // _ = @import("extract_base64_image_urls_test.zig"); // DISABLED - 9 failing tests (investigation shows std.testing.expectEqualStrings has a bug with literal strings)
     // _ = @import("session_db_test.zig"); // DISABLED - pre-existing test errors (see session_db_test.zig for details)
 }

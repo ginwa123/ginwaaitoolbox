@@ -109,15 +109,20 @@ fn setupDb() !struct {
         \\)
     , &.{});
 
-    // design_pages — mirrors the schema created by the
-    // design-mode migration (see migration.zig:1391). Used by
+    // design_pages — mirrors the v5 schema created by
+    // Migration 055 (`Migration055AddDesignPagesAndElements`, see
+    // migration.zig:1385+). The new schema is pure metadata (no
+    // html, no file_path on the row itself). Used by
     // `BuildDesignCanvasPrompt` in `build_messages_for_agent_prompt.zig`.
     try db.exec(alloc,
         \\CREATE TABLE design_pages (
         \\    id TEXT PRIMARY KEY,
         \\    workspace_item_id TEXT NOT NULL,
         \\    name TEXT NOT NULL DEFAULT '',
-        \\    html TEXT NOT NULL DEFAULT '',
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
         \\    position INTEGER NOT NULL DEFAULT 0,
         \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -826,9 +831,9 @@ test "BuildDesignCanvasPrompt renders mandatory rule + pages for design parent" 
         "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_design', 'ws_x', 'design')",
         &.{});
     try ctx.db.exec(alloc,
-        "INSERT INTO design_pages (id, workspace_item_id, name, html, position) VALUES " ++
-            "('pg_login', 'wi_design', 'Login', '<!doctype html><html>login</html>', 0), " ++
-            "('pg_dash', 'wi_design', 'Dashboard', '<!doctype html><html>dash</html>', 1)",
+        "INSERT INTO design_pages (id, workspace_item_id, name, position) VALUES " ++
+            "('pg_login', 'wi_design', 'Login', 0), " ++
+            "('pg_dash', 'wi_design', 'Dashboard', 1)",
         &.{});
     try ctx.db.exec(alloc,
         "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) " ++

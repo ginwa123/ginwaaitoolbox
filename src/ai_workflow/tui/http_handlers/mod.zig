@@ -57,10 +57,11 @@ pub const workspaceItemsCreateKanbanHandler = @import("workspace_items_create_ka
 //   DELETE /items/:item_id/design/pages/:pid   — delete page, emits SSE
 // See docs/superpowers/plans/2026-07-05-design-mode.md (Chunk 2).
 pub const designItemsCreateHandler = @import("design_items_create.zig").designItemsCreateHandler;
-pub const designPagesListHandler = @import("design_pages_list.zig").designPagesListHandler;
-pub const designPagesGetHandler = @import("design_pages_get.zig").designPagesGetHandler;
-pub const designPagesUpdateHandler = @import("design_pages_update.zig").designPagesUpdateHandler;
-pub const designPagesDeleteHandler = @import("design_pages_delete.zig").designPagesDeleteHandler;
+// The 4 design_pages_*Handler entries below were removed along with
+// the handler files in the design-fs-rewrite (chunk 1 of
+// `2026-07-05-design-mode.md`). Chunk 2 of the same plan will
+// re-introduce them against the new file-backed `design_model` API.
+// See `src/ai_workflow/tui/design_model.zig`.
 
 // Kanban column CRUD handlers (item_type='kanban' sub-resources).
 // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).

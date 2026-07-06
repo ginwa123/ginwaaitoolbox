@@ -29,7 +29,10 @@ const edit_skill_mod = nalar_mod.edit_skill;
 const set_git_worktree_mod = nalar_mod.set_git_worktree;
 const kanban_list_mod = nalar_mod.kanban_list;
 const kanban_move_task_mod = nalar_mod.kanban_move_task;
-const design_tools_mod = nalar_mod.design_tools;
+// `design_tools_mod` was removed when `modules/agent/tools/design_tools.zig`
+// was deleted in the design-fs-rewrite (chunk 1 of
+// `2026-07-05-design-mode.md`). Chunk 3 of the same plan will re-introduce
+// it against the new file-backed design_model API.
 const show_preview_mod = nalar_mod.ai_mod.show_preview;
 const add_agent_mod = nalar_mod.add_agent;
 const remove_agent_mod = nalar_mod.remove_agent;
@@ -647,114 +650,12 @@ pub fn execKanbanMoveTask(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
 }
 
 // === DESIGN TOOLS ===
-
-pub fn execSetDesignPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
-        design_tools_mod.SetDesignPageInput,
-        ctx.allocator,
-        tc.function.arguments,
-        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "set_design_page failed to parse input: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
-    defer parsed.deinit();
-
-    const inner = design_tools_mod.executeSetDesignPageToString(
-        ctx.allocator,
-        ctx.db,
-        parsed.value,
-    ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "set_design_page failed: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
-    defer ctx.allocator.free(inner);
-
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, false, err_msg, inner);
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    }
-
-    const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, true, null, inner);
-    return ToolExecResult{ .output = output, .output_allocated = true };
-}
-
-pub fn execDeleteDesignPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
-        design_tools_mod.DeleteDesignPageInput,
-        ctx.allocator,
-        tc.function.arguments,
-        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "delete_design_page failed to parse input: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "delete_design_page", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
-    defer parsed.deinit();
-
-    const inner = design_tools_mod.executeDeleteDesignPageToString(
-        ctx.allocator,
-        ctx.db,
-        parsed.value,
-    ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "delete_design_page failed: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "delete_design_page", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
-    defer ctx.allocator.free(inner);
-
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(ctx.allocator, "delete_design_page", tc.function.arguments, false, err_msg, inner);
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    }
-
-    const output = try wrapToolOutput(ctx.allocator, "delete_design_page", tc.function.arguments, true, null, inner);
-    return ToolExecResult{ .output = output, .output_allocated = true };
-}
-
-pub fn execListDesignPages(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
-        design_tools_mod.ListDesignPagesInput,
-        ctx.allocator,
-        tc.function.arguments,
-        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "list_design_pages failed to parse input: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "list_design_pages", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
-    defer parsed.deinit();
-
-    const inner = design_tools_mod.executeListDesignPagesToString(
-        ctx.allocator,
-        ctx.db,
-        parsed.value,
-    ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "list_design_pages failed: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "list_design_pages", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
-    defer ctx.allocator.free(inner);
-
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(ctx.allocator, "list_design_pages", tc.function.arguments, false, err_msg, inner);
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    }
-
-    const output = try wrapToolOutput(ctx.allocator, "list_design_pages", tc.function.arguments, true, null, inner);
-    return ToolExecResult{ .output = output, .output_allocated = true };
-}
+// The 3 design tools (set_design_page, delete_design_page,
+// list_design_pages) were removed along with
+// `modules/agent/tools/design_tools.zig` in the design-fs-rewrite
+// (chunk 1 of `2026-07-05-design-mode.md`). Chunk 3 of the same
+// plan will re-introduce them against the new file-backed
+// `design_model` API (see `src/ai_workflow/tui/design_model.zig`).
 
 pub fn execShowPreview(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
@@ -1863,14 +1764,12 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "kanban_move_task", .exec = execKanbanMoveTask, .tool_def = kanban_move_task_mod.kanban_move_task_tool },
 
     // === DESIGN TOOLS ===
-    // Three tools for the Design Mode feature (item_type='design').
-    // set_design_page is the workhorse — LLM writes HTML via this call.
-    // delete_design_page + list_design_pages are CRUD supporting tools.
-    // All three emit SSE events on success so other connected clients
-    // refresh their open canvas in real time.
-    .{ .name = "set_design_page", .exec = execSetDesignPage, .tool_def = design_tools_mod.set_design_page_tool },
-    .{ .name = "delete_design_page", .exec = execDeleteDesignPage, .tool_def = design_tools_mod.delete_design_page_tool },
-    .{ .name = "list_design_pages", .exec = execListDesignPages, .tool_def = design_tools_mod.list_design_pages_tool },
+    // Three tools for the Design Mode feature (item_type='design') were
+    // removed when the design-mode implementation moved from inline
+    // html-storage to file-backed `design_page_elements` (chunk 1 of
+    // `2026-07-05-design-mode.md`). Chunk 3 of the same plan will
+    // re-register `set_design_page` / `delete_design_page` /
+    // `list_design_pages` against the new `design_model` API.
 
     // === PREVIEW TOOLS ===
     .{ .name = "show_preview", .exec = execShowPreview, .tool_def = show_preview_mod.show_preview_tool },
@@ -1927,9 +1826,9 @@ pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool
         kanban_list_mod.kanban_list_tool,
         kanban_move_task_mod.kanban_move_task_tool,
         show_preview_mod.show_preview_tool,
-        design_tools_mod.set_design_page_tool,
-        design_tools_mod.delete_design_page_tool,
-        design_tools_mod.list_design_pages_tool,
+        // The 3 design tools were removed in the design-fs-rewrite
+        // (chunk 1 of `2026-07-05-design-mode.md`); chunk 3 will
+        // re-register them against the new file-backed design_model.
     };
     return allocator.dupe(tool_models.AgentTool, tools_list) catch return &.{};
 }
