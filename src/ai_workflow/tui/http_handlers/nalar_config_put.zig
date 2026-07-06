@@ -104,6 +104,13 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     if (input.model_compaction_size_kb) |kb| {
         config_json.model_compaction_size_kb = kb;
     }
+    if (input.max_capacity_token_model) |mc| {
+        config_json.max_capacity_token_model = mc;
+    }
+    if (input.compaction_threshold_percent) |tp| {
+        if (tp > 100) return error.InvalidThresholdPercent;
+        config_json.compaction_threshold_percent = tp;
+    }
 
     // Handle profiles - add, update, or delete
     if (input.profiles) |profiles| {
@@ -286,6 +293,16 @@ const ConfigInput = struct {
     /// to shrink the LLM context. Absent = preserve existing on-disk
     /// value. Mirrors the `LlmConfigJson` default (`100`).
     model_compaction_size_kb: ?usize = null,
+    /// Optional override for the model's context window in tokens.
+    /// Absent = preserve existing on-disk value. Mirrors the
+    /// `LlmConfigJson` default (null = use built-in per-model token
+    /// count).
+    max_capacity_token_model: ?u32 = null,
+    /// Compaction threshold percentage (0-100). Absent = preserve
+    /// existing on-disk value. Mirrors the `LlmConfigJson` default
+    /// (null = use 80). Out-of-range values (e.g. > 100) surface as
+    /// `error.InvalidThresholdPercent`.
+    compaction_threshold_percent: ?u8 = null,
     /// Whole-list replace for the top-level `sub_agents` array.
     /// When present, replaces the existing sub-agents entirely.
     /// When absent, existing sub-agents are preserved. Borrowed slices
@@ -323,6 +340,14 @@ const ConfigJson = struct {
     /// Compaction threshold in KB. Default `100` matches
     /// `LlmConfigJson` (Config.zig:92).
     model_compaction_size_kb: usize = 100,
+    /// Per-model context window override. Default `null` matches
+    /// `LlmConfigJson` — when null, the built-in `LLMModels`
+    /// per-model token count is used.
+    max_capacity_token_model: ?u32 = null,
+    /// Compaction threshold percentage (0-100). Default `null` matches
+    /// `LlmConfigJson` — when null, `LlmConfig.compactionThresholdPercent`
+    /// returns the built-in default (80).
+    compaction_threshold_percent: ?u8 = null,
     /// Top-level sub-agents array (snake_case, matches NALAR.md JSON
     /// convention). Parsed into the typed `LlmConfig.SubAgentJson` shape
     /// (borrowed from the parsed file content), or replaced by an

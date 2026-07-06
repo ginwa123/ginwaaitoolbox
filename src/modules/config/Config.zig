@@ -54,6 +54,9 @@ pub const LlmConfig = struct {
         OutOfMemory,
         HomeNotFound,
         ConfigDirNotFound,
+        /// `compaction_threshold_percent` outside the 0..100 range.
+        /// Surfaced by the HTTP PUT handler at the validation gate.
+        InvalidThresholdPercent,
     };
 
     /// Individual profile settings
