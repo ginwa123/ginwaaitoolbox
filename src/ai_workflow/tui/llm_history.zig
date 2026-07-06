@@ -3508,3 +3508,25 @@ pub fn isTaskKanban(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, ses
 
     return is_kanban;
 }
+
+
+pub fn isTaskDesign(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) !bool {
+    var is_kanban: bool = false;
+    const sql =
+        \\
+        \\SELECT 1 FROM workspace_item_tasks wit
+        \\JOIN workspace_items wi ON wit.workspace_item_id = wi.id
+        \\WHERE wit.id = ? AND wi.item_type = 'design'
+    ;
+
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        row.deinit(allocator);
+        is_kanban = true;
+    }
+
+    return is_kanban;
+}
+
