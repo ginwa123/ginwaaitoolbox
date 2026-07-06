@@ -109,6 +109,22 @@ fn setupDb() !struct {
         \\)
     , &.{});
 
+    // design_pages — mirrors the schema created by the
+    // design-mode migration (see migration.zig:1391). Used by
+    // `BuildDesignCanvasPrompt` in `build_messages_for_agent_prompt.zig`.
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    html TEXT NOT NULL DEFAULT '',
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
+        \\)
+    , &.{});
+
     return .{ .db = db, .threaded = threaded };
 }
 
@@ -737,4 +753,128 @@ test "BuildKanbanStatusPrompt returns empty string for empty session_id" {
     defer alloc.free(result);
 
     try testing.expectEqualStrings("", result);
+}
+
+// ─── Tests for BuildDesignCanvasPrompt ────────────────────────────────────
+//
+// Mirrors the BuildKanbanStatusPrompt test structure. The renderer:
+//   1. Returns "" when the parent item's item_type !== 'design'.
+//   2. Returns "" when the session is not bound to any task.
+//   3. Returns "" for an empty session_id.
+//   4. Renders the "## Design Canvas" block with the mandatory
+//      `set_design_page` rule + page listing + page-authoring
+//      conventions when the parent is a design canvas with pages.
+//   5. Renders an empty-canvas hint when the design has no pages.
+
+test "BuildDesignCanvasPrompt returns empty string for non-design parent" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Seed: a kanban item (not design) with a task.
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_kanban', 'ws_x', 'kanban')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'standard')",
+        &.{});
+
+    const result = try build_messages.BuildDesignCanvasPrompt(alloc, &ctx.db, "sess_kanban");
+    defer alloc.free(result);
+
+    try testing.expectEqualStrings("", result);
+}
+
+test "BuildDesignCanvasPrompt returns empty string for unbound session" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // No tasks seeded — getWorkspaceContext returns null.
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_design', 'ws_x', 'design')",
+        &.{});
+
+    const result = try build_messages.BuildDesignCanvasPrompt(alloc, &ctx.db, "sess_unbound");
+    defer alloc.free(result);
+
+    try testing.expectEqualStrings("", result);
+}
+
+test "BuildDesignCanvasPrompt returns empty string for empty session_id" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    const result = try build_messages.BuildDesignCanvasPrompt(alloc, &ctx.db, "");
+    defer alloc.free(result);
+
+    try testing.expectEqualStrings("", result);
+}
+
+test "BuildDesignCanvasPrompt renders mandatory rule + pages for design parent" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Seed: a design item with 2 pages, task bound to the item.
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_design', 'ws_x', 'design')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO design_pages (id, workspace_item_id, name, html, position) VALUES " ++
+            "('pg_login', 'wi_design', 'Login', '<!doctype html><html>login</html>', 0), " ++
+            "('pg_dash', 'wi_design', 'Dashboard', '<!doctype html><html>dash</html>', 1)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) " ++
+            "VALUES ('sess_design', 'design task', 'wi_design', 'standard')",
+        &.{});
+
+    const result = try build_messages.BuildDesignCanvasPrompt(alloc, &ctx.db, "sess_design");
+    defer alloc.free(result);
+
+    // Mandatory rule + 3 tool names (imperative wording so a future
+    // "soften the wording" PR breaks this test).
+    try testing.expect(std.mem.indexOf(u8, result, "## Design Canvas") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "MUST use the `set_design_page` tool") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "`list_design_pages` first") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "`delete_design_page`") != null);
+
+    // Both pages listed with ids + positions, in display order.
+    try testing.expect(std.mem.indexOf(u8, result, "- `Login` (`pg_login`, position 0)") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "- `Dashboard` (`pg_dash`, position 1)") != null);
+
+    // Page-authoring conventions present.
+    try testing.expect(std.mem.indexOf(u8, result, "**Page authoring**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "Full HTML document required") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "Idempotent overwrite") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "No \"move\" tool") != null);
+}
+
+test "BuildDesignCanvasPrompt renders empty-canvas hint when design has no pages" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Seed: design item with NO pages, task bound to the item.
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_design', 'ws_x', 'design')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) " ++
+            "VALUES ('sess_design', 'design task', 'wi_design', 'standard')",
+        &.{});
+
+    const result = try build_messages.BuildDesignCanvasPrompt(alloc, &ctx.db, "sess_design");
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "## Design Canvas") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "_No pages yet._") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "your first `set_design_page`") != null);
 }

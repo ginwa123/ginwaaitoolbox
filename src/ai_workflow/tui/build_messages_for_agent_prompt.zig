@@ -15,6 +15,7 @@ const background_process = @import("background_process.zig");
 const ProcessInfo = background_process.ProcessInfo;
 const inherited_context = @import("inherited_context.zig");
 const kanban_model = @import("kanban_model.zig");
+const design_model = @import("design_model.zig");
 
 const AgentTool = tool_models.AgentTool;
 const AgentToolFunction = tool_models.AgentToolFunction;
@@ -104,13 +105,15 @@ pub fn buildMessages(
     const kanbanStatusContent = try BuildKanbanStatusPrompt(allocator, db, session_id);
     defer allocator.free(kanbanStatusContent);
 
-    // Design canvas status — placeholder empty for now until
-    // `BuildDesignCanvasPrompt` lands in a follow-up chunk. Empty
-    // string means "session is not on a design canvas" so the
-    // `## Design Canvas` section is silently omitted by
-    // `build_agent_prompt` (same graceful-skip pattern as
-    // `kanbanStatusContent` when empty).
-    const designStatusContent: []const u8 = "";
+    // Design canvas status — mirrors the kanban block above. Renders
+    // a `## Design Canvas` section when the parent item_type is
+    // `design`, listing the existing pages and reminding the agent
+    // about the 3 design tools (`set_design_page`,
+    // `delete_design_page`, `list_design_pages`). Returns `""` when
+    // the session is not on a design canvas (same graceful-skip
+    // pattern as `kanbanStatusContent` when empty).
+    const designStatusContent = try BuildDesignCanvasPrompt(allocator, db, session_id);
+    defer allocator.free(designStatusContent);
 
     const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment, sub_agents_listing, workspaceContext, kanbanStatusContent, designStatusContent);
 
@@ -719,6 +722,12 @@ const SUB_AGENT_DESCRIPTION_MAX: usize = 80;
 /// above any realistic kanban (typical N ≤ 7).
 const MAX_KANBAN_COLUMNS: u32 = 10;
 
+/// Max pages to inline in the `## Design Canvas` status block.
+/// Mirrors `MAX_KANBAN_COLUMNS` — a typical design canvas has 1–5
+/// pages (login, dashboard, settings, etc.) so 10 is well above
+/// any realistic design item.
+const MAX_DESIGN_PAGES: u32 = 10;
+
 /// Build the "Available Sub-Agents" listing for the current
 /// session. Reads `selected_profile_model` from the `sessions`
 /// table, then resolves the sub-agents list with the per-profile
@@ -1135,6 +1144,121 @@ pub fn BuildKanbanStatusPrompt(
         \\- **blocked** — if you cannot make progress, do NOT move; explain the
         \\  blocker in your reply. The card stays where it is until the user
         \\  resolves the blocker or you find a way forward.
+        \\
+    );
+
+    return out.toOwnedSlice(allocator);
+}
+
+/// Build the "Design Canvas" status block for the current session.
+///
+/// Mirrors `BuildKanbanStatusPrompt` — returns a heap-allocated
+/// `## Design Canvas` markdown section when the parent item_type is
+/// `design`, or `""` otherwise (the section is then silently omitted
+/// by `build_agent_prompt`). The block tells the agent:
+/// 1. That the task is on a design canvas (so it should use the
+///    `set_design_page` / `list_design_pages` / `delete_design_page`
+///    tools instead of `kanban_move_task` etc.).
+/// 2. Which pages already exist (so it can `set_design_page` to
+///    update one of them or pick an unused name for a new one).
+/// 3. The page-name + HTML conventions (so the agent writes valid
+///    full HTML documents, not fragments).
+///
+/// Returns `""` for the same "graceful skip" cases as
+/// `BuildKanbanStatusPrompt`: empty session_id, getWorkspaceContext
+/// failure / null result, parent isn't a design item, or any DB
+/// failure on the page-listing query.
+pub fn BuildDesignCanvasPrompt(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]const u8 {
+    if (session_id.len == 0) return allocator.dupe(u8, "");
+
+    // 1. Re-use the workspace-context anchor to read the parent's
+    //    item_type without a second JOIN. Bail out when the parent
+    //    isn't a design canvas.
+    const ctx = (llm_history.getWorkspaceContext(allocator, db, session_id) catch |err| {
+        std.log.warn("BuildDesignCanvasPrompt: getWorkspaceContext failed: {}", .{err});
+        return allocator.dupe(u8, "");
+    }) orelse return allocator.dupe(u8, "");
+    defer ctx.deinit(allocator);
+
+    if (!std.mem.eql(u8, ctx.self_item_type, "design")) {
+        return allocator.dupe(u8, "");
+    }
+
+    // 2. Read the pages (position ASC = display order). Same
+    //    graceful-skip pattern as `BuildKanbanStatusPrompt`'s
+    //    `listColumns` call.
+    const pages = design_model.listPages(allocator, db, ctx.self_item_id) catch |err| {
+        std.log.warn("BuildDesignCanvasPrompt: listPages failed: {}", .{err});
+        return allocator.dupe(u8, "");
+    };
+    defer design_model.freePageSummaries(allocator, pages);
+
+    // 3. Render the markdown block.
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "\n\n## Design Canvas\n\n");
+    try out.appendSlice(allocator,
+        \\This task is on a design canvas (parent item_type: `design`).
+        \\**You MUST use the `set_design_page` tool to author pages** —
+        \\each call writes the full HTML body of a named page on this
+        \\canvas, rendered in the user's browser via a sandboxed iframe.
+        \\Use `list_design_pages` first to see what already exists, and
+        \\`delete_design_page` to remove a page the user no longer wants.
+        \\
+    );
+
+    // 3a. Page listing (cap: MAX_DESIGN_PAGES, with footer).
+    try out.appendSlice(allocator, "**Pages on this canvas** (in display order):\n");
+    if (pages.len == 0) {
+        try out.appendSlice(allocator,
+            \\_No pages yet._ The canvas is empty — your first `set_design_page`
+            \\call will create the first page. Pick a clear name like `Login`,
+            \\`Dashboard`, `Settings`, etc.
+            \\
+        );
+    } else {
+        const shown = @min(pages.len, MAX_DESIGN_PAGES);
+        for (pages[0..shown]) |p| {
+            try out.appendSlice(allocator, "- `");
+            try out.appendSlice(allocator, p.name);
+            try out.appendSlice(allocator, "` (`");
+            try out.appendSlice(allocator, p.id);
+            const pos_str = try std.fmt.allocPrint(allocator, "`, position {d})\n", .{p.position});
+            defer allocator.free(pos_str);
+            try out.appendSlice(allocator, pos_str);
+        }
+        if (pages.len > MAX_DESIGN_PAGES) {
+            const footer = try std.fmt.allocPrint(allocator,
+                "… and {d} more pages (cap: {d} shown).\n",
+                .{ pages.len - MAX_DESIGN_PAGES, MAX_DESIGN_PAGES },
+            );
+            defer allocator.free(footer);
+            try out.appendSlice(allocator, footer);
+        }
+    }
+
+    // 3b. Page-authoring conventions.
+    try out.appendSlice(allocator, "\n**Page authoring** (`set_design_page`):\n");
+    try out.appendSlice(allocator,
+        \\
+        \\- **Full HTML document required** — the `html` parameter MUST start with
+        \\  `<!doctype html>` and end with `</html>`. The canvas renders it verbatim
+        \\  in a sandboxed iframe. Inline `<style>` and `<script>` are allowed but
+        \\  the script runs sandboxed (no parent storage access).
+        \\- **Page name** — must be unique per canvas, must NOT contain `/` or null
+        \\  bytes (the unique index rejects duplicates with a `<error>` response).
+        \\  Pick clear names: `Login`, `Dashboard`, `Settings`, `Profile`, etc.
+        \\- **Idempotent overwrite** — re-issuing `set_design_page` with the same
+        \\  `item_id` + `page_name` REPLACES the existing page in place. Other
+        \\  connected clients see the page update via SSE.
+        \\- **No "move" tool** — pages don't have a workflow like kanban columns.
+        \\  To reorder, use `delete_design_page` + `set_design_page` (the new page
+        \\  is appended to the end), or trust the user to drag the tab in the UI.
         \\
     );
 
