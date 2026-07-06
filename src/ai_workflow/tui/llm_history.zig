@@ -679,10 +679,19 @@ pub fn getSessionMessagesSorted(
         .cwd = cwd,
         .git_worktree_cwd = git_worktree_cwd,
         .max_total_tokens = getMaxTotalTokensForSession(allocator, db, session_id) catch 0,
-        .max_capacity_total_tokens = if (nalarcore.getSingleton() catch null) |di|
-            llm_models.getModelTokenCount(nalarcore.getLlmConfig(di).model)
-        else
-            llm_models.getModelTokenCount(""),
+        .max_capacity_total_tokens = blk: {
+            // Resolve the per-config override when the singleton is alive,
+            // otherwise fall back to the built-in per-model default. The
+            // override applies regardless of which model is being used —
+            // it's a global "treat this session as if the model had a
+            // context window of N tokens" knob.
+            const di_opt = nalarcore.getSingleton() catch null;
+            if (di_opt) |di| {
+                const cfg = nalarcore.getLlmConfig(di);
+                break :blk cfg.maxCapacityForModel(cfg.model);
+            }
+            break :blk llm_models.getModelTokenCount("");
+        },
         .total_count = total_count,
         .skills = session_skills,
     };

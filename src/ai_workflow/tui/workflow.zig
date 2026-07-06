@@ -513,7 +513,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
 
         try messagesLists.appendSlice(allocator, initialMessages);
 
-        const is_do_compaction = try maybeCompactMessagesNew(allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger);
+        const is_do_compaction = try maybeCompactMessagesNew(allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger, config);
         if (is_do_compaction) {
             continue;
         }
@@ -859,8 +859,13 @@ pub fn maybeCompactMessagesNew(
     db: *sqlite.SqliteBackend,
     io: std.Io,
     logger: *logger_mod.Logger,
+    llm_config: *const config_mod.LlmConfig,
 ) !bool {
-    if (!force and !agent.LLMModels.isDoCompact(total_tokens, agent.LLMModels.getModelTokenCount(model))) {
+    if (!force and !agent.LLMModels.shouldCompact(
+        total_tokens,
+        llm_config.maxCapacityForModel(model),
+        llm_config.compactionThresholdPercent(),
+    )) {
         return false;
     }
 

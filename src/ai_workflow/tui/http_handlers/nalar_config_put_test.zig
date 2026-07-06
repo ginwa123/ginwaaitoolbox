@@ -211,3 +211,93 @@ test "nalarcore exposes LlmConfigHolder, getLlmConfig, setLlmConfig, freeAllLlmC
     const PtrType = *const LlmConfig;
     try testing.expectEqual(@as(usize, @sizeOf(usize)), @sizeOf(PtrType));
 }
+
+// ---------------------------------------------------------------------------
+// 7. Static-contract tests for the PUT handler (compaction settings)
+// ---------------------------------------------------------------------------
+//
+// The PUT handler is too integration-heavy to test behaviourally in this
+// file (no GinwaServer + DI + sqlite fixture). Per project convention
+// (`nalar-http-handler-thin-wrapper-pattern.md`), we assert the contract
+// statically by reading the handler source and grepping for required
+// substrings.
+
+const PUT_HANDLER_PATH = "src/ai_workflow/tui/http_handlers/nalar_config_put.zig";
+
+fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const file = try std.Io.Dir.cwd().openFile(std.testing.io, path, .{});
+    defer file.close(std.testing.io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(std.testing.io, &buf);
+    return reader.interface.allocRemaining(allocator, .limited(64 * 1024));
+}
+
+test "PUT handler applies max_capacity_token_model to LlmConfigJson" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "if (input.max_capacity_token_model) |mc| {") == null) {
+        std.debug.print("!! PUT handler missing max_capacity_token_model apply block !!\n", .{});
+        return error.MaxCapacityApplyBlockMissing;
+    }
+    if (std.mem.indexOf(u8, source, "config_json.max_capacity_token_model = mc;") == null) {
+        std.debug.print("!! PUT handler doesn't write max_capacity_token_model !!\n", .{});
+        return error.MaxCapacityAssignmentMissing;
+    }
+}
+
+test "PUT handler applies compaction_threshold_percent to LlmConfigJson" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "if (input.compaction_threshold_percent) |tp| {") == null) {
+        std.debug.print("!! PUT handler missing compaction_threshold_percent apply block !!\n", .{});
+        return error.ThresholdApplyBlockMissing;
+    }
+    if (std.mem.indexOf(u8, source, "config_json.compaction_threshold_percent = tp;") == null) {
+        std.debug.print("!! PUT handler doesn't write compaction_threshold_percent !!\n", .{});
+        return error.ThresholdAssignmentMissing;
+    }
+}
+
+test "PUT handler rejects compaction_threshold_percent > 100 with InvalidThresholdPercent" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "if (tp > 100) return error.InvalidThresholdPercent;") == null) {
+        std.debug.print("!! PUT handler doesn't reject threshold > 100 !!\n", .{});
+        return error.ThresholdValidationMissing;
+    }
+    // The error variant must exist in the LlmConfig.LoadError enum
+    // (declared in src/modules/config/Config.zig, NOT in this handler).
+    const cfg_source = try readSource(allocator, "src/modules/config/Config.zig");
+    defer allocator.free(cfg_source);
+    if (std.mem.indexOf(u8, cfg_source, "InvalidThresholdPercent,") == null) {
+        std.debug.print("!! LlmConfig.LoadError does not declare InvalidThresholdPercent !!\n", .{});
+        return error.LoadErrorMissingInvalidThresholdPercent;
+    }
+}
+
+test "PUT ConfigInput declares both new fields as optional" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "max_capacity_token_model: ?u32 = null,") == null) {
+        std.debug.print("!! ConfigInput missing max_capacity_token_model optional field !!\n", .{});
+        return error.ConfigInputMissingMaxCapacity;
+    }
+    if (std.mem.indexOf(u8, source, "compaction_threshold_percent: ?u8 = null,") == null) {
+        std.debug.print("!! ConfigInput missing compaction_threshold_percent optional field !!\n", .{});
+        return error.ConfigInputMissingThreshold;
+    }
+}
+
+test "PUT handler is registered in test_runner.zig" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, "src/ai_workflow/tui/test_runner.zig");
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "nalar_config_put_test.zig") == null) {
+        std.debug.print("!! test_runner.zig does not import nalar_config_put_test.zig !!\n", .{});
+        return error.TestRunnerMissingImport;
+    }
+}
