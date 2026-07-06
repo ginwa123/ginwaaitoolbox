@@ -153,6 +153,26 @@ async function resolveExistingChatTask() {
  * the first ON (or reuses the existing one resolved by
  * `resolveExistingChatTask`). OFF just hides the panel; the task
  * row stays in the DB so a future ON is instant.
+ *
+ * Race fix (2026-07-06): the previous version optimistically set
+ * `showChat = true` and called `api.createTask` whenever
+ * `chatTaskId.value` was null, even if `chatReady.value` was
+ * still false (i.e., the eager `resolveExistingChatTask` had not
+ * yet returned). When the user clicked the toggle before the
+ * lookup finished, the handler created a SECOND `Chat` task with
+ * no messages — and that empty task was the one mounted into
+ * ChatView, so the user saw an empty chat panel even though the
+ * sidebar showed the original (populated) Chat task. There is no
+ * UNIQUE constraint on `(workspace_item_id, name)` for
+ * `workspace_item_tasks` so the DB silently accepted the dup.
+ *
+ * Fix: when the eager lookup is still in flight (`chatReady ===
+ * false`), await it before deciding to create. This collapses the
+ * race window to a single `await` and ensures the create path
+ * only fires when the lookup has confirmed "no existing Chat
+ * task". The `resolveExistingChatTask` function is idempotent
+ * (it just sets `chatTaskId.value` if a match is found), so a
+ * second call after the first has finished is a cheap no-op.
  */
 async function handleToggleChat() {
   if (showChat.value) {
@@ -160,25 +180,44 @@ async function handleToggleChat() {
     showChat.value = false
     return
   }
-  // ON path — need a chat task. Reuse if we already resolved one,
-  // otherwise create.
-  showChat.value = true // optimistic — flip back to false on failure
-  chatLoading.value = true
-  try {
-    if (!chatTaskId.value) {
+  // ON path — make sure the eager resolve has finished so we
+  // don't race against it and accidentally create a duplicate
+  // Chat task. If the resolve is still in flight, await it.
+  if (!chatReady.value) {
+    chatLoading.value = true
+    try {
+      await resolveExistingChatTask()
+    } finally {
+      chatLoading.value = false
+    }
+  }
+  // Now chatReady is guaranteed true. If chatTaskId is still null,
+  // we know for sure that no Chat task exists for this design —
+  // safe to create. Otherwise reuse the existing one.
+  if (!chatTaskId.value) {
+    chatLoading.value = true
+    try {
       const task: Task = await api.createTask(
         props.workspaceId,
         props.item.id,
         { name: DESIGN_CHAT_TASK_NAME, taskType: 'standard' },
       )
       chatTaskId.value = task.id
+    } catch (err) {
+      console.error('[DesignView] toggleChat create failed:', err)
+      return // do NOT show the panel — no chat task was created
+    } finally {
+      chatLoading.value = false
     }
-  } catch (err) {
-    console.error('[DesignView] toggleChat create failed:', err)
-    showChat.value = false
-  } finally {
-    chatLoading.value = false
   }
+  // Only mount the chat panel AFTER we have a valid chatTaskId
+  // (either reused or freshly created). The previous version
+  // flipped `showChat` first and relied on the template's
+  // `v-if="showChat && chatTaskId"` to hide the panel when the
+  // task was missing — that worked, but it briefly showed the
+  // toggle in the "Chat On" state with no panel mounted, which
+  // was confusing. Now we flip the state atomically.
+  showChat.value = true
 }
 
 function handleChatClose() {

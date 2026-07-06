@@ -117,3 +117,75 @@ test('DesignView watches item.id to reset chat state on design switch', () => {
     )
   }
 })
+
+test('DesignView toggle awaits the eager resolve before creating a Chat task', () => {
+  // Race fix (2026-07-06): the toggle must NOT call api.createTask
+  // until the eager getTasks lookup has completed. The previous
+  // version set `showChat = true` and called createTask whenever
+  // `chatTaskId.value` was null, which raced with the async
+  // `resolveExistingChatTask` call in onMounted — clicking the
+  // toggle before the lookup finished created a SECOND Chat task
+  // (no UNIQUE constraint on (workspace_item_id, name)) that
+  // shadowed the original one and the user saw an empty chat.
+  //
+  // We assert two source-level contracts here:
+  //   1. `handleToggleChat` MUST `await resolveExistingChatTask`
+  //      when `chatReady` is false.
+  //   2. The `showChat = true` flip MUST be the LAST mutation in
+  //      the ON path — it happens AFTER both the await and the
+  //      create, not before.
+  //
+  // The combined pattern is: `await resolveExistingChatTask` appears
+  // between `function handleToggleChat` and the eventual
+  // `showChat.value = true` line.
+
+  // Grab the body of handleToggleChat.
+  const fnMatch = source.match(/async function handleToggleChat\(\) \{([\s\S]*?)\n\}/)
+  if (!fnMatch || !fnMatch[1]) {
+    throw new Error(
+      `DesignView.vue is missing the async function handleToggleChat() ` +
+        `block. The toggle must be async so it can await the eager ` +
+        `resolveExistingChatTask lookup.`,
+    )
+  }
+  const body: string = fnMatch[1]
+
+  // 1. The await must be present in the ON path.
+  if (!body.includes('await resolveExistingChatTask')) {
+    throw new Error(
+      `handleToggleChat must 'await resolveExistingChatTask' when ` +
+        `chatReady is false — otherwise a fast click before the ` +
+        `eager lookup finishes will create a duplicate Chat task.`,
+    )
+  }
+
+  // 2. The 'showChat.value = true' flip must come AFTER the
+  //    await (and after any createTask call). If the optimistic
+  //    flip is still in place (showChat=true before the await),
+  //    the panel would briefly show the toggle in the 'Chat On'
+  //    state with no ChatView mounted, which is the original
+  //    symptom.
+  const flipPos = body.indexOf('showChat.value = true')
+  const awaitPos = body.indexOf('await resolveExistingChatTask')
+  const createPos = body.indexOf('api.createTask')
+  if (flipPos < 0) {
+    throw new Error(
+      `handleToggleChat must set 'showChat.value = true' at the end ` +
+        `of the ON path (after the await and the create).`,
+    )
+  }
+  if (awaitPos < 0 || awaitPos > flipPos) {
+    throw new Error(
+      `handleToggleChat must 'await resolveExistingChatTask' BEFORE ` +
+        `flipping 'showChat.value = true' — otherwise the panel ` +
+        `flashes to the 'Chat On' state with no ChatView mounted.`,
+    )
+  }
+  if (createPos > 0 && (createPos > flipPos)) {
+    throw new Error(
+      `handleToggleChat must call 'api.createTask' BEFORE flipping ` +
+        `'showChat.value = true' so the ChatView has a valid ` +
+        `chatTaskId prop when it mounts.`,
+    )
+  }
+})
