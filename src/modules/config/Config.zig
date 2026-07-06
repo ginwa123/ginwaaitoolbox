@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const json = std.json;
 const Io = std.Io;
+const LLMModels = @import("../agent/LLMModels.zig");
 
 pub const LlmConfig = struct {
     allocator: std.mem.Allocator,
@@ -27,6 +28,15 @@ pub const LlmConfig = struct {
     /// the backend (notify-send / osascript / PowerShell) so they work
     /// even when the desktop app's browser is closed.
     notify_on_complete: bool = true,
+    /// Optional override for the model's context window in tokens.
+    /// `null` = use the built-in `LLMModels.getModelTokenCount(model)`
+    /// default. Set to override the model's token budget (e.g.
+    /// self-hosted model with a different window size).
+    max_capacity_token_model: ?u32,
+    /// Compaction threshold as a percentage (0-100) of the model's
+    /// context window. `null` = use the historical default of 80.
+    /// Range is validated at the HTTP layer.
+    compaction_threshold_percent: ?u8,
     /// Owned slice of random sub-agent names that `resolveSubAgent`
     /// generated for the random-fallback case. Each name is allocated
     /// on `self.allocator` and is freed in `deinit`. Slices in the
@@ -160,6 +170,20 @@ pub const LlmConfig = struct {
         /// with `finish_reason === 'stop'`. Default false (user must
         /// explicitly enable in config to avoid surprise notifications).
         notify_on_complete: bool = false,
+        /// Optional override for the model's context window (in tokens).
+        /// When `null`, `LLMModels.getModelTokenCount(model)` returns the
+        /// built-in per-model default (200_000 for MiniMax-M2.7, 500_000
+        /// for MiniMax-M3, 200_000 fallback). When set, this value is
+        /// used instead — useful for users who want to under-provision a
+        /// model for cost reasons or over-provision a self-hosted model
+        /// with a larger context window.
+        max_capacity_token_model: ?u32 = null,
+        /// Compaction threshold as a percentage (0-100) of the model's
+        /// context window. The conversation is compacted when
+        /// `total_tokens >= max_capacity * threshold / 100`. When `null`,
+        /// defaults to 80 (the historical hardcoded value in
+        /// `LLMModels.isDoCompact`). Range-validated at the HTTP layer.
+        compaction_threshold_percent: ?u8 = null,
         /// Configured MCP servers (snake_case, matches NALAR.md JSON convention).
         mcp_servers: ?std.json.Value = null,
         /// Profiles - parsed as json.Value then converted to map
@@ -308,6 +332,8 @@ pub const LlmConfig = struct {
             .url_style = try allocator.dupe(u8, config_json.url_style),
             .model_compaction_size_kb = config_json.model_compaction_size_kb,
             .notify_on_complete = config_json.notify_on_complete,
+            .max_capacity_token_model = config_json.max_capacity_token_model,
+            .compaction_threshold_percent = config_json.compaction_threshold_percent,
             .mcpServers_parsed = null,
             .mcp_servers = McpServersMap.init(allocator),
             .profiles_models = ProfilesMap.init(allocator),
@@ -749,6 +775,8 @@ pub const LlmConfig = struct {
             .url_style = try self.allocator.dupe(u8, self.url_style),
             .model_compaction_size_kb = self.model_compaction_size_kb,
             .notify_on_complete = self.notify_on_complete,
+            .max_capacity_token_model = self.max_capacity_token_model,
+            .compaction_threshold_percent = self.compaction_threshold_percent,
             .mcpServers_parsed = null,
             .mcp_servers = McpServersMap.init(self.allocator),
             .profiles_models = ProfilesMap.init(self.allocator),
@@ -1107,6 +1135,24 @@ pub const LlmConfig = struct {
         };
     }
 
+    /// Resolve the effective max-context-window in tokens for `model_name`.
+    /// Returns `self.max_capacity_token_model` if set, otherwise falls
+    /// back to the built-in `LLMModels.getModelTokenCount(model_name)`
+    /// default. Use this everywhere a "what's the model's context
+    /// window?" answer is needed instead of calling
+    /// `LLMModels.getModelTokenCount` directly.
+    pub fn maxCapacityForModel(self: *const LlmConfig, model_name: []const u8) u32 {
+        if (self.max_capacity_token_model) |override| return override;
+        return LLMModels.getModelTokenCount(model_name);
+    }
+
+    /// Resolve the compaction threshold as a percentage (0-100). Returns
+    /// `self.compaction_threshold_percent` if set, otherwise 80 (the
+    /// historical hardcoded value in `LLMModels.isDoCompact`).
+    pub fn compactionThresholdPercent(self: *const LlmConfig) u8 {
+        return self.compaction_threshold_percent orelse 80;
+    }
+
     /// The default `config.json` content written on first run (when no
     /// config file exists at the platform-default path). All required
     /// fields are present as empty strings — the user MUST edit this
@@ -1121,7 +1167,9 @@ pub const LlmConfig = struct {
         \\  "base_url": "",
         \\  "url_style": "openai",
         \\  "model_compaction_size_kb": 100,
-        \\  "notify_on_complete": false
+        \\  "notify_on_complete": false,
+        \\  "max_capacity_token_model": null,
+        \\  "compaction_threshold_percent": null
         \\}
     ;
 
