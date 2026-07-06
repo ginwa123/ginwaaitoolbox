@@ -3,7 +3,7 @@ import { onMounted, watch } from 'vue'
 
 const STORAGE_KEY = 'nalar-settings-active-tab'
 
-type TabId = 'defaults' | 'profiles' | 'sub-agents' | 'mcp'
+type TabId = 'defaults' | 'profiles' | 'sub-agents' | 'mcp' | 'compaction'
 
 const props = defineProps<{
   modelValue: TabId
@@ -18,6 +18,7 @@ const tabs: ReadonlyArray<{ id: TabId; label: string }> = [
   { id: 'profiles', label: 'Profiles' },
   { id: 'sub-agents', label: 'Sub-agents' },
   { id: 'mcp', label: 'MCP Servers' },
+  { id: 'compaction', label: 'Compaction' },
 ] as const
 
 // localStorage is the source of truth on mount, but the parent's

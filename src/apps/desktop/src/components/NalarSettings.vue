@@ -18,6 +18,7 @@ import DefaultsSection, { type DefaultsConfig } from './nalar/DefaultsSection.vu
 import ProfilesSection, { type ProfileRow } from './nalar/ProfilesSection.vue'
 import SubAgentsSection from './nalar/SubAgentsSection.vue'
 import McpServersSection from './nalar/McpServersSection.vue'
+import CompactionSection, { type CompactionConfig } from './nalar/CompactionSection.vue'
 import ProfileModal from './nalar/ProfileModal.vue'
 import { type LlmConfigModalValue } from './nalar/LlmConfigModal.vue'
 import SubAgentModal, { type SubAgentModalValue } from './nalar/SubAgentModal.vue'
@@ -36,7 +37,7 @@ defineExpose({
 })
 
 // ─── Tab state ────────────────────────────────────────────────────────────
-type Tab = 'defaults' | 'profiles' | 'sub-agents' | 'mcp'
+type Tab = 'defaults' | 'profiles' | 'sub-agents' | 'mcp' | 'compaction'
 const activeTab = ref<Tab>('defaults')
 
 // ─── Central config (useNalarConfig composable) ──────────────────────────
@@ -93,6 +94,7 @@ const profilesList = ref<ProfileRow[]>([])
 const activeProfile = ref<string | null>(null)
 const subAgentsList = ref<SubAgent[]>([])
 const mcpServersList = ref<McpServer[]>([])
+const compactionConfig = ref<CompactionConfig | null>(null)
 
 function syncFromConfig() {
   if (!config.value) return
@@ -120,6 +122,10 @@ function syncFromConfig() {
   activeProfile.value = c.active_profile ?? null
   subAgentsList.value = c.sub_agents ?? []
   mcpServersList.value = parseMcpServers(c.mcp_servers)
+  compactionConfig.value = {
+    max_capacity_token_model: c.max_capacity_token_model ?? null,
+    compaction_threshold_percent: c.compaction_threshold_percent ?? null,
+  }
 }
 
 function syncToConfig() {
@@ -145,6 +151,12 @@ function syncToConfig() {
     max_tokens: d.max_tokens,
     system_prompt: d.system_prompt,
     notify_on_complete: d.notify_on_complete,
+    ...(compactionConfig.value
+      ? {
+          max_capacity_token_model: compactionConfig.value.max_capacity_token_model,
+          compaction_threshold_percent: compactionConfig.value.compaction_threshold_percent,
+        }
+      : {}),
     ...(Object.keys(profiles).length > 0 ? { profiles } : {}),
     ...(activeProfile.value ? { active_profile: activeProfile.value } : {}),
     ...(subAgents.length > 0 ? { sub_agents: subAgents } : {}),
@@ -201,7 +213,7 @@ watch(
 // Whenever any section ref mutates, push back to the central config
 // (which keeps the composable's dirty counter in sync).
 watch(
-  [defaultsConfig, profilesList, activeProfile, subAgentsList, mcpServersList],
+  [defaultsConfig, profilesList, activeProfile, subAgentsList, mcpServersList, compactionConfig],
   () => { if (loaded.value) syncToConfig() },
   { deep: true },
 )
@@ -491,6 +503,11 @@ const isLoading = computed(() => !loaded.value)
           @edit="startEditMcpServer"
           @delete="deleteMcpServer"
           @add="startAddMcpServer"
+        />
+
+        <CompactionSection
+          v-else-if="activeTab === 'compaction'"
+          v-model="compactionConfig!"
         />
       </div>
 

@@ -1992,18 +1992,18 @@ export interface NalarConfig {
   model_compaction_size_kb?: number
   /**
    * Optional override for the model's context window in tokens.
-   * When omitted, the backend's built-in per-model token count is
-   * used (e.g. 200_000 for MiniMax-M2.7, 500_000 for MiniMax-M3,
-   * 200_000 fallback). Useful for under-provisioning a model for
-   * cost reasons or over-provisioning a self-hosted model.
+   * When null (or omitted), the backend's built-in per-model token
+   * count is used (e.g. 200_000 for MiniMax-M2.7, 500_000 for
+   * MiniMax-M3, 200_000 fallback). Useful for under-provisioning a
+   * model for cost reasons or over-provisioning a self-hosted model.
    */
-  max_capacity_token_model?: number
+  max_capacity_token_model?: number | null
   /**
    * Compaction threshold as a percentage (0-100) of the model's
-   * context window. When omitted, defaults to 80. Out-of-range
-   * values are rejected by the backend.
+   * context window. When null (or omitted), defaults to 80.
+   * Out-of-range values are rejected by the backend.
    */
-  compaction_threshold_percent?: number
+  compaction_threshold_percent?: number | null
 }
 
 export async function getNalarConfig(): Promise<NalarConfig> {
