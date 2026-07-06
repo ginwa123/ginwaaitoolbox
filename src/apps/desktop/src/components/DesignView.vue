@@ -291,17 +291,18 @@ watch(() => props.item.id, () => {
       </button>
     </div>
 
-    <!-- Body: canvas + (optional) chat panel -->
-    <div
-      class="flex-1 min-h-0 flex"
-      :class="showChat ? 'flex-col' : ''"
-    >
-      <!-- Iframe canvas (sandboxed) — always present. -->
+    <!-- Body: canvas + (optional) chat panel — horizontal split
+         (canvas left, chat right), matching the Kanban layout
+         (sidebar | kanban | chatview). When the chat toggle is
+         OFF the canvas takes the full width. -->
+    <div class="flex-1 min-h-0 flex">
+      <!-- Iframe canvas (sandboxed) — always present, shrinks
+           to half-width when the chat panel is open. -->
       <div
         class="bg-white"
         :class="
           showChat
-            ? 'flex-1 min-h-0 border-b'
+            ? 'flex-1 min-h-0 border-r overflow-hidden'
             : 'flex-1 min-h-0 w-full'
         "
         :style="showChat ? 'border-color: var(--color-border)' : ''"
@@ -334,11 +335,13 @@ watch(() => props.item.id, () => {
            ChatView remounts when the user switches design items
            AND when the same item's task was recreated (defensive:
            if the underlying row was deleted by another client, the
-           new chatTaskId triggers a clean remount). -->
+           new chatTaskId triggers a clean remount). The left
+           border visually separates it from the canvas (a la the
+           Kanban layout's chat pane). -->
       <div
         v-if="showChat && chatTaskId"
-        class="flex-1 min-h-0"
-        style="background: var(--semantic-card-bg);"
+        class="flex-1 min-h-0 border-l"
+        style="background: var(--semantic-card-bg); border-color: var(--color-border);"
       >
         <ChatView
           :key="'design-chat-' + chatTaskId"
