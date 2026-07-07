@@ -1025,3 +1025,763 @@ Expected: 0 errors. Build succeeds.
   actual `LLMModels.MINIMAX_2_7.name = "MiniMax-M2.7"`), fix them
   in the same PR. The tests use the imported constants so they
   should be stable.
+
+---
+
+## Status (as of 2026-07-07 02:17 UTC)
+
+**Shipped on `worktree/config-compact` (9 commits, pushed to PR #81):**
+1. `45fadc8e docs(plans): add plan for configurable compaction settings`
+2. `12e436f8 feat(config): add max_capacity_token_model + compaction_threshold_percent fields` — top-level on `LlmConfig`
+3. `8b6f9c20 feat(llm-models): add resolveMaxCapacity + shouldCompact wrappers`
+4. `a5927f3c feat(http): expose max_capacity_token_model + compaction_threshold_percent in GET/PUT /api/config/nalar`
+5. `78e3656e feat(frontend): add NalarConfig fields + CompactionSection component`
+6. `aeb082cf feat(frontend): add Compaction tab wired into NalarSettings + new tests`
+7. `2d68b0fa feat(workflow): wire compaction settings into production call sites`
+8. `b0d4f45a fix(workflow+frontend): fix pre-existing {s} format bug; update NalarTabStrip test for 5th tab`
+
+**Test baseline (last green before reshape attempt):** 990 pass, 3 skip (993 total), 0 errors. Wallclock ~2s.
+
+**Architectural decision (2026-07-07):** The user chose **option 2** — move both compaction fields off the top-level `LlmConfig` (and the `NalarConfig` JSON shape) and put them on `LlmProfile` only. Reasoning:
+
+> "because it is much easy to configure, and every profile will have
+> a [compaction_setting] ..."
+
+In option 2, sub-agents inherit the parent profile's setting unless they
+override it. This makes the per-profile mental model uniform (every
+profile knows its capacity + threshold; no profile-by-profile
+inheritance dance for sub-agents). The HTTP API shape becomes:
+- `GET/PUT /api/config/nalar` returns a `profiles` map keyed by profile
+  name, where each entry contains `max_capacity_tokens` and
+  `compaction_threshold_percent`.
+- The top-level `max_capacity_token_model` and `compaction_threshold_percent`
+  fields are REMOVED from `NalarConfigResponse`, `LlmConfig`, `LlmConfigJson`,
+  and the frontend `NalarConfig` interface.
+
+**Reshape status:** PARTIAL. A previous attempt modified `Config.zig`
+(removed top-level fields, added per-profile fields on `LlmProfile` +
+`SubAgentConfig`, updated `LlmConfigJson` + `ProfileJson` + `SubAgentJson`)
+but did NOT update the downstream consumers. The partial state was
+reverted to keep the build green. **Chunk 7 below** captures the full
+reshape needed to land option 2.
+
+**Why reverted vs. landed:** The downstream ripple is wide (8+ files:
+workflow.zig, llm_history.zig, http_response.zig, nalar_config_get.zig,
+nalar_config_put.zig, nalar_config_put_test.zig, config_test.zig,
+compaction_config_threshold_test.zig, CompactionSection.spec.ts, +
+the nalar_tab_strip / NalarSettings UI). Each consumer needs the
+new per-profile resolver signature. A new chunk dedicated to the
+reshape (Chunk 7) is faster than doing it as a "fix the partial
+state" chore.
+
+---
+
+## Chunk 7: Reshape compaction settings to per-profile only (option 2)
+
+**Goal:** Replace the top-level `max_capacity_token_model` +
+`compaction_threshold_percent` on `LlmConfig` (and on the HTTP
+`NalarConfigResponse`) with `max_capacity_tokens` +
+`compaction_threshold_percent` on each `LlmProfile`. Sub-agents
+inherit the parent profile's setting unless they override. The
+old top-level fields are removed everywhere.
+
+**Why this chunk is separate from Chunks 1–6:** The original
+Chunks 1–6 built the top-level shape (option 1). Chunk 7 is the
+option-2 reshape — same surface area, different layout. It's
+large because the wire format, the resolver API, the test
+fixtures, and the frontend all need to align.
+
+**Estimated effort:** ~4–6 hours. Touches 8+ Zig files, 2 frontend
+files, 2 test files. ~+8 new tests, ~15 modified tests, 0 regressions.
+
+### File changes summary
+
+| File | Change | Why |
+|------|--------|-----|
+| `src/modules/config/Config.zig` | Remove `LlmConfig.max_capacity_token_model` + `LlmConfig.compaction_threshold_percent`. Add `LlmProfile.max_capacity_tokens: ?u32` + `LlmProfile.compaction_threshold_percent: ?u8`. Add `SubAgentConfig.max_capacity_tokens` + `SubAgentConfig.compaction_threshold_percent` (same shape, default null = inherit). Update `LlmConfigJson`, `ProfileJson`, `SubAgentJson` mirrors. Update `init`, `clone`, `addProfile`, `parseSubAgentsJson`, `defaultConfigJson` (remove top-level keys). Rewrite `maxCapacityForModel` + `compactionThresholdPercent` to take `(profile: ?*const LlmProfile, sub_agent: ?*const SubAgentConfig, model_name: []const u8)` and resolve the cascade. | The core data model change. |
+| `src/ai_workflow/tui/workflow.zig` | Update `maybeCompactMessagesNew` call site (around line 864) to pass `profile` and `sub_agent` (already in scope via `LlmConfigHolder` + per-call profile resolution) to `cfg.maxCapacityForModel` + `cfg.compactionThresholdPercent`. | Production consumer of the resolver. |
+| `src/ai_workflow/tui/llm_history.zig` | Update `SessionMessageResponse.max_capacity_total_tokens` assembly to use the per-profile resolver. The caller already has the profile in scope (it's used for `max_tokens`). | Response builder for chat messages. |
+| `src/ai_workflow/tui/http_handlers/http_response.zig` | Remove `NalarConfigResponse.max_capacity_token_model` + `NalarConfigResponse.compaction_threshold_percent`. Add `NalarConfigResponse.profiles: ?std.json.Value = null` (the raw `profiles_models` map keyed by name, so the frontend can iterate). | Wire format. The frontend reads the profiles map directly. |
+| `src/ai_workflow/tui/http_handlers/nalar_config_get.zig` | Remove the two top-level field copies. Set `profiles = self.profiles_models.serializeAsJsonValue(allocator)` (a small helper). | GET side. |
+| `src/ai_workflow/tui/http_handlers/nalar_config_put.zig` | Remove the two top-level `ConfigInput` fields and the apply block. Add an optional `profiles: ?std.json.Value` field to `ConfigInput` for partial profile updates (semantics: merge into existing profiles by name, preserving unspecified fields). | PUT side. Partial-update of profiles is the new ergonomic model. |
+| `src/ai_workflow/tui/http_handlers/nalar_config_put_test.zig` | Update `makeConfig` literal (drop the 2 top-level fields). Update the 4 static-contract tests at lines 235/249/263/285 to check for the new shape (e.g., test that `ConfigInput` has a `profiles` field instead of the 2 top-level fields). | Test fixture + static tests. |
+| `src/modules/config/config_test.zig` | Update 4 round-trip tests at lines 1246/1260/1273/1287 to assert per-profile values (set `profiles: { "default": { ..., "max_capacity_tokens": 128000 } }` instead of top-level). Update 2 resolver tests at lines 1300/1316/1332/1346 to pass a profile to the resolver and assert the cascade (sub-agent override beats profile beats built-in). | Round-trip + resolver tests. |
+| `src/ai_workflow/tui/compaction_config_threshold_test.zig` | Rewrite the 4 tests to build an `LlmProfile` with the desired threshold and call `cfg.compactionThresholdPercent(profile, null, "model")`. Add a new test for sub-agent override behavior. | Resolver integration test. |
+| `src/apps/desktop/src/types/NalarConfig.ts` (or equivalent) | Remove the 2 top-level fields from the `NalarConfig` interface. The `profiles: Record<string, LlmProfile>` already exists; add `max_capacity_tokens` and `compaction_threshold_percent` to the `LlmProfile` interface. | Frontend types. |
+| `src/apps/desktop/src/components/NalarSettings/CompactionSection.vue` | Rewrite the component to iterate `props.profiles` (a `Record<string, LlmProfile>`) and render one input row per profile. Each row's v-model is `profiles[profileName].compaction_threshold_percent` and `profiles[profileName].max_capacity_tokens`. The PUT handler sends the whole profiles map (or only the changed rows — implementation choice). | UI. This is the bulk of the visible UX change. |
+| `src/apps/desktop/src/__tests__/CompactionSection.spec.ts` | Rewrite the test fixtures (top-level `max_capacity_token_model` → per-profile `max_capacity_tokens`). Add a test that asserts a profile with no override falls back to 80%. Add a test that asserts a sub-agent override beats the parent profile. | Frontend tests. |
+
+### Task 7.1: Reshape `Config.zig`
+
+**Files:**
+- Modify: `src/modules/config/Config.zig`
+
+- [ ] **Step 7.1.1: Remove `max_capacity_token_model` and `compaction_threshold_percent` from `LlmConfig`**
+
+The two fields were added in commit `12e436f8` (Chunk 1). Remove
+their declarations from the outer `LlmConfig` struct (around line 28-37).
+The `LlmConfig.maxCapacityForModel` and `LlmConfig.compactionThresholdPercent`
+helpers will be rewritten in Step 7.1.4.
+
+- [ ] **Step 7.1.2: Remove the same two fields from `LlmConfigJson`**
+
+The two fields were added in commit `12e436f8` (Chunk 1). Remove
+their declarations from the inner `LlmConfigJson` struct (around line 173-190).
+Also remove the corresponding `.max_capacity_token_model = ...` and
+`.compaction_threshold_percent = ...` lines from the `init` body (around line 351)
+and from `clone` (around line 798).
+
+- [ ] **Step 7.1.3: Remove the same two keys from `defaultConfigJson`**
+
+The raw string `defaultConfigJson` (around line 1184) currently ends with
+`\\  "max_capacity_token_model": null,\n\\  "compaction_threshold_percent": null\n\\}`.
+Remove those two lines so the default config doesn't write top-level
+keys (which would be silently ignored by the loader but are a UX wart).
+
+- [ ] **Step 7.1.4: Add `max_capacity_tokens` + `compaction_threshold_percent` to `LlmProfile`**
+
+In the `LlmProfile` struct (around line 60-77), after the
+existing `sub_agents: SubAgentsList = &.{},` field, add:
+
+```zig
+/// Optional override for the context window (in tokens) used
+/// by this profile. `null` = use `LLMModels.getModelTokenCount(model)`
+/// built-in default. Set this when using a self-hosted model with
+/// a non-standard context window, or to under-provision for cost.
+max_capacity_tokens: ?u32 = null,
+/// Compaction threshold as a percentage (0-100) of the model's
+/// context window. `null` = use the built-in 80. Values > 100
+/// are rejected by the HTTP layer with `error.InvalidThresholdPercent`.
+compaction_threshold_percent: ?u8 = null,
+```
+
+- [ ] **Step 7.1.5: Add the same two fields to `SubAgentConfig`**
+
+In the `SubAgentConfig` struct (around line 84-95), after the
+existing `system_prompt: []const u8` field, add:
+
+```zig
+/// Optional override for the context window (in tokens) for
+/// this sub-agent. `null` = inherit from the parent profile (or
+/// the built-in default if no profile).
+max_capacity_tokens: ?u32 = null,
+/// Compaction threshold percentage (0-100) for this sub-agent.
+/// `null` = inherit from the parent profile (or 80 if no profile).
+compaction_threshold_percent: ?u8 = null,
+```
+
+- [ ] **Step 7.1.6: Update `ProfileJson` + `SubAgentJson` JSON parse structs**
+
+In `ProfileJson` (around line 178-185), after the `sub_agents` field, add:
+
+```zig
+/// Optional per-profile override for the context window (in tokens).
+/// Null = use LLMModels built-in per-model default.
+max_capacity_tokens: ?u32 = null,
+/// Optional per-profile override for the compaction threshold
+/// percentage (0-100). Null = use built-in 80. Range-validated
+/// at the HTTP layer.
+compaction_threshold_percent: ?u8 = null,
+```
+
+In `SubAgentJson` (around line 217-225), after the `system_prompt` field, add:
+
+```zig
+/// Optional per-sub-agent override for the context window (in tokens).
+max_capacity_tokens: ?u32 = null,
+/// Optional per-sub-agent override for the compaction threshold
+/// percentage (0-100).
+compaction_threshold_percent: ?u8 = null,
+```
+
+- [ ] **Step 7.1.7: Update `addProfile` to capture the new fields**
+
+In `addProfile` (around line 463-485), the `.sub_agents = profile_sub_agents,`
+line is followed by the `});`. Insert before `});`:
+
+```zig
+// Per-profile compaction overrides — optional, parsed from JSON.
+.max_capacity_tokens = profile.max_capacity_tokens,
+.compaction_threshold_percent = profile.compaction_threshold_percent,
+```
+
+- [ ] **Step 7.1.8: Update `parseSubAgentsJson` to capture the new fields**
+
+In `parseSubAgentsJson` (around line 537-560), the `.system_prompt = system_prompt,`
+line is followed by the `});`. Insert before `});`:
+
+```zig
+// Per-sub-agent compaction overrides — optional, parsed from JSON.
+.max_capacity_tokens = j.max_capacity_tokens,
+.compaction_threshold_percent = j.compaction_threshold_percent,
+```
+
+- [ ] **Step 7.1.9: Rewrite `maxCapacityForModel` and `compactionThresholdPercent`**
+
+Replace the existing helpers (around lines 1159-1175) with cascade
+versions:
+
+```zig
+/// Resolve the effective max-context-window in tokens for a given
+/// model under the optional profile + sub-agent scope. Cascade order:
+///   1. sub_agent.max_capacity_tokens (if sub_agent is non-null and field is set)
+///   2. profile.max_capacity_tokens (if profile is non-null and field is set)
+///   3. LLMModels.getModelTokenCount(model_name) (built-in default)
+///
+/// Use this everywhere a "what's the effective context window for
+/// THIS chat?" answer is needed.
+pub fn maxCapacityForModel(
+    self: *const LlmConfig,
+    profile: ?*const LlmProfile,
+    sub_agent: ?*const SubAgentConfig,
+    model_name: []const u8,
+) u32 {
+    if (sub_agent) |sa| if (sa.max_capacity_tokens) |override| return override;
+    if (profile) |p| if (p.max_capacity_tokens) |override| return override;
+    return LLMModels.getModelTokenCount(model_name);
+}
+
+/// Resolve the compaction threshold as a percentage (0-100). Cascade
+/// order (same shape as maxCapacityForModel):
+///   1. sub_agent.compaction_threshold_percent (if non-null and set)
+///   2. profile.compaction_threshold_percent (if non-null and set)
+///   3. 80 (the historical hardcoded value in `LLMModels.isDoCompact`)
+pub fn compactionThresholdPercent(
+    self: *const LlmConfig,
+    profile: ?*const LlmProfile,
+    sub_agent: ?*const SubAgentConfig,
+) u8 {
+    if (sub_agent) |sa| if (sa.compaction_threshold_percent) |override| return override;
+    if (profile) |p| if (p.compaction_threshold_percent) |override| return override;
+    return 80;
+}
+```
+
+Both methods take `self` for API consistency but don't use it for
+the resolution (cascading doesn't need the top-level config — the
+profile + sub-agent + built-in default is the full chain). The
+`self` parameter is kept so callers don't need a separate helper
+import.
+
+- [ ] **Step 7.1.10: Build verification**
+
+Run:
+```bash
+cd .worktrees/config-compact && timeout 180 zig build test --summary all 2>&1 | tail -n 20
+```
+
+Expected: ~8 compile errors in `Config.zig` callers
+(`workflow.zig:864`, `compaction_config_threshold_test.zig`,
+`nalar_config_put_test.zig:38`, `config_test.zig:1257/1270/1284/1297`).
+These are fixed in Tasks 7.2–7.5. The test runner does NOT pass
+cleanly after Step 7.1.10 alone — proceed to Task 7.2.
+
+### Task 7.2: Update `workflow.zig` call site
+
+**Files:**
+- Modify: `src/ai_workflow/tui/workflow.zig` (around line 864 — the `LLMModels.shouldCompact` call)
+
+- [ ] **Step 7.2.1: Read the current `shouldCompact` call site**
+
+Verify the surrounding context: the function should already have
+`llm_config_holder` in scope (for accessing the active `LlmConfig`)
+and should have access to the active profile (via the chat's
+`profile_name` field).
+
+- [ ] **Step 7.2.2: Resolve profile + sub-agent before calling the new resolver**
+
+Before the `shouldCompact` call, add:
+
+```zig
+const profile: ?*const LlmConfig.LlmProfile = blk: {
+    const cfg = llm_config_holder.current() orelse break :blk null;
+    if (cfg.profiles_models.getPtr(profile_name)) |p| break :blk p;
+    break :blk null;
+};
+const sub_agent: ?*const LlmConfig.SubAgentConfig = blk: {
+    const cfg = llm_config_holder.current() orelse break :blk null;
+    if (sub_agent_name) |san| {
+        if (cfg.sub_agents_map.getPtr(san)) |sa| break :blk sa;
+    }
+    break :blk null;
+};
+const max_capacity = cfg.maxCapacityForModel(profile, sub_agent, model_name);
+const threshold = cfg.compactionThresholdPercent(profile, sub_agent);
+
+if (!force and !agent.LLMModels.shouldCompact(total_tokens, max_capacity, threshold)) {
+    return null;
+}
+```
+
+If `sub_agents_map` doesn't exist on `LlmConfig`, find the existing
+sub-agent lookup helper and use it (or `getSubAgent` if there's one
+already).
+
+- [ ] **Step 7.2.3: Build verification**
+
+```bash
+cd .worktrees/config-compact && timeout 180 zig build test --summary all 2>&1 | tail -n 10
+```
+
+Expected: the workflow.zig errors go away. Other downstream
+errors remain (resolved in Tasks 7.3–7.5).
+
+### Task 7.3: Update `http_response.zig` + `nalar_config_get.zig`
+
+**Files:**
+- Modify: `src/ai_workflow/tui/http_handlers/http_response.zig` (line 281-286)
+- Modify: `src/ai_workflow/tui/http_handlers/nalar_config_get.zig` (line 114-115 + line 146-148)
+
+- [ ] **Step 7.3.1: Remove the two top-level fields from `NalarConfigResponse`**
+
+In `http_response.zig`, remove:
+
+```zig
+max_capacity_token_model: ?u32 = null,
+compaction_threshold_percent: ?u8 = null,
+```
+
+Replace with a single `profiles` field:
+
+```zig
+/// Raw profiles map (parsed from `LlmConfig.profiles_models`). Keyed
+/// by profile name. Each entry contains the full `LlmProfile` shape
+/// (model, base_url, api_key, ..., max_capacity_tokens,
+/// compaction_threshold_percent, sub_agents). The frontend reads this
+/// map directly to render the per-profile compaction UI.
+profiles: ?std.json.Value = null,
+```
+
+- [ ] **Step 7.3.2: Populate `profiles` in the GET handler**
+
+In `nalar_config_get.zig`, remove the two top-level field copies
+(`.max_capacity_token_model = ...`, `.compaction_threshold_percent = ...`).
+Replace with:
+
+```zig
+.profiles = self.profiles_models.serializeAsJsonValue(allocator),
+```
+
+If `serializeAsJsonValue` doesn't exist on `ProfilesMap`, add it:
+
+```zig
+pub fn serializeAsJsonValue(
+    self: ProfilesMap,
+    allocator: std.mem.Allocator,
+) std.json.Value {
+    var obj = std.json.ObjectMap.init(allocator);
+    var it = self.iterator();
+    while (it.next()) |entry| {
+        const profile_json = std.json.Value{
+            .object_string = std.json.ObjectMap.init(allocator),
+        };
+        // For each LlmProfile field, write a key-value pair.
+        // (Manual construction; can also use std.json.Stringify.valueAlloc.)
+        ...
+        obj.put(entry.key_ptr.*, profile_json) catch continue;
+    }
+    return std.json.Value{ .object = obj };
+}
+```
+
+**Pragmatic shortcut:** If the manual construction is error-prone,
+use `std.json.Stringify.valueAlloc(allocator, self, .{})` on a
+dedicated `ProfilesMapSnapshot` struct (a temporary `{[*:0][]const u8: LlmProfile}`-
+shaped copy) instead. The snapshot is freed in the same scope.
+
+- [ ] **Step 7.3.3: Build verification**
+
+```bash
+cd .worktrees/config-compact && timeout 180 zig build test --summary all 2>&1 | tail -n 10
+```
+
+Expected: GET handler compiles. PUT handler still has the old top-level
+field apply blocks (Task 7.4).
+
+### Task 7.4: Update `nalar_config_put.zig` for the new wire format
+
+**Files:**
+- Modify: `src/ai_workflow/tui/http_handlers/nalar_config_put.zig` (lines 107-112, 300-305, 346-350)
+
+- [ ] **Step 7.4.1: Remove the two top-level apply blocks**
+
+Remove:
+
+```zig
+if (input.max_capacity_token_model) |mc| {
+    config_json.max_capacity_token_model = mc;
+}
+if (input.compaction_threshold_percent) |tp| {
+    if (tp > 100) return error.InvalidThresholdPercent;
+    config_json.compaction_threshold_percent = tp;
+}
+```
+
+- [ ] **Step 7.4.2: Remove the two top-level fields from `ConfigInput`**
+
+In `ConfigInput` (around line 300), remove `max_capacity_token_model`
+and `compaction_threshold_percent`.
+
+- [ ] **Step 7.4.3: Add a `profiles` field to `ConfigInput`**
+
+After `notify_on_complete` (around line 300), add:
+
+```zig
+/// Optional profiles update. If non-null, MERGE into the existing
+/// `LlmConfig.profiles_models` by profile name. Each entry replaces
+/// only the fields present in the JSON; fields absent from the JSON
+/// preserve their existing values. To DELETE a profile, send `null`
+/// as the entry's value (e.g. `{"profiles": {"old_profile": null}}`).
+profiles: ?std.json.Value = null,
+```
+
+- [ ] **Step 7.4.4: Implement the merge logic**
+
+Add a helper (or inline at the top of the handler):
+
+```zig
+fn applyProfilesUpdate(
+    cfg_json: *LlmConfigJson,
+    profiles: std.json.Value,
+    allocator: std.mem.Allocator,
+) !void {
+    if (profiles != .object) return error.InvalidProfilesFormat;
+    var it = profiles.object.iterator();
+    while (it.next()) |entry| {
+        const key_dup = try allocator.dupe(u8, entry.key_ptr.*);
+        errdefer allocator.free(key_dup);
+        if (entry.value_ptr.* == .null) {
+            // Delete the profile.
+            try cfg_json.profiles.remove(key_dup);
+            continue;
+        }
+        if (entry.value_ptr.* != .object) return error.InvalidProfileEntry;
+        const profile_json = entry.value_ptr.object;
+        // Validate threshold percent range if present.
+        if (profile_json.get("compaction_threshold_percent")) |tp| {
+            if (tp != .integer) return error.InvalidThresholdPercentType;
+            if (tp.integer < 0 or tp.integer > 100) {
+                return error.InvalidThresholdPercent;
+            }
+        }
+        // Insert or replace.
+        try cfg_json.profiles.put(key_dup, profile_json);
+    }
+}
+```
+
+If `cfg_json.profiles` is a different type (e.g. `?std.json.Value`),
+adapt accordingly. The validation only needs to catch the threshold
+range — other profile fields are accepted as-is (LlmConfigJson's
+existing parse logic will reject malformed types).
+
+- [ ] **Step 7.4.5: Wire the merge into the handler**
+
+After the existing apply block (around line 113), add:
+
+```zig
+if (input.profiles) |profiles| {
+    try applyProfilesUpdate(config_json, profiles, allocator);
+}
+```
+
+- [ ] **Step 7.4.6: Build verification**
+
+```bash
+cd .worktrees/config-compact && timeout 180 zig build test --summary all 2>&1 | tail -n 10
+```
+
+Expected: PUT handler compiles. Test fixtures and frontend still
+need updates (Tasks 7.5–7.7).
+
+### Task 7.5: Update tests
+
+**Files:**
+- Modify: `src/ai_workflow/tui/http_handlers/nalar_config_put_test.zig` (lines 38-39)
+- Modify: `src/modules/config/config_test.zig` (lines 1246-1356)
+- Modify: `src/ai_workflow/tui/compaction_config_threshold_test.zig` (rewrite)
+
+- [ ] **Step 7.5.1: Update `nalar_config_put_test.zig` `makeConfig` literal**
+
+In `makeConfig` (line 30-44), remove:
+```zig
+.max_capacity_token_model = null,
+.compaction_threshold_percent = null,
+```
+
+- [ ] **Step 7.5.2: Rewrite the 4 static-contract tests in `nalar_config_put_test.zig`**
+
+The existing tests at lines 235/249/263/285 check that the old
+top-level apply block is present. Replace them with:
+
+1. **`PUT handler accepts `profiles` field in ConfigInput`** — check
+   that the source contains `profiles: ?std.json.Value = null,` and
+   `applyProfilesUpdate`.
+2. **`PUT handler validates compaction_threshold_percent > 100`** —
+   check that the source contains `error.InvalidThresholdPercent` AND
+   a range check `< 0 or > 100` somewhere in `applyProfilesUpdate`.
+3. **`PUT handler does NOT write top-level max_capacity_token_model`** —
+   grep for absence of `config_json.max_capacity_token_model =` and
+   `input.max_capacity_token_model`.
+4. **`PUT handler merges profiles by name`** — check that the source
+   contains `cfg_json.profiles.put(key_dup, profile_json)` or
+   equivalent merge logic.
+
+- [ ] **Step 7.5.3: Update the 4 round-trip tests in `config_test.zig`**
+
+At lines 1246/1260/1273/1287, the tests set the 2 top-level fields
+in JSON and read them back. Replace with per-profile tests:
+
+```zig
+test "LlmConfig: profile.max_capacity_tokens reads value from JSON" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b",
+        \\  "profiles": { "default": { "model": "m", "max_capacity_tokens": 128000 } } }
+    ;
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+    const profile = cfg.profiles_models.get("default").?;
+    try std.testing.expectEqual(@as(?u32, 128000), profile.max_capacity_tokens);
+}
+```
+
+Apply the same shape to `compaction_threshold_percent`. Mirror the
+null-default tests too.
+
+- [ ] **Step 7.5.4: Rewrite the 2 resolver tests in `config_test.zig`**
+
+The tests at lines 1300/1316/1332/1346 call the OLD single-arg
+resolvers. Replace with:
+
+```zig
+test "LlmConfig: maxCapacityForModel cascade (sub-agent > profile > built-in)" {
+    // Build a config with one profile ("dev") that has
+    // max_capacity_tokens = 100_000, and one sub-agent ("alpha")
+    // that has max_capacity_tokens = 50_000.
+    ...
+    // sub-agent > profile
+    try std.testing.expectEqual(@as(u32, 50_000),
+        cfg.maxCapacityForModel(&profile, &sub_agent, "MiniMax-M3"));
+    // profile > built-in (no sub-agent)
+    try std.testing.expectEqual(@as(u32, 100_000),
+        cfg.maxCapacityForModel(&profile, null, "MiniMax-M3"));
+    // built-in default (no profile, no sub-agent)
+    try std.testing.expectEqual(@as(u32, 500_000),
+        cfg.maxCapacityForModel(null, null, "MiniMax-M3"));
+}
+```
+
+Mirror for `compactionThresholdPercent` (with 80 as the default).
+
+- [ ] **Step 7.5.5: Rewrite `compaction_config_threshold_test.zig`**
+
+The 4 existing tests use `cfg.compactionThresholdPercent()` (no args).
+Rewrite to use the cascade. Add a new test for sub-agent override.
+
+### Task 7.6: Frontend types + UI
+
+**Files:**
+- Modify: `src/apps/desktop/src/types/NalarConfig.ts` (or equivalent)
+- Modify: `src/apps/desktop/src/components/NalarSettings/CompactionSection.vue`
+- Modify: `src/apps/desktop/src/components/NalarSettings/NalarSettings.vue` (if the parent passes the props differently)
+- Modify: `src/apps/desktop/src/__tests__/CompactionSection.spec.ts`
+
+- [ ] **Step 7.6.1: Update `NalarConfig` and `LlmProfile` TypeScript interfaces**
+
+In the `NalarConfig` interface, remove:
+```ts
+max_capacity_token_model: number | null;
+compaction_threshold_percent: number | null;
+```
+
+Add to the `LlmProfile` interface:
+```ts
+max_capacity_tokens: number | null;
+compaction_threshold_percent: number | null;
+```
+
+- [ ] **Step 7.6.2: Rewrite `CompactionSection.vue`**
+
+Replace the current single-input UI with a per-profile iteration:
+
+```vue
+<template>
+  <div class="compaction-section">
+    <h3>Compaction settings</h3>
+    <div v-for="(profile, name) in profiles" :key="name" class="profile-row">
+      <h4>{{ name }} ({{ profile.model || 'no model' }})</h4>
+      <label>
+        Max context window (tokens):
+        <input
+          type="number"
+          :value="profile.max_capacity_tokens ?? ''"
+          @input="updateMaxCapacity(name, $event)"
+          placeholder="(built-in default)"
+        />
+      </label>
+      <label>
+        Compaction threshold (%):
+        <input
+          type="number"
+          min="0"
+          max="100"
+          :value="profile.compaction_threshold_percent ?? ''"
+          @input="updateThreshold(name, $event)"
+          placeholder="80"
+        />
+      </label>
+    </div>
+    <button @click="save" :disabled="!dirty">Save</button>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed } from 'vue';
+import type { LlmProfile } from '@/types/NalarConfig';
+
+const props = defineProps<{
+  profiles: Record<string, LlmProfile>;
+}>();
+const emit = defineEmits<{ save: [profiles: Record<string, LlmProfile>] }>();
+
+const local = ref<Record<string, LlmProfile>>(
+  JSON.parse(JSON.stringify(props.profiles)),
+);
+const dirty = computed(() => JSON.stringify(local.value) !== JSON.stringify(props.profiles));
+
+function updateMaxCapacity(name: string, e: Event) {
+  const v = (e.target as HTMLInputElement).value;
+  local.value[name].max_capacity_tokens = v === '' ? null : parseInt(v, 10);
+}
+// (similar for updateThreshold)
+
+function save() { emit('save', local.value); }
+</script>
+```
+
+The parent's `save` handler issues a PUT to `/api/config/nalar` with
+`{ profiles: local }`. The PUT handler applies the merge (Task 7.4).
+
+- [ ] **Step 7.6.3: Update `CompactionSection.spec.ts`**
+
+Rewrite the existing 6 fixtures to use per-profile `modelValue`:
+```ts
+props: { profiles: { dev: { model: 'm', max_capacity_tokens: 256000, ... } } }
+```
+
+Add a new test:
+- **`CompactionSection shows "built-in default" placeholder when profile.max_capacity_tokens is null`**
+- **`CompactionSection shows "80" placeholder when profile.compaction_threshold_percent is null`**
+- **`CompactionSection emits save event with the merged profiles map`**
+
+### Task 7.7: End-to-end verification
+
+- [ ] **Step 7.7.1: Run Zig tests**
+
+```bash
+cd .worktrees/config-compact && timeout 240 zig build test --summary all 2>&1 | tail -n 5
+```
+
+Expected: 998 pass (990 baseline + ~8 new tests), 3 skip, 0 errors.
+Wallclock ~2s.
+
+- [ ] **Step 7.7.2: Run frontend build**
+
+```bash
+cd src/apps/desktop && timeout 120 bun run build 2>&1 | tail -n 10
+```
+
+Expected: 0 type errors. The Vue webapp builds cleanly.
+
+- [ ] **Step 7.7.3: Manual smoke test**
+
+```bash
+env -i HOME=/tmp/nalar-reshape-test PATH=$PATH \
+  .worktrees/config-compact/zig-out/bin/nalar --port 18080 &
+sleep 3
+
+# Create a config with 2 profiles
+curl -X POST http://127.0.0.1:18080/api/config/nalar \
+  -H "Content-Type: application/json" \
+  -d '{
+    "api_key": "test", "model": "m", "base_url": "b",
+    "profiles": {
+      "dev":  {"model": "m", "max_capacity_tokens": 100000, "compaction_threshold_percent": 50},
+      "prod": {"model": "m", "max_capacity_tokens": 500000, "compaction_threshold_percent": 90}
+    }
+  }'
+
+# GET it back, confirm the per-profile shape
+curl http://127.0.0.1:18080/api/config/nalar | jq '.profiles'
+
+# Send a chat, confirm the resolver uses the right profile
+# (Profile selection logic is upstream of this chunk — see
+# workflow.zig:maybeCompactMessagesNew for the active profile
+# resolution.)
+
+kill $!
+```
+
+- [ ] **Step 7.7.4: Commit + PR**
+
+```bash
+cd .worktrees/config-compact
+git add -A
+git commit -m "feat(config): reshape compaction settings to per-profile only
+
+Move max_capacity_tokens and compaction_threshold_percent from the
+top-level LlmConfig to LlmProfile (with sub-agent inheritance
+cascade). Update HTTP wire format, resolver API, frontend types,
+and UI. See docs/superpowers/plans/2026-07-06-configurable-compaction.md
+Chunk 7 for the full task breakdown.
+
+Resolves the option-2 architectural decision (per-profile is easier
+to configure than per-config + per-profile mapping).
+"
+git push origin worktree/config-compact
+```
+
+### Acceptance criteria for Chunk 7
+
+1. Top-level `LlmConfig.max_capacity_token_model` and
+   `LlmConfig.compaction_threshold_percent` are REMOVED (no longer
+   exist on the struct or its JSON mirror).
+2. `LlmProfile.max_capacity_tokens` and
+   `LlmProfile.compaction_threshold_percent` exist with default `null`.
+3. `SubAgentConfig.max_capacity_tokens` and
+   `SubAgentConfig.compaction_threshold_percent` exist with default
+   `null` (inheriting from parent profile).
+4. The resolver cascade is: sub-agent override → profile override →
+   built-in default. Verified by tests in `config_test.zig` and
+   `compaction_config_threshold_test.zig`.
+5. The HTTP wire format removes the top-level fields and adds a
+   `profiles` map keyed by profile name. Verified by
+   `nalar_config_get.zig` + `nalar_config_put.zig` static-contract
+   tests.
+6. The frontend `NalarConfig` interface has no top-level fields;
+   `LlmProfile` has the two new fields. Verified by `bun run build`.
+7. The `CompactionSection` UI renders one row per profile, each
+   with its own threshold + max_capacity inputs. Verified by the
+   3 new spec tests.
+8. Test count grows by 8 new tests (vs. the 23 added in Chunks 1–6).
+9. All 990 baseline tests still pass; 0 regressions.
+10. `zig build install:linux:system` succeeds (4/6 steps; the cp
+    to /usr/local/bin/nalar fails harmlessly with permission denied).
+
+### Risks for Chunk 7
+
+- **HTTP wire format change is breaking.** Old clients that PUT
+  `max_capacity_token_model` at the top level will get a silent
+  no-op (the field is not parsed). Add a one-line log warning when
+  `input.max_capacity_token_model` or `input.compaction_threshold_percent`
+  is present in the PUT body. (Optional — the field is gone from
+  the type so most clients won't even compile against it.)
+- **Cascade semantics in sub-agents.** A sub-agent inherits from
+  the parent profile, but the parent profile lookup uses the
+  chat's `profile_name`, not the sub-agent's `profile_name` field
+  (most sub-agents don't have one). Verify the call site in
+  `workflow.zig` looks up the parent profile correctly.
+- **Frontend UX change.** Users who had set the top-level fields
+  via `curl` will lose them on the next config save. Document in
+  the migration notes (add to the PR description).
