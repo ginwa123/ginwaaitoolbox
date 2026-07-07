@@ -274,16 +274,6 @@ pub const NalarConfigResponse = struct {
     /// estimate exceeds this value trigger context compaction.
     /// Consumed by `session_compact.zig:57`.
     model_compaction_size_kb: usize = 100,
-    /// Optional override for the model's context window in tokens.
-    /// When null, `LLMModels.getModelTokenCount(model)` returns the
-    /// built-in default. Consumed by `workflow.zig:maybeCompactMessagesNew`
-    /// via `LlmConfig.maxCapacityForModel`.
-    max_capacity_token_model: ?u32 = null,
-    /// Compaction threshold as a percentage (0-100) of the model's
-    /// context window. When null, defaults to 80. Consumed by
-    /// `workflow.zig:maybeCompactMessagesNew` via
-    /// `LlmConfig.compactionThresholdPercent`.
-    compaction_threshold_percent: ?u8 = null,
 };
 
 /// Wire format for a single sub-agent entry. Mirrors

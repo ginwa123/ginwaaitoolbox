@@ -688,7 +688,10 @@ pub fn getSessionMessagesSorted(
             const di_opt = nalarcore.getSingleton() catch null;
             if (di_opt) |di| {
                 const cfg = nalarcore.getLlmConfig(di);
-                break :blk cfg.maxCapacityForModel(cfg.model);
+                // No profile/sub-agent in scope at this call site — pass
+                // null for both so the resolver falls back to the
+                // built-in LLMModels default for the active model.
+                break :blk cfg.maxCapacityForModel(null, null, cfg.model);
             }
             break :blk llm_models.getModelTokenCount("");
         },

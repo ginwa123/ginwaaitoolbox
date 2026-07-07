@@ -104,13 +104,10 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     if (input.model_compaction_size_kb) |kb| {
         config_json.model_compaction_size_kb = kb;
     }
-    if (input.max_capacity_token_model) |mc| {
-        config_json.max_capacity_token_model = mc;
-    }
-    if (input.compaction_threshold_percent) |tp| {
-        if (tp > 100) return error.InvalidThresholdPercent;
-        config_json.compaction_threshold_percent = tp;
-    }
+    // Note: `max_capacity_token_model` and `compaction_threshold_percent`
+    // were moved to per-profile in Chunk 7 (see LlmProfile fields in
+    // Config.zig). The top-level equivalents are gone from ConfigInput
+    // — clients edit them per-profile via the `profiles` map.
 
     // Handle profiles - add, update, or delete
     if (input.profiles) |profiles| {
@@ -142,6 +139,17 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
                     try profile_obj.put(allocator, "temperature", json.Value{ .string = try allocator.dupe(u8, profile_change.temperature) });
                     try profile_obj.put(allocator, "url_style", json.Value{ .string = try allocator.dupe(u8, profile_change.url_style) });
                     try profile_obj.put(allocator, "api_key", if (profile_change.api_key.len > 0) json.Value{ .string = try allocator.dupe(u8, profile_change.api_key) } else json.Value{ .string = "" });
+                    // Per-profile compaction overrides (Chunk 7). When
+                    // the input omits them, we omit the JSON key so an
+                    // "update" doesn't clobber the existing on-disk
+                    // value. When present, validate the threshold range.
+                    if (profile_change.max_capacity_tokens) |mct| {
+                        try profile_obj.put(allocator, "max_capacity_tokens", json.Value{ .integer = mct });
+                    }
+                    if (profile_change.compaction_threshold_percent) |tp| {
+                        if (tp > 100) return error.InvalidThresholdPercent;
+                        try profile_obj.put(allocator, "compaction_threshold_percent", json.Value{ .integer = tp });
+                    }
                     const profile_value = json.Value{ .object = profile_obj };
                     try profiles_obj.put(allocator, try allocator.dupe(u8, profile_change.name), profile_value);
                 }
@@ -293,16 +301,9 @@ const ConfigInput = struct {
     /// to shrink the LLM context. Absent = preserve existing on-disk
     /// value. Mirrors the `LlmConfigJson` default (`100`).
     model_compaction_size_kb: ?usize = null,
-    /// Optional override for the model's context window in tokens.
-    /// Absent = preserve existing on-disk value. Mirrors the
-    /// `LlmConfigJson` default (null = use built-in per-model token
-    /// count).
-    max_capacity_token_model: ?u32 = null,
-    /// Compaction threshold percentage (0-100). Absent = preserve
-    /// existing on-disk value. Mirrors the `LlmConfigJson` default
-    /// (null = use 80). Out-of-range values (e.g. > 100) surface as
-    /// `error.InvalidThresholdPercent`.
-    compaction_threshold_percent: ?u8 = null,
+    // Note: per-profile compaction overrides (max_capacity_tokens,
+    // compaction_threshold_percent) live on `ProfileChange` below
+    // (Chunk 7 reshape). Top-level equivalents removed.
     /// Whole-list replace for the top-level `sub_agents` array.
     /// When present, replaces the existing sub-agents entirely.
     /// When absent, existing sub-agents are preserved. Borrowed slices
@@ -320,6 +321,18 @@ const ProfileChange = struct {
     temperature: []const u8 = "auto",
     url_style: []const u8 = "openai",
     api_key: []const u8 = "",
+    /// Optional override for the per-profile context window (in tokens).
+    /// Mirrors `LlmProfile.max_capacity_tokens` in Config.zig. When
+    /// non-null, the JSON write below sets the `max_capacity_tokens`
+    /// key on the profile object. When null, the key is omitted
+    /// (preserves existing on-disk value if the action is "update").
+    max_capacity_tokens: ?u32 = null,
+    /// Optional per-profile compaction threshold percentage (0-100).
+    /// Mirrors `LlmProfile.compaction_threshold_percent`. Values > 100
+    /// are rejected with `error.InvalidThresholdPercent` at the apply
+    /// block above (per-profile validation is layered on top of the
+    /// top-level model_compaction_size_kb check).
+    compaction_threshold_percent: ?u8 = null,
 };
 
 const ConfigJson = struct {
@@ -340,14 +353,9 @@ const ConfigJson = struct {
     /// Compaction threshold in KB. Default `100` matches
     /// `LlmConfigJson` (Config.zig:92).
     model_compaction_size_kb: usize = 100,
-    /// Per-model context window override. Default `null` matches
-    /// `LlmConfigJson` — when null, the built-in `LLMModels`
-    /// per-model token count is used.
-    max_capacity_token_model: ?u32 = null,
-    /// Compaction threshold percentage (0-100). Default `null` matches
-    /// `LlmConfigJson` — when null, `LlmConfig.compactionThresholdPercent`
-    /// returns the built-in default (80).
-    compaction_threshold_percent: ?u8 = null,
+    // Note: top-level `max_capacity_token_model` and
+    // `compaction_threshold_percent` removed in Chunk 7. Per-profile
+    // values live on each `ProfileChange` entry.
     /// Top-level sub-agents array (snake_case, matches NALAR.md JSON
     /// convention). Parsed into the typed `LlmConfig.SubAgentJson` shape
     /// (borrowed from the parsed file content), or replaced by an

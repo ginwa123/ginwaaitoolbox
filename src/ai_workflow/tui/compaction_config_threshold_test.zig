@@ -1,28 +1,27 @@
-//! Integration test for the config-driven compaction threshold chain.
+//! Integration test for the per-profile compaction threshold chain.
 //!
-//! Asserts that `LlmConfig.compactionThresholdPercent()` correctly
-//! drives `LLMModels.shouldCompact` decisions — i.e., two configs with
-//! the same model but different `compaction_threshold_percent` values
-//! produce DIFFERENT compaction decisions at the same token count.
+//! Asserts that `LlmConfig.compactionThresholdPercent(profile, sub_agent)`
+//! correctly drives `LLMModels.shouldCompact` decisions — i.e., two
+//! configs with the same model but different
+//! `LlmProfile.compaction_threshold_percent` values produce DIFFERENT
+//! compaction decisions at the same token count.
 //!
 //! Regression test that would catch a future bug where the threshold
-//! was wired to the wrong config field, or where `shouldCompact` lost
-//! its `?u8` override parameter.
+//! was wired to the wrong config field, or where the resolver lost its
+//! `profile` / `sub_agent` cascade parameters (Chunk 7 reshape).
 
 const std = @import("std");
 const testing = std.testing;
 
 const nalarcore = @import("nalarcore");
 const LLMModels = nalarcore.llm_models;
+const LlmProfile = nalarcore.config.LlmConfig.LlmProfile;
+const SubAgentConfig = nalarcore.config.LlmConfig.SubAgentConfig;
 
-/// Build a minimal `LlmConfig` with only the `compaction_threshold_percent`
-/// field set — fields not relevant to the test default to safe empty values.
-/// The returned pointer owns its heap allocations and must be `deinit`ed
+/// Build a minimal `LlmConfig` with no per-profile overrides. The
+/// returned pointer owns its heap allocations and must be `deinit`ed
 /// + freed by the caller.
-fn makeLlmConfigWithThreshold(
-    allocator: std.mem.Allocator,
-    threshold: ?u8,
-) !*nalarcore.config.LlmConfig {
+fn makeLlmConfig(allocator: std.mem.Allocator) !*nalarcore.config.LlmConfig {
     const cfg_ptr = try allocator.create(nalarcore.config.LlmConfig);
     cfg_ptr.* = .{
         .allocator = allocator,
@@ -31,8 +30,6 @@ fn makeLlmConfigWithThreshold(
         .base_url = try allocator.dupe(u8, "https://test.example.com"),
         .url_style = try allocator.dupe(u8, "openai"),
         .model_compaction_size_kb = 100,
-        .max_capacity_token_model = null,
-        .compaction_threshold_percent = threshold,
         .notify_on_complete = false,
         .mcpServers_parsed = null,
         .mcp_servers = nalarcore.config.LlmConfig.McpServersMap.init(allocator),
@@ -42,91 +39,168 @@ fn makeLlmConfigWithThreshold(
     return cfg_ptr;
 }
 
-test "compaction_threshold_percent: null falls back to 80% built-in default" {
+/// Build an LlmProfile with the given threshold. The returned
+/// pointer owns its heap allocations; pair with `freeProfile`.
+fn makeProfile(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    threshold: ?u8,
+    max_capacity: ?u32,
+) !*LlmProfile {
+    const p = try allocator.create(LlmProfile);
+    p.* = .{
+        .model = try allocator.dupe(u8, "MiniMax-M2.7"),
+        .base_url = try allocator.dupe(u8, "https://test.example.com"),
+        .thinking = try allocator.dupe(u8, "auto"),
+        .temperature = try allocator.dupe(u8, "auto"),
+        .api_key = try allocator.dupe(u8, "test-key"),
+        .url_style = try allocator.dupe(u8, "openai"),
+        .sub_agents = &.{},
+        .max_capacity_tokens = max_capacity,
+        .compaction_threshold_percent = threshold,
+    };
+    _ = name;
+    return p;
+}
+
+/// Free the inner strings of an LlmProfile (allocated by `makeProfile`),
+/// then destroy the struct itself. Mirrors `freeProfilesMap`'s per-entry
+/// cleanup (Config.zig:431-440).
+fn freeProfile(allocator: std.mem.Allocator, p: *LlmProfile) void {
+    allocator.free(p.model);
+    allocator.free(p.base_url);
+    allocator.free(p.thinking);
+    allocator.free(p.temperature);
+    allocator.free(p.api_key);
+    allocator.free(p.url_style);
+    // sub_agents is `&.{}` in makeProfile (empty slice) — no free needed.
+    allocator.destroy(p);
+}
+
+test "compactionThresholdPercent: null profile falls back to 80% built-in default" {
     const allocator = testing.allocator;
-    const cfg = try makeLlmConfigWithThreshold(allocator, null);
+    const cfg = try makeLlmConfig(allocator);
     defer {
         cfg.deinit();
         allocator.destroy(cfg);
     }
-    try testing.expectEqual(@as(u8, 80), cfg.compactionThresholdPercent());
+    try testing.expectEqual(@as(u8, 80), cfg.compactionThresholdPercent(null, null));
 }
 
-test "compaction_threshold_percent: explicit override wins over built-in default" {
+test "compactionThresholdPercent: profile override wins over built-in default" {
     const allocator = testing.allocator;
-    const cfg = try makeLlmConfigWithThreshold(allocator, 50);
+    const cfg = try makeLlmConfig(allocator);
     defer {
         cfg.deinit();
         allocator.destroy(cfg);
     }
-    try testing.expectEqual(@as(u8, 50), cfg.compactionThresholdPercent());
+    const profile = try makeProfile(allocator, "dev", 50, null);
+    defer freeProfile(allocator, profile);
+    try testing.expectEqual(@as(u8, 50), cfg.compactionThresholdPercent(profile, null));
 }
 
-test "compaction: two configs with different thresholds produce different decisions at the same token count" {
+test "compaction: two profiles with different thresholds produce different decisions at the same token count" {
     const allocator = testing.allocator;
 
-    // Two configs — same model + capacity, different thresholds only.
-    const cfg80 = try makeLlmConfigWithThreshold(allocator, null); // → 80
+    const cfg = try makeLlmConfig(allocator);
     defer {
-        cfg80.deinit();
-        allocator.destroy(cfg80);
+        cfg.deinit();
+        allocator.destroy(cfg);
     }
-    const cfg50 = try makeLlmConfigWithThreshold(allocator, 50);
-    defer {
-        cfg50.deinit();
-        allocator.destroy(cfg50);
-    }
+    const profile_80 = try makeProfile(allocator, "prod", null, null); // → 80 (built-in)
+    defer freeProfile(allocator, profile_80);
+    const profile_50 = try makeProfile(allocator, "dev", 50, null);
+    defer freeProfile(allocator, profile_50);
 
-    const cap: u32 = cfg80.maxCapacityForModel("MiniMax-M2.7");
+    const model = "MiniMax-M2.7";
+    const cap: u32 = cfg.maxCapacityForModel(null, null, model);
     const at_79pct: u32 = cap * 79 / 100; // ~158,000 with 200k default
 
     // 79% of 200,000 = 158,000 — below the 80% threshold → no compact
-    // under cfg80 (which uses the built-in 80% default).
+    // under profile_80 (which uses the built-in 80% default).
     try testing.expect(!LLMModels.shouldCompact(
         at_79pct,
-        cfg80.maxCapacityForModel("MiniMax-M2.7"),
-        cfg80.compactionThresholdPercent(),
+        cfg.maxCapacityForModel(profile_80, null, model),
+        cfg.compactionThresholdPercent(profile_80, null),
     ));
 
-    // 79% is above 50% threshold → compact under cfg50.
+    // 79% is above 50% threshold → compact under profile_50.
     try testing.expect(LLMModels.shouldCompact(
         at_79pct,
-        cfg50.maxCapacityForModel("MiniMax-M2.7"),
-        cfg50.compactionThresholdPercent(),
+        cfg.maxCapacityForModel(profile_50, null, model),
+        cfg.compactionThresholdPercent(profile_50, null),
     ));
 }
 
-test "compaction: max_capacity_token_model override shifts the threshold proportionally" {
+test "compaction: max_capacity_tokens override shifts the threshold proportionally" {
     const allocator = testing.allocator;
-    const cfg = try makeLlmConfigWithThreshold(allocator, 50);
+    const cfg = try makeLlmConfig(allocator);
     defer {
         cfg.deinit();
         allocator.destroy(cfg);
     }
+    const profile = try makeProfile(allocator, "dev", 50, 400_000);
+    defer freeProfile(allocator, profile);
 
     const model = "MiniMax-M2.7";
     try testing.expectEqual(@as(u32, 200_000), LLMModels.getModelTokenCount(model));
 
-    // Set a 2x override on capacity; threshold stays 50%.
-    cfg.max_capacity_token_model = 400_000;
-    try testing.expectEqual(@as(u32, 400_000), cfg.maxCapacityForModel(model));
-
-    // Sanity: with built-in capacity (200k) and 50% threshold, the
-    // boundary token count is 100k — at 50k we are below.
-    try testing.expect(!LLMModels.shouldCompact(50_000, 200_000, 50));
-    try testing.expect(LLMModels.shouldCompact(100_000, 200_000, 50));
-
     // With the 2x capacity override (400k) and same 50% threshold, the
-    // boundary shifts to 200k — at 100k we are now below (was at the
+    // boundary shifts to 200k — at 100k we are below (was at the
     // boundary without the override).
+    try testing.expectEqual(@as(u32, 400_000), cfg.maxCapacityForModel(profile, null, model));
     try testing.expect(!LLMModels.shouldCompact(
         100_000,
-        cfg.maxCapacityForModel(model),
-        cfg.compactionThresholdPercent(),
+        cfg.maxCapacityForModel(profile, null, model),
+        cfg.compactionThresholdPercent(profile, null),
     ));
     try testing.expect(LLMModels.shouldCompact(
         200_000,
-        cfg.maxCapacityForModel(model),
-        cfg.compactionThresholdPercent(),
+        cfg.maxCapacityForModel(profile, null, model),
+        cfg.compactionThresholdPercent(profile, null),
     ));
+}
+
+test "compaction: sub-agent override beats parent profile (cascade)" {
+    const allocator = testing.allocator;
+    const cfg = try makeLlmConfig(allocator);
+    defer {
+        cfg.deinit();
+        allocator.destroy(cfg);
+    }
+    // Parent profile uses 50% threshold.
+    const profile = try makeProfile(allocator, "dev", 50, null);
+    defer freeProfile(allocator, profile);
+    // Sub-agent tightens to 90% — should win over the parent.
+    const sub_agent = try allocator.create(SubAgentConfig);
+    sub_agent.* = .{
+        .name = try allocator.dupe(u8, "alpha"),
+        .model = try allocator.dupe(u8, "MiniMax-M2.7"),
+        .base_url = try allocator.dupe(u8, "https://test.example.com"),
+        .thinking = try allocator.dupe(u8, "auto"),
+        .temperature = try allocator.dupe(u8, "auto"),
+        .api_key = try allocator.dupe(u8, "test-key"),
+        .url_style = try allocator.dupe(u8, "openai"),
+        .system_prompt = try allocator.dupe(u8, ""),
+        .max_capacity_tokens = null,
+        .compaction_threshold_percent = 90,
+    };
+    defer {
+        allocator.free(sub_agent.name);
+        allocator.free(sub_agent.model);
+        allocator.free(sub_agent.base_url);
+        allocator.free(sub_agent.thinking);
+        allocator.free(sub_agent.temperature);
+        allocator.free(sub_agent.url_style);
+        allocator.free(sub_agent.api_key);
+        allocator.free(sub_agent.system_prompt);
+        allocator.destroy(sub_agent);
+    }
+
+    // Sub-agent cascade wins: 90% threshold (not 50% from profile).
+    try testing.expectEqual(@as(u8, 90), cfg.compactionThresholdPercent(profile, sub_agent));
+    // Without sub-agent: profile's 50% wins.
+    try testing.expectEqual(@as(u8, 50), cfg.compactionThresholdPercent(profile, null));
+    // Without profile and sub-agent: built-in 80%.
+    try testing.expectEqual(@as(u8, 80), cfg.compactionThresholdPercent(null, null));
 }

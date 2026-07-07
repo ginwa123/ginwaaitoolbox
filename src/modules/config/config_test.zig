@@ -1075,8 +1075,12 @@ test "writeDefaultConfig creates a valid JSON config file at the given path" {
     try std.testing.expectEqualStrings("openai", obj.get("url_style").?.string);
     try std.testing.expectEqual(@as(i64, 100), obj.get("model_compaction_size_kb").?.integer);
     try std.testing.expectEqual(@as(bool, false), obj.get("notify_on_complete").?.bool);
-    try std.testing.expect(obj.get("max_capacity_token_model").? == .null);
-    try std.testing.expect(obj.get("compaction_threshold_percent").? == .null);
+    // Chunk 7: the top-level `max_capacity_token_model` and
+    // `compaction_threshold_percent` fields were moved to per-profile.
+    // The default JSON should NOT include them — the loader silently
+    // drops unknown top-level keys.
+    try std.testing.expect(obj.get("max_capacity_token_model") == null);
+    try std.testing.expect(obj.get("compaction_threshold_percent") == null);
 }
 
 test "writeDefaultConfig creates parent directories that do not exist" {
@@ -1157,8 +1161,12 @@ test "init auto-creates config.json when default path does not exist (path=null)
     try std.testing.expect(std.mem.indexOf(u8, content, "\"api_key\": \"\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "\"url_style\": \"openai\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "\"model_compaction_size_kb\": 100") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "\"max_capacity_token_model\": null") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "\"compaction_threshold_percent\": null") != null);
+    // Chunk 7: top-level `max_capacity_token_model` and
+    // `compaction_threshold_percent` were moved to per-profile and
+    // are NOT in the default config. The auto-created file should
+    // not contain them.
+    try std.testing.expect(std.mem.indexOf(u8, content, "max_capacity_token_model") == null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "compaction_threshold_percent") == null);
 }
 
 test "init does NOT auto-create when explicit path is missing" {
@@ -1243,115 +1251,136 @@ test "init does NOT auto-create when file exists with parse error" {
 //  docs/superpowers/plans/2026-07-06-configurable-compaction.md).
 // ---------------------------------------------------------------------------
 
-test "LlmConfig: max_capacity_token_model reads value from JSON" {
+test "LlmConfig: LlmProfile.max_capacity_tokens reads value from JSON" {
+    const allocator = std.testing.allocator;
+
+    // NOTE: `profiles_models` is a real JSON map (matches the
+    // shape the UI sends). The legacy `profile1..profile4` keys
+    // are convenience shorthands for tests; both shapes parse to
+    // the same internal `ProfilesMap`.
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b",
+        \\  "profiles_models": { "profile1": { "model": "m", "max_capacity_tokens": 128000 } } }
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    const profile = cfg.profiles_models.get("profile1") orelse unreachable;
+    try std.testing.expectEqual(@as(?u32, 128000), profile.max_capacity_tokens);
+}
+
+test "LlmConfig: LlmProfile.max_capacity_tokens defaults to null when missing from JSON" {
     const allocator = std.testing.allocator;
 
     const json =
         \\{ "api_key": "k", "model": "m", "base_url": "b",
-        \\  "max_capacity_token_model": 128000 }
+        \\  "profiles_models": { "profile1": { "model": "m" } } }
     ;
 
     var cfg = try writeAndRead(allocator, std.testing.io, json);
     defer cfg.deinit();
 
-    try std.testing.expectEqual(@as(?u32, 128000), cfg.max_capacity_token_model);
+    const profile = cfg.profiles_models.get("profile1") orelse unreachable;
+    try std.testing.expectEqual(@as(?u32, null), profile.max_capacity_tokens);
 }
 
-test "LlmConfig: max_capacity_token_model defaults to null when missing from JSON" {
-    const allocator = std.testing.allocator;
-
-    const json =
-        \\{ "api_key": "k", "model": "m", "base_url": "b" }
-    ;
-
-    var cfg = try writeAndRead(allocator, std.testing.io, json);
-    defer cfg.deinit();
-
-    try std.testing.expectEqual(@as(?u32, null), cfg.max_capacity_token_model);
-}
-
-test "LlmConfig: compaction_threshold_percent reads value from JSON" {
+test "LlmConfig: LlmProfile.compaction_threshold_percent reads value from JSON" {
     const allocator = std.testing.allocator;
 
     const json =
         \\{ "api_key": "k", "model": "m", "base_url": "b",
-        \\  "compaction_threshold_percent": 70 }
+        \\  "profiles_models": { "profile1": { "model": "m", "compaction_threshold_percent": 70 } } }
     ;
 
     var cfg = try writeAndRead(allocator, std.testing.io, json);
     defer cfg.deinit();
 
-    try std.testing.expectEqual(@as(?u8, 70), cfg.compaction_threshold_percent);
+    const profile = cfg.profiles_models.get("profile1") orelse unreachable;
+    try std.testing.expectEqual(@as(?u8, 70), profile.compaction_threshold_percent);
 }
 
-test "LlmConfig: compaction_threshold_percent defaults to null when missing from JSON" {
+test "LlmConfig: LlmProfile.compaction_threshold_percent defaults to null when missing from JSON" {
     const allocator = std.testing.allocator;
 
     const json =
-        \\{ "api_key": "k", "model": "m", "base_url": "b" }
+        \\{ "api_key": "k", "model": "m", "base_url": "b",
+        \\  "profiles_models": { "profile1": { "model": "m" } } }
     ;
 
     var cfg = try writeAndRead(allocator, std.testing.io, json);
     defer cfg.deinit();
 
-    try std.testing.expectEqual(@as(?u8, null), cfg.compaction_threshold_percent);
+    const profile = cfg.profiles_models.get("profile1") orelse unreachable;
+    try std.testing.expectEqual(@as(?u8, null), profile.compaction_threshold_percent);
 }
 
-test "LlmConfig: maxCapacityForModel returns override when set" {
+test "LlmConfig: maxCapacityForModel returns profile override when set" {
     const allocator = std.testing.allocator;
 
     const json =
         \\{ "api_key": "k", "model": "MiniMax-M3", "base_url": "b",
-        \\  "max_capacity_token_model": 1000000 }
+        \\  "profiles_models": { "profile1": { "model": "MiniMax-M3", "max_capacity_tokens": 1000000 } } }
     ;
 
     var cfg = try writeAndRead(allocator, std.testing.io, json);
     defer cfg.deinit();
 
-    try std.testing.expectEqual(@as(u32, 1000000), cfg.maxCapacityForModel("MiniMax-M3"));
-    // Override applies regardless of the model name (override is per-config, not per-model).
-    try std.testing.expectEqual(@as(u32, 1000000), cfg.maxCapacityForModel("SomeOtherModel"));
+    const profile = cfg.profiles_models.get("profile1") orelse unreachable;
+    // Profile override wins over the LLMModels built-in.
+    try std.testing.expectEqual(@as(u32, 1000000), cfg.maxCapacityForModel(&profile, null, "MiniMax-M3"));
+    try std.testing.expectEqual(@as(u32, 1000000), cfg.maxCapacityForModel(&profile, null, "SomeOtherModel"));
 }
 
-test "LlmConfig: maxCapacityForModel falls back to LLMModels default when null" {
+test "LlmConfig: maxCapacityForModel falls back to LLMModels default when profile has null" {
     const allocator = std.testing.allocator;
 
     const json =
-        \\{ "api_key": "k", "model": "MiniMax-M3", "base_url": "b" }
+        \\{ "api_key": "k", "model": "MiniMax-M3", "base_url": "b",
+        \\  "profiles_models": { "profile1": { "model": "MiniMax-M3" } } }
     ;
 
     var cfg = try writeAndRead(allocator, std.testing.io, json);
     defer cfg.deinit();
 
+    const profile = cfg.profiles_models.get("profile1") orelse unreachable;
     // MiniMax-M3 default is 500_000 (see LLMModels.zig:18).
-    try std.testing.expectEqual(@as(u32, 500000), cfg.maxCapacityForModel("MiniMax-M3"));
+    try std.testing.expectEqual(@as(u32, 500000), cfg.maxCapacityForModel(&profile, null, "MiniMax-M3"));
     // Unknown model falls back to 200_000 (LLMModels.zig:31).
-    try std.testing.expectEqual(@as(u32, 200000), cfg.maxCapacityForModel("Unknown"));
+    try std.testing.expectEqual(@as(u32, 200000), cfg.maxCapacityForModel(&profile, null, "Unknown"));
+    // No profile at all: same default applies.
+    try std.testing.expectEqual(@as(u32, 500000), cfg.maxCapacityForModel(null, null, "MiniMax-M3"));
 }
 
-test "LlmConfig: compactionThresholdPercent returns override when set" {
+test "LlmConfig: compactionThresholdPercent returns profile override when set" {
     const allocator = std.testing.allocator;
 
     const json =
         \\{ "api_key": "k", "model": "m", "base_url": "b",
-        \\  "compaction_threshold_percent": 50 }
+        \\  "profiles_models": { "profile1": { "model": "m", "compaction_threshold_percent": 50 } } }
     ;
 
     var cfg = try writeAndRead(allocator, std.testing.io, json);
     defer cfg.deinit();
 
-    try std.testing.expectEqual(@as(u8, 50), cfg.compactionThresholdPercent());
+    const profile = cfg.profiles_models.get("profile1") orelse unreachable;
+    try std.testing.expectEqual(@as(u8, 50), cfg.compactionThresholdPercent(&profile, null));
 }
 
-test "LlmConfig: compactionThresholdPercent returns 80 when null" {
+test "LlmConfig: compactionThresholdPercent returns 80 when no profile / null profile" {
     const allocator = std.testing.allocator;
 
     const json =
-        \\{ "api_key": "k", "model": "m", "base_url": "b" }
+        \\{ "api_key": "k", "model": "m", "base_url": "b",
+        \\  "profiles_models": { "profile1": { "model": "m" } } }
     ;
 
     var cfg = try writeAndRead(allocator, std.testing.io, json);
     defer cfg.deinit();
 
-    try std.testing.expectEqual(@as(u8, 80), cfg.compactionThresholdPercent());
+    const profile = cfg.profiles_models.get("profile1") orelse unreachable;
+    // Profile has null threshold — falls back to built-in 80.
+    try std.testing.expectEqual(@as(u8, 80), cfg.compactionThresholdPercent(&profile, null));
+    // No profile at all — same default.
+    try std.testing.expectEqual(@as(u8, 80), cfg.compactionThresholdPercent(null, null));
 }

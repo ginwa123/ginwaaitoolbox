@@ -35,8 +35,10 @@ fn makeConfig(allocator: std.mem.Allocator, model: []const u8) !*LlmConfig {
         .url_style = try allocator.dupe(u8, "openai"),
         .model_compaction_size_kb = 100,
         .notify_on_complete = false,
-        .max_capacity_token_model = null,
-        .compaction_threshold_percent = null,
+        // Note: top-level `max_capacity_token_model` and
+        // `compaction_threshold_percent` were moved to per-profile
+        // fields in Chunk 7 — see `LlmProfile.max_capacity_tokens`
+        // and `LlmProfile.compaction_threshold_percent`.
         .mcpServers_parsed = null,
         .mcp_servers = LlmConfig.McpServersMap.init(allocator),
         .profiles_models = LlmConfig.ProfilesMap.init(allocator),
@@ -232,31 +234,31 @@ fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return reader.interface.allocRemaining(allocator, .limited(64 * 1024));
 }
 
-test "PUT handler applies max_capacity_token_model to LlmConfigJson" {
+test "PUT handler writes max_capacity_tokens to per-profile JSON" {
     const allocator = std.testing.allocator;
     const source = try readSource(allocator, PUT_HANDLER_PATH);
     defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "if (input.max_capacity_token_model) |mc| {") == null) {
-        std.debug.print("!! PUT handler missing max_capacity_token_model apply block !!\n", .{});
-        return error.MaxCapacityApplyBlockMissing;
+    if (std.mem.indexOf(u8, source, "profile_change.max_capacity_tokens") == null) {
+        std.debug.print("!! PUT handler doesn't read max_capacity_tokens from ProfileChange !!\n", .{});
+        return error.ProfileMaxCapacityReadMissing;
     }
-    if (std.mem.indexOf(u8, source, "config_json.max_capacity_token_model = mc;") == null) {
-        std.debug.print("!! PUT handler doesn't write max_capacity_token_model !!\n", .{});
-        return error.MaxCapacityAssignmentMissing;
+    if (std.mem.indexOf(u8, source, "\"max_capacity_tokens\"") == null) {
+        std.debug.print("!! PUT handler doesn't write max_capacity_tokens to profile JSON !!\n", .{});
+        return error.ProfileMaxCapacityWriteMissing;
     }
 }
 
-test "PUT handler applies compaction_threshold_percent to LlmConfigJson" {
+test "PUT handler writes compaction_threshold_percent to per-profile JSON" {
     const allocator = std.testing.allocator;
     const source = try readSource(allocator, PUT_HANDLER_PATH);
     defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "if (input.compaction_threshold_percent) |tp| {") == null) {
-        std.debug.print("!! PUT handler missing compaction_threshold_percent apply block !!\n", .{});
-        return error.ThresholdApplyBlockMissing;
+    if (std.mem.indexOf(u8, source, "profile_change.compaction_threshold_percent") == null) {
+        std.debug.print("!! PUT handler doesn't read compaction_threshold_percent from ProfileChange !!\n", .{});
+        return error.ProfileThresholdReadMissing;
     }
-    if (std.mem.indexOf(u8, source, "config_json.compaction_threshold_percent = tp;") == null) {
-        std.debug.print("!! PUT handler doesn't write compaction_threshold_percent !!\n", .{});
-        return error.ThresholdAssignmentMissing;
+    if (std.mem.indexOf(u8, source, "\"compaction_threshold_percent\"") == null) {
+        std.debug.print("!! PUT handler doesn't write compaction_threshold_percent to profile JSON !!\n", .{});
+        return error.ProfileThresholdWriteMissing;
     }
 }
 
@@ -278,17 +280,17 @@ test "PUT handler rejects compaction_threshold_percent > 100 with InvalidThresho
     }
 }
 
-test "PUT ConfigInput declares both new fields as optional" {
+test "PUT ConfigInput / ProfileChange declare both new fields as optional" {
     const allocator = std.testing.allocator;
     const source = try readSource(allocator, PUT_HANDLER_PATH);
     defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "max_capacity_token_model: ?u32 = null,") == null) {
-        std.debug.print("!! ConfigInput missing max_capacity_token_model optional field !!\n", .{});
-        return error.ConfigInputMissingMaxCapacity;
+    if (std.mem.indexOf(u8, source, "max_capacity_tokens: ?u32 = null,") == null) {
+        std.debug.print("!! ProfileChange missing max_capacity_tokens optional field !!\n", .{});
+        return error.ProfileChangeMissingMaxCapacity;
     }
     if (std.mem.indexOf(u8, source, "compaction_threshold_percent: ?u8 = null,") == null) {
-        std.debug.print("!! ConfigInput missing compaction_threshold_percent optional field !!\n", .{});
-        return error.ConfigInputMissingThreshold;
+        std.debug.print("!! ProfileChange missing compaction_threshold_percent optional field !!\n", .{});
+        return error.ProfileChangeMissingThreshold;
     }
 }
 
