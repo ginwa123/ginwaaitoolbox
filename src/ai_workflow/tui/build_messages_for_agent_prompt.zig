@@ -1204,11 +1204,20 @@ pub fn BuildDesignCanvasPrompt(
     try out.appendSlice(allocator, "\n\n## Design Canvas\n\n");
     try out.appendSlice(allocator,
         \\This task is on a design canvas (parent item_type: `design`).
-        \\**You MUST use the `set_design_page` tool to author pages** —
-        \\each call writes the full HTML body of a named page on this
-        \\canvas, rendered in the user's browser via a sandboxed iframe.
-        \\Use `list_design_pages` first to see what already exists, and
-        \\`delete_design_page` to remove a page the user no longer wants.
+        \\**You MUST use the design canvas tools to author pages** — the
+        \\canvas is **file-backed** (plan v5): each page is a folder at
+        \\`<workspace_item.path>/.nalar/design/<page_name>/` and each
+        \\element is an HTML file inside that folder. Pages are pure
+        \\metadata containers (no html); elements carry the html on disk.
+        \\
+        \\**Workflow:**
+        \\  1. `set_design_page(item_id, name)` — creates (or updates) the page metadata + folder.
+        \\  2. `set_design_element(page_id, name, html, x, y, width, height, z_index)` — writes an element HTML file + positions it.
+        \\  3. `move_design_element(element_id, x, y)` — low-latency drag update.
+        \\  4. `list_design_elements(page_id)` — see current state.
+        \\  5. `delete_design_element(element_id)` — remove + unlink the file.
+        \\
+        \\After the page exists, you can ALSO edit the html files directly with `write_file` / `read_file` / `text_replace` tools — the DB is just position metadata; the files are the source of truth for html.
         \\
     );
 
@@ -1242,23 +1251,44 @@ pub fn BuildDesignCanvasPrompt(
         }
     }
 
-    // 3b. Page-authoring conventions.
+    // 3b. Page-authoring conventions (file-backed model).
     try out.appendSlice(allocator, "\n**Page authoring** (`set_design_page`):\n");
     try out.appendSlice(allocator,
         \\
-        \\- **Full HTML document required** — the `html` parameter MUST start with
-        \\  `<!doctype html>` and end with `</html>`. The canvas renders it verbatim
-        \\  in a sandboxed iframe. Inline `<style>` and `<script>` are allowed but
-        \\  the script runs sandboxed (no parent storage access).
-        \\- **Page name** — must be unique per canvas, must NOT contain `/` or null
-        \\  bytes (the unique index rejects duplicates with a `<error>` response).
-        \\  Pick clear names: `Login`, `Dashboard`, `Settings`, `Profile`, etc.
+        \\- **Pages have no html** — `set_design_page` only manages the page
+        \\  metadata (name, width, height, x, y) and creates the
+        \\  `<page_name>/` subdir. Use `set_design_element` to add positioned HTML.
         \\- **Idempotent overwrite** — re-issuing `set_design_page` with the same
-        \\  `item_id` + `page_name` REPLACES the existing page in place. Other
-        \\  connected clients see the page update via SSE.
-        \\- **No "move" tool** — pages don't have a workflow like kanban columns.
-        \\  To reorder, use `delete_design_page` + `set_design_page` (the new page
-        \\  is appended to the end), or trust the user to drag the tab in the UI.
+        \\  `(item_id, name)` REPLACES the existing page's geometry in place. The
+        \\  element rows + html files are NOT touched; only `width/height/x/y` change.
+        \\- **No "move page" tool** — pages don't have a workflow like kanban columns.
+        \\  The frontend tab strip exposes drag-to-reorder; for programmatic
+        \\  re-ordering, delete + recreate (the new page is appended to the end).
+        \\
+    );
+
+    // 3c. Element-authoring conventions.
+    try out.appendSlice(allocator, "\n**Element authoring** (`set_design_element`):\n");
+    try out.appendSlice(allocator,
+        \\
+        \\- **Each element is a positioned HTML file** at
+        \\  `<workspace_item.path>/.nalar/design/<page_name>/<element_name>.html`.
+        \\  Element `name` is sanitized for filesystem use (lowercase, slashes
+        \\  → underscore, leading dots stripped, whitespace → dashes).
+        \\- **`html` body** — full HTML document preferred (`<!doctype html>...</html>`),
+        \\  but a fragment works too (the canvas wraps it). The file is the source
+        \\  of truth — after writing, you can edit it directly with `write_file` /
+        \\  `read_file` / `text_replace` tools, and other connected clients see the
+        \\  update via SSE.
+        \\- **Common patterns**:
+        \\    - Background: `name="Background", x=0, y=0, width=<page.width>,
+        \\      height=<page.height>, z_index=-1, html="<div style='background:<color>;
+        \\      width:100%; height:100%'></div>"`
+        \\    - Phone mockup: `name="Phone mockup", width=375, height=667, html=...`
+        \\    - Hero card: `name="Hero card", width=375, height=250, html=...`
+        \\- **`z_index` draws order** — higher = on top. Use `-1` for background.
+        \\- **Drag-to-move** — `move_design_element(element_id, x, y)` updates x/y
+        \\  in the DB without rewriting the html file (low-latency).
         \\
     );
 

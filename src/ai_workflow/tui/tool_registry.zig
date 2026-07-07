@@ -29,10 +29,13 @@ const edit_skill_mod = nalar_mod.edit_skill;
 const set_git_worktree_mod = nalar_mod.set_git_worktree;
 const kanban_list_mod = nalar_mod.kanban_list;
 const kanban_move_task_mod = nalar_mod.kanban_move_task;
-// `design_tools_mod` was removed when `modules/agent/tools/design_tools.zig`
-// was deleted in the design-fs-rewrite (chunk 1 of
-// `2026-07-05-design-mode.md`). Chunk 3 of the same plan will re-introduce
-// it against the new file-backed design_model API.
+// Design tools (file-backed rewrite, plan
+// docs/superpowers/plans/2026-07-06-design-fs-rewrite.md, Chunk 3).
+const design_pages_mod = nalar_mod.design_pages;
+const design_page_elements_mod = nalar_mod.design_page_elements;
+const design_page_elements_move_mod = nalar_mod.design_page_elements_move;
+const design_page_elements_list_mod = nalar_mod.design_page_elements_list;
+const design_page_elements_delete_mod = nalar_mod.design_page_elements_delete;
 const show_preview_mod = nalar_mod.ai_mod.show_preview;
 const add_agent_mod = nalar_mod.add_agent;
 const remove_agent_mod = nalar_mod.remove_agent;
@@ -650,12 +653,200 @@ pub fn execKanbanMoveTask(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
 }
 
 // === DESIGN TOOLS ===
-// The 3 design tools (set_design_page, delete_design_page,
-// list_design_pages) were removed along with
-// `modules/agent/tools/design_tools.zig` in the design-fs-rewrite
-// (chunk 1 of `2026-07-05-design-mode.md`). Chunk 3 of the same
-// plan will re-introduce them against the new file-backed
-// `design_model` API (see `src/ai_workflow/tui/design_model.zig`).
+// File-backed rewrite of the design canvas tools (plan
+// docs/superpowers/plans/2026-07-06-design-fs-rewrite.md, Chunk 3).
+// The pre-rewrite `set_design_page` / `delete_design_page` /
+// `list_design_pages` were removed with `design_tools.zig` in
+// chunk 1; chunk 3 re-introduces them against the new file-backed
+// `design_model` API and adds 4 new element tools.
+
+pub fn execSetDesignPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        design_pages_mod.SetDesignPageInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "set_design_page failed to parse input: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    // executeSetDesignPageToString returns an XML string. Errors
+    // (missing input, DB failure, shape mistakes) are encoded as
+    // `<pages><error>...</error></pages>` so the LLM sees a
+    // structured failure rather than a tool crash.
+    const inner = design_pages_mod.executeSetDesignPageToString(
+        ctx.allocator,
+        ctx.db,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "set_design_page failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer ctx.allocator.free(inner);
+
+    // Detect the `<pages><error>...</error></pages>` shape and surface
+    // it as a tool failure (so the LLM sees `success=false` rather
+    // than a successful wrapper around an error body).
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+pub fn execSetDesignElement(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        design_page_elements_mod.SetDesignElementInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "set_design_element failed to parse input: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "set_design_element", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    const inner = design_page_elements_mod.executeSetDesignElementToString(
+        ctx.allocator,
+        ctx.io,
+        ctx.db,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "set_design_element failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "set_design_element", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer ctx.allocator.free(inner);
+
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "set_design_element", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "set_design_element", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+pub fn execMoveDesignElement(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        design_page_elements_move_mod.MoveDesignElementInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "move_design_element failed to parse input: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "move_design_element", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    const inner = design_page_elements_move_mod.executeMoveDesignElementToString(
+        ctx.allocator,
+        ctx.db,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "move_design_element failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "move_design_element", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer ctx.allocator.free(inner);
+
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "move_design_element", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "move_design_element", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+pub fn execListDesignElements(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        design_page_elements_list_mod.ListDesignElementsInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "list_design_elements failed to parse input: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "list_design_elements", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    const inner = design_page_elements_list_mod.executeListDesignElementsToString(
+        ctx.allocator,
+        ctx.db,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "list_design_elements failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "list_design_elements", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer ctx.allocator.free(inner);
+
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "list_design_elements", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "list_design_elements", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+pub fn execDeleteDesignElement(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        design_page_elements_delete_mod.DeleteDesignElementInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "delete_design_element failed to parse input: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "delete_design_element", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    const inner = design_page_elements_delete_mod.executeDeleteDesignElementToString(
+        ctx.allocator,
+        ctx.db,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "delete_design_element failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "delete_design_element", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer ctx.allocator.free(inner);
+
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "delete_design_element", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "delete_design_element", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
 
 pub fn execShowPreview(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
@@ -1764,12 +1955,17 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "kanban_move_task", .exec = execKanbanMoveTask, .tool_def = kanban_move_task_mod.kanban_move_task_tool },
 
     // === DESIGN TOOLS ===
-    // Three tools for the Design Mode feature (item_type='design') were
-    // removed when the design-mode implementation moved from inline
-    // html-storage to file-backed `design_page_elements` (chunk 1 of
-    // `2026-07-05-design-mode.md`). Chunk 3 of the same plan will
-    // re-register `set_design_page` / `delete_design_page` /
-    // `list_design_pages` against the new `design_model` API.
+    // File-backed rewrite (plan
+    // docs/superpowers/plans/2026-07-06-design-fs-rewrite.md, Chunk 3).
+    // The pre-rewrite 3 tools (`set_design_page` /
+    // `delete_design_page` / `list_design_pages`) were removed with
+    // `design_tools.zig` in chunk 1; chunk 3 re-registers them
+    // against the new `design_model` API and adds 4 new element tools.
+    .{ .name = "set_design_page", .exec = execSetDesignPage, .tool_def = design_pages_mod.set_design_page_tool },
+    .{ .name = "set_design_element", .exec = execSetDesignElement, .tool_def = design_page_elements_mod.set_design_element_tool },
+    .{ .name = "move_design_element", .exec = execMoveDesignElement, .tool_def = design_page_elements_move_mod.move_design_element_tool },
+    .{ .name = "list_design_elements", .exec = execListDesignElements, .tool_def = design_page_elements_list_mod.list_design_elements_tool },
+    .{ .name = "delete_design_element", .exec = execDeleteDesignElement, .tool_def = design_page_elements_delete_mod.delete_design_element_tool },
 
     // === PREVIEW TOOLS ===
     .{ .name = "show_preview", .exec = execShowPreview, .tool_def = show_preview_mod.show_preview_tool },
@@ -1826,9 +2022,13 @@ pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool
         kanban_list_mod.kanban_list_tool,
         kanban_move_task_mod.kanban_move_task_tool,
         show_preview_mod.show_preview_tool,
-        // The 3 design tools were removed in the design-fs-rewrite
-        // (chunk 1 of `2026-07-05-design-mode.md`); chunk 3 will
-        // re-register them against the new file-backed design_model.
+        // Design canvas tools (file-backed rewrite — Chunk 3 of
+        // `2026-07-06-design-fs-rewrite.md`).
+        design_pages_mod.set_design_page_tool,
+        design_page_elements_mod.set_design_element_tool,
+        design_page_elements_move_mod.move_design_element_tool,
+        design_page_elements_list_mod.list_design_elements_tool,
+        design_page_elements_delete_mod.delete_design_element_tool,
     };
     return allocator.dupe(tool_models.AgentTool, tools_list) catch return &.{};
 }

@@ -51,17 +51,41 @@ pub const workspaceItemsCreateKanbanHandler = @import("workspace_items_create_ka
 
 // Design item endpoints (item_type='design' — HTML canvas).
 //   POST   /items/design                       — create a design item
-//   GET    /items/:item_id/design/pages        — list pages (excludes html)
-//   GET    /items/:item_id/design/pages/:pid   — fetch one page (with html)
-//   PUT    /items/:item_id/design/pages/:pid   — replace page html, emits SSE
+//   GET    /items/:item_id/design/pages        — list pages (metadata)
+//   GET    /items/:item_id/design/pages/:pid   — fetch one page
+//   POST   /items/:item_id/design/pages        — create / replace a page
+//   PUT    /items/:item_id/design/pages/:pid   — update page geometry
 //   DELETE /items/:item_id/design/pages/:pid   — delete page, emits SSE
-// See docs/superpowers/plans/2026-07-05-design-mode.md (Chunk 2).
+//   GET    /items/:item_id/design/pages/:pid/elements
+//                                            — list elements (metadata)
+//   GET    /items/:item_id/design/pages/:pid/elements/:eid
+//                                            — fetch element incl. html
+//   POST   /items/:item_id/design/pages/:pid/elements
+//                                            — create element + write html to disk
+//   PUT    /items/:item_id/design/pages/:pid/elements/:eid
+//                                            — partial element update (html/name/geometry)
+//   PATCH  /items/:item_id/design/pages/:pid/elements/:eid/move
+//                                            — low-latency x/y update
+//   PATCH  /items/:item_id/design/pages/:pid/elements/:eid/resize
+//                                            — low-latency width/height update
+//   DELETE /items/:item_id/design/pages/:pid/elements/:eid
+//                                            — delete element + unlink html file
+// See docs/superpowers/plans/2026-07-06-design-fs-rewrite.md (Chunk 2).
 pub const designItemsCreateHandler = @import("design_items_create.zig").designItemsCreateHandler;
-// The 4 design_pages_*Handler entries below were removed along with
-// the handler files in the design-fs-rewrite (chunk 1 of
-// `2026-07-05-design-mode.md`). Chunk 2 of the same plan will
-// re-introduce them against the new file-backed `design_model` API.
-// See `src/ai_workflow/tui/design_model.zig`.
+// Page endpoints (re-introduced against the file-backed design_model API).
+pub const designPagesListHandler = @import("design_pages_list.zig").designPagesListHandler;
+pub const designPagesGetHandler = @import("design_pages_get.zig").designPagesGetHandler;
+pub const designPagesCreateHandler = @import("design_pages_create.zig").designPagesCreateHandler;
+pub const designPagesUpdateHandler = @import("design_pages_update.zig").designPagesUpdateHandler;
+pub const designPagesDeleteHandler = @import("design_pages_delete.zig").designPagesDeleteHandler;
+// Element endpoints (new in Chunk 2 of the design-fs-rewrite plan).
+pub const designPageElementsListHandler = @import("design_page_elements_list.zig").designPageElementsListHandler;
+pub const designPageElementsGetHandler = @import("design_page_elements_get.zig").designPageElementsGetHandler;
+pub const designPageElementsCreateHandler = @import("design_page_elements_create.zig").designPageElementsCreateHandler;
+pub const designPageElementsUpdateHandler = @import("design_page_elements_update.zig").designPageElementsUpdateHandler;
+pub const designPageElementsDeleteHandler = @import("design_page_elements_delete.zig").designPageElementsDeleteHandler;
+pub const designPageElementsMoveHandler = @import("design_page_elements_move.zig").designPageElementsMoveHandler;
+pub const designPageElementsResizeHandler = @import("design_page_elements_resize.zig").designPageElementsResizeHandler;
 
 // Kanban column CRUD handlers (item_type='kanban' sub-resources).
 // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).

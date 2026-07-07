@@ -386,6 +386,11 @@ pub const remove_agent = @import("modules/agent/tools/remove_agent.zig");
 pub const set_git_worktree = @import("modules/agent/tools/set_git_worktree.zig");
 pub const kanban_list = @import("modules/agent/tools/kanban_list.zig");
 pub const kanban_move_task = @import("modules/agent/tools/kanban_move_task.zig");
+pub const design_pages = @import("modules/agent/tools/design_pages.zig");
+pub const design_page_elements = @import("modules/agent/tools/design_page_elements.zig");
+pub const design_page_elements_move = @import("modules/agent/tools/design_page_elements_move.zig");
+pub const design_page_elements_list = @import("modules/agent/tools/design_page_elements_list.zig");
+pub const design_page_elements_delete = @import("modules/agent/tools/design_page_elements_delete.zig");
 // `design_tools` was removed in the design-fs-rewrite (chunk 1) and
 // will be re-introduced in chunk 3 of that plan against the new
 // file-backed design_model API. Until then, callers must not reference

@@ -843,22 +843,35 @@ test "BuildDesignCanvasPrompt renders mandatory rule + pages for design parent" 
     const result = try build_messages.BuildDesignCanvasPrompt(alloc, &ctx.db, "sess_design");
     defer alloc.free(result);
 
-    // Mandatory rule + 3 tool names (imperative wording so a future
+    // Mandatory rule + 5 tool names (imperative wording so a future
     // "soften the wording" PR breaks this test).
     try testing.expect(std.mem.indexOf(u8, result, "## Design Canvas") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "MUST use the `set_design_page` tool") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "`list_design_pages` first") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "`delete_design_page`") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "MUST use the design canvas tools") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "`set_design_page(item_id, name)`") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "`set_design_element(") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "`move_design_element(") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "`list_design_elements(") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "`delete_design_element(") != null);
+
+    // File-backed model explanation present.
+    try testing.expect(std.mem.indexOf(u8, result, "file-backed") != null);
+    try testing.expect(std.mem.indexOf(u8, result, ".nalar/design/") != null);
 
     // Both pages listed with ids + positions, in display order.
     try testing.expect(std.mem.indexOf(u8, result, "- `Login` (`pg_login`, position 0)") != null);
     try testing.expect(std.mem.indexOf(u8, result, "- `Dashboard` (`pg_dash`, position 1)") != null);
 
-    // Page-authoring conventions present.
+    // Page-authoring conventions present (file-backed model).
     try testing.expect(std.mem.indexOf(u8, result, "**Page authoring**") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "Full HTML document required") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "Pages have no html") != null);
     try testing.expect(std.mem.indexOf(u8, result, "Idempotent overwrite") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "No \"move\" tool") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "No \"move page\" tool") != null);
+
+    // Element-authoring conventions present (NEW in Chunk 3).
+    try testing.expect(std.mem.indexOf(u8, result, "**Element authoring**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "positioned HTML file") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<element_name>.html") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "`z_index` draws order") != null);
 }
 
 test "BuildDesignCanvasPrompt renders empty-canvas hint when design has no pages" {

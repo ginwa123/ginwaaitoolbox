@@ -626,3 +626,217 @@ pub fn makeTasksReorderPinnedResponse(allocator: std.mem.Allocator, count: usize
         .{},
     );
 }
+
+// ─── Design page + element types ───────────────────────────────────────────
+// Wire shape for the file-backed design canvas (plan
+// docs/superpowers/plans/2026-07-06-design-fs-rewrite.md). Pages have
+// NO html column (just geometry metadata); elements carry html on disk
+// (at <workspace_item.path>/<element.file_path>). Field names match the
+// frontend DesignView types field-for-field so contract changes are one
+// struct to update on each side.
+
+// ─── Pages ────────────────────────────────────────────────────────────────
+
+/// One page in the `GET /api/.../design/pages` list response. Same
+/// shape as `DesignPageFullResponse` minus `created_at`/`updated_at`
+/// (the tab strip doesn't need timestamps). The frontend tabs list is
+/// built from this — the full payload is fetched on demand via
+/// `GET /design/pages/:pid`.
+pub const DesignPageSummary = struct {
+    id: []const u8,
+    name: []const u8,
+    width: i64,
+    height: i64,
+    x: i64,
+    y: i64,
+    position: i64,
+};
+
+/// One page in the `GET /api/.../design/pages/:pid` response. Same
+/// fields as `DesignPageSummary` plus timestamps. The full-page
+/// response also has no html — pages are pure metadata containers in
+/// the v5 file-backed model.
+pub const DesignPageFullResponse = struct {
+    id: []const u8,
+    workspace_item_id: []const u8,
+    name: []const u8,
+    width: i64,
+    height: i64,
+    x: i64,
+    y: i64,
+    position: i64,
+    created_at: []const u8,
+    updated_at: []const u8,
+};
+
+/// Envelope for `GET /design/pages` — `{"pages":[...], "count": N}`.
+pub fn makeDesignPageListResponse(
+    allocator: std.mem.Allocator,
+    pages: anytype,
+) ![]u8 {
+    const DesignPageListResponse = struct {
+        pages: []const DesignPageSummary,
+        count: u32,
+    };
+
+    const mapped = try allocator.alloc(DesignPageSummary, pages.len);
+    defer allocator.free(mapped);
+    for (pages, 0..) |p, i| {
+        mapped[i] = .{
+            .id = p.id,
+            .name = p.name,
+            .width = p.width,
+            .height = p.height,
+            .x = p.x,
+            .y = p.y,
+            .position = p.position,
+        };
+    }
+
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        DesignPageListResponse{
+            .pages = mapped,
+            .count = @intCast(pages.len),
+        },
+        .{},
+    );
+}
+
+/// Envelope for `GET /design/pages/:pid` — `{"page": {...}}`.
+pub fn makeDesignPageFullResponse(
+    allocator: std.mem.Allocator,
+    page: anytype,
+) ![]u8 {
+    const DesignPageEnvelope = struct {
+        page: DesignPageFullResponse,
+    };
+
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        DesignPageEnvelope{
+            .page = .{
+                .id = page.id,
+                .workspace_item_id = page.workspace_item_id,
+                .name = page.name,
+                .width = page.width,
+                .height = page.height,
+                .x = page.x,
+                .y = page.y,
+                .position = page.position,
+                .created_at = page.created_at,
+                .updated_at = page.updated_at,
+            },
+        },
+        .{},
+    );
+}
+
+// ─── Elements ─────────────────────────────────────────────────────────────
+
+/// One element in the `GET /api/.../design/pages/:pid/elements` list
+/// response. NO html — that's fetched on demand via
+/// `GET /design/pages/:pid/elements/:eid` (the list call would
+/// duplicate up to 5 MB per element across the wire for no reason).
+pub const DesignElementSummary = struct {
+    id: []const u8,
+    page_id: []const u8,
+    name: []const u8,
+    file_path: []const u8,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+    z_index: i64,
+    position: i64,
+};
+
+/// One element in the `GET /design/pages/:pid/elements/:eid` and
+/// POST/PUT element responses. Includes the html body read from disk.
+pub const DesignElementFullResponse = struct {
+    id: []const u8,
+    page_id: []const u8,
+    name: []const u8,
+    file_path: []const u8,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+    z_index: i64,
+    position: i64,
+    created_at: []const u8,
+    updated_at: []const u8,
+    html: []const u8,
+};
+
+/// Envelope for `GET /design/pages/:pid/elements` —
+/// `{"elements":[...], "count": N}`.
+pub fn makeDesignElementListResponse(
+    allocator: std.mem.Allocator,
+    elements: anytype,
+) ![]u8 {
+    const DesignElementListResponse = struct {
+        elements: []const DesignElementSummary,
+        count: u32,
+    };
+
+    const mapped = try allocator.alloc(DesignElementSummary, elements.len);
+    defer allocator.free(mapped);
+    for (elements, 0..) |e, i| {
+        mapped[i] = .{
+            .id = e.id,
+            .page_id = e.page_id,
+            .name = e.name,
+            .file_path = e.file_path,
+            .x = e.x,
+            .y = e.y,
+            .width = e.width,
+            .height = e.height,
+            .z_index = e.z_index,
+            .position = e.position,
+        };
+    }
+
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        DesignElementListResponse{
+            .elements = mapped,
+            .count = @intCast(elements.len),
+        },
+        .{},
+    );
+}
+
+/// Envelope for `GET /design/pages/:pid/elements/:eid`,
+/// `POST /design/pages/:pid/elements`, `PUT /design/pages/:pid/elements/:eid`,
+/// `PATCH .../move`, `PATCH .../resize` — `{"element": {...with html...}}`.
+pub fn makeDesignElementFullResponse(
+    allocator: std.mem.Allocator,
+    element: anytype,
+) ![]u8 {
+    const DesignElementEnvelope = struct {
+        element: DesignElementFullResponse,
+    };
+
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        DesignElementEnvelope{
+            .element = .{
+                .id = element.id,
+                .page_id = element.page_id,
+                .name = element.name,
+                .file_path = element.file_path,
+                .x = element.x,
+                .y = element.y,
+                .width = element.width,
+                .height = element.height,
+                .z_index = element.z_index,
+                .position = element.position,
+                .created_at = element.created_at,
+                .updated_at = element.updated_at,
+                .html = element.html,
+            },
+        },
+        .{},
+    );
+}
