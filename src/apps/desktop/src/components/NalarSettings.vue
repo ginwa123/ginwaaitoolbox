@@ -18,7 +18,7 @@ import DefaultsSection, { type DefaultsConfig } from './nalar/DefaultsSection.vu
 import ProfilesSection, { type ProfileRow } from './nalar/ProfilesSection.vue'
 import SubAgentsSection from './nalar/SubAgentsSection.vue'
 import McpServersSection from './nalar/McpServersSection.vue'
-import CompactionSection, { type CompactionConfig } from './nalar/CompactionSection.vue'
+import CompactionSection from './nalar/CompactionSection.vue'
 import ProfileModal from './nalar/ProfileModal.vue'
 import { type LlmConfigModalValue } from './nalar/LlmConfigModal.vue'
 import SubAgentModal, { type SubAgentModalValue } from './nalar/SubAgentModal.vue'
@@ -94,7 +94,12 @@ const profilesList = ref<ProfileRow[]>([])
 const activeProfile = ref<string | null>(null)
 const subAgentsList = ref<SubAgent[]>([])
 const mcpServersList = ref<McpServer[]>([])
-const compactionConfig = ref<CompactionConfig | null>(null)
+
+// Compaction settings live on each `LlmProfile.max_capacity_tokens` and
+// `LlmProfile.compaction_threshold_percent` (Chunk 7 reshape). The
+// CompactionSection edits `profilesList` directly via `v-model:profiles`,
+// so no separate `compactionConfig` ref is needed here — we just expose
+// the same profiles map under a different v-model name.
 
 function syncFromConfig() {
   if (!config.value) return
@@ -118,14 +123,15 @@ function syncFromConfig() {
     url_style: p.url_style ?? 'openai',
     api_key: p.api_key ?? '',
     sub_agents: p.sub_agents ?? [],
+    // Chunk 7: compaction overrides now live on each profile.
+    max_capacity_tokens: p.max_capacity_tokens ?? null,
+    compaction_threshold_percent: p.compaction_threshold_percent ?? null,
   }))
   activeProfile.value = c.active_profile ?? null
   subAgentsList.value = c.sub_agents ?? []
   mcpServersList.value = parseMcpServers(c.mcp_servers)
-  compactionConfig.value = {
-    max_capacity_token_model: c.max_capacity_token_model ?? null,
-    compaction_threshold_percent: c.compaction_threshold_percent ?? null,
-  }
+  // Compaction settings now live on each profile (Chunk 7); the
+  // profilesList loop above already carries them via the `p` value.
 }
 
 function syncToConfig() {
@@ -151,12 +157,9 @@ function syncToConfig() {
     max_tokens: d.max_tokens,
     system_prompt: d.system_prompt,
     notify_on_complete: d.notify_on_complete,
-    ...(compactionConfig.value
-      ? {
-          max_capacity_token_model: compactionConfig.value.max_capacity_token_model,
-          compaction_threshold_percent: compactionConfig.value.compaction_threshold_percent,
-        }
-      : {}),
+    // Note (Chunk 7 reshape): per-profile compaction overrides
+    // (`max_capacity_tokens`, `compaction_threshold_percent`) are now
+    // written via `profiles` below, NOT as top-level fields.
     ...(Object.keys(profiles).length > 0 ? { profiles } : {}),
     ...(activeProfile.value ? { active_profile: activeProfile.value } : {}),
     ...(subAgents.length > 0 ? { sub_agents: subAgents } : {}),
@@ -171,6 +174,30 @@ function profilesToRecord(list: ProfileRow[]): Record<string, NalarProfile> {
     out[name] = rest
   }
   return out
+}
+
+/**
+ * CompactionSection emits the full profiles map (one row per profile,
+ * each row's `max_capacity_tokens` + `compaction_threshold_percent`
+ * potentially mutated). Merge the received map's compaction fields
+ * back into `profilesList` — preserving the per-profile metadata
+ * (model, base_url, sub_agents, etc.) so we don't lose what the user
+ * set on the Profiles tab.
+ */
+function onCompactionProfilesUpdate(updatedProfiles: Record<string, NalarProfile>) {
+  profilesList.value = profilesList.value.map((row) => {
+    const updated = updatedProfiles[row.name]
+    if (!updated) {
+      // Profile was removed elsewhere between renders — keep the row
+      // as-is (the Profiles tab handles deletion via its own modal).
+      return row
+    }
+    return {
+      ...row,
+      max_capacity_tokens: updated.max_capacity_tokens ?? null,
+      compaction_threshold_percent: updated.compaction_threshold_percent ?? null,
+    }
+  })
 }
 
 function parseMcpServers(
@@ -213,7 +240,7 @@ watch(
 // Whenever any section ref mutates, push back to the central config
 // (which keeps the composable's dirty counter in sync).
 watch(
-  [defaultsConfig, profilesList, activeProfile, subAgentsList, mcpServersList, compactionConfig],
+  [defaultsConfig, profilesList, activeProfile, subAgentsList, mcpServersList],
   () => { if (loaded.value) syncToConfig() },
   { deep: true },
 )
@@ -507,7 +534,8 @@ const isLoading = computed(() => !loaded.value)
 
         <CompactionSection
           v-else-if="activeTab === 'compaction'"
-          v-model="compactionConfig!"
+          :profiles="profilesToRecord(profilesList)"
+          @update:profiles="onCompactionProfilesUpdate"
         />
       </div>
 

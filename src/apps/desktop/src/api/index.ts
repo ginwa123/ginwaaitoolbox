@@ -1927,6 +1927,25 @@ export interface NalarProfile {
    * sub-agent set with their own.
    */
   sub_agents?: SubAgent[]
+  /**
+   * Optional override for this profile's context window (in tokens).
+   * When null (or omitted), the backend's built-in per-model default
+   * is used (e.g. 200_000 for MiniMax-M2.7, 500_000 for MiniMax-M3,
+   * 200_000 fallback). Useful for self-hosted models with a
+   * non-standard window.
+   *
+   * Mirrors the backend's `LlmProfile.max_capacity_tokens` field
+   * (added in the configurable-compaction Chunk 7 reshape).
+   */
+  max_capacity_tokens?: number | null
+  /**
+   * Compaction threshold as a percentage (0-100) of this profile's
+   * context window. When null (or omitted), defaults to 80. Out-of-range
+   * values are rejected by the backend with `error.InvalidThresholdPercent`.
+   *
+   * Mirrors the backend's `LlmProfile.compaction_threshold_percent`.
+   */
+  compaction_threshold_percent?: number | null
 }
 
 export interface SubAgent {
@@ -1990,20 +2009,11 @@ export interface NalarConfig {
    * edit `config.json` directly.
    */
   model_compaction_size_kb?: number
-  /**
-   * Optional override for the model's context window in tokens.
-   * When null (or omitted), the backend's built-in per-model token
-   * count is used (e.g. 200_000 for MiniMax-M2.7, 500_000 for
-   * MiniMax-M3, 200_000 fallback). Useful for under-provisioning a
-   * model for cost reasons or over-provisioning a self-hosted model.
-   */
-  max_capacity_token_model?: number | null
-  /**
-   * Compaction threshold as a percentage (0-100) of the model's
-   * context window. When null (or omitted), defaults to 80.
-   * Out-of-range values are rejected by the backend.
-   */
-  compaction_threshold_percent?: number | null
+  // Note (Chunk 7 reshape): `max_capacity_token_model` and
+  // `compaction_threshold_percent` were removed from the top-level
+  // shape and moved to per-profile fields on `NalarProfile`. The
+  // frontend reads `profiles` and edits the per-profile values
+  // directly. See CompactionSection.vue for the per-profile UI.
 }
 
 export async function getNalarConfig(): Promise<NalarConfig> {
