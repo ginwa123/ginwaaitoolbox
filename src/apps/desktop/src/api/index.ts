@@ -987,43 +987,92 @@ export async function createKanban(
 }
 
 /**
- * Design Mode (item_type='design') API — a chat-driven HTML canvas
- * where the LLM writes full HTML documents via `set_design_page`,
- * and the canvas renders them in a sandboxed iframe.
+ * Design Mode (item_type='design') API — file-backed design canvas
+ * with positioned HTML elements.
  *
- * Each design item holds N named HTML pages; the page list endpoint
- * excludes the html body for size (the active page is lazy-loaded
- * on demand via `getDesignPage`).
+ * Data model (plan v5, docs/superpowers/plans/2026-07-06-design-fs-rewrite.md):
  *
- * Plan: docs/superpowers/plans/2026-07-05-design-mode.md (Chunk 4).
+ *   - Pages are metadata-only containers — `id, name, width, height, x, y,
+ *     position` (plus `workspace_item_id` on the full row). Pages have
+ *     NO `html` field; they live in their own folder under
+ *     `<workspace_item.path>/.nalar/design/<page_name>/`.
+ *   - Elements are positioned HTML snippets rendered as boxed `<div>`s
+ *     inside the page's coordinate space — `id, page_id, name, file_path,
+ *     x, y, width, height, z_index, position` (plus `html` on the full
+ *     row). The actual html body lives at `<workspace_item.path>/<file_path>`.
+ *   - Two-element public surface: 11 HTTP endpoints (4 page CRUD + 6
+ *     element CRUD + 1 create-design-item), all routed through `apiFetch`
+ *     so non-2xx responses auto-fire a toast notification.
+ *
+ * Page list excludes html for size (tab strip only needs name +
+ * position + width/height for canvas sizing). Element list also excludes
+ * html — the active element's html is lazy-fetched via
+ * `getDesignElement` on first display.
  */
 
-/** One page summary row — excludes html (lazy-loaded on demand). */
+/** One page row in the design pages list. NO html — pages are pure
+ * metadata containers in the file-backed v5 model. Used as the
+ * `pages[]` element in the `GET .../design/pages` response. */
 export interface DesignPageSummary {
   id: string
   name: string
+  width: number
+  height: number
+  x: number
+  y: number
   position: number
+}
+
+/** Full page row returned by `getDesignPage` / `createDesignPage` /
+ * `updateDesignPage`. Adds `workspace_item_id`, `created_at`, `updated_at`.
+ * Still has no html column — pages have no html in v5. */
+export interface DesignPageFull extends DesignPageSummary {
+  workspace_item_id: string
   created_at: string
   updated_at: string
 }
 
-/** Full page row — includes html. Returned by `getDesignPage`. */
-export interface DesignPageFull extends DesignPageSummary {
+/** One element row in the design elements list. NO html — the list
+ * payload would duplicate up to 5MB per element across the wire for
+ * no reason. Returned by `listDesignElements`. */
+export interface DesignElementSummary {
+  id: string
+  page_id: string
+  name: string
+  /** File path RELATIVE to `<workspace_item.path>` (e.g.
+   * ".nalar/design/Login/hero.html"). The element's html body lives
+   * at `<workspace_item.path>/<file_path>`. */
+  file_path: string
+  x: number
+  y: number
+  width: number
+  height: number
+  z_index: number
+  position: number
+}
+
+/** Full element row returned by `getDesignElement` / `createDesignElement`
+ * / `updateDesignElement` / `moveDesignElement` / `resizeDesignElement`.
+ * Includes `html` (read from disk server-side) so the canvas can render
+ * without a follow-up GET. */
+export interface DesignElementFull extends DesignElementSummary {
+  created_at: string
+  updated_at: string
   html: string
 }
 
 /**
  * Create a new design workspace item. Returns the new `WorkspaceItem`
- * (with `item_type === 'design'`) and an empty pages array (the
- * LLM adds pages via `set_design_page`).
+ * (with `item_type === 'design'`) and an empty pages array (pages are
+ * added by the LLM via `set_design_page` or by the user via
+ * `createDesignPage`).
  *
- * `path` is the on-disk project root for any chat session the user
- * later opens from this design's tasks. Mirrors `createKanban`'s
- * path contract — required by the AddDesignDialog (the user must
- * pick a folder before submitting). Pass an empty string to skip
- * the field (the backend maps `''` → `NULL` via the project
- * `SqliteBackend.exec` convention documented in
- * `nalar-sqlite-backend-empty-slice-binds-as-null.md`).
+ * `path` is the on-disk project root for the design item — required
+ * because elements are file-backed (they live at
+ * `<workspace_item.path>/.nalar/design/<page_name>/<element_name>.html`).
+ * Mirrors `createKanban`'s path contract. Pass an empty string to
+ * skip the field (the backend maps `''` → `NULL` via the project
+ * `SqliteBackend.exec` convention).
  *
  * POST /api/workspaces/:workspaceId/items/design
  */
@@ -1042,9 +1091,9 @@ export async function createDesign(
 }
 
 /**
- * List the pages of a design item, ordered by position. Excludes the
- * html field — the tab strip only needs `name + position`. The active
- * page's html is fetched via `getDesignPage` when its tab is clicked.
+ * List the pages of a design item, ordered by position. The response
+ * envelope is `{pages: DesignPageSummary[], count: u32}` — this
+ * helper unwraps it to `DesignPageSummary[]`.
  *
  * GET /api/workspaces/:workspaceId/items/:itemId/design/pages
  */
@@ -1052,15 +1101,20 @@ export async function listDesignPages(
   workspaceId: string,
   itemId: string,
 ): Promise<DesignPageSummary[]> {
-  return await apiFetch<DesignPageSummary[]>(
+  const data = await apiFetch<{ pages: DesignPageSummary[]; count: number }>(
     `/workspaces/${workspaceId}/items/${itemId}/design/pages`,
     { method: 'GET' },
   )
+  return data.pages
 }
 
 /**
- * Fetch one design page including its full html body. Used by
- * DesignView when the user clicks a tab.
+ * Fetch one design page by id. Returns the full row (incl. geometry +
+ * `workspace_item_id` + timestamps). Pages have no html in v5 (they're
+ * metadata-only containers — elements hold the html). Use
+ * `listDesignElements` for the elements inside.
+ *
+ * The response is `{page: DesignPageFull}` — this helper unwraps it.
  *
  * GET /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId
  */
@@ -1069,16 +1123,57 @@ export async function getDesignPage(
   itemId: string,
   pageId: string,
 ): Promise<DesignPageFull> {
-  return await apiFetch<DesignPageFull>(
+  const data = await apiFetch<{ page: DesignPageFull }>(
     `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}`,
     { method: 'GET' },
   )
+  return data.page
 }
 
 /**
- * Replace a design page's html body. Returns the updated page row.
- * Backend also emits a `design_page_updated` SSE event so other
- * connected clients refresh their open canvas.
+ * Create a new page in a design item. Idempotent on
+ * `(workspace_item_id, name)` — re-issuing with the same name updates
+ * width/height/x/y in place and the same page id is preserved. The
+ * caller gets the existing page back with `was_created: boolean` to
+ * distinguish "first write on a fresh name" from "geometry replaced".
+ *
+ * Body: `{name: string, width?: number, height?: number, x?: number, y?: number}`.
+ * `name` is required; the geometry fields default to schema defaults
+ * (1440×1024 at (0,0)).
+ *
+ * Response: 201 with `{page: DesignPageFull}`.
+ * Backend emits `design_page_created` (first write) or
+ * `design_page_updated` (idempotent replacement) SSE event.
+ *
+ * POST /api/workspaces/:workspaceId/items/:itemId/design/pages
+ */
+export async function createDesignPage(
+  workspaceId: string,
+  itemId: string,
+  body: {
+    name: string
+    width?: number
+    height?: number
+    x?: number
+    y?: number
+  },
+): Promise<DesignPageFull> {
+  const data = await apiFetch<{ page: DesignPageFull }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages`,
+    { method: 'POST', body },
+  )
+  return data.page
+}
+
+/**
+ * Update a page's canvas geometry (width/height/x/y). Name is NOT
+ * updatable — to rename, delete + recreate via `createDesignPage`.
+ *
+ * Body: `{width?: number, height?: number, x?: number, y?: number}` —
+ * at least one field must be present. Response: 200 with
+ * `{page: DesignPageFull}` (re-fetched after the update so the
+ * timestamps reflect the new write). Emits `design_page_updated`
+ * SSE event.
  *
  * PUT /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId
  */
@@ -1086,21 +1181,26 @@ export async function updateDesignPage(
   workspaceId: string,
   itemId: string,
   pageId: string,
-  html: string,
+  body: {
+    width?: number
+    height?: number
+    x?: number
+    y?: number
+  },
 ): Promise<DesignPageFull> {
-  return await apiFetch<DesignPageFull>(
+  const data = await apiFetch<{ page: DesignPageFull }>(
     `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}`,
-    {
-      method: 'PUT',
-      body: { html },
-    },
+    { method: 'PUT', body },
   )
+  return data.page
 }
 
 /**
  * Delete a design page. Idempotent — returns `{deleted: true}` on
  * success and `{deleted: false}` if the page was already missing.
- * Backend also emits a `design_page_deleted` SSE event.
+ * Cascades to delete the page's elements (DB-level ON DELETE CASCADE)
+ * and their on-disk html files. Backend emits `design_page_deleted`
+ * SSE event.
  *
  * DELETE /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId
  */
@@ -1111,6 +1211,200 @@ export async function deleteDesignPage(
 ): Promise<{ deleted: boolean; page_id: string }> {
   return await apiFetch<{ deleted: boolean; page_id: string }>(
     `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}`,
+    { method: 'DELETE' },
+  )
+}
+
+/**
+ * List the elements of a design page, ordered by position then z_index.
+ * NO html in the response — fetch one element's html via
+ * `getDesignElement` when the canvas needs to render it. The response
+ * envelope is `{elements: DesignElementSummary[], count: u32}` — this
+ * helper unwraps it.
+ *
+ * GET /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements
+ */
+export async function listDesignElements(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+): Promise<DesignElementSummary[]> {
+  const data = await apiFetch<{ elements: DesignElementSummary[]; count: number }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements`,
+    { method: 'GET' },
+  )
+  return data.elements
+}
+
+/**
+ * Fetch one element by id, INCLUDING the html body (read from disk
+ * server-side at `<workspace_item.path>/<element.file_path>`). Returns
+ * the full row.
+ *
+ * The response is `{element: DesignElementFull}` — this helper
+ * unwraps it.
+ *
+ * GET /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId
+ */
+export async function getDesignElement(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  elementId: string,
+): Promise<DesignElementFull> {
+  const data = await apiFetch<{ element: DesignElementFull }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/${elementId}`,
+    { method: 'GET' },
+  )
+  return data.element
+}
+
+/**
+ * Create a new design element. Writes the html body to disk at
+ * `<workspace_item.path>/.nalar/design/<page_name>/<sanitized>.html`
+ * and INSERTs the metadata row.
+ *
+ * Body: `{name, html, x?, y?, width?, height?, z_index?}`. `name` and
+ * `html` are required; geometry fields default to schema defaults
+ * (375×667 at (0,0), z_index 0).
+ *
+ * Response: 201 with `{element: DesignElementFull}` (re-fetched with
+ * the html body so the canvas can render immediately without a
+ * follow-up GET). Emits `design_element_created` SSE event.
+ *
+ * POST /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements
+ */
+export async function createDesignElement(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  body: {
+    name: string
+    html: string
+    x?: number
+    y?: number
+    width?: number
+    height?: number
+    z_index?: number
+  },
+): Promise<DesignElementFull> {
+  const data = await apiFetch<{ element: DesignElementFull }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements`,
+    { method: 'POST', body },
+  )
+  return data.element
+}
+
+/**
+ * Partial update of an element. Any field omitted from the body is
+ * left unchanged.
+ *
+ * Body: `{name?, html?, x?, y?, width?, height?, z_index?}`.
+ *
+ *   - `name` change → new on-disk file path (derived from
+ *     `sanitizeFilename(name)`).
+ *   - `html` change → overwrite the existing file.
+ *   - `x`/`y`/`width`/`height`/`z_index` change → column UPDATE.
+ *
+ * Response: 200 with `{element: DesignElementFull}` (the updated row +
+ * html body). Emits `design_element_updated` SSE event.
+ *
+ * PUT /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId
+ */
+export async function updateDesignElement(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  elementId: string,
+  body: {
+    name?: string
+    html?: string
+    x?: number
+    y?: number
+    width?: number
+    height?: number
+    z_index?: number
+  },
+): Promise<DesignElementFull> {
+  const data = await apiFetch<{ element: DesignElementFull }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/${elementId}`,
+    { method: 'PUT', body },
+  )
+  return data.element
+}
+
+/**
+ * Low-latency x/y update for drag-to-move. Updates only `x`, `y`,
+ * `updated_at` on the element row — the html file is untouched.
+ * Designed for fast drag operations (the user pulls many pixels per
+ * second, but at most one PATCH per drag-frame).
+ *
+ * Body: `{x: number, y: number}`. Both required.
+ *
+ * Response: 200 with `{element: DesignElementFull}` (the updated
+ * row). Emits `design_element_updated` SSE event.
+ *
+ * PATCH /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId/move
+ */
+export async function moveDesignElement(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  elementId: string,
+  x: number,
+  y: number,
+): Promise<DesignElementFull> {
+  const data = await apiFetch<{ element: DesignElementFull }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/${elementId}/move`,
+    { method: 'PATCH', body: { x, y } },
+  )
+  return data.element
+}
+
+/**
+ * Low-latency width/height update for resize handles. Updates only
+ * `width`, `height`, `updated_at` on the row — the html file is
+ * untouched. Designed for fast drag operations (one PATCH per
+ * resize-frame).
+ *
+ * Body: `{width: number, height: number}`. Both required.
+ *
+ * Response: 200 with `{element: DesignElementFull}` (the updated
+ * row). Emits `design_element_updated` SSE event.
+ *
+ * PATCH /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId/resize
+ */
+export async function resizeDesignElement(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  elementId: string,
+  width: number,
+  height: number,
+): Promise<DesignElementFull> {
+  const data = await apiFetch<{ element: DesignElementFull }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/${elementId}/resize`,
+    { method: 'PATCH', body: { width, height } },
+  )
+  return data.element
+}
+
+/**
+ * Delete an element. Cascades to unlink the html file from disk on
+ * success. Idempotent — returns `{deleted: true}` on success and
+ * `{deleted: false}` if the element was already missing. Emits
+ * `design_element_deleted` SSE event.
+ *
+ * DELETE /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId
+ */
+export async function deleteDesignElement(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  elementId: string,
+): Promise<{ deleted: boolean; element_id: string }> {
+  return await apiFetch<{ deleted: boolean; element_id: string }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/${elementId}`,
     { method: 'DELETE' },
   )
 }
@@ -1744,6 +2038,56 @@ export interface KanbanTaskEvent {
   new_position?: number | null
 }
 
+// Design SSE event types (plan v5, file-backed design canvas).
+// Matches the 5 `design_*` routing keys emitted by the backend
+// `event_bus` via `on_event_sent_design.zig`. The frontend extracts
+// the affected page/element id and re-fetches / patches its state.
+//
+// Payload shapes mirror the Zig structs in `on_event_design.zig`.
+// Only the `page` / `element` fields that help the consumer decide
+// WHAT to refresh are documented here — full row data arrives via
+// the regular GET endpoints after a refetch.
+//
+// `design_page_updated`     → page geometry (width/height/x/y) or
+//                              name replacement after delete+recreate.
+// `design_page_deleted`     → page row removed; cascade-deletes
+//                              elements + on-disk html files.
+// `design_element_created`  → new element row written to disk.
+// `design_element_updated`  → element updated (full PUT or move or
+//                              resize); `action` disambiguates which.
+// `design_element_deleted`  → element row removed + html file unlinked.
+export interface DesignPageEvent {
+  action?: 'created' | 'updated'
+  workspace_id: string
+  item_id: string
+  page: { id: string }
+}
+
+export interface DesignPageDeletedEvent {
+  page_id: string
+}
+
+export interface DesignElementCreatedEvent {
+  element: { id: string; page_id: string }
+}
+
+export interface DesignElementUpdatedEvent {
+  element: { id: string; page_id: string }
+  /**
+   * Disambiguates which mutation fired the event — the frontend
+   * uses this to decide whether to patch local state vs. re-fetch
+   * (move/resize are low-latency and the local state is already
+   * correct; full PUT may carry geometry changes that need a
+   * round-trip).
+   */
+  action: 'updated' | 'moved' | 'resized'
+}
+
+export interface DesignElementDeletedEvent {
+  element_id: string
+  page_id: string
+}
+
 /**
  * Unified SSE channel options.
  *
@@ -1753,7 +2097,10 @@ export interface KanbanTaskEvent {
  * known named event types (`kanban_column`, `kanban_task`,
  * `queue_queued`, `queue_deleted`, `llm_chunk`, `llm_full`,
  * `worker_created`, `worker_updated`, `worker_deleted`,
- * `session_created`, `session_deleted`) with the SseClient so the
+ * `session_created`, `session_deleted`,
+ * `design_page_updated`, `design_page_deleted`,
+ * `design_element_created`, `design_element_updated`,
+ * `design_element_deleted`) with the SseClient so the
  * browser dispatches them; the actual dispatch to a consumer's
  * callback is filtered by `eventType` inside the factory.
  */
@@ -1761,6 +2108,26 @@ export interface UnifiedChannels {
   workers?: (event: WorkerEvent) => void
   sessions?: (event: SessionEvent) => void
   kanban?: (event: KanbanColumnEvent | KanbanTaskEvent) => void
+  /**
+   * Subscribe to design canvas events (file-backed design pages +
+   * elements). The 5 routing keys (`design_page_updated`,
+   * `design_page_deleted`, `design_element_created`,
+   * `design_element_updated`, `design_element_deleted`) each fire
+   * a different consumer callback so the frontend can handle each
+   * mutation independently. Today the backend's unified SSE handler
+   * only fans out the 5 legacy channels; subscribing to this in
+   * production is a no-op until the design routing is added to
+   * `unified_events_sse.zig`. The frontend types register the
+   * named event types anyway so `__dispatchSseBus('design_…',
+   * …)` tests work without backend changes.
+   */
+  design?: {
+    onPageUpdated: (event: DesignPageEvent) => void
+    onPageDeleted: (event: DesignPageDeletedEvent) => void
+    onElementCreated: (event: DesignElementCreatedEvent) => void
+    onElementUpdated: (event: DesignElementUpdatedEvent) => void
+    onElementDeleted: (event: DesignElementDeletedEvent) => void
+  }
   /**
    * Subscribe to LLM streaming events. When `sessionId` is provided,
    * the factory sends `llm:<sid>` (per-session routing — used by any
@@ -1807,6 +2174,15 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
   if (opts.channels.workers) tokens.push('workers')
   if (opts.channels.sessions) tokens.push('sessions')
   if (opts.channels.kanban) tokens.push('kanban')
+  // Design channel — when `channels.design` is set, request the
+  // unified SSE endpoint's `design` channel (matches the backend's
+  // backend.zig dispatch in `unified_events_sse.zig`, future wiring).
+  // Note: as of 2026-07-07 the backend has NOT yet added the design
+  // channel to the unified dispatcher — this token is included here
+  // so production catches up without frontend changes. When the
+  // backend 400s on an unknown token, callers should be ready to
+  // silently drop it.
+  if (opts.channels.design) tokens.push('design')
   if (opts.channels.llm) {
     tokens.push(opts.channels.llm.sessionId ? `llm:${opts.channels.llm.sessionId}` : 'llm')
   }
@@ -1824,9 +2200,10 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
   // if any are emitted. As of the granular `event:` names commit, EVERY
   // emitted event type sets an explicit `event:` line (worker_*,
   // session_*, llm_chunk, llm_full, queue_queued, queue_deleted,
-  // kanban_column, kanban_task), so the default-message path below is
-  // only hit by future unnamed events. The buffer stays in place so any
-  // such addition is handled correctly without re-wiring the buffer.
+  // kanban_column, kanban_task, design_*), so the default-message
+  // path below is only hit by future unnamed events. The buffer stays
+  // in place so any such addition is handled correctly without
+  // re-wiring the buffer.
   //
   // ONE shared buffer (not N per-channel buffers) — the SSE wire format
   // is a SINGLE stream of `data:` lines; the buffer holds the
@@ -1845,7 +2222,7 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
     // to listeners registered for that exact name. See the SseClient
     // JSDoc + the project memory browser-eventsource-named-events.md.
     // Set names MUST match the `event_type` values emitted by
-    // on_event_sent.zig and llm_history.zig.
+    // on_event_sent.zig, llm_history.zig, and on_event_sent_design.zig.
     additionalEventTypes: [
       'kanban_column',
       'kanban_task',
@@ -1858,6 +2235,11 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
       'worker_deleted',
       'session_created',
       'session_deleted',
+      'design_page_updated',
+      'design_page_deleted',
+      'design_element_created',
+      'design_element_updated',
+      'design_element_deleted',
     ],
     // Default heartbeat filter (matches backend sse_manager.sendHeartbeat).
     heartbeatData: 'ping',
@@ -1888,6 +2270,61 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
           opts.channels.queue.onEvent(data as QueueMessageEvent)
         } catch (err) {
           console.error('[unifiedSSE] queue event parse failed:', err, raw)
+        }
+        return
+      }
+
+      // Design canvas events. Each named event type is dispatched to
+      // its own consumer callback so the frontend can react
+      // independently (e.g. fire a refetch vs. patch local state).
+      // The 5 routing keys match `on_event_sent_design.zig`.
+      if (eventType === 'design_page_updated') {
+        if (!opts.channels.design) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.design.onPageUpdated(data as DesignPageEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] design_page_updated parse failed:', err, raw)
+        }
+        return
+      }
+      if (eventType === 'design_page_deleted') {
+        if (!opts.channels.design) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.design.onPageDeleted(data as DesignPageDeletedEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] design_page_deleted parse failed:', err, raw)
+        }
+        return
+      }
+      if (eventType === 'design_element_created') {
+        if (!opts.channels.design) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.design.onElementCreated(data as DesignElementCreatedEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] design_element_created parse failed:', err, raw)
+        }
+        return
+      }
+      if (eventType === 'design_element_updated') {
+        if (!opts.channels.design) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.design.onElementUpdated(data as DesignElementUpdatedEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] design_element_updated parse failed:', err, raw)
+        }
+        return
+      }
+      if (eventType === 'design_element_deleted') {
+        if (!opts.channels.design) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.design.onElementDeleted(data as DesignElementDeletedEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] design_element_deleted parse failed:', err, raw)
         }
         return
       }

@@ -10,19 +10,42 @@ import type {
   KanbanTaskEvent,
   SseEvent,
   QueueMessageEvent,
+  DesignPageEvent,
+  DesignPageDeletedEvent,
+  DesignElementCreatedEvent,
+  DesignElementUpdatedEvent,
+  DesignElementDeletedEvent,
 } from '../api'
 
-// NOTE: Plan's Chunk 1 spec imports `KanbanEvent` and `LlmChunkEvent`
-// from `../api`, but those names don't exist in `api/index.ts` — the
-// actual exports are `KanbanColumnEvent` / `KanbanTaskEvent` and
-// `SseEvent`. We use the real names here; the `SseEventMap` shape
-// (worker / session / kanban / llm / queue) is unchanged.
+// Event-map shape: each key is a registered bus channel; the value
+// is the event payload shape fans out from `createUnifiedSseConnection`'s
+// dispatch. Design canvas events share a 'design' channel name with
+// per-event-type dispatch on the UnifiedChannels.design callbacks;
+// the bus collapses them into a single channel so consumers subscribe
+// with `bus.on('design', cb)` and receive all 5 design event shapes
+// (they identify the event type by the `action` or named-event
+// field on the payload).
+//
+// We use the public event types (DesignPageEvent,
+// DesignPageDeletedEvent, etc.) defined in `api/index.ts`. The
+// unified SSE factory pre-dispatches each named routing key to its
+// own callback (`onPageUpdated`, `onPageDeleted`, etc.); the bus
+// wraps all 5 callbacks into a single 'design' channel listener by
+// wrapping them into a fan-out closure. See `installSseBus` below.
+type DesignEvent =
+  | DesignPageEvent
+  | DesignPageDeletedEvent
+  | DesignElementCreatedEvent
+  | DesignElementUpdatedEvent
+  | DesignElementDeletedEvent
+
 type SseEventMap = {
   worker: WorkerEvent
   session: SessionEvent
   kanban: KanbanColumnEvent | KanbanTaskEvent
   llm: SseEvent
   queue: QueueMessageEvent
+  design: DesignEvent
 }
 
 type Listener<K extends keyof SseEventMap> = (event: SseEventMap[K]) => void
@@ -99,20 +122,41 @@ export function installSseBus(_app?: App): SseBus {
     kanban: new Set<Listener<'kanban'>>(),
     llm: new Set<Listener<'llm'>>(),
     queue: new Set<Listener<'queue'>>(),
+    design: new Set<Listener<'design'>>(),
   }
 
   const state = shallowRef<SseState>('closed')
 
-  // Single global EventSource carrying ALL 5 channels. The bus does
-  // NOT open a second EventSource per chat (the v1 refcount design
-  // was reverted; see docs/plans/2026-06-30-single-sse-all-sessions-design.md).
-  // Listeners for 'llm' and 'queue' filter by event.session_id on the
-  // JS side — defense-in-depth against any backend routing regression.
+  // Single global EventSource carrying ALL 6 channels (5 legacy +
+  // design). The bus does NOT open a second EventSource per chat
+  // (the v1 refcount design was reverted; see
+  // docs/plans/2026-06-30-single-sse-all-sessions-design.md).
+  // Listeners for 'llm' and 'queue' filter by event.session_id on
+  // the JS side — defense-in-depth against any backend routing
+  // regression.
+  //
+  // The design channel wraps all 5 design_* per-event-type
+  // callbacks into a SINGLE 'design' channel listener. Consumers
+  // call `bus.on('design', cb)` and get a union event (the wrapper
+  // fans out each callback to the registered listeners via the
+  // local `dispatch` closure below — note: this closure is defined
+  // further down so `installSseBus` is forward-declared-shape safe).
   const globalClient: SseClient = createUnifiedSseConnection({
     channels: {
       workers: (e) => dispatch('worker', e),
       sessions: (e) => dispatch('session', e),
       kanban: (e) => dispatch('kanban', e),
+      // Design fan-out: route every design_* named event through
+      // the bus's 'design' channel. The `DesignEvent` union lives
+      // in SseEventMap so callers can switch on `action` /
+      // `element_id` / `page_id` to pick the right handler.
+      design: {
+        onPageUpdated: (e) => dispatch('design', e),
+        onPageDeleted: (e) => dispatch('design', e),
+        onElementCreated: (e) => dispatch('design', e),
+        onElementUpdated: (e) => dispatch('design', e),
+        onElementDeleted: (e) => dispatch('design', e),
+      },
       // Bare 'llm' and bare 'queue' — backend broadcasts all sessions'
       // events on central keys. Frontend filter is `event.session_id ===
       // mySessionId.value` inside each listener.

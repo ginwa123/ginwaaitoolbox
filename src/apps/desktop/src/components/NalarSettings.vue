@@ -83,7 +83,7 @@ onMounted(async () => {
   } catch {
     // Network/API failure — keep legacy.
   }
-  const merged: NalarConfig = { ...legacy, ...(apiData ?? {}) }
+  const merged: NalarConfig = { ...legacy, ...apiData }
   setConfig(merged)
 })
 
@@ -405,7 +405,7 @@ async function setActiveProfile(name: string) {
   activeProfile.value = name
   isSettingActive.value = true
   try {
-    await saveNalarConfig({ ...(config.value ?? {}), active_profile: name } as NalarConfig)
+    await saveNalarConfig({ ...config.value, active_profile: name } as NalarConfig)
     emit('notification', `Active profile set to "${name}"`, 'success')
   } catch (err) {
     emit('notification', `Failed to set active: ${err instanceof Error ? err.message : String(err)}`, 'error')

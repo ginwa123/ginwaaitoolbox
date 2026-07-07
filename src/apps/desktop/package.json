@@ -19,6 +19,7 @@
     "@tailwindcss/vite": "^4.2.2",
     "marked": "^18.0.2",
     "monaco-editor": "^0.52.2",
+    "panzoom": "^9.4.4",
     "pinia": "^3.0.4",
     "pinia-plugin-persistedstate": "^4.7.1",
     "tailwindcss": "^4.2.2",

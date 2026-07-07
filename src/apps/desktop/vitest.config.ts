@@ -14,9 +14,18 @@ export default mergeConfig(
       // vi.mock can intercept, so we alias the bare specifier to a tiny stub
       // for module resolution. The real CodeEditor is stubbed at mount-time
       // so the stub's contents do not matter.
+      //
+      // Same treatment for `panzoom` (Chunk 4 of the design-fs-rewrite
+      // plan): the package IS installed, but its module body attaches DOM
+      // event handlers and reads `getBoundingClientRect()` patterns that
+      // don't behave in jsdom. The DesignView is stubbed at mount-time in
+      // behavioral tests; static-contract tests just read the source.
       alias: {
         'monaco-editor': fileURLToPath(
           new URL('./src/__tests__/stubs/monaco-editor.ts', import.meta.url),
+        ),
+        panzoom: fileURLToPath(
+          new URL('./src/__tests__/stubs/panzoom.ts', import.meta.url),
         ),
       },
     },

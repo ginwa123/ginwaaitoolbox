@@ -82,7 +82,7 @@ describe('vite.config.ts — SSE proxy buffering fix', () => {
     // appear as a code-level header set on the response.
     const codePatterns = [
       /setHeader\(['"]x-no-proxy-buffering['"]/,
-      /headers\[['\"]x-no-proxy-buffering['\"]\]\s*=/,
+      /headers\[['"]x-no-proxy-buffering['"]\]\s*=/,
       /headers\.x-no-proxy-buffering\s*=/,
     ]
     for (const re of codePatterns) {
