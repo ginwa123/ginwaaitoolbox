@@ -36,6 +36,10 @@ const adapted = computed<LlmConfigModalValue>(() => ({
     temperature: 'auto',
     url_style: 'openai',
     api_key: '',
+    // Compaction overrides (plan 2026-07-07-compaction-inline) — not
+    // used by MCP servers, but LlmConfig requires the fields.
+    max_capacity_tokens: null,
+    compaction_threshold_percent: null,
   },
 }))
 

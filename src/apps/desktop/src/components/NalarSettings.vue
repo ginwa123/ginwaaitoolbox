@@ -268,7 +268,7 @@ function emptyDefaults(): DefaultsConfig {
 function startAddProfile() {
   profileModal.value = {
     mode: 'add',
-    value: { name: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '' } },
+    value: { name: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null } },
   }
 }
 function startEditProfile(p: ProfileRow) {
@@ -280,6 +280,9 @@ function startEditProfile(p: ProfileRow) {
         model: p.model ?? '', base_url: p.base_url ?? '', thinking: p.thinking ?? 'auto',
         temperature: p.temperature ?? 'auto', url_style: p.url_style ?? 'openai',
         api_key: p.api_key ?? '',
+        // Compaction overrides — plan 2026-07-07-compaction-inline.
+        max_capacity_tokens: p.max_capacity_tokens ?? null,
+        compaction_threshold_percent: p.compaction_threshold_percent ?? null,
       },
     },
   }
@@ -315,7 +318,7 @@ function startAddSubAgent() {
   subAgentModal.value = {
     mode: 'add',
     scope: { kind: 'top' },
-    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '' } },
+    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null } },
   }
 }
 function startEditSubAgent(sa: SubAgent) {
@@ -329,6 +332,11 @@ function startEditSubAgent(sa: SubAgent) {
         model: sa.model ?? '', base_url: sa.base_url ?? '', thinking: sa.thinking ?? 'auto',
         temperature: sa.temperature ?? 'auto', url_style: sa.url_style ?? 'openai',
         api_key: sa.api_key ?? '',
+        // Compaction overrides (plan 2026-07-07-compaction-inline) — not
+        // currently editable in the sub-agent modal but required by
+        // LlmConfig type.
+        max_capacity_tokens: null,
+        compaction_threshold_percent: null,
       },
     },
   }
@@ -337,7 +345,7 @@ function startAddSubAgentInProfile(profileName: string) {
   subAgentModal.value = {
     mode: 'add',
     scope: { kind: 'profile', profileName },
-    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '' } },
+    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null } },
   }
 }
 function startEditSubAgentInProfile(profileName: string, sa: SubAgent) {
@@ -351,6 +359,11 @@ function startEditSubAgentInProfile(profileName: string, sa: SubAgent) {
         model: sa.model ?? '', base_url: sa.base_url ?? '', thinking: sa.thinking ?? 'auto',
         temperature: sa.temperature ?? 'auto', url_style: sa.url_style ?? 'openai',
         api_key: sa.api_key ?? '',
+        // Compaction overrides (plan 2026-07-07-compaction-inline) —
+        // required by LlmConfig type. Sub-agent-level overrides
+        // currently cascade from the parent profile (Chunk 7).
+        max_capacity_tokens: null,
+        compaction_threshold_percent: null,
       },
     },
   }
