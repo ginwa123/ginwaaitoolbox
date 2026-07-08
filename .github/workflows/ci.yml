@@ -122,12 +122,14 @@ jobs:
           echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
           echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
-          # coreutils provides `timeout`, `stat -f%z`, and other GNU
+          # coreutils provides `timeout`, `stat -c%s`, and other GNU
           # utilities not in stock macOS. The "Smoke test: desktop binary"
           # step calls `timeout 10 ./zig-out/bin/nalar-desktop --smoke-test`
           # which fails with exit 127 ("command not found") on stock macOS
           # without coreutils installed. brew installs the binaries as
           # `gtimeout`, but the gnubin directory provides them as `timeout`
+          # (and `stat` as GNU `stat` with the `-c%s` flag). The verify
+          # steps below use `stat -c%s` for both platforms.
           # too; either way, exporting PATH ensures we pick the right one.
           echo "PATH=$(brew --prefix coreutils)/libexec/gnubin:$PATH" >> $GITHUB_ENV
 
@@ -236,7 +238,11 @@ jobs:
               echo "✗ $bin missing" >&2
               exit 1
             fi
-            local_size=$(stat -f%z "$bin")
+            # Use GNU `stat` (coreutils installs it on the runner with
+            # libexec/gnubin at the front of PATH — see the
+            # `coreutils provides timeout, stat -c%s` comment above).
+            # The BSD form `stat -f%z` is not on PATH anymore.
+            local_size=$(stat -c%s "$bin")
             echo "  ✓ $bin  ($((local_size / 1024 / 1024)) MB)"
             # Sanity: Mach-O arm64, dynamically linked
             file "$bin" | grep -q "Mach-O 64-bit executable arm64" \
