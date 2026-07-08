@@ -1927,6 +1927,25 @@ export interface NalarProfile {
    * sub-agent set with their own.
    */
   sub_agents?: SubAgent[]
+  /**
+   * Optional override for this profile's context window (in tokens).
+   * When null (or omitted), the backend's built-in per-model default
+   * is used (e.g. 200_000 for MiniMax-M2.7, 500_000 for MiniMax-M3,
+   * 200_000 fallback). Useful for self-hosted models with a
+   * non-standard window.
+   *
+   * Mirrors the backend's `LlmProfile.max_capacity_tokens` field
+   * (added in the configurable-compaction Chunk 7 reshape).
+   */
+  max_capacity_tokens?: number | null
+  /**
+   * Compaction threshold as a percentage (0-100) of this profile's
+   * context window. When null (or omitted), defaults to 80. Out-of-range
+   * values are rejected by the backend with `error.InvalidThresholdPercent`.
+   *
+   * Mirrors the backend's `LlmProfile.compaction_threshold_percent`.
+   */
+  compaction_threshold_percent?: number | null
 }
 
 export interface SubAgent {
@@ -1990,6 +2009,23 @@ export interface NalarConfig {
    * edit `config.json` directly.
    */
   model_compaction_size_kb?: number
+  /**
+   * Optional top-level override for the model's context window (in
+   * tokens). `null` = fall through to per-profile override, then
+   * built-in default. Restored in plan 2026-07-07-compaction-inline
+   * so the Defaults tab can show + edit the top-level compaction
+   * defaults. Mirrors `LlmConfig.max_capacity_token_model`.
+   */
+  max_capacity_token_model?: number | null
+  /**
+   * Optional top-level compaction threshold as a percentage (0-100).
+   * `null` = fall through to per-profile override, then built-in 80.
+   * Mirrors `LlmConfig.compaction_threshold_percent`.
+   */
+  compaction_threshold_percent?: number | null
+  // Per-profile compaction overrides (`max_capacity_tokens` /
+  // `compaction_threshold_percent`) live on `NalarProfile` (Chunk
+  // 7.6) and remain there. Both layers coexist.
 }
 
 export async function getNalarConfig(): Promise<NalarConfig> {

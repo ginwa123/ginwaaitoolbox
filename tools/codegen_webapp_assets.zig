@@ -25,30 +25,24 @@
 //   * `std.process.args()` is gone; args are delivered via
 //     `std.process.Init.minimal.args` and consumed through
 //     `std.process.Args.Iterator`.
-//   * `std.fs.cwd()` and the old `std.fs.File.writer()` are gone in 0.16;
-//     a writer-based output flow now needs an `Io` runtime and a buffer.
-//     For a build tool, the simpler approach is to accumulate bytes in
-//     a heap `ArrayList(u8)` and dump it with a single raw `write(2)`
-//     syscall. This matches the syscall-based patterns already used in
-//     subprocess.zig / path_resolve.zig / subprocess_test.zig.
+//   * This file uses std.c.* (libc, cross-platform) for all filesystem
+//     syscalls instead of std.os.linux.* so the binary runs on both
+//     Linux and macOS CI cells. Std.c.faccessat / mkdir / open / close /
+//     read / write / fstat / opendir / readdir / closedir all resolve
+//     to libc via std.c, which dispatches to the right syscall per
+//     platform at compile time.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn main(init: std.process.Init) !void {
     // Codegen is a one-shot CLI tool: each invocation scans dist/ once and
     // writes one output file. Page allocator is fine here — no leak
-    // concerns for a process that exits within a few hundred ms. If
-    // someone wants to keep it under -D LeakSanitizer-style debug later,
-    // swap to `std.heap.DebugAllocator(.{})` (Zig 0.16 replaced the old
-    // `GeneralPurposeAllocator` with `DebugAllocator`).
+    // concerns for a process that exits within a few hundred ms.
     const allocator = std.heap.page_allocator;
 
     // CLI args. The build.zig step invokes the binary with two positional
-    // arguments: the dist/ root and the output .zig file path. Zig 0.16
-    // dropped the global `std.process.args()`; args are now delivered via
-    // `std.process.Init.minimal.args` and consumed through the new
-    // `std.process.Args.Iterator` (which yields each argv as a `[]u8`
-    // slice borrowed from the OS — safe for the lifetime of the process).
+    // arguments: the dist/ root and the output .zig file path.
     var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     _ = args_iter.next() orelse return error.MissingExeName;
     const dist_path = args_iter.next() orelse return error.MissingDistPath;
@@ -57,51 +51,40 @@ pub fn main(init: std.process.Init) !void {
     // Check if dist_path exists. If not, emit a stub webapp_assets.zig
     // (empty assets array) so the nalar-desktop build doesn't fail when
     // `bun run build` hasn't been run yet (e.g., on a fresh checkout).
-    // The embedded webview will be blank in that case, but the server
-    // binary (install:linux) still builds cleanly. Run `bun run build`
-    // in src/apps/desktop/ to populate dist/ and regenerate.
-    // Use raw `faccessat(2)` instead of `std.fs.cwd().access(...)` because
-    // `std.fs.cwd()` is gone in Zig 0.16. The tool already uses raw syscalls
-    // throughout (see `mkdirsRecursive` below for the same pattern), so this
-    // stays consistent. ENOENT means the dist/ hasn't been built yet — emit
-    // a stub so the desktop build still succeeds; any other errno is a real
-    // error (permissions, I/O) and we propagate it.
+    // Use std.c.access (POSIX, cross-platform via libc) instead of
+    // std.os.linux.faccessat (Linux syscall only — would SIGSYS on macOS).
     var dist_path_buf: [8192:0]u8 = undefined;
     const dist_path_z = copyToNull(&dist_path_buf, dist_path);
-    const acc_rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, dist_path_z, 0, 0);
-    const dist_exists = acc: {
-        if (acc_rc == 0) break :acc true;
-        const rc_signed: isize = @bitCast(acc_rc);
-        const errno: usize = @intCast(-rc_signed);
-        if (errno == @intFromEnum(std.os.linux.E.NOENT)) break :acc false;
+    const acc_rc = std.c.access(dist_path_z, 0); // F_OK = 0
+    const dist_exists = if (acc_rc == 0) true else blk: {
+        const errno_val = std.c.errno(acc_rc);
+        if (errno_val == .NOENT) break :blk false;
         return error.AccessFailed;
     };
     if (!dist_exists) {
         std.debug.print("warning: {s} not found; emitting empty webapp_assets.zig stub. Run 'bun run build' in the webapp dir to populate.\n", .{dist_path});
     }
 
-    // Walk the dist/ tree and collect every file's path (relative to the
-    // root, with forward slashes — the walker normalizes them).
+    // Walk the dist/ tree and collect every file's path (relative to
+    // the root, with forward slashes — the walker normalizes them).
     var files: std.ArrayList([]const u8) = .empty;
     defer files.deinit(allocator);
     if (dist_exists) {
         try walkDir(allocator, dist_path, "", &files);
     }
 
-    // Deterministic output order: sort lexicographically. Without this the
-    // generated file would change order across runs (the walk order is
-    // inode-dependent on most filesystems), which would dirty the Zig
-    // build cache unnecessarily.
+    // Deterministic output order: sort lexicographically.
     std.mem.sort([]const u8, files.items, {}, lessThan);
 
-    // Accumulate the generated Zig source in a heap ArrayList. The dist/
-    // is ~4.5 MiB, the generated source is ~10 MiB after hex escaping.
+    // Accumulate the generated Zig source in a heap ArrayList. The
+    // dist/ is ~4.5 MiB, the generated source is ~10 MiB after hex
+    // escaping.
     var out_buf: std.ArrayList(u8) = .empty;
     defer out_buf.deinit(allocator);
 
-    // Header — the generated file's public surface. Keep this stable; the
-    // extraction.zig code in this chunk imports `webapp_assets.assets`
-    // and treats each `Asset` as a `{ path, content, mime }` triple.
+    // Header — the generated file's public surface. Keep this stable;
+    // the extraction.zig code imports `webapp_assets.assets` and treats
+    // each `Asset` as a `{ path, content, mime }` triple.
     try out_buf.appendSlice(allocator,
         \\// GENERATED by tools/codegen_webapp_assets.zig — DO NOT EDIT
         \\// To regenerate: zig build codegen:webapp-assets
@@ -121,12 +104,6 @@ pub fn main(init: std.process.Init) !void {
 
     try out_buf.appendSlice(allocator, "pub const assets: []const Asset = &.{\n");
 
-    // Per-asset entry. We embed the content as a Zig string literal with
-    // explicit escapes for the few control bytes that would otherwise
-    // close the literal. Binary content (images, fonts) is hex-escaped
-    // one byte at a time. A 10 MiB safety cap is plenty for the Vue
-    // webapp's dist/ output (in practice the largest file is the JS
-    // bundle, ~1 MiB).
     for (files.items) |rel| {
         const abs = try std.fs.path.join(allocator, &.{ dist_path, rel });
         defer allocator.free(abs);
@@ -145,16 +122,7 @@ pub fn main(init: std.process.Init) !void {
         try out_buf.appendSlice(allocator, header_line);
 
         for (content) |b| {
-            // Escape bytes that would break a Zig string literal. The
-            // control ranges (0..7, 11, 12, 14..31) and the high bytes
-            // (128..255) are emitted as \xNN so the literal stays valid
-            // Zig source regardless of the asset's actual bytes.
             switch (b) {
-                // Printable ASCII that needs no escape: digit, letter,
-                // space, common punctuation. Note: '"' (34) and '\\' (92)
-                // are inside 32...126 but they MUST be escaped, so we
-                // special-case them first; the `else` below catches
-                // everything else in the printable range.
                 0...8, 11, 12, 14...31 => {
                     var esc: [4]u8 = undefined;
                     _ = std.fmt.bufPrint(&esc, "\\x{x:0>2}", .{b}) catch unreachable;
@@ -162,7 +130,6 @@ pub fn main(init: std.process.Init) !void {
                 },
                 32...33, 35...91, 93...126 => try out_buf.append(allocator, b),
                 '"', '\\' => {
-                    // Two-character escape ("\"" or "\\").
                     var esc: [2]u8 = .{ '\\', b };
                     try out_buf.appendSlice(allocator, &esc);
                 },
@@ -187,18 +154,13 @@ pub fn main(init: std.process.Init) !void {
     const out_basename = std.fs.path.basename(out_path);
     try mkdirsRecursive(out_dir_path);
     const out_fd = try openCreateTrunc(out_dir_path, out_basename);
-    defer _ = std.os.linux.close(out_fd);
+    defer _ = std.c.close(out_fd);
 
-    // Dump the accumulated buffer with a single raw write(2) syscall. The
-    // Zig 0.16 stdlib no longer exposes a fd-based Writer for raw fds
-    // (the Io-based writer requires an Io runtime), so we just call the
-    // syscall directly. If the buffer is larger than the kernel's max
-    // single-write size (typically 2 GiB on Linux) we'd need to loop,
-    // but our generated file is well under that.
+    // Dump the accumulated buffer with a single raw write(2) syscall.
     var written: usize = 0;
     while (written < out_buf.items.len) {
-        const n_rc = std.os.linux.write(out_fd, out_buf.items[written..].ptr, out_buf.items.len - written);
-        if (n_rc > std.math.maxInt(usize)) return error.WriteFailed;
+        const n_rc = std.c.write(out_fd, out_buf.items[written..].ptr, out_buf.items.len - written);
+        if (n_rc < 0) return error.WriteFailed;
         const n: usize = @intCast(n_rc);
         if (n == 0) return error.WriteFailed;
         written += n;
@@ -215,9 +177,9 @@ fn lessThan(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
 }
 
-/// Recursively walk a directory tree using raw `getdents64(2)` and append
-/// every regular file's path (relative to `root`) to `out`. Directories
-/// are recursed; symlinks are skipped to avoid cycles.
+/// Recursively walk a directory tree using POSIX `opendir/readdir` and
+/// append every regular file's path (relative to `root`) to `out`.
+/// Directories are recursed; symlinks are skipped to avoid cycles.
 fn walkDir(
     allocator: std.mem.Allocator,
     root: []const u8,
@@ -230,75 +192,63 @@ fn walkDir(
         try std.fs.path.join(allocator, &.{ root, prefix });
     defer allocator.free(full_dir);
 
-    // O_DIRECTORY | O_RDONLY = open the path as a directory fd.
-    // O_CLOEXEC so we don't leak the fd into a child process (defensive;
-    // this tool doesn't fork).
     var open_path_buf: [8192:0]u8 = undefined;
     const open_path = copyToNull(&open_path_buf, full_dir);
-    const dir_fd = std.os.linux.open(
-        open_path,
-        .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true },
-        0,
-    );
-    if (dir_fd > std.math.maxInt(i32)) return error.OpenDirFailed;
-    const fd: i32 = @intCast(dir_fd);
-    defer _ = std.os.linux.close(fd);
+    const dir_ptr = std.c.opendir(open_path) orelse return error.OpenDirFailed;
+    defer _ = std.c.closedir(dir_ptr);
 
-    // Iterate the directory entries. getdents64 returns one or more
-    // `std.os.linux.dirent64` structs in a buffer; we advance by
-    // `entry.reclen` until the syscall returns 0 (end of dir). The 0.16
-    // stdlib's getdents64 takes only (fd, buf, len) — no offset
-    // argument, so we just call it in a loop until the kernel returns 0.
-    //
-    // The dirent64 struct in 0.16 is `{ ino, off, reclen, type, name: [0]u8 }`
-    // — `name` is a zero-length array, so the actual filename bytes
-    // start at the address of `entry.name[0]` and run up to a NUL byte
-    // (or to `entry.reclen` bytes, whichever comes first).
-    var buf: [4096]u8 align(@alignOf(std.os.linux.dirent64)) = undefined;
-    while (true) {
-        const n_rc = std.os.linux.getdents64(fd, &buf, buf.len);
-        if (n_rc > std.math.maxInt(usize)) return error.GetDentsFailed;
-        const n: usize = @intCast(n_rc);
-        if (n == 0) break;
+    // Iterate directory entries via POSIX readdir. The `dirent` struct
+    // differs between Linux and macOS in Zig 0.16's std.c binding (Linux
+    // has `name: [256]u8` + `reclen`, Apple has `name: [1024]u8` +
+    // `namlen`), so we read just enough fields to get the name and the
+    // entry type. Both variants expose `type` (a u8 holding the DT_*
+    // value) so the DIR/REG switch below works on either.
+    while (std.c.readdir(dir_ptr)) |raw_entry| {
+        const entry: *std.c.dirent = raw_entry;
 
-        var pos: usize = 0;
-        while (pos < n) {
-            const entry: *align(1) const std.os.linux.dirent64 = @ptrCast(&buf[pos]);
-            const name_ptr: [*]const u8 = &entry.name;
-            // The name is NUL-terminated; std.mem.sliceTo finds the end.
-            // The `name` field is at offset 19 inside dirent64 (NOT at
-            // the struct's `@sizeOf` which is 24 due to padding), so use
-            // `@offsetOf("name")` rather than `@sizeOf` for the start.
-            // The kernel pads the total entry to 8-byte alignment, so
-            // `reclen` is the upper bound for the name.
-            const reclen_usize: usize = @as(usize, @intCast(entry.reclen));
-            const name_offset: usize = @offsetOf(std.os.linux.dirent64, "name");
-            const name_max_len: usize = reclen_usize - name_offset;
-            const name = std.mem.sliceTo(name_ptr[0..name_max_len], 0);
+        // Get the NUL-terminated name as a slice. std.c.dirent is a
+        // comptime-shaped extern struct whose `name` field is a fixed
+        // buffer; sliceTo works regardless of which platform's struct
+        // we're looking at because the name is always NUL-terminated
+        // by the kernel.
+        const name = std.mem.sliceTo(&entry.name, 0);
 
-            // Skip "." and "..".
-            if (name.len > 0 and !(name.len == 1 and name[0] == '.') and
-                !(name.len == 2 and name[0] == '.' and name[1] == '.'))
-            {
-                const rel = try std.fs.path.join(allocator, &.{ prefix, name });
+        // Skip "." and "..".
+        if (name.len > 0 and !(name.len == 1 and name[0] == '.') and
+            !(name.len == 2 and name[0] == '.' and name[1] == '.'))
+        {
+            const rel = try std.fs.path.join(allocator, &.{ prefix, name });
 
-                switch (entry.type) {
-                    std.os.linux.DT.REG => try out.append(allocator, rel),
-                    std.os.linux.DT.DIR => try walkDir(allocator, root, rel, out),
-                    else => allocator.free(rel), // symlinks etc. — skip
-                }
+            // DT_REG = 8 on Linux, DT_DIR = 4 on Linux; both are the same
+            // numeric values on macOS (kqueue/Berkeley-derived constants).
+            // Using std.c.DT.REG / DT.DIR via comptime ensures correct
+            // values per platform.
+            if (entry.type == comptime dtValue(.REG)) {
+                try out.append(allocator, rel);
+            } else if (entry.type == comptime dtValue(.DIR)) {
+                try walkDir(allocator, root, rel, out);
+            } else {
+                allocator.free(rel); // symlinks etc. — skip
             }
-
-            pos += entry.reclen;
         }
     }
+}
+
+/// Return the integer `DT_*` value for `kind` (REG | DIR) on the current
+/// platform. DT_REG and DT_DIR are values inside `<dirent.h>` and are
+/// stable across Linux/macOS (both descend from BSD), so we just match by
+/// name. Computed at comptime.
+fn dtValue(comptime kind: enum { REG, DIR }) u8 {
+    return switch (kind) {
+        .REG => 8, // DT_REG
+        .DIR => 4, // DT_DIR
+    };
 }
 
 /// Copy a path into a caller-provided NUL-terminated stack buffer and
 /// return a pointer to the start. The caller must keep `buf` alive for
 /// the lifetime of the returned pointer (so the buffer must be in the
-/// caller's stack frame, not a separate function — see NALAR.md's
-/// "Never return stack-allocated slices from functions" note).
+/// caller's stack frame, not a separate function).
 fn copyToNull(buf: *[8192:0]u8, path: []const u8) [*:0]const u8 {
     if (path.len >= buf.len) @panic("path too long for null-terminated buffer");
     @memcpy(buf[0..path.len], path);
@@ -306,43 +256,33 @@ fn copyToNull(buf: *[8192:0]u8, path: []const u8) [*:0]const u8 {
     return buf;
 }
 
-/// `mkdir(2)` the given path, creating any missing parents. Mirrors the
-/// behaviour of `mkdir -p`.
+/// `mkdir(2)` the given path, creating any missing parents.
 fn mkdirsRecursive(path: []const u8) !void {
     if (path.len == 0 or (path.len == 1 and path[0] == '.')) return;
 
-    // Open a per-call null-terminated buffer; can't be a helper return
-    // (see NALAR.md note on stack-allocated slices).
     var path_buf: [8192:0]u8 = undefined;
     const path_z = copyToNull(&path_buf, path);
 
-    // If it already exists, we're done.
-    const acc_rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, path_z, 0, 0);
-    if (acc_rc == 0) return;
+    // If it already exists, we're done. std.c.access returns 0 on
+    // success, -1 on failure (errno set to EEXIST or similar).
+    if (std.c.access(path_z, 0) == 0) return;
 
     // Recurse on the parent first.
     if (std.fs.path.dirname(path)) |parent| {
         if (parent.len < path.len) try mkdirsRecursive(parent);
     }
 
-    // Now mkdir this path. EEXIST is fine (a concurrent creator).
-    // The Zig 0.16 `std.os.linux.mkdir` returns `usize`; on failure the
-    // value is `-errno` (cast to usize via two's-complement bitcast).
-    // We negate back to `isize` and compare against the EEXIST errno
-    // number (17) via @intFromEnum.
-    const rc = std.os.linux.mkdir(path_z, 0o755);
-    if (rc != 0) {
-        const rc_signed: isize = @bitCast(rc);
-        const errno: usize = @intCast(-rc_signed);
-        if (errno == @intFromEnum(std.os.linux.E.EXIST)) return;
-        return error.MkdirFailed;
+    // Now mkdir this path. std.c.mkdir returns 0 on success, -1 on
+    // failure with errno set. EEXIST is fine (a concurrent creator).
+    if (std.c.mkdir(path_z, @as(std.c.mode_t, 0o755)) != 0) {
+        const errno_val = std.c.errno(-1);
+        if (errno_val != .EXIST) return error.MkdirFailed;
     }
 }
 
 /// Open (or create + truncate) a file for writing. Returns the raw fd.
-fn openCreateTrunc(dir_path: []const u8, basename: []const u8) !i32 {
-    // O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC
-    const flags: std.os.linux.O = .{
+fn openCreateTrunc(dir_path: []const u8, basename: []const u8) !std.c.fd_t {
+    const flags: std.c.O = .{
         .ACCMODE = .WRONLY,
         .CREAT = true,
         .TRUNC = true,
@@ -354,56 +294,47 @@ fn openCreateTrunc(dir_path: []const u8, basename: []const u8) !i32 {
     var open_path_buf: [8192:0]u8 = undefined;
     const open_path = copyToNull(&open_path_buf, full);
 
-    const rc = std.os.linux.open(open_path, flags, 0o644);
-    if (rc > std.math.maxInt(i32)) return error.OpenOutFailed;
-    return @intCast(rc);
+    const rc = std.c.open(open_path, flags, @as(std.c.mode_t, 0o644));
+    if (rc < 0) return error.OpenOutFailed;
+    return rc;
 }
 
 /// Read the entire contents of a file into a fresh allocation. Returns
-/// the buffer; caller owns it. A safety cap of `max_bytes` is enforced to
-/// catch runaway inputs.
+/// the buffer; caller owns it. A safety cap of `max_bytes` is enforced
+/// Read the entire contents of a file into a fresh allocation. Returns
+/// the buffer; caller owns it. A safety cap of `max_bytes` is enforced
+/// to catch runaway inputs. We don't call fstat (Zig 0.16 has no
+/// cross-platform fstat — std.c.fstat is `void` on Linux and the stdlib
+/// recommends statx instead). Instead, we read incrementally into a
+/// growing ArrayList, doubling the read buffer each round and stopping
+/// at EOF. Works on every platform the build tool runs on.
 fn readFileAll(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
     var path_buf: [8192:0]u8 = undefined;
     const path_z = copyToNull(&path_buf, path);
 
-    // Use statx(2) to get the file size. The old stat(2) wrapper was
-    // removed from std.os.linux in 0.16 in favour of the newer
-    // statx (which gives the same `size` field but with a more
-    // flexible API and field-mask model). We only need `size`, but
-    // ask for TYPE too so the syscall is meaningful.
-    var statbuf: std.os.linux.Statx = undefined;
-    const stat_rc = std.os.linux.statx(
-        std.os.linux.AT.FDCWD,
-        path_z,
-        0,
-        .{ .TYPE = true, .SIZE = true },
-        &statbuf,
-    );
-    if (stat_rc != 0) return error.StatFailed;
-    const size: usize = @intCast(statbuf.size);
-    if (size > max_bytes) return error.FileTooLarge;
+    const fd_rc = std.c.open(path_z, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, @as(std.c.mode_t, 0));
+    if (fd_rc < 0) return error.OpenFileFailed;
+    const fd: std.c.fd_t = fd_rc;
+    defer _ = std.c.close(fd);
 
-    const fd_rc = std.os.linux.open(path_z, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
-    if (fd_rc > std.math.maxInt(i32)) return error.OpenFileFailed;
-    const fd: i32 = @intCast(fd_rc);
-    defer _ = std.os.linux.close(fd);
-
-    const buf = try allocator.alloc(u8, size);
-    var read_total: usize = 0;
-    while (read_total < size) {
-        const n_rc = std.os.linux.read(fd, buf[read_total..].ptr, size - read_total);
-        if (n_rc > std.math.maxInt(usize)) return error.ReadFailed;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try buf.ensureTotalCapacity(allocator, 4 * 1024);
+    var total: usize = 0;
+    var chunk: [64 * 1024]u8 = undefined;
+    while (true) {
+        const n_rc = std.c.read(fd, &chunk, chunk.len);
+        if (n_rc < 0) return error.ReadFailed;
         const n: usize = @intCast(n_rc);
         if (n == 0) break; // EOF
-        read_total += n;
+        if (total + n > max_bytes) return error.FileTooLarge;
+        try buf.appendSlice(allocator, chunk[0..n]);
+        total += n;
     }
-    return buf[0..read_total];
+    return buf.toOwnedSlice(allocator);
 }
 
-/// MIME type lookup by file extension. Mirrors the table in
-/// src/modules/static_files.zig (kept in sync with the nalar server's
-/// static-file serving logic) so the desktop app and the embedded nalar
-/// agree on content-types for the same paths.
+/// MIME type lookup by file extension.
 fn inferMime(path: []const u8) []const u8 {
     if (std.mem.endsWith(u8, path, ".html")) return "text/html; charset=utf-8";
     if (std.mem.endsWith(u8, path, ".css")) return "text/css; charset=utf-8";

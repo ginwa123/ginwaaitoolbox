@@ -10,6 +10,14 @@ export interface DefaultsConfig {
   max_tokens: string
   system_prompt: string
   notify_on_complete: boolean
+  /** Optional top-level override for the model's context window (in tokens).
+   * `null` = no top-level override (fall through to per-profile → built-in).
+   * Added in plan 2026-07-07-compaction-inline. */
+  max_capacity_token_model: number | null
+  /** Optional top-level compaction threshold as a percentage (0-100).
+   * `null` = no top-level override (fall through to per-profile → 80).
+   * Added in plan 2026-07-07-compaction-inline. */
+  compaction_threshold_percent: number | null
 }
 
 const props = defineProps<{ modelValue: DefaultsConfig }>()
@@ -38,6 +46,55 @@ const systemPromptTokens = computed(() => {
   const words = text.split(/\s+/).filter(Boolean).length
   return Math.ceil(words * 1.3)
 })
+
+// === Compaction defaults (top-level) — plan 2026-07-07-compaction-inline ===
+
+/** Display the top-level context window override as a string for the
+ *  number input. Empty string when the override is disabled (`null`)
+ *  so the input renders blank rather than "0". */
+const defaultsCapacityDisplay = computed<string>({
+  get: () =>
+    props.modelValue.max_capacity_token_model === null
+      ? ''
+      : String(props.modelValue.max_capacity_token_model),
+  set: (raw: string) => {
+    const trimmed = raw.trim()
+    if (trimmed === '') return  // ignore transient empty
+    const parsed = Number(trimmed)
+    if (!Number.isFinite(parsed) || parsed < 0) return
+    update('max_capacity_token_model', Math.floor(parsed))
+  },
+})
+
+/** Display the top-level compaction threshold as a number for the
+ *  range slider. Defaults to 80 when the override is null. */
+const defaultsThresholdDisplay = computed<number>({
+  get: () => props.modelValue.compaction_threshold_percent ?? 80,
+  set: (v: number) => {
+    if (!Number.isFinite(v)) return
+    update(
+      'compaction_threshold_percent',
+      Math.max(0, Math.min(100, Math.floor(v))),
+    )
+  },
+})
+
+/** Toggle the context-window override. When turning on, seed with the
+ *  current value or 500_000 if absent. When turning off, set to null. */
+function setCapacityOverride(on: boolean) {
+  update(
+    'max_capacity_token_model',
+    on ? (props.modelValue.max_capacity_token_model ?? 500000) : null,
+  )
+}
+
+/** Toggle the threshold override. Same pattern as the capacity toggle. */
+function setThresholdOverride(on: boolean) {
+  update(
+    'compaction_threshold_percent',
+    on ? (props.modelValue.compaction_threshold_percent ?? 80) : null,
+  )
+}
 </script>
 
 <template>
@@ -156,6 +213,95 @@ const systemPromptTokens = computed(() => {
               </span>
             </span>
           </label>
+        </div>
+      </div>
+    </section>
+
+    <!-- Compaction defaults (top-level) — plan 2026-07-07-compaction-inline -->
+    <section>
+      <h3 :class="sectionHeader" :style="sectionHeaderStyle">── Compaction defaults ──</h3>
+      <div class="space-y-4">
+        <div>
+          <label class="flex items-start gap-2 cursor-pointer text-sm">
+            <input
+              :checked="modelValue.max_capacity_token_model !== null"
+              @change="setCapacityOverride(($event.target as HTMLInputElement).checked)"
+              type="checkbox"
+              class="w-4 h-4 mt-0.5"
+              style="accent-color: var(--color-violet);"
+              data-testid="defaults-capacity-override-checkbox"
+            />
+            <span>
+              <span :style="labelStyle">Override the model's context window for all profiles</span>
+              <span class="block text-xs mt-0.5" :style="helperStyle">
+                Sets <code class="font-mono">max_capacity_token_model</code> in config.json.
+                Profiles can override this in their own compaction settings.
+              </span>
+            </span>
+          </label>
+        </div>
+
+        <div
+          :class="{ 'opacity-50 pointer-events-none': modelValue.max_capacity_token_model === null }"
+        >
+          <label :class="labelBase" :style="labelStyle">Max capacity (tokens)</label>
+          <input
+            :value="defaultsCapacityDisplay"
+            @input="defaultsCapacityDisplay = ($event.target as HTMLInputElement).value"
+            type="number"
+            min="0"
+            step="1000"
+            placeholder="500000"
+            :class="inputBase"
+            :style="inputStyle"
+            :disabled="modelValue.max_capacity_token_model === null"
+            data-testid="defaults-capacity-input"
+          />
+        </div>
+
+        <div>
+          <label class="flex items-start gap-2 cursor-pointer text-sm">
+            <input
+              :checked="modelValue.compaction_threshold_percent !== null"
+              @change="setThresholdOverride(($event.target as HTMLInputElement).checked)"
+              type="checkbox"
+              class="w-4 h-4 mt-0.5"
+              style="accent-color: var(--color-violet);"
+              data-testid="defaults-threshold-override-checkbox"
+            />
+            <span>
+              <span :style="labelStyle">Override the compaction threshold for all profiles</span>
+              <span class="block text-xs mt-0.5" :style="helperStyle">
+                Sets <code class="font-mono">compaction_threshold_percent</code> in config.json.
+                Profiles can override this in their own compaction settings.
+              </span>
+            </span>
+          </label>
+        </div>
+
+        <div
+          :class="{ 'opacity-50 pointer-events-none': modelValue.compaction_threshold_percent === null }"
+        >
+          <div class="flex items-center justify-between mb-1.5">
+            <label :class="labelBase" :style="labelStyle" class="!mb-0">Threshold (%)</label>
+            <span class="font-mono text-xs" :style="labelStyle">{{ defaultsThresholdDisplay }}</span>
+          </div>
+          <input
+            :value="defaultsThresholdDisplay"
+            @input="defaultsThresholdDisplay = parseFloat(($event.target as HTMLInputElement).value)"
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            class="w-full"
+            :disabled="modelValue.compaction_threshold_percent === null"
+            data-testid="defaults-threshold-slider"
+          />
+          <div class="flex justify-between text-xs mt-1 font-mono" :style="helperStyle">
+            <span>Never</span>
+            <span>80% (default)</span>
+            <span>Always</span>
+          </div>
         </div>
       </div>
     </section>

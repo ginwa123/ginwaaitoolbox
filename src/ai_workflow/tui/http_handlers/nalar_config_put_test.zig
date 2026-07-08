@@ -35,6 +35,11 @@ fn makeConfig(allocator: std.mem.Allocator, model: []const u8) !*LlmConfig {
         .url_style = try allocator.dupe(u8, "openai"),
         .model_compaction_size_kb = 100,
         .notify_on_complete = false,
+        // Top-level compaction defaults — restored in plan
+        // 2026-07-07-compaction-inline. Tests below set these to
+        // non-null to verify the PUT handler applies them.
+        .max_capacity_token_model = null,
+        .compaction_threshold_percent = null,
         .mcpServers_parsed = null,
         .mcp_servers = LlmConfig.McpServersMap.init(allocator),
         .profiles_models = LlmConfig.ProfilesMap.init(allocator),
@@ -208,4 +213,158 @@ test "nalarcore exposes LlmConfigHolder, getLlmConfig, setLlmConfig, freeAllLlmC
     // without a lock.
     const PtrType = *const LlmConfig;
     try testing.expectEqual(@as(usize, @sizeOf(usize)), @sizeOf(PtrType));
+}
+
+// ---------------------------------------------------------------------------
+// 7. Static-contract tests for the PUT handler (compaction settings)
+// ---------------------------------------------------------------------------
+//
+// The PUT handler is too integration-heavy to test behaviourally in this
+// file (no GinwaServer + DI + sqlite fixture). Per project convention
+// (`nalar-http-handler-thin-wrapper-pattern.md`), we assert the contract
+// statically by reading the handler source and grepping for required
+// substrings.
+
+const PUT_HANDLER_PATH = "src/ai_workflow/tui/http_handlers/nalar_config_put.zig";
+
+fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const file = try std.Io.Dir.cwd().openFile(std.testing.io, path, .{});
+    defer file.close(std.testing.io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(std.testing.io, &buf);
+    return reader.interface.allocRemaining(allocator, .limited(64 * 1024));
+}
+
+test "PUT handler writes max_capacity_tokens to per-profile JSON" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "profile_change.max_capacity_tokens") == null) {
+        std.debug.print("!! PUT handler doesn't read max_capacity_tokens from ProfileChange !!\n", .{});
+        return error.ProfileMaxCapacityReadMissing;
+    }
+    if (std.mem.indexOf(u8, source, "\"max_capacity_tokens\"") == null) {
+        std.debug.print("!! PUT handler doesn't write max_capacity_tokens to profile JSON !!\n", .{});
+        return error.ProfileMaxCapacityWriteMissing;
+    }
+}
+
+test "PUT handler writes compaction_threshold_percent to per-profile JSON" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "profile_change.compaction_threshold_percent") == null) {
+        std.debug.print("!! PUT handler doesn't read compaction_threshold_percent from ProfileChange !!\n", .{});
+        return error.ProfileThresholdReadMissing;
+    }
+    if (std.mem.indexOf(u8, source, "\"compaction_threshold_percent\"") == null) {
+        std.debug.print("!! PUT handler doesn't write compaction_threshold_percent to profile JSON !!\n", .{});
+        return error.ProfileThresholdWriteMissing;
+    }
+}
+
+test "PUT handler rejects compaction_threshold_percent > 100 with InvalidThresholdPercent" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "if (tp > 100) return error.InvalidThresholdPercent;") == null) {
+        std.debug.print("!! PUT handler doesn't reject threshold > 100 !!\n", .{});
+        return error.ThresholdValidationMissing;
+    }
+    // The error variant must exist in the LlmConfig.LoadError enum
+    // (declared in src/modules/config/Config.zig, NOT in this handler).
+    const cfg_source = try readSource(allocator, "src/modules/config/Config.zig");
+    defer allocator.free(cfg_source);
+    if (std.mem.indexOf(u8, cfg_source, "InvalidThresholdPercent,") == null) {
+        std.debug.print("!! LlmConfig.LoadError does not declare InvalidThresholdPercent !!\n", .{});
+        return error.LoadErrorMissingInvalidThresholdPercent;
+    }
+}
+
+test "PUT ConfigInput / ProfileChange declare both new fields as optional" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "max_capacity_tokens: ?u32 = null,") == null) {
+        std.debug.print("!! ProfileChange missing max_capacity_tokens optional field !!\n", .{});
+        return error.ProfileChangeMissingMaxCapacity;
+    }
+    if (std.mem.indexOf(u8, source, "compaction_threshold_percent: ?u8 = null,") == null) {
+        std.debug.print("!! ProfileChange missing compaction_threshold_percent optional field !!\n", .{});
+        return error.ProfileChangeMissingThreshold;
+    }
+}
+
+test "PUT handler is registered in test_runner.zig" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, "src/ai_workflow/tui/test_runner.zig");
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "nalar_config_put_test.zig") == null) {
+        std.debug.print("!! test_runner.zig does not import nalar_config_put_test.zig !!\n", .{});
+        return error.TestRunnerMissingImport;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 6. Top-level compaction defaults (plan 2026-07-07-compaction-inline)
+// ---------------------------------------------------------------------------
+
+test "PUT handler reads max_capacity_token_model from ConfigInput" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "input.max_capacity_token_model") == null) {
+        std.debug.print("!! PUT handler doesn't read max_capacity_token_model from ConfigInput !!\n", .{});
+        return error.TopLevelMaxCapacityReadMissing;
+    }
+}
+
+test "PUT handler reads compaction_threshold_percent from ConfigInput" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "input.compaction_threshold_percent") == null) {
+        std.debug.print("!! PUT handler doesn't read compaction_threshold_percent from ConfigInput !!\n", .{});
+        return error.TopLevelThresholdReadMissing;
+    }
+}
+
+test "PUT ConfigInput declares top-level max_capacity_token_model + threshold as optional" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    // The ConfigInput struct (NOT ProfileChange) must declare both
+    // top-level fields. Pattern: "    max_capacity_token_model: ?u32 = null,"
+    // (4-space indent, top-level block).
+    if (std.mem.indexOf(u8, source, "    max_capacity_token_model: ?u32 = null,") == null) {
+        std.debug.print("!! ConfigInput missing top-level max_capacity_token_model optional field !!\n", .{});
+        return error.ConfigInputMissingTopLevelMaxCapacity;
+    }
+    if (std.mem.indexOf(u8, source, "    compaction_threshold_percent: ?u8 = null,") == null) {
+        std.debug.print("!! ConfigInput missing top-level compaction_threshold_percent optional field !!\n", .{});
+        return error.ConfigInputMissingTopLevelThreshold;
+    }
+}
+
+test "PUT handler writes top-level max_capacity_token_model to top-level JSON (not per-profile)" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    // Verify the handler reads from `input.max_capacity_token_model`
+    // AND writes to `config_json.max_capacity_token_model` (top-level),
+    // NOT to a per-profile JSON object.
+    if (std.mem.indexOf(u8, source, "config_json.max_capacity_token_model = mc") == null) {
+        std.debug.print("!! PUT handler doesn't write top-level max_capacity_token_model to config_json !!\n", .{});
+        return error.TopLevelMaxCapacityWriteMissing;
+    }
+}
+
+test "PUT handler writes top-level compaction_threshold_percent to top-level JSON" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "config_json.compaction_threshold_percent = tp") == null) {
+        std.debug.print("!! PUT handler doesn't write top-level compaction_threshold_percent to config_json !!\n", .{});
+        return error.TopLevelThresholdWriteMissing;
+    }
 }

@@ -1,4 +1,7 @@
 test {
+    // LLMModels tests (14 existing getModelTokenCount/isDoCompact + 6 new wrappers)
+    _ = @import("LLMModels_test.zig");
+
     // Image content tests
     _ = @import("image_content_test.zig");
 

@@ -134,6 +134,79 @@ pub fn build(b: *std.Build) void {
     bun_build.setCwd(b.path(webapp_dir));
     build_webapp_step.dependOn(&bun_build.step);
 
+    // === Webapp rebuild workflow ===
+    //
+    // `b.addSystemCommand` caches based on (command string, cwd, watch
+    // inputs) only — it does NOT watch webapp source files. So editing
+    // src/apps/desktop/src/**/*.vue leaves the embedded webapp_assets.zig
+    // (and nalar-desktop binary) stale with respect to those edits.
+    //
+    // An earlier attempt used `addDirectoryWatchInput` on src/, but that
+    // caused cache invalidation on EVERY noop build — Vite's output isn't
+    // byte-stable across runs (sourcemap/manifest drift), so the directory
+    // hash drifted and triggered spurious bun runs.
+    //
+    // The intentional, predictable workflow is:
+    //
+    //     1. Edit src/apps/desktop/src/**/*.vue as usual.
+    //     2. Run `zig build webapp-rebuild` to nuke the stale embedded
+    //        file + dist/ and rebuild from scratch (~10 s; cached
+    //        after this).
+    //     3. Run `zig build nalar-desktop` to embed and link (~free
+    //        when webapp_assets.zig hasn't changed).
+    //
+    // OR all-in-one during development:
+    //
+    //     zig build webapp-rebuild && zig build nalar-desktop && \
+    //         ./zig-out/bin/nalar-desktop
+    //
+    // `zig build nalar-desktop` on its own is the cache-friendly path:
+    // when nothing has changed, it's ~free. Use `webapp-rebuild`
+    // when you've edited the webapp.
+    //
+    // Implementation: webapp_rebuild_step has its OWN copy of
+    // `bun run build` (not the cached one used by nalar-desktop's
+    // happy path), chained after a clean step. The clean step deletes
+    // the embedded file + dist/, so the rebuild's bun_build sees an
+    // empty dist/, has actual work to do, and produces fresh output.
+    const webapp_rebuild_step = b.step(
+        "webapp-rebuild",
+        "Nuke stale webapp_assets.zig + dist/ and rebuild via bun run build + codegen",
+    );
+
+    const webapp_rebuild_clean = b.addSystemCommand(&.{
+        "sh", "-c",
+        \\rm -rf src/apps/desktop_app/embedded/webapp_assets.zig &&
+        \\rm -rf src/apps/desktop/dist &&
+        \\echo "webapp-rebuild: deleted embedded + dist; rebuilding...",
+    });
+    webapp_rebuild_clean.setCwd(b.path(""));
+
+    // Separate bun_build step for the rebuild path. Has the SAME
+    // command + cwd as the cached one, but chained AFTER the clean
+    // step, so the cache can't serve a stale result.
+    const webapp_rebuild_bun = b.addSystemCommand(&.{ "bun", "run", "build" });
+    webapp_rebuild_bun.setCwd(b.path(webapp_dir));
+    webapp_rebuild_bun.step.dependOn(&webapp_rebuild_clean.step);
+    webapp_rebuild_step.dependOn(&webapp_rebuild_bun.step);
+
+    // The codegen step is shared with the cached path — its output
+    // (webapp_assets.zig) was just deleted by the clean step, so
+    // it'll re-run to regenerate. Depend on the rebuild's bun_build
+    // specifically (not the cached one).
+    const webapp_rebuild_codegen = b.addRunArtifact(b.addExecutable(.{
+        .name = "codegen_webapp_assets",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/codegen_webapp_assets.zig"),
+            .target = b.graph.host,
+            .link_libc = true,
+        }),
+    }));
+    webapp_rebuild_codegen.addArg(b.pathJoin(&.{ webapp_dir, "dist" }));
+    webapp_rebuild_codegen.addArg(b.pathJoin(&.{ "src", "apps", "desktop_app", "embedded", "webapp_assets.zig" }));
+    webapp_rebuild_codegen.step.dependOn(&webapp_rebuild_bun.step);
+    webapp_rebuild_step.dependOn(&webapp_rebuild_codegen.step);
+
     // === Codegen: walk dist/, emit webapp_assets.zig ===
     // Chunk 3: this step runs the small Zig tool at tools/codegen_webapp_assets.zig
     // to walk src/apps/desktop/dist/ and emit a Zig source file with every
@@ -149,6 +222,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/codegen_webapp_assets.zig"),
             .target = b.graph.host,
+            .link_libc = true,
         }),
     }));
     codegen.addArg(b.pathJoin(&.{ webapp_dir, "dist" }));

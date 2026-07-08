@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 export interface LlmConfig {
   model: string
@@ -8,6 +8,14 @@ export interface LlmConfig {
   temperature: string
   url_style: string
   api_key: string
+  /** Optional per-profile override for the context window (in tokens).
+   * `null` = no per-profile override (fall through to top-level defaults
+   * → built-in). Added in plan 2026-07-07-compaction-inline. */
+  max_capacity_tokens: number | null
+  /** Optional per-profile compaction threshold as a percentage (0-100).
+   * `null` = no per-profile override (fall through to top-level defaults
+   * → built-in 80). Added in plan 2026-07-07-compaction-inline. */
+  compaction_threshold_percent: number | null
 }
 
 const props = defineProps<{
@@ -34,7 +42,49 @@ const inputStyle = (hasError?: boolean): Record<string, string> => ({
 
 const labelBase = 'block text-xs font-medium mb-1.5'
 const labelStyle = { color: 'var(--semantic-text-muted)' }
+const helperStyle = { color: 'var(--semantic-text-dim)' }
 const errorStyle = { color: 'var(--color-red)' }
+
+// === Compaction overrides (per-profile) — plan 2026-07-07-compaction-inline ===
+
+const capacityDisplay = computed<string>({
+  get: () =>
+    props.modelValue.max_capacity_tokens === null
+      ? ''
+      : String(props.modelValue.max_capacity_tokens),
+  set: (raw: string) => {
+    const trimmed = raw.trim()
+    if (trimmed === '') return
+    const parsed = Number(trimmed)
+    if (!Number.isFinite(parsed) || parsed < 0) return
+    update('max_capacity_tokens', Math.floor(parsed))
+  },
+})
+
+const thresholdDisplay = computed<number>({
+  get: () => props.modelValue.compaction_threshold_percent ?? 80,
+  set: (v: number) => {
+    if (!Number.isFinite(v)) return
+    update(
+      'compaction_threshold_percent',
+      Math.max(0, Math.min(100, Math.floor(v))),
+    )
+  },
+})
+
+function setCapacityOverride(on: boolean) {
+  update(
+    'max_capacity_tokens',
+    on ? (props.modelValue.max_capacity_tokens ?? 500000) : null,
+  )
+}
+
+function setThresholdOverride(on: boolean) {
+  update(
+    'compaction_threshold_percent',
+    on ? (props.modelValue.compaction_threshold_percent ?? 80) : null,
+  )
+}
 </script>
 
 <template>
@@ -141,6 +191,91 @@ const errorStyle = { color: 'var(--color-red)' }
         >{{ showKey ? '◉' : '○' }}</button>
       </div>
       <p v-if="errors?.api_key" class="text-xs mt-1" :style="errorStyle">{{ errors.api_key }}</p>
+    </div>
+
+    <!-- Compaction overrides (per-profile) — plan 2026-07-07-compaction-inline -->
+    <div class="border-t pt-4 mt-2" style="border-color: var(--color-border);">
+      <h3 class="font-mono text-xs uppercase tracking-wider mb-3" :style="labelStyle">
+        ── Compaction overrides ──
+      </h3>
+
+      <div class="space-y-3">
+        <div>
+          <label class="flex items-start gap-2 cursor-pointer text-sm">
+            <input
+              :checked="modelValue.max_capacity_tokens !== null"
+              @change="setCapacityOverride(($event.target as HTMLInputElement).checked)"
+              type="checkbox"
+              class="w-4 h-4 mt-0.5"
+              style="accent-color: var(--color-violet);"
+              data-testid="profile-capacity-override-checkbox"
+            />
+            <span>
+              <span :style="labelStyle">Override the context window</span>
+              <span class="block text-xs mt-0.5" :style="helperStyle">
+                Falls back to top-level defaults → built-in.
+              </span>
+            </span>
+          </label>
+        </div>
+
+        <div
+          :class="{ 'opacity-50 pointer-events-none': modelValue.max_capacity_tokens === null }"
+        >
+          <label :class="labelBase" :style="labelStyle">Max capacity (tokens)</label>
+          <input
+            :value="capacityDisplay"
+            @input="capacityDisplay = ($event.target as HTMLInputElement).value"
+            type="number"
+            min="0"
+            step="1000"
+            placeholder="500000"
+            :class="inputBase"
+            :style="inputStyle(!!errors?.max_capacity_tokens)"
+            :disabled="modelValue.max_capacity_tokens === null"
+            data-testid="profile-capacity-input"
+          />
+        </div>
+
+        <div>
+          <label class="flex items-start gap-2 cursor-pointer text-sm">
+            <input
+              :checked="modelValue.compaction_threshold_percent !== null"
+              @change="setThresholdOverride(($event.target as HTMLInputElement).checked)"
+              type="checkbox"
+              class="w-4 h-4 mt-0.5"
+              style="accent-color: var(--color-violet);"
+              data-testid="profile-threshold-override-checkbox"
+            />
+            <span>
+              <span :style="labelStyle">Override the compaction threshold</span>
+              <span class="block text-xs mt-0.5" :style="helperStyle">
+                Falls back to top-level defaults → built-in 80.
+              </span>
+            </span>
+          </label>
+        </div>
+
+        <div
+          :class="{ 'opacity-50 pointer-events-none': modelValue.compaction_threshold_percent === null }"
+        >
+          <div class="flex items-center justify-between mb-1.5">
+            <label :class="labelBase" :style="labelStyle" class="!mb-0">Threshold (%)</label>
+            <span class="font-mono text-xs" :style="labelStyle">{{ thresholdDisplay }}</span>
+          </div>
+          <input
+            :value="thresholdDisplay"
+            @input="thresholdDisplay = parseFloat(($event.target as HTMLInputElement).value)"
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            class="w-full"
+            :disabled="modelValue.compaction_threshold_percent === null"
+            data-testid="profile-threshold-slider"
+          />
+        </div>
+      </div>
     </div>
   </div>
 </template>

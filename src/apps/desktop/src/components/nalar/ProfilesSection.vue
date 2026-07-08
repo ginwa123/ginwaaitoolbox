@@ -46,6 +46,24 @@ function toggleExpand(name: string) {
 function isExpanded(name: string): boolean {
   return expanded.value[name] === true
 }
+
+/**
+ * Compact compaction summary for the profile row.
+ * Format: "threshold% @ capacity tokens" when overrides are set,
+ * "default" when both fields are null. The exact wording is a UX
+ * choice — picked to fit the existing summary line style.
+ */
+function compactionSummary(profile: ProfileRow): string {
+  const cap = profile.max_capacity_tokens
+  const thr = profile.compaction_threshold_percent
+  const capStr =
+    cap === null || cap === undefined
+      ? 'default'
+      : `${(cap / 1000).toFixed(0)}k tokens`
+  const thrStr = thr === null || thr === undefined ? 'default (80%)' : `${thr}%`
+  // Compact format: "80% @ 500k" or "default (80%) @ default" or similar.
+  return `${thrStr} @ ${capStr}`
+}
 </script>
 
 <template>
@@ -131,6 +149,18 @@ function isExpanded(name: string): boolean {
               <template v-else>
                 <span>· inherits top-level sub-agents</span>
               </template>
+            </div>
+            <!-- Compaction summary (plan 2026-07-07-compaction-inline):
+                 show the effective compaction for this profile (with
+                 explicit overrides) or "default" when no override is
+                 set. Clicking Edit still opens the full modal where
+                 the override can be toggled. -->
+            <div
+              class="text-xs font-mono mt-0.5 truncate"
+              style="color: var(--semantic-text-dim);"
+              data-testid="compaction-summary"
+            >
+              Compaction: {{ compactionSummary(profile) }}
             </div>
           </div>
           <div class="flex items-center gap-1.5 shrink-0">
