@@ -689,9 +689,10 @@ pub fn getSessionMessagesSorted(
             if (di_opt) |di| {
                 const cfg = nalarcore.getLlmConfig(di);
                 // No profile/sub-agent in scope at this call site — pass
-                // null for both so the resolver falls back to the
-                // built-in LLMModels default for the active model.
-                break :blk cfg.maxCapacityForModel(null, null, cfg.model);
+                // null for both. Pass `cfg` as the defaults arg so
+                // the top-level `max_capacity_token_model` override
+                // (Defaults tab) flows through to this session view.
+                break :blk cfg.maxCapacityForModel(null, null, cfg, cfg.model);
             }
             break :blk llm_models.getModelTokenCount("");
         },

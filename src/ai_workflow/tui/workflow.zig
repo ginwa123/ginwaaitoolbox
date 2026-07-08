@@ -864,12 +864,13 @@ pub fn maybeCompactMessagesNew(
     if (!force and !agent.LLMModels.shouldCompact(
         total_tokens,
         // No profile/sub-agent in scope at this call site — pass null
-        // for both so the resolver falls back to the built-in defaults
-        // (LLMModels per-model capacity + 80% threshold). Future
+        // for both so the resolver falls back through the top-level
+        // defaults (the orchestrator's own config) to the built-in
+        // LLMModels per-model capacity + 80% threshold. Future
         // refactors that thread `profile_name` + `sub_agent_name` here
         // will pick up per-profile overrides via the cascade.
-        llm_config.maxCapacityForModel(null, null, model),
-        llm_config.compactionThresholdPercent(null, null),
+        llm_config.maxCapacityForModel(null, null, llm_config, model),
+        llm_config.compactionThresholdPercent(null, null, llm_config),
     )) {
         return false;
     }

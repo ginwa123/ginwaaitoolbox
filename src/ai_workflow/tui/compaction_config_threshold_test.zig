@@ -84,7 +84,7 @@ test "compactionThresholdPercent: null profile falls back to 80% built-in defaul
         cfg.deinit();
         allocator.destroy(cfg);
     }
-    try testing.expectEqual(@as(u8, 80), cfg.compactionThresholdPercent(null, null));
+    try testing.expectEqual(@as(u8, 80), cfg.compactionThresholdPercent(null, null, null));
 }
 
 test "compactionThresholdPercent: profile override wins over built-in default" {
@@ -96,7 +96,7 @@ test "compactionThresholdPercent: profile override wins over built-in default" {
     }
     const profile = try makeProfile(allocator, "dev", 50, null);
     defer freeProfile(allocator, profile);
-    try testing.expectEqual(@as(u8, 50), cfg.compactionThresholdPercent(profile, null));
+    try testing.expectEqual(@as(u8, 50), cfg.compactionThresholdPercent(profile, null, null));
 }
 
 test "compaction: two profiles with different thresholds produce different decisions at the same token count" {
@@ -113,22 +113,22 @@ test "compaction: two profiles with different thresholds produce different decis
     defer freeProfile(allocator, profile_50);
 
     const model = "MiniMax-M2.7";
-    const cap: u32 = cfg.maxCapacityForModel(null, null, model);
+    const cap: u32 = cfg.maxCapacityForModel(null, null, null, model);
     const at_79pct: u32 = cap * 79 / 100; // ~158,000 with 200k default
 
     // 79% of 200,000 = 158,000 — below the 80% threshold → no compact
     // under profile_80 (which uses the built-in 80% default).
     try testing.expect(!LLMModels.shouldCompact(
         at_79pct,
-        cfg.maxCapacityForModel(profile_80, null, model),
-        cfg.compactionThresholdPercent(profile_80, null),
+        cfg.maxCapacityForModel(profile_80, null, null, model),
+        cfg.compactionThresholdPercent(profile_80, null, null),
     ));
 
     // 79% is above 50% threshold → compact under profile_50.
     try testing.expect(LLMModels.shouldCompact(
         at_79pct,
-        cfg.maxCapacityForModel(profile_50, null, model),
-        cfg.compactionThresholdPercent(profile_50, null),
+        cfg.maxCapacityForModel(profile_50, null, null, model),
+        cfg.compactionThresholdPercent(profile_50, null, null),
     ));
 }
 
@@ -148,16 +148,16 @@ test "compaction: max_capacity_tokens override shifts the threshold proportional
     // With the 2x capacity override (400k) and same 50% threshold, the
     // boundary shifts to 200k — at 100k we are below (was at the
     // boundary without the override).
-    try testing.expectEqual(@as(u32, 400_000), cfg.maxCapacityForModel(profile, null, model));
+    try testing.expectEqual(@as(u32, 400_000), cfg.maxCapacityForModel(profile, null, null, model));
     try testing.expect(!LLMModels.shouldCompact(
         100_000,
-        cfg.maxCapacityForModel(profile, null, model),
-        cfg.compactionThresholdPercent(profile, null),
+        cfg.maxCapacityForModel(profile, null, null, model),
+        cfg.compactionThresholdPercent(profile, null, null),
     ));
     try testing.expect(LLMModels.shouldCompact(
         200_000,
-        cfg.maxCapacityForModel(profile, null, model),
-        cfg.compactionThresholdPercent(profile, null),
+        cfg.maxCapacityForModel(profile, null, null, model),
+        cfg.compactionThresholdPercent(profile, null, null),
     ));
 }
 
@@ -198,9 +198,31 @@ test "compaction: sub-agent override beats parent profile (cascade)" {
     }
 
     // Sub-agent cascade wins: 90% threshold (not 50% from profile).
-    try testing.expectEqual(@as(u8, 90), cfg.compactionThresholdPercent(profile, sub_agent));
+    try testing.expectEqual(@as(u8, 90), cfg.compactionThresholdPercent(profile, sub_agent, null));
     // Without sub-agent: profile's 50% wins.
-    try testing.expectEqual(@as(u8, 50), cfg.compactionThresholdPercent(profile, null));
+    try testing.expectEqual(@as(u8, 50), cfg.compactionThresholdPercent(profile, null, null));
     // Without profile and sub-agent: built-in 80%.
-    try testing.expectEqual(@as(u8, 80), cfg.compactionThresholdPercent(null, null));
+    try testing.expectEqual(@as(u8, 80), cfg.compactionThresholdPercent(null, null, null));
+}
+
+test "compactionThresholdPercent: top-level defaults (cfg) cascade before built-in" {
+    const allocator = testing.allocator;
+    const cfg = try makeLlmConfig(allocator);
+    defer {
+        cfg.deinit();
+        allocator.destroy(cfg);
+    }
+    // Set top-level default to 65% on the cfg itself.
+    cfg.compaction_threshold_percent = 65;
+    cfg.max_capacity_token_model = 350_000;
+
+    // No profile, no sub-agent → top-level defaults apply.
+    try testing.expectEqual(@as(u8, 65), cfg.compactionThresholdPercent(null, null, cfg));
+    try testing.expectEqual(@as(u32, 350_000), cfg.maxCapacityForModel(null, null, cfg, "MiniMax-M2.7"));
+
+    // Profile override (50%) wins over top-level defaults (65%).
+    const profile = try makeProfile(allocator, "dev", 50, 600_000);
+    defer freeProfile(allocator, profile);
+    try testing.expectEqual(@as(u8, 50), cfg.compactionThresholdPercent(profile, null, cfg));
+    try testing.expectEqual(@as(u32, 600_000), cfg.maxCapacityForModel(profile, null, cfg, "MiniMax-M2.7"));
 }

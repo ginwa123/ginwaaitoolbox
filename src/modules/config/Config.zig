@@ -28,6 +28,20 @@ pub const LlmConfig = struct {
     /// the backend (notify-send / osascript / PowerShell) so they work
     /// even when the desktop app's browser is closed.
     notify_on_complete: bool = true,
+    /// Optional top-level override for the context window (in tokens).
+    /// `null` = fall through to the per-profile override
+    /// (`LlmProfile.max_capacity_tokens`), then to the built-in
+    /// `LLMModels.getModelTokenCount(model)` default. Restored in
+    /// plan 2026-07-07-compaction-inline (the user wants defaults
+    /// visible in the Defaults tab, not only in a separate Compaction
+    /// tab). See `maxCapacityForModel` for the cascade order.
+    max_capacity_token_model: ?u32 = null,
+    /// Optional top-level compaction threshold as a percentage (0-100)
+    /// of the model's context window. `null` = fall through to the
+    /// per-profile override (`LlmProfile.compaction_threshold_percent`),
+    /// then to the built-in default of 80. Range-validated at the
+    /// HTTP layer (see `error.InvalidThresholdPercent`).
+    compaction_threshold_percent: ?u8 = null,
     /// Owned slice of random sub-agent names that `resolveSubAgent`
     /// generated for the random-fallback case. Each name is allocated
     /// on `self.allocator` and is freed in `deinit`. Slices in the
@@ -198,6 +212,12 @@ pub const LlmConfig = struct {
         /// with `finish_reason === 'stop'`. Default false (user must
         /// explicitly enable in config to avoid surprise notifications).
         notify_on_complete: bool = false,
+        /// Optional top-level override for the context window (in tokens).
+        /// Null = fall through to the per-profile override, then built-in.
+        max_capacity_token_model: ?u32 = null,
+        /// Optional top-level compaction threshold as a percentage (0-100).
+        /// Null = fall through to per-profile override, then 80.
+        compaction_threshold_percent: ?u8 = null,
         /// Configured MCP servers (snake_case, matches NALAR.md JSON convention).
         mcp_servers: ?std.json.Value = null,
         /// Profiles - parsed as json.Value then converted to map
@@ -351,6 +371,12 @@ pub const LlmConfig = struct {
             .url_style = try allocator.dupe(u8, config_json.url_style),
             .model_compaction_size_kb = config_json.model_compaction_size_kb,
             .notify_on_complete = config_json.notify_on_complete,
+            // Top-level compaction defaults — restored in plan
+            // 2026-07-07-compaction-inline. Persisted as raw optional
+            // values; cascade logic in `maxCapacityForModel` /
+            // `compactionThresholdPercent` honors null = fall through.
+            .max_capacity_token_model = config_json.max_capacity_token_model,
+            .compaction_threshold_percent = config_json.compaction_threshold_percent,
             .mcpServers_parsed = null,
             .mcp_servers = McpServersMap.init(allocator),
             .profiles_models = ProfilesMap.init(allocator),
@@ -798,6 +824,10 @@ pub const LlmConfig = struct {
             .url_style = try self.allocator.dupe(u8, self.url_style),
             .model_compaction_size_kb = self.model_compaction_size_kb,
             .notify_on_complete = self.notify_on_complete,
+            // Top-level compaction defaults — primitive copies, no
+            // allocation needed (they're plain optionals).
+            .max_capacity_token_model = self.max_capacity_token_model,
+            .compaction_threshold_percent = self.compaction_threshold_percent,
             .mcpServers_parsed = null,
             .mcp_servers = McpServersMap.init(self.allocator),
             .profiles_models = ProfilesMap.init(self.allocator),
@@ -1162,7 +1192,15 @@ pub const LlmConfig = struct {
     ///      and the field is set)
     ///   2. `profile.max_capacity_tokens` (if `profile` is non-null and
     ///      the field is set)
-    ///   3. `LLMModels.getModelTokenCount(model_name)` (built-in default)
+    ///   3. `defaults.max_capacity_token_model` (top-level override;
+    ///      `null` falls through to step 4). Restored in plan
+    ///      2026-07-07-compaction-inline so the Defaults tab's value
+    ///      flows through to chats that don't set a per-profile override.
+    ///   4. `LLMModels.getModelTokenCount(model_name)` (built-in default)
+///
+/// `defaults` should be `*const LlmConfig` — typically the orchestrator's
+/// own config (the same `self` that's calling this function). Pass `null`
+/// to skip step 3 and fall straight through to the built-in default.
 ///
 /// Use this everywhere a "what's the effective context window for
 /// THIS chat?" answer is needed instead of calling
@@ -1171,11 +1209,13 @@ pub const LlmConfig = struct {
         self: *const LlmConfig,
         profile: ?*const LlmProfile,
         sub_agent: ?*const SubAgentConfig,
+        defaults: ?*const LlmConfig,
         model_name: []const u8,
     ) u32 {
         _ = self;
         if (sub_agent) |sa| if (sa.max_capacity_tokens) |override| return override;
         if (profile) |p| if (p.max_capacity_tokens) |override| return override;
+        if (defaults) |d| if (d.max_capacity_token_model) |override| return override;
         return LLMModels.getModelTokenCount(model_name);
     }
 
@@ -1183,15 +1223,20 @@ pub const LlmConfig = struct {
     /// order (same shape as `maxCapacityForModel`):
     ///   1. `sub_agent.compaction_threshold_percent` (if non-null and set)
     ///   2. `profile.compaction_threshold_percent` (if non-null and set)
-    ///   3. `80` (the historical hardcoded value in `LLMModels.isDoCompact`)
+    ///   3. `defaults.compaction_threshold_percent` (top-level override;
+    ///      `null` falls through to step 4). Restored in plan
+    ///      2026-07-07-compaction-inline.
+    ///   4. `80` (the historical hardcoded value in `LLMModels.isDoCompact`)
     pub fn compactionThresholdPercent(
         self: *const LlmConfig,
         profile: ?*const LlmProfile,
         sub_agent: ?*const SubAgentConfig,
+        defaults: ?*const LlmConfig,
     ) u8 {
         _ = self;
         if (sub_agent) |sa| if (sa.compaction_threshold_percent) |override| return override;
         if (profile) |p| if (p.compaction_threshold_percent) |override| return override;
+        if (defaults) |d| if (d.compaction_threshold_percent) |override| return override;
         return 80;
     }
 
@@ -1209,7 +1254,9 @@ pub const LlmConfig = struct {
         \\  "base_url": "",
         \\  "url_style": "openai",
         \\  "model_compaction_size_kb": 100,
-        \\  "notify_on_complete": false
+        \\  "notify_on_complete": false,
+        \\  "max_capacity_token_model": null,
+        \\  "compaction_threshold_percent": null
         \\}
     ;
 

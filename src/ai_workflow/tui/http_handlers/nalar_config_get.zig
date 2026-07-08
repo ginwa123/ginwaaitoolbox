@@ -111,6 +111,10 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .sub_agents = sub_agents_response,
             .notify_on_complete = cfg.notify_on_complete,
             .model_compaction_size_kb = cfg.model_compaction_size_kb,
+            // Top-level compaction defaults — restored in plan
+            // 2026-07-07-compaction-inline.
+            .max_capacity_token_model = cfg.max_capacity_token_model,
+            .compaction_threshold_percent = cfg.compaction_threshold_percent,
             // The compaction-related fields were moved to per-profile in
             // Chunk 7. Frontend reads `profiles` map directly and shows
             // one row per profile (see CompactionSection.vue).
@@ -143,6 +147,12 @@ const ConfigJson = struct {
     notify_on_complete: bool = false,
     /// Compaction threshold in KB (see LlmConfigJson in Config.zig).
     model_compaction_size_kb: usize = 100,
+    /// Optional top-level context window override (see
+    /// LlmConfigJson in Config.zig). Restored in plan
+    /// 2026-07-07-compaction-inline.
+    max_capacity_token_model: ?u32 = null,
+    /// Optional top-level compaction threshold (see LlmConfigJson).
+    compaction_threshold_percent: ?u8 = null,
 };
 
 fn parseTemperatureOrAuto(value: json.Value) f64 {
