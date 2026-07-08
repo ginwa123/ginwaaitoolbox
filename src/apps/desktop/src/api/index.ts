@@ -2009,11 +2009,23 @@ export interface NalarConfig {
    * edit `config.json` directly.
    */
   model_compaction_size_kb?: number
-  // Note (Chunk 7 reshape): `max_capacity_token_model` and
-  // `compaction_threshold_percent` were removed from the top-level
-  // shape and moved to per-profile fields on `NalarProfile`. The
-  // frontend reads `profiles` and edits the per-profile values
-  // directly. See CompactionSection.vue for the per-profile UI.
+  /**
+   * Optional top-level override for the model's context window (in
+   * tokens). `null` = fall through to per-profile override, then
+   * built-in default. Restored in plan 2026-07-07-compaction-inline
+   * so the Defaults tab can show + edit the top-level compaction
+   * defaults. Mirrors `LlmConfig.max_capacity_token_model`.
+   */
+  max_capacity_token_model?: number | null
+  /**
+   * Optional top-level compaction threshold as a percentage (0-100).
+   * `null` = fall through to per-profile override, then built-in 80.
+   * Mirrors `LlmConfig.compaction_threshold_percent`.
+   */
+  compaction_threshold_percent?: number | null
+  // Per-profile compaction overrides (`max_capacity_tokens` /
+  // `compaction_threshold_percent`) live on `NalarProfile` (Chunk
+  // 7.6) and remain there. Both layers coexist.
 }
 
 export async function getNalarConfig(): Promise<NalarConfig> {
