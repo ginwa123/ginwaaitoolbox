@@ -18,6 +18,9 @@ import DefaultsSection, { type DefaultsConfig } from './nalar/DefaultsSection.vu
 import ProfilesSection, { type ProfileRow } from './nalar/ProfilesSection.vue'
 import SubAgentsSection from './nalar/SubAgentsSection.vue'
 import McpServersSection from './nalar/McpServersSection.vue'
+// plan 2026-07-07-compaction-inline: CompactionSection.vue is removed
+// (compaction settings live in the Defaults tab + Edit-profile modal now).
+// No import here.
 import ProfileModal from './nalar/ProfileModal.vue'
 import { type LlmConfigModalValue } from './nalar/LlmConfigModal.vue'
 import SubAgentModal, { type SubAgentModalValue } from './nalar/SubAgentModal.vue'
@@ -94,6 +97,12 @@ const activeProfile = ref<string | null>(null)
 const subAgentsList = ref<SubAgent[]>([])
 const mcpServersList = ref<McpServer[]>([])
 
+// Plan 2026-07-07-compaction-inline: CompactionSection.vue is removed;
+// its per-profile overrides live on each `LlmProfile.max_capacity_tokens`
+// and `LlmProfile.compaction_threshold_percent` (edited via the Edit-profile
+// modal). Top-level defaults live on the Defaults tab and are carried by
+// `defaultsConfig.max_capacity_token_model` + `compaction_threshold_percent`.
+
 function syncFromConfig() {
   if (!config.value) return
   const c = config.value
@@ -106,6 +115,10 @@ function syncFromConfig() {
     max_tokens: c.max_tokens ?? '',
     system_prompt: c.system_prompt ?? '',
     notify_on_complete: c.notify_on_complete ?? false,
+    // Top-level compaction defaults — plan 2026-07-07-compaction-inline.
+    // Null = no top-level override (fall through to per-profile → built-in).
+    max_capacity_token_model: c.max_capacity_token_model ?? null,
+    compaction_threshold_percent: c.compaction_threshold_percent ?? null,
   }
   profilesList.value = Object.entries(c.profiles ?? {}).map(([name, p]) => ({
     name,
@@ -116,6 +129,11 @@ function syncFromConfig() {
     url_style: p.url_style ?? 'openai',
     api_key: p.api_key ?? '',
     sub_agents: p.sub_agents ?? [],
+    // Compaction overrides — both top-level (in defaultsConfig above)
+    // AND per-profile (here) coexist. Each layer cascades over the
+    // next; per-profile wins over top-level.
+    max_capacity_tokens: p.max_capacity_tokens ?? null,
+    compaction_threshold_percent: p.compaction_threshold_percent ?? null,
   }))
   activeProfile.value = c.active_profile ?? null
   subAgentsList.value = c.sub_agents ?? []
@@ -145,6 +163,11 @@ function syncToConfig() {
     max_tokens: d.max_tokens,
     system_prompt: d.system_prompt,
     notify_on_complete: d.notify_on_complete,
+    // Top-level compaction defaults — plan 2026-07-07-compaction-inline.
+    // Unconditional spread so `null` is preserved (cascade wildcard).
+    max_capacity_token_model: d.max_capacity_token_model,
+    compaction_threshold_percent: d.compaction_threshold_percent,
+    // Per-profile compaction overrides still live on `profiles` below.
     ...(Object.keys(profiles).length > 0 ? { profiles } : {}),
     ...(activeProfile.value ? { active_profile: activeProfile.value } : {}),
     ...(subAgents.length > 0 ? { sub_agents: subAgents } : {}),
@@ -235,13 +258,17 @@ function emptyDefaults(): DefaultsConfig {
   return {
     api_endpoint: '', api_key: '', model: '', url_style: 'openai',
     temperature: 0.7, max_tokens: '', system_prompt: '', notify_on_complete: false,
+    // Top-level compaction defaults — plan 2026-07-07-compaction-inline.
+    // null = cascade wildcard (fall through to per-profile → built-in).
+    max_capacity_token_model: null,
+    compaction_threshold_percent: null,
   }
 }
 
 function startAddProfile() {
   profileModal.value = {
     mode: 'add',
-    value: { name: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '' } },
+    value: { name: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null } },
   }
 }
 function startEditProfile(p: ProfileRow) {
@@ -253,6 +280,9 @@ function startEditProfile(p: ProfileRow) {
         model: p.model ?? '', base_url: p.base_url ?? '', thinking: p.thinking ?? 'auto',
         temperature: p.temperature ?? 'auto', url_style: p.url_style ?? 'openai',
         api_key: p.api_key ?? '',
+        // Compaction overrides — plan 2026-07-07-compaction-inline.
+        max_capacity_tokens: p.max_capacity_tokens ?? null,
+        compaction_threshold_percent: p.compaction_threshold_percent ?? null,
       },
     },
   }
@@ -288,7 +318,7 @@ function startAddSubAgent() {
   subAgentModal.value = {
     mode: 'add',
     scope: { kind: 'top' },
-    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '' } },
+    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null } },
   }
 }
 function startEditSubAgent(sa: SubAgent) {
@@ -302,6 +332,11 @@ function startEditSubAgent(sa: SubAgent) {
         model: sa.model ?? '', base_url: sa.base_url ?? '', thinking: sa.thinking ?? 'auto',
         temperature: sa.temperature ?? 'auto', url_style: sa.url_style ?? 'openai',
         api_key: sa.api_key ?? '',
+        // Compaction overrides (plan 2026-07-07-compaction-inline) — not
+        // currently editable in the sub-agent modal but required by
+        // LlmConfig type.
+        max_capacity_tokens: null,
+        compaction_threshold_percent: null,
       },
     },
   }
@@ -310,7 +345,7 @@ function startAddSubAgentInProfile(profileName: string) {
   subAgentModal.value = {
     mode: 'add',
     scope: { kind: 'profile', profileName },
-    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '' } },
+    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null } },
   }
 }
 function startEditSubAgentInProfile(profileName: string, sa: SubAgent) {
@@ -324,6 +359,11 @@ function startEditSubAgentInProfile(profileName: string, sa: SubAgent) {
         model: sa.model ?? '', base_url: sa.base_url ?? '', thinking: sa.thinking ?? 'auto',
         temperature: sa.temperature ?? 'auto', url_style: sa.url_style ?? 'openai',
         api_key: sa.api_key ?? '',
+        // Compaction overrides (plan 2026-07-07-compaction-inline) —
+        // required by LlmConfig type. Sub-agent-level overrides
+        // currently cascade from the parent profile (Chunk 7).
+        max_capacity_tokens: null,
+        compaction_threshold_percent: null,
       },
     },
   }
@@ -492,6 +532,11 @@ const isLoading = computed(() => !loaded.value)
           @delete="deleteMcpServer"
           @add="startAddMcpServer"
         />
+        <!-- Plan 2026-07-07-compaction-inline: the dedicated Compaction
+             tab is REMOVED. Compaction settings now live in the Defaults
+             tab (top-level defaults) + the Edit-profile modal
+             (per-profile overrides). The tab id 'compaction' was removed
+             from NalarTabStrip.vue. -->
       </div>
 
       <!-- Sticky save bar (only when dirty) -->

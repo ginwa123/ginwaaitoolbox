@@ -9,7 +9,18 @@ export interface LlmConfigModalValue {
 const props = withDefaults(
   defineProps<{
     modelValue: LlmConfigModalValue
-    errors?: { name?: string; model?: string; base_url?: string; api_key?: string }
+    errors?: {
+      name?: string
+      model?: string
+      base_url?: string
+      api_key?: string
+      /** Plan 2026-07-07-compaction-inline: per-profile compaction
+       *  errors. Not currently set by the backend (null is always
+       *  valid; > 100 is caught at the HTTP layer), but accepted
+       *  by the form so the errors prop type is future-proof. */
+      max_capacity_tokens?: string
+      compaction_threshold_percent?: string
+    }
     title: string
     /** When true, the name field is editable (Add mode). When false (Edit mode), it's disabled. */
     nameEditable: boolean

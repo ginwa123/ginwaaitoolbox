@@ -274,6 +274,14 @@ pub const NalarConfigResponse = struct {
     /// estimate exceeds this value trigger context compaction.
     /// Consumed by `session_compact.zig:57`.
     model_compaction_size_kb: usize = 100,
+    /// Optional top-level override for the model's context window (in tokens).
+    /// `null` = fall through to per-profile override, then built-in default.
+    /// Restored in plan 2026-07-07-compaction-inline so the Defaults tab
+    /// can show + edit the top-level compaction defaults.
+    max_capacity_token_model: ?u32 = null,
+    /// Optional top-level compaction threshold as a percentage (0-100).
+    /// `null` = fall through to per-profile override, then built-in 80.
+    compaction_threshold_percent: ?u8 = null,
 };
 
 /// Wire format for a single sub-agent entry. Mirrors

@@ -649,3 +649,227 @@ describe('FilePickerDialog — agnostic data source (non-folder example)', () =>
     expect(findInDom('[data-testid="file-picker-item-hotfix"]')).not.toBeNull()
   })
 })
+
+// ─── Address-bar (path input) ──────────────────────────────────────────────────────────────
+// The "✏️ Go" button next to the breadcrumb swaps the clickable crumb row for a
+// single text input pre-filled with the current path. Enter navigates, Escape
+// reverts, the input commits on blur. Whatever the user types goes through
+// normalizeAddressInput() so a bare "docs" jumps into currentPath/docs
+// instead of being rejected as relative.
+describe('FilePickerDialog — address bar (type a path)', () => {
+  let wrapper: VueWrapper | null = null
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    document.body.style.overflow = ''
+    vi.restoreAllMocks()
+  })
+
+  it('does not render the path input in default (crumb) mode', async () => {
+    wrapper = mountDialog({ initialPath: '/home/user' })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    expect(findInDom('[data-testid="file-picker-path-edit"]')).not.toBeNull()
+    expect(findInDom('[data-testid="file-picker-path-input"]')).toBeNull()
+  })
+
+  it('clicking the ✏️ Go button enters edit mode and shows the path input', async () => {
+    wrapper = mountDialog({ initialPath: '/home/user' })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-path-edit"]')
+    await flushPromises()
+    expect(findInDom('[data-testid="file-picker-path-input"]')).not.toBeNull()
+    // The input should be pre-filled with the current path so the user can
+    // either start typing fresh text or edit the suffix.
+    expect(
+      (findInDom('[data-testid="file-picker-path-input"]') as HTMLInputElement | null)?.value,
+    ).toBe('/home/user')
+    // The breadcrumb buttons disappear while editing.
+    expect(findInDom('[data-testid="file-picker-crumb-0"]')).toBeNull()
+  })
+
+  it('typing an absolute path and pressing Enter navigates to it', async () => {
+    const loadItems = makeLoadItems()
+    wrapper = mountDialog({ initialPath: '/home/user', loadItems })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-path-edit"]')
+    await flushPromises()
+    const input = findInDom('[data-testid="file-picker-path-input"]') as HTMLInputElement
+    input.value = '/home/user/notes'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    // Vue's v-model writes via the 'input' event above; flush so the next
+    // keydown sees the new value, then submit.
+    await flushPromises()
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    )
+    await flushPromises()
+    // The dialog should now show the children of the new path. We pick a
+    // child that's only present in /home/user/notes (todo.txt) and assert
+    // it's in the DOM.
+    expect(findInDom('[data-testid="file-picker-item-/home/user/notes/todo.txt"]')).not.toBeNull()
+    // After commit the breadcrumb is back, the input is gone.
+    expect(findInDom('[data-testid="file-picker-path-input"]')).toBeNull()
+    expect(findInDom('[data-testid="file-picker-crumb-0"]')?.textContent).toBe('home')
+  })
+
+  it('a bare relative word resolves against currentPath (e.g. "notes" → /home/user/notes)', async () => {
+    const loadItems = makeLoadItems()
+    wrapper = mountDialog({ initialPath: '/home/user', loadItems })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-path-edit"]')
+    await flushPromises()
+    const input = findInDom('[data-testid="file-picker-path-input"]') as HTMLInputElement
+    input.value = 'notes'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await flushPromises()
+    expect(findInDom('[data-testid="file-picker-item-/home/user/notes/todo.txt"]')).not.toBeNull()
+  })
+
+  it('a bare ".." segment pops the current path one level up', async () => {
+    const loadItems = makeLoadItems()
+    wrapper = mountDialog({ initialPath: '/home/user/docs', loadItems })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-path-edit"]')
+    await flushPromises()
+    const input = findInDom('[data-testid="file-picker-path-input"]') as HTMLInputElement
+    input.value = '..'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await flushPromises()
+    // We should now be at /home/user — its children are docs, notes, readme.md, .hidden.
+    expect(findInDom('[data-testid="file-picker-item-/home/user/notes"]')).not.toBeNull()
+  })
+
+  it('lexical POSIX: from /home/user/docs, "../user" goes up then INTO user → /home/user/user', async () => {
+    // Documents the deliberate POSIX semantics of the joinRelative helper.
+    // The resolve is purely lexical — it does NOT ask the FS whether `user`
+    // exists under the popped base. So `../user` from /home/user/docs is
+    // `/home/user/user`, the same way `cd /home/user/docs && cd ../user`
+    // resolves in POSIX shells.
+    const loadItems = makeLoadItems()
+    wrapper = mountDialog({ initialPath: '/home/user/docs', loadItems })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-path-edit"]')
+    await flushPromises()
+    const input = findInDom('[data-testid="file-picker-path-input"]') as HTMLInputElement
+    input.value = '../user'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await flushPromises()
+    // /home/user/user doesn't exist in our mock tree, so loadItems returns []
+    // and the content pane renders the "Empty folder" empty state.
+    expect(findInDom('[data-testid="file-picker-content"]')?.textContent).toContain('Empty folder')
+  })
+
+  it('typing "~" navigates to the filesystem root', async () => {
+    const loadItems = makeLoadItems()
+    wrapper = mountDialog({ initialPath: '/home/user', loadItems })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-path-edit"]')
+    await flushPromises()
+    const input = findInDom('[data-testid="file-picker-path-input"]') as HTMLInputElement
+    input.value = '~'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await flushPromises()
+    // At the root we should see the home folder in the tree.
+    expect(findInDom('[data-testid="file-picker-tree-/home"]')).not.toBeNull()
+  })
+
+  it('pressing Escape reverts the path input and stays on the current path', async () => {
+    const loadItems = makeLoadItems()
+    wrapper = mountDialog({ initialPath: '/home/user', loadItems })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-path-edit"]')
+    await flushPromises()
+    const input = findInDom('[data-testid="file-picker-path-input"]') as HTMLInputElement
+    input.value = '/home/user/notes'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await flushPromises()
+    // The dialog is still open, still at /home/user, breadcrumb shows home/user.
+    expect(findInDom('[data-testid="file-picker-path-input"]')).toBeNull()
+    expect(findInDom('[data-testid="file-picker-crumb-0"]')?.textContent).toBe('home')
+    expect(findInDom('[data-testid="file-picker-crumb-1"]')?.textContent).toBe('user')
+    // The /notes child from the typed value must NOT have loaded.
+    expect(findInDom('[data-testid="file-picker-item-/home/user/notes/todo.txt"]')).toBeNull()
+  })
+
+  it('typing a non-existent path surfaces the existing error UI', async () => {
+    const loadItems = vi.fn(async (path: string) => {
+      if (path === '/does/not/exist') throw new Error('boom: not a directory')
+      return tree[path] ?? []
+    })
+    wrapper = mountDialog({ initialPath: '/home/user', loadItems })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-path-edit"]')
+    await flushPromises()
+    const input = findInDom('[data-testid="file-picker-path-input"]') as HTMLInputElement
+    input.value = '/does/not/exist'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    // Suppress the expected console.error from the loadPath throw.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await flushPromises()
+    errSpy.mockRestore()
+    // The dialog is still open (the error UI is in-pane, not a modal crash).
+    expect(findInDom('[data-testid="file-picker-dialog"]')).not.toBeNull()
+    // The error block contains "boom: not a directory" — the same string
+    // loadPath formatted into loadError.
+    const errEl = findInDom('[data-testid="file-picker-tree"] [class*="text-center"]')
+      || findInDom('[data-testid="file-picker-tree"]')
+    expect(errEl?.textContent).toContain('boom: not a directory')
+  })
+
+  it('re-opening the dialog after editing exits edit mode', async () => {
+    wrapper = mountDialog({ initialPath: '/home/user' })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-path-edit"]')
+    await flushPromises()
+    expect(findInDom('[data-testid="file-picker-path-input"]')).not.toBeNull()
+    // Close + reopen: the editor state must reset.
+    await wrapper.setProps({ modelValue: false })
+    expect(findInDom('[data-testid="file-picker-path-input"]')).toBeNull()
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    expect(findInDom('[data-testid="file-picker-path-input"]')).toBeNull()
+    expect(findInDom('[data-testid="file-picker-crumb-0"]')?.textContent).toBe('home')
+    expect(findInDom('[data-testid="file-picker-crumb-1"]')?.textContent).toBe('user')
+  })
+
+  it('committing with whitespace-only input is a no-op (no navigation)', async () => {
+    const loadItems = makeLoadItems()
+    wrapper = mountDialog({ initialPath: '/home/user', loadItems })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-path-edit"]')
+    await flushPromises()
+    const input = findInDom('[data-testid="file-picker-path-input"]') as HTMLInputElement
+    input.value = '   '
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await flushPromises()
+    // Still at /home/user — the user/notes child is NOT in the DOM.
+    expect(findInDom('[data-testid="file-picker-item-/home/user/notes/todo.txt"]')).toBeNull()
+    expect(findInDom('[data-testid="file-picker-crumb-1"]')?.textContent).toBe('user')
+  })
+})

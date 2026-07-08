@@ -31,6 +31,14 @@ describe('NalarTabStrip', () => {
     ])
   })
 
+  it('does NOT render the Compaction tab (plan 2026-07-07-compaction-inline)', () => {
+    const wrapper = mount(NalarTabStrip, {
+      props: { modelValue: 'defaults' },
+    })
+    const buttons = wrapper.findAll('button[role="tab"]')
+    expect(buttons.some(b => b.text().trim() === 'Compaction')).toBe(false)
+  })
+
   it('emits update:modelValue when a tab is clicked', async () => {
     const wrapper = mount(NalarTabStrip, {
       props: { modelValue: 'defaults' },

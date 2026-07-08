@@ -93,6 +93,7 @@ const emit = defineEmits<{
 const dialogRef = ref<HTMLElement | null>(null)
 const contentRef = ref<HTMLElement | null>(null)
 const searchInput = ref<HTMLInputElement | null>(null)
+const pathInput = ref<HTMLInputElement | null>(null)
 
 const currentPath = ref(initialPath.value)
 const treeEntriesCache = ref<Record<string, T[]>>({})
@@ -105,6 +106,13 @@ const highlightedIndex = ref<number>(-1)
 const searchQuery = ref('')
 const filterMode = ref<FilterMode>('all')
 const showHiddenLocal = ref(showHiddenDefault.value)
+// ── Address-bar editing state ──────────────────────────────────────────
+// When isPathEditing is true the clickable breadcrumb is replaced with a
+// single text input pre-filled with currentPath. Enter navigates to
+// whatever is typed (after normalization); Escape reverts. See
+// beginPathEdit / commitPathEdit / cancelPathEdit below.
+const isPathEditing = ref(false)
+const pathDraft = ref('')
 let previouslyFocused: HTMLElement | null = null
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -151,6 +159,65 @@ function parseBreadcrumb(path: string): Array<{ name: string; path: string }> {
 }
 
 const breadcrumb = computed(() => parseBreadcrumb(currentPath.value))
+
+// ─── Address-bar normalization ────────────────────────────────────────────
+// Accepts whatever the user typed in the address input and returns a
+// canonical absolute POSIX path, or `null` when the input is unusable.
+//
+// Rules:
+//   - empty / whitespace / '~' / '~/'           → '/'
+//   - relative path starting with './' or '../' → relative to currentPath
+//   - bare relative path like 'docs' or 'a/b'   → joined with currentPath
+//   - anything else                             → used as-is (must start
+//                                                 with '/' or be rejected
+//                                                 by the upstream loadItems
+//                                                 caller; we don't try to
+//                                                 validate against the FS
+//                                                 here — that's the
+//                                                 loadItems job).
+// Trailing slashes are stripped except for the root.
+function normalizeAddressInput(raw: string): string | null {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  if (trimmed === '~' || trimmed === '~/') return '/'
+
+  // Already absolute (starts with '/'). Collapse runs of slashes and
+  // strip a trailing slash unless the result would be empty.
+  if (trimmed.startsWith('/')) {
+    const collapsed = trimmed.replace(/\/+/g, '/').replace(/(.)\/$/, '$1')
+    return collapsed || '/'
+  }
+
+  // Relative path: resolve against currentPath so a bare "docs" jumps
+  // into "./docs" inside the current view instead of being treated as
+  // invalid. Dot-prefixed relpaths ('./a', '../a/b') are normalized as
+  // POSIX path concatenation (no realpath — we don't have access to a
+  // filesystem here and the upstream caller's loadItems will be the
+  // one that surfaces "not found" if the path doesn't exist).
+  const base = currentPath.value
+  if (trimmed.startsWith('./') || trimmed.startsWith('../')) {
+    const rel = trimmed.replace(/^\.\//, '')
+    return joinRelative(base, rel)
+  }
+  return joinRelative(base, trimmed)
+}
+
+// Tiny POSIX-flavoured relative-path join: walks the joined segments
+// and applies '../' to pop the base. Returns the result without
+// touching the filesystem.
+function joinRelative(base: string, rel: string): string {
+  const baseParts = base === '/' ? [] : base.split('/').filter(Boolean)
+  const relParts = rel.split('/').filter((p) => p !== '.' && p !== '')
+  const out = [...baseParts]
+  for (const part of relParts) {
+    if (part === '..') {
+      if (out.length > 0) out.pop()
+    } else {
+      out.push(part)
+    }
+  }
+  return '/' + out.join('/')
+}
 
 // ─── Data loading ──────────────────────────────────────────────────────────
 
@@ -368,12 +435,35 @@ function handleKeydown(event: KeyboardEvent) {
   }
 
   if (event.key === 'Escape') {
+    // Address-input takes precedence over search: if the user is editing
+    // the path, Esc cancels the edit (does NOT close the dialog).
+    if (isPathEditing.value) {
+      cancelPathEdit()
+      event.stopPropagation()
+      event.preventDefault()
+      return
+    }
     if (searchQuery.value) {
       searchQuery.value = ''
       event.stopPropagation()
       return
     }
     handleCancel()
+    event.stopPropagation()
+    return
+  }
+
+  // Address input (path editor): Enter commits, other keys are eaten by
+  // the input itself but we still need to stop the dialog-wide keydown
+  // handler from interpreting them as arrow-up / arrow-down / backspace.
+  if (isPathEditing.value) {
+    if (event.key === 'Enter') {
+      commitPathEdit()
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    // For every other key we drop the bubble so the global Up / Backspace
+    // / ArrowDown handlers below don't fire while the user is typing.
     event.stopPropagation()
     return
   }
@@ -439,6 +529,41 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
+// ─── Address-bar enter / exit / commit ─────────────────────────────────────
+// beginPathEdit swaps the breadcrumb <span> tree for a single <input>
+// pre-filled with currentPath, then auto-focuses + selects so the user
+// can start typing (or paste) immediately. commitPathEdit normalizes the
+// typed value and calls navigateTo; an empty / whitespace input cancels
+// instead of navigating to '/'. cancelPathEdit just exits the editor.
+function beginPathEdit() {
+  pathDraft.value = currentPath.value
+  isPathEditing.value = true
+  // Defer focus until after Vue has committed the conditional v-if swap.
+  nextTick(() => {
+    const el = pathInput.value
+    if (!el) return
+    el.focus()
+    el.select()
+  })
+}
+
+function commitPathEdit() {
+  const normalized = normalizeAddressInput(pathDraft.value)
+  isPathEditing.value = false
+  if (normalized === null) {
+    // Empty / whitespace → no-op, just close the editor.
+    pathDraft.value = ''
+    return
+  }
+  pathDraft.value = ''
+  void navigateTo(normalized)
+}
+
+function cancelPathEdit() {
+  isPathEditing.value = false
+  pathDraft.value = ''
+}
+
 // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
 async function openDialog() {
@@ -452,6 +577,8 @@ async function openDialog() {
   highlightedIndex.value = -1
   filterMode.value = 'all'
   showHiddenLocal.value = showHiddenDefault.value
+  isPathEditing.value = false
+  pathDraft.value = ''
 
   await expandAncestors(startPath)
 
@@ -582,7 +709,19 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <!-- Breadcrumb -->
+          <!--
+            Breadcrumb / address bar.
+
+            Normal mode: shows the path as clickable segments (the
+            existing UX — clicking a segment navigates there).
+
+            Edit mode: clicking the "✏️ Go" button (or pressing its
+            shortcut) replaces the breadcrumb with a single text input
+            pre-filled with the current path. Enter navigates, Escape
+            reverts. Whatever the user types goes through
+            normalizeAddressInput() so e.g. a bare "docs" jumps into
+            currentPath/docs instead of being rejected as relative.
+          -->
           <div
             class="px-5 py-2 flex items-center gap-1 shrink-0 text-xs"
             style="
@@ -590,35 +729,75 @@ onBeforeUnmount(() => {
               color: var(--semantic-text-muted);
             "
           >
-            <button
-              @click="navigateTo('/')"
-              data-testid="file-picker-root"
-              class="px-1.5 py-0.5 rounded hover:opacity-80"
-              style="color: var(--semantic-text-muted)"
-              title="Root"
-            >
-              /
-            </button>
-            <template v-for="(seg, idx) in breadcrumb" :key="seg.path">
-              <span aria-hidden="true" style="color: var(--semantic-text-dim)">›</span>
+            <template v-if="!isPathEditing">
               <button
-                @click="navigateTo(seg.path)"
-                :data-testid="`file-picker-crumb-${idx}`"
-                class="px-1.5 py-0.5 rounded hover:opacity-80 font-mono truncate max-w-[180px]"
-                :style="
-                  idx === breadcrumb.length - 1
-                    ? { color: 'var(--semantic-text)', fontWeight: '600' }
-                    : { color: 'var(--semantic-text-muted)' }
-                "
+                @click="navigateTo('/')"
+                data-testid="file-picker-root"
+                class="px-1.5 py-0.5 rounded hover:opacity-80"
+                style="color: var(--semantic-text-muted)"
+                title="Root"
               >
-                {{ seg.name }}
+                /
               </button>
+              <template v-for="(seg, idx) in breadcrumb" :key="seg.path">
+                <span aria-hidden="true" style="color: var(--semantic-text-dim)">›</span>
+                <button
+                  @click="navigateTo(seg.path)"
+                  :data-testid="`file-picker-crumb-${idx}`"
+                  class="px-1.5 py-0.5 rounded hover:opacity-80 font-mono truncate max-w-[180px]"
+                  :style="
+                    idx === breadcrumb.length - 1
+                      ? { color: 'var(--semantic-text)', fontWeight: '600' }
+                      : { color: 'var(--semantic-text-muted)' }
+                  "
+                >
+                  {{ seg.name }}
+                </button>
+              </template>
             </template>
 
-            <span class="flex-1" />
+            <input
+              v-else
+              ref="pathInput"
+              v-model="pathDraft"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="off"
+              data-testid="file-picker-path-input"
+              :aria-label="`Type a path to navigate. Currently at ${currentPath}.`"
+              class="flex-1 min-w-0 px-2 py-0.5 text-xs font-mono rounded outline-none transition-all"
+              style="
+                background-color: var(--semantic-sidebar-bg);
+                border: 1px solid var(--color-violet);
+                color: var(--semantic-text);
+              "
+              @keydown.enter.prevent="commitPathEdit"
+              @keydown.esc.prevent="cancelPathEdit"
+              @blur="commitPathEdit"
+            />
+
+            <span class="flex-1" v-if="!isPathEditing" />
 
             <button
-              v-if="currentPath !== '/'"
+              v-if="!isPathEditing"
+              @click="beginPathEdit"
+              data-testid="file-picker-path-edit"
+              class="px-2 py-0.5 rounded text-xs transition-all hover:opacity-80"
+              style="
+                background-color: var(--semantic-card-bg);
+                border: 1px solid var(--color-border);
+                color: var(--semantic-text);
+              "
+              title="Type a path (Enter to go, Esc to cancel)"
+              aria-label="Edit path"
+            >
+              ✏️ Go
+            </button>
+
+            <button
+              v-if="currentPath !== '/' && !isPathEditing"
               @click="navigateTo(parentPath(currentPath))"
               data-testid="file-picker-up"
               class="px-2 py-0.5 rounded text-xs transition-all hover:opacity-80"

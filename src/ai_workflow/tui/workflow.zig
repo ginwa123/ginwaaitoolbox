@@ -1,4 +1,4 @@
-const nalar_mod = @import("nalarcore");
+const nalarcore = @import("nalarcore");
 const llm_history = @import("llm_history.zig");
 const build_msg_prompt = @import("build_messages_for_agent_prompt.zig");
 const models = @import("models.zig");
@@ -7,7 +7,6 @@ const tool_registry = @import("tool_registry.zig");
 const handle_tool = @import("handle_tool.zig").handle_tool;
 const notifications = @import("notifications.zig");
 
-const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const config_mod = nalarcore.config;
 const logger_mod = nalarcore.logger;
@@ -27,23 +26,24 @@ pub const StreamingContext = struct {
 
 pub const CallbackAiWorkerFlow = struct {
     pub fn callback(data: RunParamsNew) void {
-        const di = nalar_mod.getSingleton() catch return;
+        const keyword = "CALLBACK_AI_WORKER_FLOW";
+        const di = nalarcore.getSingleton() catch return;
         const logger = di.logger;
         const allocator = di.allocator;
         const db = di.db;
         const io = di.io;
         const session_id = data.session_id;
-        const config = nalar_mod.getLlmConfig(di);
+        const config = nalarcore.getLlmConfig(di);
         const cwd = data.cwd;
 
         runAgenticMultiStepnew(di, data) catch |err| {
-            logger.errFmt("runAgenticMultiStepnew failed: {s}", .{@errorName(err)});
+            logger.errFmt("[{s}] Failed to run agentic workflow: {s}\n", .{ keyword, @errorName(err) });
             llm_history.deleteWorkerBySessionId(allocator, db, session_id) catch |error_sqlite| {
-                logger.errFmt("Failed to delete worker: {s}", .{@errorName(error_sqlite)});
+                logger.errFmt("[{s}] Failed to delete worker: {s}\n", .{ keyword, @errorName(error_sqlite) });
             };
 
             _ = llm_history.deleteQueuedMessagesBySessionId(allocator, db, session_id) catch |error_sqlite| {
-                logger.errFmt("Failed to delete all queued messages: {s}", .{@errorName(error_sqlite)});
+                logger.errFmt("[{s}] Failed to delete all queued messages: {s}\n", .{ keyword, @errorName(error_sqlite) });
             };
 
             // For TooManyRetries, the inner bail already saved a rich diagnostic
@@ -52,6 +52,7 @@ pub const CallbackAiWorkerFlow = struct {
             // instead of two — one rich (from the inner bail) and one redundant
             // "TooManyRetries" generic message that would just confuse it again.
             if (err == error.TooManyRetries) {
+                logger.errFmt("[{s}] TooManyRetries\n", .{keyword});
                 return;
             }
 
@@ -60,13 +61,13 @@ pub const CallbackAiWorkerFlow = struct {
                 db,
                 session_id,
             ) catch |err_agent_state| {
-                logger.errFmt("Failed to get current agent state: {s}", .{@errorName(err_agent_state)});
+                logger.errFmt("[{s}] Failed to get current agent state: {s}\n", .{ keyword, @errorName(err_agent_state) });
                 return;
             };
             const initial_agent = initial_agent_state.agent;
 
             const error_message = std.fmt.allocPrint(allocator, "Agent Nalar System error, the actual error is ->>>> {s}\n", .{@errorName(err)}) catch |err_fmt| {
-                logger.errFmt("Failed to format error message: {s}", .{@errorName(err_fmt)});
+                logger.errFmt("[{s}] Failed to format error message: {s}\n", .{ keyword, @errorName(err_fmt) });
                 return;
             };
             _ = llm_history.saveMessage(allocator, io, db, .{
@@ -91,7 +92,9 @@ pub const CallbackAiWorkerFlow = struct {
                 .is_input = true,
                 .is_output = false,
                 .is_feed_to_llm = false,
-            }) catch {};
+            }) catch |err_save| {
+                logger.errFmt("[{s}] Failed to format error message: {s}\n", .{ keyword, @errorName(err_save) });
+            };
 
             const session_skills_err = llm_history.getSessionSkills(allocator, db, session_id) catch null;
             defer if (session_skills_err) |s| for (s) |*skill| {
@@ -119,12 +122,14 @@ pub const CallbackAiWorkerFlow = struct {
                 .is_output = false,
                 .image_url = null,
                 .session_skills = session_skills_err,
-            }) catch {};
+            }) catch |on_event_sent_err| {
+                logger.errFmt("[{s}] failed to sent llm historry: {s}\n", .{ keyword, @errorName(on_event_sent_err) });
+            };
         };
     }
 };
 
-pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew) !void {
+pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew) !void {
     var parent_arena_allocator = std.heap.ArenaAllocator.init(di.allocator);
     defer parent_arena_allocator.deinit();
     const parent_allocator = parent_arena_allocator.allocator();
@@ -133,7 +138,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
     const logger = di.logger;
     const active_loops = di.active_loops;
     const io = di.io;
-    const config = nalar_mod.getLlmConfig(di);
+    const config = nalarcore.getLlmConfig(di);
     const environment = di.environment;
 
     // ─── Resolve the effective LLM profile (selected_profile_model) ──────
@@ -410,10 +415,6 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
             const diagnostic = std.fmt.allocPrint(parent_allocator,
                 \\[Agent Nalar System error] workflow halted after {} consecutive retries.
                 \\Reason for last retry: {s} (source: {s}).
-                \\This typically indicates a network connectivity issue to the LLM API endpoint,
-                \\API rate limit exceeded, authentication/authorization failure, or upstream
-                \\service unavailability. Review the session logs for the full chain of
-                \\errors at each retry attempt before retrying.
             , .{ retry_count, reason_error, reason_source }) catch "workflow halted after too many retries";
 
             logger.errFmt("TooManyRetries exhausted: {} consecutive failures for session_id={s} — last_error={s} source={s}", .{ retry_count, copy_session_id, reason_error, reason_source });
@@ -513,7 +514,7 @@ pub fn runAgenticMultiStepnew(di: *nalar_mod.ContextIPCTui, params: RunParamsNew
 
         try messagesLists.appendSlice(allocator, initialMessages);
 
-        const is_do_compaction = try maybeCompactMessagesNew(allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger);
+        const is_do_compaction = try maybeCompactMessagesNew(allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger, config);
         if (is_do_compaction) {
             continue;
         }
@@ -859,8 +860,19 @@ pub fn maybeCompactMessagesNew(
     db: *sqlite.SqliteBackend,
     io: std.Io,
     logger: *logger_mod.Logger,
+    llm_config: *const config_mod.LlmConfig,
 ) !bool {
-    if (!force and !agent.LLMModels.isDoCompact(total_tokens, agent.LLMModels.getModelTokenCount(model))) {
+    if (!force and !agent.LLMModels.shouldCompact(
+        total_tokens,
+        // No profile/sub-agent in scope at this call site — pass null
+        // for both so the resolver falls back through the top-level
+        // defaults (the orchestrator's own config) to the built-in
+        // LLMModels per-model capacity + 80% threshold. Future
+        // refactors that thread `profile_name` + `sub_agent_name` here
+        // will pick up per-profile overrides via the cascade.
+        llm_config.maxCapacityForModel(null, null, llm_config, model),
+        llm_config.compactionThresholdPercent(null, null, llm_config),
+    )) {
         return false;
     }
 
@@ -880,7 +892,7 @@ pub fn maybeCompactMessagesNew(
     // compactMessageInMemoryNew consumes the old list and returns the compacted one.
     // Replace the caller's list in place so the next loop iteration sees the
     // compacted messages.
-     _ = try compactMessageInMemoryNew(allocator, messages.*, compacted_xml, session_id, model, cwd, db, io, logger);
+    _ = try compactMessageInMemoryNew(allocator, messages.*, compacted_xml, session_id, model, cwd, db, io, logger);
     return true;
 }
 
@@ -1234,7 +1246,8 @@ fn buildCompactionEnvelope(
     const omitted_count = dropped_messages.len - show_count;
 
     if (omitted_count > 0) {
-        try env.print(allocator,
+        try env.print(
+            allocator,
             "    <truncated_entries count=\"{d}\" note=\"older entries omitted from index; use read_compacted_messages with session_id to fetch full history from DB\"/>\n",
             .{omitted_count},
         );

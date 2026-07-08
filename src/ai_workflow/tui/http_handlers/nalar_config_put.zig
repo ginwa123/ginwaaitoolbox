@@ -6,6 +6,23 @@ const gserverz = nalarcore.gserverz;
 const config = nalarcore.config;
 const LlmConfig = config.LlmConfig;
 
+/// Parse the PUT body into a `ConfigInput`.
+///
+/// Public so the test file can exercise the same parse path the HTTP
+/// handler uses — important because the handler's wire format has
+/// evolved (array-of-changes → object-map-and-array, see
+/// plan 2026-07-07) and tests are the only way to lock in the
+/// parser's tolerance of the on-disk shape that `NalarSettings.vue`
+/// actually sends.
+pub fn parseConfigInput(
+    allocator: std.mem.Allocator,
+    body: []const u8,
+) !ConfigInput {
+    return std.json.parseFromSliceLeaky(ConfigInput, allocator, body, .{
+        .ignore_unknown_fields = true,
+    });
+}
+
 /// PUT /api/config/nalar - Save nalar.json configuration
 pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
@@ -48,10 +65,13 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     // Read request body
     const body = req.body;
 
-    // Parse input
-    const input = std.json.parseFromSliceLeaky(ConfigInput, allocator, body, .{
-        .ignore_unknown_fields = true,
-    }) catch |err| {
+    // Parse input — delegate to the shared pub helper so the test
+    // file can exercise the same parse path with the user's exact
+    // body shape. The helper returns a tagged-union error set so
+    // the test can assert the specific failure mode (e.g. JSON
+    // syntax error vs wire-format mismatch) without coupling to the
+    // HTTP response shape.
+    const input = parseConfigInput(allocator, body) catch |err| {
         std.log.err("Failed to parse input: {s}", .{@errorName(err)});
         return res.jsonResponse(.{
             .status_code = 400,
@@ -93,7 +113,25 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         config_json.url_style = try allocator.dupe(u8, input.url_style);
     }
     if (input.max_tokens) |mt| {
-        config_json.max_tokens = mt;
+        // Frontend sends `max_tokens` as a string (often "" or a number
+        // string). Accept the string shape as-is — `config_json.max_tokens`
+        // is `?[]const u8` and the on-disk loader parses it back to usize
+        // via `LlmConfig.init`. Empty / non-numeric strings are coerced to
+        // null (= "no change") so a malformed value doesn't poison the
+        // saved config.
+        if (mt.len > 0) {
+            // Reject purely-non-numeric content (e.g. "abc") but allow the
+            // legitimate empty-after-trim case. parseInt is a strict
+            // format check that catches the "abc" case without rejecting
+            // leading zeros / quoted-numbers the frontend may send.
+            if (std.fmt.parseInt(usize, mt, 10)) |_| {
+                config_json.max_tokens = try allocator.dupe(u8, mt);
+            } else |_| {
+                config_json.max_tokens = null;
+            }
+        } else {
+            config_json.max_tokens = null;
+        }
     }
     if (input.system_prompt.len > 0) {
         config_json.system_prompt = try allocator.dupe(u8, input.system_prompt);
@@ -104,9 +142,27 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     if (input.model_compaction_size_kb) |kb| {
         config_json.model_compaction_size_kb = kb;
     }
+    // Top-level compaction defaults — restored in plan
+    // 2026-07-07-compaction-inline. `null` is a legitimate value (the
+    // cascade wildcard); clients opt out of the top-level override by
+    // sending null.
+    if (input.max_capacity_token_model) |mc| {
+        config_json.max_capacity_token_model = mc;
+    }
+    if (input.compaction_threshold_percent) |tp| {
+        if (tp > 100) return error.InvalidThresholdPercent;
+        config_json.compaction_threshold_percent = tp;
+    }
 
-    // Handle profiles - add, update, or delete
-    if (input.profiles) |profiles| {
+    // Handle profiles - accept BOTH the on-disk shape (object map) and the
+    // granular change-list shape (array of ProfileChange). The frontend's
+    // main settings panel sends the on-disk shape (Record<name, profile>);
+    // the sub-agent add/edit/delete UIs send the array shape. Plan
+    // 2026-07-07 inline-compaction + PUT 400 bug fix: previously the
+    // handler only accepted the array shape, causing the main settings
+    // save to 400 with "Invalid JSON input" because parseFromSliceLeaky
+    // rejected the on-disk object map.
+    if (input.profiles) |profiles_value| {
         // Create new profiles object
         var profiles_obj = try json.ObjectMap.init(allocator, &.{}, &.{});
 
@@ -121,25 +177,60 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             }
         }
 
-        // Apply profile changes
-        for (profiles) |profile_change| {
-            const action = profile_change.action;
-            if (action.len > 0) {
-                if (std.mem.eql(u8, action, "delete")) {
-                    _ = profiles_obj.swapRemove(profile_change.name);
-                } else if (std.mem.eql(u8, action, "add") or std.mem.eql(u8, action, "update")) {
-                    var profile_obj = try json.ObjectMap.init(allocator, &.{}, &.{});
-                    try profile_obj.put(allocator, "model", if (profile_change.model.len > 0) json.Value{ .string = try allocator.dupe(u8, profile_change.model) } else json.Value{ .string = "" });
-                    try profile_obj.put(allocator, "base_url", if (profile_change.base_url.len > 0) json.Value{ .string = try allocator.dupe(u8, profile_change.base_url) } else json.Value{ .string = "" });
-                    try profile_obj.put(allocator, "thinking", json.Value{ .string = try allocator.dupe(u8, profile_change.thinking) });
-                    try profile_obj.put(allocator, "temperature", json.Value{ .string = try allocator.dupe(u8, profile_change.temperature) });
-                    try profile_obj.put(allocator, "url_style", json.Value{ .string = try allocator.dupe(u8, profile_change.url_style) });
-                    try profile_obj.put(allocator, "api_key", if (profile_change.api_key.len > 0) json.Value{ .string = try allocator.dupe(u8, profile_change.api_key) } else json.Value{ .string = "" });
-                    const profile_value = json.Value{ .object = profile_obj };
-                    try profiles_obj.put(allocator, try allocator.dupe(u8, profile_change.name), profile_value);
+        switch (profiles_value) {
+            // Granular change-list shape: array of ProfileChange entries.
+            .array => |arr| {
+                for (arr.items) |item| {
+                    const profile_change = try json.parseFromSliceLeaky(
+                        ProfileChange,
+                        allocator,
+                        std.mem.asBytes(&item),
+                        .{ .ignore_unknown_fields = true },
+                    );
+                    const action = profile_change.action;
+                    if (action.len > 0) {
+                        if (std.mem.eql(u8, action, "delete")) {
+                            _ = profiles_obj.swapRemove(profile_change.name);
+                        } else if (std.mem.eql(u8, action, "add") or std.mem.eql(u8, action, "update")) {
+                            var profile_obj = try json.ObjectMap.init(allocator, &.{}, &.{});
+                            try profile_obj.put(allocator, "model", if (profile_change.model.len > 0) json.Value{ .string = try allocator.dupe(u8, profile_change.model) } else json.Value{ .string = "" });
+                            try profile_obj.put(allocator, "base_url", if (profile_change.base_url.len > 0) json.Value{ .string = try allocator.dupe(u8, profile_change.base_url) } else json.Value{ .string = "" });
+                            try profile_obj.put(allocator, "thinking", json.Value{ .string = try allocator.dupe(u8, profile_change.thinking) });
+                            try profile_obj.put(allocator, "temperature", json.Value{ .string = try allocator.dupe(u8, profile_change.temperature) });
+                            try profile_obj.put(allocator, "url_style", json.Value{ .string = try allocator.dupe(u8, profile_change.url_style) });
+                            try profile_obj.put(allocator, "api_key", if (profile_change.api_key.len > 0) json.Value{ .string = try allocator.dupe(u8, profile_change.api_key) } else json.Value{ .string = "" });
+                            // Per-profile compaction overrides (Chunk 7). When
+                            // the input omits them, we omit the JSON key so an
+                            // "update" doesn't clobber the existing on-disk
+                            // value. When present, validate the threshold range.
+                            if (profile_change.max_capacity_tokens) |mct| {
+                                try profile_obj.put(allocator, "max_capacity_tokens", json.Value{ .integer = mct });
+                            }
+                            if (profile_change.compaction_threshold_percent) |tp| {
+                                if (tp > 100) return error.InvalidThresholdPercent;
+                                try profile_obj.put(allocator, "compaction_threshold_percent", json.Value{ .integer = tp });
+                            }
+                            const profile_value_obj = json.Value{ .object = profile_obj };
+                            try profiles_obj.put(allocator, try allocator.dupe(u8, profile_change.name), profile_value_obj);
+                        }
+                    }
                 }
-            }
+            },
+            // On-disk shape: object map. Each entry is the full profile
+            // metadata for a single profile. Deep-copy each entry so
+            // the borrowed slice from the parsed request stays valid
+            // across the `parsed.deinit()` at scope exit.
+            .object => |obj| {
+                var iter = obj.iterator();
+                while (iter.next()) |entry| {
+                    const key = try allocator.dupe(u8, entry.key_ptr.*);
+                    const copied_value = try deepCopyJsonValue(allocator, entry.value_ptr.*);
+                    try profiles_obj.put(allocator, key, copied_value);
+                }
+            },
+            else => return error.InvalidJson,
         }
+
         config_json.profiles_models = json.Value{ .object = profiles_obj };
     }
 
@@ -263,15 +354,33 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     });
 }
 
-const ConfigInput = struct {
+/// Wire format for the PUT body. Public so the test file
+/// (`nalar_config_put_test.zig`) can re-parse the same body the
+/// HTTP handler would parse and assert the wire format matches the
+/// frontend's actual `NalarSettings.vue` shape.
+pub const ConfigInput = struct {
     api_endpoint: []const u8 = "",
     api_key: []const u8 = "",
     model: []const u8 = "",
     url_style: []const u8 = "openai",
     temperature: f64 = 0.7,
-    max_tokens: ?usize = null,
+    /// Frontend sends `max_tokens` as a string (often `""` or a number
+    /// string like "4096"). Pre-fix this was typed as `?usize` and
+    /// the parser rejected empty / non-numeric strings with
+    /// `error.InvalidCharacter` — turning the whole PUT into a 400.
+    /// Accept the string shape; the apply block coerces to usize
+    /// with a safe fallback.
+    max_tokens: ?[]const u8 = null,
     system_prompt: []const u8 = "",
-    profiles: ?[]const ProfileChange = null,
+    // Two accepted wire formats (plan 2026-07-07 + bug fix for PUT 400):
+//   - ARRAY: `[{"name":"...", "action":"update|add|delete", ...}, ...]`
+//     (the granular per-profile change list — used by sub-agent add/edit/delete UIs)
+//   - OBJECT: `{"profile1": {"model":...}, "profile2": {...}}`
+//     (the on-disk shape, sent by the main settings panel's full-form PUT)
+// We accept both via `?json.Value` and branch at the apply site. Each
+// shape is validated + deep-copied into the new `config_json.profiles_models`
+// so the same downstream code works for both.
+profiles: ?json.Value = null,
     active_profile: ?[]const u8 = null,
     /// Whole-list replace for the `mcp_servers` map (snake_case).
     /// When present, replaces the existing MCP servers entirely.
@@ -286,6 +395,20 @@ const ConfigInput = struct {
     /// to shrink the LLM context. Absent = preserve existing on-disk
     /// value. Mirrors the `LlmConfigJson` default (`100`).
     model_compaction_size_kb: ?usize = null,
+    /// Optional top-level override for the context window (in tokens).
+    /// Restored in plan 2026-07-07-compaction-inline. `null` = fall
+    /// through to per-profile override, then built-in default. Per-profile
+    /// overrides (`ProfileChange.max_capacity_tokens`) coexist independently.
+    max_capacity_token_model: ?u32 = null,
+    /// Optional top-level compaction threshold percentage (0-100).
+    /// Restored in plan 2026-07-07-compaction-inline. `null` = fall
+    /// through to per-profile override, then built-in 80. Values > 100
+    /// are rejected with `error.InvalidThresholdPercent`.
+    compaction_threshold_percent: ?u8 = null,
+    // Note: per-profile compaction overrides (max_capacity_tokens,
+    // compaction_threshold_percent) live on `ProfileChange` below.
+    // Both layers coexist: top-level for Defaults tab, per-profile for
+    // profile-specific overrides.
     /// Whole-list replace for the top-level `sub_agents` array.
     /// When present, replaces the existing sub-agents entirely.
     /// When absent, existing sub-agents are preserved. Borrowed slices
@@ -303,6 +426,18 @@ const ProfileChange = struct {
     temperature: []const u8 = "auto",
     url_style: []const u8 = "openai",
     api_key: []const u8 = "",
+    /// Optional override for the per-profile context window (in tokens).
+    /// Mirrors `LlmProfile.max_capacity_tokens` in Config.zig. When
+    /// non-null, the JSON write below sets the `max_capacity_tokens`
+    /// key on the profile object. When null, the key is omitted
+    /// (preserves existing on-disk value if the action is "update").
+    max_capacity_tokens: ?u32 = null,
+    /// Optional per-profile compaction threshold percentage (0-100).
+    /// Mirrors `LlmProfile.compaction_threshold_percent`. Values > 100
+    /// are rejected with `error.InvalidThresholdPercent` at the apply
+    /// block above (per-profile validation is layered on top of the
+    /// top-level model_compaction_size_kb check).
+    compaction_threshold_percent: ?u8 = null,
 };
 
 const ConfigJson = struct {
@@ -310,7 +445,7 @@ const ConfigJson = struct {
     model: []const u8 = "",
     base_url: []const u8 = "",
     url_style: []const u8 = "openai",
-    max_tokens: ?usize = null,
+    max_tokens: ?[]const u8 = null,
     system_prompt: []const u8 = "",
     profiles_models: ?json.Value = null,
     active_profile: ?[]const u8 = null,
@@ -323,6 +458,13 @@ const ConfigJson = struct {
     /// Compaction threshold in KB. Default `100` matches
     /// `LlmConfigJson` (Config.zig:92).
     model_compaction_size_kb: usize = 100,
+    /// Top-level context window override. Restored in plan
+    /// 2026-07-07-compaction-inline. `null` is the cascade wildcard
+    /// (falls through to per-profile override, then built-in).
+    max_capacity_token_model: ?u32 = null,
+    /// Top-level compaction threshold. Restored in plan
+    /// 2026-07-07-compaction-inline. `null` is the cascade wildcard.
+    compaction_threshold_percent: ?u8 = null,
     /// Top-level sub-agents array (snake_case, matches NALAR.md JSON
     /// convention). Parsed into the typed `LlmConfig.SubAgentJson` shape
     /// (borrowed from the parsed file content), or replaced by an

@@ -168,6 +168,10 @@ pub fn writeStateFile(
     // -p ~/.local/state/nalar` required. We use the same
     // componentIterator trick as daemon.zig: each yielded `.path` is the
     // cumulative path-so-far.
+    //
+    // Use std.c.mkdirat (cross-platform libc wrapper) instead of
+    // std.os.linux.mkdirat (Linux syscall only — wrong on macOS where
+    // AT.FDCWD is -2 instead of -100).
     if (builtin.os.tag != .windows) {
         if (std.fs.path.dirname(path)) |parent_dir| {
             var iter = std.fs.path.componentIterator(parent_dir);
@@ -176,9 +180,9 @@ pub fn writeStateFile(
                 if (component.path.len >= dpath_z.len) return error.PathTooLong;
                 @memcpy(dpath_z[0..component.path.len], component.path);
                 dpath_z[component.path.len] = 0;
-                const rc = std.os.linux.mkdirat(std.os.linux.AT.FDCWD, &dpath_z, 0o755);
-                if (rc > std.math.maxInt(i32)) {
-                    const err = std.os.linux.errno(rc);
+                const rc = std.c.mkdirat(std.c.AT.FDCWD, &dpath_z, 0o755);
+                if (rc != 0) {
+                    const err = std.c.errno(rc);
                     if (err != .EXIST) return error.WriteFailed;
                 }
             }

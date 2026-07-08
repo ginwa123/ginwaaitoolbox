@@ -179,6 +179,13 @@ pub const nalarConfigProfileDeleteHandler = @import("nalar_config_profile_delete
 // internals — see `nalar_config_profile_delete_test.zig`'s header).
 pub const removeProfileFromConfig = @import("nalar_config_profile_delete.zig").removeProfileFromConfig;
 pub const NalarConfigJsonForDelete = @import("nalar_config_profile_delete.zig").NalarConfigJsonForDelete;
+// `ConfigInput` is the wire format for `PUT /api/config/nalar`. It is
+// `pub` so the test file can re-parse the same body the handler would
+// and lock in the parse-step tolerance (the on-disk object map vs the
+// granular array-of-changes shape). Exposed alongside `parseConfigInput`
+// for the same reason.
+pub const ConfigInput = @import("nalar_config_put.zig").ConfigInput;
+pub const parseConfigInput = @import("nalar_config_put.zig").parseConfigInput;
 
 // OS notification test handler — fires a real OS notification so the
 // user can verify their system can display them without running a

@@ -82,6 +82,7 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         sqlite_db,
         io,
         logger,
+        live_cfg,
     ) catch |err| {
         logger.errFmt("[COMPACTION] manual compaction failed: {s}", .{@errorName(err)});
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "compaction failed" }) });

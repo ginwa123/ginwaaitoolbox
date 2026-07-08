@@ -9,10 +9,11 @@
 // @compileError stub for v1; tracked as a follow-up).
 //
 // Zig 0.16 API notes:
-//   * std.os.linux.fork / setsid are raw syscalls — `std.process.spawn`
-//     does NOT expose session-leader semantics, so we use the raw API.
-//   * fork returns the new child's PID in the parent, 0 in the child,
-//     or -1 on error (cast to usize; check > maxInt(i32) for errors).
+//   * std.c.fork / setsid are libc wrappers (cross-platform) — the
+//     std.os.linux.* equivalents are Linux-syscall-only and fail on
+//     macOS where the syscall numbers differ.
+//   * fork returns the new child's PID (c_int) in the parent, 0 in
+//     the child, or -1 on error.
 //   * setsid returns 0 on success, -1 on error.
 
 const std = @import("std");
@@ -36,22 +37,27 @@ pub const DaemonError = error{
 ///
 /// This function does NOT redirect stdio or change cwd. Call
 /// `redirectStdioToLog` afterwards.
+///
+/// Uses std.c.fork / std.c.setsid (libc wrappers, cross-platform)
+/// rather than std.os.linux.fork / std.os.linux.setsid (Linux syscall
+/// numbers — wrong on macOS, where the syscall numbers are different).
+/// std.c.fork returns c_int: child PID in parent, 0 in child, -1 on error.
 pub fn daemonizePosix() DaemonError!void {
     if (builtin.os.tag == .windows) {
         @compileError("daemonizePosix is POSIX-only; use daemonizeWindows on Windows");
     }
 
     // First fork.
-    const pid1 = std.os.linux.fork();
+    const pid1 = std.c.fork();
     if (pid1 < 0) return error.ForkFailed;
     if (pid1 > 0) std.process.exit(0); // parent exits immediately
 
     // In child 1: become session leader.
-    if (std.os.linux.setsid() < 0) return error.SessionFailed;
+    if (std.c.setsid() < 0) return error.SessionFailed;
 
     // Second fork — daemon is no longer session leader, so it can never
     // reacquire a controlling terminal (Linux daemon(7) idiom).
-    const pid2 = std.os.linux.fork();
+    const pid2 = std.c.fork();
     if (pid2 < 0) return error.ForkFailed;
     if (pid2 > 0) std.process.exit(0); // child 1 exits
 
@@ -73,15 +79,21 @@ pub fn mkdirP(path: []const u8) !void {
     // `.path` is the CUMULATIVE path-so-far (e.g. for "/a/b/c", second
     // component is `.name="b" .path="/a/b"`). Use `.path` directly so we
     // don't have to reconstruct the slash-joined string ourselves.
+    //
+    // Use std.c.mkdirat (libc wrapper, cross-platform) instead of
+    // std.os.linux.mkdirat (Linux syscall number only — wrong on macOS).
+    // On Linux AT.FDCWD == -100; on macOS it is -2. The libc layer
+    // resolves the value at compile time via the switch in std.c.AT.
+    // std.c.mkdirat returns 0 on success, -1 on failure (with errno set).
     var iter = std.fs.path.componentIterator(parent_dir);
     while (iter.next()) |component| {
         var prefix_z: [std.fs.max_path_bytes:0]u8 = undefined;
         if (component.path.len >= prefix_z.len) return error.PathTooLong;
         @memcpy(prefix_z[0..component.path.len], component.path);
         prefix_z[component.path.len] = 0;
-        const rc = std.os.linux.mkdirat(std.os.linux.AT.FDCWD, &prefix_z, 0o755);
-        if (rc > std.math.maxInt(i32)) {
-            const err = std.os.linux.errno(rc);
+        const rc = std.c.mkdirat(std.c.AT.FDCWD, &prefix_z, 0o755);
+        if (rc != 0) {
+            const err = std.c.errno(rc);
             if (err != .EXIST) return error.MkdirFailed;
         }
     }
@@ -108,27 +120,34 @@ pub fn redirectStdioToLog(log_path: []const u8) !void {
     // no ~/.local/share/nalar/ and the open() below fails.
     try mkdirP(log_path);
 
-    // stdin → /dev/null. open returns usize; on success it fits in i32,
-    // on failure it returns -errno (a value > maxInt(i32) when cast). We
-    // check the unsigned value first to avoid an @intCast panic.
-    const devnull_rc = std.os.linux.open("/dev/null", .{ .ACCMODE = .RDONLY }, 0);
-    if (devnull_rc <= std.math.maxInt(i32)) {
-        const devnull_fd: i32 = @intCast(devnull_rc);
-        _ = std.os.linux.dup2(devnull_fd, 0);
-        _ = std.os.linux.close(devnull_fd);
+    // stdin → /dev/null. std.c.open returns fd_t (i32) on success,
+    // -1 on failure (with errno set). We discard the error here —
+    // a missing /dev/null is "weird but not fatal" for the daemon.
+    //
+    // The mode argument must be explicitly typed to std.c.mode_t because
+    // std.c.open is variadic (libc `int open(const char*, int, ...)`);
+    // Zig 0.16 rejects bare integer literals in variadic positions.
+    const devnull_fd: std.c.fd_t = std.c.open(
+        "/dev/null",
+        .{ .ACCMODE = .RDONLY },
+        @as(std.c.mode_t, 0),
+    );
+    if (devnull_fd >= 0) {
+        _ = std.c.dup2(devnull_fd, 0);
+        _ = std.c.close(devnull_fd);
     }
 
-    // stdout/stderr → log_path (append).
-    const log_rc = std.os.linux.open(&log_path_z, .{
+    // stdout/stderr → log_path (append). Same variadic-mode requirement
+    // as above — cast 0o644 to std.c.mode_t explicitly.
+    const log_fd: std.c.fd_t = std.c.open(&log_path_z, .{
         .ACCMODE = .WRONLY,
         .CREAT = true,
         .APPEND = true,
-    }, 0o644);
-    if (log_rc > std.math.maxInt(i32)) return error.OpenLogFailed;
-    const log_fd: i32 = @intCast(log_rc);
-    _ = std.os.linux.dup2(log_fd, 1);
-    _ = std.os.linux.dup2(log_fd, 2);
-    _ = std.os.linux.close(log_fd);
+    }, @as(std.c.mode_t, 0o644));
+    if (log_fd < 0) return error.OpenLogFailed;
+    _ = std.c.dup2(log_fd, 1);
+    _ = std.c.dup2(log_fd, 2);
+    _ = std.c.close(log_fd);
 }
 
 /// Check if a process is alive via kill(pid, 0). Returns true for any
