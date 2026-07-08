@@ -31,6 +31,7 @@
 // second nalar on :8080.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const cli = @import("cli.zig");
 const port = @import("port.zig");
 const path_resolve = @import("path_resolve.zig");
@@ -52,9 +53,16 @@ const webapp_assets = @import("embedded/webapp_assets.zig");
 // After main() actually calls webview.run() (below), this import
 // becomes redundant, but keeping it is a one-line safety net against
 // future refactors.
-const platform_linux = @import("platform/linux.zig");
+//
+// Cross-platform note: linux.zig has a comptime guard that errors
+// out on non-Linux targets, so this import must be wrapped in a
+// comptime branch — including it on macOS/Windows trips a
+// `@compileError` in linux.zig at module scope.
 comptime {
-    _ = platform_linux; // bare `_ = ...;` is illegal at module scope
+    if (builtin.os.tag == .linux) {
+        const platform_linux = @import("platform/linux.zig");
+        _ = platform_linux; // bare `_ = ...;` is illegal at module scope
+    }
 }
 
 // Pull in the test files so they run under `zig build test:desktop-app`.

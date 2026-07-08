@@ -132,7 +132,16 @@
     // without #ifdef'ing the frontend. The webapp here is the user's
     // own embedded assets, not arbitrary third-party content, so this
     // is a safe enable.
-    wkconfig.preferences.javaScriptCanAccessClipboard = YES;
+    // javaScriptCanAccessClipboard was deprecated in macOS 14 (Sonoma)
+    // and removed in macOS 15 (Sequoia). The replacement is to use the
+    // WKWebViewConfiguration-defaults plus an info.plist entry
+    // (NSPrincipalClass = NSApplication), which is what every other
+    // Chromium / Electron-based desktop webview does today. For the
+    // nalar-desktop app the permission is moot — there's no user
+    // clipboard interaction in the embedded webapp — so we just drop
+    // the call. The webapp itself uses web Clipboard API for paste.
+    // (Keeping this commented to document the API history.)
+    // wkconfig.preferences.javaScriptCanAccessClipboard = YES;
 
     _webView = [[WKWebView alloc] initWithFrame:frame configuration:wkconfig];
     [_webView setNavigationDelegate:self];

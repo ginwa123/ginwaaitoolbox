@@ -118,10 +118,18 @@ jobs:
         env:
           HOMEBREW_NO_AUTO_UPDATE: '1'
         run: |
-          brew install pkg-config openssl@3
+          brew install pkg-config openssl@3 coreutils
           echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
           echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
+          # coreutils provides `timeout`, `stat -f%z`, and other GNU
+          # utilities not in stock macOS. The "Smoke test: desktop binary"
+          # step calls `timeout 10 ./zig-out/bin/nalar-desktop --smoke-test`
+          # which fails with exit 127 ("command not found") on stock macOS
+          # without coreutils installed. brew installs the binaries as
+          # `gtimeout`, but the gnubin directory provides them as `timeout`
+          # too; either way, exporting PATH ensures we pick the right one.
+          echo "PATH=$(brew --prefix coreutils)/libexec/gnubin:$PATH" >> $GITHUB_ENV
 
       - name: Show toolchain versions
         # All `pkg-config` queries are wrapped in `|| echo "<not installed>"`
