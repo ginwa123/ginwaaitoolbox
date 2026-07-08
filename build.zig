@@ -199,6 +199,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/codegen_webapp_assets.zig"),
             .target = b.graph.host,
+            .link_libc = true,
         }),
     }));
     webapp_rebuild_codegen.addArg(b.pathJoin(&.{ webapp_dir, "dist" }));
@@ -221,6 +222,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/codegen_webapp_assets.zig"),
             .target = b.graph.host,
+            .link_libc = true,
         }),
     }));
     codegen.addArg(b.pathJoin(&.{ webapp_dir, "dist" }));
