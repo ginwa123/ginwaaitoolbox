@@ -21,14 +21,22 @@ describe('NalarTabStrip', () => {
     })
   })
 
-  it('renders all 5 tab labels in order', () => {
+  it('renders all 4 tab labels in order', () => {
     const wrapper = mount(NalarTabStrip, {
       props: { modelValue: 'defaults' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
     expect(buttons.map(b => b.text().trim())).toEqual([
-      'Defaults', 'Profiles', 'Sub-agents', 'MCP Servers', 'Compaction',
+      'Defaults', 'Profiles', 'Sub-agents', 'MCP Servers',
     ])
+  })
+
+  it('does NOT render the Compaction tab (plan 2026-07-07-compaction-inline)', () => {
+    const wrapper = mount(NalarTabStrip, {
+      props: { modelValue: 'defaults' },
+    })
+    const buttons = wrapper.findAll('button[role="tab"]')
+    expect(buttons.some(b => b.text().trim() === 'Compaction')).toBe(false)
   })
 
   it('emits update:modelValue when a tab is clicked', async () => {
@@ -36,7 +44,7 @@ describe('NalarTabStrip', () => {
       props: { modelValue: 'defaults' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
-    expect(buttons.length).toBe(5)
+    expect(buttons.length).toBe(4)
     await buttons[1]!.trigger('click')
     expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['profiles'])
   })
@@ -46,7 +54,7 @@ describe('NalarTabStrip', () => {
       props: { modelValue: 'sub-agents' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
-    expect(buttons.length).toBe(5)
+    expect(buttons.length).toBe(4)
     expect(buttons[0]!.attributes('aria-selected')).toBe('false')
     expect(buttons[2]!.attributes('aria-selected')).toBe('true')
   })

@@ -18,7 +18,9 @@ import DefaultsSection, { type DefaultsConfig } from './nalar/DefaultsSection.vu
 import ProfilesSection, { type ProfileRow } from './nalar/ProfilesSection.vue'
 import SubAgentsSection from './nalar/SubAgentsSection.vue'
 import McpServersSection from './nalar/McpServersSection.vue'
-import CompactionSection from './nalar/CompactionSection.vue'
+// plan 2026-07-07-compaction-inline: CompactionSection.vue is removed
+// (compaction settings live in the Defaults tab + Edit-profile modal now).
+// No import here.
 import ProfileModal from './nalar/ProfileModal.vue'
 import { type LlmConfigModalValue } from './nalar/LlmConfigModal.vue'
 import SubAgentModal, { type SubAgentModalValue } from './nalar/SubAgentModal.vue'
@@ -37,7 +39,7 @@ defineExpose({
 })
 
 // ─── Tab state ────────────────────────────────────────────────────────────
-type Tab = 'defaults' | 'profiles' | 'sub-agents' | 'mcp' | 'compaction'
+type Tab = 'defaults' | 'profiles' | 'sub-agents' | 'mcp'
 const activeTab = ref<Tab>('defaults')
 
 // ─── Central config (useNalarConfig composable) ──────────────────────────
@@ -95,11 +97,11 @@ const activeProfile = ref<string | null>(null)
 const subAgentsList = ref<SubAgent[]>([])
 const mcpServersList = ref<McpServer[]>([])
 
-// Compaction settings live on each `LlmProfile.max_capacity_tokens` and
-// `LlmProfile.compaction_threshold_percent` (Chunk 7 reshape). The
-// CompactionSection edits `profilesList` directly via `v-model:profiles`,
-// so no separate `compactionConfig` ref is needed here — we just expose
-// the same profiles map under a different v-model name.
+// Plan 2026-07-07-compaction-inline: CompactionSection.vue is removed;
+// its per-profile overrides live on each `LlmProfile.max_capacity_tokens`
+// and `LlmProfile.compaction_threshold_percent` (edited via the Edit-profile
+// modal). Top-level defaults live on the Defaults tab and are carried by
+// `defaultsConfig.max_capacity_token_model` + `compaction_threshold_percent`.
 
 function syncFromConfig() {
   if (!config.value) return
@@ -113,6 +115,10 @@ function syncFromConfig() {
     max_tokens: c.max_tokens ?? '',
     system_prompt: c.system_prompt ?? '',
     notify_on_complete: c.notify_on_complete ?? false,
+    // Top-level compaction defaults — plan 2026-07-07-compaction-inline.
+    // Null = no top-level override (fall through to per-profile → built-in).
+    max_capacity_token_model: c.max_capacity_token_model ?? null,
+    compaction_threshold_percent: c.compaction_threshold_percent ?? null,
   }
   profilesList.value = Object.entries(c.profiles ?? {}).map(([name, p]) => ({
     name,
@@ -123,15 +129,15 @@ function syncFromConfig() {
     url_style: p.url_style ?? 'openai',
     api_key: p.api_key ?? '',
     sub_agents: p.sub_agents ?? [],
-    // Chunk 7: compaction overrides now live on each profile.
+    // Compaction overrides — both top-level (in defaultsConfig above)
+    // AND per-profile (here) coexist. Each layer cascades over the
+    // next; per-profile wins over top-level.
     max_capacity_tokens: p.max_capacity_tokens ?? null,
     compaction_threshold_percent: p.compaction_threshold_percent ?? null,
   }))
   activeProfile.value = c.active_profile ?? null
   subAgentsList.value = c.sub_agents ?? []
   mcpServersList.value = parseMcpServers(c.mcp_servers)
-  // Compaction settings now live on each profile (Chunk 7); the
-  // profilesList loop above already carries them via the `p` value.
 }
 
 function syncToConfig() {
@@ -157,9 +163,11 @@ function syncToConfig() {
     max_tokens: d.max_tokens,
     system_prompt: d.system_prompt,
     notify_on_complete: d.notify_on_complete,
-    // Note (Chunk 7 reshape): per-profile compaction overrides
-    // (`max_capacity_tokens`, `compaction_threshold_percent`) are now
-    // written via `profiles` below, NOT as top-level fields.
+    // Top-level compaction defaults — plan 2026-07-07-compaction-inline.
+    // Unconditional spread so `null` is preserved (cascade wildcard).
+    max_capacity_token_model: d.max_capacity_token_model,
+    compaction_threshold_percent: d.compaction_threshold_percent,
+    // Per-profile compaction overrides still live on `profiles` below.
     ...(Object.keys(profiles).length > 0 ? { profiles } : {}),
     ...(activeProfile.value ? { active_profile: activeProfile.value } : {}),
     ...(subAgents.length > 0 ? { sub_agents: subAgents } : {}),
@@ -174,30 +182,6 @@ function profilesToRecord(list: ProfileRow[]): Record<string, NalarProfile> {
     out[name] = rest
   }
   return out
-}
-
-/**
- * CompactionSection emits the full profiles map (one row per profile,
- * each row's `max_capacity_tokens` + `compaction_threshold_percent`
- * potentially mutated). Merge the received map's compaction fields
- * back into `profilesList` — preserving the per-profile metadata
- * (model, base_url, sub_agents, etc.) so we don't lose what the user
- * set on the Profiles tab.
- */
-function onCompactionProfilesUpdate(updatedProfiles: Record<string, NalarProfile>) {
-  profilesList.value = profilesList.value.map((row) => {
-    const updated = updatedProfiles[row.name]
-    if (!updated) {
-      // Profile was removed elsewhere between renders — keep the row
-      // as-is (the Profiles tab handles deletion via its own modal).
-      return row
-    }
-    return {
-      ...row,
-      max_capacity_tokens: updated.max_capacity_tokens ?? null,
-      compaction_threshold_percent: updated.compaction_threshold_percent ?? null,
-    }
-  })
 }
 
 function parseMcpServers(
@@ -274,6 +258,10 @@ function emptyDefaults(): DefaultsConfig {
   return {
     api_endpoint: '', api_key: '', model: '', url_style: 'openai',
     temperature: 0.7, max_tokens: '', system_prompt: '', notify_on_complete: false,
+    // Top-level compaction defaults — plan 2026-07-07-compaction-inline.
+    // null = cascade wildcard (fall through to per-profile → built-in).
+    max_capacity_token_model: null,
+    compaction_threshold_percent: null,
   }
 }
 
@@ -531,12 +519,11 @@ const isLoading = computed(() => !loaded.value)
           @delete="deleteMcpServer"
           @add="startAddMcpServer"
         />
-
-        <CompactionSection
-          v-else-if="activeTab === 'compaction'"
-          :profiles="profilesToRecord(profilesList)"
-          @update:profiles="onCompactionProfilesUpdate"
-        />
+        <!-- Plan 2026-07-07-compaction-inline: the dedicated Compaction
+             tab is REMOVED. Compaction settings now live in the Defaults
+             tab (top-level defaults) + the Edit-profile modal
+             (per-profile overrides). The tab id 'compaction' was removed
+             from NalarTabStrip.vue. -->
       </div>
 
       <!-- Sticky save bar (only when dirty) -->
