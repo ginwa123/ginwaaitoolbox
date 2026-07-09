@@ -1783,7 +1783,7 @@ pub const MAIN_AGENT_TOOL_REGISTRY: []const ToolInfo = UNIFIED_TOOL_REGISTRY;
 /// This is the canonical list of tool definitions for the main agent
 pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool {
     const tools_list = comptime &[_]tool_models.AgentTool{
-        set_agent_properties_mod.set_agent_properties_tool,
+        // set_agent_properties_mod.set_agent_properties_tool,
         spawn_sub_agent_tool.spawn_sub_agent_tool,
         update_activity_mod.update_activity_tool,
         list_skills_mod.list_skills_tool,
