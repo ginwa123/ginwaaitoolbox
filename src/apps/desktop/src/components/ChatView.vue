@@ -37,6 +37,7 @@ import SetGitWorktree from './tool_outputs/SetGitWorktree.vue'
 import ReadCompactedMessages from './tool_outputs/ReadCompactedMessages.vue'
 import KanbanMove from './tool_outputs/KanbanMove.vue'
 import KanbanList from './tool_outputs/KanbanList.vue'
+import ShowPreview from './tool_outputs/ShowPreview.vue'
 import PreviewSidePanel from './PreviewSidePanel.vue'
 import SubAgentPeekPanel from './nalar/SubAgentPeekPanel.vue'
 import { useNavigationStore } from '../stores/navigation'
@@ -2382,35 +2383,20 @@ const compactSession = async () => {
                               2. Un-collapses the panel.
                               3. Jumps the panel to the matching
                                  preview tab via the `focusId` prop.
-                            We do NOT render an expandable body — the
-                            existing inline summary (renderResponse →
-                            tool-inline) is the entire bubble. The
-                            user's mental model: "the bubble is just
-                            a bookmark; the panel is the content."
+                            We delegate the visual rendering to
+                            `<ShowPreview>` (which parses the XML
+                            envelope into a header line matching the
+                            rest of the tool cards); the click handler
+                            just calls `openPreviewForMessage` to
+                            focus the matching tab in the side panel.
                           -->
-                          <button
+                          <ShowPreview
                             v-else-if="msg.tool_name === 'show_preview'"
-                            type="button"
-                            class="tool-summary show-preview-bubble"
-                            :data-testid="`show-preview-bubble-${msg.id}`"
-                            :title="`Click to open in side panel`"
-                            style="cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background-color 0.15s; text-align: left; width: 100%; border: none; background: transparent; font: inherit; color: inherit;"
-                            @click="openPreviewForMessage(msg.id)"
-                          >
-                            <span
-                              v-html="
-                                renderResponse(
-                                  msg.content,
-                                  msg.role,
-                                  msg.tool_name,
-                                  msg.diffview_before,
-                                  msg.diffview_after,
-                                  msg.finish_reason,
-                                  msg.tool_calls_json,
-                                )
-                              "
-                            ></span>
-                          </button>
+                            :content="innerToolData(msg)"
+                            :message-id="msg.id"
+                            :parameters="getParametersForMessage(msg)"
+                            @open="openPreviewForMessage($event)"
+                          />
                           <div v-else class="tool-expandable">
                             <button
                               class="tool-summary"

@@ -83,6 +83,14 @@ function makeShowPreviewMessage(id: string) {
   return {
     id,
     role: 'tool',
+    // is_output=true is REQUIRED for ChatView's `showPreviewMessages`
+    // filter (ChatView.vue:607) to include the message in the
+    // preview side panel's `:previews` prop. Without it, the panel
+    // hides itself (preview-side-panel v-if="previews.length > 0")
+    // and the assertion below on data-testid="preview-side-panel"
+    // never sees the element. (Pre-existing bug — this test was
+    // failing on main too before the ShowPreview refactor.)
+    is_output: true,
     tool_name: 'show_preview',
     content: `<tool><name>show_preview</name><parameters><content_type>markdown</content_type><content># Title</content></parameters><success>true</success><data><show_preview><status>shown</status><preview_id>pv_${id}</preview_id><content_type>markdown</content_type><content_length>7</content_length></show_preview></data></tool>`,
     timestamp: new Date(),
@@ -173,7 +181,7 @@ describe('ChatView show_preview bubble click', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders show_preview tool messages as a clickable button (not the generic expandable fallback)', async () => {
+  it('renders show_preview tool messages as a clickable card (delegated to <ShowPreview>, not the generic expandable fallback)', async () => {
     installChatViewMocks()
     wrapper = await mountChatView('session_bubble_render')
 
@@ -183,11 +191,14 @@ describe('ChatView show_preview bubble click', () => {
     await nextTick()
     await nextTick()
 
-    // The bubble has the data-testid derived from the message id.
-    const bubble = wrapper!.find('[data-testid="show-preview-bubble-msg-sp-1"]')
-    expect(bubble.exists()).toBe(true)
-    // And it's a <button> (not the generic expandable <div>).
-    expect(bubble.element.tagName).toBe('BUTTON')
+    // The card has the data-testid derived from the message id.
+    const card = wrapper!.find('[data-testid="show-preview-card-msg-sp-1"]')
+    expect(card.exists()).toBe(true)
+    // It renders as a `<div role="button">` so keyboard users can
+    // focus + activate it (Enter / Space). It's NOT the generic
+    // expandable <div> fallback and NOT the old raw `<button>`.
+    expect(card.attributes('role')).toBe('button')
+    expect(card.attributes('tabindex')).toBe('0')
 
     // Since the injected message is a `show_preview` tool message, the
     // side panel also appears (driven by `showPreviewMessages` =
@@ -217,9 +228,9 @@ describe('ChatView show_preview bubble click', () => {
     vm.previewPanelCollapsed = true
     await nextTick()
 
-    const bubble = wrapper!.find('[data-testid="show-preview-bubble-msg-sp-2"]')
-    expect(bubble.exists()).toBe(true)
-    await bubble.trigger('click')
+    const card = wrapper!.find('[data-testid="show-preview-card-msg-sp-2"]')
+    expect(card.exists()).toBe(true)
+    await card.trigger('click')
     await nextTick()
 
     // Panel state should be cleared by the click handler:
@@ -240,8 +251,8 @@ describe('ChatView show_preview bubble click', () => {
     vm.messages = [makeShowPreviewMessage('msg-sp-3')]
     await nextTick()
 
-    const bubble = wrapper!.find('[data-testid="show-preview-bubble-msg-sp-3"]')
-    await bubble.trigger('click')
+    const card = wrapper!.find('[data-testid="show-preview-card-msg-sp-3"]')
+    await card.trigger('click')
     await nextTick()
     expect(vm.previewToShowId).toBe('msg-sp-3')
 
