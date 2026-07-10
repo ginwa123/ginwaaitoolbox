@@ -9,7 +9,7 @@ const gserverz = root_mod.gserverz;
 const nalarcore = root_mod;
 const sqlite = nalarcore.sqlite;
 const ai_workflow = nalarcore.ai_workflow;
-const logger = nalarcore.logger;
+const loggermod = nalarcore.loggermod;
 
 const config = nalarcore.config;
 pub const http_response = nalarcore.http_response;

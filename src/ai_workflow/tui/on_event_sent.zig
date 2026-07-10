@@ -2,7 +2,7 @@ const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const sqlite = tree1_mod.sqlite;
-const logger = @import("nalarcore").logger;
+const loggermod = @import("nalarcore").loggermod;
 const models = @import("models.zig");
 const gserverz = tree1_mod.gserverz;
 const llm_history = @import("llm_history.zig");
@@ -221,7 +221,7 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
     const di = try tree1_mod.getSingleton();
     const event_bus = di.event_bus;
 
-    const log = logger.getGlobal();
+    const log = loggermod.getGlobal();
     const session_id = input.session_id;
 
     // Trace: log what content we're receiving

@@ -20,6 +20,7 @@ const AgentTool = tool_models.AgentTool;
 const AgentToolFunction = tool_models.AgentToolFunction;
 const ToolParameters = tool_models.ToolParameters;
 const ToolProperty = tool_models.ToolProperty;
+const agentic_loop = @import("agentic_loop/mod.zig");
 
 pub fn buildMessages(
     allocator: std.mem.Allocator,
@@ -28,7 +29,7 @@ pub fn buildMessages(
     cwd: []const u8,
     session_id: []const u8,
     parent_session_id: []const u8,
-    historyMessages: []TUIHistory,
+    historyMessages: []agentic_loop.LLMHistory,
     tools: []tool_models.AgentTool,
     inherited_context_mode: []const u8,
     /// Optional explicit "active agent configuration" to inject as

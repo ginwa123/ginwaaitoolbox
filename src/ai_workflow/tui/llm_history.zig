@@ -2,7 +2,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const agent = nalarcore.agent;
-const logger_mod = nalarcore.logger;
+const logger_mod = nalarcore.loggermod;
 const helpers = nalarcore.helpers;
 const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("nalarcore").llm_models;
@@ -1645,42 +1645,6 @@ pub fn getActiveWorker(
     return try workers.toOwnedSlice(allocator);
 }
 
-/// Register or update a worker
-pub fn upsertWorker(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    worker_id: []const u8,
-    session_id: []const u8,
-    working_directory: []const u8,
-) !void {
-    // Check if worker exists to determine action
-    const check_sql = "SELECT id FROM worker WHERE id = ?";
-    var rows = try db.query(allocator, check_sql, &.{worker_id});
-    defer rows.deinit();
-    const exists = (try rows.next()) != null;
-
-    const sql = "INSERT OR REPLACE INTO worker (id, session_id, working_directory, last_activity, last_activity_description) VALUES (?, ?, ?, strftime('%s', 'now'), '')";
-    try db.exec(allocator, sql, &.{ worker_id, session_id, working_directory });
-
-    // Also ensure session exists in sessions table (for JOIN queries)
-    // Use INSERT OR IGNORE to handle cases where session might already exist
-    const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, created_at, updated_at) VALUES (?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
-    try db.exec(allocator, session_sql, &.{ session_id, session_id });
-
-    // Emit worker event
-    const action = if (exists) "updated" else "created";
-    const now_timestamp: i64 = helpers.unixTimestamp();
-    on_event_sent.onEventSendWorkers(allocator, .{
-        .action = action,
-        .id = worker_id,
-        .session_id = session_id,
-        .working_directory = working_directory,
-        .last_activity = now_timestamp,
-        .last_activity_description = "",
-        .created_at = "",
-    }) catch {};
-}
-
 /// Update worker's last activity timestamp with description
 pub fn updateWorkerActivityWithDescription(
     allocator: std.mem.Allocator,
@@ -1702,16 +1666,6 @@ pub fn updateWorkerActivityWithDescription(
         .last_activity_description = description,
         .created_at = "",
     }) catch {};
-}
-
-/// Update worker's last activity timestamp
-pub fn updateWorkerActivity(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    worker_id: []const u8,
-) !void {
-    const sql = "UPDATE worker SET last_activity = strftime('%s', 'now') WHERE id = ?";
-    try db.exec(allocator, sql, &.{worker_id});
 }
 
 /// Remove a worker
@@ -1861,94 +1815,8 @@ pub fn cancelSession(
     try db.exec(allocator, sql, &.{session_id});
 }
 
-/// Check if a session is cancelled
-pub fn isSessionCancelled(
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-) bool {
-    const sql = "SELECT cancelled FROM worker WHERE id = ?";
-    var rows = db.query(std.heap.c_allocator, sql, &.{session_id}) catch return false;
-    defer rows.deinit();
-    if (rows.next() catch return false) |row| {
-        const cancelled = std.fmt.parseInt(i32, row.values[0], 10) catch 0;
-        return cancelled == 1;
-    }
-    return false;
-}
 
-/// Mark session as idle (remove from worker table) and emit SSE "deleted" event
-pub fn markSessionIdle(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-) !void {
-    const sql = "DELETE FROM worker WHERE id = ?";
-    try db.exec(allocator, sql, &.{session_id});
 
-    // Emit worker deleted event so connected SSE clients can drop the entry
-    on_event_sent.onEventSendWorkers(allocator, .{
-        .action = "deleted",
-        .id = session_id,
-        .session_id = "",
-        .working_directory = "",
-        .last_activity = 0,
-        .last_activity_description = "",
-        .created_at = "",
-    }) catch {};
-}
-
-/// Queue a message for a session and emit SSE event to notify connected clients
-pub fn queueMessage(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-    message: []const u8,
-    image_url: []const u8,
-) !void {
-    const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(std.Options.debug_io, .real).nanoseconds});
-    defer allocator.free(id);
-
-    const sql = "INSERT INTO session_queue_messages (id, session_id, message, image_url) VALUES (?, ?, ?, ?)";
-    const copy_image_url = try allocator.dupe(u8, image_url);
-    defer allocator.free(copy_image_url);
-
-    try db.exec(allocator, sql, &.{ id, session_id, message, copy_image_url });
-
-    // Emit SSE event to notify connected clients
-    const di = nalarcore.getSingleton() catch return;
-    const event_bus = di.event_bus;
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
-
-    const payload = .{
-        .action = "queued",
-        .id = id,
-        .message = message,
-        .session_id = session_id,
-        .image_url = image_url,
-    };
-    try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
-        .whitespace = .indent_4,
-    })});
-
-    const data_copy = try allocator.dupe(u8, buf.items);
-    const event = ai_mod.on_event_sent.SseEvent{
-        .session_id = session_id,
-        .data = data_copy,
-        .event_type = "queue_queued",
-    };
-
-    // Per-session emit (kept for any future server-side fan-out that
-    // needs only this session's queue messages).
-    const key = try std.fmt.allocPrint(allocator, "queue_messages_{s}", .{session_id});
-    defer allocator.free(key);
-    event_bus.emit(ai_mod.on_event_sent.SseEvent, key, event);
-    // Central broadcast: subscribers to bare "queue" receive ALL sessions'
-    // queue messages. The frontend listener filter narrows to the current
-    // session_id on the JS side.
-    event_bus.emit(ai_mod.on_event_sent.SseEvent, "queue", event);
-}
 
 /// Struct to hold queued message data including image_url
 pub const QueuedMessage = struct {

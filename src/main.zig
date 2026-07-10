@@ -89,7 +89,7 @@ pub fn main(init: std.process.Init) !void {
 
     nalarcore.setPanicLogPath(log_file_path);
 
-    nalarcore.logger.initGlobalColor(allocator, io, .{
+    nalarcore.loggermod.initGlobalColor(allocator, io, .{
         .min_level = .debug,
         .output_mode = .file,
         .log_file_path = log_file_path,
@@ -97,9 +97,9 @@ pub fn main(init: std.process.Init) !void {
         .include_request_id = true,
         .include_timestamp = true,
     });
-    defer nalarcore.logger.deinitGlobal(io);
+    defer nalarcore.loggermod.deinitGlobal(io);
 
-    const global_logger_ptr = nalarcore.logger.getGlobal().?;
+    const global_logger_ptr = nalarcore.loggermod.getGlobal().?;
 
     const ctxParent = try allocator.create(nalarcore.ContextIPCTui);
     defer allocator.destroy(ctxParent);

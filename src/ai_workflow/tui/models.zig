@@ -1,6 +1,6 @@
 const sqlite = @import("nalarcore").sqlite;
 const config = @import("nalarcore").config;
-const logger = @import("nalarcore").logger;
+const loggermod = @import("nalarcore").loggermod;
 const nalarcore = @import("nalarcore");
 const event_bus = nalarcore.event_bus;
 const std = @import("std");
@@ -64,7 +64,7 @@ pub const WorkflowArgs = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     sqlite_db: *sqlite.SqliteBackend,
-    logger: *logger.Logger,
+    logger: *loggermod.Logger,
     llm_config: *const config.LlmConfig,
     session_id: []u8,
     message: []u8,

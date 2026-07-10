@@ -1,7 +1,7 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
-const logger_mod = nalarcore.logger;
+const logger_mod = nalarcore.loggermod;
 const config_mod = nalarcore.config;
 const ai_workflow = nalarcore.ai_mod;
 

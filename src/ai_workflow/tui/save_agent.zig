@@ -1,7 +1,7 @@
 const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const sqlite = tree1_mod.sqlite;
-const logger_mod = tree1_mod.logger;
+const logger_mod = tree1_mod.loggermod;
 
 /// Check if an agent is already loaded in the database
 pub fn isLoaded(

@@ -96,7 +96,7 @@ pub const ContextIPCTui = struct {
     io: std.Io,
     db: *sqlite.SqliteBackend,
     llm_config_holder: LlmConfigHolder,
-    logger: *logger.Logger,
+    logger: *loggermod.Logger,
     environment: ?*const std.process.Environ.Map,
     active_loops: *ai_mod.active_loops,
     event_bus: *event_bus.EventBus,
@@ -376,7 +376,7 @@ pub const list_agents = @import("modules/agent/tools/list_agents.zig");
 pub const set_agent_properties = @import("modules/agent/tools/set_agent_properties.zig");
 
 pub const http_client = @import("modules/http/HttpClient.zig");
-pub const logger = @import("modules/logger/Logger.zig");
+pub const loggermod = @import("modules/logger/Logger.zig");
 pub const migrations = @import("ai_workflow/tui/migration.zig");
 pub const skill_mod = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");

@@ -9,13 +9,15 @@ const notifications = @import("notifications.zig");
 
 const sqlite = nalarcore.sqlite;
 const config_mod = nalarcore.config;
-const logger_mod = nalarcore.logger;
+const logger_mod = nalarcore.loggermod;
 const agent = nalarcore.agent;
 const prompt = nalarcore.agent.prompt;
 const helpers = nalarcore.helpers;
 
 const std = @import("std");
 const json = std.json;
+
+const agentic_loop = @import("agentic_loop/mod.zig");
 
 // Thread-safe set of active session loop IDs
 pub const StreamingContext = struct {
@@ -137,6 +139,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
     const db = di.db;
     const logger = di.logger;
     const active_loops = di.active_loops;
+    const event_bus = di.event_bus;
     const io = di.io;
     const config = nalarcore.getLlmConfig(di);
     const environment = di.environment;
@@ -205,27 +208,56 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
     // Check if session is already running (exists in worker table)
     if (llm_history.isSessionRunning(db, copy_session_id) and active_loops.contains(io, copy_session_id)) {
         // Session is already running, queue the message
-        try llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_message, copy_image_urls);
+        try agentic_loop.insertQueueMessage(agentic_loop.InsertQueueMessageInput{
+            .allocator = parent_allocator,
+            .db = db,
+            .logger = logger,
+            .session_id = copy_session_id,
+            .message = copy_message,
+            .image_url = copy_image_urls,
+            .event_bus = event_bus,
+            .is_emit_sse = true,
+        });
         is_have_queue_message = true;
         return;
     }
     defer {
-        llm_history.markSessionIdle(parent_allocator, db, copy_session_id) catch |err| {
-            logger.errFmt("Failed to mark session idle: {s}", .{@errorName(err)});
+        agentic_loop.deleteWorker(agentic_loop.DeleteWorkerInput{
+            .allocator = parent_allocator,
+            .db = db,
+            .logger = logger,
+            .session_id = copy_session_id,
+            .event_bus = event_bus,
+            .is_emit_sse = true,
+        }) catch |err| {
+            logger.errFmt("Failed to delete worker: {s}", .{@errorName(err)});
         };
     }
 
     defer active_loops.remove(io, copy_session_id);
 
-    // Register in worker table (upsertWorker already does this)
-    try llm_history.upsertWorker(parent_allocator, db, copy_session_id, copy_session_id, copy_cwd);
-
-    try llm_history.updateSessionUpdatedAt(parent_allocator, db, copy_session_id);
-
-    try llm_history.updateWorkspaceUpdatedAt(parent_allocator, db, copy_session_id);
+    try agentic_loop.update_worker(agentic_loop.UpdateWorkerInput{
+        .allocator = parent_allocator,
+        .db = db,
+        .logger = logger,
+        .worker_id = copy_session_id,
+        .session_id = copy_session_id,
+        .working_directory = copy_cwd,
+        .event_bus = event_bus,
+        .is_emit_sse = true,
+    });
 
     // Queue the initial message
-    try llm_history.queueMessage(parent_allocator, db, copy_session_id, copy_message, copy_image_urls);
+    try agentic_loop.insertQueueMessage(agentic_loop.InsertQueueMessageInput{
+        .allocator = parent_allocator,
+        .db = db,
+        .logger = logger,
+        .session_id = copy_session_id,
+        .message = copy_message,
+        .image_url = copy_image_urls,
+        .event_bus = event_bus,
+        .is_emit_sse = true,
+    });
 
     var retry_count: usize = 0;
     // Track the most recent retry error so the AI agent can understand WHY
@@ -256,13 +288,21 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
         const allocator = arenaAllocatorWhileLoop.allocator();
 
         // Check cancellation using DB
-        if (llm_history.isSessionCancelled(db, copy_session_id)) {
+        if (agentic_loop.isWorkerCancelled(agentic_loop.IsWorkerCancelledInput{
+            .allocator = allocator,
+            .db = db,
+            .session_id = copy_session_id,
+        })) {
             logger.infoFmt("WORKFLOW CANCELLED while looping back for next API call...", .{});
             break;
         }
 
         // Get queued messages from DB
-        var queued_messages = try llm_history.getQueueMessages(allocator, db, copy_session_id);
+        var queued_messages = try agentic_loop.getQueueMessage(agentic_loop.GetQueueMessageInput{
+            .allocator = allocator,
+            .db = db,
+            .session_id = copy_session_id,
+        });
         if (queued_messages) |*messages| {
             for (messages.items) |queued| {
                 // Use image_url from database if present, otherwise try to extract from message
@@ -353,8 +393,16 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
             }
         }
 
-        // Update worker activity in DB to show we're actively processing
-        try llm_history.updateWorkerActivity(allocator, db, copy_session_id);
+        try agentic_loop.update_worker(agentic_loop.UpdateWorkerInput{
+            .allocator = allocator,
+            .db = db,
+            .logger = logger,
+            .worker_id = copy_session_id,
+            .session_id = copy_session_id,
+            .working_directory = copy_cwd,
+            .event_bus = event_bus,
+            .is_emit_sse = true,
+        });
 
         // Fetch current agent fresh from DB each iteration
         const currentAgentState = try llm_history.get_current_agent_by_session_id(
@@ -478,8 +526,11 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
         }
 
         var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
-
-        const db_messages = try llm_history.getMessages(allocator, db, copy_session_id);
+        const db_messages = try agentic_loop.getLLMHistories(agentic_loop.GetLLMHistoriesInput{
+            .allocator = allocator,
+            .db = db,
+            .session_id = copy_session_id,
+        });
         const is_task_kanban = try llm_history.isTaskKanban(allocator, db, copy_session_id);
         defer {
             for (db_messages) |*msg| msg.deinit(allocator);
@@ -605,7 +656,15 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                     try notifications.notify(io, allocator, "Agent Nalar", preview);
                 }
 
-                try llm_history.markSessionIdle(allocator, db, copy_session_id);
+                // try llm_history.markSessionIdle(allocator, db, copy_session_id);
+                try agentic_loop.deleteWorker(agentic_loop.DeleteWorkerInput{
+                    .allocator = allocator,
+                    .db = db,
+                    .logger = logger,
+                    .session_id = copy_session_id,
+                    .event_bus = event_bus,
+                    .is_emit_sse = true,
+                });
 
                 break;
             } else if (finish_reason == .length) {
@@ -724,7 +783,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
 }
 
 fn generateSessionNameNew(
-    db_messages: []models.TUIHistory,
+    db_messages: []agentic_loop.LLMHistory,
     allocator: std.mem.Allocator,
     api_key: []const u8,
     model: []const u8,
