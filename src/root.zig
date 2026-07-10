@@ -381,7 +381,6 @@ pub const migrations = @import("ai_workflow/tui/migration.zig");
 pub const skill_mod = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
 pub const edit_skill = @import("modules/agent/tools/edit_skill.zig");
-pub const add_agent = @import("modules/agent/tools/add_agent.zig");
 pub const remove_agent = @import("modules/agent/tools/remove_agent.zig");
 pub const set_git_worktree = @import("modules/agent/tools/set_git_worktree.zig");
 pub const kanban_list = @import("modules/agent/tools/kanban_list.zig");

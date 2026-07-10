@@ -30,7 +30,6 @@ const set_git_worktree_mod = nalar_mod.set_git_worktree;
 const kanban_list_mod = nalar_mod.kanban_list;
 const kanban_move_task_mod = nalar_mod.kanban_move_task;
 const show_preview_mod = nalar_mod.ai_mod.show_preview;
-const add_agent_mod = nalar_mod.add_agent;
 const remove_agent_mod = nalar_mod.remove_agent;
 const remove_file_mod = nalar_mod.remove_file;
 const change_agent_mod = nalar_mod.change_agent;
@@ -727,37 +726,6 @@ pub fn execEditSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     }
 
     const output = try wrapToolOutput(ctx.allocator, "edit_skill", tc.function.arguments, true, null, inner);
-    return ToolExecResult{ .output = output, .output_allocated = true };
-}
-
-pub fn execAddAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
-        add_agent_mod.AddAgentInput,
-        ctx.allocator,
-        tc.function.arguments,
-        .{ .allocate = .alloc_always },
-    ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_agent failed: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "add_agent", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
-    defer parsed.deinit();
-
-    const inner = add_agent_mod.executeAddAgentToString(ctx.allocator, parsed.value) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_agent failed: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "add_agent", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
-
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(ctx.allocator, "add_agent", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    }
-
-    const output = try wrapToolOutput(ctx.allocator, "add_agent", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 

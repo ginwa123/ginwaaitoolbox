@@ -14,6 +14,7 @@ pub fn execute_web_search(allocator: std.mem.Allocator, io: std.Io, input: WebSe
     const bashInput = BashInput{
         .command = command,
         .cwd = input.cwd orelse "/tmp",
+        .mandatory_timeout = 60, // snapshot can be slow on heavy SPAs; kill at 60 s
         .max_output = 1024 * 1024,
     };
 

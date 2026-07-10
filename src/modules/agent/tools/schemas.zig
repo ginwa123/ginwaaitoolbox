@@ -6,7 +6,13 @@ const std = @import("std");
 
 pub const BashInput = struct {
     command: []const u8,
-    timeout: ?u32 = 30,
+    /// MANDATORY timeout in seconds. The bash process is killed (SIGKILL on
+    /// POSIX, TerminateProcess on Windows) when this elapses. The caller MUST
+    /// pass this — there is no default. Use `execute_bash` which returns
+    /// `error.MandatoryTimeoutMissing` if null. The deadline is enforced via
+    /// `std.Io.async` (a Select that races a sleep against the reader EOF
+    /// flags), so it is honored even when the main thread is otherwise busy.
+    mandatory_timeout: ?u32 = null,
     cwd: ?[]const u8 = null,
     max_output: ?usize = 1024 * 1024, // default 1MB
     stdin_data: ?[]const u8 = null, // optional stdin input, null = close stdin
