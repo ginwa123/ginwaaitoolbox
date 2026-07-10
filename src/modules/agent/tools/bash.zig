@@ -14,6 +14,11 @@ pub const CommandForbidden = error{
     CommandForbidden,
 };
 
+/// Returned by `execute_bash` when the caller omits `mandatory_timeout`.
+/// The bash tool is treated as unsafe-without-an-explicit-deadline because
+/// forgetting to set a timeout lets runaway commands hang the agent.
+pub const MandatoryTimeoutMissing = error{MandatoryTimeoutMissing};
+
 /// Detects forbidden command patterns that produce unbounded output
 fn isForbiddenCommand(command: []const u8) bool {
     const trimmed = std.mem.trim(u8, command, " \t\n\r");
@@ -103,6 +108,20 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     // --- Forbidden pattern check ---
     if (isForbiddenCommand(command)) {
         return error.CommandForbidden;
+    }
+
+    // --- Mandatory-timeout check (foreground only) ---
+    // The background path does not use the timeout (the process detaches
+    // via nohup and runs forever), so we skip the check there. But the
+    // foreground path MUST have an explicit deadline — the previous design
+    // defaulted to 30 s which silently masked runaway commands. Returning
+    // an error forces the LLM (and any other caller) to think about how
+    // long the command is allowed to take.
+    if (!input.background and input.mandatory_timeout == null) {
+        return error.MandatoryTimeoutMissing;
+    }
+    if (input.mandatory_timeout) |t| {
+        if (t == 0) return error.MandatoryTimeoutMissing;
     }
 
     // --- Self-kill protection check ---
@@ -202,7 +221,8 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     // --- Foreground mode ---
     const max_output = input.max_output orelse 20 * 1024; // 20KB default
     const max_lines = input.max_lines orelse 1000;
-    const timeout_sec = input.timeout orelse 30;
+    // Mandatory: validated at the top of execute_bash.
+    const timeout_sec = input.mandatory_timeout.?;
 
     // .pgid removed: default null. child.kill kills the immediate child, which
     // is the correct behavior for a tool. Subprocesses are reparented on exit.
@@ -231,7 +251,6 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     }
 
     const timeout_ns = @as(u64, timeout_sec) * std.time.ns_per_s;
-    const start_time = std.Io.Timestamp.now(io, .real).nanoseconds;
 
     var stdout_data: std.ArrayList(u8) = .empty;
     var stderr_data: std.ArrayList(u8) = .empty;
@@ -359,21 +378,67 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     var timeout_hit = false;
     var child_term: ?std.process.Child.Term = null;
 
-    while (true) {
-        const elapsed = std.Io.Timestamp.now(io, .real).nanoseconds - start_time;
-        if (elapsed > timeout_ns) {
-            timeout_hit = true;
-            _ = child.kill(io);
-            // Do not call child.wait() here; kill() invalidates child.id.
-            // The wait happens after the threads join below.
-            child_term = if (builtin.os.tag == .windows) .{ .unknown = 1 } else .{ .signal = .KILL };
-            break;
+    // Race the deadline against child completion via std.Io.async + Select.
+    //
+    // Two async tasks run concurrently on the Io runtime:
+    //   1. timeoutSleepFn — sleeps for timeout_ns; completing means deadline
+    //      expired and we must kill the child.
+    //   2. waitChildFn — polls the stdout/stderr EOF flags (set by the
+    //      reader threads above when the OS reports pipe EOF); completing
+    //      means the child exited cleanly and we must call child.wait.
+    //
+    // Whichever finishes first wins. After we handle the winner we call
+    // cancelDiscard() so the loser's resources (cancelation token, queue
+    // slot) are released. The child.kill path still has to call child.wait
+    // later because child.kill() invalidates child.id and the OS still
+    // needs to reap the zombie.
+    const TimeoutUnion = union(enum) {
+        timeout: void,
+        child_done: void,
+    };
+
+    var select_buf: [1]TimeoutUnion = .{undefined};
+    var select = std.Io.Select(TimeoutUnion).init(io, &select_buf);
+    defer select.cancelDiscard();
+
+    select.async(.timeout, timeoutSleepFn, .{ io, timeout_ns });
+    select.async(.child_done, waitChildFn, .{ io, &stdout_eof, &stderr_eof });
+
+    // Use a labeled-block expression so the error.Cancelled branch (which
+    // needs to take the same timeout-kill path) can break out without a
+    // `goto` (Zig 0.16 has no goto). The block's result type is void; we
+    // just want control-flow merging.
+    blk: {
+        const result = select.await() catch |err| switch (err) {
+            // Await is canceled only if we explicitly request cancelation;
+            // the only caller is cancelDiscard() in the defer above, which
+            // runs AFTER we already have a result. Reaching this branch
+            // implies some other cancelation request (e.g. parent-task
+            // cancelation propagation). Treat it the same as a timeout —
+            // kill the child so we don't leak it. Fall through to the
+            // kill+wait path below rather than `return`, because the
+            // reader-thread join + child cleanup (errdefer blocks above)
+            // MUST run or the threads/child are leaked.
+            error.Canceled => {
+                timeout_hit = true;
+                _ = child.kill(io);
+                child_term = if (builtin.os.tag == .windows) .{ .unknown = 1 } else .{ .signal = .KILL };
+                break :blk;
+            },
+        };
+
+        switch (result) {
+            .timeout => {
+                timeout_hit = true;
+                _ = child.kill(io);
+                // Do not call child.wait() here; kill() invalidates child.id.
+                // The wait happens after the threads join below.
+                child_term = if (builtin.os.tag == .windows) .{ .unknown = 1 } else .{ .signal = .KILL };
+            },
+            .child_done => {
+                child_term = child.wait(io) catch .{ .unknown = 1 };
+            },
         }
-        if (stdout_eof.load(.acquire) and stderr_eof.load(.acquire)) {
-            child_term = child.wait(io) catch .{ .unknown = 1 };
-            break;
-        }
-        try std.Io.sleep(io, .{ .nanoseconds = 10 * std.time.ns_per_ms }, .real);
     }
 
     stdout_thread.join();
@@ -457,6 +522,29 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     };
 }
 
+/// Async task body for the timeout slot of the Io Select. Returns void (the
+/// Select union field is `timeout: void`); cancellation from `cancelDiscard`
+/// surfaces as `error.Canceled` from `std.Io.sleep`, which we swallow (the
+/// race is already decided by the other arm of the Select).
+fn timeoutSleepFn(io: std.Io, duration_ns: u64) void {
+    std.Io.sleep(io, .{ .nanoseconds = @intCast(duration_ns) }, .real) catch {};
+}
+
+/// Async task body for the child-done slot of the Io Select. Polls the
+/// atomic EOF flags set by the stdout/stderr reader threads and returns when
+/// both report EOF. The 10 ms sleep cadence keeps the Io runtime responsive
+/// (cancelation points at the cancel points) without burning CPU.
+fn waitChildFn(
+    io: std.Io,
+    stdout_eof: *std.atomic.Value(bool),
+    stderr_eof: *std.atomic.Value(bool),
+) void {
+    while (true) {
+        if (stdout_eof.load(.acquire) and stderr_eof.load(.acquire)) return;
+        std.Io.sleep(io, .{ .nanoseconds = 10 * std.time.ns_per_ms }, .real) catch return;
+    }
+}
+
 pub fn bash_result_to_string(allocator: std.mem.Allocator, result: BashOutput) ![]const u8 {
     return try std.fmt.allocPrint(allocator,
         \\<command>{s}</command>
@@ -537,6 +625,20 @@ pub const bash_tool = AgentTool{
                     .description = "Absolute working directory. Always set explicitly.",
                 },
                 .{
+                    .name = "mandatory_timeout",
+                    .type = "number",
+                    .description =
+                    \\REQUIRED. Maximum wall-clock seconds the command is allowed
+                    \\to run. When the deadline elapses the bash process is killed
+                    \\(SIGKILL on POSIX, TerminateProcess on Windows) so the agent
+                    \\cannot hang on a runaway command. There is no default — the
+                    \\tool returns `MandatoryTimeoutMissing` if you omit this.
+                    \\Pick a value that matches what the command realistically
+                    \\needs (a few seconds for ls/cat, 30–60 s for builds,
+                    \\300+ s for long compilations).
+                    ,
+                },
+                .{
                     .name = "max_output",
                     .type = "number",
                     .description = "Maximum stdout+stderr bytes. Default: 20480 (20KB). Output exceeding this limit is truncated.",
@@ -554,6 +656,9 @@ pub const bash_tool = AgentTool{
                     \\Returns PID and log path in stdout.
                     \\Example stdout: "PID: 12345\nLog: /tmp/bg_1234567890.log"
                     \\Use PID to check status (ps -p <PID>) or kill (kill <PID>).
+                    \\Note: when background=true the mandatory_timeout field is
+                    \\ignored (the detached process has no deadline enforced by
+                    \\this tool — the caller is responsible for killing it later).
                     ,
                 },
                 .{
@@ -571,7 +676,7 @@ pub const bash_tool = AgentTool{
                     ,
                 },
             },
-            .required = &.{ "command", "cwd" },
+            .required = &.{ "command", "cwd", "mandatory_timeout" },
         },
     },
 };
