@@ -40,12 +40,16 @@ pub const CallbackAiWorkerFlow = struct {
 
         runAgenticMultiStepnew(di, data) catch |err| {
             logger.errFmt("[{s}] Failed to run agentic workflow: {s}\n", .{ keyword, @errorName(err) });
-            llm_history.deleteWorkerBySessionId(allocator, db, session_id) catch |error_sqlite| {
-                logger.errFmt("[{s}] Failed to delete worker: {s}\n", .{ keyword, @errorName(error_sqlite) });
-            };
 
-            _ = llm_history.deleteQueuedMessagesBySessionId(allocator, db, session_id) catch |error_sqlite| {
-                logger.errFmt("[{s}] Failed to delete all queued messages: {s}\n", .{ keyword, @errorName(error_sqlite) });
+            agentic_loop.deleteWorker(.{
+                .allocator = allocator,
+                .db = db,
+                .logger = logger,
+                .session_id = session_id,
+                .event_bus = di.event_bus,
+                .is_emit_sse = true,
+            }) catch |error_sqlite| {
+                logger.errFmt("[{s}] Failed to delete worker: {s}\n", .{ keyword, @errorName(error_sqlite) });
             };
 
             // For TooManyRetries, the inner bail already saved a rich diagnostic
