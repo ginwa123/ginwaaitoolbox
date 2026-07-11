@@ -1211,7 +1211,8 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
     ) catch {
         // Mirror the workflow.zig error message pattern (workflow.zig:68)
         // for consistency with the rest of the runSubAgent error paths.
-        const err_msg = std.fmt.allocPrint(args_ptr.allocator,
+        const err_msg = std.fmt.allocPrint(
+            args_ptr.allocator,
             "Agent Nalar System error, the actual error is ->>>> Failed to create session_id for '{s}'\n",
             .{args_ptr.agent_name},
         ) catch "Agent Nalar System error, the actual error is ->>>> Failed to create session_id";
@@ -1225,7 +1226,8 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
     // Store session_id in shared results immediately after creation
     {
         const session_id_copy = args_ptr.allocator.dupe(u8, sess_id) catch {
-            const err_msg = std.fmt.allocPrint(args_ptr.allocator,
+            const err_msg = std.fmt.allocPrint(
+                args_ptr.allocator,
                 "Agent Nalar System error, the actual error is ->>>> Failed to copy session_id for '{s}'\n",
                 .{args_ptr.agent_name},
             ) catch "Agent Nalar System error, the actual error is ->>>> Failed to copy session_id";
@@ -1241,7 +1243,25 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
     const is_sub_agent = std.mem.indexOf(u8, sess_id, "subagent") != null;
     args_ptr.logger.debugFmt("Calling workflow.runAgenticMultiStep for '{s}'", .{args_ptr.agent_name});
 
-    ai_workflow.runAgenticMultiStepnew(di, .{
+    const logger = di.logger;
+    const allocator = di.allocator;
+    const active_loops = di.active_loops;
+    const event_bus = di.event_bus;
+    const db = di.db;
+    const io = di.io;
+    const config = nalar_mod.getLlmConfig(di);
+    const environment = di.environment;
+
+    ai_workflow.runAgenticMultiStepnew(.{
+        .allocator = allocator,
+        .db = db,
+        .io = io,
+        .logger = logger,
+        .event_bus = event_bus,
+        .active_loops = active_loops,
+        .llm_config = config,
+        .environment = environment,
+    }, .{
         .parent_session_id = args_ptr.parent_sess_id,
         .session_id = sess_id,
         .message = args_ptr.instruction,
@@ -1281,7 +1301,8 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
             , .{}) catch
                 "Agent Nalar System error, the actual error is ->>>> TooManyRetries\n"
         else
-            std.fmt.allocPrint(args_ptr.allocator,
+            std.fmt.allocPrint(
+                args_ptr.allocator,
                 "Agent Nalar System error, the actual error is ->>>> {s}\n",
                 .{err_name},
             ) catch "Failed to format error message";
@@ -1296,7 +1317,8 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         // Mirror the workflow.zig error message pattern (workflow.zig:68)
         // so the parent LLM sees a clear "Agent Nalar System error" prefix
         // instead of a bare error name.
-        const err_msg = std.fmt.allocPrint(args_ptr.allocator,
+        const err_msg = std.fmt.allocPrint(
+            args_ptr.allocator,
             "Agent Nalar System error, the actual error is ->>>> getLatestMessage: {s}\n",
             .{@errorName(err)},
         ) catch "Agent Nalar System error, the actual error is ->>>> getLatestMessage failed";
@@ -1309,7 +1331,8 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         var mutable_msg = msg;
         if (mutable_msg.response_content.len > 0) {
             const response_copy = args_ptr.allocator.dupe(u8, mutable_msg.response_content) catch {
-                const err_msg = std.fmt.allocPrint(args_ptr.allocator,
+                const err_msg = std.fmt.allocPrint(
+                    args_ptr.allocator,
                     "Agent Nalar System error, the actual error is ->>>> Failed to copy response: OutOfMemory\n",
                     .{},
                 ) catch "Agent Nalar System error, the actual error is ->>>> Failed to copy response";
@@ -1577,7 +1600,6 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 // `<loaded>`, etc.) so the 12 tool modules' `toXmlSuccess`/`toXmlError`
 // functions and the 13 frontend `tool_outputs/*.vue` components keep
 // working unchanged.
-
 
 /// Convert a JSON arguments string to XML structure wrapped in
 /// `<parameters>...</parameters>`. The conversion rules:

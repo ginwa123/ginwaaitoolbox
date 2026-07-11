@@ -3,7 +3,7 @@ const mod = @import("mod.zig");
 const sqlite = mod.nalarcore.sqlite;
 
 /// Check if a session is currently running (exists in worker table)
-pub fn isSessionRunning(
+pub fn isWorkerRunning(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,

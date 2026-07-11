@@ -14,12 +14,6 @@ const gserverz = nalarcore.gserverz;
 
 pub const WorkerListError = error{
     QueryFailed,
-    /// `makeWorkerListResponse` returns `![]u8` (its body uses
-    /// `std.json.Stringify.valueAlloc` which can fail with
-    /// `OutOfMemory`). On the per-request arena this is
-    /// effectively unreachable, but the type system requires the
-    /// variant so `try makeWorkerListResponse` propagates a typed
-    /// error.
     OutOfMemory,
 };
 

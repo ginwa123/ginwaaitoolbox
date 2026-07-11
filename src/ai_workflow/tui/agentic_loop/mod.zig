@@ -55,4 +55,11 @@ pub const deleteQueuedMessage = delete_queue_worker_mod.deleteQueuedMessage;
 
 
 const is_worker_running_mod = @import("is_worker_running.zig");
-pub const isSessionRunning = is_worker_running_mod.isSessionRunning;
+pub const isWorkerRunning = is_worker_running_mod.isWorkerRunning;
+
+const compaction_mod = @import("compaction.zig");
+pub const CallCompactAgentInput = compaction_mod.CallCompactAgentInput;
+pub const callCompactAgent = compaction_mod.callCompactAgent;
+
+const is_session_kanban_mod = @import("is_session_kanban.zig");
+pub const isSessionKanban = is_session_kanban_mod.isSessionKanban;

@@ -4,9 +4,8 @@
 //! Each handler is in its own file for maintainability.
 
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const gserverz = root_mod.gserverz;
-const nalarcore = root_mod;
+pub const nalarcore = @import("nalarcore");
+const gserverz = nalarcore.gserverz;
 const sqlite = nalarcore.sqlite;
 const ai_workflow = nalarcore.ai_workflow;
 const loggermod = nalarcore.loggermod;

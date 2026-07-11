@@ -8,29 +8,36 @@ const sqlite = nalarcore.sqlite;
 const logger_mod = nalarcore.loggermod;
 const json = std.json;
 
-/// Call CompactionAgent to compress conversation history.
-/// Returns compacted context or null on failure.
-pub fn callCompactAgentNew(
-    messages: std.ArrayList(agent.AgentMessage),
+pub const CallCompactAgentInput = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
+    logger: ?*logger_mod.Logger,
+    messages: std.ArrayList(agent.AgentMessage),
     api_key: []const u8,
     model: []const u8,
     base_url: []const u8,
-    cwd: []const u8,
-    logger: *logger_mod.Logger,
-    io: std.Io,
+};
+
+/// Call CompactionAgent to compress conversation history.
+/// Returns compacted context or null on failure.
+pub fn callCompactAgent(
+    obj: CallCompactAgentInput,
 ) ?[]const u8 {
-    _ = cwd;
+    const allocator = obj.allocator;
+    const messages = obj.messages;
+    const logger = obj.logger;
+    const api_key = obj.api_key;
+    const model = obj.model;
+    const base_url = obj.base_url;
+    const io = obj.io;
+
 
     if (messages.items.len < 2) {
-        logger.warnFmt("[COMPACTION] Not enough messages to compact", .{});
+        logger.?.warnFmt("[COMPACTION] Not enough messages to compact", .{});
         return null;
     }
 
     const last_idx = messages.items.len - 1;
-
-    // The original agent's system prompt — assumed to live at index 0.
-    // Used for context only (constraints/tools/scope), not summarized as conversation.
     const original_system_prompt: []const u8 = messages.items[0].content orelse "";
 
     // Collect content from all messages between first and last,
@@ -43,19 +50,14 @@ pub fn callCompactAgentNew(
         if (msg.content) |c| {
             const role_str = msg.role.to_str();
             const labeled = std.fmt.allocPrint(allocator, "[{s}]: {s}", .{ role_str, c }) catch |err| {
-                logger.errFmt("[COMPACTION] Failed to label message content: {s}", .{@errorName(err)});
+                logger.?.errFmt("[COMPACTION] Failed to label message content: {s}", .{@errorName(err)});
                 return null;
             };
             parts.append(allocator, labeled) catch |err| {
-                logger.errFmt("[COMPACTION] Failed to collect message content: {s}", .{@errorName(err)});
+                logger.?.errFmt("[COMPACTION] Failed to collect message content: {s}", .{@errorName(err)});
                 return null;
             };
         }
-
-        // If the message carries structured tool calls (e.g. assistant
-        // messages with finish_reason == .tool_calls), surface those too —
-        // otherwise the compactor never sees that a tool was invoked at all
-        // when content is null or purely conversational.
         if (msg.tool_calls) |tool_calls| {
             for (tool_calls) |tc| {
                 const tc_str = std.fmt.allocPrint(allocator, "[tool_call]: {s}({s})", .{
@@ -68,7 +70,7 @@ pub fn callCompactAgentNew(
     }
 
     const history_str = std.mem.join(allocator, "\n", parts.items) catch |err| {
-        logger.errFmt("[COMPACTION] Failed to join history: {s}", .{@errorName(err)});
+        logger.?.errFmt("[COMPACTION] Failed to join history: {s}", .{@errorName(err)});
         return null;
     };
     defer allocator.free(history_str);
@@ -135,7 +137,7 @@ pub fn callCompactAgentNew(
         \\CONVERSATION HISTORY:
         \\{s}
     , .{ original_system_prompt, history_str }) catch |err| {
-        logger.errFmt("[COMPACTION] Failed to format compact message: {s}", .{@errorName(err)});
+        logger.?.errFmt("[COMPACTION] Failed to format compact message: {s}", .{@errorName(err)});
         return null;
     };
     defer allocator.free(compact_message);
@@ -147,7 +149,7 @@ pub fn callCompactAgentNew(
         .role = .system,
         .content = prompt.CompactionAgent,
     }) catch |err| {
-        logger.errFmt("[COMPACTION] Failed to append system message: {s}", .{@errorName(err)});
+        logger.?.errFmt("[COMPACTION] Failed to append system message: {s}", .{@errorName(err)});
         return null;
     };
 
@@ -155,12 +157,12 @@ pub fn callCompactAgentNew(
         .role = .user,
         .content = compact_message,
     }) catch |err| {
-        logger.errFmt("[COMPACTION] Failed to append user message: {s}", .{@errorName(err)});
+        logger.?.errFmt("[COMPACTION] Failed to append user message: {s}", .{@errorName(err)});
         return null;
     };
 
     var compaction_agent = agent.Agent.init(allocator, io) catch |err| {
-        logger.errFmt("[COMPACTION] Agent.init failed: {s}", .{@errorName(err)});
+        logger.?.errFmt("[COMPACTION] Agent.init failed: {s}", .{@errorName(err)});
         return null;
     };
     defer compaction_agent.deinit();
@@ -174,23 +176,23 @@ pub fn callCompactAgentNew(
         .messages = messages_convocompact.items,
         .temperature = 0.0,
     }, null, noopStreamCallbackNew) catch |err| {
-        logger.errFmt("[COMPACTION] callStreaming failed: {s}", .{@errorName(err)});
+        logger.?.errFmt("[COMPACTION] callStreaming failed: {s}", .{@errorName(err)});
         return null;
     };
     defer response.deinit();
 
     const content = response.content orelse {
-        logger.errFmt("[COMPACTION] Response content is null", .{});
+        logger.?.errFmt("[COMPACTION] Response content is null", .{});
         return null;
     };
 
     if (content.len == 0) {
-        logger.warnFmt("[COMPACTION] Empty response from CompactionAgent", .{});
+        logger.?.warnFmt("[COMPACTION] Empty response from CompactionAgent", .{});
         return null;
     }
 
     const duplicated = allocator.dupe(u8, content) catch |err| {
-        logger.errFmt("[COMPACTION] Failed to duplicate content: {s}", .{@errorName(err)});
+        logger.?.errFmt("[COMPACTION] Failed to duplicate content: {s}", .{@errorName(err)});
         return null;
     };
 

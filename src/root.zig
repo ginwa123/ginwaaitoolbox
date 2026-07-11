@@ -428,6 +428,9 @@ pub const event_bus = @import("modules/event_bus/src/event.zig");
 pub const static_files = @import("modules/static_files.zig");
 
 pub const startup = @import("startup.zig");
+pub const agentic_loop_mod = @import("ai_workflow/tui/agentic_loop/mod.zig");
+
+pub const notifications_mod = @import("modules/notification/notifications.zig");
 
 test {
     _ = @import("ai_workflow/tui/test_runner.zig");
@@ -439,4 +442,5 @@ test {
     _ = @import("modules/custom_http_server/src/test_session_lifecycle.zig");
     _ = @import("modules/custom_http_server/src/sse_chunked_test.zig");
     _ = @import("modules/test_runner.zig");
+    _ = @import("modules/notification/test_runner.zig");
 }

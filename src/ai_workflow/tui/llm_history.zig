@@ -3296,27 +3296,3 @@ pub fn updateWorkspaceUpdatedAt(allocator: std.mem.Allocator, db: *sqlite.Sqlite
     try db.exec(allocator, sql, &.{session_id});
 }
 
-pub fn isTaskKanban(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) !bool {
-    var is_kanban: bool = false;
-    // Filter on `wit.id` (the canonical session id for kanban /
-    // routine tasks per Migration 052's `task.id == session.id`
-    // convention), not on `session_id` — that column was dropped
-    // by Migration 052 and would return "no such column" against
-    // post-migration production data.
-    const sql =
-        \\
-        \\SELECT 1 FROM workspace_item_tasks wit
-        \\JOIN workspace_items wi ON wit.workspace_item_id = wi.id
-        \\WHERE wit.id = ? AND wi.item_type = 'kanban'
-    ;
-
-    var rows = try db.query(allocator, sql, &.{session_id});
-    defer rows.deinit();
-
-    if (try rows.next()) |row| {
-        row.deinit(allocator);
-        is_kanban = true;
-    }
-
-    return is_kanban;
-}
