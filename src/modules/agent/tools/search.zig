@@ -4,6 +4,34 @@ const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
+const sanitize = @import("../../../helpers/sanitize.zig");
+
+pub const SearchError = error{
+    /// Pattern was an empty string — almost certainly a caller bug, not a
+    /// "no match" condition. ripgrep accepts empty patterns but the tool
+    /// should reject them so the LLM/operator sees a clear error.
+    EmptyPattern,
+    /// Pattern contained a NUL byte. ripgrep silently truncates at NUL,
+    /// which would mean the LLM's intended search runs against a shorter
+    /// (and likely wrong) pattern. Reject up-front instead.
+    PatternContainsNulByte,
+    /// max_output was 0. Passing stdout_limit = .limited(0) to ripgrep
+    /// produces zero output and a confusing failure mode.
+    InvalidMaxOutput,
+    /// max_output exceeded the hard ceiling (100 MB). Prevents a single
+    /// search from OOM-ing the process.
+    MaxOutputTooLarge,
+    /// max_results was 0. Returns empty matches + "<warning>pattern not
+    /// found" which looks identical to a real no-match and confuses the
+    /// LLM. Treat as a caller bug.
+    InvalidMaxResults,
+    /// ripgrep could not parse the pattern as a valid regex (exit 2
+    /// with a "regex parse error" / "regex error" signature in stderr).
+    RegexParseError,
+    /// ripgrep could not access the path (path doesn't exist, permission
+    /// denied, etc). Wraps the ripgrep stderr text in the error name.
+    PathError,
+};
 
 pub const SearchMatch = struct {
     file: []const u8,
@@ -74,31 +102,114 @@ fn getMatchedLines(obj: *const std.json.ObjectMap) ?usize {
     return null;
 }
 
+/// Hard ceiling on max_output to prevent a single search from OOM-ing the
+/// process. 100 MB is large enough for any practical search (genuinely huge
+/// codebases will still fit) but small enough to bound the worst case.
+pub const max_output_hard_limit: usize = 100 * 1024 * 1024;
+
 pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, input: SearchInput) !SearchResult {
+    // === Up-front validation (no ripgrep invocation if any fail) ===
+
     // Validate head/tail are mutually exclusive
     if (input.head != null and input.tail != null) {
         return error.HeadAndTailMutuallyExclusive;
     }
 
-    const max_results = input.max_results orelse 50;
+    // Pattern must be non-empty. ripgrep accepts empty patterns but the
+    // result is meaningless — reject so the caller sees a clear error.
+    if (input.pattern.len == 0) return error.EmptyPattern;
 
+    // Reject patterns containing NUL bytes. ripgrep's C-string handling
+    // truncates at NUL, which would mean the LLM's intended pattern is
+    // silently mutated. Refuse the call entirely.
+    if (std.mem.indexOfScalar(u8, input.pattern, 0) != null) {
+        return error.PatternContainsNulByte;
+    }
+
+    // Validate max_output bounds up-front. Zero is meaningless; over the
+    // hard ceiling risks OOM.
+    const max_output = input.max_output orelse 1024 * 1024;
+    if (max_output == 0) return error.InvalidMaxOutput;
+    if (max_output > max_output_hard_limit) return error.MaxOutputTooLarge;
+
+    // Validate max_results. Zero is indistinguishable from "no match" and
+    // is almost certainly a caller bug.
+    const max_results = input.max_results orelse 50;
+    if (max_results == 0) return error.InvalidMaxResults;
+
+    // === Build ripgrep argv with flag-injection defense ===
+    //
+    // We use `-e <pattern>` to tell ripgrep "next arg is the pattern", which
+    // means a pattern starting with `-` (e.g. `--help`, `--`, `-z`) is
+    // treated as a literal search string and NOT as a flag. We then put
+    // `--` before the path so that even if someone passes a path like
+    // `--pre-glob=...` it can't be misinterpreted.
+    //
+    // `--no-config` blocks `~/.ripgreprc` / `.ripgreprc` from being loaded,
+    // which is an attacker-controlled flag surface on multi-user systems.
+    // `--no-messages` suppresses ripgrep's stderr (we surface the errors
+    // ourselves via the exit-code mapping below).
     const argv = &[_][]const u8{
         "rg",
         "--json",
         "--line-number",
+        "--no-config",
+        "--no-messages",
+        "-e",
         input.pattern,
+        "--",
         input.path,
     };
 
-    const max_output = input.max_output orelse 1024 * 1024;
-    const result = try std.process.run(allocator, io, .{
+    const result = std.process.run(allocator, io, .{
         .argv = argv,
         .stdout_limit = std.Io.Limit.limited(max_output),
         .cwd = .{ .path = input.cwd orelse cwd },
-    });
+    }) catch |err| {
+        // Map clear errors to our domain:
+        // - FileNotFound on cwd → tell the caller the working directory is wrong
+        if (err == error.FileNotFound) return error.PathError;
+        return err;
+    };
 
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
+
+    // === Map ripgrep exit code to a domain error or accept stdout ===
+    //
+    // ripgrep exit codes (from rg --help):
+    //   0 — match found
+    //   1 — no match (empty stdout, stderr empty)
+    //   2 — error (regex parse error, file/dir not found, permission denied)
+    //   signal/stopped/unknown — process-level oddities
+    //
+    // We can't tell exit_code 2's sub-cause from the code alone, but we
+    // CAN pattern-match on stderr text. The heuristics here are deliberately
+    // conservative — if the heuristic misses, we still surface a clear
+    // error.
+    switch (result.term) {
+        .exited => |code| switch (code) {
+            0 => {}, // success — fall through
+            1 => {}, // no match — fall through (empty matches list will yield "pattern not found" later)
+            else => {
+                // exit 2 (or other non-zero) → distinguish by stderr
+                const stderr_text = result.stderr;
+                if (std.mem.indexOf(u8, stderr_text, "regex") != null or
+                    std.mem.indexOf(u8, stderr_text, "Regex") != null or
+                    std.mem.indexOf(u8, stderr_text, "pattern") != null)
+                {
+                    return error.RegexParseError;
+                }
+                return error.PathError;
+            },
+        },
+        .signal, .stopped, .unknown => {
+            // rg was killed by signal (e.g. ulimit, OOM) or terminated
+            // abnormally. Surface as a path/I/O error so the LLM retries
+            // with a different path or smaller pattern.
+            return error.PathError;
+        },
+    }
 
     var matches = std.ArrayList(SearchMatch).empty;
     errdefer {
@@ -142,10 +253,14 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
                             var match_file: []const u8 = "";
                             var match_snippet: []const u8 = "";
                             var line_num: usize = 0;
-                            var has_required = false;
+                            var line_num_valid = false;
+                            var file_ok = false;
 
                             if (getTextFromJson(&data.object, "path")) |path_text| {
-                                match_file = path_text;
+                                if (path_text.len > 0) {
+                                    match_file = path_text;
+                                    file_ok = true;
+                                }
                             }
 
                             if (getTextFromJson(&data.object, "lines")) |lines_text| {
@@ -154,23 +269,43 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
 
                             if (data.object.get("line_number")) |ln| {
                                 if (ln == .integer) {
-                                    line_num = @intCast(ln.integer);
-                                    has_required = true;
+                                    // Validate before casting: rg emits
+                                    // positive line numbers, so 0 or
+                                    // negative is corrupt. Previously
+                                    // the code did @intCast(ln.integer)
+                                    // which PANICS in safe builds on
+                                    // negative values, and wraps to a
+                                    // huge usize in release-fast.
+                                    if (ln.integer >= 1 and ln.integer <= std.math.maxInt(usize)) {
+                                        line_num = @intCast(ln.integer);
+                                        line_num_valid = true;
+                                    }
                                 }
                             }
 
-                            if (has_required) {
+                            if (line_num_valid and file_ok) {
+                                // Sanitize the snippet to ensure valid
+                                // UTF-8. rg emits snippets in the file's
+                                // encoding; binary files can contain
+                                // invalid UTF-8 bytes which break the
+                                // XML output (zig's std.json.fmt emits
+                                // them as JSON arrays of integers instead
+                                // of strings — see project memory
+                                // zig-0.16-std-json-fmt-emits-invalid-utf8-as-array).
+                                // sanitizeUtf8 ALWAYS returns a fresh
+                                // heap allocation (it's a toOwnedSlice),
+                                // so we always own the result.
+                                const sanitized_snippet = sanitize.sanitizeUtf8(allocator, match_snippet) catch continue;
+                                errdefer allocator.free(sanitized_snippet);
+
                                 const owned_file = try allocator.dupe(u8, match_file);
                                 errdefer allocator.free(owned_file);
-
-                                const owned_snippet = try allocator.dupe(u8, match_snippet);
-                                errdefer allocator.free(owned_snippet);
 
                                 const match = SearchMatch{
                                     .file = owned_file,
                                     .line_number = line_num,
                                     .file_total_lines = 0,
-                                    .snippet = owned_snippet,
+                                    .snippet = sanitized_snippet,
                                 };
                                 try matches.append(allocator, match);
                                 if (matches.items.len >= max_results) break;
@@ -344,6 +479,41 @@ pub fn search_result_to_string_grouped(allocator: std.mem.Allocator, result: Sea
     return try output.toOwnedSlice(allocator);
 }
 
+/// Flat (non-grouped) output: one match per <m> element inside <search>.
+/// Same XML shape as the per-match entries in the grouped output, so the
+/// LLM frontend can iterate over <m> elements uniformly. Used when
+/// SearchInput.group_by_file == false (the LLM doesn't care about which
+/// file a match came from, e.g. when searching a single known file).
+pub fn search_result_to_string_flat(allocator: std.mem.Allocator, result: SearchResult, pattern: []const u8, search_path: []const u8) ![]const u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    try output.appendSlice(allocator, "<search pattern=\"");
+    try output.appendSlice(allocator, pattern);
+    try output.appendSlice(allocator, "\" path=\"");
+    try output.appendSlice(allocator, search_path);
+    try output.appendSlice(allocator, "\" group_by_file=\"false\">\n");
+
+    for (result.matches.items) |m| {
+        const trimmed_snippet = std.mem.trim(u8, m.snippet, &std.ascii.whitespace);
+        const trimmed_path = std.mem.trim(u8, m.file, &std.ascii.whitespace);
+        const match_xml = try std.fmt.allocPrint(allocator,
+            \\  <m><f>{s}</f><l>{d}</l><s>{s}</s></m>
+        , .{
+            trimmed_path,
+            m.line_number,
+            trimmed_snippet,
+        });
+        try output.appendSlice(allocator, match_xml);
+        try output.appendSlice(allocator, "\n");
+        allocator.free(match_xml);
+    }
+
+    try output.appendSlice(allocator, "</search>\n");
+
+    return try output.toOwnedSlice(allocator);
+}
+
 pub const search_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -361,6 +531,20 @@ pub const search_tool = AgentTool{
         \\</search>
         \\Where: total=file total lines, count=number of matches in this file.
         \\
+        \\When group_by_file=false the response is flat (one <m> per match,
+        \\no <file> wrapper):
+        \\<search pattern="..." path="..." group_by_file="false">
+        \\  <m><f>path/to/file.zig</f><l>10</l><s>snippet</s></m>
+        \\</search>
+        \\
+        \\Edge cases:
+        \\- pattern starting with `-` is treated as a literal (rg's `-e`
+        \\  flag is used internally) — searching for the literal text
+        \\  "--help" works.
+        \\- pattern must be non-empty and contain no NUL bytes.
+        \\- max_output is hard-capped at 100MB.
+        \\- max_results and max_output must be > 0.
+        \\
         \\- Use this to locate symbols, functions, or types before reading.
         \\- Prefer this over bash+rg for code navigation.
         ,
@@ -370,7 +554,7 @@ pub const search_tool = AgentTool{
                 .{
                     .name = "pattern",
                     .type = "string",
-                    .description = "Regex or literal string to search for.",
+                    .description = "Regex or literal string to search for. Must be non-empty and contain no NUL bytes.",
                 },
                 .{
                     .name = "path",
@@ -380,22 +564,27 @@ pub const search_tool = AgentTool{
                 .{
                     .name = "max_results",
                     .type = "number",
-                    .description = "Max matches to return. Default: 50.",
+                    .description = "Max matches to return. Default: 50. Must be > 0.",
                 },
                 .{
                     .name = "head",
                     .type = "number",
-                    .description = "Return first N matches from result set.",
+                    .description = "Return first N matches from result set. Mutually exclusive with tail.",
                 },
                 .{
                     .name = "tail",
                     .type = "number",
-                    .description = "Return last N matches from result set.",
+                    .description = "Return last N matches from result set. Mutually exclusive with head.",
                 },
                 .{
                     .name = "max_output",
                     .type = "number",
-                    .description = "Max output size in bytes. Default: 1048576 (1MB). Use larger value if you encounter StdoutStreamTooLong error.",
+                    .description = "Max output size in bytes. Default: 1048576 (1MB). Hard cap: 100MB. Must be > 0.",
+                },
+                .{
+                    .name = "group_by_file",
+                    .type = "boolean",
+                    .description = "Group matches by file. Default: true. Set false for flat output.",
                 },
                 .{
                     .name = "cwd",
@@ -409,5 +598,7 @@ pub const search_tool = AgentTool{
 };
 
 test {
-    // Tests removed - search_test.zig removed due to API changes
+    // Tests removed - see search_test.zig (registered in
+    // src/modules/agent/test_runner.zig) for the 14+ edge case tests
+    // that exercise this tool.
 }
