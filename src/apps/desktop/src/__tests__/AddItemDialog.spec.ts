@@ -253,6 +253,107 @@ describe('AddItemDialog — name input', () => {
     const submitBtn = findInDom<HTMLButtonElement>('[data-testid="add-item-submit"]')
     expect(submitBtn?.disabled).toBe(true)
   })
+
+  // ─── Empty/whitespace name → visible error message ─────────────────────
+  //
+  // The dialog now shows an inline "Name is required" error after
+  // the user has interacted with the name field (typed-then-cleared
+  // OR blurred with whitespace). The error explains why Add is
+  // disabled — without it, the disabled button looks like a renderer
+  // bug to users who can't see why nothing happens.
+  //
+  // Plan: docs/superpowers/plans/2026-07-10-empty-workspace-item-bug.md
+
+  it('whitespace-only name shows visible "Name is required" error', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+
+    // Set path via picker so the only thing blocking Add is the name.
+    clickInDom('[data-testid="add-item-choose-folder"]')
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-select-home"]')
+    await flushPromises()
+
+    // No error initially — the field is empty by design on first open.
+    expect(findInDom('[data-testid="add-item-name-error"]')).toBeNull()
+
+    // Type whitespace and dispatch input → nameTouched flips → error appears.
+    const nameInput = findInDom<HTMLInputElement>('[data-testid="add-item-name"]')!
+    nameInput.value = '   '
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    const error = findInDom<HTMLElement>('[data-testid="add-item-name-error"]')
+    expect(error?.textContent).toContain('Name is required')
+    // The submit button is still disabled.
+    const submitBtn = findInDom<HTMLButtonElement>('[data-testid="add-item-submit"]')
+    expect(submitBtn?.disabled).toBe(true)
+  })
+
+  it('typing a valid name hides the "Name is required" error', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+
+    clickInDom('[data-testid="add-item-choose-folder"]')
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-select-home"]')
+    await flushPromises()
+
+    // Type then clear → error appears.
+    const nameInput = findInDom<HTMLInputElement>('[data-testid="add-item-name"]')!
+    nameInput.value = 'X'
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    expect(findInDom('[data-testid="add-item-name-error"]')).toBeNull()
+
+    // Clear → error appears again.
+    nameInput.value = ''
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    expect(findInDom('[data-testid="add-item-name-error"]')).not.toBeNull()
+
+    // Type valid → error disappears.
+    nameInput.value = 'My Project'
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    expect(findInDom('[data-testid="add-item-name-error"]')).toBeNull()
+  })
+
+  it('blurring an empty name field shows the error (without typing)', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+
+    // Focus then blur the empty name field — nameTouched flips via
+    // @blur even without an @input. Simulates the user clicking
+    // the field then clicking away.
+    const nameInput = findInDom<HTMLInputElement>('[data-testid="add-item-name"]')!
+    nameInput.focus()
+    nameInput.dispatchEvent(new Event('blur', { bubbles: true }))
+    await flushPromises()
+
+    expect(findInDom('[data-testid="add-item-name-error"]')).not.toBeNull()
+  })
+
+  it('opening the dialog after a previous session starts fresh (no error flash)', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+
+    // Type then clear → error.
+    const nameInput = findInDom<HTMLInputElement>('[data-testid="add-item-name"]')!
+    nameInput.value = '   '
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    expect(findInDom('[data-testid="add-item-name-error"]')).not.toBeNull()
+
+    // Close + reopen → state must reset so the user doesn't see
+    // the error flash on a freshly-opened dialog.
+    await wrapper.setProps({ show: false })
+    await flushPromises()
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    expect(findInDom('[data-testid="add-item-name-error"]')).toBeNull()
+  })
 })
 
 describe('AddItemDialog — folder picker integration', () => {

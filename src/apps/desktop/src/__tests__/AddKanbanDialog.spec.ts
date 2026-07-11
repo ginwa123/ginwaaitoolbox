@@ -117,6 +117,55 @@ describe('AddKanbanDialog', () => {
     expect(btn?.disabled).toBe(true)
   })
 
+  // ─── Visible "Name is required" error UX (mirrors AddItemDialog) ─────────
+  //
+  // The dialog now shows an inline error below the name input after
+  // the user has interacted with an empty/whitespace field, so the
+  // disabled Add button has a visible explanation.
+  //
+  // Plan: docs/superpowers/plans/2026-07-10-empty-workspace-item-bug.md
+
+  it('whitespace-only name shows visible "Name is required" error', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+
+    // No error initially — the field is empty by design on first open.
+    expect(findInDom('[data-testid="add-kanban-name-error"]')).toBeNull()
+
+    // Type whitespace and dispatch input → nameTouched flips → error appears.
+    const nameInput = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')!
+    nameInput.value = '   '
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    const error = findInDom<HTMLElement>('[data-testid="add-kanban-name-error"]')
+    expect(error?.textContent).toContain('Name is required')
+  })
+
+  it('typing a valid name hides the "Name is required" error', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+
+    // Type then clear → error appears.
+    const nameInput = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')!
+    nameInput.value = 'X'
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    expect(findInDom('[data-testid="add-kanban-name-error"]')).toBeNull()
+
+    // Clear → error appears.
+    nameInput.value = ''
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    expect(findInDom('[data-testid="add-kanban-name-error"]')).not.toBeNull()
+
+    // Type valid → error disappears.
+    nameInput.value = 'Sprint 12'
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    expect(findInDom('[data-testid="add-kanban-name-error"]')).toBeNull()
+  })
+
   it('Add button is disabled when no folder is picked (even with a valid name)', async () => {
     wrapper = mountDialog(true)
     await flushPromises()
