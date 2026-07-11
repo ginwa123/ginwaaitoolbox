@@ -6,6 +6,10 @@ const logger_mod = nalarcore.loggermod;
 const agent = nalarcore.agent;
 const LLMHistory = mod.LLMHistory;
 const event_bus_mod = nalarcore.event_bus;
+const onEventSendLLMHistory = mod.onEventSendLLMHistory;
+const SkillInfo = mod.SkillInfo;
+
+const keyword = "INSERTLLMHISTORIES";
 
 pub const InsertLLMHistoriesInput = struct {
     allocator: std.mem.Allocator,
@@ -14,36 +18,9 @@ pub const InsertLLMHistoriesInput = struct {
     logger: ?*logger_mod.Logger,
     is_emit_sse: bool,
     event_bus: ?*event_bus_mod.EventBus,
+    cwd: []const u8,
     entity: LLMHistory,
 };
-
-// pub const SaveMessageInput = struct {
-//     session_id: []const u8,
-//     model: []const u8,
-//     cwd: []const u8,
-//     content: ?[]const u8,
-//     reasoning_content: ?[]const u8,
-//     role: ?[]const u8,
-//     finish_reason: ?[]const u8,
-//     tool_calls: ?[]agent.ToolCall,
-//     tool_call_id: ?[]const u8,
-//     tool_name: ?[]const u8 = null,
-//     agent_name: ?[]const u8,
-//     loop_index: u32,
-//     temperature: f32,
-//     is_thinking: bool,
-//     is_input: bool = false,
-//     is_output: bool = false,
-//     parent_session_id: ?[]const u8 = null,
-//     parent_id: ?[]const u8 = null,
-//     prompt_tokens: usize = 0,
-//     completion_tokens: usize = 0,
-//     total_tokens: usize = 0,
-//     diffview_before: ?[]const u8 = null,
-//     diffview_after: ?[]const u8 = null,
-//     image_urls: ?[][]const u8 = null,
-//     is_feed_to_llm: bool = true,
-// };
 
 pub fn inserLLMHistories(
     obj: InsertLLMHistoriesInput,
@@ -51,33 +28,38 @@ pub fn inserLLMHistories(
     const allocator = obj.allocator;
     const db = obj.db;
     const logger = obj.logger;
-    _ = logger;
     const io = obj.io;
+    const event_bus = obj.event_bus;
 
     const input = obj.entity;
+    const session_id = input.session_id;
+    const model = input.model;
+    const cwd = obj.cwd;
+    const temperature = input.temperature;
+    const is_thinking = input.is_thinking;
+    const is_input = input.is_input;
+    const is_output = input.is_output;
+    const finish_reason = input.finish_reason;
+    const reasoning_content = input.reasoning_content;
 
     const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(id);
     const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(created_at);
 
-    const contentStr = input.content orelse "";
-    const finishReasonStr = input.finish_reason orelse "null";
-    const roleStr = input.role orelse "assistant";
+    const contentStr = input.response_content;
+    const finishReasonStr = input.finish_reason;
+    const roleStr = input.role;
     const reasoningStr = input.reasoning_content orelse "";
-    const agentStr = input.agent_name orelse "Agent";
+    const agentStr = input.agent;
+
+    const is_emit_sse = obj.is_emit_sse;
 
     // tool_calls_json holds ONLY the serialized tool_calls array (assistant message wire format).
     // For tool result messages, the tool_call_id lives in the dedicated tool_call_id column —
     // do NOT overload tool_calls_json with the id. That overload caused the 2013 bug where the
     // transform could not tell a JSON array from a plain id string.
-    var toolCallsJson: []const u8 = "";
-    var toolCallsOwned: ?[]u8 = null;
-    if (input.tool_calls) |tc| {
-        toolCallsOwned = try serializeToolCalls(allocator, tc);
-        toolCallsJson = toolCallsOwned.?;
-    }
-    defer if (toolCallsOwned) |tcj| allocator.free(tcj);
+    const toolCallsOwned = input.tool_calls_json;
 
     const sql =
         \\INSERT INTO llm_history (
@@ -124,7 +106,7 @@ pub fn inserLLMHistories(
     defer allocator.free(copy_finish_reason);
     const copy_role = try allocator.dupe(u8, roleStr);
     defer allocator.free(copy_role);
-    const copy_tool_calls = try allocator.dupe(u8, toolCallsJson);
+    const copy_tool_calls = try allocator.dupe(u8, toolCallsOwned);
     defer allocator.free(copy_tool_calls);
     const copy_reasoning = try allocator.dupe(u8, reasoningStr);
     defer allocator.free(copy_reasoning);
@@ -139,7 +121,7 @@ pub fn inserLLMHistories(
     defer allocator.free(copy_parent_session_id);
     const copy_parent_id = try allocator.dupe(u8, input.parent_id orelse "");
     defer allocator.free(copy_parent_id);
-    const copy_tool_name = try allocator.dupe(u8, input.tool_name orelse "");
+    const copy_tool_name = try allocator.dupe(u8, input.tool_name);
     defer allocator.free(copy_tool_name);
     const copy_tool_call_id = try allocator.dupe(u8, input.tool_call_id orelse "");
     defer allocator.free(copy_tool_call_id);
@@ -179,33 +161,77 @@ pub fn inserLLMHistories(
     try db.exec(allocator, sql, sqlArgs);
 
     // Update the session's cwd in the sessions table
-    const copy_cwd = try allocator.dupe(u8, input.cwd);
+    const copy_cwd = try allocator.dupe(u8, cwd);
     defer allocator.free(copy_cwd);
     try db.exec(allocator, "UPDATE sessions SET cwd = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", &.{ copy_cwd, copy_session_id });
 
-    _ = on_event_sent.onEventSendLLMHistory(allocator, .{
-        .session_id = session_id,
-        .model = config.model,
-        .cwd = cwd,
-        .content = error_message,
-        .reasoning_content = null,
-        .role = agent.Role.user.to_str(),
-        .finish_reason = "null",
-        .tool_calls_json = null,
-        .tool_call_id = null,
-        .agent_name = initial_agent,
-        .loop_index = 0,
-        .temperature = initial_agent_state.temperature,
-        .is_thinking = initial_agent_state.is_thinking,
-        .parent_id = session_id,
-        .parent_session_id = session_id,
-        .is_input = true,
-        .is_output = false,
-        .image_url = null,
-        .session_skills = session_skills_err,
-    }) catch |on_event_sent_err| {
-        logger.errFmt("[{s}] failed to sent llm historry: {s}\n", .{ keyword, @errorName(on_event_sent_err) });
-    };
+    if (is_emit_sse) {
+        if (event_bus) |ev| {
+            const session_skills = try getSessionSkills(allocator, db, copy_session_id);
+
+            _ = onEventSendLLMHistory(.{ .allocator = allocator, .io = io, .logger = logger, .event_bus = ev, .entity = .{
+                .session_id = session_id,
+                .model = model,
+                .cwd = cwd,
+                .content = copy_content,
+                .reasoning_content = reasoning_content,
+                .role = copy_role,
+                .finish_reason = finish_reason,
+                .tool_calls_json = copy_tool_calls,
+                .tool_call_id = copy_tool_call_id,
+                .agent_name = copy_agent,
+                .loop_index = input.loop_index,
+                .temperature = temperature,
+                .is_thinking = is_thinking,
+                .parent_id = session_id,
+                .parent_session_id = session_id,
+                .is_input = is_input,
+                .is_output = is_output,
+                .image_url = copy_image_urls,
+                .session_skills = session_skills,
+                .tool_name = copy_tool_name,
+                .total_tokens = input.total_tokens,
+                .diffview_before = copy_diffview_before,
+                .diffview_after = copy_diffview_after,
+            } }) catch |on_event_sent_err| {
+                logger.?.errFmt("[{s}] failed to sent llm historry: {s}\n", .{ keyword, @errorName(on_event_sent_err) });
+            };
+        }
+    }
+}
+
+/// Get all skills loaded for a session
+fn getSessionSkills(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]SkillInfo {
+    if (session_id.len == 0) return &.{};
+
+    const sql = "SELECT skill_name, content, loaded_at FROM session_skills WHERE session_id = ?";
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    var skills = std.ArrayList(SkillInfo).empty;
+    errdefer {
+        for (skills.items) |*s| s.deinit(allocator);
+        skills.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const skill_name = row.values[0];
+        const content = row.values[1];
+        const loaded_at = if (row.values[2].len > 0) std.fmt.parseInt(i64, row.values[2], 10) catch null else null;
+
+        try skills.append(allocator, .{
+            .skill_name = try allocator.dupe(u8, skill_name),
+            .content = try allocator.dupe(u8, content),
+            .loaded_at = loaded_at,
+        });
+        row.deinit(allocator);
+    }
+
+    return try skills.toOwnedSlice(allocator);
 }
 
 fn serializeToolCalls(allocator: std.mem.Allocator, tool_calls: []agent.ToolCall) ![]u8 {

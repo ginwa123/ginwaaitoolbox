@@ -4,16 +4,43 @@ const nalarcore = mod.nalarcore;
 const agent = nalarcore.agent;
 const event_bus_mod = nalarcore.event_bus;
 const logger_mod = nalarcore.loggermod;
+const helpers = nalarcore.helpers;
+const SseEvent = mod.SseEvent;
+const SkillInfo = mod.SkillInfo;
 
-const SkillInfo = struct {
-    skill_name: []u8,
-    content: []u8,
-    loaded_at: ?i64 = null,
+/// JSON representation of a tool call
+const ToolCallJson = struct {
+    id: []const u8,
+    name: []const u8,
+    arguments: []const u8,
+};
 
-    pub fn deinit(self: SkillInfo, allocator: std.mem.Allocator) void {
-        allocator.free(self.skill_name);
-        allocator.free(self.content);
-    }
+const SseEventLLMHistory = struct {
+    index: ?usize = null,
+    content: []const u8,
+    type: []const u8 = "full",
+    session_id: []const u8,
+    model: []const u8,
+    cwd: []const u8,
+    reasoning_content: ?[]const u8 = null,
+    role: []const u8 = "assistant",
+    finish_reason: ?[]const u8 = null,
+    tool_calls_json: ?[]const u8 = null,
+    tool_call_id: ?[]const u8 = null,
+    tool_name: ?[]const u8 = null,
+    agent_name: ?[]const u8 = null,
+    loop_index: u32,
+    temperature: f32,
+    is_thinking: bool,
+    is_input: bool,
+    is_output: bool,
+    parent_session_id: ?[]const u8 = null,
+    parent_id: ?[]const u8 = null,
+    total_tokens: ?u32 = null,
+    diffview_before: ?[]const u8 = null,
+    diffview_after: ?[]const u8 = null,
+    image_url: ?[]const u8 = null,
+    session_skills: ?[]const SkillInfo = null,
 };
 
 pub const OnEventInputLLMHistory = struct {
@@ -25,7 +52,7 @@ pub const OnEventInputLLMHistory = struct {
     reasoning_content: ?[]const u8,
     role: ?[]const u8,
     finish_reason: ?[]const u8,
-    tool_calls_json: ?[]agent.ToolCall,
+    tool_calls_json: ?[]const u8,
     tool_call_id: ?[]const u8,
     tool_name: ?[]const u8 = null,
     agent_name: ?[]const u8,
@@ -40,17 +67,19 @@ pub const OnEventInputLLMHistory = struct {
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
     image_url: ?[]const u8 = null,
-    session_skills: ?[]const SkillInfo = null,
+    session_skills: []const SkillInfo,
 };
 
-pub const OnEventSendLLMHistoryInput = struct { allocator: std.mem.Allocator, io: std.Io, logger: ?*logger_mod, event_bus: event_bus_mod.EventBus, obj: OnEventInputLLMHistory };
+pub const OnEventSendLLMHistoryInput = struct { allocator: std.mem.Allocator, io: std.Io, logger: ?*logger_mod.Logger, event_bus: *event_bus_mod.EventBus, entity: OnEventInputLLMHistory };
 
 pub fn onEventSendLLMHistory(
     obj: OnEventSendLLMHistoryInput,
 ) !void {
-    const input = obj.obj;
+    const input = obj.entity;
     const log = obj.logger;
-
+    const session_id = input.session_id;
+    const allocator = obj.allocator;
+    const event_bus = obj.event_bus;
 
     // Trace: log what content we're receiving
     if (input.content) |c| {
@@ -93,36 +122,20 @@ pub fn onEventSendLLMHistory(
     defer if (sanitized_reasoning) |s| allocator.free(s);
 
     // Build tool_calls JSON array if present
-    var tool_calls_json: ?[]const ToolCallJson = null;
-    var tool_calls_owned: std.ArrayList(ToolCallJson) = .empty;
-    defer if (tool_calls_json == null) tool_calls_owned.deinit(allocator);
-
-    if (input.tool_calls_json) |calls| {
-        for (calls) |call| {
-            try tool_calls_owned.append(allocator, .{
-                .id = call.id,
-                .name = call.function.name,
-                .arguments = call.function.arguments,
-            });
-        }
-        tool_calls_json = try tool_calls_owned.toOwnedSlice(allocator);
-    }
 
     // Convert llm_history.SkillInfo to local SkillInfo for SSE payload
     var session_skills_json: ?[]const SkillInfo = null;
     var session_skills_owned: std.ArrayList(SkillInfo) = .empty;
     defer if (session_skills_json == null) session_skills_owned.deinit(allocator);
 
-    if (input.session_skills) |skills| {
-        for (skills) |skill| {
-            try session_skills_owned.append(allocator, .{
-                .skill_name = skill.skill_name,
-                .content = skill.content,
-                .loaded_at = skill.loaded_at,
-            });
-        }
-        session_skills_json = try session_skills_owned.toOwnedSlice(allocator);
+    for (input.session_skills) |skill| {
+        try session_skills_owned.append(allocator, .{
+            .skill_name = skill.skill_name,
+            .content = skill.content,
+            .loaded_at = skill.loaded_at,
+        });
     }
+    session_skills_json = try session_skills_owned.toOwnedSlice(allocator);
 
     const payload = SseEventLLMHistory{
         .index = input.index,
@@ -133,7 +146,7 @@ pub fn onEventSendLLMHistory(
         .reasoning_content = if (sanitized_reasoning) |s| s else input.reasoning_content,
         .role = input.role orelse "assistant",
         .finish_reason = input.finish_reason,
-        .tool_calls_json = tool_calls_json,
+        .tool_calls_json = input.tool_calls_json,
         .tool_call_id = input.tool_call_id,
         .tool_name = input.tool_name,
         .agent_name = input.agent_name,

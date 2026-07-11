@@ -4,7 +4,6 @@ const LLMHistory = mod.LLMHistory;
 const nalarcore = mod.nalarcore;
 const sqlite = nalarcore.sqlite;
 
-
 pub const GetLLMHistoriesInput = struct {
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -22,8 +21,12 @@ pub fn getLLMHistories(
 
     const sql =
         \\SELECT
-        \\    h.id, h.session_id, h.model, h.created_at,
-        \\    h.response_content, h.finish_reason,
+        \\    h.id,
+        \\    h.session_id,
+        \\    h.model,
+        \\    h.created_at,
+        \\    h.response_content,
+        \\    h.finish_reason,
         \\    COALESCE(h.role, 'assistant'),
         \\    COALESCE(h.tool_calls_json, ''),
         \\    COALESCE(h.reasoning_content, ''),
@@ -66,7 +69,7 @@ pub fn getLLMHistories(
             .response_content = try allocator.dupe(u8, row.values[4]),
             .finish_reason = try allocator.dupe(u8, row.values[5]),
             .role = try allocator.dupe(u8, row.values[6]),
-            .tools = try allocator.dupe(u8, row.values[7]),
+            .tool_calls_json = try allocator.dupe(u8, row.values[7]),
             .reasoning_content = if (row.values[8].len > 0) try allocator.dupe(u8, row.values[8]) else null,
             .agent = try allocator.dupe(u8, row.values[9]),
             .session_name = try allocator.dupe(u8, row.values[10]),

@@ -32,7 +32,7 @@ pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, mess
     // Tool role is handled separately above
     if (role != .tool) {
         var tool_calls: ?[]agent.ToolCall = null;
-        const toolSource = if (message.tools.len > 0) message.tools else message.response_content;
+        const toolSource = if (message.tool_calls_json.len > 0) message.tool_calls_json else message.response_content;
         const tcParsed = json.parseFromSlice(json.Value, allocator, toolSource, .{}) catch null;
         if (tcParsed) |tcp| {
             defer tcp.deinit();
