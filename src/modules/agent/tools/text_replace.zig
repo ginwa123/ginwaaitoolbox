@@ -11,7 +11,7 @@ const AgentTool = schemas.AgentTool;
 /// during decoding to avoid double-decoding).
 /// Local definition (rather than importing the canonical one) keeps
 /// `text_replace.zig` free of cross-module dependencies.
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+pub fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     for (s) |c| {
@@ -86,7 +86,7 @@ pub const DiffView = struct {
 };
 
 /// Normalize CRLF (\r\n) to LF (\n), always returns a new allocation
-fn normalizeLineEndings(allocator: std.mem.Allocator, content: []u8) ![]u8 {
+pub fn normalizeLineEndings(allocator: std.mem.Allocator, content: []u8) ![]u8 {
     if (std.mem.indexOf(u8, content, "\r\n") == null) {
         // No CRLF found — still allocate so caller always owns the result
         return try allocator.dupe(u8, content);
@@ -171,7 +171,7 @@ fn stripTrailingWhitespace(allocator: std.mem.Allocator, content: []u8, had_crlf
 }
 
 /// Convert LF to CRLF
-fn lfToCrlf(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+pub fn lfToCrlf(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     if (std.mem.indexOf(u8, content, "\n") == null) {
         return try allocator.dupe(u8, content);
     }
@@ -210,7 +210,7 @@ fn lfToCrlf(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
 /// new content
 /// >>>>>>> AFTER
 /// ```
-fn generateUnifiedDiff(
+pub fn generateUnifiedDiff(
     allocator: std.mem.Allocator,
     raw: []const u8,
     first: usize,
@@ -571,12 +571,3 @@ pub const text_replace_tool: AgentTool = .{
     },
 };
 
-// ============================================================================
-// Test Compatibility Aliases
-// ============================================================================
-
-/// Alias for executeTextReplace (snake_case name used by tests)
-/// Takes individual parameters instead of TextReplaceInput struct
-pub fn text_replace(allocator: std.mem.Allocator, path: []const u8, old_str: []const u8, new_str: []const u8) !void {
-    _ = try executeTextReplace(allocator, path, old_str, new_str);
-}

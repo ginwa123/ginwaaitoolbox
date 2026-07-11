@@ -9,15 +9,24 @@
  * The parsers share two helpers:
  *
  *   - `extractTag(content, tag, multiline)` — finds `<tag>…</tag>` and returns
- *     its inner text. `multiline` defaults to true so the body can span
- *     multiple lines (e.g., `<content>…big multi-line text…</content>`).
+ *     its inner text, XML-unescaped (`&lt;` → `<`, `&gt;` → `>`, `&quot;` → `"`,
+ *     `&apos;` → `'`, `&amp;` → `&`). The backend's `toXmlSuccess` /
+ *     `xmlError` helpers escape these 5 characters on serialization; without
+ *     this unescape, downstream consumers (Vue templates, code-block
+ *     renderers) would see literal `&quot;` / `&lt;` instead of `"` / `<`
+ *     when the underlying text contained those characters (e.g. a quote
+ *     inside a source-code diff). `multiline` defaults to true so the body
+ *     can span multiple lines.
  *
  *   - `extractAll(content, tag)` — finds every `<tag>…</tag>` occurrence and
- *     returns an array of inner-text values. Useful for repeated tags like
- *     `<skill>…</skill>`.
+ *     returns an array of inner-text values (XML-unescaped). Useful for
+ *     repeated tags like `<skill>…</skill>`.
  *
- * Parsers are pure functions; safe to call inside `computed`. They do NOT
- * XML-unescape the inner text — the upstream `unwrapToolOutput` does that.
+ * Parsers are pure functions; safe to call inside `computed`. They DO
+ * XML-unescape the inner text via `unescapeXml()` — this is necessary
+ * because the XML inner content is escaped on the backend (e.g. `"`
+ * becomes `&quot;`) and un-escaping here gives the parsed values their
+ * intended byte-level fidelity.
  *
  * Conventions:
  *   - Singular boolean fields default to `false` (no <x>true</x> tag = false).
@@ -25,7 +34,30 @@
  *   - Optional numbers return `null` when missing or unparseable.
  */
 
-export function extractTag(content: string, tag: string, multiline = true): string | null {
+/**
+ * Decode XML entities produced by the backend's `toXmlSuccess` / `xmlError`.
+ * Mirrors `llm_history.zig xmlEscape` (its inverse) exactly. The order matters:
+ * `&amp;` MUST be replaced last, otherwise the other replacements would
+ * double-decode earlier `&amp;`-prefixed entities (e.g. `&amp;quot;` would
+ * incorrectly become `"` instead of `&quot;`).
+ *
+ * Decodes:
+ *   - `&lt;`   → `<`
+ *   - `&gt;`   → `>`
+ *   - `&quot;` → `"`
+ *   - `&apos;` → `'`
+ *   - `&amp;`  → `&`   (last)
+ */
+export function unescapeXml(s: string): string {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+function findTag(content: string, tag: string): string | null {
   const openSeq = `<${tag}>`
   const closeSeq = `</${tag}>`
   const openIdx = content.indexOf(openSeq)
@@ -34,6 +66,17 @@ export function extractTag(content: string, tag: string, multiline = true): stri
   const closeIdx = content.indexOf(closeSeq, valueStart)
   if (closeIdx === -1) return null
   return content.slice(valueStart, closeIdx)
+}
+
+export function extractTag(content: string, tag: string, _multiline = true): string | null {
+  // The `_multiline` flag is preserved for back-compat with the original
+  // public signature but is currently a no-op (the implementation already
+  // supports multiline inner content via `indexOf` matching the first `<tag>`
+  // / `</tag>` pair, which works for both single-line and multi-line
+  // bodies). Existing call sites pass only `content` and `tag`.
+  const raw = findTag(content, tag)
+  if (raw === null) return null
+  return unescapeXml(raw)
 }
 
 /** Trim helper used by every boolean / number parser. */
