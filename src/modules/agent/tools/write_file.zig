@@ -73,6 +73,11 @@ pub fn toXmlError(allocator: std.mem.Allocator, err: anyerror, path: []const u8)
         error.InputOutput => std.fmt.allocPrint(allocator, "Failed to write file '{s}'. Check write permissions.", .{path}) catch return "<success>false</success><file_write>{s}</file_write><error>UnknownError</error>",
         else => std.fmt.allocPrint(allocator, "Unexpected error: {s}", .{@errorName(err)}) catch return "<success>false</success><file_write>{s}</file_write><error>UnknownError</error>",
     };
+    // From here on, `message` is always a heap allocation (the catch
+    // branches above `return` early when allocPrint fails). Release it
+    // on every return path — both success (the wrapped XML embeds
+    // `message` by value) and the outer-catch fallback.
+    defer allocator.free(message);
     return std.fmt.allocPrint(allocator, "<success>false</success><file_write>{s}</file_write><error>{s}</error>", .{ path, message }) catch "<success>false</success><file_write>{s}</file_write><error>UnknownError</error>";
 }
 
