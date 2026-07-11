@@ -48,6 +48,15 @@ typedef struct {
     // (right-click → Inspect Element → DevTools). Off by default in
     // production; enable with the nalar-desktop `--devtools` flag.
     bool                       enable_developer_extras;
+    // When non-null, paths under app://localhost/api/* are proxied to
+    // this base URL (e.g. "http://127.0.0.1:8081"). Lets the webapp
+    // use relative `/api/...` fetches from a webview served off the
+    // app:// scheme — the scheme handler forwards the request to nalar
+    // running on its own port, so the webview and the API never share
+    // a port. When null, all app:// requests are answered from the
+    // asset table (no API proxy; the webapp would need absolute URLs
+    // + CORS, or no API access at all).
+    const char*                api_proxy_base; // nullable, e.g. "http://127.0.0.1:8081"
 } nalar_webview_config;
 
 /// Create a window, load the given URL, and prepare to run the event loop.

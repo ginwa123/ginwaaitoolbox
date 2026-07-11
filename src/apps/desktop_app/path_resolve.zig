@@ -76,13 +76,17 @@ pub fn resolve(
     return null;
 }
 
-/// Return the absolute path to the running executable. Linux reads
-/// `/proc/self/exe` via `readlink(2)`. macOS/Windows are not implemented
-/// in this chunk — Chunk 8's main.zig will fall back to "." on those
-/// platforms, which causes `resolve()` to skip step 2 and use $PATH.
+/// Return the absolute path to the running executable.
+///
+/// Linux reads `/proc/self/exe` via `readlink(2)`. macOS uses Zig's
+/// std.process.executablePath (which dispatches to `_NSGetExecutablePath`
+/// from dyld under the hood, so no extra framework link is required).
+/// Windows is not implemented — the caller falls back to "." which causes
+/// `resolve()` to skip step 2 and use $PATH.
 pub fn selfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {
     return switch (builtin.os.tag) {
         .linux => linuxSelfExePath(allocator),
+        .macos => macosSelfExePath(allocator),
         else => return error.UnsupportedPlatform,
     };
 }
@@ -98,6 +102,28 @@ fn linuxSelfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {
     // size, so a value > 4096 means an error occurred.
     if (rc > buf.len) return error.ReadLinkFailed;
     return allocator.dupe(u8, buf[0..rc]) catch return error.OutOfMemory;
+}
+
+fn macosSelfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {
+    // dyld's `_NSGetExecutablePath` (in libSystem, no extra framework
+    // link required) returns the path the kernel recorded at exec time.
+    // It may be a symlink; resolve() only does dirname + faccessat on
+    // the joined "nalar" path, so symlinks are fine here.
+    //
+    // We call the C function directly instead of going through
+    // `std.process.executablePath` because that requires an Io handle
+    // (`std.Io.Threaded`), and this function is called from main()
+    // before the platform event loop starts. Spinning up a Threaded
+    // instance for a single dyld lookup would be wasteful and would
+    // pull an allocator requirement into a path that today only needs
+    // the user's allocator.
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var bufsize: u32 = buf.len;
+    const rc = std.c._NSGetExecutablePath(&buf, &bufsize);
+    if (rc != 0) return error.ReadLinkFailed; // 0 == success; nonzero == bufsize was too small
+    // dyld null-terminates and returns the byte count via bufsize on success
+    const n: usize = bufsize;
+    return allocator.dupe(u8, buf[0..n]) catch return error.OutOfMemory;
 }
 
 fn fileExists(path: []const u8) bool {

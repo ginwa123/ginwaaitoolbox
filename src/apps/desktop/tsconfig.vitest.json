@@ -3,7 +3,11 @@
 
   // Override to include only test files and clear exclusions.
   // Application code imported in tests is automatically included via module resolution.
-  "include": ["src/**/__tests__/*", "env.d.ts"],
+  // `src/**/*.vue` is included so test files that import .vue components
+  // resolve correctly under `vue-tsc --build` (without this, TS2307
+  // "Cannot find module ... .vue" errors fire on every spec that
+  // imports a SFC).
+  "include": ["src/**/__tests__/*", "src/**/*.vue", "env.d.ts"],
   "exclude": [],
 
   "compilerOptions": {

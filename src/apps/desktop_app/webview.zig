@@ -40,6 +40,15 @@ pub const Config = extern struct {
     /// Inspect Element → DevTools). Off by default; enable with the
     /// nalar-desktop `--devtools` flag.
     enable_developer_extras: bool = false,
+    /// Base URL the platform's scheme handler forwards `app://localhost/api/*`
+    /// requests to. Lets the webview and the nalar API run on different
+    /// ports — the webview is served entirely off the `app://` scheme
+    /// (no HTTP port), and `/api/*` calls in the webapp are proxied to
+    /// this URL. When null, the scheme handler only serves assets and
+    /// `/api/*` requests get a 502.
+    ///
+    /// Format: "http://<host>:<port>" (no trailing slash).
+    api_proxy_base: ?[*:0]const u8 = null,
 };
 
 // extern "c" declarations of the C ABI. The implementations live in

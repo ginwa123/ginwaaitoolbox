@@ -7,6 +7,7 @@ fn createPlatformExe(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     name: []const u8,
+    use_system_linux_libs: bool,
 ) *std.Build.Step.Compile {
     const exe = b.addExecutable(.{
         .name = name,
@@ -19,17 +20,45 @@ fn createPlatformExe(
     });
     exe.root_module.linkSystemLibrary("c", .{});
     if (target.result.os.tag == .linux) {
+        // Only link system sqlite3/ssl/crypto when running on a Linux
+        // host (where those libs are installed as Linux .so files).
+        // When cross-compiling from macOS/Windows host, the system
+        // libs are not available as Linux ELF files on the host and
+        // linkSystemLibrary would fail. In that case, `mod` already
+        // carries the vendored sqlite3 amalgamation (added once in the
+        // shared-module post-setup), so sqlite3 symbols are satisfied.
+        // Zig 0.16's std.http TLS is pure Zig (std.crypto.tls) — it
+        // doesn't need libssl/libcrypto at link time, so dropping those
+        // is fine.
+        if (use_system_linux_libs) {
+            exe.root_module.linkSystemLibrary("sqlite3", .{});
+            exe.root_module.linkSystemLibrary("ssl", .{});
+            exe.root_module.linkSystemLibrary("crypto", .{});
+        }
+    } else if (target.result.os.tag == .macos) {
+        // Link Homebrew's system sqlite3 (installed at
+        // /opt/homebrew/opt/sqlite). Same rationale as Linux: Zig 0.16's
+        // pointer-authentication extension tags the vendored C
+        // amalgamation with mismatched tags vs. how Zig's runtime
+        // stores pointers, causing "LookasideSlot misaligned" panics
+        // inside sqlite3DbMallocRawNN under concurrent API load. The
+        // Homebrew dylib is built with proper Apple Clang flags and
+        // doesn't have this issue. `mod` does NOT add the vendored
+        // sqlite3 for macOS targets (see the mod setup below), so
+        // there's no symbol collision. The build will fail with a
+        // clear linker error if Homebrew's sqlite3 isn't installed.
+        // We pass the FULL PATH to the dylib because macOS's dyld
+        // search path doesn't include the Homebrew keg-only install
+        // location, and `linkSystemLibrary` with just a name doesn't
+        // search /opt/homebrew/opt/*. Add the dylib's directory to the
+        // linker search path AND link by name.
+        exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite/lib" });
         exe.root_module.linkSystemLibrary("sqlite3", .{});
-        exe.root_module.linkSystemLibrary("ssl", .{});
-        exe.root_module.linkSystemLibrary("crypto", .{});
+        exe.root_module.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite/include" });
     } else if (target.result.os.tag == .windows) {
-        // Vendor sqlite3 amalgamation for Windows — compile from
-        // source so the binary has sqlite3 support without relying on
-        // system package layout. On macOS, the `mod` already has
-        // sqlite3.c attached (added once at the shared-module post-
-        // setup), so the executable inherits it via the `imports`
-        // array — duplicating it here would emit two sqlite3.o copies
-        // and fail with "duplicate symbol definition".
+        // Vendor sqlite3 amalgamation for Windows. The cross-compile
+        // TESTS work for Windows because they don't hit the link-emit
+        // step that checks for the system libs.
         exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
         exe.root_module.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),
@@ -75,7 +104,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    b.installArtifact(exe);
+    const exe_install = b.addInstallArtifact(exe, .{});
 
     exe.root_module.linkSystemLibrary("c", .{});
     if (target.result.os.tag == .linux) {
@@ -341,17 +370,101 @@ pub fn build(b: *std.Build) void {
     const desktop_install = b.addInstallArtifact(desktop_exe, .{});
     b.getInstallStep().dependOn(&desktop_install.step);
 
+    // macOS .app bundle: a bare Mach-O executable launched from a
+    // terminal is treated by the WindowServer as a background process
+    // — no Dock icon, no focus, the window may never appear. Wrapping
+    // the binary in a .app bundle (with an Info.plist) registers it
+    // with Launch Services so the system treats it as a real GUI app.
+    // Run `zig build nalar-desktop-app` to produce `zig-out/nalar-desktop.app`.
+    if (target.result.os.tag == .macos) {
+        const app_bundle_step = b.step("nalar-desktop-app", "Build nalar-desktop as a macOS .app bundle");
+
+        // Install the Info.plist into zig-out/nalar-desktop.app/Contents/.
+        // We use a generated file (cached) for the plist contents.
+        const plist_contents: []const u8 =
+            \\<?xml version="1.0" encoding="UTF-8"?>
+            \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            \\<plist version="1.0">
+            \\<dict>
+            \\    <key>CFBundleName</key>
+            \\    <string>nalar-desktop</string>
+            \\    <key>CFBundleDisplayName</key>
+            \\    <string>Nalar</string>
+            \\    <key>CFBundleIdentifier</key>
+            \\    <string>dev.ginwa.nalar-desktop</string>
+            \\    <key>CFBundleVersion</key>
+            \\    <string>1</string>
+            \\    <key>CFBundleShortVersionString</key>
+            \\    <string>1.0.0</string>
+            \\    <key>CFBundlePackageType</key>
+            \\    <string>APPL</string>
+            \\    <key>CFBundleExecutable</key>
+            \\    <string>nalar-desktop</string>
+            \\    <key>LSMinimumSystemVersion</key>
+            \\    <string>11.0</string>
+            \\    <key>NSHighResolutionCapable</key>
+            \\    <true/>
+            \\    <key>NSPrincipalClass</key>
+            \\    <string>NSApplication</string>
+            \\    <key>LSUIElement</key>
+            \\    <false/>
+            \\</dict>
+            \\</plist>
+        ;
+
+        // `addWriteFiles` creates a file in the cache; `addInstallFile`
+        // moves it to the install tree. We do both because addInstallFile
+        // expects a Source, and a generated string in-memory is one.
+        const plist_write = b.addWriteFiles();
+        const plist_src = plist_write.add("Info.plist", plist_contents);
+        const install_plist = b.addInstallFile(
+            plist_src,
+            b.pathJoin(&.{ "nalar-desktop.app", "Contents", "Info.plist" }),
+        );
+
+        // Install the desktop binary into
+        // zig-out/nalar-desktop.app/Contents/MacOS/.
+        const install_binary = b.addInstallFile(
+            desktop_exe.getEmittedBin(),
+            b.pathJoin(&.{ "nalar-desktop.app", "Contents", "MacOS", "nalar-desktop" }),
+        );
+
+        // Install the nalar (service) binary into the same directory.
+        // The desktop looks for "nalar" next to itself (path_resolve
+        // selfExePath) and falls back to $PATH. When the desktop runs
+        // from inside the .app bundle, "next to self" is
+        // Contents/MacOS/, so nalar must be there too — otherwise the
+        // auto-spawn fails with NalarNotFound and the app exits
+        // before showing a window.
+        const install_nalar = b.addInstallFile(
+            exe.getEmittedBin(),
+            b.pathJoin(&.{ "nalar-desktop.app", "Contents", "MacOS", "nalar" }),
+        );
+
+        // Wire it up. We don't depend on the main install step (the
+        // one that writes zig-out/bin/nalar-desktop) — addInstallFile
+        // pulls the binary directly from its build artifact.
+        app_bundle_step.dependOn(&install_binary.step);
+        app_bundle_step.dependOn(&install_nalar.step);
+        app_bundle_step.dependOn(&install_plist.step);
+    }
+
     // Make the desktop binary depend on the codegen step. The codegen runs
     // `bun run build` first (via build_webapp_step) and then walks dist/ to
     // emit webapp_assets.zig, so by the time desktop_exe compiles the
     // embedded/ directory is populated with the latest assets.
     desktop_exe.step.dependOn(&codegen.step);
 
-    // `zig build nalar-desktop` alias — depends on the install step (which
-    // already includes desktop_exe via b.installArtifact above), so the
-    // binary ends up in zig-out/bin/.
-    const build_nalar_desktop = b.step("nalar-desktop", "Build the nalar-desktop binary");
+    // `zig build nalar-desktop` alias — depends on the install step
+    // (which already includes desktop_exe via b.installArtifact
+    // above) AND on the nalar install (so the auto-spawn can find
+    // nalar next to itself in zig-out/bin/). Without the nalar
+    // install dependency, the desktop would fail at runtime with
+    // "Cannot find 'nalar' binary" because the bare binary
+    // directory only contains nalar-desktop.
+    const build_nalar_desktop = b.step("nalar-desktop", "Build the nalar-desktop binary (and nalar for auto-spawn)");
     build_nalar_desktop.dependOn(b.getInstallStep());
+    build_nalar_desktop.dependOn(&exe_install.step);
 
     const run_desktop = b.step("run:desktop-app", "Run the nalar desktop wrapper");
     const run_desktop_cmd = b.addRunArtifact(desktop_exe);
@@ -404,6 +517,22 @@ pub fn build(b: *std.Build) void {
         mod.linkSystemLibrary("ssl", .{});
         mod.linkSystemLibrary("crypto", .{});
         mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    } else if (target.result.os.tag == .macos and !add_linux_libs) {
+        // macOS native build: link Homebrew's system sqlite3 dylib into
+        // `mod` itself (NOT vendored C source). The exe created by
+        // `createPlatformExe` ALSO calls `linkSystemLibrary("sqlite3")`
+        // — both mods are the SAME dylib so the linker de-duplicates
+        // it. We add the dylib directory to mod's library search path
+        // AND the include path so `@cImport("sqlite3.h")` in
+        // Sqlite.zig finds the header at cimport time. Without this,
+        // the linker symbols are unresolved because the sqlite3
+        // references live in mod's generated object code (e.g. from
+        // @cImport translating to opaque struct stubs, or from any
+        // Zig code that calls into c.sqlite3_*), but the actual
+        // dylib is only linked into exe's namespace.
+        mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite/lib" });
+        mod.linkSystemLibrary("sqlite3", .{});
+        mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite/include" });
     } else {
         // The cross-compile targets (or non-Linux host builds) need the
         // vendored sqlite3 amalgamation to satisfy sqlite3_* references
@@ -443,7 +572,7 @@ pub fn build(b: *std.Build) void {
         .os_tag = .linux,
         .abi = .gnu,
     });
-    const linux_exe = createPlatformExe(b, mod, linux_target, optimize, "nalarcore-linux-x86_64");
+    const linux_exe = createPlatformExe(b, mod, linux_target, optimize, "nalarcore-linux-x86_64", add_linux_libs);
     linux_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
     const install_linux = b.addInstallArtifact(linux_exe, .{});
@@ -459,7 +588,7 @@ pub fn build(b: *std.Build) void {
     // auto-appends `.exe` on Windows targets, so passing a name with `.exe`
     // already produces the doubled suffix `nalarcore-windows-x86_64.exe.exe`
     // (which the CI yaml's verify step doesn't expect).
-    const windows_exe = createPlatformExe(b, mod, windows_target, optimize, "nalarcore-windows-x86_64");
+    const windows_exe = createPlatformExe(b, mod, windows_target, optimize, "nalarcore-windows-x86_64", add_linux_libs);
     const install_windows = b.addInstallArtifact(windows_exe, .{});
     windows_step.dependOn(&install_windows.step);
 
@@ -468,7 +597,7 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .x86_64,
         .os_tag = .macos,
     });
-    const macos_exe = createPlatformExe(b, mod, macos_target, optimize, "nalarcore-macos-x86_64");
+    const macos_exe = createPlatformExe(b, mod, macos_target, optimize, "nalarcore-macos-x86_64", add_linux_libs);
     const install_macos = b.addInstallArtifact(macos_exe, .{});
     macos_step.dependOn(&install_macos.step);
 
@@ -477,12 +606,12 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .aarch64,
         .os_tag = .macos,
     });
-    const macos_arm_exe = createPlatformExe(b, mod, macos_arm_target, optimize, "nalarcore-macos-aarch64");
+    const macos_arm_exe = createPlatformExe(b, mod, macos_arm_target, optimize, "nalarcore-macos-aarch64", add_linux_libs);
     const install_macos_arm = b.addInstallArtifact(macos_arm_exe, .{});
     macos_arm_step.dependOn(&install_macos_arm.step);
 
     const linux_system_step = b.step("install:linux:system", "Build for Linux x86_64 and install to system");
-    const linux_system_exe = createPlatformExe(b, mod, target, optimize, "nalar");
+    const linux_system_exe = createPlatformExe(b, mod, target, optimize, "nalar", add_linux_libs);
     linux_system_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_system_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
     linux_system_step.dependOn(&linux_system_exe.step);
@@ -511,7 +640,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     dev_exe.root_module.linkSystemLibrary("c", .{});
-    if (target.result.os.tag == .linux) {
+    if (target.result.os.tag == .linux and add_linux_libs) {
         dev_exe.root_module.linkSystemLibrary("sqlite3", .{});
         dev_exe.root_module.linkSystemLibrary("ssl", .{});
         dev_exe.root_module.linkSystemLibrary("crypto", .{});
@@ -618,11 +747,12 @@ pub fn build(b: *std.Build) void {
     // file — so my banner would see a stale (possibly deleted) bin/ and
     // print missing-file lines.
     //
-    // `dependOn` takes `*Step` not `*const *Step` — `install_linux` and
-    // `desktop_install` are both `*InstallArtifact` whose `.step` field
-    // is what `dependOn` needs.
+    // `dependOn` takes `*Step` not `*const *Step` — `install_linux`,
+    // `desktop_install`, and `exe_install` are all `*InstallArtifact`
+    // whose `.step` field is what `dependOn` needs.
     build_all_step.dependOn(&install_linux.step);
     build_all_step.dependOn(&desktop_install.step);
+    build_all_step.dependOn(&exe_install.step);
     build_all_step.dependOn(&build_banner.step);
 
     // Default: same as `build:all`. Without this, `zig build` (no args)

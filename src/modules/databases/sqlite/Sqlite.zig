@@ -76,7 +76,7 @@ pub const Error = error{
 /// lazily because the struct field of the same name is referenced only
 /// when SqliteBackend is actually used.
 pub const SqliteBackend = struct {
-    const c = if (builtin.os.tag == .linux)
+    const c = if (builtin.os.tag == .linux or builtin.os.tag == .macos)
         @cImport(@cInclude("sqlite3.h"))
     else
         struct {
@@ -145,7 +145,7 @@ pub const SqliteBackend = struct {
 
     pub fn exec(self: *SqliteBackend, allocator: std.mem.Allocator, sql: []const u8, argv: []const []const u8) Error!void {
         _ = allocator;
-        try self.mutex.lock(self.io);
+        self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const db = self.db orelse return Error.DatabaseNotFound;
 
@@ -191,7 +191,7 @@ pub const SqliteBackend = struct {
     }
 
     pub fn queryRow(self: *SqliteBackend, allocator: std.mem.Allocator, sql: []const u8, argv: []const []const u8) Error!Row {
-        try self.mutex.lock(self.io);
+        self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
         const db = self.db orelse return Error.DatabaseNotFound;
@@ -287,7 +287,7 @@ pub const SqliteBackend = struct {
     };
 
     pub fn query(self: *SqliteBackend, allocator: std.mem.Allocator, sql: []const u8, argv: []const []const u8) Error!Rows {
-        try self.mutex.lock(self.io);
+        self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const db = self.db orelse return Error.DatabaseNotFound;
 

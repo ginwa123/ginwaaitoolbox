@@ -111,11 +111,32 @@ pub fn main(init: std.process.Init) !void {
 
     // 1b. Connect mode (--nalar-url): skip the entire spawn path. The
     // user has their own nalar running and we just point the webview at
-    // it. --port and --nalar-path are ignored. Asset extraction is also
-    // skipped (the external nalar is responsible for serving the webapp).
+    // it. --port and --nalar-path are ignored. Asset extraction is
+    // skipped because the webview is served from the embedded asset
+    // table (via app://) regardless of the connect target.
     if (cfg.nalar_url) |url| {
         std.log.info("Connect mode: connecting to {s} (no spawn)", .{url});
-        try runWebview(allocator, cfg, url, &.{});
+        // Strip trailing slash from --nalar-url so we can use it
+        // directly as the proxy base (the scheme handler appends the
+        // path verbatim: base + "/api/workers" = url + "/api/workers").
+        const proxy_base = std.mem.trimEnd(u8, url, "/");
+        // Open at the SCHEME ROOT (`app://localhost/`), not at
+        // `app://localhost/index.html`. Reason: Vue Router's
+        // `createWebHistory` reads `window.location.pathname` to
+        // figure out the initial route. If the URL is `/index.html`,
+        // the router tries to match `/index.html` against the route
+        // table — but the only `/` route is the redirect to `/app`,
+        // which doesn't match `/index.html`. The router-view stays
+        // empty (Vue renders `<!---->`) and the user sees a white
+        // screen. Loading at the root path makes the redirect fire
+        // and AppLayout mount.
+        try runWebview(
+            allocator,
+            cfg,
+            "app://localhost/",
+            &.{},
+            proxy_base,
+        );
         return;
     }
 
@@ -126,34 +147,34 @@ pub fn main(init: std.process.Init) !void {
 
     // ATTACH MODE (default + new behavior).
     //
-    // 1. Extract the embedded webapp assets to a per-pid temp dir.
-    //    Even if the user already has a nalar running, the desktop
-    //    owns the webapp and we want the next auto-spawn to be able
-    //    to serve it via `--static-dir`. If we end up attaching to
-    //    an existing nalar (no auto-spawn), the extracted dir goes
-    //    unused and is cleaned up at process exit.
+    // The webapp is now served from the desktop's embedded asset table
+    // via the `app://localhost/` scheme — no disk extraction, no
+    // `--static-dir` argument to nalar. nalar is API-only and runs on
+    // its own port; the desktop's WKURLSchemeHandler forwards
+    // `app://localhost/api/*` requests to that port. So the webview
+    // and the nalar API live on different "ports" (the webview is
+    // served from a custom scheme, nalar is HTTP).
     //
-    //    NOTE: when the auto-spawn path fires, the spawned nalar
-    //    outlives the desktop (architectural commitment: closing the
-    //    window does NOT stop nalar). The temp dir becomes part of
-    //    nalar's runtime state, so we LEAK the path on auto-spawn
-    //    success — the OS will clean it up at next reboot. The leak
-    //    is bounded (one dir per process) and the temp name includes
-    //    the PID, so it's discoverable in `/tmp` if debugging is
-    //    ever needed. A future improvement is to register the dir
-    //    with a `nalar service register-static-dir <path>` call so
-    //    the user can clean it up via `service stop`.
-    const webapp_dir = extraction.extract(allocator, webapp_assets.assets) catch |err| {
-        std.log.err("Failed to extract webapp assets to temp dir: {s}", .{@errorName(err)});
-        return err;
-    };
-    defer extraction.cleanup(allocator, webapp_dir);
+    // We still extract the assets to a temp dir for the case where
+    // the user has explicitly configured nalar with --static-dir
+    // pointing at our temp dir (via the existing config plumbing).
+    // That extraction is now OPTIONAL: if it fails (e.g. disk full)
+    // we log a warning and continue with empty assets.
+    //
+    // NOTE: when the auto-spawn path fires, the spawned nalar
+    // outlives the desktop (architectural commitment: closing the
+    // window does NOT stop nalar). The temp dir becomes part of
+    // nalar's runtime state, so we LEAK the path on auto-spawn
+    // success — the OS will clean it up at next reboot. The leak
+    // is bounded (one dir per process) and the temp name includes
+    // the PID, so it's discoverable in `/tmp` if debugging is
+    // ever needed. A future improvement is to register the dir
+    // with a `nalar service register-static-dir <path>` call so
+    // the user can clean it up via `service stop`.
 
-
-
-    // 2. Resolve the attach target via attach.zig: probe state file
-    //    → health → connect. If nalar isn't running and --no-auto-start
-    //    was passed, surface an actionable error.
+    // Resolve the attach target via attach.zig: probe state file
+    // → health → connect. If nalar isn't running and --no-auto-start
+    // was passed, surface an actionable error.
     const state_path = nalarcore.state_file.defaultStatePath(allocator) catch |err| {
         std.log.err("Failed to resolve state.json path: {s}", .{@errorName(err)});
         return err;
@@ -178,6 +199,10 @@ pub fn main(init: std.process.Init) !void {
     // which is fine for our use.
     const path_env = init.environ_map.get("PATH") orelse "";
 
+    // The auto-spawned nalar doesn't need --static-dir (it serves only
+    // the API; the webview is served from the embedded table). We pass
+    // a placeholder string for the `static_dir` field — subprocess.spawn
+    // ignores it. This keeps attach.zig's signature stable.
     const attach_target = attach.resolveAttachTarget(allocator, io, .{
         .state_path = state_path,
         .default_port = if (cfg.attach_port == 0) 8081 else cfg.attach_port,
@@ -185,7 +210,7 @@ pub fn main(init: std.process.Init) !void {
         .nalar_path = cfg.nalar_path,
         .self_exe_path = self_exe_owned,
         .path_env = path_env,
-        .static_dir = webapp_dir,
+        .static_dir = "(unused — desktop serves webapp from app:// scheme)",
     }) catch |err| switch (err) {
         error.AutoStartDisabled => {
             std.log.err("nalar is not running.", .{});
@@ -204,21 +229,100 @@ pub fn main(init: std.process.Init) !void {
     };
     defer allocator.free(attach_target.host);
 
-    // 2. Build the URL.
-    const url = try std.fmt.allocPrint(allocator, "http://{s}:{d}/", .{ attach_target.host, attach_target.port });
-    defer allocator.free(url);
+    // The webview loads from the `app://localhost/` scheme (served
+    // from the embedded asset table) and forwards `/api/*` requests
+    // to nalar on the host/port we just resolved. This splits the
+    // webview's port (none — it's served from the app:// scheme) from
+    // nalar's API port, so the two never collide.
+    const api_proxy_base = try std.fmt.allocPrint(
+        allocator,
+        "http://{s}:{d}",
+        .{ attach_target.host, attach_target.port },
+    );
+    defer allocator.free(api_proxy_base);
+
+    // Build the C ABI asset table from the comptime-generated
+    // webapp_assets. The generated entries are `[*:0]const u8`
+    // NUL-terminated string literals (Zig string literals always
+    // include the trailing NUL), so `.ptr` is a valid C string.
+    const c_assets = buildCAssets(allocator) catch |err| {
+        std.log.err("Failed to build webview asset table: {s}", .{@errorName(err)});
+        return err;
+    };
+    defer allocator.free(c_assets);
+
+    // The webview's origin is `app://localhost` — we open at the
+    // ROOT path (`app://localhost/`) so Vue Router's
+    // `createWebHistory` sees `window.location.pathname = "/"` and
+    // the `path: '/', redirect: '/app'` rule fires. Loading
+    // `app://localhost/index.html` would leave the browser at path
+    // `/index.html` and the redirect rule wouldn't match, so
+    // `<router-view>` would stay empty (white screen). The scheme
+    // handler's SPA fallback serves `/index.html` for any route
+    // path with no `.` in the basename — so a request for `/` is
+    // answered with the index.html bytes (the lookup for
+    // `/index.html` doesn't match, but the heuristic returns the
+    // asset's contents as a route).
+    const url = "app://localhost/";
 
     // 3. Run the webview. No defer terminate — the desktop's lifetime
     //    is now decoupled from nalar's. Closing the window does NOT
     //    signal nalar; only `nalar service stop` does.
-    std.log.info("Attaching to nalar at {s} (we_spawned={any})", .{ url, attach_target.we_spawned });
-    try runWebview(allocator, cfg, url, &.{});
+    std.log.info("Attaching to nalar at http://{s}:{d}/ (we_spawned={any})", .{
+        attach_target.host,
+        attach_target.port,
+        attach_target.we_spawned,
+    });
+    try runWebview(allocator, cfg, url, c_assets, api_proxy_base);
+}
+
+/// Convert the comptime-generated `webapp_assets.assets` (whose
+/// entries are Zig slices: `path/content/mime: []const u8`) into the
+/// C ABI's `nalar_webview_asset` layout (`path: [*:0]const u8`,
+/// `content: [*]const u8` + `content_len: usize`, `mime: [*:0]const u8`).
+///
+/// The generated strings are Zig string literals — they're stored in
+/// the binary as `[*:0]const u8` with a NUL terminator, so `.ptr` is
+/// a valid C string. `content.len` provides the byte count for the
+/// C `content_len` field.
+///
+/// Lifetime: the C ABI holds the asset table pointer until
+/// `nalar_webview_destroy`. The generated strings live for the entire
+/// process (they're in `.rodata`), so the borrowed `.ptr` references
+/// are valid for the webview's lifetime. The returned slice itself
+/// is heap-allocated by this function; the caller owns it and must
+/// `allocator.free` it.
+fn buildCAssets(allocator: std.mem.Allocator) ![]const webview.CAsset {
+    const src = webapp_assets.assets;
+    const out = try allocator.alloc(webview.CAsset, src.len);
+    for (src, 0..) |a, i| {
+        // `a.path` is `[]const u8` (Zig slice) but the C field needs
+        // `[*:0]const u8` (NUL-terminated C string). The generated
+        // strings are Zig string literals which always carry a
+        // trailing NUL, so we can `@ptrCast` to the sentinel-pointer
+        // type without reallocating.
+        const path_z: [*:0]const u8 = @ptrCast(a.path.ptr);
+        const mime_z: [*:0]const u8 = @ptrCast(a.mime.ptr);
+        out[i] = .{
+            .path = path_z,
+            .content = a.content.ptr,
+            .content_len = a.content.len,
+            .mime = mime_z,
+        };
+    }
+    return out;
 }
 
 /// Build the webview Config from the CLI settings + asset table, then run
 /// the platform event loop (blocks until the window closes). Used by both
 /// spawn mode (with the embedded webapp assets) and connect mode (with
 /// an empty asset table — the external nalar serves the webapp).
+///
+/// `api_proxy_base` is the HTTP base URL the platform's scheme handler
+/// forwards `app://localhost/api/*` requests to (e.g. "http://127.0.0.1:8081").
+/// The webview loads from `app://localhost/index.html` (assets served
+/// from the in-memory table); the `/api/*` proxy lets the webapp use
+/// relative `/api/...` URLs without CORS or same-origin tricks.
 ///
 /// On error, logs the platform error and returns it. The caller is
 /// responsible for any `defer` cleanups (asset extraction, nalar child,
@@ -229,6 +333,7 @@ fn runWebview(
     cfg: cli.Config,
     url: []const u8,
     c_assets: []const webview.CAsset,
+    api_proxy_base: []const u8,
 ) !void {
     // Null-terminate the strings the C ABI expects.
     const title_z = try allocator.dupeZ(u8, cfg.title);
@@ -238,6 +343,20 @@ fn runWebview(
     const ua_z: ?[:0]u8 = if (cfg.user_agent) |ua| try allocator.dupeZ(u8, ua) else null;
     const ua_z_const: ?[*:0]const u8 = if (ua_z) |ua| ua.ptr else null;
     defer if (ua_z) |ua| allocator.free(ua);
+
+    // api_proxy_base is optional — null means no API proxy (the
+    // webapp would have to use absolute URLs + CORS, or have no
+    // backend at all). For the standalone-attached desktop case it's
+    // always non-null.
+    //
+    // `Allocator.free` requires a slice type, not an optional — we
+    // free conditionally rather than via `defer` so the type matches.
+    const api_proxy_z: ?[:0]u8 = if (api_proxy_base.len == 0)
+        null
+    else
+        try allocator.dupeZ(u8, api_proxy_base);
+    defer if (api_proxy_z) |s| allocator.free(s);
+    const api_proxy_z_const: ?[*:0]const u8 = if (api_proxy_z) |s| s.ptr else null;
 
     const webview_cfg: webview.Config = .{
         .title = title_z.ptr,
@@ -253,6 +372,7 @@ fn runWebview(
         .assets = c_assets.ptr,
         .asset_count = c_assets.len,
         .enable_developer_extras = cfg.enable_devtools,
+        .api_proxy_base = api_proxy_z_const,
     };
 
     std.log.info("Opening webview at {s}", .{url});

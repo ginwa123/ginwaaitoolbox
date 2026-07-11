@@ -109,6 +109,22 @@ fn requiresRg() bool {
     return true;
 }
 
+// Resolve the absolute path of a `testing.TmpDir`. `tmpdir.sub_path` is
+// only the random basename (relative to `.zig-cache/tmp/`), so passing
+// it directly to `executeSearch` would force rg to look for it under
+// whatever cwd we pass — which is rarely `.zig-cache/tmp/` itself. We
+// expand to an absolute path so the cwd argument to `executeSearch`
+// (which the behavioral tests pin to `/tmp` to keep the spawn hermetic)
+// doesn't have to line up with where Zig's `tmpDir` helper actually
+// created the directory.
+//
+// Buffer must be large enough for `<cwd>/.zig-cache/tmp/<16-char
+// sub_path>` — `std.fs.max_path_bytes` (PATH_MAX) is plenty.
+fn tmpdirAbsPath(tmpdir: testing.TmpDir, io: std.Io, buf: []u8) ![]u8 {
+    const n = try tmpdir.dir.realPath(io, buf);
+    return buf[0..n];
+}
+
 test "search: pattern starting with -- is NOT interpreted as rg flag" {
     if (!requiresRg()) return;
 
@@ -125,10 +141,12 @@ test "search: pattern starting with -- is NOT interpreted as rg flag" {
         .sub_path = "marker.txt",
         .data = "this --help marker is here\nplain line\n",
     });
+    var abs_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try tmpdirAbsPath(tmpdir, io, &abs_path_buf);
 
     var result = try search.executeSearch(allocator, io, "/tmp", .{
         .pattern = "--help",
-        .path = &tmpdir.sub_path,
+        .path = tmpdir_path,
     });
     defer result.deinit(allocator);
 
@@ -156,10 +174,12 @@ test "search: pattern 'foo' in a dir with literal 'foo' finds it" {
         .sub_path = "a.txt",
         .data = "the foo is here\nboring\n",
     });
+    var abs_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try tmpdirAbsPath(tmpdir, io, &abs_path_buf);
 
     var result = try search.executeSearch(allocator, io, "/tmp", .{
         .pattern = "foo",
-        .path = &tmpdir.sub_path,
+        .path = tmpdir_path,
     });
     defer result.deinit(allocator);
 
@@ -245,10 +265,12 @@ test "search: binary snippet is sanitized to valid UTF-8" {
         .sub_path = "binary.dat",
         .data = binary_content,
     });
+    var abs_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try tmpdirAbsPath(tmpdir, io, &abs_path_buf);
 
     var result = try search.executeSearch(allocator, io, "/tmp", .{
         .pattern = "match_here",
-        .path = &tmpdir.sub_path,
+        .path = tmpdir_path,
         .max_output = 65536,
     });
     defer result.deinit(allocator);
@@ -283,14 +305,17 @@ test "search: max_results cap honored" {
         }
         break :blk try buf.toOwnedSlice(allocator);
     };
+    defer allocator.free(content);
     try tmpdir.dir.writeFile(io, .{
         .sub_path = "many.txt",
         .data = content,
     });
+    var abs_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try tmpdirAbsPath(tmpdir, io, &abs_path_buf);
 
     var result = try search.executeSearch(allocator, io, "/tmp", .{
         .pattern = "foo",
-        .path = &tmpdir.sub_path,
+        .path = tmpdir_path,
         .max_results = 5,
     });
     defer result.deinit(allocator);
