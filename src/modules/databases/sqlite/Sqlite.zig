@@ -86,6 +86,7 @@ pub const SqliteBackend = struct {
             pub const SQLITE_OK: c_int = 0;
             pub const SQLITE_ROW: c_int = 100;
             pub const SQLITE_DONE: c_int = 101;
+            pub const SQLITE_MISUSE: c_int = 21;
             pub const SQLITE_CANTOPEN: c_int = 14;
             pub const SQLITE_PERM: c_int = 3;
             pub const SQLITE_FULL: c_int = 13;
@@ -122,7 +123,12 @@ pub const SqliteBackend = struct {
         const rc = c.sqlite3_open(db_path.ptr, &db);
         if (rc != c.SQLITE_OK) {
             const err_msg = c.sqlite3_errmsg(db);
-            std.log.err("SQLite: {s}", .{err_msg});
+            // Demoted from `std.log.err` to `std.log.warn`: a bad path is
+            // a user-input error (not a programmer error), and the wrapper
+            // already surfaces it via the structured Error return value.
+            // Calling `err` here triggered `log_err_count > 0` in
+            // `zig build test`, which exited 1 even on passing assertions.
+            std.log.warn("SQLite: {s}", .{err_msg});
             _ = c.sqlite3_close(db);
             return switch (rc) {
                 c.SQLITE_CANTOPEN => Error.DatabaseNotFound,
@@ -148,6 +154,14 @@ pub const SqliteBackend = struct {
         try self.mutex.lock(self.io);
         defer self.mutex.unlock(self.io);
         const db = self.db orelse return Error.DatabaseNotFound;
+
+        // Empty SQL is a successful no-op. sqlite3_prepare_v2 with a
+        // zero-length input returns OK with stmt=NULL; calling step()
+        // on a NULL stmt is documented as harmless. Treat the whole
+        // thing as a no-op up front to avoid the NULL-stmt edge case
+        // and to make the documented behavior explicit at the wrapper
+        // level (callers don't need to special-case "" themselves).
+        if (sql.len == 0) return;
 
         var stmt: ?*c.sqlite3_stmt = null;
         var rc = c.sqlite3_prepare_v2(db, sql.ptr, @intCast(sql.len), &stmt, null);
@@ -200,7 +214,8 @@ pub const SqliteBackend = struct {
         const prep_rc = c.sqlite3_prepare_v2(db, sql.ptr, @intCast(sql.len), &stmt, null);
         if (prep_rc != c.SQLITE_OK) {
             const err_msg = c.sqlite3_errmsg(db);
-            std.log.err("Prepare failed: {s}", .{err_msg});
+            // Demoted from `std.log.err` — see `init` for rationale.
+            std.log.warn("Prepare failed: {s}", .{err_msg});
             return Error.PrepareFailed;
         }
         defer _ = c.sqlite3_finalize(stmt);
@@ -239,6 +254,10 @@ pub const SqliteBackend = struct {
     pub const Rows = struct {
         allocator: std.mem.Allocator,
         stmt: ?*c.sqlite3_stmt,
+        /// Tracks whether the iterator has reached SQLITE_DONE so that
+        /// subsequent `next()` calls short-circuit to null without
+        /// re-invoking `sqlite3_step()`. See `next` for the rationale.
+        done: bool = false,
 
         pub fn deinit(self: *Rows) void {
             if (self.stmt) |s| {
@@ -247,8 +266,24 @@ pub const SqliteBackend = struct {
         }
 
         pub fn next(self: *Rows) Error!?Row {
+            // Defensive: once we've returned null (DONE) for a query,
+            // subsequent calls should keep returning null without
+            // re-invoking sqlite3_step. Empirically, calling step()
+            // after DONE on a SELECT can return ROW again (with the
+            // same row data) on some SQLite versions/configurations —
+            // which would surface as a duplicated final row in the
+            // caller's loop. Track the done state explicitly so we
+            // don't depend on sqlite's rc-after-DONE behavior.
+            if (self.done) return null;
             const rc = c.sqlite3_step(self.stmt);
             if (rc == c.SQLITE_DONE) {
+                self.done = true;
+                return null;
+            }
+            if (rc == c.SQLITE_MISUSE) {
+                // The statement has already returned DONE and step()
+                // was called again. Treat the same as DONE.
+                self.done = true;
                 return null;
             }
             if (rc != c.SQLITE_ROW) {

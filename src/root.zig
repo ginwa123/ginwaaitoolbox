@@ -432,6 +432,7 @@ pub const startup = @import("startup.zig");
 test {
     _ = @import("ai_workflow/tui/test_runner.zig");
     _ = @import("modules/agent/test_runner.zig");
+    _ = @import("modules/databases/test_runner.zig");
     _ = @import("modules/event_bus/src/test_runner.zig");
     _ = @import("modules/http/test_runner.zig");
     _ = @import("modules/logger/test_runner.zig"); // needs Zig 0.16 API updates
