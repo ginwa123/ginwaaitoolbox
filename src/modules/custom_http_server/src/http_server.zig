@@ -658,19 +658,30 @@ pub const RequestBuffer = struct {
         const header_end = std.mem.indexOf(u8, data, "\r\n\r\n") orelse return null;
         const headers = data[0..header_end];
 
-        // Try different search patterns
-        const cl_pattern1 = "Content-Length:";
-
-        const cl_pos = std.mem.indexOf(u8, headers, cl_pattern1);
+        // Scan header lines for a case-insensitive "content-length" prefix.
+        // Matches the case-insensitive scan in `readFullRequest` below
+        // so a static call sees the same answer as the streaming call.
+        var cl_pos: ?usize = null;
+        var lines = std.mem.splitSequence(u8, headers, "\r\n");
+        while (lines.next()) |line| {
+            if (line.len >= 15 and std.ascii.eqlIgnoreCase(line[0..14], "content-length")) {
+                cl_pos = @intCast(line.ptr - headers.ptr);
+                break;
+            }
+        }
         if (cl_pos == null) {
             return null;
         }
 
-        const cl_start = cl_pos.? + cl_pattern1.len;
+        const cl_start = cl_pos.? + 14; // skip "content-length"
 
-        // Skip whitespace
+        // Skip the colon + OWS (optional whitespace per RFC 7230 §3.2.3)
         var actual_start = cl_start;
-        while (actual_start < headers.len and headers[actual_start] == ' ') {
+        while (actual_start < headers.len and
+            (headers[actual_start] == ':' or
+            headers[actual_start] == ' ' or
+            headers[actual_start] == '\t'))
+        {
             actual_start += 1;
         }
 

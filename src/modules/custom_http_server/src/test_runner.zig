@@ -15,4 +15,5 @@ test {
     // the parent project's `zig build test` instead.
     // _ = @import("sse_chunked_test.zig");
     _ = @import("test_session_lifecycle.zig");
+    _ = @import("complex_cases_test.zig");
 }

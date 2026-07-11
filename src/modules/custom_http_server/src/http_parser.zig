@@ -142,6 +142,26 @@ pub const HttpResponse = struct {
         return copy;
     }
 
+    /// Free all heap-owned data: the headers map and any header values
+    /// that were allocated by `withBody` / `withJson` (Content-Length and
+    /// Content-Type). Header keys/values from `headers.put(...)` are
+    /// caller-owned (caller frees the key + value strings).
+    ///
+    /// Production usage in http_server.zig does NOT call this because
+    /// the per-request arena reaps everything. This method exists for
+    /// test code (where `std.testing.allocator` enforces leak detection)
+    /// and for non-arena callers that want explicit ownership.
+    pub fn deinit(self: *HttpResponse) void {
+        // The standard helper methods (withBody/withJson) use
+        // std.fmt.allocPrint(allocator, "{}", .{n}) for the
+        // Content-Length value, which is heap-owned. Content-Type is
+        // a string literal ("application/json") so no free needed.
+        if (self.headers.fetchRemove("Content-Length")) |kv| {
+            self.allocator.free(kv.value);
+        }
+        self.headers.deinit();
+    }
+
     pub fn toBytes(self: HttpResponse) ![]u8 {
         var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(self.allocator);
