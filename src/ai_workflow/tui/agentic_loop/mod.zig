@@ -34,4 +34,7 @@ pub const deleteWorker = delete_worker_mod.deleteWorker;
 const get_llm_histories_mod = @import("get_llm_histories.zig");
 pub const GetLLMHistoriesInput = get_llm_histories_mod.GetLLMHistoriesInput;
 pub const getLLMHistories = get_llm_histories_mod.getLLMHistories;
-pub const LLMHistory = get_llm_histories_mod.LLMHistory;
+
+const llm_history_mod = @import("llm_history.zig");
+pub const LLMHistory = llm_history_mod.LLMHistory;
+
