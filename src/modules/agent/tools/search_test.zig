@@ -148,9 +148,6 @@ test "search: pattern starting with -- is NOT interpreted as rg flag" {
     // the random basename (e.g. "AbCdEfGh1234"), NOT the full path. Resolve
     // the real path via tmpdir.dir.realPath and pass it as cwd, then search
     // "." inside the tmpdir. See commit message for the Zig 0.16 context.
-    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmpdir.dir.realPath(io, &path_buf);
-    const tmpdir_path: []const u8 = path_buf[0..path_len];
 
     var result = try search.executeSearch(allocator, io, tmpdir_path, .{
         .pattern = "--help",
@@ -189,9 +186,6 @@ test "search: pattern 'foo' in a dir with literal 'foo' finds it" {
     // the random basename (e.g. "AbCdEfGh1234"), NOT the full path. Resolve
     // the real path via tmpdir.dir.realPath and pass it as cwd, then search
     // "." inside the tmpdir. See commit message for the Zig 0.16 context.
-    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmpdir.dir.realPath(io, &path_buf);
-    const tmpdir_path: []const u8 = path_buf[0..path_len];
 
     var result = try search.executeSearch(allocator, io, tmpdir_path, .{
         .pattern = "foo",
@@ -274,7 +268,9 @@ test "search: binary snippet is sanitized to valid UTF-8" {
     const binary_content: []const u8 = &[_]u8{
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
         0xFF, 0xFE, 0x00, 0x00, // invalid UTF-8 byte sequence
-        'm', 'a', 't', 'c', 'h', '_', 'h', 'e', 'r', 'e', '\n',
+        'm',  'a',  't',  'c',
+        'h',  '_',  'h',  'e',
+        'r',  'e',  '\n',
         0x80, 0x81, 0x82, // more invalid UTF-8
     };
     try tmpdir.dir.writeFile(io, .{
@@ -288,9 +284,6 @@ test "search: binary snippet is sanitized to valid UTF-8" {
     // the random basename (e.g. "AbCdEfGh1234"), NOT the full path. Resolve
     // the real path via tmpdir.dir.realPath and pass it as cwd, then search
     // "." inside the tmpdir. See commit message for the Zig 0.16 context.
-    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmpdir.dir.realPath(io, &path_buf);
-    const tmpdir_path: []const u8 = path_buf[0..path_len];
 
     var result = try search.executeSearch(allocator, io, tmpdir_path, .{
         .pattern = "match_here",
@@ -343,9 +336,6 @@ test "search: max_results cap honored" {
     // the random basename (e.g. "AbCdEfGh1234"), NOT the full path. Resolve
     // the real path via tmpdir.dir.realPath and pass it as cwd, then search
     // "." inside the tmpdir. See commit message for the Zig 0.16 context.
-    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmpdir.dir.realPath(io, &path_buf);
-    const tmpdir_path: []const u8 = path_buf[0..path_len];
 
     var result = try search.executeSearch(allocator, io, tmpdir_path, .{
         .pattern = "foo",
