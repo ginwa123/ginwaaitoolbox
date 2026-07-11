@@ -1772,16 +1772,6 @@ pub fn getWorkerBySessionId(
     return null;
 }
 
-/// Check if a session is currently running (exists in worker table)
-pub fn isSessionRunning(
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-) bool {
-    const sql = "SELECT 1 FROM worker WHERE id = ? LIMIT 1";
-    var rows = db.query(std.heap.c_allocator, sql, &.{session_id}) catch return false;
-    defer rows.deinit();
-    return (rows.next() catch return false) != null;
-}
 
 /// Check if a task is currently running (a worker row exists for it).
 ///
@@ -1858,66 +1848,7 @@ pub fn getQueueMessages(
     return messages;
 }
 
-/// Delete a specific queued message and emit SSE event
-pub fn deleteQueuedMessage(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-    message: []const u8,
-) !void {
-    const sql = "DELETE FROM session_queue_messages WHERE session_id = ? AND message = ? ";
-    try db.exec(allocator, sql, &.{ session_id, message });
 
-    // Emit SSE event to notify connected clients
-    const di = nalarcore.getSingleton() catch return;
-    const event_bus = di.event_bus;
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
-
-    const payload = .{
-        .action = "deleted",
-        .message = message,
-        .session_id = session_id,
-    };
-    try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
-        .whitespace = .indent_4,
-    })});
-
-    const data_copy = try allocator.dupe(u8, buf.items);
-    const event = ai_mod.on_event_sent.SseEvent{
-        .session_id = session_id,
-        .data = data_copy,
-        .event_type = "queue_deleted",
-    };
-
-    // Per-session emit (kept for any future server-side fan-out that
-    // needs only this session's queue messages).
-    const key = try std.fmt.allocPrint(allocator, "queue_messages_{s}", .{session_id});
-    defer allocator.free(key);
-    event_bus.emit(ai_mod.on_event_sent.SseEvent, key, event);
-    // Central broadcast: subscribers to bare "queue" receive ALL sessions'
-    // queue messages (including deletes). The frontend listener filter
-    // narrows to the current session_id on the JS side.
-    event_bus.emit(ai_mod.on_event_sent.SseEvent, "queue", event);
-}
-
-/// Check if session has queued messages
-pub fn hasQueuedMessages(
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-) bool {
-    const sql = "SELECT 1 FROM session_queue_messages WHERE session_id = ? LIMIT 1";
-    var rows = db.query(std.heap.c_allocator, sql, &.{session_id}) catch return false;
-    defer rows.deinit();
-
-    if (rows.next() catch return false) |row| {
-        const queued = std.fmt.parseInt(i32, row.values[0], 10) catch 0;
-        return queued == 1;
-    }
-
-    return false;
-}
 
 // =============================================================================
 // Session Table Functions (migrated from session_table.zig)

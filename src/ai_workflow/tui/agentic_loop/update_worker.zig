@@ -20,7 +20,7 @@ pub const UpsertWorkerInput = struct {
 };
 
 /// Register or update a worker
-pub fn upsertWorker(obj: UpsertWorkerInput) !void {
+pub fn updateWorker(obj: UpsertWorkerInput) !void {
     const allocator = obj.allocator;
     const db = obj.db;
     const logger = obj.logger;

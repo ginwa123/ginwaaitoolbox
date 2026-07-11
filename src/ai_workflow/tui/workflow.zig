@@ -17,7 +17,7 @@ const helpers = nalarcore.helpers;
 const std = @import("std");
 const json = std.json;
 
-const agentic_loop = @import("agentic_loop/mod.zig");
+const agentic_loop_mod = @import("agentic_loop/mod.zig");
 
 // Thread-safe set of active session loop IDs
 pub const StreamingContext = struct {
@@ -32,6 +32,7 @@ pub const CallbackAiWorkerFlow = struct {
         const di = nalarcore.getSingleton() catch return;
         const logger = di.logger;
         const allocator = di.allocator;
+        const event_bus = di.event_bus;
         const db = di.db;
         const io = di.io;
         const session_id = data.session_id;
@@ -41,7 +42,7 @@ pub const CallbackAiWorkerFlow = struct {
         runAgenticMultiStepnew(di, data) catch |err| {
             logger.errFmt("[{s}] Failed to run agentic workflow: {s}\n", .{ keyword, @errorName(err) });
 
-            agentic_loop.deleteWorker(.{
+            agentic_loop_mod.deleteWorker(.{
                 .allocator = allocator,
                 .db = db,
                 .logger = logger,
@@ -76,61 +77,14 @@ pub const CallbackAiWorkerFlow = struct {
                 logger.errFmt("[{s}] Failed to format error message: {s}\n", .{ keyword, @errorName(err_fmt) });
                 return;
             };
-            _ = llm_history.saveMessage(allocator, io, db, .{
-                .session_id = session_id,
-                .model = config.model,
-                .cwd = cwd,
-                .content = error_message,
-                .reasoning_content = null,
-                .role = agent.Role.user.to_str(),
-                .finish_reason = "null",
-                .tool_calls = null,
-                .tool_call_id = null,
-                .agent_name = initial_agent,
-                .loop_index = 0,
-                .temperature = initial_agent_state.temperature,
-                .is_thinking = initial_agent_state.is_thinking,
-                .prompt_tokens = 0,
-                .completion_tokens = 0,
-                .total_tokens = 0,
-                .parent_id = session_id,
-                .parent_session_id = session_id,
-                .is_input = true,
-                .is_output = false,
-                .is_feed_to_llm = false,
-            }) catch |err_save| {
-                logger.errFmt("[{s}] Failed to format error message: {s}\n", .{ keyword, @errorName(err_save) });
-            };
 
-            const session_skills_err = llm_history.getSessionSkills(allocator, db, session_id) catch null;
-            defer if (session_skills_err) |s| for (s) |*skill| {
-                allocator.free(skill.skill_name);
-                allocator.free(skill.content);
-            };
+            const id = std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}) catch return;
+            defer allocator.free(id);
 
-            _ = on_event_sent.onEventSendLLMHistory(allocator, .{
-                .session_id = session_id,
-                .model = config.model,
-                .cwd = cwd,
-                .content = error_message,
-                .reasoning_content = null,
-                .role = agent.Role.user.to_str(),
-                .finish_reason = "null",
-                .tool_calls_json = null,
-                .tool_call_id = null,
-                .agent_name = initial_agent,
-                .loop_index = 0,
-                .temperature = initial_agent_state.temperature,
-                .is_thinking = initial_agent_state.is_thinking,
-                .parent_id = session_id,
-                .parent_session_id = session_id,
-                .is_input = true,
-                .is_output = false,
-                .image_url = null,
-                .session_skills = session_skills_err,
-            }) catch |on_event_sent_err| {
-                logger.errFmt("[{s}] failed to sent llm historry: {s}\n", .{ keyword, @errorName(on_event_sent_err) });
-            };
+            const created_at = std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}) catch return;
+            defer allocator.free(created_at);
+
+            agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{ .id = id, .session_id = session_id, .model = config.model, .response_content = error_message, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = initial_agent, .loop_index = 0, .temperature = initial_agent_state.temperature, .is_thinking = initial_agent_state.is_thinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = session_id, .parent_session_id = session_id, .is_input = true, .is_output = false, .is_feed_to_llm = false, .image_urls = null, .created_at = created_at } }) catch return;
         };
     }
 };
@@ -210,9 +164,10 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
     const initial_agent = initial_agent_state.agent;
 
     // Check if session is already running (exists in worker table)
-    if (llm_history.isSessionRunning(db, copy_session_id) and active_loops.contains(io, copy_session_id)) {
+    const is_worker_running = agentic_loop_mod.isSessionRunning(parent_allocator, db, copy_session_id);
+    if (is_worker_running and active_loops.contains(io, copy_session_id)) {
         // Session is already running, queue the message
-        try agentic_loop.insertQueueMessage(agentic_loop.InsertQueueMessageInput{
+        try agentic_loop_mod.insertQueueMessage(agentic_loop_mod.InsertQueueMessageInput{
             .allocator = parent_allocator,
             .db = db,
             .logger = logger,
@@ -226,7 +181,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
         return;
     }
     defer {
-        agentic_loop.deleteWorker(agentic_loop.DeleteWorkerInput{
+        agentic_loop_mod.deleteWorker(agentic_loop_mod.DeleteWorkerInput{
             .allocator = parent_allocator,
             .db = db,
             .logger = logger,
@@ -240,7 +195,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
 
     defer active_loops.remove(io, copy_session_id);
 
-    try agentic_loop.update_worker(agentic_loop.UpdateWorkerInput{
+    try agentic_loop_mod.updateWorker(agentic_loop_mod.UpdateWorkerInput{
         .allocator = parent_allocator,
         .db = db,
         .logger = logger,
@@ -252,7 +207,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
     });
 
     // Queue the initial message
-    try agentic_loop.insertQueueMessage(agentic_loop.InsertQueueMessageInput{
+    try agentic_loop_mod.insertQueueMessage(agentic_loop_mod.InsertQueueMessageInput{
         .allocator = parent_allocator,
         .db = db,
         .logger = logger,
@@ -292,7 +247,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
         const allocator = arenaAllocatorWhileLoop.allocator();
 
         // Check cancellation using DB
-        if (agentic_loop.isWorkerCancelled(agentic_loop.IsWorkerCancelledInput{
+        if (agentic_loop_mod.isWorkerCancelled(agentic_loop_mod.IsWorkerCancelledInput{
             .allocator = allocator,
             .db = db,
             .session_id = copy_session_id,
@@ -302,7 +257,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
         }
 
         // Get queued messages from DB
-        var queued_messages = try agentic_loop.getQueueMessage(agentic_loop.GetQueueMessageInput{
+        var queued_messages = try agentic_loop_mod.getQueueMessage(agentic_loop_mod.GetQueueMessageInput{
             .allocator = allocator,
             .db = db,
             .session_id = copy_session_id,
@@ -341,7 +296,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                     }
                 }
 
-                try agentic_loop.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
+                try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
                     .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     .session_id = copy_session_id,
                     .model = effective_model,
@@ -366,11 +321,18 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                     .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                 } });
 
-                _ = try llm_history.deleteQueuedMessage(allocator, db, copy_session_id, queued.message);
+                try agentic_loop_mod.deleteQueuedMessage(.{
+                    .allocator = allocator,
+                    .db = db,
+                    .is_emit_sse = true,
+                    .event_bus = event_bus,
+                    .session_id = copy_session_id,
+                    .message = queued.message,
+                });
             }
         }
 
-        try agentic_loop.update_worker(agentic_loop.UpdateWorkerInput{
+        try agentic_loop_mod.updateWorker(agentic_loop_mod.UpdateWorkerInput{
             .allocator = allocator,
             .db = db,
             .logger = logger,
@@ -453,7 +415,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                 allocator.free(skill.content);
             };
 
-            try agentic_loop.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
+            try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
                 .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                 .session_id = copy_session_id,
                 .model = effective_model,
@@ -482,7 +444,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
         }
 
         var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
-        const db_messages = try agentic_loop.getLLMHistories(agentic_loop.GetLLMHistoriesInput{
+        const db_messages = try agentic_loop_mod.getLLMHistories(agentic_loop_mod.GetLLMHistoriesInput{
             .allocator = allocator,
             .db = db,
             .session_id = copy_session_id,
@@ -544,7 +506,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
         retry_count = 0;
         if (res_dynamic_agent.finish_reason) |finish_reason| {
             if (finish_reason == .stop) {
-                try agentic_loop.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
+                try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
                     .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     .session_id = copy_session_id,
                     .model = effective_model,
@@ -570,7 +532,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                     .is_feed_to_llm = true,
                 } });
 
-                const isHaveQueueMessage = llm_history.hasQueuedMessages(db, copy_session_id);
+                const isHaveQueueMessage = agentic_loop_mod.hasQueuedMessages(allocator, db, copy_session_id);
                 if (isHaveQueueMessage) {
                     continue;
                 }
@@ -586,7 +548,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                 }
 
                 // try llm_history.markSessionIdle(allocator, db, copy_session_id);
-                try agentic_loop.deleteWorker(agentic_loop.DeleteWorkerInput{
+                try agentic_loop_mod.deleteWorker(agentic_loop_mod.DeleteWorkerInput{
                     .allocator = allocator,
                     .db = db,
                     .logger = logger,
@@ -605,7 +567,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                 if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
                     try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, copy_selected_profile_model);
                 } else {
-                    try agentic_loop.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
+                    try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
                         .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                         .session_id = copy_session_id,
                         .model = effective_model,
@@ -631,7 +593,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                         .is_feed_to_llm = true,
                     } });
 
-                    const isHaveQueueMessage = llm_history.hasQueuedMessages(db, copy_session_id);
+                    const isHaveQueueMessage = agentic_loop_mod.hasQueuedMessages(allocator, db, copy_session_id);
                     if (isHaveQueueMessage) {
                         continue;
                     }
@@ -640,11 +602,11 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                 }
             } else {
                 retry_count += 1;
-                const session_skills_retry = try llm_history.getSessionSkills(allocator, db, copy_session_id);
-                defer for (session_skills_retry) |*skill| {
-                    allocator.free(skill.skill_name);
-                    allocator.free(skill.content);
-                };
+                // const session_skills_retry = try llm_history.getSessionSkills(allocator, db, copy_session_id);
+                // defer for (session_skills_retry) |*skill| {
+                //     allocator.free(skill.skill_name);
+                //     allocator.free(skill.content);
+                // };
 
                 // _ = try on_event_sent.onEventSendLLMHistory(allocator, .{
                 //     .session_id = copy_session_id,
@@ -684,7 +646,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
 }
 
 fn generateSessionNameNew(
-    db_messages: []agentic_loop.LLMHistory,
+    db_messages: []agentic_loop_mod.LLMHistory,
     allocator: std.mem.Allocator,
     api_key: []const u8,
     model: []const u8,
@@ -855,8 +817,6 @@ pub fn maybeCompactMessagesNew(
     return true;
 }
 
-/// Call CompactionAgent to compress conversation history.
-/// Returns compacted context or null on failure.
 /// Call CompactionAgent to compress conversation history.
 /// Returns compacted context or null on failure.
 pub fn callCompactAgentNew(

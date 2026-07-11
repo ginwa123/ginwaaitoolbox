@@ -1,7 +1,7 @@
 pub const nalarcore = @import("nalarcore");
 
 const update_worker_mod = @import("update_worker.zig");
-pub const update_worker = update_worker_mod.upsertWorker;
+pub const updateWorker = update_worker_mod.updateWorker;
 pub const UpdateWorkerInput = update_worker_mod.UpsertWorkerInput;
 
 const insert_queue_message_mod = @import("insert_queue_message.zig");
@@ -44,3 +44,15 @@ pub const insertLLMHistories = insert_llm_histories_mod.inserLLMHistories;
 
 const session_skills_mod = @import("session_skills.zig");
 pub const SkillInfo = session_skills_mod.SkillInfo;
+
+const has_queue_messagge_mod = @import("has_queue_messagge.zig");
+pub const hasQueuedMessages = has_queue_messagge_mod.hasQueuedMessages;
+
+
+const delete_queue_worker_mod = @import("delete_queue_worker.zig");
+pub const DeleteQueueMessagesInput = delete_queue_worker_mod.DeleteQueueMessagesInput;
+pub const deleteQueuedMessage = delete_queue_worker_mod.deleteQueuedMessage;
+
+
+const is_worker_running_mod = @import("is_worker_running.zig");
+pub const isSessionRunning = is_worker_running_mod.isSessionRunning;
