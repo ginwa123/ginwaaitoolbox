@@ -8,6 +8,14 @@ pub const WorkspaceItemsCreateError = error{
     MissingBody,
     MissingName,
     NameNotString,
+    /// The `name` field is present and a string but, after trimming
+    /// leading/trailing ASCII whitespace, is empty. Distinct from
+    /// `MissingName` (which fires when the field is absent or
+    /// `null`) so the frontend can show a specific error message
+    /// ("Name is required") instead of a generic 400. Also distinct
+    /// from `NameNotString` so a JSON type mismatch stays
+    /// diagnosable. Plan: docs/superpowers/plans/2026-07-10-empty-workspace-item-bug.md.
+    EmptyName,
     MissingPath,
     PathNotString,
     DatabaseError,
@@ -46,7 +54,13 @@ fn useCase(
 
     const name_val = root.get("name") orelse return error.MissingName;
     if (name_val != .string) return error.NameNotString;
-    const name = name_val.string;
+    // Trim leading/trailing ASCII whitespace and reject empty
+    // names. The trim returns a slice into the same backing JSON
+    // memory owned by the per-request arena, so no allocation
+    // needed. Plan: docs/superpowers/plans/2026-07-10-empty-workspace-item-bug.md.
+    const trimmed_name = std.mem.trim(u8, name_val.string, " \t\n\r");
+    if (trimmed_name.len == 0) return error.EmptyName;
+    const name = trimmed_name;
 
     const path_val = root.get("path") orelse return error.MissingPath;
     if (path_val != .string) return error.PathNotString;
@@ -101,6 +115,7 @@ pub fn workspaceItemsCreateHandler(ctx: gserverz.HttpContext, req: gserverz.Http
         const status: u16 = switch (err) {
             error.InvalidJson, error.MissingBody,
             error.MissingName, error.NameNotString,
+            error.EmptyName,
             error.MissingPath, error.PathNotString => 400,
             error.DatabaseError, error.OutOfMemory => 500,
         };
@@ -109,6 +124,7 @@ pub fn workspaceItemsCreateHandler(ctx: gserverz.HttpContext, req: gserverz.Http
             error.MissingBody => "request body required",
             error.MissingName => "name required",
             error.NameNotString => "name must be a string",
+            error.EmptyName => "name required",
             error.MissingPath => "path required",
             error.PathNotString => "path must be a string",
             error.DatabaseError => "Failed to create workspace item",

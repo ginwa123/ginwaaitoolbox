@@ -82,7 +82,14 @@ fn useCase(
     input: WorkspaceItemsCreateKanbanInput,
 ) WorkspaceItemsCreateKanbanError!WorkspaceItemsCreateKanbanResult {
     if (input.workspace_id.len == 0) return error.WorkspaceIdRequired;
-    if (input.body.name.len == 0) return error.NameRequired;
+    // Trim leading/trailing ASCII whitespace and reject empty names.
+    // Mirrors `workspace_items_create.zig`'s `EmptyName` validation
+    // so both create endpoints have consistent semantics.
+    // `std.mem.trim` returns a slice into the same backing
+    // `parseFromSliceLeaky` arena, so no allocation needed. Plan:
+    // docs/superpowers/plans/2026-07-10-empty-workspace-item-bug.md.
+    const trimmed_name = std.mem.trim(u8, input.body.name, " \t\n\r");
+    if (trimmed_name.len == 0) return error.NameRequired;
 
     // Path is optional — when omitted, NULL is stored (cwd-less
     // kanban, same as pre-fix behavior). The frontend should always
@@ -112,7 +119,7 @@ fn useCase(
     // didn't pass a path.
     db.exec(allocator,
         "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position, created_at, updated_at) VALUES (?, ?, 'kanban', ?, NULLIF(?, ''), COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1, datetime('now'), datetime('now'))",
-        &.{ item_id, input.workspace_id, input.body.name, path_for_insert, input.workspace_id },
+        &.{ item_id, input.workspace_id, trimmed_name, path_for_insert, input.workspace_id },
     ) catch return error.InsertFailed;
 
     // Seed the 3 default columns (`todo / in progress / done`).
@@ -133,7 +140,7 @@ fn useCase(
             .id = item_id,
             .workspace_id = input.workspace_id,
             .item_type = "kanban",
-            .name = input.body.name,
+            .name = trimmed_name,
             .path = path_opt,
             .position = 0,
         }, .{});
@@ -158,7 +165,7 @@ fn useCase(
         .id = item_id,
         .workspace_id = input.workspace_id,
         .item_type = "kanban",
-        .name = input.body.name,
+        .name = trimmed_name,
         .path = path_opt,
         .position = 0, // placeholder — see notes below
     }, .{});
@@ -201,6 +208,17 @@ pub fn workspaceItemsCreateKanbanHandler(
     };
 
     if (parsed.name.len == 0) {
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name is required" }),
+        });
+    }
+    // Trim leading/trailing ASCII whitespace. Reject whitespace-only
+    // names at the handler level too (the useCase also rejects
+    // them, but checking at both layers keeps the error message
+    // localized to the handler-side path). Plan:
+    // docs/superpowers/plans/2026-07-10-empty-workspace-item-bug.md.
+    if (std.mem.trim(u8, parsed.name, " \t\n\r").len == 0) {
         return res.jsonResponse(.{
             .status_code = 400,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "name is required" }),
