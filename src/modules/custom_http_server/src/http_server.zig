@@ -268,6 +268,17 @@ pub const GinwaServer = struct {
         self.router.deinit();
     }
 
+    /// Free the GinwaServer struct itself. Callers that allocated the
+    /// server with `init(...)` (which calls `allocator.create(GinwaServer)`)
+    /// MUST call this to release the struct memory — `deinit()` only cleans
+    /// up the server's internal state. This method calls `deinit()` first
+    /// so that `destroy(allocator)` is a complete release (sse_manager +
+    /// router + struct memory).
+    pub fn destroy(self: *GinwaServer, allocator: std.mem.Allocator) void {
+        self.deinit();
+        allocator.destroy(self);
+    }
+
     pub fn listen(self: *GinwaServer) !void {
         if (builtin.os.tag == .windows) {
             const rc = winsock.listen(self.address.sock_fd, 128);
@@ -565,10 +576,23 @@ pub const GinwaServer = struct {
             if (rc != 0) return 0;
             return @byteSwap(addr.port);
         } else {
+            // Zig 0.16's `posix.getpeername` panics on `.BADF` (it marks
+            // that error branch as `unreachable` per the `// always a race
+            // condition` comment at `std/posix.zig:530`). Guard the call
+            // with an explicit fd validity check so callers passing -1
+            // (or any other negative fd) get the historical "0 means
+            // unknown port" return value rather than crashing the process.
+            if (fd < 0) return 0;
+
+            // For valid fds, Zig 0.16's `posix.getpeername` returns an
+            // error union. Catch any of FileDescriptorNotASocket /
+            // NetworkDown / SocketNotBound / SocketUnconnected /
+            // SystemResources / Unexpected and return 0 — matches the
+            // original contract for non-connected sockets.
             var addr: posix.sockaddr.in = undefined;
             var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.in);
-            const rc = posix.getpeername(fd, @ptrCast(&addr), &addr_len);
-            if (rc < 0) return 0;
+            const rc = posix.getpeername(fd, @ptrCast(&addr), &addr_len) catch return 0;
+            _ = rc;
             return @byteSwap(addr.port);
         }
     }

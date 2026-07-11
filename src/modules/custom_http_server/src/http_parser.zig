@@ -75,6 +75,36 @@ pub const HttpRequest = struct {
     pub fn writeSSEEvent(self: *const HttpRequest, event: []const u8) void {
         _ = linux.write(self._client_fd, event.ptr, event.len);
     }
+
+    /// Free all heap-owned data:
+    /// - `path` was allocated by `urlDecode` in `parseRequest`
+    /// - `query` keys + values were URL-decoded (heap-owned)
+    /// - `headers`, `params` maps own their buckets; their entries are
+    ///   slices into `raw` (request_data) or into `path`, so no per-entry free
+    ///
+    /// Production usage (http_server.zig handle function) does NOT call this
+    /// because the per-request arena reaps everything. This method exists for
+    /// test code (where `std.testing.allocator` enforces leak detection) and
+    /// for non-arena callers that want explicit ownership.
+    pub fn deinit(self: *HttpRequest, allocator: std.mem.Allocator) void {
+        // `path` was always allocated by `urlDecode` in `parseRequest` (even
+        // for empty inputs the function allocates `decoded_len` bytes, which
+        // can be 0). Free unconditionally.
+        allocator.free(self.path);
+
+        // Query keys + values are heap-allocated URL-decoded strings
+        // (see `parseRequest` body). Free each before deiniting the map
+        // (which only frees the bucket array).
+        var qit = self.query.iterator();
+        while (qit.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        self.query.deinit();
+
+        self.headers.deinit();
+        self.params.deinit();
+    }
 };
 
 /// HTTP Response builder

@@ -48,7 +48,7 @@ test "GinwaServer.init creates server instance" {
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
-    defer server.deinit();
+    defer server.destroy(allocator);
 
     try std.testing.expect(server.address.sock_fd == addr.sock_fd);
     try std.testing.expectEqual(@as(u16, 45682), server.address.port);
@@ -63,7 +63,7 @@ test "GinwaServer.init router is initialized" {
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
-    defer server.deinit();
+    defer server.destroy(allocator);
 
     // Router should be accessible (we can't directly check internal state, but
     // we can verify the server was created successfully)
@@ -83,7 +83,7 @@ test "GinwaServer with registered route" {
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
-    defer server.deinit();
+    defer server.destroy(allocator);
 
     try server.router.get("/test", struct {
         fn handle(_: http_parser.HttpContext, _: http_parser.HttpRequest, _: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
@@ -145,7 +145,7 @@ test "GinwaServer.getClientPort returns 0 for invalid fd" {
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
-    defer server.deinit();
+    defer server.destroy(allocator);
 
     // -1 is an invalid file descriptor, should return 0
     const port = server.getClientPort(-1);
@@ -165,7 +165,7 @@ test "GinwaServer.recvFromClient fails on invalid fd" {
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
-    defer server.deinit();
+    defer server.destroy(allocator);
 
     var buf: [1024]u8 = undefined;
     const result = server.recvFromClient(-1, &buf);
@@ -181,7 +181,7 @@ test "GinwaServer.sendToClient fails on invalid fd" {
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
-    defer server.deinit();
+    defer server.destroy(allocator);
 
     const result = server.sendToClient(-1, "Hello");
     try std.testing.expectError(error.SendFailed, result);
@@ -200,7 +200,7 @@ test "Server accepts client connection" {
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
-    defer server.deinit();
+    defer server.destroy(allocator);
 
     // Create a client socket and connect
     const client_fd_sock = linux.socket(2, 1, 0);
