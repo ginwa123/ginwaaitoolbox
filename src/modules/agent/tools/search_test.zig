@@ -126,9 +126,17 @@ test "search: pattern starting with -- is NOT interpreted as rg flag" {
         .data = "this --help marker is here\nplain line\n",
     });
 
-    var result = try search.executeSearch(allocator, io, "/tmp", .{
+    // Zig 0.16's testing.TmpDir.sub_path is a fixed-size array holding just
+    // the random basename (e.g. "AbCdEfGh1234"), NOT the full path. Resolve
+    // the real path via tmpdir.dir.realPath and pass it as cwd, then search
+    // "." inside the tmpdir. See commit message for the Zig 0.16 context.
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
         .pattern = "--help",
-        .path = &tmpdir.sub_path,
+        .path = ".",
     });
     defer result.deinit(allocator);
 
@@ -157,9 +165,17 @@ test "search: pattern 'foo' in a dir with literal 'foo' finds it" {
         .data = "the foo is here\nboring\n",
     });
 
-    var result = try search.executeSearch(allocator, io, "/tmp", .{
+    // Zig 0.16's testing.TmpDir.sub_path is a fixed-size array holding just
+    // the random basename (e.g. "AbCdEfGh1234"), NOT the full path. Resolve
+    // the real path via tmpdir.dir.realPath and pass it as cwd, then search
+    // "." inside the tmpdir. See commit message for the Zig 0.16 context.
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
         .pattern = "foo",
-        .path = &tmpdir.sub_path,
+        .path = ".",
     });
     defer result.deinit(allocator);
 
@@ -246,9 +262,17 @@ test "search: binary snippet is sanitized to valid UTF-8" {
         .data = binary_content,
     });
 
-    var result = try search.executeSearch(allocator, io, "/tmp", .{
+    // Zig 0.16's testing.TmpDir.sub_path is a fixed-size array holding just
+    // the random basename (e.g. "AbCdEfGh1234"), NOT the full path. Resolve
+    // the real path via tmpdir.dir.realPath and pass it as cwd, then search
+    // "." inside the tmpdir. See commit message for the Zig 0.16 context.
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
         .pattern = "match_here",
-        .path = &tmpdir.sub_path,
+        .path = ".",
         .max_output = 65536,
     });
     defer result.deinit(allocator);
@@ -283,14 +307,25 @@ test "search: max_results cap honored" {
         }
         break :blk try buf.toOwnedSlice(allocator);
     };
+    // content is heap-owned from toOwnedSlice; writeFile reads but does not
+    // take ownership. Free it once writeFile returns.
+    defer allocator.free(content);
     try tmpdir.dir.writeFile(io, .{
         .sub_path = "many.txt",
         .data = content,
     });
 
-    var result = try search.executeSearch(allocator, io, "/tmp", .{
+    // Zig 0.16's testing.TmpDir.sub_path is a fixed-size array holding just
+    // the random basename (e.g. "AbCdEfGh1234"), NOT the full path. Resolve
+    // the real path via tmpdir.dir.realPath and pass it as cwd, then search
+    // "." inside the tmpdir. See commit message for the Zig 0.16 context.
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
         .pattern = "foo",
-        .path = &tmpdir.sub_path,
+        .path = ".",
         .max_results = 5,
     });
     defer result.deinit(allocator);
