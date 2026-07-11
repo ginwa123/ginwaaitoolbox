@@ -12,7 +12,6 @@ test {
     _ = @import("routines/cron_test.zig");
     _ = @import("routines/fire_test.zig");
     _ = @import("routines/scheduler_test.zig");
-    _ = @import("notifications_test.zig");
     _ = @import("parse_diff_view_test.zig");
     _ = @import("save_agent_test.zig");
     _ = @import("save_skill_test.zig");
@@ -36,7 +35,6 @@ test {
     _ = @import("llm_history_is_input_output_test.zig");
     _ = @import("llm_history_routines_test.zig");
     _ = @import("llm_history_compacted_messages_test.zig");
-    _ = @import("llm_history_is_task_kanban_test.zig");
     _ = @import("compaction_long_context_test.zig");
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     _ = @import("http_handlers/workspace_items_reorder_test.zig");

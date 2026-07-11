@@ -1,11 +1,15 @@
-const nalarcore = @import("nalarcore");
+const mod = @import("mod.zig");
+const std = @import("std");
+
+const nalarcore = mod.nalarcore;
+
 const llm_history = @import("llm_history.zig");
 const build_msg_prompt = @import("build_messages_for_agent_prompt.zig");
 const models = @import("models.zig");
 const on_event_sent = @import("on_event_sent.zig");
 const tool_registry = @import("tool_registry.zig");
 const handle_tool = @import("handle_tool.zig").handle_tool;
-const notifications = @import("notifications.zig");
+const notifications = nalarcore.notifications_mod;
 
 const sqlite = nalarcore.sqlite;
 const config_mod = nalarcore.config;
@@ -14,10 +18,10 @@ const agent = nalarcore.agent;
 const prompt = nalarcore.agent.prompt;
 const helpers = nalarcore.helpers;
 
-const std = @import("std");
 const json = std.json;
 
-const agentic_loop = @import("agentic_loop/mod.zig");
+const agentic_loop_mod = nalarcore.agentic_loop_mod;
+const event_bus_mod = nalarcore.event_bus;
 
 // Thread-safe set of active session loop IDs
 pub const StreamingContext = struct {
@@ -32,20 +36,36 @@ pub const CallbackAiWorkerFlow = struct {
         const di = nalarcore.getSingleton() catch return;
         const logger = di.logger;
         const allocator = di.allocator;
+        const active_loops = di.active_loops;
+        const event_bus = di.event_bus;
         const db = di.db;
         const io = di.io;
         const session_id = data.session_id;
         const config = nalarcore.getLlmConfig(di);
         const cwd = data.cwd;
+        const environment = di.environment;
 
-        runAgenticMultiStepnew(di, data) catch |err| {
+        runAgenticMultiStepnew(.{
+            .allocator = allocator,
+            .db = db,
+            .io = io,
+            .logger = logger,
+            .event_bus = event_bus,
+            .active_loops = active_loops,
+            .llm_config = config,
+            .environment = environment,
+        }, data) catch |err| {
             logger.errFmt("[{s}] Failed to run agentic workflow: {s}\n", .{ keyword, @errorName(err) });
-            llm_history.deleteWorkerBySessionId(allocator, db, session_id) catch |error_sqlite| {
-                logger.errFmt("[{s}] Failed to delete worker: {s}\n", .{ keyword, @errorName(error_sqlite) });
-            };
 
-            _ = llm_history.deleteQueuedMessagesBySessionId(allocator, db, session_id) catch |error_sqlite| {
-                logger.errFmt("[{s}] Failed to delete all queued messages: {s}\n", .{ keyword, @errorName(error_sqlite) });
+            agentic_loop_mod.deleteWorker(.{
+                .allocator = allocator,
+                .db = db,
+                .logger = logger,
+                .session_id = session_id,
+                .event_bus = di.event_bus,
+                .is_emit_sse = true,
+            }) catch |error_sqlite| {
+                logger.errFmt("[{s}] Failed to delete worker: {s}\n", .{ keyword, @errorName(error_sqlite) });
             };
 
             // For TooManyRetries, the inner bail already saved a rich diagnostic
@@ -72,66 +92,30 @@ pub const CallbackAiWorkerFlow = struct {
                 logger.errFmt("[{s}] Failed to format error message: {s}\n", .{ keyword, @errorName(err_fmt) });
                 return;
             };
-            _ = llm_history.saveMessage(allocator, io, db, .{
-                .session_id = session_id,
-                .model = config.model,
-                .cwd = cwd,
-                .content = error_message,
-                .reasoning_content = null,
-                .role = agent.Role.user.to_str(),
-                .finish_reason = "null",
-                .tool_calls = null,
-                .tool_call_id = null,
-                .agent_name = initial_agent,
-                .loop_index = 0,
-                .temperature = initial_agent_state.temperature,
-                .is_thinking = initial_agent_state.is_thinking,
-                .prompt_tokens = 0,
-                .completion_tokens = 0,
-                .total_tokens = 0,
-                .parent_id = session_id,
-                .parent_session_id = session_id,
-                .is_input = true,
-                .is_output = false,
-                .is_feed_to_llm = false,
-            }) catch |err_save| {
-                logger.errFmt("[{s}] Failed to format error message: {s}\n", .{ keyword, @errorName(err_save) });
-            };
 
-            const session_skills_err = llm_history.getSessionSkills(allocator, db, session_id) catch null;
-            defer if (session_skills_err) |s| for (s) |*skill| {
-                allocator.free(skill.skill_name);
-                allocator.free(skill.content);
-            };
+            const id = std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}) catch return;
+            defer allocator.free(id);
 
-            _ = on_event_sent.onEventSendLLMHistory(allocator, .{
-                .session_id = session_id,
-                .model = config.model,
-                .cwd = cwd,
-                .content = error_message,
-                .reasoning_content = null,
-                .role = agent.Role.user.to_str(),
-                .finish_reason = "null",
-                .tool_calls_json = null,
-                .tool_call_id = null,
-                .agent_name = initial_agent,
-                .loop_index = 0,
-                .temperature = initial_agent_state.temperature,
-                .is_thinking = initial_agent_state.is_thinking,
-                .parent_id = session_id,
-                .parent_session_id = session_id,
-                .is_input = true,
-                .is_output = false,
-                .image_url = null,
-                .session_skills = session_skills_err,
-            }) catch |on_event_sent_err| {
-                logger.errFmt("[{s}] failed to sent llm historry: {s}\n", .{ keyword, @errorName(on_event_sent_err) });
-            };
+            const created_at = std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}) catch return;
+            defer allocator.free(created_at);
+
+            agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{ .id = id, .session_id = session_id, .model = config.model, .response_content = error_message, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = initial_agent, .loop_index = 0, .temperature = initial_agent_state.temperature, .is_thinking = initial_agent_state.is_thinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = session_id, .parent_session_id = session_id, .is_input = true, .is_output = false, .is_feed_to_llm = false, .image_urls = null, .created_at = created_at } }) catch return;
         };
     }
 };
 
-pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew) !void {
+pub const RunAgenticMultiStepInput = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    logger: *logger_mod.Logger,
+    event_bus: *event_bus_mod.EventBus,
+    active_loops: *models.ActiveLoops,
+    llm_config: *config_mod.LlmConfig,
+    environment: ?*const std.process.Environ.Map,
+};
+
+pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew) !void {
     var parent_arena_allocator = std.heap.ArenaAllocator.init(di.allocator);
     defer parent_arena_allocator.deinit();
     const parent_allocator = parent_arena_allocator.allocator();
@@ -141,7 +125,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
     const active_loops = di.active_loops;
     const event_bus = di.event_bus;
     const io = di.io;
-    const config = nalarcore.getLlmConfig(di);
+    const config = di.llm_config;
     const environment = di.environment;
 
     // ─── Resolve the effective LLM profile (selected_profile_model) ──────
@@ -206,9 +190,10 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
     const initial_agent = initial_agent_state.agent;
 
     // Check if session is already running (exists in worker table)
-    if (llm_history.isSessionRunning(db, copy_session_id) and active_loops.contains(io, copy_session_id)) {
+    const is_worker_running = agentic_loop_mod.isWorkerRunning(parent_allocator, db, copy_session_id);
+    if (is_worker_running and active_loops.contains(io, copy_session_id)) {
         // Session is already running, queue the message
-        try agentic_loop.insertQueueMessage(agentic_loop.InsertQueueMessageInput{
+        try agentic_loop_mod.insertQueueMessage(agentic_loop_mod.InsertQueueMessageInput{
             .allocator = parent_allocator,
             .db = db,
             .logger = logger,
@@ -222,7 +207,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
         return;
     }
     defer {
-        agentic_loop.deleteWorker(agentic_loop.DeleteWorkerInput{
+        agentic_loop_mod.deleteWorker(.{
             .allocator = parent_allocator,
             .db = db,
             .logger = logger,
@@ -236,7 +221,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
 
     defer active_loops.remove(io, copy_session_id);
 
-    try agentic_loop.update_worker(agentic_loop.UpdateWorkerInput{
+    try agentic_loop_mod.updateWorker(agentic_loop_mod.UpdateWorkerInput{
         .allocator = parent_allocator,
         .db = db,
         .logger = logger,
@@ -248,7 +233,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
     });
 
     // Queue the initial message
-    try agentic_loop.insertQueueMessage(agentic_loop.InsertQueueMessageInput{
+    try agentic_loop_mod.insertQueueMessage(agentic_loop_mod.InsertQueueMessageInput{
         .allocator = parent_allocator,
         .db = db,
         .logger = logger,
@@ -288,7 +273,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
         const allocator = arenaAllocatorWhileLoop.allocator();
 
         // Check cancellation using DB
-        if (agentic_loop.isWorkerCancelled(agentic_loop.IsWorkerCancelledInput{
+        if (agentic_loop_mod.isWorkerCancelled(agentic_loop_mod.IsWorkerCancelledInput{
             .allocator = allocator,
             .db = db,
             .session_id = copy_session_id,
@@ -298,7 +283,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
         }
 
         // Get queued messages from DB
-        var queued_messages = try agentic_loop.getQueueMessage(agentic_loop.GetQueueMessageInput{
+        var queued_messages = try agentic_loop_mod.getQueueMessage(agentic_loop_mod.GetQueueMessageInput{
             .allocator = allocator,
             .db = db,
             .session_id = copy_session_id,
@@ -337,17 +322,17 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                     }
                 }
 
-                try llm_history.saveMessage(allocator, io, db, .{
+                try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
+                    .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     .session_id = copy_session_id,
                     .model = effective_model,
-                    .cwd = copy_cwd,
-                    .content = queued.message,
+                    .response_content = queued.message,
                     .reasoning_content = null,
                     .role = agent.Role.user.to_str(),
                     .finish_reason = "null",
-                    .tool_calls = null,
+                    .tool_calls_json = "",
                     .tool_call_id = null,
-                    .agent_name = initial_agent,
+                    .agent = initial_agent,
                     .loop_index = 0,
                     .temperature = initial_agent_state.temperature,
                     .is_thinking = initial_agent_state.is_thinking,
@@ -359,41 +344,21 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                     .is_input = true,
                     .is_output = false,
                     .image_urls = image_urls,
-                });
+                    .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+                } });
 
-                const session_skills_queued = llm_history.getSessionSkills(parent_allocator, db, copy_session_id) catch null;
-                defer if (session_skills_queued) |s| for (s) |*skill| {
-                    parent_allocator.free(skill.skill_name);
-                    parent_allocator.free(skill.content);
-                };
-
-                try on_event_sent.onEventSendLLMHistory(allocator, .{
+                try agentic_loop_mod.deleteQueuedMessage(.{
+                    .allocator = allocator,
+                    .db = db,
+                    .is_emit_sse = true,
+                    .event_bus = event_bus,
                     .session_id = copy_session_id,
-                    .model = effective_model,
-                    .cwd = copy_cwd,
-                    .content = queued.message,
-                    .reasoning_content = null,
-                    .role = agent.Role.user.to_str(),
-                    .finish_reason = "null",
-                    .tool_calls_json = null,
-                    .tool_call_id = null,
-                    .agent_name = initial_agent,
-                    .loop_index = 0,
-                    .temperature = initial_agent_state.temperature,
-                    .is_thinking = initial_agent_state.is_thinking,
-                    .parent_id = copy_parent_session_id,
-                    .parent_session_id = copy_parent_session_id,
-                    .is_input = true,
-                    .is_output = false,
-                    .image_url = if (queued.image_url.len > 0) queued.image_url else null,
-                    .session_skills = session_skills_queued,
+                    .message = queued.message,
                 });
-
-                _ = try llm_history.deleteQueuedMessage(allocator, db, copy_session_id, queued.message);
             }
         }
 
-        try agentic_loop.update_worker(agentic_loop.UpdateWorkerInput{
+        try agentic_loop_mod.updateWorker(agentic_loop_mod.UpdateWorkerInput{
             .allocator = allocator,
             .db = db,
             .logger = logger,
@@ -476,17 +441,17 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                 allocator.free(skill.content);
             };
 
-            _ = llm_history.saveMessage(allocator, io, db, .{
+            try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
+                .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                 .session_id = copy_session_id,
                 .model = effective_model,
-                .cwd = copy_cwd,
-                .content = diagnostic,
+                .response_content = diagnostic,
                 .reasoning_content = null,
                 .role = agent.Role.user.to_str(),
                 .finish_reason = "null",
-                .tool_calls = null,
+                .tool_calls_json = "",
                 .tool_call_id = null,
-                .agent_name = effective_agent_name,
+                .agent = effective_agent_name,
                 .loop_index = loop_counter,
                 .temperature = agent_temperature,
                 .is_thinking = isThinking,
@@ -497,41 +462,20 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                 .parent_session_id = copy_parent_session_id,
                 .is_input = true,
                 .is_output = false,
-            }) catch {};
-
-            _ = on_event_sent.onEventSendLLMHistory(allocator, .{
-                .session_id = copy_session_id,
-                .model = effective_model,
-                .cwd = copy_cwd,
-                .content = diagnostic,
-                .reasoning_content = null,
-                .role = agent.Role.user.to_str(),
-                .finish_reason = "null",
-                .tool_calls_json = null,
-                .tool_call_id = null,
-                .tool_name = null,
-                .agent_name = effective_agent_name,
-                .loop_index = loop_counter,
-                .temperature = agent_temperature,
-                .is_thinking = isThinking,
-                .is_input = true,
-                .is_output = false,
-                .parent_session_id = copy_parent_session_id,
-                .parent_id = copy_parent_session_id,
-                .image_url = null,
-                .session_skills = session_skills_bail,
-            }) catch {};
+                .image_urls = null,
+                .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+            } });
 
             return error.TooManyRetries;
         }
 
         var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
-        const db_messages = try agentic_loop.getLLMHistories(agentic_loop.GetLLMHistoriesInput{
+        const db_messages = try agentic_loop_mod.getLLMHistories(.{
             .allocator = allocator,
             .db = db,
             .session_id = copy_session_id,
         });
-        const is_task_kanban = try llm_history.isTaskKanban(allocator, db, copy_session_id);
+        const is_task_kanban = try agentic_loop_mod.isSessionKanban(allocator, db, copy_session_id);
         defer {
             for (db_messages) |*msg| msg.deinit(allocator);
             allocator.free(db_messages);
@@ -588,60 +532,33 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
         retry_count = 0;
         if (res_dynamic_agent.finish_reason) |finish_reason| {
             if (finish_reason == .stop) {
-                _ = try llm_history.saveMessage(allocator, io, db, .{
+                try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
+                    .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     .session_id = copy_session_id,
                     .model = effective_model,
-                    .cwd = copy_cwd,
-                    .content = res_dynamic_agent.content,
+                    .response_content = res_dynamic_agent.content orelse "",
                     .reasoning_content = res_dynamic_agent.reasoning_content,
                     .role = agent.Role.assistant.to_str(),
-                    .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
-                    .tool_calls = null,
+                    .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else "stop",
+                    .tool_calls_json = "",
                     .tool_call_id = null,
-                    .agent_name = effective_agent_name,
+                    .agent = effective_agent_name,
                     .loop_index = loop_counter,
                     .temperature = agent_temperature,
                     .is_thinking = isThinking,
-                    .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
-                    .completion_tokens = res_dynamic_agent.usage.completion_tokens,
-                    .total_tokens = res_dynamic_agent.usage.total_tokens,
+                    .prompt_tokens = @intCast(res_dynamic_agent.usage.prompt_tokens),
+                    .completion_tokens = @intCast(res_dynamic_agent.usage.completion_tokens),
+                    .total_tokens = @intCast(res_dynamic_agent.usage.total_tokens),
                     .parent_id = copy_parent_session_id,
                     .parent_session_id = copy_parent_session_id,
-                });
-
-                // Send SSE event directly with the agent's response content
-                // Don't use getLatestMessage as it might return wrong message if timestamps collide
-                const session_skills_dynamic = try llm_history.getSessionSkills(allocator, db, copy_session_id);
-                defer for (session_skills_dynamic) |*skill| {
-                    allocator.free(skill.skill_name);
-                    allocator.free(skill.content);
-                };
-
-                _ = try on_event_sent.onEventSendLLMHistory(allocator, .{
-                    .session_id = copy_session_id,
-                    .model = effective_model,
-                    .cwd = copy_cwd,
-                    .content = res_dynamic_agent.content,
-                    .reasoning_content = res_dynamic_agent.reasoning_content,
-                    .role = agent.Role.assistant.to_str(),
-                    .finish_reason = res_dynamic_agent.finish_reason.?.to_str(),
-                    .tool_calls_json = null,
-                    .tool_call_id = null,
-                    .tool_name = null,
-                    .agent_name = effective_agent_name,
-                    .loop_index = loop_counter,
-                    .temperature = agent_temperature,
-                    .is_thinking = isThinking,
                     .is_input = false,
                     .is_output = true,
-                    .parent_session_id = copy_parent_session_id,
-                    .parent_id = copy_parent_session_id,
-                    .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
-                    .image_url = null,
-                    .session_skills = session_skills_dynamic,
-                });
+                    .image_urls = null,
+                    .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+                    .is_feed_to_llm = true,
+                } });
 
-                const isHaveQueueMessage = llm_history.hasQueuedMessages(db, copy_session_id);
+                const isHaveQueueMessage = agentic_loop_mod.hasQueuedMessages(allocator, db, copy_session_id);
                 if (isHaveQueueMessage) {
                     continue;
                 }
@@ -657,7 +574,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                 }
 
                 // try llm_history.markSessionIdle(allocator, db, copy_session_id);
-                try agentic_loop.deleteWorker(agentic_loop.DeleteWorkerInput{
+                try agentic_loop_mod.deleteWorker(agentic_loop_mod.DeleteWorkerInput{
                     .allocator = allocator,
                     .db = db,
                     .logger = logger,
@@ -672,101 +589,8 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
                 continue;
             } else if (finish_reason == .tool_calls) {
                 try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, copy_selected_profile_model);
-            } else if (finish_reason == .assistant) {
-                if (res_dynamic_agent.tool_calls != null and res_dynamic_agent.tool_calls.?.len > 0) {
-                    try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, copy_selected_profile_model);
-                } else {
-                    // Treat as normal completion
-                    _ = try llm_history.saveMessage(allocator, io, db, .{
-                        .session_id = copy_session_id,
-                        .model = effective_model,
-                        .cwd = copy_cwd,
-                        .content = res_dynamic_agent.content,
-                        .reasoning_content = res_dynamic_agent.reasoning_content,
-                        .role = agent.Role.assistant.to_str(),
-                        .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
-                        .tool_calls = null,
-                        .tool_call_id = null,
-                        .agent_name = effective_agent_name,
-                        .loop_index = loop_counter,
-                        .temperature = agent_temperature,
-                        .is_thinking = isThinking,
-                        .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
-                        .completion_tokens = res_dynamic_agent.usage.completion_tokens,
-                        .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
-                        .parent_id = copy_parent_session_id,
-                        .parent_session_id = copy_parent_session_id,
-                    });
-
-                    // Send SSE event directly with the agent's response content
-                    // Don't use getLatestMessage as it might return wrong message if timestamps collide
-                    const session_skills_assistant = try llm_history.getSessionSkills(allocator, db, copy_session_id);
-                    defer for (session_skills_assistant) |*skill| {
-                        allocator.free(skill.skill_name);
-                        allocator.free(skill.content);
-                    };
-
-                    _ = try on_event_sent.onEventSendLLMHistory(allocator, .{
-                        .session_id = copy_session_id,
-                        .model = effective_model,
-                        .cwd = copy_cwd,
-                        .content = res_dynamic_agent.content,
-                        .reasoning_content = res_dynamic_agent.reasoning_content,
-                        .role = agent.Role.assistant.to_str(),
-                        .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
-                        .tool_calls_json = null,
-                        .tool_call_id = null,
-                        .tool_name = null,
-                        .agent_name = effective_agent_name,
-                        .loop_index = loop_counter,
-                        .temperature = agent_temperature,
-                        .is_thinking = isThinking,
-                        .is_input = false,
-                        .is_output = true,
-                        .parent_session_id = copy_parent_session_id,
-                        .parent_id = copy_parent_session_id,
-                        .total_tokens = @as(u32, @intCast(res_dynamic_agent.usage.total_tokens)),
-                        .image_url = null,
-                        .session_skills = session_skills_assistant,
-                    });
-
-                    const isHaveQueueMessage = llm_history.hasQueuedMessages(db, copy_session_id);
-                    if (isHaveQueueMessage) {
-                        continue;
-                    }
-
-                    break;
-                }
             } else {
                 retry_count += 1;
-                const session_skills_retry = try llm_history.getSessionSkills(allocator, db, copy_session_id);
-                defer for (session_skills_retry) |*skill| {
-                    allocator.free(skill.skill_name);
-                    allocator.free(skill.content);
-                };
-
-                _ = try on_event_sent.onEventSendLLMHistory(allocator, .{
-                    .session_id = copy_session_id,
-                    .model = effective_model,
-                    .cwd = copy_cwd,
-                    .content = null,
-                    .reasoning_content = null,
-                    .role = null,
-                    .finish_reason = "stop",
-                    .tool_calls_json = null,
-                    .tool_call_id = null,
-                    .tool_name = null,
-                    .agent_name = effective_agent_name,
-                    .loop_index = loop_counter,
-                    .temperature = agent_temperature,
-                    .is_thinking = isThinking,
-                    .is_input = false,
-                    .is_output = false,
-                    .parent_session_id = copy_parent_session_id,
-                    .parent_id = copy_parent_session_id,
-                    .image_url = null,
-                    .session_skills = session_skills_retry,
-                });
                 break;
             }
 
@@ -783,7 +607,7 @@ pub fn runAgenticMultiStepnew(di: *nalarcore.ContextIPCTui, params: RunParamsNew
 }
 
 fn generateSessionNameNew(
-    db_messages: []agentic_loop.LLMHistory,
+    db_messages: []agentic_loop_mod.LLMHistory,
     allocator: std.mem.Allocator,
     api_key: []const u8,
     model: []const u8,
@@ -922,227 +746,33 @@ pub fn maybeCompactMessagesNew(
 ) !bool {
     if (!force and !agent.LLMModels.shouldCompact(
         total_tokens,
-        // No profile/sub-agent in scope at this call site — pass null
-        // for both so the resolver falls back through the top-level
-        // defaults (the orchestrator's own config) to the built-in
-        // LLMModels per-model capacity + 80% threshold. Future
-        // refactors that thread `profile_name` + `sub_agent_name` here
-        // will pick up per-profile overrides via the cascade.
         llm_config.maxCapacityForModel(null, null, llm_config, model),
         llm_config.compactionThresholdPercent(null, null, llm_config),
     )) {
         return false;
     }
 
-    // Snapshot the current messages so that callCompactAgentNew's in-place mutation
-    // of index 0 (rewriting it to the compaction system prompt) does not leak back
-    // into the caller's list if the compact call fails.
     const copy_messages = try allocator.dupe(agent.AgentMessage, messages.items);
     defer allocator.free(copy_messages);
     var copy_list = std.ArrayList(agent.AgentMessage).fromOwnedSlice(copy_messages);
     defer copy_list.deinit(allocator);
 
-    const compacted_xml = callCompactAgentNew(copy_list, allocator, api_key, model, base_url, cwd, logger, io) orelse {
-        // LLM call failed; caller keeps the original (uncompacted) list.
+    const compacted_xml = agentic_loop_mod.callCompactAgent(
+        .{
+            .allocator = allocator,
+            .io = io,
+            .messages = copy_list,
+            .api_key = api_key,
+            .model = model,
+            .base_url = base_url,
+            .logger = logger,
+        },
+    ) orelse {
         return false;
     };
 
-    // compactMessageInMemoryNew consumes the old list and returns the compacted one.
-    // Replace the caller's list in place so the next loop iteration sees the
-    // compacted messages.
     _ = try compactMessageInMemoryNew(allocator, messages.*, compacted_xml, session_id, model, cwd, db, io, logger);
     return true;
-}
-
-/// Call CompactionAgent to compress conversation history.
-/// Returns compacted context or null on failure.
-/// Call CompactionAgent to compress conversation history.
-/// Returns compacted context or null on failure.
-pub fn callCompactAgentNew(
-    messages: std.ArrayList(agent.AgentMessage),
-    allocator: std.mem.Allocator,
-    api_key: []const u8,
-    model: []const u8,
-    base_url: []const u8,
-    cwd: []const u8,
-    logger: *logger_mod.Logger,
-    io: std.Io,
-) ?[]const u8 {
-    _ = cwd;
-
-    if (messages.items.len < 2) {
-        logger.warnFmt("[COMPACTION] Not enough messages to compact", .{});
-        return null;
-    }
-
-    const last_idx = messages.items.len - 1;
-
-    // The original agent's system prompt — assumed to live at index 0.
-    // Used for context only (constraints/tools/scope), not summarized as conversation.
-    const original_system_prompt: []const u8 = messages.items[0].content orelse "";
-
-    // Collect content from all messages between first and last,
-    // labeled by role so the CompactionAgent can tell turns apart
-    // instead of receiving one undifferentiated blob of text.
-    var parts: std.ArrayList([]const u8) = .empty;
-    defer parts.deinit(allocator);
-
-    for (messages.items[1..last_idx]) |msg| {
-        if (msg.content) |c| {
-            const role_str = msg.role.to_str();
-            const labeled = std.fmt.allocPrint(allocator, "[{s}]: {s}", .{ role_str, c }) catch |err| {
-                logger.errFmt("[COMPACTION] Failed to label message content: {s}", .{@errorName(err)});
-                return null;
-            };
-            parts.append(allocator, labeled) catch |err| {
-                logger.errFmt("[COMPACTION] Failed to collect message content: {s}", .{@errorName(err)});
-                return null;
-            };
-        }
-
-        // If the message carries structured tool calls (e.g. assistant
-        // messages with finish_reason == .tool_calls), surface those too —
-        // otherwise the compactor never sees that a tool was invoked at all
-        // when content is null or purely conversational.
-        if (msg.tool_calls) |tool_calls| {
-            for (tool_calls) |tc| {
-                const tc_str = std.fmt.allocPrint(allocator, "[tool_call]: {s}({s})", .{
-                    tc.function.name,
-                    tc.function.arguments,
-                }) catch continue;
-                parts.append(allocator, tc_str) catch continue;
-            }
-        }
-    }
-
-    const history_str = std.mem.join(allocator, "\n", parts.items) catch |err| {
-        logger.errFmt("[COMPACTION] Failed to join history: {s}", .{@errorName(err)});
-        return null;
-    };
-    defer allocator.free(history_str);
-
-    const compact_message = std.fmt.allocPrint(allocator,
-        \\You are preparing a handoff package for a fresh AI coding agent.
-        \\The next agent has ZERO context. It cannot ask questions. It must act immediately.
-        \\
-        \\Rules:
-        \\- Be surgical. No narrative, no filler, no summaries of conversation.
-        \\- Every line must help the next agent take action or avoid a mistake.
-        \\- If something was tried and failed, say exactly why — not just "it failed".
-        \\- If a file was modified, say what changed and why, not just the filename.
-        \\- The NEXT ACTION must be a single concrete step, not a vague goal.
-        \\- If there are blockers, say what they are and what was tried to unblock them.
-        \\
-        \\Output exactly this structure, no extra sections:
-        \\
-        \\GOAL:
-        \\(The original user objective, one or two sentences max)
-        \\
-        \\CURRENT STATE:
-        \\- cwd:
-        \\- repo:
-        \\- branch:
-        \\- worktree:
-        \\- build status: (passing / failing / unknown)
-        \\- test status: (passing / failing / unknown)
-        \\
-        \\TECH STACK:
-        \\(Languages, frameworks, build tools — only what is relevant to the task)
-        \\
-        \\FILES MODIFIED:
-        \\(path — what changed and why, one line per file)
-        \\
-        \\KEY DISCOVERIES:
-        \\(Non-obvious things learned about the codebase, APIs, or constraints)
-        \\
-        \\FAILED ATTEMPTS:
-        \\(What was tried, what happened, root cause if known)
-        \\
-        \\OPEN ISSUES:
-        \\(Unresolved problems blocking or threatening progress)
-        \\
-        \\ASSUMPTIONS MADE:
-        \\(Decisions taken without explicit user confirmation)
-        \\
-        \\NEXT ACTION:
-        \\(Exactly one concrete step. File to edit, command to run, function to write.)
-        \\
-        \\AFTER THAT:
-        \\(The 2-3 steps that follow NEXT ACTION, in order)
-        \\
-        \\DO NOT:
-        \\(Pitfalls, wrong paths, things that look right but aren't)
-        \\
-        \\---
-        \\ORIGINAL SYSTEM PROMPT (context only — constraints, tools, scope the
-        \\original agent operated under. Do NOT summarize this section itself;
-        \\use it only to inform DO NOT / ASSUMPTIONS MADE / FAILED ATTEMPTS above):
-        \\{s}
-        \\
-        \\---
-        \\CONVERSATION HISTORY:
-        \\{s}
-    , .{ original_system_prompt, history_str }) catch |err| {
-        logger.errFmt("[COMPACTION] Failed to format compact message: {s}", .{@errorName(err)});
-        return null;
-    };
-    defer allocator.free(compact_message);
-
-    var messages_convocompact: std.ArrayList(agent.AgentMessage) = .empty;
-    defer messages_convocompact.deinit(allocator);
-
-    messages_convocompact.append(allocator, .{
-        .role = .system,
-        .content = prompt.CompactionAgent,
-    }) catch |err| {
-        logger.errFmt("[COMPACTION] Failed to append system message: {s}", .{@errorName(err)});
-        return null;
-    };
-
-    messages_convocompact.append(allocator, .{
-        .role = .user,
-        .content = compact_message,
-    }) catch |err| {
-        logger.errFmt("[COMPACTION] Failed to append user message: {s}", .{@errorName(err)});
-        return null;
-    };
-
-    var compaction_agent = agent.Agent.init(allocator, io) catch |err| {
-        logger.errFmt("[COMPACTION] Agent.init failed: {s}", .{@errorName(err)});
-        return null;
-    };
-    defer compaction_agent.deinit();
-
-    compaction_agent.apiKey = api_key;
-    compaction_agent.model = model;
-    compaction_agent.baseUrl = base_url;
-
-    const response = compaction_agent.callStreaming(.{
-        .tools = &.{},
-        .messages = messages_convocompact.items,
-        .temperature = 0.0,
-    }, null, noopStreamCallbackNew) catch |err| {
-        logger.errFmt("[COMPACTION] callStreaming failed: {s}", .{@errorName(err)});
-        return null;
-    };
-    defer response.deinit();
-
-    const content = response.content orelse {
-        logger.errFmt("[COMPACTION] Response content is null", .{});
-        return null;
-    };
-
-    if (content.len == 0) {
-        logger.warnFmt("[COMPACTION] Empty response from CompactionAgent", .{});
-        return null;
-    }
-
-    const duplicated = allocator.dupe(u8, content) catch |err| {
-        logger.errFmt("[COMPACTION] Failed to duplicate content: {s}", .{@errorName(err)});
-        return null;
-    };
-
-    return duplicated;
 }
 
 /// Compact messages in memory based on CompactionAgent output.
@@ -1510,49 +1140,15 @@ pub const RunParams = struct {
     is_sub_agent: bool = false,
 };
 
-/// Resolved sub-agent config overlay, populated by
-/// `tool_registry.execSpawnSubAgent` after calling
-/// `Config.resolveSubAgent`. When `non-null`, the fields here are
-/// applied on top of the existing `selected_profile_model`
-/// resolution in `runAgenticMultiStepnew`.
-///
-/// String fields with `.len == 0` mean "inherit the
-/// profile-resolved value" (the matched `SubAgentConfig` had an
-/// empty string for that field, OR the random-fallback case).
-/// `is_thinking` / `temperature` `null` means "auto — inherit
-/// parent's value at run time".
-///
-/// The struct is *passed by value* (not pointer) because it's small
-/// and `RunParamsNew` is by-value already. The string slices it
-/// references borrow from the `LlmConfig` allocator — they must
-/// outlive the workflow run, which they do because
-/// `LlmConfig` is owned by the singleton.
 pub const SubAgentOverrides = struct {
-    /// Final name to record in `llm_history.agent_name` and the
-    /// session_id suffix. Either the matched config name (e.g.
-    /// "code-reviewer") or a generated random name
-    /// ("agent-{16 hex chars}") for the fallback case.
     resolved_name: []const u8,
-    /// True when the original `agent_name` was not found in any
-    /// sub_agents list. The frontend shows a "random" badge in the
-    /// SpawnSubAgent tool result when this is true.
     is_random_fallback: bool,
-    /// LLM fields (overlay on profile-resolved values). Empty
-    /// string = "inherit the profile-resolved value".
     model: []const u8 = "",
     base_url: []const u8 = "",
     api_key: []const u8 = "",
     url_style: []const u8 = "",
-    /// `null` = "auto — inherit parent's value at run time".
-    /// When non-null, the override is applied on top of the
-    /// session's current value (NOT the profile value — see
-    /// `runAgenticMultiStepnew` for the order of application).
     is_thinking: ?bool = null,
     temperature: ?f32 = null,
-    /// System prompt to inject as the sub-agent's
-    /// `## Your Active Agent Configuration`. Empty = no injection
-    /// (the sub-agent uses the default `build_agent_prompt`
-    /// scaffold with no specialized configuration).
     system_prompt: []const u8 = "",
 };
 
@@ -1565,12 +1161,7 @@ pub const RunParamsNew = struct {
     allowed_tools: []const u8,
     is_sub_agent: bool = false,
     image_urls: []const u8 = "",
-    selected_profile_model: []const u8 = "", // NEW
-    inherited_context: []const u8 = "", // NEW: mode string for parent history inheritance
-    /// NEW: pre-resolved sub-agent config overlay. When non-null,
-    /// the fields here are applied on top of the
-    /// `selected_profile_model` resolution (see `SubAgentOverrides`
-    /// doc). The struct is small and owned by the call site; the
-    /// string slices it references must outlive this workflow run.
+    selected_profile_model: []const u8 = "",
+    inherited_context: []const u8 = "",
     sub_agent_overrides: ?SubAgentOverrides = null,
 };

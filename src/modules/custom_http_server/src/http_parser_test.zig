@@ -63,7 +63,7 @@ test "parse GET request without body" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     try expectEqualStrings("GET", req.method);
     try expectEqualStrings("/test", req.path);
@@ -77,7 +77,7 @@ test "parse POST request with small JSON" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     try expectEqualStrings("POST", req.method);
     try expectEqualStrings("/api", req.path);
@@ -93,7 +93,7 @@ test "parse request with custom headers" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     // Headers may have trailing \r from HTTP parsing
     const host_val = req.headers.get("Host") orelse "";
@@ -122,7 +122,7 @@ test "parse POST with 4KB JSON (exactly buffer size)" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     try expectEqual(@as(usize, 4096), req.body.len);
 }
@@ -135,7 +135,7 @@ test "parse POST with 5KB JSON (exceeds buffer size)" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     try expectEqual(@as(usize, 5120), req.body.len);
 }
@@ -148,7 +148,7 @@ test "parse POST with 8KB JSON (2x buffer size)" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     try expectEqual(@as(usize, 8192), req.body.len);
 }
@@ -161,7 +161,7 @@ test "parse POST with 16KB JSON (4x buffer size)" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     try expectEqual(@as(usize, 16384), req.body.len);
 }
@@ -174,7 +174,7 @@ test "parse POST with 100KB JSON (large payload)" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     try expectEqual(@as(usize, 102400), req.body.len);
 }
@@ -189,7 +189,7 @@ test "parse POST with JSON at buffer boundary (4095 bytes)" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     try expectEqual(@as(usize, 4095), req.body.len);
 }
@@ -202,7 +202,7 @@ test "parse POST with JSON at buffer boundary (4097 bytes)" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     try expectEqual(@as(usize, 4097), req.body.len);
 }
@@ -213,7 +213,7 @@ test "parse JSON with special characters" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     try expectEqualStrings(body, req.body);
 }
@@ -224,7 +224,7 @@ test "parse JSON with unicode characters" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     try expectEqualStrings(body, req.body);
 }
@@ -237,7 +237,7 @@ test "parse POST with body split across 4096 boundaries" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     try expectEqual(@as(usize, 8192), req.body.len);
 }
@@ -259,7 +259,7 @@ test "parse GET with URL-encoded path containing large query" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     try expectEqualStrings("/api/search", req.path);
     try expect(req.query.get("data") != null);
@@ -275,7 +275,7 @@ test "parse POST with 1MB JSON (stress test)" {
     defer allocator.free(request_data);
     
     var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.headers.deinit();
+    defer req.deinit(allocator);
 
     try expectEqual(@as(usize, 1024 * 1024), req.body.len);
 }

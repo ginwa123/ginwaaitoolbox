@@ -6,34 +6,15 @@ const SseClient = sse_manager.SseClient;
 const builtin = @import("builtin");
 
 // Helper to create a pair of connected sockets for testing
+// Windows is not supported here (socketpair is POSIX-only); callers must
+// guard with `if (builtin.os.tag != .windows)` when running on Windows.
 fn createSocketPair() ![2]i32 {
-    const local = if (builtin.os.tag == .windows) 
-        std.net.AddressFamily.unix else 
-        std.net.AddressFamily.unix;
-    
     var fds: [2]i32 = undefined;
-    // On Windows we need to use a different approach since socketpair isn't available
-    if (builtin.os.tag == .windows) {
-        // On Windows, create a pair using socket + accept/connect
-        const server_sock = try posix.socket(.ipv6, .stream, .passive);
-        defer posix.closeSocket(server_sock);
-        
-        // Bind to localhost:0 to get a random available port
-        const addr = std.net.Address.initIpv6([_]u8{0} ** 16, 0, 0, 0, 0, 0, 0, 0, 127, 0, 0, 1);
-        try posix.bind(server_sock, &addr);
-        _ = posix.listen(server_sock, 1);
-        
-        const bound_addr = try posix.getsockname(server_sock, null);
-        const client_sock = try posix.socket(.ipv6, .stream, .active);
-        _ = posix.connect(client_sock, &bound_addr);
-        
-        const server_conn = try posix.accept(server_sock, null, null);
-        
-        return [2]i32{ client_sock, server_conn };
-    } else {
-        try posix.socketpair(.unix, .stream, .passive, &fds);
-        return fds;
-    }
+    // AF_UNIX (1), SOCK_STREAM (1), protocol 0. socketpair returns 0 on
+    // success, -1 on failure (we check < 0).
+    const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+    if (rc < 0) return error.SocketPairFailed;
+    return fds;
 }
 
 // ============================================================================
@@ -49,15 +30,19 @@ test "SseManager: register and remove single client" {
     defer server_arena.deinit();
     const server_allocator = server_arena.allocator();
 
-    var io = std.Io.init();
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+
+    defer threaded.deinit();
+
+    const io = threaded.io();
     var mgr = try SseManager.init(allocator, server_allocator, io);
     defer mgr.deinit();
 
     // Create a socket pair for testing
     const pair = try createSocketPair();
     defer {
-        posix.closeSocket(pair[0]);
-        posix.closeSocket(pair[1]);
+        _ = posix.system.close(pair[0]);
+        _ = posix.system.close(pair[1]);
     }
 
     // Register a client
@@ -79,7 +64,11 @@ test "SseManager: register and remove multiple clients" {
     defer server_arena.deinit();
     const server_allocator = server_arena.allocator();
 
-    var io = std.Io.init();
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+
+    defer threaded.deinit();
+
+    const io = threaded.io();
     var mgr = try SseManager.init(allocator, server_allocator, io);
     defer mgr.deinit();
 
@@ -88,12 +77,12 @@ test "SseManager: register and remove multiple clients" {
     const pair2 = try createSocketPair();
     const pair3 = try createSocketPair();
     defer {
-        posix.closeSocket(pair1[0]);
-        posix.closeSocket(pair1[1]);
-        posix.closeSocket(pair2[0]);
-        posix.closeSocket(pair2[1]);
-        posix.closeSocket(pair3[0]);
-        posix.closeSocket(pair3[1]);
+        _ = posix.system.close(pair1[0]);
+        _ = posix.system.close(pair1[1]);
+        _ = posix.system.close(pair2[0]);
+        _ = posix.system.close(pair2[1]);
+        _ = posix.system.close(pair3[0]);
+        _ = posix.system.close(pair3[1]);
     }
 
     // Register multiple clients
@@ -122,14 +111,18 @@ test "SseManager: remove by ID works correctly" {
     defer server_arena.deinit();
     const server_allocator = server_arena.allocator();
 
-    var io = std.Io.init();
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+
+    defer threaded.deinit();
+
+    const io = threaded.io();
     var mgr = try SseManager.init(allocator, server_allocator, io);
     defer mgr.deinit();
 
     const pair = try createSocketPair();
     defer {
-        posix.closeSocket(pair[0]);
-        posix.closeSocket(pair[1]);
+        _ = posix.system.close(pair[0]);
+        _ = posix.system.close(pair[1]);
     }
 
     const id = try mgr.registerClient(pair[0]);
@@ -149,7 +142,11 @@ test "SseManager: remove non-existent client returns null" {
     defer server_arena.deinit();
     const server_allocator = server_arena.allocator();
 
-    var io = std.Io.init();
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+
+    defer threaded.deinit();
+
+    const io = threaded.io();
     var mgr = try SseManager.init(allocator, server_allocator, io);
     defer mgr.deinit();
 
@@ -167,7 +164,11 @@ test "SseManager: deinit cleans up all clients" {
     defer server_arena.deinit();
     const server_allocator = server_arena.allocator();
 
-    var io = std.Io.init();
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+
+    defer threaded.deinit();
+
+    const io = threaded.io();
     var mgr = try SseManager.init(allocator, server_allocator, io);
 
     // Create and register multiple clients
@@ -175,7 +176,7 @@ test "SseManager: deinit cleans up all clients" {
     defer {
         // Note: manager already closed read ends, only close write ends
         for (socket_pairs.items) |fds| {
-            posix.closeSocket(fds[1]);
+            _ = posix.system.close(fds[1]);
         }
         socket_pairs.deinit(allocator);
     }
@@ -193,7 +194,7 @@ test "SseManager: deinit cleans up all clients" {
 
     // Close the other ends of socket pairs
     for (socket_pairs.items) |fds| {
-        posix.closeSocket(fds[1]);
+        _ = posix.system.close(fds[1]);
     }
 }
 
@@ -206,14 +207,18 @@ test "SseManager: removeClientByFd then removeClient (race condition test)" {
     defer server_arena.deinit();
     const server_allocator = server_arena.allocator();
 
-    var io = std.Io.init();
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+
+    defer threaded.deinit();
+
+    const io = threaded.io();
     var mgr = try SseManager.init(allocator, server_allocator, io);
     defer mgr.deinit();
 
     const pair = try createSocketPair();
     defer {
-        posix.closeSocket(pair[0]);
-        posix.closeSocket(pair[1]);
+        _ = posix.system.close(pair[0]);
+        _ = posix.system.close(pair[1]);
     }
 
     _ = try mgr.registerClient(pair[0]);
@@ -237,14 +242,18 @@ test "SseManager: removeClient then removeClientByFd (race condition test)" {
     defer server_arena.deinit();
     const server_allocator = server_arena.allocator();
 
-    var io = std.Io.init();
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+
+    defer threaded.deinit();
+
+    const io = threaded.io();
     var mgr = try SseManager.init(allocator, server_allocator, io);
     defer mgr.deinit();
 
     const pair = try createSocketPair();
     defer {
-        posix.closeSocket(pair[0]);
-        posix.closeSocket(pair[1]);
+        _ = posix.system.close(pair[0]);
+        _ = posix.system.close(pair[1]);
     }
 
     const id = try mgr.registerClient(pair[0]);
@@ -268,14 +277,18 @@ test "SseManager: register same fd twice returns same id" {
     defer server_arena.deinit();
     const server_allocator = server_arena.allocator();
 
-    var io = std.Io.init();
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+
+    defer threaded.deinit();
+
+    const io = threaded.io();
     var mgr = try SseManager.init(allocator, server_allocator, io);
     defer mgr.deinit();
 
     const pair = try createSocketPair();
     defer {
-        posix.closeSocket(pair[0]);
-        posix.closeSocket(pair[1]);
+        _ = posix.system.close(pair[0]);
+        _ = posix.system.close(pair[1]);
     }
 
     const id1 = try mgr.registerClient(pair[0]);
@@ -291,12 +304,15 @@ test "SseClient: deinit doesn't crash on closed fd" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var io = std.Io.init();
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
 
+    defer threaded.deinit();
+
+    const io = threaded.io();
     // Create an invalid socket fd by closing immediately
     const pair = try createSocketPair();
     // Close the first socket
-    posix.closeSocket(pair[0]);
+    _ = posix.system.close(pair[0]);
 
     var id: [16]u8 = undefined;
     @memset(&id, 0);
@@ -306,7 +322,7 @@ test "SseClient: deinit doesn't crash on closed fd" {
 
     // deinit should not crash even though fd is invalid
     client.deinit();
-    posix.closeSocket(pair[1]);
+    _ = posix.system.close(pair[1]);
 }
 
 test "SseManager: stress test - rapid add/remove" {
@@ -318,7 +334,11 @@ test "SseManager: stress test - rapid add/remove" {
     defer server_arena.deinit();
     const server_allocator = server_arena.allocator();
 
-    var io = std.Io.init();
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+
+    defer threaded.deinit();
+
+    const io = threaded.io();
     var mgr = try SseManager.init(allocator, server_allocator, io);
     defer mgr.deinit();
 
@@ -327,7 +347,7 @@ test "SseManager: stress test - rapid add/remove" {
     defer {
         // Close write ends (read ends were closed by mgr.deinit)
         for (socket_pairs.items) |fds| {
-            posix.closeSocket(fds[1]);
+            _ = posix.system.close(fds[1]);
         }
         socket_pairs.deinit(allocator);
     }
@@ -350,7 +370,7 @@ test "SseManager: stress test - rapid add/remove" {
 
     // Clean up other ends
     for (socket_pairs.items) |fds| {
-        posix.closeSocket(fds[1]);
+        _ = posix.system.close(fds[1]);
     }
 }
 
@@ -368,14 +388,18 @@ test "SseManager: gracefulShutdown with ArenaAllocator - no crash" {
     defer server_arena.deinit();
     const server_allocator = server_arena.allocator();
 
-    var io = std.Io.init();
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+
+    defer threaded.deinit();
+
+    const io = threaded.io();
     var mgr = try SseManager.init(allocator, server_allocator, io);
 
     // Create and register multiple clients
     var socket_pairs = std.ArrayListUnmanaged([2]i32){ .items = &.{}, .capacity = 0 };
     defer {
         for (socket_pairs.items) |fds| {
-            posix.closeSocket(fds[1]);
+            _ = posix.system.close(fds[1]);
         }
         socket_pairs.deinit(allocator);
     }
@@ -396,7 +420,7 @@ test "SseManager: gracefulShutdown with ArenaAllocator - no crash" {
 
     // Clean up other ends after gracefulShutdown closed them
     for (socket_pairs.items) |fds| {
-        posix.closeSocket(fds[1]);
+        _ = posix.system.close(fds[1]);
     }
 
     // Final deinit should be clean

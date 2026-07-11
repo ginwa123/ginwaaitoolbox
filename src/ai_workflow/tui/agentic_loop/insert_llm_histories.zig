@@ -1,0 +1,241 @@
+const std = @import("std");
+const mod = @import("mod.zig");
+const nalarcore = mod.nalarcore;
+const sqlite = nalarcore.sqlite;
+const logger_mod = nalarcore.loggermod;
+const agent = nalarcore.agent;
+const LLMHistory = mod.LLMHistory;
+const event_bus_mod = nalarcore.event_bus;
+const onEventSendLLMHistory = mod.onEventSendLLMHistory;
+const SkillInfo = mod.SkillInfo;
+
+const keyword = "INSERTLLMHISTORIES";
+
+pub const InsertLLMHistoriesInput = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    logger: ?*logger_mod.Logger,
+    is_emit_sse: bool,
+    event_bus: ?*event_bus_mod.EventBus,
+    cwd: []const u8,
+    entity: LLMHistory,
+};
+
+pub fn inserLLMHistories(
+    obj: InsertLLMHistoriesInput,
+) !void {
+    const allocator = obj.allocator;
+    const db = obj.db;
+    const logger = obj.logger;
+    const io = obj.io;
+    const event_bus = obj.event_bus;
+
+    const input = obj.entity;
+    const session_id = input.session_id;
+    const model = input.model;
+    const cwd = obj.cwd;
+    const temperature = input.temperature;
+    const is_thinking = input.is_thinking;
+    const is_input = input.is_input;
+    const is_output = input.is_output;
+    const finish_reason = input.finish_reason;
+    const reasoning_content = input.reasoning_content;
+
+    const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+    defer allocator.free(id);
+    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+    defer allocator.free(created_at);
+
+    const contentStr = input.response_content;
+    const finishReasonStr = input.finish_reason;
+    const roleStr = input.role;
+    const reasoningStr = input.reasoning_content orelse "";
+    const agentStr = input.agent;
+
+    const is_emit_sse = obj.is_emit_sse;
+
+    // tool_calls_json holds ONLY the serialized tool_calls array (assistant message wire format).
+    // For tool result messages, the tool_call_id lives in the dedicated tool_call_id column —
+    // do NOT overload tool_calls_json with the id. That overload caused the 2013 bug where the
+    // transform could not tell a JSON array from a plain id string.
+    const toolCallsOwned = input.tool_calls_json;
+
+    const sql =
+        \\INSERT INTO llm_history (
+        \\    id,
+        \\    session_id,
+        \\    model,
+        \\    response_content,
+        \\    finish_reason,
+        \\    role,
+        \\    tool_calls_json,
+        \\    tool_call_id,
+        \\    reasoning_content,
+        \\    is_feed_to_llm,
+        \\    agent,
+        \\    loop_index,
+        \\    temperature,
+        \\    is_thinking,
+        \\    created_at,
+        \\    parent_session_id,
+        \\    parent_id,
+        \\    prompt_tokens,
+        \\    completion_tokens,
+        \\    total_tokens,
+        \\    is_input,
+        \\    is_output,
+        \\    tool_name,
+        \\    diffview_before,
+        \\    diffview_after,
+        \\    image_url
+        \\) VALUES (
+        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        \\    ?, ?, ?, ?, ?, ?
+        \\)
+    ;
+
+    const copy_session_id = try allocator.dupe(u8, input.session_id);
+    defer allocator.free(copy_session_id);
+    const copy_model = try allocator.dupe(u8, input.model);
+    defer allocator.free(copy_model);
+    const copy_content = try allocator.dupe(u8, contentStr);
+    defer allocator.free(copy_content);
+    const copy_finish_reason = try allocator.dupe(u8, finishReasonStr);
+    defer allocator.free(copy_finish_reason);
+    const copy_role = try allocator.dupe(u8, roleStr);
+    defer allocator.free(copy_role);
+    const copy_tool_calls = try allocator.dupe(u8, toolCallsOwned);
+    defer allocator.free(copy_tool_calls);
+    const copy_reasoning = try allocator.dupe(u8, reasoningStr);
+    defer allocator.free(copy_reasoning);
+    const copy_agent = try allocator.dupe(u8, agentStr);
+    defer allocator.free(copy_agent);
+    const loop_index_str = try std.fmt.allocPrint(allocator, "{}", .{input.loop_index});
+    defer allocator.free(loop_index_str);
+    const temperature_str = try std.fmt.allocPrint(allocator, "{d:.2}", .{input.temperature});
+    defer allocator.free(temperature_str);
+    const is_thinking_str = if (input.is_thinking) "1" else "0";
+    const copy_parent_session_id = try allocator.dupe(u8, input.parent_session_id orelse "");
+    defer allocator.free(copy_parent_session_id);
+    const copy_parent_id = try allocator.dupe(u8, input.parent_id orelse "");
+    defer allocator.free(copy_parent_id);
+    const copy_tool_name = try allocator.dupe(u8, input.tool_name);
+    defer allocator.free(copy_tool_name);
+    const copy_tool_call_id = try allocator.dupe(u8, input.tool_call_id orelse "");
+    defer allocator.free(copy_tool_call_id);
+    const prompt_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.prompt_tokens});
+    defer allocator.free(prompt_tokens_str);
+    const completion_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.completion_tokens});
+    defer allocator.free(completion_tokens_str);
+    const total_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.total_tokens});
+    defer allocator.free(total_tokens_str);
+    const copy_diffview_before = try allocator.dupe(u8, input.diffview_before orelse "");
+    defer allocator.free(copy_diffview_before);
+    const copy_diffview_after = try allocator.dupe(u8, input.diffview_after orelse "");
+    defer allocator.free(copy_diffview_after);
+
+    const copy_is_feed_to_llm = try allocator.dupe(u8, if (input.is_feed_to_llm) "1" else "0");
+    defer allocator.free(copy_is_feed_to_llm);
+
+    // Join multiple image URLs with || delimiter
+    var image_urls_str: []const u8 = "";
+    var copy_image_urls: ?[]u8 = null;
+    if (input.image_urls) |urls| {
+        if (urls.len > 0) {
+            var combined = std.ArrayList(u8).empty;
+            defer combined.deinit(allocator);
+            for (urls, 0..) |url, i| {
+                if (i > 0) try combined.appendSlice(allocator, "||");
+                try combined.appendSlice(allocator, url);
+            }
+            copy_image_urls = try allocator.dupe(u8, combined.items);
+            image_urls_str = copy_image_urls.?;
+        }
+    }
+    defer if (copy_image_urls) |c| allocator.free(c);
+
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
+
+    try db.exec(allocator, sql, sqlArgs);
+
+    // Update the session's cwd in the sessions table
+    const copy_cwd = try allocator.dupe(u8, cwd);
+    defer allocator.free(copy_cwd);
+    try db.exec(allocator, "UPDATE sessions SET cwd = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", &.{ copy_cwd, copy_session_id });
+
+    if (is_emit_sse) {
+        if (event_bus) |ev| {
+            const session_skills = try getSessionSkills(allocator, db, copy_session_id);
+
+            _ = onEventSendLLMHistory(.{ .allocator = allocator, .io = io, .logger = logger, .event_bus = ev, .entity = .{
+                .session_id = session_id,
+                .model = model,
+                .cwd = cwd,
+                .content = copy_content,
+                .reasoning_content = reasoning_content,
+                .role = copy_role,
+                .finish_reason = finish_reason,
+                .tool_calls_json = copy_tool_calls,
+                .tool_call_id = copy_tool_call_id,
+                .agent_name = copy_agent,
+                .loop_index = input.loop_index,
+                .temperature = temperature,
+                .is_thinking = is_thinking,
+                .parent_id = session_id,
+                .parent_session_id = session_id,
+                .is_input = is_input,
+                .is_output = is_output,
+                .image_url = copy_image_urls,
+                .session_skills = session_skills,
+                .tool_name = copy_tool_name,
+                .total_tokens = input.total_tokens,
+                .diffview_before = copy_diffview_before,
+                .diffview_after = copy_diffview_after,
+            } }) catch |on_event_sent_err| {
+                logger.?.errFmt("[{s}] failed to sent llm historry: {s}\n", .{ keyword, @errorName(on_event_sent_err) });
+            };
+        }
+    }
+}
+
+/// Get all skills loaded for a session
+fn getSessionSkills(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]SkillInfo {
+    if (session_id.len == 0) return &.{};
+
+    const sql = "SELECT skill_name, content, loaded_at FROM session_skills WHERE session_id = ?";
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    var skills = std.ArrayList(SkillInfo).empty;
+    errdefer {
+        for (skills.items) |*s| s.deinit(allocator);
+        skills.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const skill_name = row.values[0];
+        const content = row.values[1];
+        const loaded_at = if (row.values[2].len > 0) std.fmt.parseInt(i64, row.values[2], 10) catch null else null;
+
+        try skills.append(allocator, .{
+            .skill_name = try allocator.dupe(u8, skill_name),
+            .content = try allocator.dupe(u8, content),
+            .loaded_at = loaded_at,
+        });
+        row.deinit(allocator);
+    }
+
+    return try skills.toOwnedSlice(allocator);
+}
+
+fn serializeToolCalls(allocator: std.mem.Allocator, tool_calls: []agent.ToolCall) ![]u8 {
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    try aw.writer.print("{f}", .{std.json.fmt(tool_calls, .{})});
+    return aw.toOwnedSlice();
+}
