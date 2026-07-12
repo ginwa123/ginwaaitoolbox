@@ -77,18 +77,21 @@ pub fn resolve(
 }
 
 /// Return the absolute path to the running executable. Linux reads
-/// `/proc/self/exe` via `readlink(2)`. macOS/Windows are not implemented
-/// in this chunk — Chunk 8's main.zig will fall back to "." on those
-/// platforms, which causes `resolve()` to skip step 2 and use $PATH.
+/// `/proc/self/exe` via `readlink(2)`; macOS calls `_NSGetExecutablePath`
+/// from libSystem (the Apple-blessed way to find your own exe path).
+/// Windows is still unimplemented — main.zig falls back to "." on it,
+/// which makes `resolve()` skip the "next to self" check and go
+/// straight to $PATH lookup.
 pub fn selfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {
     return switch (builtin.os.tag) {
         .linux => linuxSelfExePath(allocator),
+        .macos => macosSelfExePath(allocator),
         else => return error.UnsupportedPlatform,
     };
 }
 
 fn linuxSelfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {
-    // PATH_MAX is 4096 on Linux; 1024 is enough for almost all real
+    // PATH_MAX is 4096 on Linux; 4096 is enough for almost all real
     // installations. If the path is longer, readlink will return -ENAMETOOLONG
     // and we'll surface that as ReadLinkFailed.
     var buf: [4096]u8 = undefined;
@@ -98,6 +101,38 @@ fn linuxSelfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {
     // size, so a value > 4096 means an error occurred.
     if (rc > buf.len) return error.ReadLinkFailed;
     return allocator.dupe(u8, buf[0..rc]) catch return error.OutOfMemory;
+}
+
+fn macosSelfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {
+    // macOS doesn't have /proc/self/exe; the documented way to find your
+    // own exe path is `_NSGetExecutablePath` from libSystem. Per Apple docs,
+    // the returned path may contain symbolic links and ".." components —
+    // we hand it back as-is and let the "next to self" check in `resolve`
+    // (`std.fs.path.isAbsolute`) handle that. For a freshly-built binary
+    // in e.g. `./zig-out/bin/nalar-desktop`, the returned path is already
+    // absolute (the kernel knows where it was exec'd from), so the check
+    // works without further resolution.
+    //
+    // The call signature: int _NSGetExecutablePath(char* buf, uint32_t* bufsize);
+    //   - On success: returns 0, `buf` contains the NUL-terminated path,
+    //     `*bufsize` is the number of bytes written (excluding NUL).
+    //   - If `bufsize` is too small: returns -1, `*bufsize` is updated to
+    //     the required size. We grow the buffer and retry.
+    var buf: [4096]u8 = undefined;
+    var bufsize: u32 = buf.len;
+    const rc = std.c._NSGetExecutablePath(&buf, &bufsize);
+    if (rc == 0) {
+        const len = std.mem.indexOfScalar(u8, &buf, 0) orelse bufsize;
+        return allocator.dupe(u8, buf[0..len]) catch return error.OutOfMemory;
+    }
+    // Buffer too small — retry with the required size.
+    if (bufsize == 0 or bufsize > 65536) return error.ReadLinkFailed;
+    const heap = allocator.alloc(u8, bufsize) catch return error.OutOfMemory;
+    defer allocator.free(heap);
+    const retry_rc = std.c._NSGetExecutablePath(heap.ptr, &bufsize);
+    if (retry_rc != 0) return error.ReadLinkFailed;
+    const len = std.mem.indexOfScalar(u8, heap, 0) orelse bufsize;
+    return allocator.dupe(u8, heap[0..len]) catch return error.OutOfMemory;
 }
 
 fn fileExists(path: []const u8) bool {

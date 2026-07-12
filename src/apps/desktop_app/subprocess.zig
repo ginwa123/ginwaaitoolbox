@@ -19,18 +19,22 @@
 //     `EAGAIN` (the underlying socket is non-blocking and there's no
 //     data yet), so a probe that hits the server before the response
 //     is ready fails instead of blocking. To get reliable "block
-//     until the response arrives" semantics, we use raw Linux
-//     syscalls (`std.os.linux.socket/connect/send/recv/close`) which
-//     are blocking by default and map `EAGAIN` to a real timeout via
+//     until the response arrives" semantics, we use raw libc socket
+//     calls (`std.c.socket/connect/recv/close`) which are blocking by
+//     default on Linux + macOS and map `EAGAIN` to a real timeout via
 //     `SO_RCVTIMEO`.
 //   * `std.process.spawn(io, options)` returns a `Child` directly
 //     (no `init` + `spawn`). `child.kill()` and `child.wait(io)`
 //     take no extra args in 0.16.
-//   * The Zig 0.16 stdlib has no public `std.posix.socket/bind/...`
-//     wrappers — those live in `std.os.linux.*` and return a raw
-//     `usize` (success value on success, `-errno` cast to `usize` on
-//     failure). We check the return value against 0 / `maxInt(i32)`
-//     inline. The `errno()` helper inside posix.zig is private.
+//   * An earlier version of this file used raw `std.os.linux.*`
+//     syscalls, which compile on macOS but invoke Linux syscall
+//     numbers that don't exist on the Darwin kernel — the process
+//     gets killed with SIGSYS the first time `clock_gettime` runs.
+//     The libc `std.c.*` wrappers fix that without changing the
+//     blocking semantics; the libc socket functions return `-1` on
+//     error (with errno set) or `0`/byte-count on success, which is
+//     slightly different from the raw Linux syscall return convention
+//     but equivalent in practice.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -98,7 +102,7 @@ pub fn waitForHealth(
         // values this is just poll_ns.
         const remaining = deadline_ns - now_ts;
         const sleep_ns: u64 = if (remaining < poll_ns) remaining else poll_ns;
-        const sleep_ts: std.posix.timespec = .{
+        const sleep_ts: std.c.timespec = .{
             .sec = @intCast(@divFloor(sleep_ns, std.time.ns_per_s)),
             .nsec = @intCast(@mod(sleep_ns, std.time.ns_per_s)),
         };
@@ -113,48 +117,56 @@ fn tryProbe(port: u16) bool {
     // Open a blocking TCP socket. SO_RCVTIMEO gives the recv() call a
     // per-attempt deadline so a half-dead server can't make the probe
     // hang past the next-poll interval.
-    const fd_rc = std.os.linux.socket(
-        std.os.linux.AF.INET,
-        std.os.linux.SOCK.STREAM,
-        0,
-    );
-    if (fd_rc > std.math.maxInt(i32)) return false;
-    const fd: i32 = @intCast(fd_rc);
-    defer _ = std.os.linux.close(fd);
+    //
+    // Uses libc `std.c.socket` (cross-platform). The previous version
+    // called `std.os.linux.socket` which compiles on macOS but invokes
+    // the Linux syscall number — which doesn't exist on the Darwin
+    // kernel, so the process gets killed with SIGSYS on the first probe.
+    const fd = std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
+    if (fd == -1) return false;
+    defer _ = std.c.close(fd);
 
     // 1-second per-call recv() timeout. If the server hasn't responded
     // within 1s we abandon this probe and let the outer loop retry.
-    // The struct timeval is {tv_sec, tv_usec}.
-    const rcvtimeo = [_]u8{ 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    _ = std.os.linux.setsockopt(
+    // Use `std.c.timeval` (cross-platform) so the field layout matches
+    // the kernel's expectation on both Linux and macOS — previous
+    // versions of this file used a hand-rolled byte array, which was
+    // easy to get wrong on little-endian targets (e.g. tv_sec = 1
+    // needs bytes [1, 0, 0, 0, 0, 0, 0, 0], not [0, 0, 0, 1, ...]).
+    const rcvtimeo: std.c.timeval = .{ .sec = 1, .usec = 0 };
+    _ = std.c.setsockopt(
         fd,
-        std.os.linux.SOL.SOCKET,
-        std.os.linux.SO.RCVTIMEO,
+        std.c.SOL.SOCKET,
+        std.c.SO.RCVTIMEO,
         &rcvtimeo,
         @sizeOf(@TypeOf(rcvtimeo)),
     );
 
     // Build sockaddr_in for 127.0.0.1:port. Port + addr are big-endian.
+    // `std.c.sockaddr.in` has fields `family`, `port`, `addr`, `zero`
+    // on Linux (4 fields, 16 bytes); on macOS there's an additional
+    // `len: u8` prefix field. Both versions default `family` to AF.INET
+    // and `zero` to all-zeros, so we only set `port` and `addr`.
     const addr_bytes = [_]u8{ 127, 0, 0, 1 };
     var addr: u32 = 0;
     for (addr_bytes, 0..) |b, i| addr |= @as(u32, b) << @intCast(i * 8);
-    const sockaddr = std.os.linux.sockaddr.in{
+    const sockaddr = std.c.sockaddr.in{
         .port = std.mem.nativeToBig(u16, port),
         .addr = addr,
     };
-    const connect_rc = std.os.linux.connect(
+    const connect_rc = std.c.connect(
         fd,
         @ptrCast(&sockaddr),
-        @sizeOf(std.os.linux.sockaddr.in),
+        @sizeOf(std.c.sockaddr.in),
     );
-    if (connect_rc != 0) return false;
+    if (connect_rc == -1) return false;
 
     // Send a minimal HTTP/1.0 request. We use HTTP/1.0 (not 1.1) so
     // the server is allowed to close the connection after the single
     // response — no keep-alive bookkeeping needed.
     const req = "GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-    const write_rc = std.os.linux.write(fd, req.ptr, req.len);
-    if (write_rc != req.len) return false;
+    const write_rc = std.c.write(fd, req.ptr, req.len);
+    if (write_rc != @as(isize, @intCast(req.len))) return false;
 
     // Read the response. The status line is "HTTP/1.x NNN ..." — we
     // only need to read far enough to find the 3-digit status code.
@@ -165,8 +177,8 @@ fn tryProbe(port: u16) bool {
     var buf: [512]u8 = undefined;
     var total: usize = 0;
     while (total < buf.len) {
-        const n_rc = std.os.linux.recvfrom(fd, buf[total..].ptr, buf.len - total, 0, null, null);
-        if (n_rc > std.math.maxInt(usize) - total) return false; // overflow guard
+        const n_rc = std.c.recvfrom(fd, buf[total..].ptr, buf.len - total, 0, null, null);
+        if (n_rc == -1) return false;
         const n: usize = @intCast(n_rc);
         if (n == 0) break; // EOF — server closed
         total += n;
@@ -183,8 +195,12 @@ fn tryProbe(port: u16) bool {
 }
 
 fn readMonotonicNs() u64 {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts);
+    // Uses libc `std.c.clock_gettime` instead of `std.os.linux.clock_gettime`.
+    // The latter invokes the Linux syscall number directly, which doesn't
+    // exist on Darwin (SIGSYS = "Bad system call: 12"). `std.c.clock_gettime`
+    // goes through libc, which dispatches the correct syscall per platform.
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 

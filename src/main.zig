@@ -158,7 +158,7 @@ pub fn main(init: std.process.Init) !void {
     // };
     // defer cron.stop();
 
-    var port: u16 = 0;
+    var port: u16 = 8081;
 
     var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     while (args_iter.next()) |arg| {
@@ -181,7 +181,7 @@ pub fn main(init: std.process.Init) !void {
             }
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             std.debug.print("Usage: nalar [--port PORT] [--static-dir DIR]\n", .{});
-            std.debug.print("  --port PORT          Port to run the HTTP server on (default: 8080)\n", .{});
+            std.debug.print("  --port PORT          Port to run the HTTP server on (default: 8081)\n", .{});
             std.debug.print("  --static-dir DIR     Serve files from DIR at HTTP / (e.g. for a webapp)\n", .{});
             return;
         }
