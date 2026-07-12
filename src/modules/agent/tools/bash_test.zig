@@ -72,6 +72,42 @@ test "bash_tool: timeout fires on long-running command" {
     try testing.expect(result.exit_code != 0); // killed by signal
 }
 
+test "bash_tool: timeout kills subshell descendants (no pipe-leak hang)" {
+    // Regression test for the macOS hang. When bash is killed but its
+    // descendants (subshells via `( )`, `|&`, backgrounded `&`, pipes)
+    // inherit the pipe FDs back to us, the reader threads block forever
+    // on pipe EOF that never arrives. The fix puts bash in its own
+    // process group (.pgid = 0) so the timeout path can kill the whole
+    // group with std.posix.kill(-pgid, .KILL).
+    //
+    // Without the fix this test hangs until the Zig test runner's
+    // per-test timeout kills it; with the fix it returns in ~1 s with
+    // timeout == true. We bound the wait with an overall deadline
+    // matching `mandatory_timeout * 4` so a regression surfaces as a
+    // test failure rather than a process hang.
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
+
+    const allocator = testing.allocator;
+    const io = std.testing.io;
+
+    // `( sleep 5 ) | cat` — bash spawns a subshell for `( )` that
+    // inherits the pipe FDs to us. The pre-fix code killed bash but
+    // not the subshell, so the reader thread waited forever for EOF.
+    const result = try bash.execute_bash(allocator, io, .{
+        .command = "( sleep 5 ) | cat",
+        .cwd = "/tmp",
+        .mandatory_timeout = 1,
+    });
+    defer {
+        allocator.free(result.command);
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    try testing.expect(result.timeout == true);
+    try testing.expect(result.exit_code != 0);
+}
+
 test "bash_tool: missing mandatory_timeout returns MandatoryTimeoutMissing" {
     // Runs on ALL platforms (no shell required) — the validation fires before
     // we ever spawn a child.

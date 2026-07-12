@@ -224,21 +224,40 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     // Mandatory: validated at the top of execute_bash.
     const timeout_sec = input.mandatory_timeout.?;
 
-    // .pgid removed: default null. child.kill kills the immediate child, which
-    // is the correct behavior for a tool. Subprocesses are reparented on exit.
+    // .pgid = 0: place the spawned `bash` in its own process group (pgid
+    // == bash's PID). Any descendants bash spawns (subshells via `( )`,
+    // `|&`, backgrounded `&`, pipes — all of which happen a lot in agent
+    // bash commands) inherit that group. When the timeout fires we send
+    // SIGKILL to the negative pgid via `std.posix.kill(-pgid, .KILL)`,
+    // which terminates the whole tree in one syscall. Without this,
+    // `child.kill()` only kills the immediate `bash`; descendants get
+    // reparented to init (PID 1) but keep the pipe FDs to us open, so
+    // `stdout_thread.join()` / `stderr_thread.join()` block forever
+    // waiting for pipe EOF that never arrives — and nalar appears
+    // "stuck" on any agent command that exercises a subshell.
+    //
+    // This is more visible on macOS bash 3.2 than on Linux glibc bash
+    // because macOS ships bash 3.2 (the comment at line 596 already
+    // notes this) and the smoke-test commands that work on Linux tend
+    // to be single-process. Any real agent command (rg | head, ls -laR,
+    // timeouts, multi-stage builds) hits the subshell path and hangs.
     var child = try std.process.spawn(io, .{
         .argv = &.{ "bash", "-c", command },
         .cwd = if (input.cwd) |cwd| .{ .path = cwd } else .inherit,
         .stdin = if (input.stdin_data != null) .pipe else .close,
         .stdout = .pipe,
         .stderr = .pipe,
+        .pgid = 0,
     });
-    // Cleanup on any early-exit path: if the function returns an error
-    // before reaching the success path (which calls child.wait directly),
-    // kill the child so the OS can reap it. Zig 0.16's child.kill is a
-    // no-op when child.id is already null, so it's safe to call after
-    // a timeout-triggered kill in the success path.
-    errdefer _ = child.kill(io);
+    // Snapshot the pgid immediately — `child.kill()` nulls `child.id`,
+    // and we need the pgid for the group-wide kill below. With pgid=0
+    // the child IS the leader, so pgid == child.id.
+    const child_pgid: std.posix.pid_t = child.id.?;
+    // Cleanup on any early-exit path: kill the whole process group so
+    // bash AND any subshells it spawned close their pipe FDs and the
+    // reader threads can see EOF. `std.posix.kill` with a negative pid
+    // sends to the whole group; ESRCH (group already gone) is fine.
+    errdefer _ = std.posix.kill(-child_pgid, .KILL) catch {};
 
     if (input.stdin_data) |data| {
         if (child.stdin) |stdin| {
@@ -370,7 +389,10 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     // pipes and the kill never runs. The errdefer at line 220 handles
     // the pre-spawn case where these threads don't exist yet.
     errdefer {
-        _ = child.kill(io);
+        // Kill the entire process group so descendants close their pipe
+        // FDs; without this the joins below hang on EOF that's never
+        // delivered. See the long comment at the spawn site.
+        _ = std.posix.kill(-child_pgid, .KILL) catch {};
         stdout_thread.join();
         stderr_thread.join();
     }
@@ -421,7 +443,11 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
             // MUST run or the threads/child are leaked.
             error.Canceled => {
                 timeout_hit = true;
-                _ = child.kill(io);
+                // Kill the entire process group, not just bash — see the
+                // long comment at the spawn site. Otherwise any subshell
+                // bash spawned keeps the pipe FDs open and the reader
+                // thread join below hangs forever.
+                _ = std.posix.kill(-child_pgid, .KILL) catch {};
                 child_term = if (builtin.os.tag == .windows) .{ .unknown = 1 } else .{ .signal = .KILL };
                 break :blk;
             },
@@ -430,8 +456,8 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         switch (result) {
             .timeout => {
                 timeout_hit = true;
-                _ = child.kill(io);
-                // Do not call child.wait() here; kill() invalidates child.id.
+                _ = std.posix.kill(-child_pgid, .KILL) catch {};
+                // Do not call child.wait() here; kill invalidates child.id.
                 // The wait happens after the threads join below.
                 child_term = if (builtin.os.tag == .windows) .{ .unknown = 1 } else .{ .signal = .KILL };
             },
