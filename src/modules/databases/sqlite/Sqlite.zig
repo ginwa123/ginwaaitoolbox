@@ -354,6 +354,11 @@ pub const SqliteBackend = struct {
         if (self.db) |d| {
             _ = c.sqlite3_close(d);
         }
+        // CRITICAL: null out `db` after closing so the Transaction code's
+        // `self.backend.db == null` use-after-free guard actually fires.
+        // Without this, the pointer dangles and any subsequent operation
+        // would dereference freed memory.
+        self.db = null;
     }
 
     /// Number of rows changed by the most recent INSERT/UPDATE/DELETE
