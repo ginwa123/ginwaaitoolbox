@@ -108,6 +108,49 @@ test "bash_tool: timeout kills subshell descendants (no pipe-leak hang)" {
     try testing.expect(result.exit_code != 0);
 }
 
+test "bash_tool: timeout kills descendants across all common subshell shapes" {
+    // Each of these exercises a distinct descendant topology that bash
+    // spawns before exec'ing into the long-running command. The pre-fix
+    // code (no .pgid, child.kill only) left each descendant holding the
+    // pipe FDs to us, so the reader thread blocked forever. With the
+    // process-group kill, the whole tree dies together and the pipes
+    // EOF cleanly.
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
+
+    const allocator = testing.allocator;
+    const io = std.testing.io;
+
+    const cases = [_][]const u8{
+        "( sleep 5 )", // bare subshell group
+        "sleep 5 | head", // pipe (no subshell, but reader FDs shared)
+        "sleep 5 & wait", // backgrounded job + wait
+        "{ sleep 5; }", // brace group
+        "( ( sleep 5 ) )", // nested subshells
+        "bash -c 'sleep 5'", // inner bash inherits our pgid
+        // The exact shape the AI hit in production (session-1783866771666):
+        // outer `timeout` + nested `bash -c` + subshell-in-pipe. If the
+        // process-group kill is incomplete this hangs for the full
+        // mandatory_timeout duration and the reader-thread join never
+        // returns.
+        "timeout 3 bash -c '( sleep 10 ) | head -n 5'",
+    };
+
+    for (cases) |cmd| {
+        const result = try bash.execute_bash(allocator, io, .{
+            .command = cmd,
+            .cwd = "/tmp",
+            .mandatory_timeout = 3,
+        });
+        defer {
+            allocator.free(result.command);
+            allocator.free(result.stdout);
+            allocator.free(result.stderr);
+        }
+        try testing.expect(result.timeout == true);
+        try testing.expect(result.exit_code != 0);
+    }
+}
+
 test "bash_tool: missing mandatory_timeout returns MandatoryTimeoutMissing" {
     // Runs on ALL platforms (no shell required) — the validation fires before
     // we ever spawn a child.

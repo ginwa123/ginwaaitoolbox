@@ -1,5 +1,25 @@
 const std = @import("std");
 const builtin = @import("builtin");
+
+// POSIX `nanosleep(req, rem)` — declared as `extern "c"` so the call
+// doesn't go through Zig 0.16's Io runtime. We deliberately avoid
+// `std.Io.sleep` here because the bash tool is invoked from the AI
+// workflow, which itself runs as an `Io.Group` concurrent task. Blocking
+// on `std.Io.sleep` inside that context would dead-lock the group
+// (the workflow task can't make progress while a nested Io task waits
+// for a worker that the blocked workflow IS). Plain `nanosleep` parks
+// the OS thread without involving the Io runtime, so the rest of the
+// group keeps making progress.
+//
+// Field names differ between libc implementations: glibc uses `tv_sec`/
+// `tv_nsec`, Darwin and most BSDs use `sec`/`nsec`. We mirror the local
+// `PosixTimespec` shape from helpers/mod.zig (sec/nsec) so this works
+// on macOS too.
+const NanoSleepTimespec = extern struct {
+    sec: c_long,
+    nsec: c_long,
+};
+extern "c" fn nanosleep(req: *const NanoSleepTimespec, rem: ?*NanoSleepTimespec) c_int;
 const schemas = @import("schemas.zig");
 const BashInput = schemas.BashInput;
 const BashOutput = schemas.BashOutput;
@@ -400,72 +420,62 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     var timeout_hit = false;
     var child_term: ?std.process.Child.Term = null;
 
-    // Race the deadline against child completion via std.Io.async + Select.
+    // Race the deadline against child completion WITHOUT std.Io.Select.
     //
-    // Two async tasks run concurrently on the Io runtime:
-    //   1. timeoutSleepFn — sleeps for timeout_ns; completing means deadline
-    //      expired and we must kill the child.
-    //   2. waitChildFn — polls the stdout/stderr EOF flags (set by the
-    //      reader threads above when the OS reports pipe EOF); completing
-    //      means the child exited cleanly and we must call child.wait.
+    // The previous implementation used `select.async(...)` +
+    // `select.await(...)` to wait on the timeout and the EOF flags
+    // concurrently. That design deadlocks when this function is called
+    // from an Io worker context (the AI workflow is dispatched as an
+    // `Io.Group.concurrent` task from the event bus): the workflow's
+    // worker thread blocks in `select.await`, the nested async tasks
+    // need other workers, but the `Io.Group` containing the workflow
+    // task can't signal completion while the workflow is parked in
+    // `await`. The async children starve and the workflow never returns
+    // — nalar appears "stuck" on any bash tool call from the AI.
     //
-    // Whichever finishes first wins. After we handle the winner we call
-    // cancelDiscard() so the loser's resources (cancelation token, queue
-    // slot) are released. The child.kill path still has to call child.wait
-    // later because child.kill() invalidates child.id and the OS still
-    // needs to reap the zombie.
-    const TimeoutUnion = union(enum) {
-        timeout: void,
-        child_done: void,
-    };
-
-    var select_buf: [1]TimeoutUnion = .{undefined};
-    var select = std.Io.Select(TimeoutUnion).init(io, &select_buf);
-    defer select.cancelDiscard();
-
-    select.async(.timeout, timeoutSleepFn, .{ io, timeout_ns });
-    select.async(.child_done, waitChildFn, .{ io, &stdout_eof, &stderr_eof });
-
-    // Use a labeled-block expression so the error.Cancelled branch (which
-    // needs to take the same timeout-kill path) can break out without a
-    // `goto` (Zig 0.16 has no goto). The block's result type is void; we
-    // just want control-flow merging.
-    blk: {
-        const result = select.await() catch |err| switch (err) {
-            // Await is canceled only if we explicitly request cancelation;
-            // the only caller is cancelDiscard() in the defer above, which
-            // runs AFTER we already have a result. Reaching this branch
-            // implies some other cancelation request (e.g. parent-task
-            // cancelation propagation). Treat it the same as a timeout —
-            // kill the child so we don't leak it. Fall through to the
-            // kill+wait path below rather than `return`, because the
-            // reader-thread join + child cleanup (errdefer blocks above)
-            // MUST run or the threads/child are leaked.
-            error.Canceled => {
+    // Replacement: a plain `std.Thread.sleep` deadline race. We poll the
+    // EOF flags set by the reader threads every 10 ms until both report
+    // EOF, OR the wall-clock deadline elapses — whichever comes first.
+    // Neither call goes through the Io runtime, so there's no
+    // re-entrancy. Safe to call from any context (test runner, Io
+    // worker, plain thread).
+    const deadline_ns = std.Io.Timestamp.now(io, .real).nanoseconds + @as(i64, @intCast(timeout_ns));
+    child_term = blk: {
+        while (true) {
+            // Child done? Both EOF flags set means the pipes are closed
+            // AND the reader threads have flushed — at that point bash
+            // has either exited or is about to be reaped; either way
+            // child.wait() will return quickly.
+            if (stdout_eof.load(.acquire) and stderr_eof.load(.acquire)) {
+                break :blk child.wait(io) catch .{ .unknown = 1 };
+            }
+            // Deadline reached?
+            if (std.Io.Timestamp.now(io, .real).nanoseconds >= deadline_ns) {
                 timeout_hit = true;
-                // Kill the entire process group, not just bash — see the
-                // long comment at the spawn site. Otherwise any subshell
-                // bash spawned keeps the pipe FDs open and the reader
-                // thread join below hangs forever.
+                // Kill the entire process group, not just bash — see
+                // the long comment at the spawn site. Otherwise any
+                // subshell bash spawned keeps the pipe FDs open and
+                // the reader thread join below hangs forever.
                 _ = std.posix.kill(-child_pgid, .KILL) catch {};
-                child_term = if (builtin.os.tag == .windows) .{ .unknown = 1 } else .{ .signal = .KILL };
-                break :blk;
-            },
-        };
-
-        switch (result) {
-            .timeout => {
-                timeout_hit = true;
-                _ = std.posix.kill(-child_pgid, .KILL) catch {};
-                // Do not call child.wait() here; kill invalidates child.id.
-                // The wait happens after the threads join below.
-                child_term = if (builtin.os.tag == .windows) .{ .unknown = 1 } else .{ .signal = .KILL };
-            },
-            .child_done => {
-                child_term = child.wait(io) catch .{ .unknown = 1 };
-            },
+                // Do not call child.wait() here; kill invalidates
+                // child.id. The wait happens after the threads join.
+                break :blk if (builtin.os.tag == .windows)
+                    .{ .unknown = 1 }
+                else
+                    .{ .signal = .KILL };
+            }
+            // Sleep 10 ms — blocking the OS thread via raw libc
+            // `nanosleep`, NOT through the Io runtime. This is exactly
+            // the kind of code that triggered the re-entrancy deadlock
+            // in the Io.Select version (the worker thread couldn't run
+            // the nested Io sleep async, blocking the parent group).
+            const ts = NanoSleepTimespec{
+                .sec = 0,
+                .nsec = 10 * std.time.ns_per_ms,
+            };
+            _ = nanosleep(&ts, null);
         }
-    }
+    };
 
     stdout_thread.join();
     stderr_thread.join();
@@ -546,29 +556,6 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         .stdout_lines = stdout_line_count,
         .stderr_lines = stderr_line_count,
     };
-}
-
-/// Async task body for the timeout slot of the Io Select. Returns void (the
-/// Select union field is `timeout: void`); cancellation from `cancelDiscard`
-/// surfaces as `error.Canceled` from `std.Io.sleep`, which we swallow (the
-/// race is already decided by the other arm of the Select).
-fn timeoutSleepFn(io: std.Io, duration_ns: u64) void {
-    std.Io.sleep(io, .{ .nanoseconds = @intCast(duration_ns) }, .real) catch {};
-}
-
-/// Async task body for the child-done slot of the Io Select. Polls the
-/// atomic EOF flags set by the stdout/stderr reader threads and returns when
-/// both report EOF. The 10 ms sleep cadence keeps the Io runtime responsive
-/// (cancelation points at the cancel points) without burning CPU.
-fn waitChildFn(
-    io: std.Io,
-    stdout_eof: *std.atomic.Value(bool),
-    stderr_eof: *std.atomic.Value(bool),
-) void {
-    while (true) {
-        if (stdout_eof.load(.acquire) and stderr_eof.load(.acquire)) return;
-        std.Io.sleep(io, .{ .nanoseconds = 10 * std.time.ns_per_ms }, .real) catch return;
-    }
 }
 
 pub fn bash_result_to_string(allocator: std.mem.Allocator, result: BashOutput) ![]const u8 {
