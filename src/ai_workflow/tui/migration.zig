@@ -1,5 +1,7 @@
 const std = @import("std");
-const sqlite_mod = @import("../../modules/databases/sqlite/Sqlite.zig");
+const mod = @import("mod.zig");
+const nalarcore = mod.nalarcore;
+const sqlite_mod = nalarcore.sqlite;
 
 pub const SqliteBackend = sqlite_mod.SqliteBackend;
 

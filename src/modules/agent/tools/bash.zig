@@ -490,39 +490,23 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         .unknown => -1,
     };
 
-    // Truncate output by line count if max_lines was exceeded
-    var stdout_lines_to_keep = stdout_data.items.len;
-    const stdout_truncation_needed = stdout_line_count > max_lines;
-    if (stdout_truncation_needed) {
-        var count: usize = 0;
-        for (stdout_data.items, 0..) |byte, i| {
-            if (byte == '\n') {
-                count += 1;
-                if (count == max_lines) {
-                    stdout_lines_to_keep = i + 1;
-                    break;
-                }
-            }
-        }
-    }
+    // Truncate output by BYTE count if max_output was exceeded. Byte-based
+    // truncation protects against a single huge line (e.g. generated code
+    // dumped with no newlines) blowing up the context window — line-based
+    // truncation would keep the entire huge line, but byte-based truncation
+    // caps at max_output regardless of line structure. The reader thread
+    // already enforces the byte limit at read time; this is the defensive
+    // post-read re-check for any data that slipped past (e.g. reader's
+    // line-count branch overshot the byte limit when both triggers fired
+    // in the same iteration).
+    const stdout_truncation_needed = stdout_data.items.len > max_output;
+    const stderr_truncation_needed = stderr_data.items.len > max_output;
 
-    // Truncate stderr by line count
-    var stderr_lines_to_keep = stderr_data.items.len;
-    const stderr_truncation_needed = stderr_line_count > max_lines;
-    if (stderr_truncation_needed) {
-        var count: usize = 0;
-        for (stderr_data.items, 0..) |byte, i| {
-            if (byte == '\n') {
-                count += 1;
-                if (count == max_lines) {
-                    stderr_lines_to_keep = i + 1;
-                    break;
-                }
-            }
-        }
-    }
-
-    const was_truncated = stdout_truncation_needed or stderr_truncation_needed or (stdout_data.items.len >= max_output or stderr_data.items.len >= max_output);
+    // Use the reader's actual truncation signal for the user-facing flag.
+    // The reader truncates to exactly max_output bytes (or earlier via
+    // line-count), so `data.len > max_output` only catches the rare overshoot;
+    // the reader's flag captures BOTH paths (byte cap and line cap).
+    const was_truncated = stdout_truncated or stderr_truncated;
 
     // Allocate command on heap to avoid dangling pointer to stack buffer
     const command_copy = try allocator.dupe(u8, command);
@@ -533,7 +517,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     const stdout_copy = if (stdout_data.items.len == 0)
         try allocator.dupe(u8, "No output produced.")
     else if (stdout_truncation_needed)
-        try allocator.dupe(u8, stdout_data.items[0..stdout_lines_to_keep])
+        try allocator.dupe(u8, stdout_data.items[0..max_output])
     else
         try allocator.dupe(u8, stdout_data.items);
     errdefer allocator.free(stdout_copy);
@@ -541,7 +525,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     const stderr_copy = if (stderr_data.items.len == 0)
         try allocator.dupe(u8, "No errors.")
     else if (stderr_truncation_needed)
-        try allocator.dupe(u8, stderr_data.items[0..stderr_lines_to_keep])
+        try allocator.dupe(u8, stderr_data.items[0..max_output])
     else
         try allocator.dupe(u8, stderr_data.items);
     errdefer allocator.free(stderr_copy);

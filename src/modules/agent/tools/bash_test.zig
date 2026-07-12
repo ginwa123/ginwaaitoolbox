@@ -27,17 +27,23 @@ test "bash_tool: foreground echo command runs on host OS" {
     try testing.expect(std.mem.indexOf(u8, result.stdout, "hello-cross-platform") != null);
 }
 
-test "bash_tool: large output is truncated by line count" {
+test "bash_tool: large output is truncated by byte count" {
+    // Verifies byte-based truncation caps a single huge line of generated
+    // code (no newlines) — the failure mode that motivated moving the
+    // post-read truncation from line-count to byte-count.
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
 
     const allocator = testing.allocator;
     const io = std.testing.io;
 
+    // Produce 5000 bytes on a SINGLE line (no newlines). max_output=256
+    // forces byte truncation; max_lines=999_999 disables line truncation
+    // so we are testing the byte path in isolation.
     const result = try bash.execute_bash(allocator, io, .{
-        .command = "seq 1 1000",
+        .command = "head -c 5000 < /dev/zero | tr '\\0' 'x'",
         .cwd = "/tmp",
-        .max_output = 1024 * 1024,
-        .max_lines = 5,
+        .max_output = 256,
+        .max_lines = 999_999,
         .mandatory_timeout = 5,
     });
     defer {
@@ -48,7 +54,10 @@ test "bash_tool: large output is truncated by line count" {
 
     try testing.expect(result.exit_code == 0);
     try testing.expect(result.truncated == true);
-    try testing.expect(result.stdout_lines >= 5);
+    // The duplicated output must be capped at max_output bytes (not the
+    // full 5000-byte single line).
+    try testing.expect(result.stdout.len <= 256);
+    try testing.expect(result.stdout.len > 0);
 }
 
 test "bash_tool: timeout fires on long-running command" {
