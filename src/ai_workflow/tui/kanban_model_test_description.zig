@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const testing = std.testing;
+const nalarcore = @import("nalarcore");
 const sqlite = @import("nalarcore").sqlite;
 const kanban_model = @import("kanban_model.zig");
 
@@ -40,7 +41,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     try db.exec(alloc,
         "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT)",
         &.{});
-    const migration = @import("migration.zig");
+    const migration = nalarcore.migrations_mod.migration;
     try migration.Migration051AddKanban.up(&db, alloc);
     try migration.Migration053AddKanbanColumnDescription.up(&db, alloc);
     return .{ .db = db, .threaded = threaded };

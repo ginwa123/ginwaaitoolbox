@@ -377,7 +377,6 @@ pub const set_agent_properties = @import("modules/agent/tools/set_agent_properti
 
 pub const http_client = @import("modules/http/HttpClient.zig");
 pub const loggermod = @import("modules/logger/Logger.zig");
-pub const migrations = @import("ai_workflow/tui/migration.zig");
 pub const skill_mod = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
 pub const edit_skill = @import("modules/agent/tools/edit_skill.zig");
@@ -431,6 +430,7 @@ pub const startup = @import("startup.zig");
 pub const agentic_loop_mod = @import("ai_workflow/tui/agentic_loop/mod.zig");
 
 pub const notifications_mod = @import("modules/notification/notifications.zig");
+pub const migrations_mod = @import("migrations/mod.zig");
 
 test {
     _ = @import("ai_workflow/tui/test_runner.zig");
