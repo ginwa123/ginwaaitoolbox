@@ -24,7 +24,7 @@ const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/workspace_items_reorder.
 const LIST_PATH = "src/ai_workflow/tui/llm_history.zig";
 const CREATE_PATH = "src/ai_workflow/tui/http_handlers/workspace_items_create.zig";
 const RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
-const MIGRATION_PATH = "src/ai_workflow/tui/migration.zig";
+const MIGRATION_PATH = "src/migrations/migration.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const raw = try std.Io.Dir.cwd().readFileAlloc(

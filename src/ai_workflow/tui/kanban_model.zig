@@ -6,7 +6,7 @@
 //! drag-and-drop reorderable within and across columns.
 //!
 //! Schema: see Migration 051 (`Migration051AddKanban` in
-//! `src/ai_workflow/tui/migration.zig`).
+//! `src/migrations/migration.zig`).
 //!
 //! SQL convention: every SELECT aliases its tables (`kc` for
 //! `kanban_columns`, `t` for `workspace_item_tasks`) and qualifies

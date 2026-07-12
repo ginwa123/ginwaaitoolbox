@@ -33,7 +33,7 @@ const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/workspaces_reorder.zig";
 const LIST_PATH = "src/ai_workflow/tui/http_handlers/workspaces_list.zig";
 const CREATE_PATH = "src/ai_workflow/tui/http_handlers/workspaces_create.zig";
 const RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
-const MIGRATION_PATH = "src/ai_workflow/tui/migration.zig";
+const MIGRATION_PATH = "src/migrations/migration.zig";
 
 /// Read a source file from disk, relative to the project root
 /// (which is the cwd when `zig build test:ai_workflow:tui` runs).

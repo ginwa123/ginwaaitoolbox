@@ -19,7 +19,7 @@ const text_normalize = nalarcore.helpers.text_normalize;
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/task_pin.zig";
 const LLM_HISTORY_PATH = "src/ai_workflow/tui/llm_history.zig";
 const RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
-const MIGRATION_PATH = "src/ai_workflow/tui/migration.zig";
+const MIGRATION_PATH = "src/migrations/migration.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const raw = try std.Io.Dir.cwd().readFileAlloc(

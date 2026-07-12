@@ -443,4 +443,5 @@ test {
     _ = @import("modules/custom_http_server/src/sse_chunked_test.zig");
     _ = @import("modules/test_runner.zig");
     _ = @import("modules/notification/test_runner.zig");
+    _ = @import("migrations/test_runner.zig");
 }

@@ -24,7 +24,7 @@ fn setupDb() !struct {
 
     // Minimal schema — exactly the columns saveMessage writes and
     // markMessageNotForLlmRun updates. ORDER matches the production
-    // CREATE TABLE in src/ai_workflow/tui/migration.zig (latest rev).
+    // CREATE TABLE in src/migrations/migration.zig (latest rev).
     try db.exec(alloc,
         \\CREATE TABLE llm_history (
         \\  id TEXT PRIMARY KEY,
