@@ -5,6 +5,7 @@ const sqlite = nalarcore.sqlite;
 const logger_mod = nalarcore.loggermod;
 const event_bus_mod = nalarcore.event_bus;
 const onEventSendWorkers = mod.onEventSendWorkers;
+const testing = std.testing;
 
 pub const DeleteWorkerInput = struct {
     allocator: std.mem.Allocator,
@@ -45,4 +46,130 @@ pub fn deleteWorker(
             };
         }
     }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    try db.exec(alloc,
+        \\CREATE TABLE worker (id TEXT PRIMARY KEY, session_id TEXT)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "deleteWorker removes the matching worker row" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try s.db.exec(testing.allocator, "INSERT INTO worker (id, session_id) VALUES ('w1', 's1')", &.{});
+
+    try deleteWorker(.{
+        .allocator = testing.allocator,
+        .db = &s.db,
+        .logger = null,
+        .session_id = "w1",
+        .event_bus = null,
+        .is_emit_sse = false,
+    });
+
+    // The DELETE removed w1; the query below should return no rows.
+    var q = try s.db.query(testing.allocator, "SELECT 1 FROM worker WHERE id = 'w1'", &.{});
+    defer q.deinit();
+    if (try q.next()) |row| {
+        defer row.deinit(testing.allocator);
+        return error.DeleteShouldHaveRemovedRow;
+    }
+}
+
+test "deleteWorker is a no-op when the worker does not exist" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    // DELETE matching zero rows is not an error in SQLite.
+    try deleteWorker(.{
+        .allocator = testing.allocator,
+        .db = &s.db,
+        .logger = null,
+        .session_id = "ghost",
+        .event_bus = null,
+        .is_emit_sse = false,
+    });
+}
+
+test "deleteWorker only removes the matching row, not other rows" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try s.db.exec(testing.allocator,
+        "INSERT INTO worker (id, session_id) VALUES ('w1', 's1'), ('w2', 's2'), ('w3', 's3')",
+        &.{});
+
+    try deleteWorker(.{
+        .allocator = testing.allocator,
+        .db = &s.db,
+        .logger = null,
+        .session_id = "w2",
+        .event_bus = null,
+        .is_emit_sse = false,
+    });
+
+    // After deleting w2 from {w1, w2, w3}, only w1 and w3 remain (in
+    // alphabetical id order).
+    var q = try s.db.query(testing.allocator, "SELECT id FROM worker ORDER BY id", &.{});
+    defer q.deinit();
+    var ids: [2]?[]u8 = .{ null, null };
+    defer for (ids) |maybe| if (maybe) |id| testing.allocator.free(id);
+    var i: usize = 0;
+    while (try q.next()) |row| : (i += 1) {
+        defer row.deinit(testing.allocator);
+        if (i < 2) ids[i] = try testing.allocator.dupe(u8, row.values[0]);
+    }
+    try testing.expectEqualStrings("w1", ids[0].?);
+    try testing.expectEqualStrings("w3", ids[1].?);
+}
+
+test "deleteWorker with is_emit_sse=true and event_bus=null is a safe no-op for the SSE branch" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try s.db.exec(testing.allocator, "INSERT INTO worker (id, session_id) VALUES ('w1', 's1')", &.{});
+
+    try deleteWorker(.{
+        .allocator = testing.allocator,
+        .db = &s.db,
+        .logger = null,
+        .session_id = "w1",
+        .event_bus = null,
+        .is_emit_sse = true,
+    });
+    // Confirm the row was deleted despite the SSE branch being skipped.
+    var q = try s.db.query(testing.allocator, "SELECT 1 FROM worker WHERE id = 'w1'", &.{});
+    defer q.deinit();
+    if (try q.next()) |row| {
+        defer row.deinit(testing.allocator);
+        return error.DeleteShouldHaveRemovedRow;
+    }
+}
+
+test "deleteWorker with is_emit_sse=false short-circuits before any event_bus access" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try s.db.exec(testing.allocator, "INSERT INTO worker (id, session_id) VALUES ('w1', 's1')", &.{});
+
+    try deleteWorker(.{
+        .allocator = testing.allocator,
+        .db = &s.db,
+        .logger = null,
+        .session_id = "w1",
+        .event_bus = null,
+        .is_emit_sse = false,
+    });
 }

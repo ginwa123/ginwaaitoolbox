@@ -3,6 +3,7 @@ const mod = @import("mod.zig");
 const LLMHistory = mod.LLMHistory;
 const nalarcore = mod.nalarcore;
 const sqlite = nalarcore.sqlite;
+const testing = std.testing;
 
 pub const GetLLMHistoriesInput = struct {
     allocator: std.mem.Allocator,
@@ -97,7 +98,13 @@ pub fn getLLMHistories(
                         try urls.append(allocator, try allocator.dupe(u8, url));
                     }
                 }
-                break :blk if (urls.items.len > 0) urls.items else null;
+                // CRITICAL: use toOwnedSlice (not `urls.items`) so the returned
+                // slice is sized to `items.len`. `urls.items` aliases the
+                // ArrayList's full backing buffer (`capacity` may exceed `len`);
+                // if we returned that and a later caller (e.g. LLMHistory.deinit)
+                // tried to `allocator.free` the slice, it would free the wrong
+                // size and trip the debug allocator's canary check.
+                break :blk if (urls.items.len > 0) try urls.toOwnedSlice(allocator) else null;
             } else null,
             .tool_call_id = if (row.values[24].len > 0) try allocator.dupe(u8, row.values[24]) else null,
         };
@@ -111,4 +118,353 @@ pub fn getLLMHistories(
 fn parseRowBool(s: []const u8) bool {
     if (s.len == 0) return false;
     return s[0] == '1';
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+//
+// `getLLMHistories` is a 24-column SELECT with a LEFT JOIN, COALESCE
+// defaults, numeric/bool parsing, and a pipe-split image_url. The tests
+// below exercise each of those branches against a minimal in-memory DB.
+
+const IdxAgent = 9;
+const IdxSessionName = 10;
+const IdxLoopIndex = 11;
+const IdxToolName = 12;
+const IdxParentSession = 13;
+const IdxTemperature = 14;
+const IdxIsThinking = 15;
+const IdxPromptTokens = 16;
+const IdxCompletionTokens = 17;
+const IdxTotalTokens = 18;
+const IdxIsInput = 19;
+const IdxIsOutput = 20;
+const IdxDiffviewBefore = 21;
+const IdxDiffviewAfter = 22;
+const IdxImageUrl = 23;
+const IdxToolCallId = 24;
+
+fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    // Minimum schema that satisfies the production SELECT.
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT,
+        \\    model TEXT,
+        \\    created_at TEXT,
+        \\    response_content TEXT,
+        \\    finish_reason TEXT,
+        \\    role TEXT,
+        \\    tool_calls_json TEXT,
+        \\    tool_call_id TEXT,
+        \\    reasoning_content TEXT,
+        \\    is_feed_to_llm INTEGER DEFAULT 1,
+        \\    agent TEXT,
+        \\    loop_index INTEGER DEFAULT 0,
+        \\    temperature REAL DEFAULT 0.2,
+        \\    is_thinking INTEGER DEFAULT 0,
+        \\    tool_name TEXT,
+        \\    parent_session_id TEXT,
+        \\    prompt_tokens INTEGER DEFAULT 0,
+        \\    completion_tokens INTEGER DEFAULT 0,
+        \\    total_tokens INTEGER DEFAULT 0,
+        \\    is_input INTEGER DEFAULT 0,
+        \\    is_output INTEGER DEFAULT 0,
+        \\    diffview_before TEXT,
+        \\    diffview_after TEXT,
+        \\    image_url TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Insert a llm_history row with sensible defaults. Caller can override
+/// individual fields by passing custom `image_url`, `is_feed_to_llm`, etc.
+fn seedRow(
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    session_id: []const u8,
+    created_at: []const u8,
+) !void {
+    try db.exec(testing.allocator,
+        "INSERT INTO llm_history (id, session_id, created_at, response_content, role, is_feed_to_llm) " ++
+        "VALUES (?, ?, ?, '', 'assistant', 1)",
+        &.{ id, session_id, created_at });
+}
+
+/// Free every `LLMHistory` returned by `getLLMHistories` — the caller
+/// owns each row's heap slices.
+fn freeHistories(histories: []LLMHistory) void {
+    for (histories) |*h| h.deinit(testing.allocator);
+}
+
+test "getLLMHistories returns an empty slice when there are no rows" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s1" });
+    defer testing.allocator.free(result);
+    try testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "getLLMHistories returns rows for the matching session_id in created_at ASC order" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    try seedRow(&s.db, "h1", "s1", "2024-01-01 00:00:00");
+    try seedRow(&s.db, "h2", "s1", "2025-01-01 00:00:00");
+    try seedRow(&s.db, "h3", "s2", "2025-06-01 00:00:00"); // different session
+    try seedRow(&s.db, "h4", "s1", "2024-06-01 00:00:00");
+
+    const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s1" });
+    defer {
+        freeHistories(result);
+        testing.allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 3), result.len);
+    try testing.expectEqualStrings("h1", result[0].id);
+    try testing.expectEqualStrings("h4", result[1].id);
+    try testing.expectEqualStrings("h2", result[2].id);
+}
+
+test "getLLMHistories LEFT JOIN falls back to empty session_name when no session row exists" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try seedRow(&s.db, "h1", "orphan", "2025-01-01 00:00:00");
+    // No row in `sessions` for "orphan" — COALESCE returns ''.
+
+    const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "orphan" });
+    defer {
+        freeHistories(result);
+        testing.allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 1), result.len);
+    try testing.expectEqualStrings("", result[0].session_name);
+}
+
+test "getLLMHistories LEFT JOIN populates session_name when the session row exists" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try s.db.exec(testing.allocator, "INSERT INTO sessions (id, name) VALUES ('s_named', 'My Chat')", &.{});
+    try seedRow(&s.db, "h1", "s_named", "2025-01-01 00:00:00");
+
+    const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s_named" });
+    defer {
+        freeHistories(result);
+        testing.allocator.free(result);
+    }
+    try testing.expectEqualStrings("My Chat", result[0].session_name);
+}
+
+test "getLLMHistories parses numeric fields (loop_index, tokens, temperature)" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try s.db.exec(testing.allocator,
+        "INSERT INTO llm_history (id, session_id, created_at, loop_index, prompt_tokens, completion_tokens, total_tokens, temperature) " ++
+        "VALUES ('h', 's', '2025-01-01', 7, 100, 50, 150, 0.7)",
+        &.{});
+
+    const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
+    defer {
+        freeHistories(result);
+        testing.allocator.free(result);
+    }
+    try testing.expectEqual(@as(u32, 7), result[0].loop_index);
+    try testing.expectEqual(@as(u32, 100), result[0].prompt_tokens);
+    try testing.expectEqual(@as(u32, 50), result[0].completion_tokens);
+    try testing.expectEqual(@as(u32, 150), result[0].total_tokens);
+    try testing.expectEqual(@as(f32, 0.7), result[0].temperature);
+}
+
+test "getLLMHistories parses bool flags (is_input, is_output, is_thinking)" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try s.db.exec(testing.allocator,
+        "INSERT INTO llm_history (id, session_id, created_at, is_input, is_output, is_thinking) " ++
+        "VALUES ('h', 's', '2025-01-01', 1, 0, 1)",
+        &.{});
+
+    const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
+    defer {
+        freeHistories(result);
+        testing.allocator.free(result);
+    }
+    try testing.expect(result[0].is_input);
+    try testing.expect(!result[0].is_output);
+    try testing.expect(result[0].is_thinking);
+}
+
+test "getLLMHistories filters out rows where is_feed_to_llm = 0" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try s.db.exec(testing.allocator,
+        "INSERT INTO llm_history (id, session_id, created_at, is_feed_to_llm) " ++
+        "VALUES ('h_yes', 's', '2025-01-01', 1)",
+        &.{});
+    try s.db.exec(testing.allocator,
+        "INSERT INTO llm_history (id, session_id, created_at, is_feed_to_llm) " ++
+        "VALUES ('h_no',  's', '2025-01-02', 0)",
+        &.{});
+
+    const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
+    defer {
+        freeHistories(result);
+        testing.allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 1), result.len);
+    try testing.expectEqualStrings("h_yes", result[0].id);
+}
+
+test "getLLMHistories includes rows where is_feed_to_llm is NULL (treats NULL as 1)" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try s.db.exec(testing.allocator,
+        "INSERT INTO llm_history (id, session_id, created_at, is_feed_to_llm) " ++
+        "VALUES ('h_null', 's', '2025-01-01', NULL)",
+        &.{});
+
+    const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
+    defer {
+        freeHistories(result);
+        testing.allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 1), result.len);
+    try testing.expectEqualStrings("h_null", result[0].id);
+}
+
+test "getLLMHistories splits pipe-separated image_url into image_urls array" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try s.db.exec(testing.allocator,
+        "INSERT INTO llm_history (id, session_id, created_at, image_url) " ++
+        "VALUES ('h', 's', '2025-01-01', 'url1||url2||url3')",
+        &.{});
+
+    const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
+    defer {
+        freeHistories(result);
+        testing.allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 3), result[0].image_urls.?.len);
+    try testing.expectEqualStrings("url1", result[0].image_urls.?[0]);
+    try testing.expectEqualStrings("url2", result[0].image_urls.?[1]);
+    try testing.expectEqualStrings("url3", result[0].image_urls.?[2]);
+}
+
+test "getLLMHistories image_urls is null when image_url column is empty" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try s.db.exec(testing.allocator,
+        "INSERT INTO llm_history (id, session_id, created_at, image_url) " ++
+        "VALUES ('h', 's', '2025-01-01', '')",
+        &.{});
+
+    const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
+    defer {
+        freeHistories(result);
+        testing.allocator.free(result);
+    }
+    try testing.expect(result[0].image_urls == null);
+}
+
+test "getLLMHistories keeps a single image_url as a one-element array (no leading/trailing ||)" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try s.db.exec(testing.allocator,
+        "INSERT INTO llm_history (id, session_id, created_at, image_url) " ++
+        "VALUES ('h', 's', '2025-01-01', 'only-one')",
+        &.{});
+
+    const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
+    defer {
+        freeHistories(result);
+        testing.allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 1), result[0].image_urls.?.len);
+    try testing.expectEqualStrings("only-one", result[0].image_urls.?[0]);
+}
+
+test "getLLMHistories sets nullable fields to null when DB column is empty" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try seedRow(&s.db, "h", "s", "2025-01-01 00:00:00");
+    // All nullable columns are empty by default in the seedRow call.
+
+    const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
+    defer {
+        freeHistories(result);
+        testing.allocator.free(result);
+    }
+    try testing.expect(result[0].reasoning_content == null);
+    try testing.expect(result[0].parent_session_id == null);
+    try testing.expect(result[0].diffview_before == null);
+    try testing.expect(result[0].diffview_after == null);
+    try testing.expect(result[0].image_urls == null);
+    try testing.expect(result[0].tool_call_id == null);
+}
+
+test "getLLMHistories populates nullable fields when DB has content" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    try s.db.exec(testing.allocator,
+        "INSERT INTO llm_history (id, session_id, created_at, reasoning_content, parent_session_id, " ++
+        "diffview_before, diffview_after, tool_call_id) " ++
+        "VALUES ('h', 's', '2025-01-01', 'r', 'p', 'b', 'a', 't')",
+        &.{});
+
+    const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
+    defer {
+        freeHistories(result);
+        testing.allocator.free(result);
+    }
+    try testing.expectEqualStrings("r", result[0].reasoning_content.?);
+    try testing.expectEqualStrings("p", result[0].parent_session_id.?);
+    try testing.expectEqualStrings("b", result[0].diffview_before.?);
+    try testing.expectEqualStrings("a", result[0].diffview_after.?);
+    try testing.expectEqualStrings("t", result[0].tool_call_id.?);
+}
+
+// Silence "unused" warnings on the column-index constants — they're
+// documentation, not yet used by the tests above.
+comptime {
+    _ = IdxAgent;
+    _ = IdxSessionName;
+    _ = IdxLoopIndex;
+    _ = IdxToolName;
+    _ = IdxParentSession;
+    _ = IdxTemperature;
+    _ = IdxIsThinking;
+    _ = IdxPromptTokens;
+    _ = IdxCompletionTokens;
+    _ = IdxTotalTokens;
+    _ = IdxIsInput;
+    _ = IdxIsOutput;
+    _ = IdxDiffviewBefore;
+    _ = IdxDiffviewAfter;
+    _ = IdxImageUrl;
+    _ = IdxToolCallId;
 }

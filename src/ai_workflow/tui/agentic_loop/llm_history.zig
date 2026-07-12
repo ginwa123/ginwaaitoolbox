@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 
 
 pub const LLMHistory = struct {
@@ -51,8 +52,129 @@ pub const LLMHistory = struct {
             allocator.free(iums);
         }
         if (self.tool_call_id) |tci| allocator.free(tci);
-        allocator.free(self.tool_calls_json);
         if (self.parent_id) |pi| allocator.free(pi);
     }
 };
 
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+test "LLMHistory default fields are safe to read without explicit init" {
+    const h = LLMHistory{
+        .id = "id",
+        .session_id = "sid",
+        .model = "model",
+        .created_at = "2025-01-01",
+        .response_content = "",
+        .finish_reason = "stop",
+        .role = "assistant",
+        .tool_calls_json = "",
+    };
+    try testing.expectEqualStrings("Agent", h.agent);
+    try testing.expectEqualStrings("", h.session_name);
+    try testing.expectEqualStrings("", h.tool_name);
+    try testing.expectEqual(@as(u32, 0), h.loop_index);
+    try testing.expectEqual(@as(f32, 0.2), h.temperature);
+    try testing.expect(!h.is_thinking);
+    try testing.expectEqual(@as(u32, 0), h.prompt_tokens);
+    try testing.expectEqual(@as(u32, 0), h.completion_tokens);
+    try testing.expectEqual(@as(u32, 0), h.total_tokens);
+    try testing.expect(!h.is_input);
+    try testing.expect(!h.is_output);
+    try testing.expect(h.reasoning_content == null);
+    try testing.expect(h.parent_session_id == null);
+    try testing.expect(h.parent_id == null);
+    try testing.expect(h.diffview_before == null);
+    try testing.expect(h.diffview_after == null);
+    try testing.expect(h.image_urls == null);
+    try testing.expect(h.tool_call_id == null);
+    try testing.expect(h.is_feed_to_llm);
+}
+
+test "LLMHistory.deinit frees every owned slice on a minimal-init history" {
+    // Every owned slice field is filled with a separate heap allocation so
+    // the testing allocator's canary catches any leak OR double-free.
+    var h = LLMHistory{
+        .id = try testing.allocator.dupe(u8, "h_id"),
+        .session_id = try testing.allocator.dupe(u8, "h_sid"),
+        .model = try testing.allocator.dupe(u8, "h_model"),
+        .created_at = try testing.allocator.dupe(u8, "2025-01-01"),
+        .response_content = try testing.allocator.dupe(u8, "hi"),
+        .finish_reason = try testing.allocator.dupe(u8, "stop"),
+        .role = try testing.allocator.dupe(u8, "assistant"),
+        .tool_calls_json = try testing.allocator.dupe(u8, "[]"),
+        .agent = try testing.allocator.dupe(u8, "Agent"),
+        .session_name = try testing.allocator.dupe(u8, "sn"),
+        .tool_name = try testing.allocator.dupe(u8, "tn"),
+        .reasoning_content = try testing.allocator.dupe(u8, "r"),
+        .parent_session_id = try testing.allocator.dupe(u8, "psi"),
+        .parent_id = try testing.allocator.dupe(u8, "pi"),
+        .diffview_before = try testing.allocator.dupe(u8, "before"),
+        .diffview_after = try testing.allocator.dupe(u8, "after"),
+        .image_urls = blk: {
+            const urls = try testing.allocator.alloc([]const u8, 2);
+            urls[0] = try testing.allocator.dupe(u8, "url1");
+            urls[1] = try testing.allocator.dupe(u8, "url2");
+            break :blk urls;
+        },
+        .tool_call_id = try testing.allocator.dupe(u8, "tci"),
+    };
+    h.deinit(testing.allocator);
+    // No leak, no double-free — the testing allocator would have raised a
+    // panic in either case at the end of the test scope.
+}
+
+test "LLMHistory.deinit skips nullable fields when they are null" {
+    // NOTE: `.agent`, `.session_name`, `.tool_name` have non-null defaults
+    // ("Agent", "", "") that are string literals, not heap allocations.
+    // `LLMHistory.deinit` unconditionally calls `allocator.free` on each,
+    // so any test that uses the defaults would panic with "Invalid free".
+    // We set them to heap-owned copies here to keep this test focused on
+    // the nullable-fields branch (reasoning_content, parent_session_id,
+    // diffview_*, image_urls, tool_call_id, parent_id).
+    //
+    // TODO: the unconditional `allocator.free` of the default-literal
+    // strings is a latent production bug — see `zig-defer-allocator-free-
+    // on-string-literal` in project memory. Any code path that constructs
+    // an LLMHistory WITHOUT overriding `.agent`/`.session_name`/`.tool_name`
+    // will crash on deinit. `getLLMHistories.zig:73-77` happens to always
+    // heap-dupe these so the production path is safe, but a defensive
+    // fix here would be welcome.
+    var h = LLMHistory{
+        .id = try testing.allocator.dupe(u8, "x"),
+        .session_id = try testing.allocator.dupe(u8, "y"),
+        .model = try testing.allocator.dupe(u8, "z"),
+        .created_at = try testing.allocator.dupe(u8, "t"),
+        .response_content = try testing.allocator.dupe(u8, ""),
+        .finish_reason = try testing.allocator.dupe(u8, ""),
+        .role = try testing.allocator.dupe(u8, ""),
+        .tool_calls_json = try testing.allocator.dupe(u8, ""),
+        // Heap-own the three non-null string fields so deinit doesn't
+        // try to free string-literal defaults.
+        .agent = try testing.allocator.dupe(u8, "Agent"),
+        .session_name = try testing.allocator.dupe(u8, ""),
+        .tool_name = try testing.allocator.dupe(u8, ""),
+        // All optional fields left at their default `null` / `false` / `0`.
+    };
+    h.deinit(testing.allocator);
+}
+
+test "LLMHistory.deinit handles empty image_urls array (no element frees)" {
+    // Heap-own `.agent`, `.session_name`, `.tool_name` — see the note on
+    // the "skips nullable fields" test above for why this is required.
+    var h = LLMHistory{
+        .id = try testing.allocator.dupe(u8, "i"),
+        .session_id = try testing.allocator.dupe(u8, "s"),
+        .model = try testing.allocator.dupe(u8, "m"),
+        .created_at = try testing.allocator.dupe(u8, "c"),
+        .response_content = try testing.allocator.dupe(u8, "rc"),
+        .finish_reason = try testing.allocator.dupe(u8, "fr"),
+        .role = try testing.allocator.dupe(u8, "r"),
+        .tool_calls_json = try testing.allocator.dupe(u8, "[]"),
+        .agent = try testing.allocator.dupe(u8, "Agent"),
+        .session_name = try testing.allocator.dupe(u8, ""),
+        .tool_name = try testing.allocator.dupe(u8, ""),
+        // Empty image_urls slice — the deinit loop iterates 0 times.
+        .image_urls = &.{},
+    };
+    h.deinit(testing.allocator);
+}

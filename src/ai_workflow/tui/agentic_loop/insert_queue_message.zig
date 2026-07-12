@@ -5,6 +5,7 @@ const sqlite = nalarcore.sqlite;
 const logger_mod = nalarcore.loggermod;
 const event_bus_mod = nalarcore.event_bus;
 const on_event_sent = @import("../mod.zig").on_event_sent;
+const testing = std.testing;
 
 pub const InsertQueueMessageInput = struct {
     allocator: std.mem.Allocator,
@@ -74,4 +75,134 @@ pub fn insertQueueMessage(
             ev.emit(on_event_sent.SseEvent, "queue", event);
         }
     }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    try db.exec(alloc,
+        \\CREATE TABLE session_queue_messages (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    message TEXT NOT NULL,
+        \\    image_url TEXT
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "insertQueueMessage inserts a row with the given message and image_url" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    try insertQueueMessage(.{
+        .allocator = testing.allocator,
+        .db = &s.db,
+        .logger = null,
+        .session_id = "s1",
+        .message = "hello",
+        .image_url = "img_data",
+        .event_bus = null,
+        .is_emit_sse = false,
+    });
+
+    var q = try s.db.query(testing.allocator, "SELECT message, image_url FROM session_queue_messages WHERE session_id = 's1'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(testing.allocator);
+    try testing.expectEqualStrings("hello", row.values[0]);
+    try testing.expectEqualStrings("img_data", row.values[1]);
+}
+
+test "insertQueueMessage handles empty image_url without panicking" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    try insertQueueMessage(.{
+        .allocator = testing.allocator,
+        .db = &s.db,
+        .logger = null,
+        .session_id = "s1",
+        .message = "no image",
+        .image_url = "",
+        .event_bus = null,
+        .is_emit_sse = false,
+    });
+
+    var q = try s.db.query(testing.allocator, "SELECT image_url FROM session_queue_messages WHERE session_id = 's1'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(testing.allocator);
+    try testing.expectEqualStrings("", row.values[0]);
+}
+
+test "insertQueueMessage inserts each call as a new row (auto-incrementing id)" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    try insertQueueMessage(.{ .allocator = testing.allocator, .db = &s.db, .logger = null, .session_id = "s1", .message = "first", .image_url = "", .event_bus = null, .is_emit_sse = false });
+    try insertQueueMessage(.{ .allocator = testing.allocator, .db = &s.db, .logger = null, .session_id = "s1", .message = "second", .image_url = "", .event_bus = null, .is_emit_sse = false });
+    try insertQueueMessage(.{ .allocator = testing.allocator, .db = &s.db, .logger = null, .session_id = "s1", .message = "third", .image_url = "", .event_bus = null, .is_emit_sse = false });
+
+    var q = try s.db.query(testing.allocator, "SELECT message FROM session_queue_messages WHERE session_id = 's1' ORDER BY rowid", &.{});
+    defer q.deinit();
+    var msgs: [3]?[]u8 = .{ null, null, null };
+    defer for (msgs) |maybe| if (maybe) |m| testing.allocator.free(m);
+    var i: usize = 0;
+    while (try q.next()) |row| : (i += 1) {
+        defer row.deinit(testing.allocator);
+        if (i < 3) msgs[i] = try testing.allocator.dupe(u8, row.values[0]);
+    }
+    try testing.expectEqualStrings("first", msgs[0].?);
+    try testing.expectEqualStrings("second", msgs[1].?);
+    try testing.expectEqualStrings("third", msgs[2].?);
+}
+
+test "insertQueueMessage filters messages by session_id" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    try insertQueueMessage(.{ .allocator = testing.allocator, .db = &s.db, .logger = null, .session_id = "s1", .message = "s1 msg", .image_url = "", .event_bus = null, .is_emit_sse = false });
+    try insertQueueMessage(.{ .allocator = testing.allocator, .db = &s.db, .logger = null, .session_id = "s2", .message = "s2 msg", .image_url = "", .event_bus = null, .is_emit_sse = false });
+
+    var q = try s.db.query(testing.allocator, "SELECT COUNT(*) FROM session_queue_messages WHERE session_id = 's1'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(testing.allocator);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "insertQueueMessage with is_emit_sse=true and event_bus=null is a safe no-op for the SSE branch" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    // The implementation must check `if (event_bus) |ev|` BEFORE any
+    // payload allocation. The DB writes must still complete.
+    try insertQueueMessage(.{
+        .allocator = testing.allocator,
+        .db = &s.db,
+        .logger = null,
+        .session_id = "s1",
+        .message = "skip",
+        .image_url = "",
+        .event_bus = null,
+        .is_emit_sse = true,
+    });
+
+    var q = try s.db.query(testing.allocator, "SELECT 1 FROM session_queue_messages WHERE session_id = 's1'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(testing.allocator);
 }

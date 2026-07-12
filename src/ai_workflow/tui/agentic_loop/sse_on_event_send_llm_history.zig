@@ -7,6 +7,7 @@ const logger_mod = nalarcore.loggermod;
 const helpers = nalarcore.helpers;
 const SseEvent = mod.SseEvent;
 const SkillInfo = mod.SkillInfo;
+const testing = std.testing;
 
 /// JSON representation of a tool call
 const ToolCallJson = struct {
@@ -187,4 +188,299 @@ pub fn onEventSendLLMHistory(
     // LLM events. The frontend listener filter narrows to the current
     // session_id on the JS side.
     event_bus.emit(SseEvent, "llm", event);
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+//
+// `onEventSendLLMHistory` dereferences `logger.?` at line 89, so passing
+// `null` for the logger crashes. Tests construct a real Logger via
+// `Logger.init(alloc, io, .{})`. We only assert on the captured event's
+// type + JSON shape — the trace logging itself is incidental.
+
+var captured_llm_event: ?SseEvent = null;
+
+fn captureLlmFn(ev: SseEvent) void {
+    captured_llm_event = ev;
+}
+
+fn freeCapturedLlmEventData() void {
+    if (captured_llm_event) |ev| {
+        testing.allocator.free(ev.data);
+    }
+}
+
+fn setupLlmBusAndIo() !struct {
+    bus: event_bus_mod.EventBus,
+    threaded: std.Io.Threaded,
+    logger: logger_mod.Logger,
+} {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    const bus = event_bus_mod.EventBus.init("llm_test_bus", testing.allocator, io);
+    const logger = logger_mod.Logger.init(testing.allocator, io, .{
+        .min_level = .err, // suppress info-level traces from the helper
+        .include_location = false,
+        .include_request_id = false,
+        .include_timestamp = false,
+    });
+    return .{ .bus = bus, .threaded = threaded, .logger = logger };
+}
+
+fn teardownLlmBus(s: *@TypeOf(setupLlmBusAndIo() catch unreachable)) void {
+    s.bus.deinit();
+    s.threaded.deinit();
+    s.logger.deinit();
+}
+
+test "onEventSendLLMHistory: emits event_type 'llm_full' on both session_id and 'llm' keys" {
+    var s = try setupLlmBusAndIo();
+    defer teardownLlmBus(&s);
+    defer freeCapturedLlmEventData();
+    captured_llm_event = null;
+    try s.bus.subscribe(SseEvent, "llm", captureLlmFn);
+
+    try onEventSendLLMHistory(.{
+        .allocator = testing.allocator,
+        .io = s.threaded.io(),
+        .logger = &s.logger,
+        .event_bus = &s.bus,
+        .entity = .{
+            .session_id = "s1",
+            .model = "test-model",
+            .cwd = "/tmp",
+            .content = "hello",
+            .reasoning_content = null,
+            .role = "assistant",
+            .finish_reason = "stop",
+            .tool_calls_json = null,
+            .tool_call_id = null,
+            .agent_name = "Agent",
+            .loop_index = 0,
+            .temperature = 0.2,
+            .is_thinking = false,
+            .is_input = false,
+            .is_output = true,
+            .session_skills = &.{},
+        },
+    });
+
+    const ev = captured_llm_event orelse return error.NoEventCaptured;
+    try testing.expectEqualStrings("llm_full", ev.event_type.?);
+    try testing.expectEqualStrings("s1", ev.session_id);
+}
+
+test "onEventSendLLMHistory: JSON payload includes the standard field set" {
+    var s = try setupLlmBusAndIo();
+    defer teardownLlmBus(&s);
+    defer freeCapturedLlmEventData();
+    captured_llm_event = null;
+    try s.bus.subscribe(SseEvent, "llm", captureLlmFn);
+
+    try onEventSendLLMHistory(.{
+        .allocator = testing.allocator,
+        .io = s.threaded.io(),
+        .logger = &s.logger,
+        .event_bus = &s.bus,
+        .entity = .{
+            .session_id = "s_json",
+            .model = "m_json",
+            .cwd = "/tmp",
+            .content = "json content",
+            .reasoning_content = null,
+            .role = "assistant",
+            .finish_reason = "stop",
+            .tool_calls_json = null,
+            .tool_call_id = null,
+            .agent_name = "Agent",
+            .loop_index = 0,
+            .temperature = 0.2,
+            .is_thinking = false,
+            .is_input = false,
+            .is_output = true,
+            .session_skills = &.{},
+        },
+    });
+
+    const ev = captured_llm_event orelse return error.NoEventCaptured;
+    // Verify each canonical field appears in the JSON.
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"session_id\"") != null);
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"model\"") != null);
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"cwd\"") != null);
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"content\"") != null);
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"role\"") != null);
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"loop_index\"") != null);
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"temperature\"") != null);
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"is_thinking\"") != null);
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"is_input\"") != null);
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"is_output\"") != null);
+    // Note: std.json.fmt does NOT escape the inner quotes around field
+    // values, so the substring looks like `"type":"full"`, not
+    // `"type":"full"` (no double-quotes around `full`).
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"type\":") != null);
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"full\"") != null);
+}
+
+test "onEventSendLLMHistory: invalid UTF-8 in content is sanitized (no byte-array in JSON)" {
+    // Regression guard for the bug documented at sse_on_event_send_llm_history.zig:101
+    // — without sanitizeUtf8, std.json.fmt emits invalid-UTF-8 strings as
+    // ARRAYS of bytes. The test passes a known-invalid byte sequence and
+    // asserts the JSON contains a string (not an array) for `content`.
+    var s = try setupLlmBusAndIo();
+    defer teardownLlmBus(&s);
+    defer freeCapturedLlmEventData();
+    captured_llm_event = null;
+    try s.bus.subscribe(SseEvent, "llm", captureLlmFn);
+
+    // 0x89 0x93 are invalid UTF-8 (continuation bytes without a start byte).
+    const invalid_utf8 = "\x89\x93broken";
+    try onEventSendLLMHistory(.{
+        .allocator = testing.allocator,
+        .io = s.threaded.io(),
+        .logger = &s.logger,
+        .event_bus = &s.bus,
+        .entity = .{
+            .session_id = "s_utf8",
+            .model = "m",
+            .cwd = "/tmp",
+            .content = invalid_utf8,
+            .reasoning_content = null,
+            .role = "assistant",
+            .finish_reason = "stop",
+            .tool_calls_json = null,
+            .tool_call_id = null,
+            .agent_name = "Agent",
+            .loop_index = 0,
+            .temperature = 0.2,
+            .is_thinking = false,
+            .is_input = false,
+            .is_output = true,
+            .session_skills = &.{},
+        },
+    });
+
+    const ev = captured_llm_event orelse return error.NoEventCaptured;
+    // The fix is correct if `content` is JSON-stringified (quoted)
+    // rather than JSON-array-ified. Specifically: "content": should be
+    // present, NOT "content":[.
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"content\":") != null);
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"content\":[") == null);
+}
+
+test "onEventSendLLMHistory: invalid UTF-8 in reasoning_content is sanitized" {
+    var s = try setupLlmBusAndIo();
+    defer teardownLlmBus(&s);
+    defer freeCapturedLlmEventData();
+    captured_llm_event = null;
+    try s.bus.subscribe(SseEvent, "llm", captureLlmFn);
+
+    const invalid_utf8 = "\xff\xfe\xfdthinking-broken";
+    try onEventSendLLMHistory(.{
+        .allocator = testing.allocator,
+        .io = s.threaded.io(),
+        .logger = &s.logger,
+        .event_bus = &s.bus,
+        .entity = .{
+            .session_id = "s_reason",
+            .model = "m",
+            .cwd = "/tmp",
+            .content = "ok content",
+            .reasoning_content = invalid_utf8,
+            .role = "assistant",
+            .finish_reason = "stop",
+            .tool_calls_json = null,
+            .tool_call_id = null,
+            .agent_name = "Agent",
+            .loop_index = 0,
+            .temperature = 0.2,
+            .is_thinking = true,
+            .is_input = false,
+            .is_output = true,
+            .session_skills = &.{},
+        },
+    });
+
+    const ev = captured_llm_event orelse return error.NoEventCaptured;
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"reasoning_content\":") != null);
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"reasoning_content\":[") == null);
+}
+
+test "onEventSendLLMHistory: content=null produces a valid empty-string content in the payload" {
+    var s = try setupLlmBusAndIo();
+    defer teardownLlmBus(&s);
+    defer freeCapturedLlmEventData();
+    captured_llm_event = null;
+    try s.bus.subscribe(SseEvent, "llm", captureLlmFn);
+
+    try onEventSendLLMHistory(.{
+        .allocator = testing.allocator,
+        .io = s.threaded.io(),
+        .logger = &s.logger,
+        .event_bus = &s.bus,
+        .entity = .{
+            .session_id = "s_null",
+            .model = "m",
+            .cwd = "/tmp",
+            .content = null,
+            .reasoning_content = null,
+            .role = "assistant",
+            .finish_reason = "stop",
+            .tool_calls_json = null,
+            .tool_call_id = null,
+            .agent_name = "Agent",
+            .loop_index = 0,
+            .temperature = 0.2,
+            .is_thinking = false,
+            .is_input = false,
+            .is_output = true,
+            .session_skills = &.{},
+        },
+    });
+
+    const ev = captured_llm_event orelse return error.NoEventCaptured;
+    // Empty string content — the JSON contains `"content": ""` (note the
+    // space after `:` because the payload uses `.whitespace = .indent_4`).
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"content\":") != null);
+    // The value should be an empty JSON string. With indent_4 whitespace,
+    // it appears as `"content": ""` (space + empty quoted string).
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"content\": \"\"") != null);
+}
+
+test "onEventSendLLMHistory: emits on both session_id and 'llm' keys (central broadcast)" {
+    var s = try setupLlmBusAndIo();
+    defer teardownLlmBus(&s);
+    defer freeCapturedLlmEventData();
+    captured_llm_event = null;
+    // Subscribe only to "llm" — the session_id key gets a separate emit
+    // that we won't capture. The test verifies the central "llm" emit
+    // fires (which is what the frontend filter pattern relies on).
+    try s.bus.subscribe(SseEvent, "llm", captureLlmFn);
+
+    try onEventSendLLMHistory(.{
+        .allocator = testing.allocator,
+        .io = s.threaded.io(),
+        .logger = &s.logger,
+        .event_bus = &s.bus,
+        .entity = .{
+            .session_id = "s_broadcast",
+            .model = "m",
+            .cwd = "/tmp",
+            .content = "broadcast me",
+            .reasoning_content = null,
+            .role = "assistant",
+            .finish_reason = "stop",
+            .tool_calls_json = null,
+            .tool_call_id = null,
+            .agent_name = "Agent",
+            .loop_index = 0,
+            .temperature = 0.2,
+            .is_thinking = false,
+            .is_input = false,
+            .is_output = true,
+            .session_skills = &.{},
+        },
+    });
+
+    const ev = captured_llm_event orelse return error.NoEventCaptured;
+    try testing.expectEqualStrings("llm_full", ev.event_type.?);
 }
