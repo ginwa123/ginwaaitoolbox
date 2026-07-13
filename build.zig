@@ -43,15 +43,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const http_dep = b.dependency("httpz", .{ .target = target, .optimize = optimize });
-
     const mod = b.addModule("nalarcore", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
 
     mod.addImport("nalarcore", mod);
-    mod.addImport("httpz", http_dep.module("httpz"));
     // Platform-specific link libs (sqlite3/ssl/crypto on Linux,
     // vendored sqlite3.c on Windows/macOS) are added below in the
     // test/dev-exe/inline-exe setup blocks. They propagate to every

@@ -156,24 +156,6 @@ pub const GlobalMemorySystem =
     \\| "Changed line 52 in foo.zig" | "After fixing a tricky bug, add a regression test immediately" |
 ;
 
-pub const TaskManagementPrompt =
-    \\## Task Management
-    \\
-    \\**`.nalar/tasks.md`** — Per-directory append-only task log.
-    \\Format: `## [status] YYYYMMDD_HHMMSS — task description`
-    \\
-    \\Lifecycle: `[active]` → `[x]` per completed subtask → `[done]`
-    \\
-    \\Example:
-    \\```markdown
-    \\## [active] 20250416_143000 — Implement user auth
-    \\- [x] Design API endpoints
-    \\- [ ] Write database migration
-    \\- [ ] Implement handler
-    \\## [done] 20250415_090000 — Set up project structure
-    \\```
-;
-
 pub const skills_system_prompt =
     \\# Skills System Prompt
     \\
