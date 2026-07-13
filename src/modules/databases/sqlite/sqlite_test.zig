@@ -1353,3 +1353,98 @@ test "nested savepoints (depth 2 -> 3) commit and rollback correctly" {
     defer alloc.free(cnt);
     try testing.expectEqualStrings("1", cnt); // only 'a'
 }
+
+test "backend.deinit() while tx is open: tx.commit returns DatabaseNotFound" {
+    // This test verifies the use-after-free guard: if the caller
+    // closes the backend while a tx is in flight, commit() detects
+    // the closed state (db == null — set by Task 1.0's deinit fix)
+    // and returns DatabaseNotFound instead of dereferencing a freed
+    // pointer. Requires Task 1.0 (deinit nulls out self.db) to be in
+    // place — without it, the guard never fires.
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    var tx = try ctx.db.begin();
+    try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+
+    // Close the backend while tx is still in flight. The mutex is
+    // held by the tx; commit() must release it AND return DatabaseNotFound.
+    ctx.db.deinit();
+    const result = tx.commit();
+    try testing.expectError(sqlite_mod.Error.DatabaseNotFound, result);
+}
+
+test "backend.deinit() while tx is open: tx.rollback returns DatabaseNotFound" {
+    // Mirror of the commit test, for the rollback path.
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    var tx = try ctx.db.begin();
+    try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+
+    ctx.db.deinit();
+    const result = tx.rollback();
+    try testing.expectError(sqlite_mod.Error.DatabaseNotFound, result);
+}
+
+test "tx.commit after commit returns TransactionClosed (single-use enforcement)" {
+    // After a successful commit, the tx is single-use. Any further call
+    // returns Error.TransactionClosed to prevent UB (mutex is no longer
+    // held, so a tx.* call would race with concurrent writers).
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    var tx = try ctx.db.begin();
+    try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+    try tx.commit();
+
+    // Second commit → TransactionClosed.
+    try testing.expectError(sqlite_mod.Error.TransactionClosed, tx.commit());
+    // exec after commit → TransactionClosed.
+    try testing.expectError(sqlite_mod.Error.TransactionClosed, tx.exec(alloc, "INSERT INTO foo VALUES ('b')", &.{}));
+    // rollback after commit → TransactionClosed (use the switch idiom).
+    tx.rollback() catch |err| switch (err) {
+        error.TransactionClosed => {},
+        else => return err,
+    };
+}
+
+test "defer tx.rollback() catch |err| switch (TransactionClosed => {}) is the safe idiom" {
+    // The whole point of defer-rollback: if commit() already ran, the
+    // deferred rollback returns TransactionClosed and we swallow it.
+    // Otherwise it runs the actual rollback.
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        // Zig 0.16 forbids `return` from a `defer` expression, so the
+        // deferred rollback must swallow ALL errors. The only error
+        // expected here is TransactionClosed (commit() succeeded), so
+        // swallowing is the right behavior for this idiom.
+        defer tx.rollback() catch {};
+        try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+        try tx.commit();
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("1", cnt);
+}
