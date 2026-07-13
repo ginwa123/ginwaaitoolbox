@@ -73,8 +73,10 @@ const handleMoveUp = (elementId: string): void => {
   const idx = indexOf(elementId)
   if (idx <= 0) return // already at top
   const next = layers.value.slice()
-  const above = next[idx - 1]
-  next[idx - 1] = next[idx]
+  // Bounds-checked above (idx >= 1), so non-null assertions are safe.
+  const above = next[idx - 1]!
+  const current = next[idx]!
+  next[idx - 1] = current
   next[idx] = above
   // Emit top-to-bottom order; the parent will re-order the elements
   // array (preserving the bottom-to-top order of the layers panel).
@@ -86,8 +88,10 @@ const handleMoveDown = (elementId: string): void => {
   const idx = indexOf(elementId)
   if (idx === -1 || idx >= layers.value.length - 1) return // already at bottom
   const next = layers.value.slice()
-  const below = next[idx + 1]
-  next[idx + 1] = next[idx]
+  // Bounds-checked above (idx < layers.length - 1), so non-null assertions are safe.
+  const current = next[idx]!
+  const below = next[idx + 1]!
+  next[idx + 1] = current
   next[idx] = below
   emit('reorder', next.map((e) => e.id))
 }

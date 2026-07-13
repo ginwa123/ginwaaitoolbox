@@ -221,7 +221,7 @@ onUnmounted(() => {
          preview's content, they can use the PropertiesPanel's Monaco
          editor instead. -->
     <div
-      v-if="element.file_path || element.html !== undefined"
+      v-if="element.file_path"
       class="absolute inset-0 pointer-events-none overflow-hidden"
       :style="{
         backgroundColor: element.fill || 'transparent',
