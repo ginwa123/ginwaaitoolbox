@@ -1952,14 +1952,27 @@ export interface KanbanTaskEvent {
  * known named event types (`kanban_column`, `kanban_task`,
  * `queue_queued`, `queue_deleted`, `llm_chunk`, `llm_full`,
  * `worker_created`, `worker_updated`, `worker_deleted`,
- * `session_created`, `session_deleted`) with the SseClient so the
- * browser dispatches them; the actual dispatch to a consumer's
- * callback is filtered by `eventType` inside the factory.
+ * `session_created`, `session_deleted`, `design_element_created`,
+ * `design_element_updated`, `design_element_deleted`) with the
+ * SseClient so the browser dispatches them; the actual dispatch to
+ * a consumer's callback is filtered by `eventType` inside the
+ * factory.
  */
 export interface UnifiedChannels {
   workers?: (event: WorkerEvent) => void
   sessions?: (event: SessionEvent) => void
   kanban?: (event: KanbanColumnEvent | KanbanTaskEvent) => void
+  /**
+   * Subscribe to design-mode element mutations. The backend emits
+   * three granular event names (`design_element_created`,
+   * `design_element_updated`, `design_element_deleted`) that share
+   * the same `DesignElementEvent` payload (the `action` discriminator
+   * tells them apart). All three route on the central `design_element`
+   * event_bus key — the consumer filters by `action` if it cares
+   * about the distinction (the `designSse` store treats all three
+   * uniformly: re-fetch the page's element list).
+   */
+  design?: (event: DesignElementEvent) => void
   /**
    * Subscribe to LLM streaming events. When `sessionId` is provided,
    * the factory sends `llm:<sid>` (per-session routing — used by any
@@ -1986,8 +1999,8 @@ export interface UnifiedSseOptions {
 /**
  * Open ONE EventSource that fans out every event family the caller
  * wired up. Replaces the 5 dedicated `create*SseConnection` factories
- * (workers / sessions / kanban / queue / llm) — they all route to
- * `/api/events?channels=…` under the hood.
+ * (workers / sessions / kanban / queue / llm) plus the design channel
+ * — they all route to `/api/events?channels=…` under the hood.
  *
  * **Why 1 SSE endpoint doesn't mean "1 EventSource globally":**
  * For apps that subscribe to a session-scoped channel via the per-
@@ -2006,6 +2019,7 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
   if (opts.channels.workers) tokens.push('workers')
   if (opts.channels.sessions) tokens.push('sessions')
   if (opts.channels.kanban) tokens.push('kanban')
+  if (opts.channels.design) tokens.push('design_element')
   if (opts.channels.llm) {
     tokens.push(opts.channels.llm.sessionId ? `llm:${opts.channels.llm.sessionId}` : 'llm')
   }
@@ -2057,6 +2071,16 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
       'worker_deleted',
       'session_created',
       'session_deleted',
+      // Design-mode element events (see src/ai_workflow/tui/on_event_sent_design.zig).
+      // All three share the same `DesignElementEvent` payload; the
+      // `action` discriminator tells them apart. The single
+      // `design_element` channel token in `tokens` subscribes to all
+      // three at once — no per-action channel routing needed because
+      // the frontend treats them uniformly (re-fetch the page's
+      // element list).
+      'design_element_created',
+      'design_element_updated',
+      'design_element_deleted',
     ],
     // Default heartbeat filter (matches backend sse_manager.sendHeartbeat).
     heartbeatData: 'ping',
@@ -2076,6 +2100,28 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
           opts.channels.kanban(data as KanbanColumnEvent | KanbanTaskEvent)
         } catch (err) {
           console.error('[unifiedSSE] kanban event parse failed:', err, raw)
+        }
+        return
+      }
+
+      // Design-mode element events. The backend emits three granular
+      // event names (`design_element_created` / `_updated` / `_deleted`)
+      // — see src/ai_workflow/tui/on_event_sent_design.zig — all
+      // share the same `DesignElementEvent` payload (the `action`
+      // discriminator tells them apart). We dispatch all three to
+      // the same `design` channel; the consumer can switch on
+      // `event.action` if it cares about the distinction.
+      if (
+        eventType === 'design_element_created' ||
+        eventType === 'design_element_updated' ||
+        eventType === 'design_element_deleted'
+      ) {
+        if (!opts.channels.design) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.design(data as DesignElementEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] design event parse failed:', err, raw)
         }
         return
       }
