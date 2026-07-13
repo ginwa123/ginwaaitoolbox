@@ -185,7 +185,7 @@ fn useCase(
     defer allocator.free(new_id);
 
     // 3. Re-query to get the full row.
-    var element = design_model.getElement(allocator, db, new_id) catch return error.ElementNotVisible;
+    const element = design_model.getElement(allocator, db, new_id) catch return error.ElementNotVisible;
     errdefer design_model.freeElement(allocator, element);
 
     // 4. Emit the SSE event (best-effort).

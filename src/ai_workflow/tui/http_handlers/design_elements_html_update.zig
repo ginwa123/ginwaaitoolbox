@@ -84,7 +84,7 @@ fn useCase(
     };
     defer allocator.free(updated_id);
 
-    var element = design_model.getElement(allocator, db, updated_id) catch return error.ElementNotVisible;
+    const element = design_model.getElement(allocator, db, updated_id) catch return error.ElementNotVisible;
     errdefer design_model.freeElement(allocator, element);
 
     return .{ .element = element };
