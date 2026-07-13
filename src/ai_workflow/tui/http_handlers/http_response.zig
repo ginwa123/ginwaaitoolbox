@@ -634,3 +634,190 @@ pub fn makeTasksReorderPinnedResponse(allocator: std.mem.Allocator, count: usize
         .{},
     );
 }
+
+// ─── Design-mode response types ────────────────────────────────────────────
+// Wire shapes for `GET/POST/PUT/PATCH/DELETE /api/.../design/...`.
+// Mirrors the `DesignPage` and `DesignElement` structs in
+// `src/ai_workflow/tui/design_model.zig` field-for-field so a future
+// contract change is one struct definition to update.
+//
+// `DesignElementResponse` deliberately omits the `html` body — the
+// full HTML is fetched lazily via a separate `GET .../elements/:eid/html`
+// endpoint (`DesignElement.loadElementHtml`). This keeps the page+elements
+// JSON payload small even for designs with 50+ elements, and lets the
+// iframe preview opt in to fetching bodies only when the element is
+// selected.
+//
+// The model's `elem_type` field is renamed to `type` on the wire (the
+// SQL column is `type` too — `elem_type` is a Zig-only name because
+// `type` is a Zig keyword).
+//
+// Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md
+//   (Chunk 3, Task 3.1).
+pub const DesignPageResponse = struct {
+    id: []const u8,
+    workspace_item_id: []const u8,
+    name: []const u8,
+    width: i64,
+    height: i64,
+    position: i64,
+    created_at: []const u8,
+    updated_at: []const u8,
+};
+
+/// Map a `design_model.DesignPage` (or any struct with the same
+/// fields) into a `DesignPageResponse`. The `anytype` parameter keeps
+/// this helper decoupled from the data-layer struct so the two can
+/// evolve independently without touching the response shape.
+pub fn makeDesignPageResponse(page: anytype) DesignPageResponse {
+    return .{
+        .id = page.id,
+        .workspace_item_id = page.workspace_item_id,
+        .name = page.name,
+        .width = page.width,
+        .height = page.height,
+        .position = page.position,
+        .created_at = page.created_at,
+        .updated_at = page.updated_at,
+    };
+}
+
+/// Build the `{"pages":[...], "count": N}` envelope used by
+/// `GET /design/pages`. The inner slice is allocated from the
+/// per-request arena and freed before this function returns; the
+/// outer envelope JSON is what the caller receives.
+pub fn makeDesignPageListResponse(allocator: std.mem.Allocator, pages: anytype) ![]u8 {
+    const DesignPageListResponse = struct {
+        pages: []const DesignPageResponse,
+        count: u32,
+    };
+
+    const mapped = try allocator.alloc(DesignPageResponse, pages.len);
+    defer allocator.free(mapped);
+    for (pages, 0..) |p, i| mapped[i] = makeDesignPageResponse(p);
+
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        DesignPageListResponse{
+            .pages = mapped,
+            .count = @intCast(pages.len),
+        },
+        .{},
+    );
+}
+
+pub const DesignElementResponse = struct {
+    id: []const u8,
+    page_id: []const u8,
+    name: []const u8,
+    /// Element type — wire string from `ElementType` enum tagName.
+    /// One of: "rectangle" | "ellipse" | "text" | "image" | "frame" | "group".
+    type: []const u8,
+    file_path: []const u8,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+    rotation: f64,
+    fill: []const u8,
+    stroke: []const u8,
+    stroke_width: i64,
+    corner_radius: i64,
+    opacity: f64,
+    text_content: []const u8,
+    text_style: []const u8,
+    image_url: []const u8,
+    z_index: i64,
+    position: i64,
+    created_at: []const u8,
+    updated_at: []const u8,
+};
+
+/// Map a `design_model.DesignElement` (or any struct with the same
+/// fields) into a `DesignElementResponse`. The model's `elem_type`
+/// field (renamed from SQL `type` because `type` is a Zig keyword)
+/// is exposed on the wire as `type`.
+pub fn makeDesignElementResponse(elem: anytype) DesignElementResponse {
+    return .{
+        .id = elem.id,
+        .page_id = elem.page_id,
+        .name = elem.name,
+        .type = elem.elem_type,
+        .file_path = elem.file_path,
+        .x = elem.x,
+        .y = elem.y,
+        .width = elem.width,
+        .height = elem.height,
+        .rotation = elem.rotation,
+        .fill = elem.fill,
+        .stroke = elem.stroke,
+        .stroke_width = elem.stroke_width,
+        .corner_radius = elem.corner_radius,
+        .opacity = elem.opacity,
+        .text_content = elem.text_content,
+        .text_style = elem.text_style,
+        .image_url = elem.image_url,
+        .z_index = elem.z_index,
+        .position = elem.position,
+        .created_at = elem.created_at,
+        .updated_at = elem.updated_at,
+    };
+}
+
+/// Build the `{"elements":[...], "count": N}` envelope used by
+/// callers that want to return a flat element list (currently
+/// unused by the 9 HTTP handlers — all of them wrap the elements
+/// inside a `DesignPageWithElements` payload — but exported for
+/// future endpoints, e.g. a search-by-name route).
+pub fn makeDesignElementListResponse(allocator: std.mem.Allocator, elements: anytype) ![]u8 {
+    const DesignElementListResponse = struct {
+        elements: []const DesignElementResponse,
+        count: u32,
+    };
+
+    const mapped = try allocator.alloc(DesignElementResponse, elements.len);
+    defer allocator.free(mapped);
+    for (elements, 0..) |e, i| mapped[i] = makeDesignElementResponse(e);
+
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        DesignElementListResponse{
+            .elements = mapped,
+            .count = @intCast(elements.len),
+        },
+        .{},
+    );
+}
+
+/// Bundle used by `GET /design/pages/:page_id` — returns the page
+/// metadata + all elements in one payload (HTML bodies excluded —
+/// fetch lazily via `GET .../elements/:eid/html`).
+pub const DesignPageWithElementsResponse = struct {
+    page: DesignPageResponse,
+    elements: []const DesignElementResponse,
+};
+
+/// Build the `{"page":..., "elements":[...]}` envelope for
+/// `getPageWithElements`. Mirrors the `kanban_model.PageWithElements`
+/// pattern: the page is the parent, elements are the children, both
+/// in the same JSON object. The inner slices are allocated from the
+/// per-request arena and freed before this function returns; the
+/// outer envelope JSON is what the caller receives.
+pub fn makeDesignPageWithElementsResponse(
+    allocator: std.mem.Allocator,
+    page: anytype,
+    elements: anytype,
+) ![]u8 {
+    const mapped_elements = try allocator.alloc(DesignElementResponse, elements.len);
+    defer allocator.free(mapped_elements);
+    for (elements, 0..) |e, i| mapped_elements[i] = makeDesignElementResponse(e);
+
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        DesignPageWithElementsResponse{
+            .page = makeDesignPageResponse(page),
+            .elements = mapped_elements,
+        },
+        .{},
+    );
+}
