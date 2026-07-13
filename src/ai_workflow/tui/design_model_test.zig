@@ -393,3 +393,237 @@ test "deleteElement removes the row and unlinks the file" {
     const was_deleted2 = try design_model.deleteElement(alloc, &ctx.db, element_id);
     try testing.expect(!was_deleted2);
 }
+
+// ─── Test: getPageWithElements returns page + elements (no HTML bodies) ──
+
+test "getPageWithElements returns page + its elements" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    // Create a page, then add 2 elements to it.
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const e1_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "hero",
+        .elem_type = .rectangle,
+        .html = "<div>hero</div>",
+        .x = 10,
+        .y = 20,
+        .width = 100,
+        .height = 50,
+        .fill = "#22c55e",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
+    });
+    defer alloc.free(e1_id);
+
+    const e2_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "card",
+        .elem_type = .text,
+        .html = "<p>hi</p>",
+        .x = 30,
+        .y = 40,
+        .width = 200,
+        .height = 80,
+        .fill = "#ffffff",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
+        .text_content = "hello world",
+    });
+    defer alloc.free(e2_id);
+
+    const bundle = try design_model.getPageWithElements(alloc, &ctx.db, page_id);
+    defer bundle.deinit(alloc);
+
+    // Page fields populated correctly.
+    try testing.expectEqualStrings(page_id, bundle.page.id);
+    try testing.expectEqualStrings("Home", bundle.page.name);
+    try testing.expectEqual(@as(i64, 1440), bundle.page.width);
+    try testing.expectEqual(@as(i64, 1024), bundle.page.height);
+
+    // Two elements returned in (z_index, position) order.
+    try testing.expectEqual(@as(usize, 2), bundle.elements.len);
+    try testing.expectEqualStrings("hero", bundle.elements[0].name);
+    try testing.expectEqualStrings("card", bundle.elements[1].name);
+    try testing.expectEqualStrings(e1_id, bundle.elements[0].id);
+    try testing.expectEqualStrings(e2_id, bundle.elements[1].id);
+
+    // Element fields populated (file_path included, but no html body
+    // — loadElementHtml must be called separately to fetch it).
+    try testing.expect(bundle.elements[0].file_path.len > 0);
+    try testing.expectEqualStrings("rectangle", bundle.elements[0].elem_type);
+    try testing.expectEqualStrings("text", bundle.elements[1].elem_type);
+    try testing.expectEqual(@as(i64, 10), bundle.elements[0].x);
+    try testing.expectEqual(@as(i64, 20), bundle.elements[0].y);
+    try testing.expectEqual(@as(i64, 100), bundle.elements[0].width);
+    try testing.expectEqual(@as(i64, 50), bundle.elements[0].height);
+    try testing.expectEqualStrings("#22c55e", bundle.elements[0].fill);
+}
+
+test "getPageWithElements returns PageNotFound for missing page_id" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const result = design_model.getPageWithElements(alloc, &ctx.db, "page_does_not_exist");
+    try testing.expectError(error.PageNotFound, result);
+}
+
+test "getPageWithElements on page with zero elements returns empty slice" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Empty",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const bundle = try design_model.getPageWithElements(alloc, &ctx.db, page_id);
+    defer bundle.deinit(alloc);
+
+    try testing.expectEqual(@as(usize, 0), bundle.elements.len);
+    try testing.expectEqualStrings("Empty", bundle.page.name);
+}
+
+// ─── Test: listPagesWithElements returns all pages with their elements ──
+
+test "listPagesWithElements returns all pages with their elements" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    // Create 2 pages with elements on each.
+    const page1_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page1_id);
+
+    const page2_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 800,
+        .height = 600,
+    });
+    defer alloc.free(page2_id);
+
+    // 2 elements on page1, 1 element on page2.
+    const p1e1 = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page1_id, .name = "hero", .elem_type = .rectangle,
+        .html = "<div>hero</div>", .x = 0, .y = 0, .width = 100, .height = 50,
+        .fill = "#22c55e", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(p1e1);
+    const p1e2 = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page1_id, .name = "footer", .elem_type = .rectangle,
+        .html = "<footer/>", .x = 0, .y = 1000, .width = 1440, .height = 24,
+        .fill = "#000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(p1e2);
+    const p2e1 = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page2_id, .name = "submit", .elem_type = .rectangle,
+        .html = "<button/>", .x = 100, .y = 200, .width = 200, .height = 40,
+        .fill = "#3b82f6", .rotation = 0.0, .corner_radius = 4, .opacity = 1.0,
+    });
+    defer alloc.free(p2e1);
+
+    const results = try design_model.listPagesWithElements(alloc, &ctx.db, ctx.item_id);
+    defer design_model.freePagesWithElements(alloc, results);
+
+    // 2 pages returned, in (position ASC) order.
+    try testing.expectEqual(@as(usize, 2), results.len);
+    try testing.expectEqualStrings("Home", results[0].page.name);
+    try testing.expectEqualStrings("Login", results[1].page.name);
+
+    // Page 1 has 2 elements.
+    try testing.expectEqual(@as(usize, 2), results[0].elements.len);
+    try testing.expectEqualStrings("hero", results[0].elements[0].name);
+    try testing.expectEqualStrings("footer", results[0].elements[1].name);
+
+    // Page 2 has 1 element.
+    try testing.expectEqual(@as(usize, 1), results[1].elements.len);
+    try testing.expectEqualStrings("submit", results[1].elements[0].name);
+    try testing.expectEqual(@as(i64, 4), results[1].elements[0].corner_radius);
+}
+
+test "listPagesWithElements returns empty slice for an item with no pages" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const results = try design_model.listPagesWithElements(alloc, &ctx.db, ctx.item_id);
+    defer design_model.freePagesWithElements(alloc, results);
+    try testing.expectEqual(@as(usize, 0), results.len);
+}
+
+test "listPagesWithElements on item where one page has zero elements" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    // Page A has 1 element, Page B has 0 elements.
+    const pageA = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "A",
+        .width = 100, .height = 100,
+    });
+    defer alloc.free(pageA);
+
+    const pageB = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "B",
+        .width = 200, .height = 200,
+    });
+    defer alloc.free(pageB);
+
+    const a_e1 = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = pageA, .name = "thing", .elem_type = .rectangle,
+        .html = "<x/>", .x = 0, .y = 0, .width = 10, .height = 10,
+        .fill = "#fff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(a_e1);
+
+    const results = try design_model.listPagesWithElements(alloc, &ctx.db, ctx.item_id);
+    defer design_model.freePagesWithElements(alloc, results);
+
+    try testing.expectEqual(@as(usize, 2), results.len);
+    try testing.expectEqualStrings("A", results[0].page.name);
+    try testing.expectEqual(@as(usize, 1), results[0].elements.len);
+    try testing.expectEqualStrings("B", results[1].page.name);
+    try testing.expectEqual(@as(usize, 0), results[1].elements.len);
+}

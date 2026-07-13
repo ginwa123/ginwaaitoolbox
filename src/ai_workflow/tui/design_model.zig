@@ -796,6 +796,158 @@ pub fn freeElement(allocator: std.mem.Allocator, e: DesignElement) void {
     allocator.free(e.updated_at);
 }
 
+// ─── PageWithElements (page + elements bundle for REST GET endpoints) ─────
+
+/// One page plus all its elements (no HTML bodies — lazy-loaded via
+/// `loadElementHtml`). Free with `self.deinit(allocator)`.
+pub const PageWithElements = struct {
+    page: DesignPage,
+    elements: []DesignElement,
+
+    /// Release the page fields, every element's fields, and the
+    /// elements slice in one call. Mirrors the lifecycle of `listPages`
+    /// + `listElements` but bundled.
+    pub fn deinit(self: PageWithElements, allocator: std.mem.Allocator) void {
+        allocator.free(self.page.id);
+        allocator.free(self.page.workspace_item_id);
+        allocator.free(self.page.name);
+        allocator.free(self.page.created_at);
+        allocator.free(self.page.updated_at);
+        freeElements(allocator, self.elements);
+    }
+};
+
+/// Get ONE design page with all of its elements (no HTML bodies).
+/// Returns `PageNotFound` if no page with that id exists. The
+/// returned bundle owns all heap allocations — caller MUST call
+/// `result.deinit(allocator)`.
+///
+/// Lazy-loading: element HTML bodies are NOT included; use
+/// `loadElementHtml(element_id)` to fetch them individually.
+pub fn getPageWithElements(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    page_id: []const u8,
+) anyerror!PageWithElements {
+    // 1. Fetch the page row.
+    var q = try db.query(allocator,
+        \\SELECT dp.id, dp.workspace_item_id, dp.name, dp.width, dp.height,
+        \\       dp.position, COALESCE(dp.created_at, ''), COALESCE(dp.updated_at, '')
+        \\FROM design_pages dp
+        \\WHERE dp.id = ?
+    , &.{page_id});
+    defer q.deinit();
+
+    const page = (try q.next()) orelse return error.PageNotFound;
+    // The page row is owned by `q` — dup the fields BEFORE row.deinit
+    // fires (the existing listPages pattern uses allocator.dupe inside
+    // the loop body). See project memory
+    // `zig-slice-headers-across-defer-lifetimes`.
+    var page_owned: DesignPage = undefined;
+    {
+        defer page.deinit(allocator);
+        page_owned = .{
+            .id = try allocator.dupe(u8, page.values[0]),
+            .workspace_item_id = try allocator.dupe(u8, page.values[1]),
+            .name = try allocator.dupe(u8, page.values[2]),
+            .width = std.fmt.parseInt(i64, page.values[3], 10) catch 0,
+            .height = std.fmt.parseInt(i64, page.values[4], 10) catch 0,
+            .position = std.fmt.parseInt(i64, page.values[5], 10) catch 0,
+            .created_at = try allocator.dupe(u8, page.values[6]),
+            .updated_at = try allocator.dupe(u8, page.values[7]),
+        };
+    }
+
+    // 2. Fetch the page's elements via the existing listElements helper.
+    const elements = try listElements(allocator, db, page_owned.id);
+
+    return .{
+        .page = page_owned,
+        .elements = elements,
+    };
+}
+
+/// List ALL pages of a design item, each with its elements (no HTML
+/// bodies). Returns an owned slice; caller MUST call `freePagesWithElements`
+/// (or each result's `deinit` + `allocator.free(slice)`).
+///
+/// For an item with N pages and M total elements across all pages,
+/// this issues 1 query for the page list and N queries for the
+/// elements — fine for small N (the design-mode UI typically has
+/// 3-10 pages). If N grows large, callers should batch via
+/// `getPageWithElements` per visible page instead.
+pub fn listPagesWithElements(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    item_id: []const u8,
+) anyerror![]PageWithElements {
+    const pages = try listPages(allocator, db, item_id);
+    // Track how many pages we've successfully moved into `rows`.
+    // Un-consumed pages still own their strings (and need freeing
+    // on error). Consumed pages are owned by `rows` (freed by
+    // rows.deinit via the errdefer below). The backing slice of
+    // `pages` is freed on both paths (success path frees it
+    // directly after the loop; error path frees it via the defer
+    // below).
+    var consumed: usize = 0;
+    var backing_slice_freed = false;
+    defer {
+        if (!backing_slice_freed) {
+            // Error path: free the un-consumed tail's strings, then
+            // the backing slice. The consumed pages are owned by
+            // `rows` and will be freed by its errdefer below
+            // (registered AFTER this defer).
+            for (pages[consumed..]) |p| {
+                allocator.free(p.id);
+                allocator.free(p.workspace_item_id);
+                allocator.free(p.name);
+                allocator.free(p.created_at);
+                allocator.free(p.updated_at);
+            }
+            allocator.free(pages);
+        }
+    }
+
+    var rows = std.ArrayList(PageWithElements).empty;
+    errdefer {
+        for (rows.items) |*r| r.deinit(allocator);
+        rows.deinit(allocator);
+        // The outer defer for `pages` cleanup has ALREADY fired by
+        // here (errdefer LIFO ordering — registered last, fires first).
+    }
+
+    for (pages) |page| {
+        const elements = listElements(allocator, db, page.id) catch |err| {
+            // listElements failed before we moved the page into
+            // rows. The page's strings will be freed by the outer
+            // defer (pages[consumed..] includes this page).
+            return err;
+        };
+        // If rows.append fails, we still own `elements` and need
+        // to free them (the page's strings are freed by the outer
+        // defer because consumed was not incremented yet).
+        errdefer freeElements(allocator, elements);
+        rows.append(allocator, .{
+            .page = page,
+            .elements = elements,
+        }) catch |err| return err;
+        consumed += 1;
+    }
+
+    // Success: backing slice is no longer needed (per-page strings
+    // have all been moved into rows.items). Free the backing slice
+    // and tell the outer defer to skip its work.
+    backing_slice_freed = true;
+    allocator.free(pages);
+    return rows.toOwnedSlice(allocator);
+}
+
+/// Free a slice of PageWithElements and its backing storage.
+pub fn freePagesWithElements(allocator: std.mem.Allocator, items: []PageWithElements) void {
+    for (items) |*item| item.deinit(allocator);
+    allocator.free(items);
+}
+
 // ─── deleteElement ────────────────────────────────────────────────────────
 
 /// Delete an element. Returns `true` if the row was deleted, `false`
