@@ -126,6 +126,12 @@ pub const SqliteBackend = struct {
     io: std.Io = .failing,
     db: ?*c.sqlite3 = null,
     mutex: std.Io.Mutex = .init,
+    /// Tracks the current transaction nesting depth (0 = no tx active;
+    /// 1 = top-level BEGIN in flight; 2+ = nested SAVEPOINT). Incremented
+    /// by `begin` / `savepoint`, decremented by `commit` / `rollback`.
+    /// Used to choose between `BEGIN` / `COMMIT` (depth 0↔1) and
+    /// `SAVEPOINT` / `RELEASE` / `ROLLBACK TO` (depth >= 1).
+    transaction_depth: u32 = 0,
 
     pub fn init(self: *SqliteBackend, io: std.Io, db_path: [:0]const u8) Error!void {
         self.io = io;
@@ -414,24 +420,34 @@ pub const SqliteBackend = struct {
         pub fn commit(self: *Transaction) Error!void {
             if (self.completed) return Error.TransactionClosed;
             const db = self.backend.db orelse {
-                // Backend was closed during tx — release the mutex we hold
-                // and report the closed state. Caller's deferred rollback
-                // (if any) returns TransactionClosed because completed = true.
                 self.completed = true;
+                // Decrement depth even on backend-closed: the mutex was held
+                // and we want to release it. The depth is a property of the
+                // backend, not the connection.
+                self.backend.transaction_depth -= 1;
                 self.backend.mutex.unlock(self.backend.io);
                 return Error.DatabaseNotFound;
             };
 
-            // Top-level tx (depth == 1): COMMIT. Nested tx (depth >= 2):
-            // RELEASE sp_<depth> (handled in Chunk 3 Task 3.1 via the
-            // sentinel-terminated buffer pattern).
-            const rc = c.sqlite3_exec(db, "COMMIT", null, null, null);
+            // SQL depends on depth:
+            //   depth == 1 → top-level COMMIT
+            //   depth >= 2 → RELEASE for the matching SAVEPOINT
+            var sql_buf: [32:0]u8 = undefined;
+            const sql_slice = if (self.depth == 1)
+                std.fmt.bufPrint(sql_buf[0..31], "COMMIT", .{}) catch return Error.ExecuteFailed
+            else
+                std.fmt.bufPrint(sql_buf[0..31], "RELEASE sp_{d}", .{self.depth}) catch
+                    return Error.ExecuteFailed;
+            sql_buf[sql_slice.len] = 0;
+
+            const rc = c.sqlite3_exec(db, &sql_buf, null, null, null);
             self.completed = true;
+            self.backend.transaction_depth -= 1;
             self.backend.mutex.unlock(self.backend.io);
 
             if (rc != c.SQLITE_OK) {
                 const err_msg = c.sqlite3_errmsg(db);
-                std.log.warn("sqlite3_exec COMMIT failed: {s}", .{err_msg});
+                std.log.warn("sqlite3_exec {s} failed: {s}", .{ sql_slice, err_msg });
                 return Error.ExecuteFailed;
             }
         }
@@ -440,17 +456,27 @@ pub const SqliteBackend = struct {
             if (self.completed) return Error.TransactionClosed;
             const db = self.backend.db orelse {
                 self.completed = true;
+                self.backend.transaction_depth -= 1;
                 self.backend.mutex.unlock(self.backend.io);
                 return Error.DatabaseNotFound;
             };
 
-            const rc = c.sqlite3_exec(db, "ROLLBACK", null, null, null);
+            var sql_buf: [32:0]u8 = undefined;
+            const sql_slice = if (self.depth == 1)
+                std.fmt.bufPrint(sql_buf[0..31], "ROLLBACK", .{}) catch return Error.ExecuteFailed
+            else
+                std.fmt.bufPrint(sql_buf[0..31], "ROLLBACK TO sp_{d}", .{self.depth}) catch
+                    return Error.ExecuteFailed;
+            sql_buf[sql_slice.len] = 0;
+
+            const rc = c.sqlite3_exec(db, &sql_buf, null, null, null);
             self.completed = true;
+            self.backend.transaction_depth -= 1;
             self.backend.mutex.unlock(self.backend.io);
 
             if (rc != c.SQLITE_OK) {
                 const err_msg = c.sqlite3_errmsg(db);
-                std.log.warn("sqlite3_exec ROLLBACK failed: {s}", .{err_msg});
+                std.log.warn("sqlite3_exec {s} failed: {s}", .{ sql_slice, err_msg });
                 return Error.ExecuteFailed;
             }
         }
@@ -540,9 +566,12 @@ pub const SqliteBackend = struct {
             return Error.ExecuteFailed;
         }
 
+        // Track depth BEFORE returning the Transaction so commit/rollback
+        // can choose the correct SQL (COMMIT vs RELEASE sp_<n>).
+        self.transaction_depth += 1;
         return Transaction{
             .backend = self,
-            .depth = 0,
+            .depth = self.transaction_depth,
             .completed = false,
         };
     }
