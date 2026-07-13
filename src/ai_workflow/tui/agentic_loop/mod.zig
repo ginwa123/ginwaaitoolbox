@@ -73,3 +73,6 @@ pub const updateSessionName = update_session_name_mod.updateSessionName;
 
 pub const parsing_mod = @import("parsing.zig");
 
+
+pub const tools = @import("tools.zig");
+

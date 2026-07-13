@@ -1075,8 +1075,8 @@ pub fn filterAndMergeTools(
     allowed_tools: []const u8,
     is_sub_agent: bool,
 ) ![]agent.AgentTool {
-    var base_tools = try allocator.alloc(agent.AgentTool, agentic_loop_mod.tools.all_agent_tools(allocator).len);
-    @memcpy(base_tools, agentic_loop_mod.tools.all_agent_tools(allocator));
+    var base_tools = try allocator.alloc(agent.AgentTool, tool_registry.allAgentTools(allocator).len);
+    @memcpy(base_tools, tool_registry.allAgentTools(allocator));
 
     // Filter base tools if allowed_tools is specified
     if (allowed_tools.len > 0 and !std.mem.eql(u8, allowed_tools, "all")) {
