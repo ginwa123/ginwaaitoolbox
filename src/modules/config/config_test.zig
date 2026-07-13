@@ -415,6 +415,72 @@ test "LlmConfig: url_style defaults to openai when missing from JSON" {
 }
 
 // ---------------------------------------------------------------------------
+// retry_delay_ms: workflow retry backoff in milliseconds. 0 = no delay
+// (current behavior). Plan 2026-07-15-retry-delay. Defaults to 0 when
+// missing so existing config files load without surprises.
+// ---------------------------------------------------------------------------
+
+test "retry_delay_ms: defaults to 0 when missing from JSON" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b" }
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), cfg.retry_delay_ms);
+}
+
+test "retry_delay_ms: reads value from JSON when present" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "retry_delay_ms": 5000
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(@as(u32, 5000), cfg.retry_delay_ms);
+}
+
+test "defaultConfigJson includes retry_delay_ms: 0" {
+    // Pin the literal string in defaultConfigJson so future edits to
+    // the default-template don't accidentally drop the new field.
+    // Mirrors the existing model_compaction_size_kb auto-init check.
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base_len = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const base_path = path_buf[0..base_len];
+
+    const nested_path = try std.fs.path.join(allocator, &.{ base_path, "retry", "config.json" });
+    defer allocator.free(nested_path);
+
+    try LlmConfig.writeDefaultConfig(allocator, std.testing.io, nested_path);
+
+    const file = try std.Io.Dir.openFileAbsolute(std.testing.io, nested_path, .{});
+    defer file.close(std.testing.io);
+    var read_buf: [4096]u8 = undefined;
+    var reader = file.reader(std.testing.io, &read_buf);
+    const content = try reader.interface.allocRemaining(allocator, .limited(64 * 1024));
+    defer allocator.free(content);
+
+    if (std.mem.indexOf(u8, content, "\"retry_delay_ms\": 0") == null) {
+        std.debug.print("!! defaultConfigJson missing retry_delay_ms: 0 !!\n", .{});
+        return error.RetryDelayMissingFromDefault;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // model_compaction_size_kb: session-compactor threshold (consumed by
 // `session_compact.zig:57`). No UI — power users edit config.json.
 // ---------------------------------------------------------------------------
