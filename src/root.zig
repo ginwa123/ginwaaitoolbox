@@ -386,6 +386,9 @@ pub const remove_agent = @import("modules/agent/tools/remove_agent.zig");
 pub const set_git_worktree = @import("modules/agent/tools/set_git_worktree.zig");
 pub const kanban_list = @import("modules/agent/tools/kanban_list.zig");
 pub const kanban_move_task = @import("modules/agent/tools/kanban_move_task.zig");
+pub const set_design_page = @import("modules/agent/tools/set_design_page.zig");
+pub const add_design_element = @import("modules/agent/tools/add_design_element.zig");
+pub const update_design_element = @import("modules/agent/tools/update_design_element.zig");
 
 pub const config = @import("modules/config/Config.zig");
 pub const helperTool = @import("modules/agent/tools/helper.zig");
