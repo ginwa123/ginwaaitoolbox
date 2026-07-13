@@ -661,3 +661,200 @@ pub fn updateElement(
     try db.exec(allocator, sql_buf[0..pos], args.items);
     return allocator.dupe(u8, input.element_id);
 }
+
+// ─── listElements / getElement ─────────────────────────────────────────────
+
+/// List all elements of a design page in (z_index, position) order.
+/// Returns an owned slice; caller MUST release with
+/// `freeElements(allocator, slice)`. Excludes the element's HTML
+/// body — use `loadElementHtml` to fetch the body lazily.
+pub fn listElements(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    page_id: []const u8,
+) anyerror![]DesignElement {
+    var q = try db.query(allocator,
+        \\SELECT de.id, de.page_id, de.name, de.file_path,
+        \\       de.x, de.y, de.width, de.height, de.z_index, de.position,
+        \\       de.type, de.rotation, de.fill, de.stroke, de.stroke_width,
+        \\       de.corner_radius, de.opacity,
+        \\       de.text_content, de.text_style, de.image_url,
+        \\       COALESCE(de.created_at, ''), COALESCE(de.updated_at, '')
+        \\FROM design_page_elements de
+        \\WHERE de.page_id = ?
+        \\ORDER BY de.z_index ASC, de.position ASC
+    , &.{page_id});
+    defer q.deinit();
+
+    var rows = std.ArrayList(DesignElement).empty;
+    errdefer {
+        for (rows.items) |e| {
+            allocator.free(e.id);
+            allocator.free(e.page_id);
+            allocator.free(e.name);
+            allocator.free(e.file_path);
+            allocator.free(e.elem_type);
+            allocator.free(e.fill);
+            allocator.free(e.stroke);
+            allocator.free(e.text_content);
+            allocator.free(e.text_style);
+            allocator.free(e.image_url);
+            allocator.free(e.created_at);
+            allocator.free(e.updated_at);
+        }
+        rows.deinit(allocator);
+    }
+    while (try q.next()) |row| {
+        defer row.deinit(allocator);
+        try rows.append(allocator, .{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .page_id = try allocator.dupe(u8, row.values[1]),
+            .name = try allocator.dupe(u8, row.values[2]),
+            .file_path = try allocator.dupe(u8, row.values[3]),
+            .x = std.fmt.parseInt(i64, row.values[4], 10) catch 0,
+            .y = std.fmt.parseInt(i64, row.values[5], 10) catch 0,
+            .width = std.fmt.parseInt(i64, row.values[6], 10) catch 0,
+            .height = std.fmt.parseInt(i64, row.values[7], 10) catch 0,
+            .z_index = std.fmt.parseInt(i64, row.values[8], 10) catch 0,
+            .position = std.fmt.parseInt(i64, row.values[9], 10) catch 0,
+            .elem_type = try allocator.dupe(u8, row.values[10]),
+            .rotation = std.fmt.parseFloat(f64, row.values[11]) catch 0,
+            .fill = try allocator.dupe(u8, row.values[12]),
+            .stroke = try allocator.dupe(u8, row.values[13]),
+            .stroke_width = std.fmt.parseInt(i64, row.values[14], 10) catch 0,
+            .corner_radius = std.fmt.parseInt(i64, row.values[15], 10) catch 0,
+            .opacity = std.fmt.parseFloat(f64, row.values[16]) catch 0,
+            .text_content = try allocator.dupe(u8, row.values[17]),
+            .text_style = try allocator.dupe(u8, row.values[18]),
+            .image_url = try allocator.dupe(u8, row.values[19]),
+            .created_at = try allocator.dupe(u8, row.values[20]),
+            .updated_at = try allocator.dupe(u8, row.values[21]),
+        });
+    }
+    return rows.toOwnedSlice(allocator);
+}
+
+/// Get a single element by id (excluding HTML body). Returns
+/// `ElementNotFound` if no such row exists.
+pub fn getElement(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    element_id: []const u8,
+) anyerror!DesignElement {
+    var q = try db.query(allocator,
+        \\SELECT de.id, de.page_id, de.name, de.file_path,
+        \\       de.x, de.y, de.width, de.height, de.z_index, de.position,
+        \\       de.type, de.rotation, de.fill, de.stroke, de.stroke_width,
+        \\       de.corner_radius, de.opacity,
+        \\       de.text_content, de.text_style, de.image_url,
+        \\       COALESCE(de.created_at, ''), COALESCE(de.updated_at, '')
+        \\FROM design_page_elements de
+        \\WHERE de.id = ?
+    , &.{element_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ElementNotFound;
+    defer row.deinit(allocator);
+    return .{
+        .id = try allocator.dupe(u8, row.values[0]),
+        .page_id = try allocator.dupe(u8, row.values[1]),
+        .name = try allocator.dupe(u8, row.values[2]),
+        .file_path = try allocator.dupe(u8, row.values[3]),
+        .x = std.fmt.parseInt(i64, row.values[4], 10) catch 0,
+        .y = std.fmt.parseInt(i64, row.values[5], 10) catch 0,
+        .width = std.fmt.parseInt(i64, row.values[6], 10) catch 0,
+        .height = std.fmt.parseInt(i64, row.values[7], 10) catch 0,
+        .z_index = std.fmt.parseInt(i64, row.values[8], 10) catch 0,
+        .position = std.fmt.parseInt(i64, row.values[9], 10) catch 0,
+        .elem_type = try allocator.dupe(u8, row.values[10]),
+        .rotation = std.fmt.parseFloat(f64, row.values[11]) catch 0,
+        .fill = try allocator.dupe(u8, row.values[12]),
+        .stroke = try allocator.dupe(u8, row.values[13]),
+        .stroke_width = std.fmt.parseInt(i64, row.values[14], 10) catch 0,
+        .corner_radius = std.fmt.parseInt(i64, row.values[15], 10) catch 0,
+        .opacity = std.fmt.parseFloat(f64, row.values[16]) catch 0,
+        .text_content = try allocator.dupe(u8, row.values[17]),
+        .text_style = try allocator.dupe(u8, row.values[18]),
+        .image_url = try allocator.dupe(u8, row.values[19]),
+        .created_at = try allocator.dupe(u8, row.values[20]),
+        .updated_at = try allocator.dupe(u8, row.values[21]),
+    };
+}
+
+/// Free a single DesignElement (no backing slice).
+pub fn freeElement(allocator: std.mem.Allocator, e: DesignElement) void {
+    allocator.free(e.id);
+    allocator.free(e.page_id);
+    allocator.free(e.name);
+    allocator.free(e.file_path);
+    allocator.free(e.elem_type);
+    allocator.free(e.fill);
+    allocator.free(e.stroke);
+    allocator.free(e.text_content);
+    allocator.free(e.text_style);
+    allocator.free(e.image_url);
+    allocator.free(e.created_at);
+    allocator.free(e.updated_at);
+}
+
+// ─── deleteElement ────────────────────────────────────────────────────────
+
+/// Delete an element. Returns `true` if the row was deleted, `false`
+/// if no such element existed.
+///
+/// The on-disk file is unlinked AFTER the SQL DELETE succeeds
+/// (defer-pattern). If the unlink fails (file missing or
+/// permission denied), we silently log and continue — the DB
+/// state is the source of truth, and a leftover file becomes an
+/// orphan that the next run can clean up.
+pub fn deleteElement(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    element_id: []const u8,
+) anyerror!bool {
+    // Look up file_path BEFORE delete.
+    const file_path = blk: {
+        var q = try db.query(allocator,
+            "SELECT de.file_path FROM design_page_elements de WHERE de.id = ?",
+            &.{element_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return false;
+        defer row.deinit(allocator);
+        break :blk try allocator.dupe(u8, row.values[0]);
+    };
+    defer allocator.free(file_path);
+
+    // Delete the row first.
+    try db.exec(allocator,
+        "DELETE FROM design_page_elements WHERE id = ?",
+        &.{element_id});
+
+    // Defer-pattern: unlink file AFTER SQL succeeded. Swallow errors
+    // (the file may already be missing or read-only).
+    if (file_path.len > 0) {
+        design_io.deleteFileIfExists(allocator, file_path) catch {};
+    }
+    return true;
+}
+
+// ─── loadElementHtml ──────────────────────────────────────────────────────
+
+/// Read the on-disk HTML body for an element. Returns
+/// `ElementNotFound` if no such row exists; propagates IO errors
+/// from the file read.
+pub fn loadElementHtml(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    element_id: []const u8,
+) anyerror![]u8 {
+    var q = try db.query(allocator,
+        "SELECT de.file_path FROM design_page_elements de WHERE de.id = ?",
+        &.{element_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ElementNotFound;
+    defer row.deinit(allocator);
+    const file_path = try allocator.dupe(u8, row.values[0]);
+    defer allocator.free(file_path);
+    if (file_path.len == 0) return error.FileNotFound;
+    return try std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(5 * 1024 * 1024));
+}

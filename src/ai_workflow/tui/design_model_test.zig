@@ -294,3 +294,102 @@ test "addElement creates a row + writes the HTML file" {
     defer alloc.free(content);
     try testing.expectEqualStrings("<div>Login</div>", content);
 }
+
+// ─── Test: loadElementHtml round-trips the original HTML ─────────────────
+
+test "loadElementHtml returns the original HTML body" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const element_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "hero",
+        .elem_type = .rectangle,
+        .html = "<h1>Welcome</h1>",
+        .x = 0,
+        .y = 0,
+        .width = 200,
+        .height = 100,
+        .fill = "#22c55e",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
+    });
+    defer alloc.free(element_id);
+
+    const html = try design_model.loadElementHtml(alloc, ctx.threaded.io(), &ctx.db, element_id);
+    defer alloc.free(html);
+    try testing.expectEqualStrings("<h1>Welcome</h1>", html);
+}
+
+// ─── Test: deleteElement removes the row and the file ───────────────────
+
+test "deleteElement removes the row and unlinks the file" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const element_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "card",
+        .elem_type = .rectangle,
+        .html = "<div>card</div>",
+        .x = 0,
+        .y = 0,
+        .width = 100,
+        .height = 100,
+        .fill = "#ffffff",  // `db.exec` binds `""` as NULL which would
+                            //  violate the NOT NULL constraint on fill.
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
+    });
+    defer alloc.free(element_id);
+
+    const file_path = try std.fs.path.join(alloc, &.{
+        ctx.item_path,
+        ".nalar/design/Home/card.html",
+    });
+    defer alloc.free(file_path);
+
+    // Sanity: file exists before delete.
+    {
+        const stat_before = try std.Io.Dir.cwd().statFile(ctx.threaded.io(), file_path, .{});
+        try testing.expect(stat_before.kind == .file);
+    }
+
+    // Delete.
+    const was_deleted = try design_model.deleteElement(alloc, &ctx.db, element_id);
+    try testing.expect(was_deleted);
+
+    // File is gone.
+    const stat_after_result = std.Io.Dir.cwd().statFile(ctx.threaded.io(), file_path, .{});
+    try testing.expectError(error.FileNotFound, stat_after_result);
+
+    // deleteElement on a missing id returns false.
+    const was_deleted2 = try design_model.deleteElement(alloc, &ctx.db, element_id);
+    try testing.expect(!was_deleted2);
+}
