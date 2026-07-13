@@ -11,12 +11,18 @@ pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: 
     const role = agent.Role.from_str(message.role) orelse .assistant;
 
     // Handle tool result messages (role == "tool")
-    // For tool messages, the tools column contains the tool_call_id string directly
+    // For tool messages, the tools column contains the tool_call_id string directly.
+    // The `response_content` for a tool result is wrapped in a
+    // `<tool><name>...</name><parameters>...</parameters><success>...</success><data>...</data></tool>`
+    // envelope (produced by `tool_registry.wrapToolOutput`).
+    // Strip the envelope and use only the inner payload (success: `<data>`,
+    // failure: `<error>`) so the LLM sees the actual tool output rather than
+    // the envelope metadata.
     if (role == .tool) {
         const agentMessage = agent.AgentMessage{
             .id = try allocator.dupe(u8, message.id),
             .role = .tool,
-            .content = try allocator.dupe(u8, message.response_content),
+            .content = try stripToolEnvelope(allocator, message.response_content),
             .tool_call_id = try allocator.dupe(u8, message.tool_call_id orelse ""),
         };
         try messages.append(allocator, agentMessage);
@@ -125,4 +131,66 @@ pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: 
     }
 
     return messages.toOwnedSlice(allocator);
+}
+
+/// Strip the `<tool><name>...</name><parameters>...</parameters><success>...</success><data>...</data></tool>`
+/// envelope produced by `tool_registry.wrapToolOutput` and return just the
+/// inner payload.
+///
+/// On success envelopes (contain `<success>true</success>`), returns the
+/// contents of `<data>...</data>`. On failure envelopes
+/// (`<success>false</success>`), returns the contents of `<error>...</error>`.
+/// If the envelope is present but contains neither tag, returns an empty
+/// string.
+///
+/// Returns the input UNCHANGED (heap-duplicated) if it doesn't look like a
+/// tool envelope — this keeps backwards compatibility with old
+/// `response_content` rows that pre-date the envelope format.
+///
+/// Mirrors `apps/desktop/src/helpers/unwrapToolOutput.ts` (which uses
+/// `tryUnwrapToolOutput` for the same fallback semantics).
+fn stripToolEnvelope(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    return stripToolEnvelopeImpl(allocator, raw) catch |err| {
+        // Use the project's custom Logger (nalarcore.loggermod) — it has its
+        // own formatter and does NOT route through std.log, so it won't
+        // increment the test runner's `log_err_count`. Mirrors the
+        // `startup.zig` "Failed to ... {s}" convention for errFmt messages.
+        // `getGlobal()` returns null if the logger hasn't been initialized
+        // (e.g. inside a unit test) — guard with `if (...) |logger|` so we
+        // never crash in that case.
+        if (nalarcore.loggermod.getGlobal()) |logger| {
+            logger.warnFmt(
+                "[stripToolEnvelope] Agent Nalar System error, the actual error is ->>>> {s} (input_len={d}, starts_with_tool={any})",
+                .{
+                    @errorName(err),
+                    raw.len,
+                    std.mem.startsWith(u8, raw, "<tool>"),
+                },
+            );
+        }
+        return err;
+    };
+}
+
+fn stripToolEnvelopeImpl(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    if (!std.mem.startsWith(u8, raw, "<tool>")) return try allocator.dupe(u8, raw);
+    if (!std.mem.endsWith(u8, raw, "</tool>")) return try allocator.dupe(u8, raw);
+
+    if (extractTag(raw, "data")) |inner| return try allocator.dupe(u8, inner);
+    if (extractTag(raw, "error")) |inner| return try allocator.dupe(u8, inner);
+    // Envelope present but no <data> and no <error> — empty payload.
+    return try allocator.dupe(u8, "");
+}
+
+/// Find the first `<tag>...</tag>` block in `haystack` and return the inner
+/// slice (borrowed from `haystack` — caller must copy if needed).
+/// Returns null if the tag is not present.
+fn extractTag(haystack: []const u8, comptime tag: []const u8) ?[]const u8 {
+    const open_seq = "<" ++ tag ++ ">";
+    const close_seq = "</" ++ tag ++ ">";
+    const open_idx = std.mem.indexOf(u8, haystack, open_seq) orelse return null;
+    const value_start = open_idx + open_seq.len;
+    const tail = haystack[value_start..];
+    const close_local = std.mem.indexOf(u8, tail, close_seq) orelse return null;
+    return tail[0..close_local];
 }
