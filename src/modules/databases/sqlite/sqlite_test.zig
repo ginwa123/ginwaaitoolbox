@@ -21,6 +21,39 @@
 //!   within the same thread that holds a tx — `std.Io.Mutex` is not
 //!   reentrant. Use the `tx.*` variants instead.
 //!
+//! Usage example — recommended defer pattern vs. commit-at-bottom:
+//!
+//! ```zig
+//! // Recommended (single line, robust to early returns):
+//! var tx = try db.begin();
+//! defer tx.commitOrRollback() catch {};  // commits when scope exits
+//! try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+//! try tx.exec(alloc, "UPDATE foo SET x = ? WHERE id = ?", &.{"1", "a"});
+//! // No explicit commit() at the bottom — defer handles it.
+//!
+//! // Older style (commit at the bottom of the function):
+//! var tx = try db.begin();
+//! defer tx.rollback() catch |err| switch (err) {
+//!     error.TransactionClosed => {},   // already committed — safe no-op
+//!     else => return err,
+//! };
+//! try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+//! try tx.exec(alloc, "UPDATE foo SET x = ? WHERE id = ?", &.{"1", "a"});
+//! try tx.commit();  // Easy to forget when an early return is added later
+//! ```
+//!
+//! Why the defer-commitOrRollback pattern is preferred:
+//!   - One line instead of a 5-line switch.
+//!   - Robust to early `return` or `try` errors — defer always fires.
+//!   - The tx finalizes at exactly one predictable point (function exit),
+//!     regardless of which statement caused the early return.
+//!   - If the COMMIT SQL itself fails (rare: disk full, constraint
+//!     violation at commit time), `commitOrRollback` returns
+//!     `Error.ExecuteFailed` so the caller can handle it explicitly.
+//!   - The "commit in defer" shape makes the lifetime of the tx
+//!     visually obvious from the function body — readers don't need
+//!     to trace control flow to find the finalization point.
+//!
 //! Tests follow the in-memory `:memory:` + `std.Io.Threaded` pattern from
 //! `routines/model_test.zig`. Each test gets a fresh DB via `setupDb()`.
 //!
