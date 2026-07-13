@@ -343,6 +343,98 @@ pub const SqliteBackend = struct {
         }
     };
 
+    /// A database transaction. Mirrors Go's `sql.Tx` — acquire one via
+    /// `SqliteBackend.begin()` (top-level) or `SqliteBackend.savepoint(name)`
+    /// (nested). Run statements with the tx methods, then `commit()` to make
+    /// changes permanent or `rollback()` to discard them.
+    ///
+    /// **Mutex semantics:** The `SqliteBackend.mutex` is acquired and held
+    /// for the entire lifetime of the transaction. Concurrent `exec`/`query`
+    /// calls from other threads block until `commit()`/`rollback()` releases
+    /// it. DO NOT call `db.exec()` / `db.query()` from within the same thread
+    /// that holds a tx — `std.Io.Mutex` is NOT reentrant; calling a
+    /// lock-acquiring method on the backend from inside `tx.exec` will
+    /// deadlock. Use `tx.exec` / `tx.query` / `tx.queryRow` instead.
+    ///
+    /// **Single-use:** All methods (`exec`, `query`, `queryRow`, `commit`,
+    /// `rollback`) return `Error.TransactionClosed` if called after a
+    /// successful `commit()` or `rollback()`. This is a SAFETY check, not
+    /// ergonomics: after the mutex is released by commit/rollback, any
+    /// further `tx.*` call would invoke SQL on the underlying connection
+    /// WITHOUT the mutex held, racing with concurrent writers. Returning an
+    /// error prevents the UB. The recommended idiom is:
+    ///
+    /// ```zig
+    /// var tx = try db.begin();
+    /// defer tx.rollback() catch |err| switch (err) {
+    ///     error.TransactionClosed => {}, // already committed/rolled back
+    ///     else => return err,
+    /// };
+    /// ```
+    ///
+    /// The `defer tx.rollback() catch |err| switch(err) { error.TransactionClosed => {}, ... }`
+    /// pattern mirrors Go's `defer tx.Rollback()` (which silently succeeds
+    /// on `sql.ErrTxDone`); the explicit switch is required because Zig
+    /// surfaces all errors.
+    ///
+    /// **Borrowed slices:** As with the non-tx `Row` type, slices returned
+    /// from `tx.queryRow()` / `tx.query()` are allocated by the caller's
+    /// allocator; the caller must call `Row.deinit(allocator)` to free them.
+    pub const Transaction = struct {
+        backend: *SqliteBackend,
+        depth: u32,
+        completed: bool = false,
+
+        pub fn exec(self: *Transaction, allocator: std.mem.Allocator, sql: []const u8, argv: []const []const u8) Error!void {
+            if (self.completed) return Error.TransactionClosed;
+            return executeStatement(self.backend, allocator, sql, argv);
+        }
+
+        pub fn commit(self: *Transaction) Error!void {
+            if (self.completed) return Error.TransactionClosed;
+            const db = self.backend.db orelse {
+                // Backend was closed during tx — release the mutex we hold
+                // and report the closed state. Caller's deferred rollback
+                // (if any) returns TransactionClosed because completed = true.
+                self.completed = true;
+                self.backend.mutex.unlock(self.backend.io);
+                return Error.DatabaseNotFound;
+            };
+
+            // Top-level tx (depth == 1): COMMIT. Nested tx (depth >= 2):
+            // RELEASE sp_<depth> (handled in Chunk 3 Task 3.1 via the
+            // sentinel-terminated buffer pattern).
+            const rc = c.sqlite3_exec(db, "COMMIT", null, null, null);
+            self.completed = true;
+            self.backend.mutex.unlock(self.backend.io);
+
+            if (rc != c.SQLITE_OK) {
+                const err_msg = c.sqlite3_errmsg(db);
+                std.log.warn("sqlite3_exec COMMIT failed: {s}", .{err_msg});
+                return Error.ExecuteFailed;
+            }
+        }
+
+        pub fn rollback(self: *Transaction) Error!void {
+            if (self.completed) return Error.TransactionClosed;
+            const db = self.backend.db orelse {
+                self.completed = true;
+                self.backend.mutex.unlock(self.backend.io);
+                return Error.DatabaseNotFound;
+            };
+
+            const rc = c.sqlite3_exec(db, "ROLLBACK", null, null, null);
+            self.completed = true;
+            self.backend.mutex.unlock(self.backend.io);
+
+            if (rc != c.SQLITE_OK) {
+                const err_msg = c.sqlite3_errmsg(db);
+                std.log.warn("sqlite3_exec ROLLBACK failed: {s}", .{err_msg});
+                return Error.ExecuteFailed;
+            }
+        }
+    };
+
     pub fn query(self: *SqliteBackend, allocator: std.mem.Allocator, sql: []const u8, argv: []const []const u8) Error!Rows {
         try self.mutex.lock(self.io);
         defer self.mutex.unlock(self.io);
@@ -381,6 +473,45 @@ pub const SqliteBackend = struct {
         // Without this, the pointer dangles and any subsequent operation
         // would dereference freed memory.
         self.db = null;
+    }
+
+    /// Begin a new top-level transaction on this backend. Returns a
+    /// `Transaction` whose `exec`/`query` methods operate inside the
+    /// transaction until `commit()` or `rollback()` is called.
+    ///
+    /// The backend's mutex is acquired and held for the entire transaction
+    /// lifetime. Concurrent `exec`/`query` calls on the same backend
+    /// (from other threads) block until the transaction ends.
+    ///
+    /// Returns `Error.DatabaseNotFound` if the backend is not initialized.
+    /// Returns `Error.ExecuteFailed` if the underlying `BEGIN` SQL fails
+    /// (e.g. already inside a transaction — should not happen if the
+    /// caller respects the mutex contract).
+    ///
+    /// Cancel-safe: if the Io runtime cancels mid-`lock()`, returns
+    /// `error.Canceled` without acquiring the lock or starting a tx.
+    pub fn begin(self: *SqliteBackend) Error!Transaction {
+        if (self.db == null) return Error.DatabaseNotFound;
+
+        // Acquire the mutex BEFORE issuing BEGIN. This is the critical
+        // correctness invariant: while the tx is alive, no other
+        // backend.exec / backend.query call can interleave.
+        try self.mutex.lock(self.io);
+        errdefer self.mutex.unlock(self.io);
+
+        // Issue BEGIN. On any failure, the errdefer releases the mutex.
+        const rc = c.sqlite3_exec(self.db.?, "BEGIN", null, null, null);
+        if (rc != c.SQLITE_OK) {
+            const err_msg = c.sqlite3_errmsg(self.db.?);
+            std.log.warn("sqlite3_exec BEGIN failed: {s}", .{err_msg});
+            return Error.ExecuteFailed;
+        }
+
+        return Transaction{
+            .backend = self,
+            .depth = 0,
+            .completed = false,
+        };
     }
 
     /// Number of rows changed by the most recent INSERT/UPDATE/DELETE
