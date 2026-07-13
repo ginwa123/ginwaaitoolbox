@@ -421,11 +421,12 @@ pub const SqliteBackend = struct {
             if (self.completed) return Error.TransactionClosed;
             const db = self.backend.db orelse {
                 self.completed = true;
-                // Decrement depth even on backend-closed: the mutex was held
-                // and we want to release it. The depth is a property of the
-                // backend, not the connection.
+                // On backend-closed: depth is a property of the backend
+                // (not the connection), so we decrement it for consistency.
+                // Only release the mutex on the outermost commit/rollback —
+                // inner savepoints hold the mutex on behalf of the outer tx.
                 self.backend.transaction_depth -= 1;
-                self.backend.mutex.unlock(self.backend.io);
+                if (self.depth == 1) self.backend.mutex.unlock(self.backend.io);
                 return Error.DatabaseNotFound;
             };
 
@@ -443,7 +444,10 @@ pub const SqliteBackend = struct {
             const rc = c.sqlite3_exec(db, &sql_buf, null, null, null);
             self.completed = true;
             self.backend.transaction_depth -= 1;
-            self.backend.mutex.unlock(self.backend.io);
+            // Only the OUTERMOST commit releases the mutex. An inner
+            // savepoint commit (depth >= 2) leaves the mutex held so
+            // the surrounding outer transaction can keep using it.
+            if (self.depth == 1) self.backend.mutex.unlock(self.backend.io);
 
             if (rc != c.SQLITE_OK) {
                 const err_msg = c.sqlite3_errmsg(db);
@@ -457,7 +461,9 @@ pub const SqliteBackend = struct {
             const db = self.backend.db orelse {
                 self.completed = true;
                 self.backend.transaction_depth -= 1;
-                self.backend.mutex.unlock(self.backend.io);
+                // Same depth-gated mutex release as commit(): only the
+                // outermost rollback actually frees the lock.
+                if (self.depth == 1) self.backend.mutex.unlock(self.backend.io);
                 return Error.DatabaseNotFound;
             };
 
@@ -472,7 +478,9 @@ pub const SqliteBackend = struct {
             const rc = c.sqlite3_exec(db, &sql_buf, null, null, null);
             self.completed = true;
             self.backend.transaction_depth -= 1;
-            self.backend.mutex.unlock(self.backend.io);
+            // See commit() above — inner savepoint rollback must NOT
+            // release the mutex; the outer transaction is still alive.
+            if (self.depth == 1) self.backend.mutex.unlock(self.backend.io);
 
             if (rc != c.SQLITE_OK) {
                 const err_msg = c.sqlite3_errmsg(db);

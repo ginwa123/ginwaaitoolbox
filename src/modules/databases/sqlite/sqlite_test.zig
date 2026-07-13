@@ -1237,3 +1237,119 @@ test "tx.query returns Rows iterator (same shape as backend.query)" {
         try tx.commit();
     }
 }
+
+test "savepoint commit persists inner writes, outer commits too" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE log (id TEXT PRIMARY KEY, msg TEXT NOT NULL)", &.{});
+
+    {
+        var outer = try ctx.db.begin();
+        defer outer.rollback() catch {};
+
+        try outer.exec(alloc, "INSERT INTO log VALUES ('1', 'outer')", &.{});
+
+        {
+            var inner = try ctx.db.savepoint();
+            defer inner.rollback() catch {};
+            try inner.exec(alloc, "INSERT INTO log VALUES ('2', 'inner')", &.{});
+            try inner.commit();
+        }
+
+        try outer.commit();
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM log", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("2", cnt);
+}
+
+test "savepoint rollback undoes only inner writes, outer still alive" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE log (id TEXT PRIMARY KEY, msg TEXT NOT NULL)", &.{});
+
+    {
+        var outer = try ctx.db.begin();
+        defer outer.rollback() catch {};
+
+        try outer.exec(alloc, "INSERT INTO log VALUES ('1', 'outer')", &.{});
+
+        {
+            var inner = try ctx.db.savepoint();
+            defer inner.rollback() catch {};
+            try inner.exec(alloc, "INSERT INTO log VALUES ('2', 'inner')", &.{});
+            try inner.rollback();
+            // 'inner' row gone, but the outer tx + 'outer' row still in flight.
+        }
+
+        try outer.exec(alloc, "INSERT INTO log VALUES ('3', 'outer2')", &.{});
+        try outer.commit();
+    }
+
+    // Expect only '1' (outer) and '3' (outer2) — '2' (inner) was rolled back.
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM log", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("2", cnt);
+
+    const msg1 = (try scalarText(alloc, &ctx.db,
+        "SELECT msg FROM log WHERE id = '2'", &.{})) orelse "";
+    defer if (msg1.len > 0) alloc.free(msg1);
+    try testing.expectEqualStrings("", msg1);
+}
+
+test "savepoint without outer tx returns ExecuteFailed" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+
+    // No begin() before savepoint() — should fail.
+    const result = ctx.db.savepoint();
+    try testing.expectError(sqlite_mod.Error.ExecuteFailed, result);
+}
+
+test "nested savepoints (depth 2 -> 3) commit and rollback correctly" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE log (id TEXT PRIMARY KEY, msg TEXT NOT NULL)", &.{});
+
+    {
+        var outer = try ctx.db.begin();
+        defer outer.rollback() catch {};
+
+        try outer.exec(alloc, "INSERT INTO log VALUES ('a', 'outer')", &.{});
+
+        {
+            var mid = try ctx.db.savepoint();
+            defer mid.rollback() catch {};
+            try mid.exec(alloc, "INSERT INTO log VALUES ('b', 'mid')", &.{});
+
+            {
+                var deep = try ctx.db.savepoint();
+                defer deep.rollback() catch {};
+                try deep.exec(alloc, "INSERT INTO log VALUES ('c', 'deep')", &.{});
+                try deep.commit(); // commit deep
+            }
+
+            // Roll back mid — this should undo 'b' and 'c'.
+            try mid.rollback();
+        }
+
+        try outer.commit();
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM log", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("1", cnt); // only 'a'
+}
