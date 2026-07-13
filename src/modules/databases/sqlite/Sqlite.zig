@@ -576,6 +576,53 @@ pub const SqliteBackend = struct {
         };
     }
 
+    /// Open a nested savepoint within the current transaction. Must be
+    /// called WHILE a tx is already open (i.e. between `begin()` /
+    /// `savepoint()` and the corresponding `commit()` / `rollback()`).
+    ///
+    /// Savepoints let you roll back PART of a transaction without
+    /// discarding the whole thing — useful for "try this batch, discard
+    /// if it fails, keep going" patterns.
+    ///
+    /// The savepoint is named `sp_<depth>` (auto-generated based on the
+    /// current depth). The returned Transaction's `depth` field is >= 2.
+    ///
+    /// **Caller must hold an active transaction.** Calling `savepoint()`
+    /// when `transaction_depth == 0` returns `Error.ExecuteFailed`
+    /// (SQLite rejects SAVEPOINT outside an outer tx).
+    pub fn savepoint(self: *SqliteBackend) Error!Transaction {
+        if (self.db == null) return Error.DatabaseNotFound;
+        if (self.transaction_depth == 0) return Error.ExecuteFailed;
+
+        // Mutex is already held by the outer tx — do NOT re-lock.
+
+        self.transaction_depth += 1;
+        const new_depth = self.transaction_depth;
+
+        // Build a NUL-terminated SAVEPOINT name. We use a fixed-size
+        // sentinel-terminated buffer because sqlite3_exec takes a C string.
+        // `sql_buf[0..31]` is `[]u8` (what bufPrint expects); the 32nd byte
+        // holds the NUL sentinel we set after formatting.
+        var sql_buf: [32:0]u8 = undefined;
+        const sql_slice = std.fmt.bufPrint(sql_buf[0..31], "SAVEPOINT sp_{d}", .{new_depth}) catch
+            return Error.ExecuteFailed;
+        sql_buf[sql_slice.len] = 0;
+
+        const rc = c.sqlite3_exec(self.db.?, &sql_buf, null, null, null);
+        if (rc != c.SQLITE_OK) {
+            const err_msg = c.sqlite3_errmsg(self.db.?);
+            std.log.warn("sqlite3_exec {s} failed: {s}", .{ sql_slice, err_msg });
+            self.transaction_depth -= 1;
+            return Error.ExecuteFailed;
+        }
+
+        return Transaction{
+            .backend = self,
+            .depth = new_depth,
+            .completed = false,
+        };
+    }
+
     /// Number of rows changed by the most recent INSERT/UPDATE/DELETE
     /// statement. Used by callers that need to know whether their
     /// `db.exec` actually matched any rows (the API doesn't return the
