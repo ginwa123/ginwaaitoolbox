@@ -242,3 +242,55 @@ test "setDesignPage rejects empty page_name" {
     });
     try testing.expectError(error.BadPageName, result);
 }
+
+// ─── Test: addElement writes a row + a file ──────────────────────────────
+
+test "addElement creates a row + writes the HTML file" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    // Create a page first.
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Add the element.
+    const element_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "login-card",
+        .elem_type = .rectangle,
+        .html = "<div>Login</div>",
+        .x = 100,
+        .y = 200,
+        .width = 400,
+        .height = 300,
+        .fill = "#ffffff",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
+    });
+    defer alloc.free(element_id);
+
+    // Generated id starts with "elem_".
+    try testing.expect(element_id.len > 4);
+    try testing.expect(std.mem.startsWith(u8, element_id, "elem_"));
+
+    // Verify the HTML file was written to disk.
+    const file_path = try std.fs.path.join(alloc, &.{
+        ctx.item_path,
+        ".nalar/design/Login/login-card.html",
+    });
+    defer alloc.free(file_path);
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(ctx.threaded.io(), file_path, alloc, .limited(1024));
+    defer alloc.free(content);
+    try testing.expectEqualStrings("<div>Login</div>", content);
+}

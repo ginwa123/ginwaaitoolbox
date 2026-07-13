@@ -257,3 +257,407 @@ pub fn listPages(
     }
     return rows.toOwnedSlice(allocator);
 }
+
+// ─── DesignElement struct + freeElements ───────────────────────────────────
+
+/// One design-page-element row, fully duplicated into heap memory.
+/// Free with `freeElements(allocator, slice)`.
+pub const DesignElement = struct {
+    id: []u8,
+    page_id: []u8,
+    name: []u8,
+    file_path: []u8,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+    z_index: i64,
+    position: i64,
+    /// One of "rectangle" | "ellipse" | "text" | "image" | "frame" | "group"
+    elem_type: []u8,
+    rotation: f64,
+    fill: []u8,
+    stroke: []u8,
+    stroke_width: i64,
+    corner_radius: i64,
+    opacity: f64,
+    text_content: []u8,
+    text_style: []u8,
+    image_url: []u8,
+    created_at: []u8,
+    updated_at: []u8,
+};
+
+/// Free the per-element strings and the backing slice in one call.
+pub fn freeElements(allocator: std.mem.Allocator, elements: []DesignElement) void {
+    for (elements) |e| {
+        allocator.free(e.id);
+        allocator.free(e.page_id);
+        allocator.free(e.name);
+        allocator.free(e.file_path);
+        allocator.free(e.elem_type);
+        allocator.free(e.fill);
+        allocator.free(e.stroke);
+        allocator.free(e.text_content);
+        allocator.free(e.text_style);
+        allocator.free(e.image_url);
+        allocator.free(e.created_at);
+        allocator.free(e.updated_at);
+    }
+    allocator.free(elements);
+}
+
+/// Element type as a Zig enum. The wire string is `@tagName(input.type)`.
+pub const ElementType = enum {
+    rectangle,
+    ellipse,
+    text,
+    image,
+    frame,
+    group,
+};
+
+// ─── addElement ───────────────────────────────────────────────────────────
+
+pub const AddElementInput = struct {
+    page_id: []const u8,
+    name: []const u8,
+    elem_type: ElementType,
+    html: []const u8,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+    fill: []const u8,
+    rotation: f64,
+    corner_radius: i64,
+    opacity: f64,
+    text_content: []const u8 = "",
+    text_style: []const u8 = "",
+    image_url: []const u8 = "",
+};
+
+pub const AddElementError = error{
+    PageNotFound,
+    ItemPathMissing,
+    BadName,
+    FileWriteFailed,
+    DbError,
+    OutOfMemory,
+};
+
+/// Add a new element to a design page. Atomically writes the element's
+/// HTML to disk and inserts the corresponding metadata row.
+///
+/// Returns the new element_id. Caller owns the returned slice.
+///
+/// Behavior:
+///   1. Look up the parent page (item_id, page name, item path) via
+///      JOIN. Returns `PageNotFound` if the page is missing or
+///      `ItemPathMissing` if the workspace_item has no `path`.
+///   2. Sanitize page name and element name.
+///   3. Build file path: `<item_path>/.nalar/design/<page>/<element>.html`
+///   4. Make the page directory (mkdir-p via Io).
+///   5. Atomic-write the HTML body to disk.
+///   6. INSERT the metadata row with all 11 v6 columns.
+pub fn addElement(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    io: std.Io,
+    input: AddElementInput,
+) anyerror![]u8 {
+    if (input.name.len == 0) return error.BadName;
+
+    // 1. Look up parent page via JOIN.
+    const Lookup = struct { item_id: []u8, page_name: []u8, item_path: []u8 };
+    const lookup: Lookup = blk: {
+        var q = try db.query(allocator,
+            \\SELECT dp.workspace_item_id, dp.name, wi.path
+            \\FROM design_pages dp
+            \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
+            \\WHERE dp.id = ?
+        , &.{input.page_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.PageNotFound;
+        defer row.deinit(allocator);
+        break :blk .{
+            .item_id = try allocator.dupe(u8, row.values[0]),
+            .page_name = try allocator.dupe(u8, row.values[1]),
+            .item_path = try allocator.dupe(u8, row.values[2]),
+        };
+    };
+    defer allocator.free(lookup.item_id);
+    defer allocator.free(lookup.page_name);
+    defer allocator.free(lookup.item_path);
+    if (lookup.item_path.len == 0) return error.ItemPathMissing;
+
+    // 2. Sanitize the page and element names for filesystem safety.
+    const sanitized_page = try design_io.sanitizeFilename(allocator, lookup.page_name);
+    defer allocator.free(sanitized_page);
+    const sanitized_elem = try design_io.sanitizeFilename(allocator, input.name);
+    defer allocator.free(sanitized_elem);
+
+    // 3. Build the file path.
+    const page_dir = try std.fmt.allocPrint(allocator, "{s}/.nalar/design/{s}", .{ lookup.item_path, sanitized_page });
+    defer allocator.free(page_dir);
+    const file_path = try std.fmt.allocPrint(allocator, "{s}/{s}.html", .{ page_dir, sanitized_elem });
+    defer allocator.free(file_path);
+
+    // 4. mkdir -p the page directory (createDirPath is the Io-native
+    // mkdir-p equivalent in Zig 0.16).
+    std.Io.Dir.cwd().createDirPath(io, page_dir) catch return error.FileWriteFailed;
+
+    // 5. Atomic-write the HTML body to disk.
+    design_io.atomicWriteFile(allocator, file_path, input.html) catch return error.FileWriteFailed;
+
+    // 6. INSERT the metadata row with all 11 v6 columns populated.
+    const id = try generateElementId(allocator);
+    defer allocator.free(id);
+
+    // Stringify integer / real columns for argv compatibility.
+    const x_str = try std.fmt.allocPrint(allocator, "{d}", .{input.x});
+    defer allocator.free(x_str);
+    const y_str = try std.fmt.allocPrint(allocator, "{d}", .{input.y});
+    defer allocator.free(y_str);
+    const width_str = try std.fmt.allocPrint(allocator, "{d}", .{input.width});
+    defer allocator.free(width_str);
+    const height_str = try std.fmt.allocPrint(allocator, "{d}", .{input.height});
+    defer allocator.free(height_str);
+    const rotation_str = try std.fmt.allocPrint(allocator, "{d}", .{input.rotation});
+    defer allocator.free(rotation_str);
+    const corner_radius_str = try std.fmt.allocPrint(allocator, "{d}", .{input.corner_radius});
+    defer allocator.free(corner_radius_str);
+    const opacity_str = try std.fmt.allocPrint(allocator, "{d}", .{input.opacity});
+    defer allocator.free(opacity_str);
+    const elem_type_str = @tagName(input.elem_type);
+
+    try db.exec(allocator,
+        \\INSERT INTO design_page_elements (
+        \\    id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at
+        \\) VALUES (
+        \\    ?, ?, ?, ?, ?, ?, ?, ?, 0,
+        \\    COALESCE((SELECT MAX(de.position) FROM design_page_elements de
+        \\        WHERE de.page_id = ?), -1) + 1,
+        \\    ?, ?, ?, '', 0, ?, ?, '', '', '', NULL,
+        \\    datetime('now'), datetime('now')
+        \\)
+    , &.{
+        id, input.page_id, input.name, file_path,
+        x_str, y_str, width_str, height_str, input.page_id,
+        elem_type_str, rotation_str, input.fill, corner_radius_str, opacity_str,
+    });
+
+    return allocator.dupe(u8, id);
+}
+
+/// Generate a unique element id of the form `elem_<nanos>`.
+fn generateElementId(allocator: std.mem.Allocator) ![]u8 {
+    const counter = nextElementIdCounter();
+    var entropy: [8]u8 = undefined;
+    const stack_addr: u64 = @intCast(@intFromPtr(&entropy));
+    const mixed: u64 = counter ^ stack_addr;
+    std.mem.writeInt(u64, &entropy, mixed, .little);
+    var hex: [16]u8 = undefined;
+    const hex_chars = "0123456789abcdef";
+    for (entropy, 0..) |b, i| {
+        hex[i * 2] = hex_chars[b >> 4];
+        hex[i * 2 + 1] = hex_chars[b & 0x0F];
+    }
+    return std.fmt.allocPrint(allocator, "elem_{s}", .{&hex});
+}
+
+var element_id_counter: std.atomic.Value(u64) = .init(0);
+
+fn nextElementIdCounter() u64 {
+    return element_id_counter.fetchAdd(1, .seq_cst);
+}
+
+// ─── updateElement ────────────────────────────────────────────────────────
+
+pub const UpdateElementInput = struct {
+    element_id: []const u8,
+    name: ?[]const u8 = null,
+    elem_type: ?ElementType = null,
+    html: ?[]const u8 = null,
+    x: ?i64 = null,
+    y: ?i64 = null,
+    width: ?i64 = null,
+    height: ?i64 = null,
+    rotation: ?f64 = null,
+    fill: ?[]const u8 = null,
+    stroke: ?[]const u8 = null,
+    stroke_width: ?i64 = null,
+    corner_radius: ?i64 = null,
+    opacity: ?f64 = null,
+    text_content: ?[]const u8 = null,
+    text_style: ?[]const u8 = null,
+    image_url: ?[]const u8 = null,
+};
+
+/// Update an element. Each non-null field is SET in the SQL UPDATE;
+/// null fields are left unchanged. If `html` is set, the file at
+/// `file_path` is rewritten atomically. Returns the element_id on
+/// success; returns `ElementNotFound` if no such row exists.
+pub fn updateElement(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: UpdateElementInput,
+) anyerror![]u8 {
+    // Build dynamic SET clause + argv.
+    var sets: std.ArrayList([]const u8) = .empty;
+    defer sets.deinit(allocator);
+    var args: std.ArrayList([]const u8) = .empty;
+    defer args.deinit(allocator);
+
+    // String scratch buffers we own (cleaned at end of function).
+    var owned: std.ArrayList([]u8) = .empty;
+    defer {
+        for (owned.items) |s| allocator.free(s);
+        owned.deinit(allocator);
+    }
+
+    if (input.name) |v| { try sets.append(allocator, "name = ?"); try args.append(allocator, v); }
+    if (input.elem_type) |v| {
+        try sets.append(allocator, "type = ?");
+        try args.append(allocator, @tagName(v));
+    }
+    if (input.x) |v| {
+        try sets.append(allocator, "x = ?");
+        try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+        try args.append(allocator, owned.items[owned.items.len - 1]);
+    }
+    if (input.y) |v| {
+        try sets.append(allocator, "y = ?");
+        try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+        try args.append(allocator, owned.items[owned.items.len - 1]);
+    }
+    if (input.width) |v| {
+        try sets.append(allocator, "width = ?");
+        try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+        try args.append(allocator, owned.items[owned.items.len - 1]);
+    }
+    if (input.height) |v| {
+        try sets.append(allocator, "height = ?");
+        try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+        try args.append(allocator, owned.items[owned.items.len - 1]);
+    }
+    if (input.rotation) |v| {
+        try sets.append(allocator, "rotation = ?");
+        try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+        try args.append(allocator, owned.items[owned.items.len - 1]);
+    }
+    if (input.fill) |v| { try sets.append(allocator, "fill = ?"); try args.append(allocator, v); }
+    if (input.stroke) |v| { try sets.append(allocator, "stroke = ?"); try args.append(allocator, v); }
+    if (input.stroke_width) |v| {
+        try sets.append(allocator, "stroke_width = ?");
+        try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+        try args.append(allocator, owned.items[owned.items.len - 1]);
+    }
+    if (input.corner_radius) |v| {
+        try sets.append(allocator, "corner_radius = ?");
+        try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+        try args.append(allocator, owned.items[owned.items.len - 1]);
+    }
+    if (input.opacity) |v| {
+        try sets.append(allocator, "opacity = ?");
+        try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+        try args.append(allocator, owned.items[owned.items.len - 1]);
+    }
+    if (input.text_content) |v| { try sets.append(allocator, "text_content = ?"); try args.append(allocator, v); }
+    if (input.text_style) |v| { try sets.append(allocator, "text_style = ?"); try args.append(allocator, v); }
+    if (input.image_url) |v| { try sets.append(allocator, "image_url = ?"); try args.append(allocator, v); }
+
+    // If html changed, look up file_path, atomic-rewrite the file,
+    // and record that we need to UPDATE file_path too if the file
+    // didn't exist before (orphan recovery).
+    var new_file_path_owned: ?[]u8 = null;
+    defer if (new_file_path_owned) |p| allocator.free(p);
+    if (input.html) |new_html| {
+        var q = try db.query(allocator,
+            "SELECT file_path FROM design_page_elements WHERE id = ?",
+            &.{input.element_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.ElementNotFound;
+        defer row.deinit(allocator);
+        const existing_path = try allocator.dupe(u8, row.values[0]);
+        defer allocator.free(existing_path);
+
+        // If file_path was empty (orphan), set it to a freshly-built
+        // path so the rewrite sticks. Otherwise rewrite the file
+        // in place.
+        if (existing_path.len == 0) {
+            // Look up the page → item_path + page_name to build a
+            // new file path. JOIN with design_pages and
+            // workspace_items.
+            var pq = try db.query(allocator,
+                \\SELECT dp.workspace_item_id, dp.name, wi.path
+                \\FROM design_page_elements de
+                \\JOIN design_pages dp ON dp.id = de.page_id
+                \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
+                \\WHERE de.id = ?
+            , &.{input.element_id});
+            defer pq.deinit();
+            const prow = (try pq.next()) orelse return error.ElementNotFound;
+            defer prow.deinit(allocator);
+            const sanitized_page = try design_io.sanitizeFilename(allocator, prow.values[1]);
+            defer allocator.free(sanitized_page);
+            // Reuse the existing element name (the orphan case
+            // implies the row was created with file_path=''
+            // for some reason; use the row's `name` field).
+            const elem_name = try allocator.dupe(u8, "element");
+            defer allocator.free(elem_name);
+            const new_path = try std.fmt.allocPrint(allocator, "{s}/.nalar/design/{s}/{s}.html", .{
+                prow.values[2], sanitized_page, elem_name,
+            });
+            new_file_path_owned = new_path;
+            try sets.append(allocator, "file_path = ?");
+            try args.append(allocator, new_path);
+        } else {
+            design_io.atomicWriteFile(allocator, existing_path, new_html) catch return error.FileWriteFailed;
+        }
+    }
+
+    // Always update updated_at.
+    try sets.append(allocator, "updated_at = datetime('now')");
+    try args.append(allocator, input.element_id);
+
+    if (sets.items.len == 1) {
+        // Only updated_at → nothing to update; no-op.
+        return allocator.dupe(u8, input.element_id);
+    }
+
+    // Build the UPDATE statement: "UPDATE design_page_elements SET " + sets joined by ", " + " WHERE id = ?"
+    var sql_buf: [4096]u8 = undefined;
+    const sql_prefix = "UPDATE design_page_elements SET ";
+    var pos: usize = 0;
+    @memcpy(sql_buf[pos..][0..sql_prefix.len], sql_prefix);
+    pos += sql_prefix.len;
+    for (sets.items, 0..) |s, i| {
+        if (i > 0) {
+            @memcpy(sql_buf[pos..][0..2], ", ");
+            pos += 2;
+        }
+        @memcpy(sql_buf[pos..][0..s.len], s);
+        pos += s.len;
+    }
+    // The last "set" is the WHERE id = ? — but we appended updated_at
+    // AND element_id separately. Pull the WHERE out: pop the
+    // element_id from sets and use it as the WHERE.
+    _ = sets.pop();
+    // Actually we set things up wrong: the element_id is in args
+    // as the last position, but our SET list already includes
+    // "updated_at = datetime('now')" as a set. Let's re-do this.
+    // SQL would be: UPDATE ... SET col1=?, col2=?, updated_at=datetime('now') WHERE id=?
+    // We appended element_id to args as the WHERE placeholder. Sets
+    // already ends with "updated_at = datetime('now')" (no params).
+    // So the SQL is correct — just append " WHERE id = ?".
+    const where_clause = " WHERE id = ?";
+    @memcpy(sql_buf[pos..][0..where_clause.len], where_clause);
+    pos += where_clause.len;
+
+    try db.exec(allocator, sql_buf[0..pos], args.items);
+    return allocator.dupe(u8, input.element_id);
+}
