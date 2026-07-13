@@ -1142,3 +1142,98 @@ test "begin before init returns DatabaseNotFound" {
     const result = db.begin();
     try testing.expectError(sqlite_mod.Error.DatabaseNotFound, result);
 }
+
+test "tx.queryRow sees uncommitted writes inside the same tx" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        defer tx.rollback() catch {};
+
+        try tx.exec(alloc, "INSERT INTO kv VALUES ('a', 'one')", &.{});
+
+        // Read it back inside the same tx — must see 'one', not NULL.
+        const row = try tx.queryRow(alloc,
+            "SELECT v FROM kv WHERE k = 'a'", &.{});
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("one", row.values[0]);
+
+        try tx.commit();
+    }
+}
+
+test "read-modify-write pattern is atomic across tx" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE counter (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)
+    , &.{});
+    try ctx.db.exec(alloc, "INSERT INTO counter VALUES (1, 0)", &.{});
+
+    // Simulate a read-modify-write: read n, increment, write back.
+    // Inside a tx, the read + write happen atomically with respect to
+    // other writers.
+    {
+        var tx = try ctx.db.begin();
+        defer tx.rollback() catch {};
+
+        const row = try tx.queryRow(alloc,
+            "SELECT n FROM counter WHERE id = 1", &.{});
+        defer row.deinit(alloc);
+        const n = try std.fmt.parseInt(i32, row.values[0], 10);
+        try testing.expectEqual(@as(i32, 0), n);
+
+        try tx.exec(alloc,
+            "UPDATE counter SET n = ? WHERE id = 1",
+            &.{ "1" });
+        try tx.commit();
+    }
+
+    // Verify the write persisted.
+    const row = try ctx.db.queryRow(alloc,
+        "SELECT n FROM counter WHERE id = 1", &.{});
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "tx.query returns Rows iterator (same shape as backend.query)" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE items (id TEXT PRIMARY KEY)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        defer tx.rollback() catch {};
+
+        try tx.exec(alloc, "INSERT INTO items VALUES ('a'), ('b'), ('c')", &.{});
+
+        var q = try tx.query(alloc,
+            "SELECT id FROM items ORDER BY id", &.{});
+        defer q.deinit();
+
+        const r1 = (try q.next()) orelse return error.ExpectedRow;
+        defer r1.deinit(alloc);
+        try testing.expectEqualStrings("a", r1.values[0]);
+
+        const r2 = (try q.next()) orelse return error.ExpectedRow;
+        defer r2.deinit(alloc);
+        try testing.expectEqualStrings("b", r2.values[0]);
+
+        const r3 = (try q.next()) orelse return error.ExpectedRow;
+        defer r3.deinit(alloc);
+        try testing.expectEqualStrings("c", r3.values[0]);
+
+        try testing.expect((try q.next()) == null);
+        try tx.commit();
+    }
+}
