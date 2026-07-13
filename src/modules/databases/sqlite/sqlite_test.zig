@@ -1039,3 +1039,106 @@ test "exec with binary-safe binding (no NUL terminator in arg)" {
     defer row.deinit(alloc);
     try testing.expectEqual(@as(usize, 100), row.values[0].len);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Group 9: Transaction struct (begin / tx.exec / commit / rollback)
+// ═══════════════════════════════════════════════════════════════════════════
+
+test "begin returns a Transaction and commit persists writes" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        defer tx.rollback() catch {}; // no-op after successful commit
+        try tx.exec(alloc,
+            "INSERT INTO foo VALUES ('a'), ('b')", &.{});
+        try tx.commit();
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("2", cnt);
+}
+
+test "rollback after commit returns TransactionClosed (single-use enforcement)" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    var tx = try ctx.db.begin();
+    try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+    try tx.commit();
+
+    // After commit, the tx is single-use. Rollback returns
+    // Error.TransactionClosed (NOT a silent no-op — the mutex was
+    // released by commit, so a rollback would invoke SQL on the
+    // connection without holding the mutex, racing with other writers).
+    const result = tx.rollback();
+    try testing.expectError(sqlite_mod.Error.TransactionClosed, result);
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("1", cnt);
+}
+
+test "defer rollback after error discards all writes (atomic)" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        defer tx.rollback() catch {}; // fires if commit() not reached
+        try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+        // Force a failure mid-tx by trying to violate the PK constraint.
+        const result = tx.exec(alloc,
+            "INSERT INTO foo VALUES ('a')", &.{});
+        try testing.expectError(sqlite_mod.Error.ExecuteFailed, result);
+        // No commit() reached — defer fires, ROLLBACK issued, 'a' is gone.
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("0", cnt);
+}
+
+test "explicit rollback discards writes" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        try tx.exec(alloc, "INSERT INTO foo VALUES ('a'), ('b')", &.{});
+        try tx.rollback();
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("0", cnt);
+}
+
+test "begin before init returns DatabaseNotFound" {
+    var db: SqliteBackend = .{};
+    defer db.deinit();
+    const result = db.begin();
+    try testing.expectError(sqlite_mod.Error.DatabaseNotFound, result);
+}
