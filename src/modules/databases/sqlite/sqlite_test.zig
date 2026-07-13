@@ -8,6 +8,19 @@
 //!   - `changes()` — row count of last write
 //!   - `deinit()` — close DB
 //!
+//! Transactions:
+//!
+//!   - `begin()` → `Transaction` (top-level tx)
+//!   - `savepoint()` → `Transaction` (nested, requires an outer tx)
+//!   - `tx.exec / tx.query / tx.queryRow` — same shape as backend.*
+//!   - `tx.commit()` / `tx.rollback()` — return Error.TransactionClosed after completion
+//!
+//!   The backend mutex is held for the entire tx lifetime, so concurrent
+//!   `exec`/`query` calls from other threads block until `commit()` or
+//!   `rollback()` releases it. Do NOT call `db.exec` / `db.query` from
+//!   within the same thread that holds a tx — `std.Io.Mutex` is not
+//!   reentrant. Use the `tx.*` variants instead.
+//!
 //! Tests follow the in-memory `:memory:` + `std.Io.Threaded` pattern from
 //! `routines/model_test.zig`. Each test gets a fresh DB via `setupDb()`.
 //!
@@ -20,6 +33,9 @@
 //!   - `changes()` accounting across INSERT/UPDATE/DELETE
 //!   - error variant contract for `init` failures (DatabaseNotFound,
 //!     PermissionDenied) — file-system level
+//!   - tx commit / rollback / defer-rollback TransactionClosed enforcement
+//!   - nested savepoints (depth 2 / 3)
+//!   - backend.deinit() during open tx (use-after-free guard)
 
 const std = @import("std");
 const testing = std.testing;
@@ -1447,4 +1463,82 @@ test "defer tx.rollback() catch |err| switch (TransactionClosed => {}) is the sa
         "SELECT COUNT(*) FROM foo", &.{})) orelse "";
     defer alloc.free(cnt);
     try testing.expectEqualStrings("1", cnt);
+}
+test "integration: atomic INSERT-then-UPDATE (mirrors insert_llm_histories pattern)" {
+    // This test mirrors the canonical tx use case in nalar:
+    // inserting a row that references a parent, then updating the
+    // parent's metadata in the same operation. Without tx, a crash
+    // between the INSERT and UPDATE leaves the parent row's metadata
+    // stale relative to the inserted child.
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    cwd TEXT NOT NULL DEFAULT ''
+        \\)
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    response_content TEXT NOT NULL DEFAULT ''
+        \\)
+    , &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO sessions VALUES ('s1', '/old/path')", &.{});
+
+    // Atomic INSERT into llm_history + UPDATE sessions.cwd.
+    {
+        var tx = try ctx.db.begin();
+        defer tx.rollback() catch {}; // safety net
+        try tx.exec(alloc,
+            "INSERT INTO llm_history VALUES ('m1', 's1', 'hello world')",
+            &.{});
+        try tx.exec(alloc,
+            "UPDATE sessions SET cwd = '/new/path' WHERE id = 's1'",
+            &.{});
+        try tx.commit();
+    }
+
+    // Both writes persisted.
+    const cwd = (try scalarText(alloc, &ctx.db,
+        "SELECT cwd FROM sessions WHERE id = 's1'", &.{})) orelse "";
+    defer alloc.free(cwd);
+    try testing.expectEqualStrings("/new/path", cwd);
+
+    const msg = (try scalarText(alloc, &ctx.db,
+        "SELECT response_content FROM llm_history WHERE id = 'm1'", &.{})) orelse "";
+    defer alloc.free(msg);
+    try testing.expectEqualStrings("hello world", msg);
+}
+
+test "integration: rollback of partial multi-statement leaves DB unchanged" {
+    // Force a failure mid-tx by violating a UNIQUE constraint. Verify
+    // the preceding INSERT was rolled back too — not just the failing one.
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE items (id TEXT PRIMARY KEY, label TEXT NOT NULL)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        defer tx.rollback() catch {};
+        try tx.exec(alloc, "INSERT INTO items VALUES ('a', 'first')", &.{});
+        try tx.exec(alloc, "INSERT INTO items VALUES ('b', 'second')", &.{});
+        // Force a failure: duplicate primary key.
+        const result = tx.exec(alloc,
+            "INSERT INTO items VALUES ('a', 'duplicate')", &.{});
+        try testing.expectError(sqlite_mod.Error.ExecuteFailed, result);
+        // Defer fires → ROLLBACK → 'a' and 'b' both gone.
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM items", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("0", cnt);
 }

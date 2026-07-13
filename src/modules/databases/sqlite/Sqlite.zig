@@ -1,3 +1,14 @@
+//! SQLite backend used everywhere nalar needs a database. Provides
+//! basic `exec` / `query` / `queryRow` for single-statement operations
+//! and a `Transaction` RAII type for multi-statement atomic operations.
+//!
+//! See `sqlite_test.zig` (the canonical documentation of the public
+//! API surface) for usage patterns and test coverage.
+//!
+//! The `c` declarations are platform-scoped (Linux uses `@cImport` with
+//! the system sqlite3.h; macOS/Windows use manual extern declarations
+//! because the headers aren't on the default include path).
+
 const std = @import("std");
 const builtin = @import("builtin");
 
