@@ -72,6 +72,7 @@ test {
     _ = @import("get_session_list_test.zig");
     _ = @import("transform_llm_history_to_agent_messages_test.zig");
     _ = @import("on_event_sent_sanitize_test.zig");
+    _ = @import("on_event_sent_design_test.zig");
     _ = @import("gitignore_vendor_sqlite3_test.zig");
     _ = @import("../../modules/agent/tools/show_preview_test.zig");
     // _ = @import("extract_base64_image_urls_test.zig"); // DISABLED - 9 failing tests (investigation shows std.testing.expectEqualStrings has a bug with literal strings)
