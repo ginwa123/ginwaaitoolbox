@@ -55,6 +55,16 @@ pub const Error = error{
     RowNotFound,
     OutOfMemory,
     Canceled,
+    /// Returned by any Transaction method (exec/query/queryRow/commit/rollback)
+    /// called after the transaction has been completed. Indicates the tx
+    /// is single-use and must not be touched again. The mutex is no longer
+    /// held, so any further use would race with concurrent writers on the
+    /// same backend. The recommended defer pattern is:
+    ///   `defer tx.rollback() catch |err| switch (err) {
+    ///       error.TransactionClosed => {},
+    ///       else => return err,
+    ///   };`
+    TransactionClosed,
 };
 
 /// Cross-platform sqlite3 bindings.
@@ -149,10 +159,16 @@ pub const SqliteBackend = struct {
         _ = c.sqlite3_exec(db, "PRAGMA busy_timeout=5000;", null, null, null); // 5 second timeout
     }
 
-    pub fn exec(self: *SqliteBackend, allocator: std.mem.Allocator, sql: []const u8, argv: []const []const u8) Error!void {
+    /// Inner implementation: prepare + bind + step a single SQL statement.
+    /// Caller MUST hold the backend mutex. Used by both `exec` (with lock)
+    /// and `Transaction.exec` (without re-locking — the tx already holds it).
+    fn executeStatement(
+        self: *SqliteBackend,
+        allocator: std.mem.Allocator,
+        sql: []const u8,
+        argv: []const []const u8,
+    ) Error!void {
         _ = allocator;
-        try self.mutex.lock(self.io);
-        defer self.mutex.unlock(self.io);
         const db = self.db orelse return Error.DatabaseNotFound;
 
         // Empty SQL is a successful no-op. sqlite3_prepare_v2 with a
@@ -172,7 +188,7 @@ pub const SqliteBackend = struct {
         }
         if (rc != c.SQLITE_OK) {
             const err_msg = c.sqlite3_errmsg(db);
-            std.debug.print("sqlite3_prepare_v2 error: {s}\n", .{err_msg});
+            std.log.warn("sqlite3_prepare_v2 error: {s}", .{err_msg});
             return Error.PrepareFailed;
         }
 
@@ -185,7 +201,7 @@ pub const SqliteBackend = struct {
             }
             if (rc != c.SQLITE_OK) {
                 const err_msg = c.sqlite3_errmsg(db);
-                std.debug.print("sqlite3_bind_text error: {s}\n", .{err_msg});
+                std.log.warn("sqlite3_bind_text error: {s}", .{err_msg});
                 return Error.BindFailed;
             }
         }
@@ -198,10 +214,16 @@ pub const SqliteBackend = struct {
                 break;
             } else {
                 const err_msg = c.sqlite3_errmsg(db);
-                std.debug.print("sqlite3_step error: {s}\n", .{err_msg});
+                std.log.warn("sqlite3_step error: {s}", .{err_msg});
                 return Error.ExecuteFailed;
             }
         }
+    }
+
+    pub fn exec(self: *SqliteBackend, allocator: std.mem.Allocator, sql: []const u8, argv: []const []const u8) Error!void {
+        try self.mutex.lock(self.io);
+        defer self.mutex.unlock(self.io);
+        return executeStatement(self, allocator, sql, argv);
     }
 
     pub fn queryRow(self: *SqliteBackend, allocator: std.mem.Allocator, sql: []const u8, argv: []const []const u8) Error!Row {
