@@ -70,3 +70,6 @@ pub const onEventSendSessions = sse_on_event_send_sessions_mod.onEventSendSessio
 
 const update_session_name_mod = @import("update_session_name.zig");
 pub const updateSessionName = update_session_name_mod.updateSessionName;
+
+pub const parsing_mod = @import("parsing.zig");
+

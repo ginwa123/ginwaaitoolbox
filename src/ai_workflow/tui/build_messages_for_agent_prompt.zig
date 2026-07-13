@@ -7,7 +7,6 @@ const session_helpers = llm_history;
 const sqlite = tree1_mod.sqlite;
 const prompt = tree1_mod.prompt;
 const TUIHistory = @import("models.zig").TUIHistory;
-const transform_llm_history_to_agent_messages = @import("transform_llm_history_to_agent_messages.zig");
 const tool_models = tree1_mod.tool_models;
 const config_mod = tree1_mod.config;
 const http_client = tree1_mod.http_client;
@@ -140,7 +139,7 @@ pub fn buildMessages(
 
     try allMessages.append(allocator, systemMessage);
     for (historyMessages) |hist| {
-        const agentMsgs = try transform_llm_history_to_agent_messages.transform_llm_history_to_agent_message(allocator, hist);
+        const agentMsgs = try agentic_loop.parsing_mod.transformLLMHistoryToAgentMessage(allocator, hist);
         for (agentMsgs) |msg| {
             try allMessages.append(allocator, msg);
         }
@@ -924,7 +923,8 @@ pub fn BuildWorkspaceContext(
         }
 
         if (sib.truncated_tasks_count > 0) {
-            const footer = try std.fmt.allocPrint(allocator,
+            const footer = try std.fmt.allocPrint(
+                allocator,
                 "    … and {d} more task{s} under this item\n",
                 .{ sib.truncated_tasks_count, if (sib.truncated_tasks_count == 1) "" else "s" },
             );
@@ -934,7 +934,8 @@ pub fn BuildWorkspaceContext(
     }
 
     if (ctx.truncated_items_count > 0) {
-        const footer = try std.fmt.allocPrint(allocator,
+        const footer = try std.fmt.allocPrint(
+            allocator,
             "\n… and {d} more item{s} in this workspace (cap: {d} shown).\n",
             .{ ctx.truncated_items_count, if (ctx.truncated_items_count == 1) "" else "s", llm_history.MAX_SIBLING_ITEMS },
         );
@@ -1102,7 +1103,8 @@ pub fn BuildKanbanStatusPrompt(
             }
         }
         if (cols.len > MAX_KANBAN_COLUMNS) {
-            const footer = try std.fmt.allocPrint(allocator,
+            const footer = try std.fmt.allocPrint(
+                allocator,
                 "… and {d} more columns (cap: {d} shown).\n",
                 .{ cols.len - MAX_KANBAN_COLUMNS, MAX_KANBAN_COLUMNS },
             );

@@ -27,4 +27,6 @@ test {
     _ = @import("get_llm_histories.zig");
     _ = @import("sse_send_event_worker.zig");
     _ = @import("sse_on_event_send_llm_history.zig");
+    _ = @import("parsing.zig");
+    _ = @import("parsing_test.zig");
 }

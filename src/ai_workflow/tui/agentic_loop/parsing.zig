@@ -1,11 +1,11 @@
 const std = @import("std");
-const TUIHistory = @import("models.zig").TUIHistory;
-const tree1_mod = @import("nalarcore");
-const agent = tree1_mod.agent;
+const mod = @import("mod.zig");
+const nalarcore = mod.nalarcore;
+const LLMHistory = mod.LLMHistory;
+const agent = nalarcore.agent;
 const json = std.json;
-const agentic_loop = @import("agentic_loop/mod.zig");
 
-pub fn transform_llm_history_to_agent_message(allocator: std.mem.Allocator, message: agentic_loop.LLMHistory) ![]agent.AgentMessage {
+pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: LLMHistory) ![]agent.AgentMessage {
     var messages: std.ArrayList(agent.AgentMessage) = .empty;
 
     const role = agent.Role.from_str(message.role) orelse .assistant;
