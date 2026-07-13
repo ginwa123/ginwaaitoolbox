@@ -67,6 +67,9 @@ test {
     _ = @import("http_handlers/design_elements_create_test.zig");
     _ = @import("http_handlers/design_elements_update_test.zig");
     _ = @import("http_handlers/design_elements_delete_test.zig");
+    _ = @import("http_handlers/design_elements_html_get_test.zig");
+    _ = @import("http_handlers/design_elements_html_update_test.zig");
+    _ = @import("http_handlers/design_elements_geometry_update_test.zig");
     _ = @import("http_handlers/kanban_copy_spec_test.zig");
     _ = @import("http_handlers/tasks_move_test.zig");
     _ = @import("http_handlers/tasks_create_kanban_test.zig");
