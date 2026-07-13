@@ -47,6 +47,7 @@ test {
     _ = @import("migration_054_test.zig");
     _ = @import("migration_057_test.zig");
     _ = @import("design_io_test.zig");
+    _ = @import("design_model_test.zig");
     _ = @import("kanban_model_test.zig");
     _ = @import("kanban_model_test_description.zig");
     _ = @import("kanban_copy_spec_test.zig");
