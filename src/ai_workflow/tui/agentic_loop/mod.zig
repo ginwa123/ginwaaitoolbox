@@ -63,3 +63,10 @@ pub const callCompactAgent = compaction_mod.callCompactAgent;
 
 const is_session_kanban_mod = @import("is_session_kanban.zig");
 pub const isSessionKanban = is_session_kanban_mod.isSessionKanban;
+
+const sse_on_event_send_sessions_mod = @import("sse_on_event_send_session.zig");
+pub const OnEventInputSessions = sse_on_event_send_sessions_mod.OnEventInputSessions;
+pub const onEventSendSessions = sse_on_event_send_sessions_mod.onEventSendSessions;
+
+const update_session_name_mod = @import("update_session_name.zig");
+pub const updateSessionName = update_session_name_mod.updateSessionName;

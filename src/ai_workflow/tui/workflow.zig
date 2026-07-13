@@ -435,11 +435,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // Save the diagnostic as a user message so the AI agent sees it on
             // its next turn. Mirror the pattern the outer catch uses for generic
             // errors so the message shape is consistent.
-            const session_skills_bail = llm_history.getSessionSkills(allocator, db, copy_session_id) catch null;
-            defer if (session_skills_bail) |s| for (s) |*skill| {
-                allocator.free(skill.skill_name);
-                allocator.free(skill.content);
-            };
 
             try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
                 .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
@@ -501,7 +496,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         };
         loop_counter += 1;
         if (loop_counter == 1 and is_task_kanban == false) {
-            generateSessionNameNew(db_messages, allocator, effective_api_key, effective_model, effective_base_url, copy_session_id, logger, io, db);
+            generateSessionNameNew(db_messages, allocator, effective_api_key, effective_model, effective_base_url, copy_session_id, logger, io, db, event_bus);
         }
 
         const initialMessages = try build_msg_prompt.buildMessages(allocator, io, db, copy_cwd, copy_session_id, copy_parent_session_id, db_messages, merged_tools, copy_inherited_context, sub_agent_system_prompt);
@@ -616,6 +611,7 @@ fn generateSessionNameNew(
     logger: *logger_mod.Logger,
     io: std.Io,
     db: *sqlite.SqliteBackend,
+    event_bus: *event_bus_mod.EventBus,
 ) void {
     // Find the first user message from db_messages (TUIHistory)
     var first_user_message: ?[]const u8 = null;
@@ -671,12 +667,11 @@ fn generateSessionNameNew(
         }
 
         // Update session name in database
-        llm_history.updateSessionName(allocator, db, session_id, stripped_content) catch {
+        agentic_loop_mod.updateSessionName(allocator, db, session_id, stripped_content, event_bus) catch {
             logger.errFmt("[SESSION NAME] Failed to update session name: {s}", .{stripped_content});
             if (needs_free) allocator.free(stripped_content);
             return;
         };
-
         llm_history.updateTaskName(allocator, db, session_id, stripped_content) catch {
             logger.errFmt("[SESSION NAME] Failed to update task name: {s}", .{stripped_content});
             if (needs_free) allocator.free(stripped_content);

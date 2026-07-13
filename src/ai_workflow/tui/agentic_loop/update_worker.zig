@@ -8,7 +8,6 @@ const onEventSendWorkers = mod.onEventSendWorkers;
 const event_bus_mod = nalarcore.event_bus;
 const testing = std.testing;
 
-
 pub const UpsertWorkerInput = struct {
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -233,9 +232,7 @@ test "updateWorker ON CONFLICT also updates the session row's updated_at" {
     defer s.threaded.deinit();
 
     // Seed an old sessions row.
-    try s.db.exec(testing.allocator,
-        "INSERT INTO sessions (id, name, status, updated_at) VALUES ('s_old', 'old', 'active', '2020-01-01 00:00:00')",
-        &.{});
+    try s.db.exec(testing.allocator, "INSERT INTO sessions (id, name, status, updated_at) VALUES ('s_old', 'old', 'active', '2020-01-01 00:00:00')", &.{});
 
     try updateWorker(.{ .allocator = testing.allocator, .db = &s.db, .logger = null, .worker_id = "w_old", .session_id = "s_old", .working_directory = "/x", .event_bus = null, .is_emit_sse = false });
 
@@ -252,9 +249,7 @@ test "updateWorker updates workspace_item_tasks.updated_at when a matching task 
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try s.db.exec(testing.allocator,
-        "INSERT INTO workspace_item_tasks (id, updated_at) VALUES ('s_task', 'epoch')",
-        &.{});
+    try s.db.exec(testing.allocator, "INSERT INTO workspace_item_tasks (id, updated_at) VALUES ('s_task', 'epoch')", &.{});
 
     try updateWorker(.{ .allocator = testing.allocator, .db = &s.db, .logger = null, .worker_id = "w_t", .session_id = "s_task", .working_directory = "/tmp", .event_bus = null, .is_emit_sse = false });
 
@@ -310,3 +305,4 @@ test "updateWorker writes a non-empty last_activity_description (defensive: defa
     // The impl passes '' as the default — document that.
     try testing.expectEqualStrings("", row.values[0]);
 }
+

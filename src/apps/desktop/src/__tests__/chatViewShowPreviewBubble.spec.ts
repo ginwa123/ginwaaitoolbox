@@ -263,4 +263,86 @@ describe('ChatView show_preview bubble click', () => {
     await nextTick()
     expect(vm.previewToShowId).toBeNull()
   })
+
+  // Regression test for the "auto-open is opt-in" change (2026-07-12):
+  // The preview side panel used to auto-open whenever a NEW
+  // `show_preview` tool message arrived in the chat. This was
+  // disruptive — the panel slid open mid-message and crowded the
+  // chat. The new behavior keeps the panel COLLAPSED by default;
+  // it only opens when the user explicitly clicks a `show_preview`
+  // bubble (via `openPreviewForMessage`). This test verifies that
+  // injecting N previews back-to-back leaves the panel in the
+  // collapsed state throughout.
+  it('does NOT auto-open the preview side panel when new show_preview messages arrive', async () => {
+    installChatViewMocks()
+    wrapper = await mountChatView('session_bubble_noauto')
+
+    const vm = wrapper!.vm as unknown as {
+      messages: unknown[]
+      previewPanelCollapsed: boolean
+      previewPanelDismissed: boolean
+    }
+
+    // Initial state: panel defaults to COLLAPSED (was the bug — used
+    // to default to expanded).
+    expect(vm.previewPanelCollapsed).toBe(true)
+    expect(vm.previewPanelDismissed).toBe(false)
+
+    // Inject the first show_preview message — panel still collapsed.
+    vm.messages = [makeShowPreviewMessage('msg-noauto-1')]
+    await nextTick()
+    await nextTick()
+    expect(vm.previewPanelCollapsed).toBe(true)
+
+    // Inject a second show_preview message — panel still collapsed
+    // (the watcher that used to flip it to false is gone).
+    vm.messages.push(makeShowPreviewMessage('msg-noauto-2'))
+    await nextTick()
+    await nextTick()
+    expect(vm.previewPanelCollapsed).toBe(true)
+
+    // Inject a third — same. Verifies the watcher does NOT trigger
+    // even when the array length grows multiple times in a session.
+    vm.messages.push(makeShowPreviewMessage('msg-noauto-3'))
+    await nextTick()
+    await nextTick()
+    expect(vm.previewPanelCollapsed).toBe(true)
+  })
+
+  // Regression test for the "user click still opens" half of the
+  // opt-in policy (companion to the noauto test above). The
+  // `openPreviewForMessage` click handler is the ONLY path that
+  // un-collapses the panel; new previews arriving in the chat
+  // don't, but the user can still pop the panel open by clicking
+  // a `show_preview` bubble. This test verifies that.
+  it('still opens the panel when the user explicitly clicks a show_preview bubble', async () => {
+    installChatViewMocks()
+    wrapper = await mountChatView('session_bubble_clickopens')
+
+    const vm = wrapper!.vm as unknown as {
+      messages: unknown[]
+      previewPanelCollapsed: boolean
+      previewPanelDismissed: boolean
+      previewToShowId: string | null
+    }
+
+    // Inject a show_preview message. The panel starts collapsed
+    // (verified by the test above); the click handler is the only
+    // way to open it.
+    vm.messages = [makeShowPreviewMessage('msg-clickopens-1')]
+    await nextTick()
+    await nextTick()
+    expect(vm.previewPanelCollapsed).toBe(true)
+
+    // User clicks the bubble — panel un-collapses and focusId
+    // is set to the clicked message id.
+    const card = wrapper!.find('[data-testid="show-preview-card-msg-clickopens-1"]')
+    expect(card.exists()).toBe(true)
+    await card.trigger('click')
+    await nextTick()
+
+    expect(vm.previewPanelCollapsed).toBe(false)
+    expect(vm.previewPanelDismissed).toBe(false)
+    expect(vm.previewToShowId).toBe('msg-clickopens-1')
+  })
 })
