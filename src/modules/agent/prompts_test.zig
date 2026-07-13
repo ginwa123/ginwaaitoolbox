@@ -50,8 +50,7 @@ test "build_agent_prompt with no environment: no Global Knowledge section" {
         null,
         "",
         "",
-        "",
-    );
+        "", "");
     defer alloc.free(prompt);
 
     // Static GlobalMemorySystem section is present (gated on list_memory tool)
@@ -105,8 +104,7 @@ test "build_agent_prompt loads memory files into Global Knowledge section" {
         &env,
         "",
         "",
-        "",
-    );
+        "", "");
     defer alloc.free(prompt);
 
     // The Global Knowledge section is present
@@ -145,8 +143,7 @@ test "build_agent_prompt: empty memories dir, no Global Knowledge section" {
         &env,
         "",
         "",
-        "",
-    );
+        "", "");
     defer alloc.free(prompt);
 
     // No memories folder → no dynamic Global Knowledge section
@@ -233,8 +230,7 @@ test "build_agent_prompt lists global and local skills in Available Skills secti
         &env,
         "",
         "",
-        "",
-    );
+        "", "");
     defer alloc.free(prompt);
 
     // Section header is present
@@ -320,8 +316,7 @@ test "build_agent_prompt Available Skills section includes absolute file path an
         &env,
         "",
         "",
-        "",
-    );
+        "", "");
     defer alloc.free(prompt);
 
     // === Bullet list must include the absolute path of each skill ===
@@ -395,8 +390,7 @@ test "build_agent_prompt omits Available Skills section when list_skills tool is
         &env,
         "",
         "",
-        "",
-    );
+        "", "");
     defer alloc.free(prompt);
 
     try std.testing.expect(!contains(prompt, "## Available Skills"));
@@ -425,8 +419,7 @@ test "build_agent_prompt silently skips Available Skills when env is null" {
         null, // ← env is null
         "",
         "",
-        "",
-    );
+        "", "");
     defer alloc.free(prompt);
 
     // No section emitted; no error thrown
@@ -476,8 +469,7 @@ test "build_agent_prompt injects Local Knowledge section from <cwd>/.nalar/memor
         null, // env is null — only local knowledge should be present
         "",
         "",
-        "",
-    );
+        "", "");
     defer alloc.free(prompt);
 
     // The section header is present
@@ -559,8 +551,7 @@ test "build_agent_prompt renders Local and Global Knowledge together when both e
         &env,
         "",
         "",
-        "",
-    );
+        "", "");
     defer alloc.free(prompt);
 
     // Both sections are present
@@ -606,8 +597,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories does n
         null,
         "",
         "",
-        "",
-    );
+        "", "");
     defer alloc.free(prompt);
 
     // No .nalar/memories → no Local Knowledge section
@@ -634,8 +624,7 @@ test "build_agent_prompt omits Local Knowledge when cwd is empty" {
         null,
         "",
         "",
-        "",
-    );
+        "", "");
     defer alloc.free(prompt);
 
     // No cwd → no Local Knowledge section
@@ -677,8 +666,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories has no
         null,
         "",
         "",
-        "",
-    );
+        "", "");
     defer alloc.free(prompt);
 
     // Dir exists but has no .md files → no section
@@ -814,8 +802,7 @@ test "build_agent_prompt with sub_agents_listing: section is rendered when non-e
         null,
         sub_agents_listing,
         "",
-        "",
-    );
+        "", "");
     defer alloc.free(prompt);
 
     try std.testing.expect(contains(prompt, "## Available Sub-Agents"));
@@ -839,8 +826,9 @@ test "build_agent_prompt with sub_agents_listing: section is omitted when empty"
         "",
         null,
         "", // empty sub_agents_listing
-        "",
-        "",
+        "", // empty workspaceContext
+        "", // empty kanbanStatusContent
+        "", // empty designStatusContent
     );
     defer alloc.free(prompt);
 
@@ -897,8 +885,7 @@ test "build_agent_prompt renders Kanban Status Tracking when section is non-empt
         null,
         "",
         "",
-        kanban_block,
-    );
+        kanban_block, "");
     defer alloc.free(prompt);
 
     try std.testing.expect(contains(prompt, "## Kanban Status Tracking"));
@@ -927,8 +914,9 @@ test "build_agent_prompt omits Kanban Status Tracking when section is empty" {
         "",
         null,
         "",
-        "",
+        "", // empty workspaceContext
         "", // empty kanbanStatusContent
+        "", // empty designStatusContent
     );
     defer alloc.free(prompt);
 
@@ -1470,8 +1458,7 @@ test "build_agent_prompt renders Workspace Context when section is non-empty" {
         null,
         "",
         workspaceContext,
-        "",
-    );
+        "", "");
     defer alloc.free(prompt);
 
     // Section header is present.
@@ -1523,7 +1510,8 @@ test "build_agent_prompt omits Workspace Context when section is empty" {
         null,
         "",
         "", // empty workspaceContext
-        "",
+        "", // empty kanbanStatusContent
+        "", // empty designStatusContent
     );
     defer alloc.free(prompt);
 
