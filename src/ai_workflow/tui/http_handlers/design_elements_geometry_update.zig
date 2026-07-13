@@ -56,6 +56,10 @@ pub const DesignElementGeometryUpdateError = error{
     ElementNotVisible,
     /// `allocator.dupe` failed while building the output struct.
     OutOfMemory,
+    // Note: `FileWriteFailed` is NOT in this set — geometry updates
+    // never rewrite the HTML file, so the model layer cannot surface
+    // that error here. The spec's "Error mapping" section for
+    // geometry does not list FileWriteFailed either.
 };
 
 /// Output of the update-geometry use-case.
@@ -94,12 +98,11 @@ fn useCase(
         .rotation = rotation,
     }) catch |err| switch (err) {
         error.ElementNotFound => return error.ElementNotFound,
-        error.FileWriteFailed => return error.FileWriteFailed,
         else => return error.DbError,
     };
     defer allocator.free(updated_id);
 
-    var element = design_model.getElement(allocator, db, updated_id) catch return error.ElementNotVisible;
+    const element = design_model.getElement(allocator, db, updated_id) catch return error.ElementNotVisible;
     errdefer design_model.freeElement(allocator, element);
 
     return .{ .element = element };

@@ -383,6 +383,27 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/reorder_pinned", ai_mod.http_handlers.tasksReorderPinnedHandler);
     try gs.router.get("/api/routines", ai_mod.http_handlers.routinesListHandler);
 
+    // Design workspace-item endpoints (item_type='design') — v6
+    //   GET    /design/pages                                — list pages
+    //   POST   /design/pages                                — create page
+    //   GET    /design/pages/:pid                           — get page + elements
+    //   POST   /design/pages/:pid/elements                  — add element
+    //   PUT    /design/pages/:pid/elements/:eid             — update element
+    //   DELETE /design/pages/:pid/elements/:eid             — delete element
+    //   GET    /design/pages/:pid/elements/:eid/html        — get HTML body
+    //   PATCH  /design/pages/:pid/elements/:eid/html        — update HTML body
+    //   PATCH  /design/pages/:pid/elements/:eid/geometry    — update geometry
+    // See docs/superpowers/plans/2026-07-08-design-mode-redesign.md (Chunk 3.5).
+    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/design/pages", ai_mod.http_handlers.designPagesListHandler);
+    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages", ai_mod.http_handlers.designPagesCreateHandler);
+    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id", ai_mod.http_handlers.designPagesGetHandler);
+    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements", ai_mod.http_handlers.designElementsCreateHandler);
+    try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id", ai_mod.http_handlers.designElementsUpdateHandler);
+    try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id", ai_mod.http_handlers.designElementsDeleteHandler);
+    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/html", ai_mod.http_handlers.designElementsHtmlGetHandler);
+    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/html", ai_mod.http_handlers.designElementsHtmlUpdateHandler);
+    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/geometry", ai_mod.http_handlers.designElementsGeometryUpdateHandler);
+
     // testing debug
     try gs.router.post("/test/shutdown", ai_mod.http_handlers.shutdownHandler);
     try gs.router.get("/test/sessions/client_ids", ai_mod.http_handlers.sessionToClientIdsHandler);

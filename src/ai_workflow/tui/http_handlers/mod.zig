@@ -124,6 +124,20 @@ pub const gitPrCreateHandler = @import("git_pr_create.zig").gitPrCreateHandler;
 // Queue messages handlers
 pub const queueMessagesGetHandler = @import("queue_messages_get.zig").queueMessagesGetHandler;
 
+// Design-mode HTTP handlers (item_type='design') — v6 of the
+// design-mode redesign. See
+// docs/superpowers/plans/2026-07-08-design-mode-redesign.md
+// (Chunk 3) for the full route table.
+pub const designPagesListHandler = @import("design_pages_list.zig").designPagesListHandler;
+pub const designPagesCreateHandler = @import("design_pages_create.zig").designPagesCreateHandler;
+pub const designPagesGetHandler = @import("design_pages_get.zig").designPagesGetHandler;
+pub const designElementsCreateHandler = @import("design_elements_create.zig").designElementsCreateHandler;
+pub const designElementsUpdateHandler = @import("design_elements_update.zig").designElementsUpdateHandler;
+pub const designElementsDeleteHandler = @import("design_elements_delete.zig").designElementsDeleteHandler;
+pub const designElementsHtmlGetHandler = @import("design_elements_html_get.zig").designElementsHtmlGetHandler;
+pub const designElementsHtmlUpdateHandler = @import("design_elements_html_update.zig").designElementsHtmlUpdateHandler;
+pub const designElementsGeometryUpdateHandler = @import("design_elements_geometry_update.zig").designElementsGeometryUpdateHandler;
+
 // Session to client IDs monitoring
 pub const sessionToClientIdsHandler = @import("session_to_client_ids.zig").sessionToClientIdsHandler;
 
