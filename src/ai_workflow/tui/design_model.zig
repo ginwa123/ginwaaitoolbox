@@ -33,6 +33,7 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const helpers = nalarcore.helpers;
 const design_io = @import("design_io.zig");
+const on_event_sent_design = @import("on_event_sent_design.zig");
 
 /// Generate a unique page id of the form `page_<unix_nanoseconds>`.
 /// Same approach as `kanban_model.generateColumnId` (a process-global
@@ -368,11 +369,14 @@ pub fn addElement(
 ) anyerror![]u8 {
     if (input.name.len == 0) return error.BadName;
 
-    // 1. Look up parent page via JOIN.
-    const Lookup = struct { item_id: []u8, page_name: []u8, item_path: []u8 };
+    // 1. Look up parent page via JOIN. Also SELECT `wi.workspace_id`
+    //    so we can emit a `design_element_created` SSE event with the
+    //    full (workspace_id, item_id, page_id, element_id) context
+    //    — the frontend listener filters events by all four ids.
+    const Lookup = struct { workspace_id: []u8, item_id: []u8, page_name: []u8, item_path: []u8 };
     const lookup: Lookup = blk: {
         var q = try db.query(allocator,
-            \\SELECT dp.workspace_item_id, dp.name, wi.path
+            \\SELECT wi.workspace_id, dp.workspace_item_id, dp.name, wi.path
             \\FROM design_pages dp
             \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
             \\WHERE dp.id = ?
@@ -381,11 +385,13 @@ pub fn addElement(
         const row = (try q.next()) orelse return error.PageNotFound;
         defer row.deinit(allocator);
         break :blk .{
-            .item_id = try allocator.dupe(u8, row.values[0]),
-            .page_name = try allocator.dupe(u8, row.values[1]),
-            .item_path = try allocator.dupe(u8, row.values[2]),
+            .workspace_id = try allocator.dupe(u8, row.values[0]),
+            .item_id = try allocator.dupe(u8, row.values[1]),
+            .page_name = try allocator.dupe(u8, row.values[2]),
+            .item_path = try allocator.dupe(u8, row.values[3]),
         };
     };
+    defer allocator.free(lookup.workspace_id);
     defer allocator.free(lookup.item_id);
     defer allocator.free(lookup.page_name);
     defer allocator.free(lookup.item_path);
@@ -450,6 +456,21 @@ pub fn addElement(
         elem_type_str, rotation_str, input.fill, corner_radius_str, opacity_str,
     });
 
+    // Emit SSE event AFTER the SQL INSERT succeeded. Best-effort: if
+    // the event_bus is not initialized (e.g. in unit tests without a
+    // GinwaServer singleton) or the JSON serialization fails, the
+    // caller still gets the new element_id — SSE is a hint, not a
+    // hard contract. The lookup slices (workspace_id, item_id) are
+    // still alive at this point; the function-level defers haven't
+    // fired yet.
+    on_event_sent_design.onEventSendDesignElementCreated(allocator, .{
+        .action = "created",
+        .workspace_id = lookup.workspace_id,
+        .item_id = lookup.item_id,
+        .page_id = input.page_id,
+        .element_id = id,
+    }) catch {};
+
     return allocator.dupe(u8, id);
 }
 
@@ -506,6 +527,38 @@ pub fn updateElement(
     db: *sqlite.SqliteBackend,
     input: UpdateElementInput,
 ) anyerror![]u8 {
+    // 0. Pre-lookup: fetch (page_id, workspace_id, item_id) for the
+    //    element so we can emit a `design_element_updated` SSE
+    //    event with the full id context (after the SQL UPDATE
+    //    succeeds). Returns `ElementNotFound` if no such row.
+    //    The JOIN chains design_page_elements → design_pages →
+    //    workspace_items.
+    const ElementContext = struct {
+        page_id: []u8,
+        workspace_id: []u8,
+        item_id: []u8,
+    };
+    const ctx: ElementContext = blk: {
+        var q = try db.query(allocator,
+            \\SELECT de.page_id, wi.workspace_id, dp.workspace_item_id
+            \\FROM design_page_elements de
+            \\JOIN design_pages dp ON dp.id = de.page_id
+            \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
+            \\WHERE de.id = ?
+        , &.{input.element_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.ElementNotFound;
+        defer row.deinit(allocator);
+        break :blk .{
+            .page_id = try allocator.dupe(u8, row.values[0]),
+            .workspace_id = try allocator.dupe(u8, row.values[1]),
+            .item_id = try allocator.dupe(u8, row.values[2]),
+        };
+    };
+    defer allocator.free(ctx.page_id);
+    defer allocator.free(ctx.workspace_id);
+    defer allocator.free(ctx.item_id);
+
     // Build dynamic SET clause + argv.
     var sets: std.ArrayList([]const u8) = .empty;
     defer sets.deinit(allocator);
@@ -659,6 +712,21 @@ pub fn updateElement(
     pos += where_clause.len;
 
     try db.exec(allocator, sql_buf[0..pos], args.items);
+
+    // Emit SSE event AFTER the SQL UPDATE succeeded and the SQL
+    // actually changed at least one user-provided column. Best-effort:
+    // if the event_bus is not initialized or the JSON serialization
+    // fails, the caller still gets the element_id — SSE is a hint,
+    // not a hard contract. The `ctx` slices are still alive at this
+    // point; the function-level defers haven't fired.
+    on_event_sent_design.onEventSendDesignElementUpdated(allocator, .{
+        .action = "updated",
+        .workspace_id = ctx.workspace_id,
+        .item_id = ctx.item_id,
+        .page_id = ctx.page_id,
+        .element_id = input.element_id,
+    }) catch {};
+
     return allocator.dupe(u8, input.element_id);
 }
 
@@ -963,17 +1031,39 @@ pub fn deleteElement(
     db: *sqlite.SqliteBackend,
     element_id: []const u8,
 ) anyerror!bool {
-    // Look up file_path BEFORE delete.
-    const file_path = blk: {
+    // Look up file_path + workspace_id + item_id + page_id BEFORE
+    // delete so we can both unlink the file and emit a
+    // `design_element_deleted` SSE event with the full id context.
+    // Single JOIN query that returns all four pieces of context.
+    const Lookup = struct {
+        file_path: []u8,
+        page_id: []u8,
+        workspace_id: []u8,
+        item_id: []u8,
+    };
+    const lookup: Lookup = blk: {
         var q = try db.query(allocator,
-            "SELECT de.file_path FROM design_page_elements de WHERE de.id = ?",
-            &.{element_id});
+            \\SELECT de.file_path, de.page_id, wi.workspace_id,
+            \\       dp.workspace_item_id
+            \\FROM design_page_elements de
+            \\JOIN design_pages dp ON dp.id = de.page_id
+            \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
+            \\WHERE de.id = ?
+        , &.{element_id});
         defer q.deinit();
         const row = (try q.next()) orelse return false;
         defer row.deinit(allocator);
-        break :blk try allocator.dupe(u8, row.values[0]);
+        break :blk .{
+            .file_path = try allocator.dupe(u8, row.values[0]),
+            .page_id = try allocator.dupe(u8, row.values[1]),
+            .workspace_id = try allocator.dupe(u8, row.values[2]),
+            .item_id = try allocator.dupe(u8, row.values[3]),
+        };
     };
-    defer allocator.free(file_path);
+    defer allocator.free(lookup.file_path);
+    defer allocator.free(lookup.page_id);
+    defer allocator.free(lookup.workspace_id);
+    defer allocator.free(lookup.item_id);
 
     // Delete the row first.
     try db.exec(allocator,
@@ -982,9 +1072,22 @@ pub fn deleteElement(
 
     // Defer-pattern: unlink file AFTER SQL succeeded. Swallow errors
     // (the file may already be missing or read-only).
-    if (file_path.len > 0) {
-        design_io.deleteFileIfExists(allocator, file_path) catch {};
+    if (lookup.file_path.len > 0) {
+        design_io.deleteFileIfExists(allocator, lookup.file_path) catch {};
     }
+
+    // Emit SSE event AFTER the SQL DELETE succeeded. Best-effort: if
+    // the event_bus is not initialized or the JSON serialization
+    // fails, the caller still gets a successful return value — SSE
+    // is a hint, not a hard contract. The lookup slices are still
+    // alive at this point; the function-level defers haven't fired.
+    on_event_sent_design.onEventSendDesignElementDeleted(allocator, .{
+        .action = "deleted",
+        .workspace_id = lookup.workspace_id,
+        .item_id = lookup.item_id,
+        .page_id = lookup.page_id,
+        .element_id = element_id,
+    }) catch {};
     return true;
 }
 
