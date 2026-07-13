@@ -35,7 +35,7 @@ const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 
-const migration = @import("../migration.zig");
+const migration = nalarcore.migrations_mod.migration;
 const Migration044AddRoutines = migration.Migration044AddRoutines;
 
 const model = @import("model.zig");

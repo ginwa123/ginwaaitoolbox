@@ -1398,6 +1398,3 @@ pub fn registerAllMigrations(manager: *MigrationManager) !void {
     }
 }
 
-test {
-    _ = @import("migration_test.zig");
-}

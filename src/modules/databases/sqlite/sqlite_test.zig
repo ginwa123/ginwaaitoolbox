@@ -8,6 +8,52 @@
 //!   - `changes()` — row count of last write
 //!   - `deinit()` — close DB
 //!
+//! Transactions:
+//!
+//!   - `begin()` → `Transaction` (top-level tx)
+//!   - `savepoint()` → `Transaction` (nested, requires an outer tx)
+//!   - `tx.exec / tx.query / tx.queryRow` — same shape as backend.*
+//!   - `tx.commit()` / `tx.rollback()` — return Error.TransactionClosed after completion
+//!
+//!   The backend mutex is held for the entire tx lifetime, so concurrent
+//!   `exec`/`query` calls from other threads block until `commit()` or
+//!   `rollback()` releases it. Do NOT call `db.exec` / `db.query` from
+//!   within the same thread that holds a tx — `std.Io.Mutex` is not
+//!   reentrant. Use the `tx.*` variants instead.
+//!
+//! Usage example — recommended defer pattern vs. commit-at-bottom:
+//!
+//! ```zig
+//! // Recommended (single line, robust to early returns):
+//! var tx = try db.begin();
+//! defer tx.commitOrRollback() catch {};  // commits when scope exits
+//! try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+//! try tx.exec(alloc, "UPDATE foo SET x = ? WHERE id = ?", &.{"1", "a"});
+//! // No explicit commit() at the bottom — defer handles it.
+//!
+//! // Older style (commit at the bottom of the function):
+//! var tx = try db.begin();
+//! defer tx.rollback() catch |err| switch (err) {
+//!     error.TransactionClosed => {},   // already committed — safe no-op
+//!     else => return err,
+//! };
+//! try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+//! try tx.exec(alloc, "UPDATE foo SET x = ? WHERE id = ?", &.{"1", "a"});
+//! try tx.commit();  // Easy to forget when an early return is added later
+//! ```
+//!
+//! Why the defer-commitOrRollback pattern is preferred:
+//!   - One line instead of a 5-line switch.
+//!   - Robust to early `return` or `try` errors — defer always fires.
+//!   - The tx finalizes at exactly one predictable point (function exit),
+//!     regardless of which statement caused the early return.
+//!   - If the COMMIT SQL itself fails (rare: disk full, constraint
+//!     violation at commit time), `commitOrRollback` returns
+//!     `Error.ExecuteFailed` so the caller can handle it explicitly.
+//!   - The "commit in defer" shape makes the lifetime of the tx
+//!     visually obvious from the function body — readers don't need
+//!     to trace control flow to find the finalization point.
+//!
 //! Tests follow the in-memory `:memory:` + `std.Io.Threaded` pattern from
 //! `routines/model_test.zig`. Each test gets a fresh DB via `setupDb()`.
 //!
@@ -20,6 +66,9 @@
 //!   - `changes()` accounting across INSERT/UPDATE/DELETE
 //!   - error variant contract for `init` failures (DatabaseNotFound,
 //!     PermissionDenied) — file-system level
+//!   - tx commit / rollback / defer-rollback TransactionClosed enforcement
+//!   - nested savepoints (depth 2 / 3)
+//!   - backend.deinit() during open tx (use-after-free guard)
 
 const std = @import("std");
 const testing = std.testing;
@@ -1038,4 +1087,588 @@ test "exec with binary-safe binding (no NUL terminator in arg)" {
     const row = (try q.next()) orelse return error.ExpectedRow;
     defer row.deinit(alloc);
     try testing.expectEqual(@as(usize, 100), row.values[0].len);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Group 9: Transaction struct (begin / tx.exec / commit / rollback)
+// ═══════════════════════════════════════════════════════════════════════════
+
+test "begin returns a Transaction and commit persists writes" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        defer tx.rollback() catch {}; // no-op after successful commit
+        try tx.exec(alloc,
+            "INSERT INTO foo VALUES ('a'), ('b')", &.{});
+        try tx.commit();
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("2", cnt);
+}
+
+test "rollback after commit returns TransactionClosed (single-use enforcement)" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    var tx = try ctx.db.begin();
+    try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+    try tx.commit();
+
+    // After commit, the tx is single-use. Rollback returns
+    // Error.TransactionClosed (NOT a silent no-op — the mutex was
+    // released by commit, so a rollback would invoke SQL on the
+    // connection without holding the mutex, racing with other writers).
+    const result = tx.rollback();
+    try testing.expectError(sqlite_mod.Error.TransactionClosed, result);
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("1", cnt);
+}
+
+test "defer rollback after error discards all writes (atomic)" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        defer tx.rollback() catch {}; // fires if commit() not reached
+        try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+        // Force a failure mid-tx by trying to violate the PK constraint.
+        const result = tx.exec(alloc,
+            "INSERT INTO foo VALUES ('a')", &.{});
+        try testing.expectError(sqlite_mod.Error.ExecuteFailed, result);
+        // No commit() reached — defer fires, ROLLBACK issued, 'a' is gone.
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("0", cnt);
+}
+
+test "explicit rollback discards writes" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        try tx.exec(alloc, "INSERT INTO foo VALUES ('a'), ('b')", &.{});
+        try tx.rollback();
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("0", cnt);
+}
+
+test "begin before init returns DatabaseNotFound" {
+    var db: SqliteBackend = .{};
+    defer db.deinit();
+    const result = db.begin();
+    try testing.expectError(sqlite_mod.Error.DatabaseNotFound, result);
+}
+
+test "tx.queryRow sees uncommitted writes inside the same tx" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        defer tx.rollback() catch {};
+
+        try tx.exec(alloc, "INSERT INTO kv VALUES ('a', 'one')", &.{});
+
+        // Read it back inside the same tx — must see 'one', not NULL.
+        const row = try tx.queryRow(alloc,
+            "SELECT v FROM kv WHERE k = 'a'", &.{});
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("one", row.values[0]);
+
+        try tx.commit();
+    }
+}
+
+test "read-modify-write pattern is atomic across tx" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE counter (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)
+    , &.{});
+    try ctx.db.exec(alloc, "INSERT INTO counter VALUES (1, 0)", &.{});
+
+    // Simulate a read-modify-write: read n, increment, write back.
+    // Inside a tx, the read + write happen atomically with respect to
+    // other writers.
+    {
+        var tx = try ctx.db.begin();
+        defer tx.rollback() catch {};
+
+        const row = try tx.queryRow(alloc,
+            "SELECT n FROM counter WHERE id = 1", &.{});
+        defer row.deinit(alloc);
+        const n = try std.fmt.parseInt(i32, row.values[0], 10);
+        try testing.expectEqual(@as(i32, 0), n);
+
+        try tx.exec(alloc,
+            "UPDATE counter SET n = ? WHERE id = 1",
+            &.{ "1" });
+        try tx.commit();
+    }
+
+    // Verify the write persisted.
+    const row = try ctx.db.queryRow(alloc,
+        "SELECT n FROM counter WHERE id = 1", &.{});
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "tx.query returns Rows iterator (same shape as backend.query)" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE items (id TEXT PRIMARY KEY)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        defer tx.rollback() catch {};
+
+        try tx.exec(alloc, "INSERT INTO items VALUES ('a'), ('b'), ('c')", &.{});
+
+        var q = try tx.query(alloc,
+            "SELECT id FROM items ORDER BY id", &.{});
+        defer q.deinit();
+
+        const r1 = (try q.next()) orelse return error.ExpectedRow;
+        defer r1.deinit(alloc);
+        try testing.expectEqualStrings("a", r1.values[0]);
+
+        const r2 = (try q.next()) orelse return error.ExpectedRow;
+        defer r2.deinit(alloc);
+        try testing.expectEqualStrings("b", r2.values[0]);
+
+        const r3 = (try q.next()) orelse return error.ExpectedRow;
+        defer r3.deinit(alloc);
+        try testing.expectEqualStrings("c", r3.values[0]);
+
+        try testing.expect((try q.next()) == null);
+        try tx.commit();
+    }
+}
+
+test "savepoint commit persists inner writes, outer commits too" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE log (id TEXT PRIMARY KEY, msg TEXT NOT NULL)", &.{});
+
+    {
+        var outer = try ctx.db.begin();
+        defer outer.rollback() catch {};
+
+        try outer.exec(alloc, "INSERT INTO log VALUES ('1', 'outer')", &.{});
+
+        {
+            var inner = try ctx.db.savepoint();
+            defer inner.rollback() catch {};
+            try inner.exec(alloc, "INSERT INTO log VALUES ('2', 'inner')", &.{});
+            try inner.commit();
+        }
+
+        try outer.commit();
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM log", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("2", cnt);
+}
+
+test "savepoint rollback undoes only inner writes, outer still alive" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE log (id TEXT PRIMARY KEY, msg TEXT NOT NULL)", &.{});
+
+    {
+        var outer = try ctx.db.begin();
+        defer outer.rollback() catch {};
+
+        try outer.exec(alloc, "INSERT INTO log VALUES ('1', 'outer')", &.{});
+
+        {
+            var inner = try ctx.db.savepoint();
+            defer inner.rollback() catch {};
+            try inner.exec(alloc, "INSERT INTO log VALUES ('2', 'inner')", &.{});
+            try inner.rollback();
+            // 'inner' row gone, but the outer tx + 'outer' row still in flight.
+        }
+
+        try outer.exec(alloc, "INSERT INTO log VALUES ('3', 'outer2')", &.{});
+        try outer.commit();
+    }
+
+    // Expect only '1' (outer) and '3' (outer2) — '2' (inner) was rolled back.
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM log", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("2", cnt);
+
+    const msg1 = (try scalarText(alloc, &ctx.db,
+        "SELECT msg FROM log WHERE id = '2'", &.{})) orelse "";
+    defer if (msg1.len > 0) alloc.free(msg1);
+    try testing.expectEqualStrings("", msg1);
+}
+
+test "savepoint without outer tx returns ExecuteFailed" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+
+    // No begin() before savepoint() — should fail.
+    const result = ctx.db.savepoint();
+    try testing.expectError(sqlite_mod.Error.ExecuteFailed, result);
+}
+
+test "nested savepoints (depth 2 -> 3) commit and rollback correctly" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE log (id TEXT PRIMARY KEY, msg TEXT NOT NULL)", &.{});
+
+    {
+        var outer = try ctx.db.begin();
+        defer outer.rollback() catch {};
+
+        try outer.exec(alloc, "INSERT INTO log VALUES ('a', 'outer')", &.{});
+
+        {
+            var mid = try ctx.db.savepoint();
+            defer mid.rollback() catch {};
+            try mid.exec(alloc, "INSERT INTO log VALUES ('b', 'mid')", &.{});
+
+            {
+                var deep = try ctx.db.savepoint();
+                defer deep.rollback() catch {};
+                try deep.exec(alloc, "INSERT INTO log VALUES ('c', 'deep')", &.{});
+                try deep.commit(); // commit deep
+            }
+
+            // Roll back mid — this should undo 'b' and 'c'.
+            try mid.rollback();
+        }
+
+        try outer.commit();
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM log", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("1", cnt); // only 'a'
+}
+
+test "backend.deinit() while tx is open: tx.commit returns DatabaseNotFound" {
+    // This test verifies the use-after-free guard: if the caller
+    // closes the backend while a tx is in flight, commit() detects
+    // the closed state (db == null — set by Task 1.0's deinit fix)
+    // and returns DatabaseNotFound instead of dereferencing a freed
+    // pointer. Requires Task 1.0 (deinit nulls out self.db) to be in
+    // place — without it, the guard never fires.
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    var tx = try ctx.db.begin();
+    try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+
+    // Close the backend while tx is still in flight. The mutex is
+    // held by the tx; commit() must release it AND return DatabaseNotFound.
+    ctx.db.deinit();
+    const result = tx.commit();
+    try testing.expectError(sqlite_mod.Error.DatabaseNotFound, result);
+}
+
+test "backend.deinit() while tx is open: tx.rollback returns DatabaseNotFound" {
+    // Mirror of the commit test, for the rollback path.
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    var tx = try ctx.db.begin();
+    try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+
+    ctx.db.deinit();
+    const result = tx.rollback();
+    try testing.expectError(sqlite_mod.Error.DatabaseNotFound, result);
+}
+
+test "tx.commit after commit returns TransactionClosed (single-use enforcement)" {
+    // After a successful commit, the tx is single-use. Any further call
+    // returns Error.TransactionClosed to prevent UB (mutex is no longer
+    // held, so a tx.* call would race with concurrent writers).
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    var tx = try ctx.db.begin();
+    try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+    try tx.commit();
+
+    // Second commit → TransactionClosed.
+    try testing.expectError(sqlite_mod.Error.TransactionClosed, tx.commit());
+    // exec after commit → TransactionClosed.
+    try testing.expectError(sqlite_mod.Error.TransactionClosed, tx.exec(alloc, "INSERT INTO foo VALUES ('b')", &.{}));
+    // rollback after commit → TransactionClosed (use the switch idiom).
+    tx.rollback() catch |err| switch (err) {
+        error.TransactionClosed => {},
+        else => return err,
+    };
+}
+
+test "defer tx.rollback() catch |err| switch (TransactionClosed => {}) is the safe idiom" {
+    // The whole point of defer-rollback: if commit() already ran, the
+    // deferred rollback returns TransactionClosed and we swallow it.
+    // Otherwise it runs the actual rollback.
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        // Zig 0.16 forbids `return` from a `defer` expression, so the
+        // deferred rollback must swallow ALL errors. The only error
+        // expected here is TransactionClosed (commit() succeeded), so
+        // swallowing is the right behavior for this idiom.
+        defer tx.rollback() catch {};
+        try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+        try tx.commit();
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("1", cnt);
+}
+test "integration: atomic INSERT-then-UPDATE (mirrors insert_llm_histories pattern)" {
+    // This test mirrors the canonical tx use case in nalar:
+    // inserting a row that references a parent, then updating the
+    // parent's metadata in the same operation. Without tx, a crash
+    // between the INSERT and UPDATE leaves the parent row's metadata
+    // stale relative to the inserted child.
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    cwd TEXT NOT NULL DEFAULT ''
+        \\)
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    response_content TEXT NOT NULL DEFAULT ''
+        \\)
+    , &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO sessions VALUES ('s1', '/old/path')", &.{});
+
+    // Atomic INSERT into llm_history + UPDATE sessions.cwd.
+    {
+        var tx = try ctx.db.begin();
+        defer tx.rollback() catch {}; // safety net
+        try tx.exec(alloc,
+            "INSERT INTO llm_history VALUES ('m1', 's1', 'hello world')",
+            &.{});
+        try tx.exec(alloc,
+            "UPDATE sessions SET cwd = '/new/path' WHERE id = 's1'",
+            &.{});
+        try tx.commit();
+    }
+
+    // Both writes persisted.
+    const cwd = (try scalarText(alloc, &ctx.db,
+        "SELECT cwd FROM sessions WHERE id = 's1'", &.{})) orelse "";
+    defer alloc.free(cwd);
+    try testing.expectEqualStrings("/new/path", cwd);
+
+    const msg = (try scalarText(alloc, &ctx.db,
+        "SELECT response_content FROM llm_history WHERE id = 'm1'", &.{})) orelse "";
+    defer alloc.free(msg);
+    try testing.expectEqualStrings("hello world", msg);
+}
+
+test "integration: rollback of partial multi-statement leaves DB unchanged" {
+    // Force a failure mid-tx by violating a UNIQUE constraint. Verify
+    // the preceding INSERT was rolled back too — not just the failing one.
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE items (id TEXT PRIMARY KEY, label TEXT NOT NULL)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        defer tx.rollback() catch {};
+        try tx.exec(alloc, "INSERT INTO items VALUES ('a', 'first')", &.{});
+        try tx.exec(alloc, "INSERT INTO items VALUES ('b', 'second')", &.{});
+        // Force a failure: duplicate primary key.
+        const result = tx.exec(alloc,
+            "INSERT INTO items VALUES ('a', 'duplicate')", &.{});
+        try testing.expectError(sqlite_mod.Error.ExecuteFailed, result);
+        // Defer fires → ROLLBACK → 'a' and 'b' both gone.
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM items", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("0", cnt);
+}
+
+test "commitOrRollback commits an unfinalized tx" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+        // No explicit commit() — rely on defer commitOrRollback.
+        try tx.commitOrRollback();
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("1", cnt);
+}
+
+test "commitOrRollback after explicit commit is a silent no-op (not TransactionClosed)" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    var tx = try ctx.db.begin();
+    try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+    try tx.commit();
+
+    // The key test: commitOrRollback on an already-committed tx must
+    // succeed silently (NOT return Error.TransactionClosed — that
+    // would defeat the purpose of the defer idiom).
+    try tx.commitOrRollback();
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("1", cnt);
+}
+
+test "commitOrRollback after explicit rollback is a silent no-op" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    var tx = try ctx.db.begin();
+    try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+    try tx.rollback();
+
+    // Same intent: commitOrRollback on an already-rolled-back tx
+    // must succeed silently.
+    try tx.commitOrRollback();
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("0", cnt);
+}
+
+test "commitOrRollback inside a savepoint commits the savepoint (not the outer tx)" {
+    // Inside a savepoint, commitOrRollback should issue RELEASE sp_<n>
+    // (the savepoint's commit), not COMMIT (the outer tx's commit).
+    // After the savepoint commits, the outer tx remains alive.
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE log (id TEXT PRIMARY KEY, msg TEXT NOT NULL)", &.{});
+
+    {
+        var outer = try ctx.db.begin();
+        defer outer.rollback() catch {};
+        try outer.exec(alloc, "INSERT INTO log VALUES ('1', 'outer')", &.{});
+
+        {
+            var inner = try ctx.db.savepoint();
+            try inner.exec(alloc, "INSERT INTO log VALUES ('2', 'inner')", &.{});
+            try inner.commitOrRollback(); // commits the savepoint, not outer
+        }
+
+        try outer.commitOrRollback(); // commits the outer tx
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM log", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("2", cnt);
 }

@@ -7,6 +7,7 @@ const helpers = nalarcore.helpers;
 const gserverz = nalarcore.gserverz;
 const startup = nalarcore.startup;
 const static_files = nalarcore.static_files;
+const migration = nalarcore.migrations_mod.migration;
 
 // state_file and main_service are re-exported from nalarcore (see src/root.zig).
 // Access them via nalarcore.* to avoid duplicating the module symbol
@@ -75,9 +76,9 @@ pub fn main(init: std.process.Init) !void {
     defer dbSqlite.deinit();
     try dbSqlite.init(io, db_path);
 
-    var migrationManager = ai_mod.migration.MigrationManager.init(allocator, &dbSqlite);
+    var migrationManager = migration.MigrationManager.init(allocator, &dbSqlite);
     defer migrationManager.deinit();
-    try ai_mod.migration.registerAllMigrations(&migrationManager);
+    try migration.registerAllMigrations(&migrationManager);
     try migrationManager.runMigrations();
 
     const tmp_path = environment.get("TMPDIR") orelse

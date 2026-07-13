@@ -3,11 +3,6 @@ test {
     _ = @import("build_messages_for_agent_prompt_test.zig");
     _ = @import("handle_tool_test.zig");
     _ = @import("inherited_context_test.zig");
-    _ = @import("migration_performance_indexes_test.zig");
-    _ = @import("migration_routines_test.zig");
-    _ = @import("migration_git_worktree_test.zig");
-    _ = @import("migration_chat_list_index_test.zig");
-    _ = @import("migration_defensive_indexes_test.zig");
     _ = @import("routines/model_test.zig");
     _ = @import("routines/cron_test.zig");
     _ = @import("routines/fire_test.zig");
@@ -39,10 +34,6 @@ test {
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     _ = @import("http_handlers/workspace_items_reorder_test.zig");
     _ = @import("http_handlers/task_pin_test.zig");
-    _ = @import("migration_051_test.zig");
-    _ = @import("migration_009_test.zig");
-    _ = @import("migration_053_test.zig");
-    _ = @import("migration_054_test.zig");
     _ = @import("kanban_model_test.zig");
     _ = @import("kanban_model_test_description.zig");
     _ = @import("kanban_copy_spec_test.zig");

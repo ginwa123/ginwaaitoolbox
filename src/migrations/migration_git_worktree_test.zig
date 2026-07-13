@@ -23,7 +23,7 @@ const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 
-const migration = @import("migration.zig");
+const migration = nalarcore.migrations_mod.migration;
 const Migration046AddGitWorktreeCwdToSessions = migration.Migration046AddGitWorktreeCwdToSessions;
 
 // ─── Test helpers ─────────────────────────────────────────────────────────
