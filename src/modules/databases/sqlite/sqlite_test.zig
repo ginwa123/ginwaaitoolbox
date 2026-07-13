@@ -1542,3 +1542,100 @@ test "integration: rollback of partial multi-statement leaves DB unchanged" {
     defer alloc.free(cnt);
     try testing.expectEqualStrings("0", cnt);
 }
+
+test "commitOrRollback commits an unfinalized tx" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    {
+        var tx = try ctx.db.begin();
+        try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+        // No explicit commit() — rely on defer commitOrRollback.
+        try tx.commitOrRollback();
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("1", cnt);
+}
+
+test "commitOrRollback after explicit commit is a silent no-op (not TransactionClosed)" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    var tx = try ctx.db.begin();
+    try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+    try tx.commit();
+
+    // The key test: commitOrRollback on an already-committed tx must
+    // succeed silently (NOT return Error.TransactionClosed — that
+    // would defeat the purpose of the defer idiom).
+    try tx.commitOrRollback();
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("1", cnt);
+}
+
+test "commitOrRollback after explicit rollback is a silent no-op" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE foo (id TEXT PRIMARY KEY)", &.{});
+
+    var tx = try ctx.db.begin();
+    try tx.exec(alloc, "INSERT INTO foo VALUES ('a')", &.{});
+    try tx.rollback();
+
+    // Same intent: commitOrRollback on an already-rolled-back tx
+    // must succeed silently.
+    try tx.commitOrRollback();
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM foo", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("0", cnt);
+}
+
+test "commitOrRollback inside a savepoint commits the savepoint (not the outer tx)" {
+    // Inside a savepoint, commitOrRollback should issue RELEASE sp_<n>
+    // (the savepoint's commit), not COMMIT (the outer tx's commit).
+    // After the savepoint commits, the outer tx remains alive.
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE log (id TEXT PRIMARY KEY, msg TEXT NOT NULL)", &.{});
+
+    {
+        var outer = try ctx.db.begin();
+        defer outer.rollback() catch {};
+        try outer.exec(alloc, "INSERT INTO log VALUES ('1', 'outer')", &.{});
+
+        {
+            var inner = try ctx.db.savepoint();
+            try inner.exec(alloc, "INSERT INTO log VALUES ('2', 'inner')", &.{});
+            try inner.commitOrRollback(); // commits the savepoint, not outer
+        }
+
+        try outer.commitOrRollback(); // commits the outer tx
+    }
+
+    const cnt = (try scalarText(alloc, &ctx.db,
+        "SELECT COUNT(*) FROM log", &.{})) orelse "";
+    defer alloc.free(cnt);
+    try testing.expectEqualStrings("2", cnt);
+}

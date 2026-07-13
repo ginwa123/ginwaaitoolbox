@@ -428,8 +428,19 @@ pub const SqliteBackend = struct {
             return executeQuery(self.backend, allocator, sql, argv);
         }
 
-        pub fn commit(self: *Transaction) Error!void {
-            if (self.completed) return Error.TransactionClosed;
+        /// Internal helper: run COMMIT (or RELEASE sp_<n> for nested tx),
+        /// decrement depth, release the mutex on the outermost commit,
+        /// and flip `completed`. Shared between `commit` (which gates
+        /// on `completed` first and returns `TransactionClosed` on
+        /// re-finalization) and `commitOrRollback` (which silently
+        /// no-ops on re-finalization).
+        ///
+        /// MUST NOT be called directly — callers are `commit` and
+        /// `commitOrRollback`, which both gate on `self.completed`
+        /// BEFORE calling this helper. Calling without the gate
+        /// would skip the re-finalization check and could release
+        /// the mutex twice (UB).
+        fn _doFinalizeCommit(self: *Transaction) Error!void {
             const db = self.backend.db orelse {
                 self.completed = true;
                 // On backend-closed: depth is a property of the backend
@@ -465,6 +476,59 @@ pub const SqliteBackend = struct {
                 std.log.warn("sqlite3_exec {s} failed: {s}", .{ sql_slice, err_msg });
                 return Error.ExecuteFailed;
             }
+        }
+
+        pub fn commit(self: *Transaction) Error!void {
+            if (self.completed) return Error.TransactionClosed;
+            return self._doFinalizeCommit();
+        }
+
+        /// Commit the transaction if it has not yet been finalized. If the
+        /// transaction was already committed or rolled back, this is a no-op
+        /// returning success (NOT `Error.TransactionClosed` — that would defeat
+        /// the point of the defer-idiom). Mirrors Go's
+        /// `(*Tx).CommitOrRollback` (Go 1.21+).
+        ///
+        /// The recommended defer-idiom for transactions:
+        ///
+        /// ```zig
+        /// var tx = try db.begin();
+        /// defer tx.commitOrRollback() catch {}; // commits if not yet finalized
+        /// // ... use tx ...
+        /// ```
+        ///
+        /// This replaces the more verbose pattern:
+        ///
+        /// ```zig
+        /// defer tx.rollback() catch |err| switch (err) {
+        ///     error.TransactionClosed => {}, // already committed
+        ///     else => return err,
+        /// };
+        /// ```
+        ///
+        /// **Why use commitOrRollback instead of `commit` in defer?**
+        /// Because if your code path called `commit()` explicitly before the
+        /// defer fired, `commitOrRollback` is a silent no-op — whereas
+        /// `tx.commit()` would return `Error.TransactionClosed` (and the catch
+        /// would log it). Both are correct; commitOrRollback is just
+        /// ergonomically cleaner for the deferred-finalize pattern.
+        ///
+        /// **Why use commitOrRollback instead of `rollback` in defer?**
+        /// Same reason: if `commit()` ran before the defer fired,
+        /// `rollback()` returns `Error.TransactionClosed`. The
+        /// `defer rollback() catch switch(TransactionClosed => {})` pattern
+        /// works but is verbose.
+        ///
+        /// **Error semantics:**
+        /// - If the COMMIT (or RELEASE for nested tx) SQL fails: returns
+        ///   `Error.ExecuteFailed`. `completed` is set so a future
+        ///   `rollback()` returns `TransactionClosed`.
+        /// - If the backend was deinitialized during the tx: returns
+        ///   `Error.DatabaseNotFound`.
+        /// - Otherwise: returns success.
+        pub fn commitOrRollback(self: *Transaction) Error!void {
+            if (self.completed) return; // already finalized — silent no-op
+            return self._doFinalizeCommit();
         }
 
         pub fn rollback(self: *Transaction) Error!void {
