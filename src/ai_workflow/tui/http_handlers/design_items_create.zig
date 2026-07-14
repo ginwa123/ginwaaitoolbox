@@ -109,24 +109,20 @@ fn useCase(
     db.exec(allocator,
         \\INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position, created_at, updated_at)
         \\VALUES (?, ?, 'design', ?, ?, COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1, datetime('now'), datetime('now'))
-    , .{ item_id, input.workspace_id, trimmed_name, trimmed_path, input.workspace_id }) catch {
+    , &.{ item_id, input.workspace_id, trimmed_name, trimmed_path, input.workspace_id }) catch {
         return error.InsertFailed;
     };
 
     // Build the response via the existing `makeWorkspaceItemResponse`
-    // helper so the wire shape matches the kanban create response
-    // (both are workspace_item responses).
-    const item = nalarcore.ai_mod.workspace_items.WorkspaceItemInfo{
+    // helper. The wire shape is `{ id, success }` — the kanban
+    // handler returns a richer CreateKanbanResponse (because the
+    // frontend wants the kanban's default columns in the same
+    // round-trip); design creation only needs to confirm the row
+    // exists so the client can re-fetch via GET /items/:id if it
+    // wants the full shape.
+    const json = http_response.makeWorkspaceItemResponse(allocator, .{
         .id = item_id,
-        .workspace_id = input.workspace_id,
-        .item_type = "design",
-        .name = trimmed_name,
-        .path = trimmed_path,
-        .position = 0, // ignored by the helper (it doesn't serialize position yet)
-        .created_at = "",
-        .updated_at = "",
-    };
-    const json = http_response.makeWorkspaceItemResponse(allocator, item) catch {
+    }) catch {
         return error.OutOfMemory;
     };
     return json;

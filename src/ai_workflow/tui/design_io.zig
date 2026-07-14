@@ -193,7 +193,7 @@ pub fn deleteDirectoryRecursively(
         defer allocator.free(entry_path);
         switch (entry.kind) {
             .directory => try deleteDirectoryRecursively(allocator, io, entry_path),
-            .file, .sym_link, .named_pipe, .unix_domain_socket, .event_port, .event_ostream, .unknown => {
+            .file, .sym_link, .named_pipe, .unix_domain_socket, .event_port, .unknown => {
                 try deleteFileIfExists(allocator, entry_path);
             },
             else => {}, // skip device files etc.

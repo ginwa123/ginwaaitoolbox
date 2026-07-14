@@ -17,13 +17,14 @@ pub fn workspaceItemsDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.Http
 
     const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
+    const io = di.io;
 
     const item_id = req.params.get("item_id") orelse "";
     if (item_id.len == 0) {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }) });
     }
 
-    const result = useCase(allocator, sqlite_db, item_id) catch |err| {
+    const result = useCase(allocator, io, sqlite_db, item_id) catch |err| {
         const status: u16 = switch (err) {
             error.WorkspaceItemNotFound => 404,
             else => 500,
@@ -48,6 +49,7 @@ const WorkspaceItemsDeleteResult = struct {
 
 fn useCase(
     allocator: std.mem.Allocator,
+    io: std.Io,
     sqlite_db: *nalarcore.sqlite.SqliteBackend,
     item_id: []const u8,
 ) WorkspaceItemsDeleteError!WorkspaceItemsDeleteResult {
@@ -72,24 +74,23 @@ fn useCase(
     // about the orphan files. The user has already confirmed the
     // delete via the Sidebar's openDeleteConfirm dialog, so we
     // don't want to error out for a non-critical cleanup step.
-    if (existing.?.item_type) |it| {
-        if (std.mem.eql(u8, it, "design")) {
-            if (existing.?.path) |p| {
-                if (p.len > 0) {
-                    var folder_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-                    const folder_path = std.fmt.bufPrint(
-                        &folder_path_buf,
-                        "{s}/.nalar/design",
-                        .{p},
-                    ) catch null;
-                    if (folder_path) |fp| {
-                        design_io.deleteDirectoryRecursively(allocator, fp) catch |err| {
-                            std.log.warn(
-                                "failed to rmdir design folder {s} on item delete: {{s}}",
-                                .{ fp, @errorName(err) },
-                            );
-                        };
-                    }
+    const existing_item_type = existing.?.item_type;
+    if (std.mem.eql(u8, existing_item_type, "design")) {
+        if (existing.?.path) |p| {
+            if (p.len > 0) {
+                var folder_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+                const folder_path = std.fmt.bufPrint(
+                    &folder_path_buf,
+                    "{s}/.nalar/design",
+                    .{p},
+                ) catch null;
+                if (folder_path) |fp| {
+                    design_io.deleteDirectoryRecursively(allocator, io, fp) catch |err| {
+                        std.log.warn(
+                            "failed to rmdir design folder {s} on item delete: {s}",
+                            .{ fp, @errorName(err) },
+                        );
+                    };
                 }
             }
         }
