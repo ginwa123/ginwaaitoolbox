@@ -93,7 +93,7 @@ const handleClick = () => {
   // workspacesStore.setActiveWorkspaceItem), so clicking a kanban
   // still activates it; AppLayout just routes the active item to the
   // kanban board instead of a list.
-  if (props.item.item_type !== 'kanban') {
+  if (props.item.item_type !== 'kanban' && props.item.item_type !== 'design') {
     workspacesStore.toggleExpandedItem(props.item.id)
   }
   // Always emit click for external handling (e.g., navigation to
@@ -427,7 +427,7 @@ const handlePinnedDrop = (event: DragEvent) => {
              column-based UI, not the generic task picker, and (b)
              deleting a kanban requires column cleanup first — the
              bare delete handler doesn't do that. -->
-        <template v-if="item.item_type !== 'kanban'">
+        <template v-if="item.item_type !== 'kanban' && item.item_type !== 'design'">
           <button
             @click="handleAddTask"
             class="w-5 h-5 text-sm leading-none flex items-center justify-center rounded opacity-0 group-hover/item:opacity-100 transition-opacity duration-150 hover:text-green-400"
