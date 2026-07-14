@@ -698,6 +698,15 @@ fn callDynamicAgentNew(
     tools: []const agent.AgentTool,
 ) !agent.CallResponse {
     var dynamic_agent = try agent.Agent.init(allocator, io);
+    // BUG FIX 2026-07-14: missing `defer dynamic_agent.deinit()` was leaking
+    // `httpClient`'s connection pool / sockets on every workflow loop iteration.
+    // After extended uptime the leak reaches the soft FD limit (1024) and triggers
+    // `error.ProcessFdQuotaExceeded` in any subsequent FD-allocating call. The
+    // other two `Agent.init` call sites in this codebase already had the matching
+    // defer: `name_agent` (workflow.zig:637) and `compaction_agent`
+    // (compaction.zig:168). `Agent.deinit()` (Agent.zig:1815) calls
+    // `self.httpClient.deinit()` which frees any pooled HTTP connections.
+    defer dynamic_agent.deinit();
     dynamic_agent.apiKey = api_key;
     dynamic_agent.model = model;
     dynamic_agent.baseUrl = base_url;
