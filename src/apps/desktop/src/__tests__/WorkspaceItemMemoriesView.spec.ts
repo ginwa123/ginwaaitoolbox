@@ -26,8 +26,9 @@ vi.mock('../api', async (importOriginal) => {
   }
 })
 
-import { listLocalMemories } from '../api'
+import { listLocalMemories, getLocalMemoryDetail } from '../api'
 const mockList = listLocalMemories as unknown as ReturnType<typeof vi.fn>
+const mockGetDetail = getLocalMemoryDetail as unknown as ReturnType<typeof vi.fn>
 
 describe('WorkspaceItemMemoriesView', () => {
   let wrapper: VueWrapper | null = null
@@ -35,6 +36,7 @@ describe('WorkspaceItemMemoriesView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     mockList.mockReset()
+    mockGetDetail.mockReset()
   })
 
   afterEach(() => {
@@ -92,5 +94,47 @@ describe('WorkspaceItemMemoriesView', () => {
     await flushPromises()
     expect(mockList).not.toHaveBeenCalled()
     expect(document.body.textContent).toContain('No path')
+  })
+
+  it('shows error state when listLocalMemories rejects', async () => {
+    mockList.mockRejectedValue(new Error('network down'))
+    const w = mount(WorkspaceItemMemoriesView, {
+      props: { cwd: '/tmp/proj' },
+      attachTo: document.body,
+    })
+    wrapper = w
+    await flushPromises()
+    expect(document.body.textContent).toContain('network down')
+    expect(w.find('[data-testid="workspace-item-memories-error"]').exists()).toBe(true)
+  })
+
+  it('renders detail panel after selecting a memory', async () => {
+    mockList.mockResolvedValue({
+      memories: [
+        { name: 'rule.md', title: 'My Rule', path: '/p/.nalar/memories/rule.md', size: 100 },
+      ],
+    })
+    mockGetDetail.mockResolvedValue({
+      memory: {
+        name: 'rule.md',
+        title: 'My Rule',
+        path: '/p/.nalar/memories/rule.md',
+        size: 100,
+        content: '# My Rule\n\nbody',
+      },
+      error_message: null,
+    })
+    const w = mount(WorkspaceItemMemoriesView, {
+      props: { cwd: '/p' },
+      attachTo: document.body,
+    })
+    wrapper = w
+    await flushPromises()
+    await w.find('[data-testid="workspace-item-memories-row-rule.md"]').trigger('click')
+    await flushPromises()
+    // Detail panel should show the content (it lives in LocalMemoryDetailView,
+    // which has its own tests; here we just assert the LocalMemoryDetailView was
+    // mounted by checking that the create-mode hint is NOT shown).
+    expect(document.body.textContent).not.toContain('Select a memory, or create a new one.')
   })
 })

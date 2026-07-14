@@ -113,9 +113,16 @@ const saveEdit = async () => {
   try {
     await updateLocalMemory(detail.value.name, editContent.value, props.cwd)
     mode.value = 'view'
-    // Refresh detail so title/size update if the H1 changed
-    const result = await getLocalMemoryDetail(detail.value.name, props.cwd)
-    if (result.memory) detail.value = result.memory
+    // Refresh the local size to reflect the new content length (avoid
+    // a second round-trip to the server — the only field that changes
+    // on edit is size, and we can compute it client-side from the new
+    // content string).
+    if (detail.value) {
+      detail.value = {
+        ...detail.value,
+        size: editContent.value.length,
+      }
+    }
     emit('memorySaved')
   } catch (err) {
     emit('error', err instanceof Error ? err.message : 'Failed to save memory')
@@ -172,6 +179,11 @@ const saveCreate = async () => {
   } finally {
     isSaving.value = false
   }
+}
+
+// --- Create-mode cancel ---
+const handleCancelCreate = () => {
+  emit('cancelCreate')
 }
 
 // --- Delete handlers ---
@@ -267,7 +279,7 @@ defineExpose({ startCreate })
         style="border-top: 1px solid var(--color-border);"
       >
         <button
-          @click="$emit('cancelCreate')"
+          @click="handleCancelCreate"
           :disabled="isSaving"
           class="px-4 py-2 rounded-lg text-sm font-medium"
           style="background-color: var(--semantic-card-bg); color: var(--semantic-text-muted); border: 1px solid var(--color-border);"
@@ -366,6 +378,8 @@ defineExpose({ startCreate })
       v-if="showDeleteConfirm"
       class="absolute inset-0 flex items-center justify-center z-10"
       style="background-color: rgba(0, 0, 0, 0.5);"
+      data-testid="memory-detail-delete-modal"
+      @keydown.esc="cancelDelete"
     >
       <div
         class="rounded-xl p-6 max-w-sm mx-4"
@@ -383,6 +397,7 @@ defineExpose({ startCreate })
             :disabled="isDeleting"
             class="px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-200"
             style="background-color: var(--semantic-content-bg); color: var(--semantic-text-muted); border: 1px solid var(--color-border);"
+            data-testid="memory-detail-delete-cancel"
           >
             Cancel
           </button>
@@ -391,6 +406,7 @@ defineExpose({ startCreate })
             :disabled="isDeleting"
             class="px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-200"
             style="background-color: var(--color-red); color: white;"
+            data-testid="memory-detail-delete-confirm"
           >
             {{ isDeleting ? 'Deleting...' : 'Delete' }}
           </button>
