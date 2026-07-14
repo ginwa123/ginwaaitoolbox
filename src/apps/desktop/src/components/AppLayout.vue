@@ -16,6 +16,7 @@ import KanbanColumnEditor from './KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './KanbanSettingsDialog.vue'
 import CopyKanbanSpecDialog from './CopyKanbanSpecDialog.vue'
 import DesignView from './DesignView.vue'
+import WorkspaceItemMemoriesView from './WorkspaceItemMemoriesView.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
@@ -1614,51 +1615,82 @@ watch(chatSessionCwd, (newCwd) => {
       <Chats v-else-if="currentView === 'chat'" />
       <div
         v-else-if="currentView === 'workspace'"
-        class="flex-1 flex flex-col items-center justify-center p-8"
+        class="flex-1 flex flex-col"
       >
+        <!-- Compact header card (always shown when an item is active) -->
         <div
           v-if="activeWorkspaceItem"
-          class="w-full max-w-2xl p-8 rounded-xl text-center"
-          style="
-            background: linear-gradient(
-              135deg,
-              var(--semantic-card-bg),
-              var(--semantic-sidebar-bg)
-            );
-            border: 1px solid var(--color-border);
-          "
+          class="px-6 py-3 flex items-center justify-between gap-3 shrink-0"
+          style="border-bottom: 1px solid var(--color-border);"
+        >
+          <div class="flex flex-col min-w-0">
+            <h2 class="text-lg font-semibold truncate" style="color: var(--semantic-text);">
+              {{ activeWorkspaceItem.name }}
+            </h2>
+            <p class="text-xs truncate" style="color: var(--semantic-text-dim);">
+              {{ workspacesStore.activeWorkspace?.name }}
+              <span v-if="activeWorkspaceItem.path"> · {{ activeWorkspaceItem.path }}</span>
+            </p>
+          </div>
+        </div>
+
+        <!-- Memories view: only when path is truthy -->
+        <div v-if="activeWorkspaceItem && activeWorkspaceItem.path" class="flex-1 min-h-0">
+          <WorkspaceItemMemoriesView
+            :key="activeWorkspaceItem.id"
+            :cwd="activeWorkspaceItem.path"
+            :item-name="activeWorkspaceItem.name"
+          />
+        </div>
+
+        <!-- No-path fallback: keep today's centered card -->
+        <div
+          v-else-if="activeWorkspaceItem"
+          class="flex-1 flex flex-col items-center justify-center p-8"
         >
           <div
-            class="w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center"
-            style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue))"
+            class="w-full max-w-2xl p-8 rounded-xl text-center"
+            style="
+              background: linear-gradient(
+                135deg,
+                var(--semantic-card-bg),
+                var(--semantic-sidebar-bg)
+              );
+              border: 1px solid var(--color-border);
+            "
           >
-            <svg
-              class="w-8 h-8"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              style="color: var(--color-bg)"
+            <div
+              class="w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center"
+              style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue))"
             >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-              />
-            </svg>
-          </div>
-          <h2 class="text-2xl font-bold mb-2" style="color: var(--semantic-text)">
-            {{ activeWorkspaceItem.name }}
-          </h2>
-          <p class="text-sm mb-4" style="color: var(--semantic-text-muted)">
-            {{ workspacesStore.activeWorkspace?.name }}
-          </p>
-          <div
-            v-if="activeWorkspaceItem.path"
-            class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
-            style="background-color: var(--semantic-active-bg); color: var(--semantic-text-muted)"
-          >
-            <span>{{ activeWorkspaceItem.path }}</span>
+              <svg
+                class="w-8 h-8"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                style="color: var(--color-bg)"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                />
+              </svg>
+            </div>
+            <h2 class="text-2xl font-bold mb-2" style="color: var(--semantic-text)">
+              {{ activeWorkspaceItem.name }}
+            </h2>
+            <p class="text-sm mb-4" style="color: var(--semantic-text-muted)">
+              {{ workspacesStore.activeWorkspace?.name }}
+            </p>
+            <div
+              v-if="activeWorkspaceItem.path"
+              class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
+              style="background-color: var(--semantic-active-bg); color: var(--semantic-text-muted)"
+            >
+              <span>{{ activeWorkspaceItem.path }}</span>
+            </div>
           </div>
         </div>
 
