@@ -33,7 +33,7 @@ fn createPlatformExe(
         exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
         exe.root_module.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),
-            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
+            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_FTS5" },
         });
     }
     return exe;
@@ -98,7 +98,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
         exe.root_module.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),
-            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
+            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_FTS5" },
         });
     }
     // === Build the Vue webapp (bun) ===
@@ -441,7 +441,7 @@ pub fn build(b: *std.Build) void {
         mod.addIncludePath(b.path("vendor/sqlite3"));
         mod.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),
-            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
+            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_FTS5" },
         });
     }
     mod.linkSystemLibrary("c", .{});
@@ -554,7 +554,7 @@ pub fn build(b: *std.Build) void {
         dev_exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
         dev_exe.root_module.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),
-            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION" },
+            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_FTS5" },
         });
     }
     const install_dev = b.addInstallArtifact(dev_exe, .{});
