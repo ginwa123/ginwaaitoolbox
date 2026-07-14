@@ -30,6 +30,9 @@ test {
     _ = @import("tools/read_compacted_messages_test.zig");
     _ = @import("tools/kanban_list_test.zig");
     _ = @import("tools/kanban_move_task_test.zig");
+    _ = @import("tools/set_design_page_test.zig");
+    _ = @import("tools/add_design_element_test.zig");
+    _ = @import("tools/update_design_element_test.zig");
 
     // Bash tool cross-platform tests
     _ = @import("tools/bash_test.zig");

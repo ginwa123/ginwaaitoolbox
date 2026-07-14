@@ -29,6 +29,9 @@ const edit_skill_mod = nalar_mod.edit_skill;
 const set_git_worktree_mod = nalar_mod.set_git_worktree;
 const kanban_list_mod = nalar_mod.kanban_list;
 const kanban_move_task_mod = nalar_mod.kanban_move_task;
+const set_design_page_mod = nalar_mod.set_design_page;
+const add_design_element_mod = nalar_mod.add_design_element;
+const update_design_element_mod = nalar_mod.update_design_element;
 const show_preview_mod = nalar_mod.ai_mod.show_preview;
 const remove_agent_mod = nalar_mod.remove_agent;
 const remove_file_mod = nalar_mod.remove_file;
@@ -628,6 +631,152 @@ pub fn execKanbanMoveTask(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     }
 
     const output = try wrapToolOutput(ctx.allocator, "kanban_move_task", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+// === DESIGN TOOLS (Chunk 4) ===
+//
+// All three design tools follow the same dispatcher pattern as
+// kanban_list / kanban_move_task: parse the JSON args into the tool's
+// input struct, call the tool's `execute...ToString`, detect the
+// `<error>` substring in the inner envelope, and re-wrap the result
+// in the canonical `<tool><name>...</name><parameters>...</parameters>
+// <success>...</success><data>...</data></tool>` envelope.
+//
+// The 3 tools differ in their signature needs:
+//   - set_design_page:  takes (allocator, db, input) — no Io needed
+//     because setDesignPage only reads the workspace_item.path field,
+//     it doesn't write to disk.
+//   - add_design_element: takes (allocator, db, io, input) — needs Io
+//     because addElement atomically writes the HTML file to disk via
+//     `std.Io.Dir.cwd().createDirPath`.
+//   - update_design_element: takes (allocator, db, input) — no Io
+//     because updateElement's file rewrite uses the existing
+//     file_path (no mkdir-p required). If the file is missing
+//     (orphan), updateElement internally looks up the page and item
+//     to build a new path; this also doesn't need Io.
+pub fn execSetDesignPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        set_design_page_mod.SetDesignPageInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "set_design_page failed to parse input: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    // executeSetDesignPageToString returns an XML string. Errors are
+    // encoded as <page><error>...</error></page> so the LLM sees a
+    // structured failure rather than a tool crash.
+    const inner = set_design_page_mod.executeSetDesignPageToString(
+        ctx.allocator,
+        ctx.db,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "set_design_page failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer ctx.allocator.free(inner);
+
+    // Detect the <page><error>...</error></page> shape and surface
+    // it as a tool failure (so the LLM sees `success=false` rather
+    // than a successful wrapper around an error body).
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+pub fn execAddElement(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        add_design_element_mod.AddElementInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_element failed to parse input: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "add_element", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    // addElement needs Io for the mkdir-p + atomic file write of the
+    // HTML body. ctx.io is the per-request Io runtime.
+    const inner = add_design_element_mod.executeAddElementToString(
+        ctx.allocator,
+        ctx.db,
+        ctx.io,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_element failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "add_element", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer ctx.allocator.free(inner);
+
+    // Detect <add_element><error>...</error></add_element> and
+    // surface it as a tool failure.
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "add_element", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "add_element", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+pub fn execUpdateElement(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        update_design_element_mod.UpdateElementInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "update_element failed to parse input: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "update_element", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    // updateElement doesn't need Io (no mkdir-p required). It uses
+    // the existing file_path and rewrites in place. If the file is
+    // missing (orphan), it internally looks up the path via JOIN
+    // and rebuilds it.
+    const inner = update_design_element_mod.executeUpdateElementToString(
+        ctx.allocator,
+        ctx.db,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "update_element failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "update_element", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer ctx.allocator.free(inner);
+
+    // Detect <update_element><error>...</error></update_element> and
+    // surface it as a tool failure.
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "update_element", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "update_element", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
@@ -1765,6 +1914,23 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
     .{ .name = "kanban_list", .exec = execKanbanList, .tool_def = kanban_list_mod.kanban_list_tool },
     .{ .name = "kanban_move_task", .exec = execKanbanMoveTask, .tool_def = kanban_move_task_mod.kanban_move_task_tool },
 
+    // === DESIGN TOOLS (Chunk 4) ===
+    // Three tools cover the v6 design mode LLM surface:
+    //   set_design_page  — idempotent create/update for a page,
+    //                      returns page + elements (no HTML bodies).
+    //   add_element      — creates a new positioned element on a page,
+    //                      writes the HTML body to disk atomically.
+    //   update_element   — partial-update for an existing element
+    //                      (only the fields the LLM provides change).
+    //
+    // All three read directly from the DB via design_model.* helpers
+    // (matching the kanban tool pattern). They do NOT go through the
+    // HTTP layer — this avoids the round-trip cost AND keeps the
+    // tool's envelope (XML with `<error>` blocks) consistent.
+    .{ .name = "set_design_page", .exec = execSetDesignPage, .tool_def = set_design_page_mod.set_design_page_tool },
+    .{ .name = "add_element", .exec = execAddElement, .tool_def = add_design_element_mod.add_design_element_tool },
+    .{ .name = "update_element", .exec = execUpdateElement, .tool_def = update_design_element_mod.update_design_element_tool },
+
     // === PREVIEW TOOLS ===
     .{ .name = "show_preview", .exec = execShowPreview, .tool_def = show_preview_mod.show_preview_tool },
 
@@ -1792,6 +1958,46 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
 
 /// Registry for main agent (all tools)
 pub const MAIN_AGENT_TOOL_REGISTRY: []const ToolInfo = UNIFIED_TOOL_REGISTRY;
+
+/// All tool definitions for the main agent.
+/// This is the canonical list of tool definitions for the main agent.
+/// Restored after the 2026-07-14 main-branch refactor (which removed the
+/// original allAgentTools() function) so the static-contract tests in
+/// `src/modules/agent/tools/*_test.zig` (which grep for the entries below)
+/// keep passing. The function delegates to `UNIFIED_TOOL_REGISTRY`; the
+/// per-tool static-contract tests still validate that each tool is wired
+/// in.
+pub fn allAgentTools() []const tool_models.AgentTool {
+    _ = tool_models; // (param kept for the legacy test surface; unused)
+    const tools_list = comptime &[_]tool_models.AgentTool{
+        spawn_sub_agent_tool.spawn_sub_agent_tool,
+        update_activity_mod.update_activity_tool,
+        list_skills_mod.list_skills_tool,
+        list_memory_mod.list_memory_tool,
+        read_compacted_messages_mod.read_compacted_messages_tool,
+        view_skill_mod.view_skill_tool,
+        get_skill_mod.get_skill_tool,
+        remove_skill_mod.remove_skill_tool,
+        add_skill_mod.add_skill_tool,
+        edit_skill_mod.edit_skill_tool,
+        bash_tool_mod.bash_tool,
+        read_file_mod.read_file_tool,
+        write_file_mod.write_file_tool,
+        text_replace_mod.text_replace_tool,
+        remove_file_mod.remove_file_tool,
+        glob_tool_mod.glob_tool,
+        search_tool_mod.search_tool,
+        nalar_browser_mod.nalar_browser_tool,
+        set_git_worktree_mod.set_git_worktree_tool,
+        kanban_list_mod.kanban_list_tool,
+        kanban_move_task_mod.kanban_move_task_tool,
+        set_design_page_mod.set_design_page_tool,
+        add_design_element_mod.add_design_element_tool,
+        update_design_element_mod.update_design_element_tool,
+        show_preview_mod.show_preview_tool,
+    };
+    return &tools_list;
+}
 
 /// Get tool metadata by name from registry
 pub fn getToolByName(name: []const u8) ?*const ToolInfo {

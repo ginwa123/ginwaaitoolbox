@@ -292,6 +292,15 @@ pub fn build_agent_prompt(
     /// section so the agent sees "you are on a kanban" framing
     /// before the tool listing.
     kanbanStatusContent: []const u8,
+    /// Pre-rendered "Design Canvas" markdown block, built by
+    /// `BuildDesignCanvasPrompt(allocator, db, session_id)` in
+    /// `build_messages_for_agent_prompt.zig`. Empty string means "the
+    /// session is not on a design canvas" (the section is silently
+    /// omitted). The block already includes its `## Design Canvas`
+    /// header. Rendered right after the Kanban Status Tracking
+    /// section so the agent sees the workflow expectations before
+    /// the tool listing.
+    designStatusContent: []const u8,
 ) ![]const u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
@@ -413,6 +422,17 @@ pub fn build_agent_prompt(
     // `BuildKanbanStatusPrompt`); we just append it verbatim.
     if (kanbanStatusContent.len > 0) {
         try result.appendSlice(allocator, kanbanStatusContent);
+    }
+
+    // Design canvas status block (v6 — 3 LLM tools:
+    // set_design_page, add_element, update_element). Built by
+    // BuildDesignCanvasPrompt. Empty = "session is not on a design
+    // canvas" (silently omitted). Rendered right after the Kanban
+    // Status Tracking block; both share the same "before the tool
+    // listing" ordering so the LLM sees the workflow expectations
+    // before reading the tool schemas.
+    if (designStatusContent.len > 0) {
+        try result.appendSlice(allocator, designStatusContent);
     }
 
     // OS info.

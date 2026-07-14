@@ -93,7 +93,7 @@ const handleClick = () => {
   // workspacesStore.setActiveWorkspaceItem), so clicking a kanban
   // still activates it; AppLayout just routes the active item to the
   // kanban board instead of a list.
-  if (props.item.item_type !== 'kanban') {
+  if (props.item.item_type !== 'kanban' && props.item.item_type !== 'design') {
     workspacesStore.toggleExpandedItem(props.item.id)
   }
   // Always emit click for external handling (e.g., navigation to
@@ -428,12 +428,29 @@ const handlePinnedDrop = (event: DragEvent) => {
             data-testid="item-active-dot"
           />
         </button>
-        <!-- Add Task + Delete Item buttons (show on hover). Hidden for
-             kanban items because (a) kanban adds tasks through its own
-             column-based UI, not the generic task picker, and (b)
-             deleting a kanban requires column cleanup first — the
-             bare delete handler doesn't do that. -->
-        <template v-if="item.item_type !== 'kanban'">
+        <!-- Add Task + Delete Item buttons (show on hover). Previously
+             the kanban and design item_types were excluded from the
+             sidebar delete, on the (false) assumption that they had
+             their own delete UIs. Neither KanbanView nor DesignView
+             expose a "Delete this kanban" or "Delete this design"
+             button; the only "delete" affordances inside those views
+             are deleteColumn / deleteElement for children. Restored
+             the sidebar delete for all item_types:
+
+             - kanban: backend's deleteWorkspaceItem cascades to
+               kanban_columns (FK ON DELETE CASCADE) which then cascades
+               to workspace_item_tasks.kanban_column_id (FK ON DELETE
+               SET NULL — moot since the task rows are deleted by the
+               parent cascade anyway). No on-disk state to clean up.
+             - design: backend's deleteWorkspaceItem cascades to
+               design_pages, and the handler rmdirs the
+               .nalar/design/ folder from disk.
+             - chat/folder: no children, no on-disk state — plain
+               row delete.
+
+             See workspace_items_delete.zig for the disk-cleanup logic
+             (only runs for item_type='design'). -->
+        <template v-if="true">
           <button
             @click="handleAddTask"
             class="w-5 h-5 text-sm leading-none flex items-center justify-center rounded opacity-0 group-hover/item:opacity-100 transition-opacity duration-150 hover:text-green-400"

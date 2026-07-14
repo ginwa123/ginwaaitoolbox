@@ -131,6 +131,124 @@ export interface KanbanColumn {
   created_at: string
 }
 
+/**
+ * Wire shape for `GET /api/workspaces/:wsId/items/:itemId/design/pages`
+ * (list envelope) and `POST .../design/pages` (single page response).
+ *
+ * The numeric fields are `number` here even though the backend uses
+ * `i64` — JSON has no integer/float distinction on the wire, so a
+ * loose `number` keeps call sites that do arithmetic (e.g. position
+ * comparisons) from fighting the type system. The backend's
+ * `http_response.DesignPageResponse` (see src/ai_workflow/tui/http_handlers/
+ * http_response.zig) is the canonical wire contract.
+ *
+ * Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md
+ *   (Chunk 5, Task 5.1)
+ */
+export interface DesignPage {
+  id: string
+  workspace_item_id: string
+  name: string
+  width: number
+  height: number
+  position: number
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * Element types emitted by the backend's `ElementType` enum
+ * (src/ai_workflow/tui/design_model.zig). Wire form is the lowercase
+ * `tagName` string; the backend maps it back to the enum at the
+ * handler boundary.
+ */
+export type DesignElementType =
+  | 'rectangle'
+  | 'ellipse'
+  | 'text'
+  | 'image'
+  | 'frame'
+  | 'group'
+
+/**
+ * Wire shape for design elements (the rows in
+ * `design_page_elements`). Mirrors the backend's
+ * `http_response.DesignElementResponse` struct — see
+ * src/ai_workflow/tui/http_handlers/http_response.zig:709-734.
+ *
+ * Numeric fields are typed as `number` (not `i64`) because JSON has
+ * no integer/float distinction; the backend serializes i64 values
+ * as unquoted integers. `rotation` and `opacity` are f64 on the
+ * backend; typed as `number` for the same reason.
+ *
+ * Optional string fields default to `''` on the backend (NOT NULL
+ * DEFAULT ''), so an empty string is the "no value" sentinel for
+ * `fill`, `stroke`, `text_content`, `text_style`, `image_url`,
+ * `file_path`. The UI can therefore read these as truthy-or-empty
+ * without nullability checks.
+ */
+export interface DesignElement {
+  id: string
+  page_id: string
+  name: string
+  type: DesignElementType
+  x: number
+  y: number
+  width: number
+  height: number
+  rotation: number
+  fill: string
+  stroke: string
+  stroke_width: number
+  corner_radius: number
+  opacity: number
+  text_content: string
+  text_style: string
+  image_url: string
+  file_path: string
+  z_index: number
+  position: number
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * Geometry-only patch payload for
+ * `PATCH .../design/pages/:page_id/elements/:element_id/geometry`.
+ * Every field is optional — the backend applies a sparse merge and
+ * leaves omitted fields untouched. Used by the drag/resize
+ * affordances in the canvas component (Chunk 7+).
+ */
+export interface DesignElementGeometry {
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  rotation?: number
+}
+
+/**
+ * Wire shape for design-mode SSE events (the payload of
+ * `design_element_created` / `design_element_updated` /
+ * `design_element_deleted`).
+ *
+ * The backend emits all three with the same payload struct (see
+ * `on_event_design.zig` — `DesignElement{Created,Updated,Deleted}Data`
+ * are structurally identical). The `action` discriminator lets the
+ * frontend route without needing separate interfaces.
+ *
+ * Field names match the backend's JSON keys: snake_case for ids
+ * (matches the SSE wire format), `action` is the lowercase
+ * discriminator string.
+ */
+export interface DesignElementEvent {
+  action: 'created' | 'updated' | 'deleted'
+  workspace_id: string
+  item_id: string
+  page_id: string
+  element_id: string
+}
+
 export interface WorkspaceItem {
   id: string
   name: string
@@ -939,6 +1057,32 @@ export async function createWorkspaceItem(
   })
 }
 
+/**
+ * Create a new design workspace item (`item_type='design'`). The
+ * `path` is REQUIRED because design elements live as HTML files
+ * under `<path>/.nalar/design/...` (the model layer rejects
+ * element-add with `ItemPathMissing` if path is NULL — see
+ * design_model.zig).
+ *
+ * Mirrors `createKanban(workspaceId, name, path)` but requires the
+ * path (no cwd-less design). Returns the new `WorkspaceItem`.
+ *
+ * POST /api/workspaces/:workspaceId/items/design
+ */
+export async function createDesign(
+  workspaceId: string,
+  name: string,
+  path: string,
+): Promise<WorkspaceItem> {
+  return await apiFetch<WorkspaceItem>(
+    `/workspaces/${workspaceId}/items/design`,
+    {
+      method: 'POST',
+      body: { name, path },
+    },
+  )
+}
+
 export async function deleteWorkspaceItem(
   workspaceId: string,
   itemId: string,
@@ -1171,6 +1315,216 @@ export async function moveTask(
       method: 'PATCH',
       body: { column_id: columnId, position },
     },
+  )
+}
+
+// =====================================================================
+// Design Mode API (v6 — Figma-lite, file-backed HTML model)
+// =====================================================================
+//
+// 9 endpoints for the new design-mode surface, replacing the v5
+// panzoom-canvas API. The backend (src/ai_workflow/tui/http_handlers/
+// design_*.zig + src/ai_workflow/tui/design_model.zig) is fully
+// implemented and tested; this section is the thin TypeScript wrapper.
+//
+// Every endpoint routes through the per-request arena on the backend,
+// so the responses are built via `std.json.Stringify.valueAlloc` and
+// are guaranteed to be valid JSON with all user-provided content
+// (HTML bodies, names) properly escaped.
+//
+// Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md
+//   (Chunk 5, Task 5.1 + 5.2)
+
+/**
+ * GET /api/workspaces/:workspaceId/items/:itemId/design/pages
+ *
+ * List all pages in a design workspace item, ordered by `position`
+ * ascending. Returns `{ pages, count }` envelope.
+ */
+export async function listDesignPages(
+  workspaceId: string,
+  itemId: string,
+): Promise<{ pages: DesignPage[]; count: number }> {
+  return await apiFetch<{ pages: DesignPage[]; count: number }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages`,
+  )
+}
+
+/**
+ * POST /api/workspaces/:workspaceId/items/:itemId/design/pages
+ *
+ * Create a new design page. The backend assigns `id`, `position`,
+ * `created_at`, `updated_at`. The new page is appended at the end
+ * of the current position order.
+ *
+ * Returns 201 Created with the full DesignPage record.
+ */
+export async function createDesignPage(
+  workspaceId: string,
+  itemId: string,
+  name: string,
+): Promise<DesignPage> {
+  return await apiFetch<DesignPage>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages`,
+    { method: 'POST', body: { name } },
+  )
+}
+
+/**
+ * GET /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId
+ *
+ * Fetch a single page plus its full element list (HTML bodies
+ * EXCLUDED — fetch lazily via `getDesignElementHtml` as the user
+ * selects each element, to keep the list-page payload small for
+ * designs with many elements).
+ */
+export async function getDesignPage(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+): Promise<{ page: DesignPage; elements: DesignElement[] }> {
+  return await apiFetch<{ page: DesignPage; elements: DesignElement[] }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}`,
+  )
+}
+
+/**
+ * POST /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements
+ *
+ * Add a new element to a page. Required body fields: `name`, `type`,
+ * `html`. All other DesignElement fields are optional and fall back to
+ * the backend's defaults (`x=y=width=height=rotation=0`, `fill=''`,
+ * etc.) when omitted.
+ *
+ * The `html` body is written to a per-element file at
+ * `<item.path>/.design/<page_id>/<element_id>.html` BEFORE the DB
+ * insert, so a DB failure after the file write leaves an orphan —
+ * the backend reaps orphans on the next insert for the same page.
+ *
+ * Returns 201 Created with the full DesignElement record.
+ */
+export async function addDesignElement(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  body: {
+    name: string
+    type: DesignElementType
+    html: string
+    [k: string]: any
+  },
+): Promise<DesignElement> {
+  return await apiFetch<DesignElement>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements`,
+    { method: 'POST', body },
+  )
+}
+
+/**
+ * PUT /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId
+ *
+ * Full update of an element. The body shape is `Partial<DesignElement>` —
+ * any subset of fields can be patched. The backend applies the patch
+ * as a sparse merge (omitted fields left unchanged).
+ *
+ * Returns the full updated DesignElement record (so the frontend can
+ * sync its local Pinia store from the response).
+ */
+export async function updateDesignElement(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  elementId: string,
+  patch: Partial<DesignElement>,
+): Promise<DesignElement> {
+  return await apiFetch<DesignElement>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/${elementId}`,
+    { method: 'PUT', body: patch },
+  )
+}
+
+/**
+ * DELETE /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId
+ *
+ * Idempotent delete. Returns `{ success: true }` whether the row
+ * existed or not (the backend returns 200 either way — a missing
+ * element is not a 404 here because the canonical "I want this gone"
+ * semantic should be idempotent).
+ */
+export async function deleteDesignElement(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  elementId: string,
+): Promise<{ success: boolean }> {
+  return await apiFetch<{ success: boolean }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/${elementId}`,
+    { method: 'DELETE' },
+  )
+}
+
+/**
+ * GET /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId/html
+ *
+ * Lazy-load a single element's HTML body. Used by the iframe preview
+ * component as the user selects elements — avoids loading all
+ * bodies up-front in the page+elements GET response.
+ */
+export async function getDesignElementHtml(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  elementId: string,
+): Promise<{ html: string }> {
+  return await apiFetch<{ html: string }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/${elementId}/html`,
+  )
+}
+
+/**
+ * PATCH /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId/html
+ *
+ * Persist a new HTML body for an element. Triggered by the
+ * contenteditable / Monaco save flow — the content is the user-
+ * edited inner HTML of the element's iframe.
+ *
+ * Returns the full updated DesignElement record.
+ */
+export async function updateDesignElementHtml(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  elementId: string,
+  html: string,
+): Promise<DesignElement> {
+  return await apiFetch<DesignElement>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/${elementId}/html`,
+    { method: 'PATCH', body: { html } },
+  )
+}
+
+/**
+ * PATCH /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId/geometry
+ *
+ * Geometry-only update path — separate from the full PUT for two
+ * reasons: (1) drag/resize fires 60+/sec, so the smaller payload +
+ * sparser validation saves backend CPU; (2) the SSE event is
+ * emitted at lower frequency for geometry vs. text/html updates
+ * (the `update` event fires for HTML changes; geometry uses the
+ * same `update` event but the frontend debounces by diffing).
+ *
+ * Returns the full updated DesignElement record.
+ */
+export async function updateDesignElementGeometry(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  elementId: string,
+  geometry: DesignElementGeometry,
+): Promise<DesignElement> {
+  return await apiFetch<DesignElement>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/${elementId}/geometry`,
+    { method: 'PATCH', body: geometry },
   )
 }
 
@@ -1624,14 +1978,27 @@ export interface KanbanTaskEvent {
  * known named event types (`kanban_column`, `kanban_task`,
  * `queue_queued`, `queue_deleted`, `llm_chunk`, `llm_full`,
  * `worker_created`, `worker_updated`, `worker_deleted`,
- * `session_created`, `session_deleted`) with the SseClient so the
- * browser dispatches them; the actual dispatch to a consumer's
- * callback is filtered by `eventType` inside the factory.
+ * `session_created`, `session_deleted`, `design_element_created`,
+ * `design_element_updated`, `design_element_deleted`) with the
+ * SseClient so the browser dispatches them; the actual dispatch to
+ * a consumer's callback is filtered by `eventType` inside the
+ * factory.
  */
 export interface UnifiedChannels {
   workers?: (event: WorkerEvent) => void
   sessions?: (event: SessionEvent) => void
   kanban?: (event: KanbanColumnEvent | KanbanTaskEvent) => void
+  /**
+   * Subscribe to design-mode element mutations. The backend emits
+   * three granular event names (`design_element_created`,
+   * `design_element_updated`, `design_element_deleted`) that share
+   * the same `DesignElementEvent` payload (the `action` discriminator
+   * tells them apart). All three route on the central `design_element`
+   * event_bus key — the consumer filters by `action` if it cares
+   * about the distinction (the `designSse` store treats all three
+   * uniformly: re-fetch the page's element list).
+   */
+  design?: (event: DesignElementEvent) => void
   /**
    * Subscribe to LLM streaming events. When `sessionId` is provided,
    * the factory sends `llm:<sid>` (per-session routing — used by any
@@ -1658,8 +2025,8 @@ export interface UnifiedSseOptions {
 /**
  * Open ONE EventSource that fans out every event family the caller
  * wired up. Replaces the 5 dedicated `create*SseConnection` factories
- * (workers / sessions / kanban / queue / llm) — they all route to
- * `/api/events?channels=…` under the hood.
+ * (workers / sessions / kanban / queue / llm) plus the design channel
+ * — they all route to `/api/events?channels=…` under the hood.
  *
  * **Why 1 SSE endpoint doesn't mean "1 EventSource globally":**
  * For apps that subscribe to a session-scoped channel via the per-
@@ -1678,6 +2045,7 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
   if (opts.channels.workers) tokens.push('workers')
   if (opts.channels.sessions) tokens.push('sessions')
   if (opts.channels.kanban) tokens.push('kanban')
+  if (opts.channels.design) tokens.push('design_element')
   if (opts.channels.llm) {
     tokens.push(opts.channels.llm.sessionId ? `llm:${opts.channels.llm.sessionId}` : 'llm')
   }
@@ -1729,6 +2097,16 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
       'worker_deleted',
       'session_created',
       'session_deleted',
+      // Design-mode element events (see src/ai_workflow/tui/on_event_sent_design.zig).
+      // All three share the same `DesignElementEvent` payload; the
+      // `action` discriminator tells them apart. The single
+      // `design_element` channel token in `tokens` subscribes to all
+      // three at once — no per-action channel routing needed because
+      // the frontend treats them uniformly (re-fetch the page's
+      // element list).
+      'design_element_created',
+      'design_element_updated',
+      'design_element_deleted',
     ],
     // Default heartbeat filter (matches backend sse_manager.sendHeartbeat).
     heartbeatData: 'ping',
@@ -1748,6 +2126,28 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
           opts.channels.kanban(data as KanbanColumnEvent | KanbanTaskEvent)
         } catch (err) {
           console.error('[unifiedSSE] kanban event parse failed:', err, raw)
+        }
+        return
+      }
+
+      // Design-mode element events. The backend emits three granular
+      // event names (`design_element_created` / `_updated` / `_deleted`)
+      // — see src/ai_workflow/tui/on_event_sent_design.zig — all
+      // share the same `DesignElementEvent` payload (the `action`
+      // discriminator tells them apart). We dispatch all three to
+      // the same `design` channel; the consumer can switch on
+      // `event.action` if it cares about the distinction.
+      if (
+        eventType === 'design_element_created' ||
+        eventType === 'design_element_updated' ||
+        eventType === 'design_element_deleted'
+      ) {
+        if (!opts.channels.design) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.design(data as DesignElementEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] design event parse failed:', err, raw)
         }
         return
       }

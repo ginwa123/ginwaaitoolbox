@@ -1204,6 +1204,273 @@ pub const Migration054MakeSessionQueueMessageNullable = struct {
     }
 };
 
+// ────────────────────────────────────────────────────────────────────────
+// Migration 055 — design_pages table (v1 of design-mode feature)
+// ────────────────────────────────────────────────────────────────────────
+//
+// Why this migration exists
+// ──────────────────────────
+// First migration of the design-mode feature. Creates the
+// `design_pages` table where each row represents one page of a design
+// (e.g. "Login", "Dashboard") within a `workspace_items` row of
+// `item_type = 'design'`.
+//
+// The original v1 stored page HTML inline as a `html TEXT` column.
+// The file-backed upgrade is shipped in Migration 056. This split
+// matches the eventual deployment: 055 ships first (initial feature),
+// 056 ships later (the file-backed fix).
+//
+// Why the indexes
+// ───────────────
+// - UNIQUE design_pages(workspace_item_id, name) — enables INSERT
+//   ... ON CONFLICT for the idempotent `setDesignPage` use case.
+// - design_pages(workspace_item_id, position) — keeps `listPages`
+//   fast as a page count grows.
+//
+// Why ANALYZE at the end
+// ───────────────────────
+// New indexes need fresh sqlite_stat1 entries for the query planner
+// to recognize them — without ANALYZE, the planner's statistics are
+// stale and the new indexes may be ignored. Mirrors the
+// ANALYZE-after-DDL pattern used by Migrations 041/042/043/048/049/
+// 050/051/052/053/054.
+//
+// Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md
+pub const Migration055AddDesignPages = struct {
+    pub const version: u32 = 55;
+    pub const name = "add_design_pages";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS design_pages (
+            \\    id TEXT PRIMARY KEY,
+            \\    workspace_item_id TEXT NOT NULL,
+            \\    name TEXT NOT NULL DEFAULT '',
+            \\    html TEXT NOT NULL DEFAULT '',
+            \\    position INTEGER NOT NULL DEFAULT 0,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_design_pages_item_name " ++
+            "ON design_pages(workspace_item_id, name)",
+            &[_][]const u8{},
+        );
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_design_pages_item_position " ++
+            "ON design_pages(workspace_item_id, position)",
+            &[_][]const u8{},
+        );
+        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
+    }
+};
+
+// ────────────────────────────────────────────────────────────────────────
+// Migration 056 — upgrade design_pages to file-backed model
+// ────────────────────────────────────────────────────────────────────────
+//
+// Why this migration exists
+// ──────────────────────────
+// Migration 055's design_pages stored HTML inline as a `html TEXT`
+// column. The v5/v6 model moves to a hybrid DB-metadata + on-disk HTML
+// file layout:
+//   - Pages become metadata-only (width/height/x/y/position) with NO
+//     html column. The per-page folder at
+//     `<workspace_item.path>/.nalar/design/<page_name>/` holds the
+//     element files.
+//   - Each element is a positioned HTML snippet in the new
+//     `design_page_elements` table; the html body lives at the
+//     element's `file_path` (absolute path under workspace_item.path).
+//
+// Why version 56 (not 55)
+// ──────────────────────
+// Existing DBs that already ran Migration055 have it recorded at
+// version 55 in `schema_migrations`. If we kept the upgrade at
+// version 55, the tracker would skip it for existing users
+// (symptom: `set_design_page` fails with `PrepareFailed: no such
+// column: width`). Bumping to 56 guarantees the upgrade body runs
+// once for every existing user. Fresh-DB installs run it as part of
+// the bootstrap sequence — the CREATE TABLE IF NOT EXISTS +
+// addColumnIfMissing calls are all idempotent.
+//
+// Migration body handles both upgrade-from-055 and fresh-DB:
+//   - `CREATE TABLE IF NOT EXISTS design_pages` — fresh-DB; no-op on
+//     upgrade (table already exists)
+//   - `dropColumnIfExists("design_pages", "html")` — upgrade only;
+//     fresh-DB has no html to drop
+//   - `addColumnIfMissing(...)` for width/height/x/y — upgrade only;
+//     fresh-DB's CREATE TABLE above already declares them
+//   - `CREATE TABLE IF NOT EXISTS design_page_elements` — always new
+//
+// Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md
+pub const Migration056UpgradeDesignPagesToFileModel = struct {
+    pub const version: u32 = 56;
+    pub const name = "upgrade_design_pages_to_file_model";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // CREATE design_pages (fresh-DB path). On a legacy DB that
+        // already has the v1 table, this is a no-op (CREATE TABLE IF
+        // NOT EXISTS).
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS design_pages (
+            \\    id TEXT PRIMARY KEY,
+            \\    workspace_item_id TEXT NOT NULL,
+            \\    name TEXT NOT NULL DEFAULT '',
+            \\    width INTEGER NOT NULL DEFAULT 1440,
+            \\    height INTEGER NOT NULL DEFAULT 1024,
+            \\    x INTEGER NOT NULL DEFAULT 0,
+            \\    y INTEGER NOT NULL DEFAULT 0,
+            \\    position INTEGER NOT NULL DEFAULT 0,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+
+        // Upgrade path: drop legacy `html` column from Migration 055
+        // if present. SQLite 3.35+ supports DROP COLUMN. No-op on
+        // fresh DBs.
+        try dropColumnIfExists(db, allocator, "design_pages", "html");
+
+        // Ensure the 4 new position columns exist. On fresh DBs the
+        // CREATE TABLE above already declares them with the same
+        // defaults, so these are no-ops; on legacy DBs they're new
+        // columns being backfilled with sensible defaults.
+        try addColumnIfMissing(db, allocator, "design_pages", "width", "width INTEGER NOT NULL DEFAULT 1440");
+        try addColumnIfMissing(db, allocator, "design_pages", "height", "height INTEGER NOT NULL DEFAULT 1024");
+        try addColumnIfMissing(db, allocator, "design_pages", "x", "x INTEGER NOT NULL DEFAULT 0");
+        try addColumnIfMissing(db, allocator, "design_pages", "y", "y INTEGER NOT NULL DEFAULT 0");
+
+        // CREATE design_page_elements (new in v5/v6). Always new —
+        // no upgrade path needed.
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS design_page_elements (
+            \\    id TEXT PRIMARY KEY,
+            \\    page_id TEXT NOT NULL,
+            \\    name TEXT NOT NULL DEFAULT '',
+            \\    file_path TEXT NOT NULL DEFAULT '',
+            \\    x INTEGER NOT NULL DEFAULT 0,
+            \\    y INTEGER NOT NULL DEFAULT 0,
+            \\    width INTEGER NOT NULL DEFAULT 375,
+            \\    height INTEGER NOT NULL DEFAULT 667,
+            \\    z_index INTEGER NOT NULL DEFAULT 0,
+            \\    position INTEGER NOT NULL DEFAULT 0,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+
+        // Indexes. CREATE [UNIQUE] INDEX IF NOT EXISTS — all safe
+        // to re-run.
+        try db.exec(allocator,
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_design_pages_item_name " ++
+            "ON design_pages(workspace_item_id, name)",
+            &[_][]const u8{},
+        );
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_design_pages_item_position " ++
+            "ON design_pages(workspace_item_id, position)",
+            &[_][]const u8{},
+        );
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_design_page_elements_page_z_pos " ++
+            "ON design_page_elements(page_id, z_index, position)",
+            &[_][]const u8{},
+        );
+
+        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
+    }
+};
+
+// ────────────────────────────────────────────────────────────────────────
+// Migration 057 — add v6 element properties to design_page_elements
+// ────────────────────────────────────────────────────────────────────────
+//
+// Why this migration exists
+// ──────────────────────────
+// Adds 11 new columns to `design_page_elements` for the Figma-lite
+// design-mode redesign (see design doc §5.1). The columns are purely
+// additive — existing v5 columns (id, page_id, name, file_path, x, y,
+// width, height, z_index, position, created_at, updated_at) are
+// untouched. All new columns have sensible defaults so existing rows
+// survive without a backfill.
+//
+// The properties unlocked by each column:
+//   - `type`        → rectangle | ellipse | text | image | frame | group
+//   - `rotation`    → degrees for the element transform
+//   - `fill`        → CSS background-color (e.g. "#22c55e")
+//   - `stroke`      → CSS border-color (e.g. "#000000")
+//   - `stroke_width`→ CSS border-width (integer px)
+//   - `corner_radius` → CSS border-radius (integer px)
+//   - `opacity`     → 0.0..1.0 (REAL for sub-pixel precision)
+//   - `text_content`→ populated for type='text' elements
+//   - `text_style`  → JSON: font, size, weight, color, align (type='text')
+//   - `image_url`   → populated for type='image' elements
+//   - `parent_id`   → FK to design_page_elements(id) for frame/group nesting;
+//                     ON DELETE SET NULL so deleting a parent doesn't
+//                     cascade-delete the children.
+//
+// Why NOT NULL with DEFAULT '' for text columns
+// ─────────────────────────────────────────────
+// `SqliteBackend.exec` binds `arg.len == 0` as SQL NULL (see
+// `src/modules/databases/sqlite/Sqlite.zig:73-74`). The application
+// reads these fields as `[]const u8` (never `?[]const u8`), so a
+// nullable column would force every SELECT to COALESCE and every
+// INSERT to handle NULL explicitly. Mirrors the convention used by
+// Migration 053 for `kanban_columns.description`.
+//
+// Why `addColumnIfMissing` instead of plain ALTER TABLE
+// ────────────────────────────────────────────────────
+// SQLite's `ALTER TABLE ... ADD COLUMN` does NOT support `IF NOT
+// EXISTS` (errors at prepare with "near 'EXISTS': syntax error"). The
+// helper checks `pragma_table_info` before issuing ALTER. Fresh DBs
+// get all 11 columns from the Migration 056 CREATE TABLE above; this
+// migration's adds are no-ops on fresh DBs and real adds on legacy
+// DBs that already have Migration 056 in place but predate v6.
+//
+// Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md
+pub const Migration057AddDesignElementProperties = struct {
+    pub const version: u32 = 57;
+    pub const name = "add_design_element_properties";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Visual property columns. All 11 additions are purely
+        // additive — Migration 056's CREATE TABLE did NOT declare
+        // them, so for fresh-DB installs we add them here via
+        // addColumnIfMissing (which is a no-op on a DB that already
+        // has them, e.g. after a partial migration).
+        try addColumnIfMissing(db, allocator, "design_page_elements", "type",
+            "type TEXT NOT NULL DEFAULT 'rectangle'");
+        try addColumnIfMissing(db, allocator, "design_page_elements", "rotation",
+            "rotation REAL NOT NULL DEFAULT 0");
+        try addColumnIfMissing(db, allocator, "design_page_elements", "fill",
+            "fill TEXT NOT NULL DEFAULT ''");
+        try addColumnIfMissing(db, allocator, "design_page_elements", "stroke",
+            "stroke TEXT NOT NULL DEFAULT ''");
+        try addColumnIfMissing(db, allocator, "design_page_elements", "stroke_width",
+            "stroke_width INTEGER NOT NULL DEFAULT 0");
+        try addColumnIfMissing(db, allocator, "design_page_elements", "corner_radius",
+            "corner_radius INTEGER NOT NULL DEFAULT 0");
+        try addColumnIfMissing(db, allocator, "design_page_elements", "opacity",
+            "opacity REAL NOT NULL DEFAULT 1.0");
+        try addColumnIfMissing(db, allocator, "design_page_elements", "text_content",
+            "text_content TEXT NOT NULL DEFAULT ''");
+        try addColumnIfMissing(db, allocator, "design_page_elements", "text_style",
+            "text_style TEXT NOT NULL DEFAULT ''");
+        try addColumnIfMissing(db, allocator, "design_page_elements", "image_url",
+            "image_url TEXT NOT NULL DEFAULT ''");
+        try addColumnIfMissing(db, allocator, "design_page_elements", "parent_id",
+            "parent_id TEXT");
+
+        // Analyze so the query planner sees the new columns on
+        // legacy DBs.
+        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -1292,7 +1559,15 @@ pub fn addColumnIfMissing(
     ) catch return error.BufferTooSmall;
     var q = try db.query(allocator, check_sql, &.{});
     defer q.deinit();
-    if ((try q.next()) != null) return; // column already exists — no-op.
+    if ((try q.next())) |row| {
+        // Row returned (column exists) — free the row's values
+        // (allocated via `allocator` per Sqlite.zig:267) before
+        // returning. Without this `defer`, the helper would
+        // leak the row's `[]u8` value slice on every call.
+        row.deinit(allocator);
+        return;
+    }
+    // column does not exist — fall through to ALTER below.
 
     var ddl_buf: [256]u8 = undefined;
     const ddl = std.fmt.bufPrint(
@@ -1324,7 +1599,13 @@ pub fn dropColumnIfExists(
     ) catch return error.BufferTooSmall;
     var q = try db.query(allocator, check_sql, &.{});
     defer q.deinit();
-    if ((try q.next()) == null) return; // column doesn't exist — no-op.
+    const row = (try q.next()) orelse {
+        // Column doesn't exist — no-op.
+        return;
+    };
+    // Column exists — free the row's values before issuing the
+    // DROP statement (see addColumnIfMissing for the rationale).
+    row.deinit(allocator);
 
     var ddl_buf: [256]u8 = undefined;
     const ddl = std.fmt.bufPrint(
@@ -1389,6 +1670,9 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration052DropSessionIdFromWorkspaceItemTasks.version, .name = Migration052DropSessionIdFromWorkspaceItemTasks.name, .up = Migration052DropSessionIdFromWorkspaceItemTasks.up },
     .{ .version = Migration053AddKanbanColumnDescription.version, .name = Migration053AddKanbanColumnDescription.name, .up = Migration053AddKanbanColumnDescription.up },
     .{ .version = Migration054MakeSessionQueueMessageNullable.version, .name = Migration054MakeSessionQueueMessageNullable.name, .up = Migration054MakeSessionQueueMessageNullable.up },
+    .{ .version = Migration055AddDesignPages.version, .name = Migration055AddDesignPages.name, .up = Migration055AddDesignPages.up },
+    .{ .version = Migration056UpgradeDesignPagesToFileModel.version, .name = Migration056UpgradeDesignPagesToFileModel.name, .up = Migration056UpgradeDesignPagesToFileModel.up },
+    .{ .version = Migration057AddDesignElementProperties.version, .name = Migration057AddDesignElementProperties.name, .up = Migration057AddDesignElementProperties.up },
 };
 
 /// Register all migrations with a MigrationManager

@@ -14,6 +14,7 @@ const background_process = @import("background_process.zig");
 const ProcessInfo = background_process.ProcessInfo;
 const inherited_context = @import("inherited_context.zig");
 const kanban_model = @import("kanban_model.zig");
+const design_model = @import("design_model.zig");
 
 const AgentTool = tool_models.AgentTool;
 const AgentToolFunction = tool_models.AgentToolFunction;
@@ -104,7 +105,15 @@ pub fn buildMessages(
     const kanbanStatusContent = try BuildKanbanStatusPrompt(allocator, db, session_id);
     defer allocator.free(kanbanStatusContent);
 
-    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment, sub_agents_listing, workspaceContext, kanbanStatusContent);
+    // Build the "Design Canvas" status section (v6 — 3 LLM tools).
+    // Only rendered when the session's parent item has
+    // item_type === 'design' (the helper silently returns "" otherwise).
+    // Mirrors the Kanban pattern above — same graceful-skip on
+    // errors, same render-after-workspace-context ordering.
+    const designStatusContent = try BuildDesignCanvasPrompt(allocator, db, session_id);
+    defer allocator.free(designStatusContent);
+
+    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment, sub_agents_listing, workspaceContext, kanbanStatusContent, designStatusContent);
 
     // Render inherited parent conversation history (if requested) and append
     // it to the system prompt as a labelled, read-only block.
@@ -1137,6 +1146,197 @@ pub fn BuildKanbanStatusPrompt(
         \\- **blocked** — if you cannot make progress, do NOT move; explain the
         \\  blocker in your reply. The card stays where it is until the user
         \\  resolves the blocker or you find a way forward.
+        \\
+    );
+
+    return out.toOwnedSlice(allocator);
+}
+
+// Cap for how many design pages to enumerate in the Design Canvas status
+// prompt. Pages beyond the cap are listed as a count footer. Mirrors
+// `MAX_KANBAN_COLUMNS` (10) — small enough to keep the prompt compact,
+// large enough to cover most multi-page designs.
+const MAX_DESIGN_PAGES: u32 = 10;
+
+/// Render the "Design Canvas" markdown block — workflow expectations
+/// for the LLM when the session's parent item is a design canvas
+/// (`item_type === 'design'`). Mirrors `BuildKanbanStatusPrompt`:
+/// silently returns `""` (a 0-byte heap-owned slice) when the session
+/// is not bound to a design item, when the DB lookups fail, or when
+/// the session_id is empty.
+///
+/// The block teaches the LLM about the 3 design tools
+/// (`set_design_page`, `add_element`, `update_element`) and the 6
+/// element types (`rectangle`, `ellipse`, `text`, `image`, `frame`,
+/// `group`) so it can pick the right shape on first call without
+/// re-reading the tool schemas. It also lists the current pages (with
+/// their visible elements) so the agent has spatial context before
+/// deciding what to add/modify.
+pub fn BuildDesignCanvasPrompt(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]const u8 {
+    if (session_id.len == 0) return allocator.dupe(u8, "");
+
+    // 1. Re-use the workspace-context anchor to read the parent's
+    //    item_type without a second JOIN. Bail out when the parent
+    //    isn't a design canvas.
+    const ctx = (llm_history.getWorkspaceContext(allocator, db, session_id) catch |err| {
+        std.log.warn("BuildDesignCanvasPrompt: getWorkspaceContext failed: {}", .{err});
+        return allocator.dupe(u8, "");
+    }) orelse return allocator.dupe(u8, "");
+    defer ctx.deinit(allocator);
+
+    if (!std.mem.eql(u8, ctx.self_item_type, "design")) {
+        return allocator.dupe(u8, "");
+    }
+
+    // 2. Read the pages (in flow order). Same graceful-skip pattern as
+    //    BuildKanbanStatusPrompt — any DB failure returns "".
+    const pages = design_model.listPages(allocator, db, ctx.self_item_id) catch |err| {
+        std.log.warn("BuildDesignCanvasPrompt: listPages failed: {}", .{err});
+        return allocator.dupe(u8, "");
+    };
+    defer design_model.freePages(allocator, pages);
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "\n\n## Design Canvas\n\n");
+    try out.appendSlice(allocator,
+        \\This task is on a design canvas (parent item_type: `design`).
+        \\**You interact with the canvas via 3 LLM tools** (full schemas
+        \\in the tool listing below — pass `workspace_id` + `item_id` from
+        \\the `## Workspace Context` section above, and `page_id` is the
+        \\page's id from the listing below):
+        \\
+        \\- `set_design_page(item_id, page_name, width?, height?)` — create
+        \\  or look up a page by name. Idempotent: calling with an existing
+        \\  name returns the same `page_id`. Defaults: width=1920,
+        \\  height=1080.
+        \\- `add_element(page_id, name, type, html, x?, y?, width?, height?, fill?, rotation?, corner_radius?, opacity?, text_content?, text_style?, image_url?)`
+        \\  — add one element to a page. The `html` is the rendered DOM
+        \\  fragment (e.g. `<div class="card">...</div>`) that the
+        \\  frontend mounts in the canvas at the given (x, y) with the
+        \\  given width/height. Geometry defaults to 0/0/100/100; `fill`
+        \\  is a CSS color string (`#ffffff`, `rgb(...)`, etc.).
+        \\- `update_element(element_id, ...)` — patch any subset of the
+        \\  element's fields (name, type, html, x/y/width/height/rotation,
+        \\  fill, stroke, stroke_width, corner_radius, opacity,
+        \\  text_content, text_style, image_url). All fields nullable;
+        \\  pass only what changes.
+        \\
+        \\**Element types** (pass the string in `add_element`/`update_element`):
+        \\
+        \\- `rectangle` — filled rect with optional corner_radius + fill.
+        \\  Use for backgrounds, cards, buttons, badges.
+        \\- `ellipse` — filled ellipse, same geometry as rectangle.
+        \\- `text` — text element. The `text_content` field is the
+        \\  visible string; `text_style` is a CSS snippet (e.g.
+        \\  `"font-size:24px;color:#111;"`).
+        \\- `image` — raster image element. The `image_url` field is the
+        \\  URL (https:// or data: or relative); `html` is the `<img>`
+        \\  fragment the canvas mounts.
+        \\- `frame` — a reusable frame (template) — same properties as
+        \\  rectangle, but flagged as a frame for the layers panel.
+        \\- `group` — a logical group of child elements. The element's
+        \\  own `html` is the container; children are added by calling
+        \\  `add_element` with subsequent `position` numbers in the
+        \\  same group.
+        \\
+    );
+
+    // 3. Page listing (cap: MAX_DESIGN_PAGES, with footer).
+    try out.appendSlice(allocator, "\n**Pages on this canvas** (in flow order):\n");
+    if (pages.len == 0) {
+        try out.appendSlice(allocator,
+            \\_No pages yet._ Call `set_design_page(item_id, "<descriptive name>")`
+            \\to create the first one before adding any elements.
+            \\
+        );
+    } else {
+        const shown = @min(pages.len, MAX_DESIGN_PAGES);
+        for (pages[0..shown]) |p| {
+            const pos_str = try std.fmt.allocPrint(allocator, "`, position {d})\n", .{p.position});
+            defer allocator.free(pos_str);
+            try out.appendSlice(allocator, "- `");
+            try out.appendSlice(allocator, p.name);
+            try out.appendSlice(allocator, "` (`");
+            try out.appendSlice(allocator, p.id);
+            try out.appendSlice(allocator, ", width ");
+            const w_str = try std.fmt.allocPrint(allocator, "{d}", .{p.width});
+            defer allocator.free(w_str);
+            try out.appendSlice(allocator, w_str);
+            try out.appendSlice(allocator, ", height ");
+            const h_str = try std.fmt.allocPrint(allocator, "{d}", .{p.height});
+            defer allocator.free(h_str);
+            try out.appendSlice(allocator, h_str);
+            try out.appendSlice(allocator, pos_str);
+
+            // List visible elements on this page (cap: 8) so the LLM
+            // has spatial context without re-querying. Errors degrade
+            // gracefully — skip the element list when the DB read fails.
+            const elements = design_model.listElements(allocator, db, p.id) catch |err| {
+                std.log.warn("BuildDesignCanvasPrompt: listElements failed for page {s}: {}", .{ p.id, err });
+                continue;
+            };
+            defer design_model.freeElements(allocator, elements);
+
+            if (elements.len > 0) {
+                try out.appendSlice(allocator, "  Elements:\n");
+                const el_shown = @min(elements.len, @as(usize, 8));
+                for (elements[0..el_shown]) |e| {
+                    try out.appendSlice(allocator, "  - `");
+                    try out.appendSlice(allocator, e.name);
+                    try out.appendSlice(allocator, "` (");
+                    try out.appendSlice(allocator, e.elem_type);
+                    try out.appendSlice(allocator, ", id ");
+                    try out.appendSlice(allocator, e.id);
+                    const xywh = try std.fmt.allocPrint(allocator, ", x={d} y={d} w={d} h={d}", .{ e.x, e.y, e.width, e.height });
+                    defer allocator.free(xywh);
+                    try out.appendSlice(allocator, xywh);
+                    try out.appendSlice(allocator, ")\n");
+                }
+                if (elements.len > 8) {
+                    const footer = try std.fmt.allocPrint(allocator,
+                        "    … and {d} more elements on this page.\n",
+                        .{elements.len - 8},
+                    );
+                    defer allocator.free(footer);
+                    try out.appendSlice(allocator, footer);
+                }
+            }
+        }
+        if (pages.len > MAX_DESIGN_PAGES) {
+            const footer = try std.fmt.allocPrint(allocator,
+                "… and {d} more pages (cap: {d} shown).\n",
+                .{ pages.len - MAX_DESIGN_PAGES, MAX_DESIGN_PAGES },
+            );
+            defer allocator.free(footer);
+            try out.appendSlice(allocator, footer);
+        }
+    }
+
+    // 4. Workflow expectations.
+    try out.appendSlice(allocator,
+        \\
+        \\**Workflow expectations** (these apply every time you touch the canvas):
+        \\
+        \\- **start** — on first action, call `set_design_page(item_id, "<page>")`
+        \\  to create the page (or look up the existing one). Skip if the
+        \\  page listing above already shows the page you need.
+        \\- **add** — call `add_element(page_id, name, type, html, ...)` for each
+        \\  new shape. Pick `type` from the 6 above; pass `html` as the
+        \\  rendered fragment (the canvas mounts it inside a positioned
+        \\  wrapper). Coordinates (x, y) are top-left in canvas pixels.
+        \\- **modify** — call `update_element(element_id, ...)` with the
+        \\  changed fields only. The tool re-fetches and returns the full
+        \\  element, so you can verify the patch landed.
+        \\- **complete** — before your final reply, summarize which
+        \\  pages/elements you created and any geometry you set. The user
+        \\  sees the canvas update live; a recap keeps the chat history
+        \\  aligned with the visual state.
         \\
     );
 

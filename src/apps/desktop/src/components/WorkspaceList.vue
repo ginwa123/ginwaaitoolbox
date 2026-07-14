@@ -627,6 +627,21 @@ const handleItemDragEnd = () => {
                   Add Kanban
                 </button>
               </li>
+              <!-- NEW (design-mode feature, plan:
+                   docs/superpowers/plans/2026-06-13-design-mode.md):
+                   Third dropdown option for creating a design-mode
+                   workspace item. Sidebar.handleAddItem routes the
+                   'design' itemType to the new AddDesignDialog. -->
+              <li>
+                <button
+                  @click="handleAddItem(workspace.id, 'design')"
+                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
+                  style="color: var(--semantic-text);"
+                  data-testid="workspace-add-design-option"
+                >
+                  Add Design
+                </button>
+              </li>
             </ul>
           </li>
         </ul>

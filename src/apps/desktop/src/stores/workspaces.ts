@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useNavigationStore } from './navigation'
 import { useSseBus } from '../helpers/sseBus'
+import type { DesignElement } from '../api'
 
 export interface KanbanColumn {
   id: string
@@ -50,6 +51,12 @@ export interface WorkspaceItem {
   // type-checking — see the nalar-frontend-task-literal-typing-rule
   // memory.
   kanban_columns?: KanbanColumn[]
+  // NEW (Chunk 6 of design-mode-redesign plan). Populated for
+  // `item_type === 'design'` items when the active page is open.
+  // Optional so legacy literals (5+ test files construct WorkspaceItem
+  // without this field) keep type-checking — see the
+  // nalar-frontend-task-literal-typing-rule memory.
+  design_elements?: DesignElement[]
 }
 
 export interface Workspace {
@@ -133,6 +140,16 @@ const STORAGE_KEY_WORKSPACE_ITEM_EXPANDED = 'nalar-workspace-item-expanded'
 const STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED = 'nalar-workspace-item-tasks-expanded'
 
 import * as api from '../api'
+// Aliases for design-mode API functions whose names collide with
+// the store action wrappers below (Task 6.1 of design-mode-redesign
+// plan). `getDesignPage` doesn't collide so it stays as a bare api
+// lookup (no `api.getDesignPage(...)` in the action).
+import {
+  addDesignElement as addDesignElementApi,
+  updateDesignElement as updateDesignElementApi,
+  deleteDesignElement as deleteDesignElementApi,
+  updateDesignElementGeometry as updateDesignElementGeometryApi,
+} from '../api'
 
 export const useWorkspacesStore = defineStore('workspaces', () => {
   // Loading state
@@ -646,6 +663,72 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  /**
+   * Create a new design workspace item and select it.
+   *
+   * `path` is REQUIRED — design elements live as HTML files at
+   * `<path>/.nalar/design/<page>/<element>.html`. The backend's
+   * `POST /api/workspaces/:wid/items/design` rejects an empty
+   * `path` with 400 (PathRequired), and the model's `addElement`
+   * rejects `path IS NULL` with `ItemPathMissing` on first use.
+   * So path is mandatory at both layers.
+   *
+   * After the API call, the new item is pushed into the local store
+   * and `activeWorkspaceItemId` is set to it (so the DesignView
+   * opens immediately). Returns the new item id or undefined on
+   * failure.
+   */
+  async function addDesignItem(
+    workspaceId: string,
+    name: string,
+    path: string,
+  ): Promise<string | undefined> {
+    try {
+      const item = await api.createDesign(workspaceId, name, path)
+      const ws = workspaces.value.find((w) => w.id === workspaceId)
+      if (ws) {
+        // Defensive merge: the backend now returns the full
+        // CreateDesignResponse (id, workspace_id, item_type, name,
+        // path, position) — but if it ever regresses to the bare
+        // {id, success} shape, the sidebar would render "Untitled
+        // project" because `item.name` would be undefined. Fall
+        // back to the form's name/path (we just sent them — they're
+        // the source of truth on the client side) so the UI is
+        // always correct, regardless of what the backend returns.
+        // The kanban flow has the same pattern via `addKanbanItem`
+        // (line ~595) — mirrors the same defense-in-depth.
+        ws.items.push({
+          ...item,
+          // WorkspaceItem interface fields — fall back to the form
+          // values when the response is missing them.
+          // `workspace_id` is intentionally NOT set here — it lives
+          // on the parent Workspace (we found `ws` by `ws.id ===
+          // workspaceId`), and the WorkspaceItem interface doesn't
+          // have a workspace_id field (the parent-workspace lookup
+          // is the source of truth).
+          name: item.name ?? name,
+          item_type: item.item_type ?? 'design',
+          path: item.path ?? path,
+          tasks: [],
+          design_elements: [],
+        })
+        // Auto-expand the workspace + select the new item so the
+        // user lands in the new DesignView (mirror addKanbanItem).
+        if (!ws.expanded) {
+          ws.expanded = true
+          const expandedWorkspaces = loadExpandedWorkspaces()
+          expandedWorkspaces.add(ws.id)
+          saveExpandedWorkspaces(expandedWorkspaces)
+        }
+      }
+      activeWorkspaceItemId.value = item.id
+      return item.id
+    } catch (err) {
+      console.error('[workspacesStore.addDesignItem] API call failed:', err)
+      return undefined
+    }
+  }
+
   // Backfill (or change) the `path` of a kanban workspace item. Used
   // by the KanbanView "Set project root" banner that surfaces when a
   // kanban was created before the path field existed (the user's
@@ -911,6 +994,154 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         task.kanban_column_id = columnId
         task.kanban_position = position
       }
+    }
+  }
+
+  // ─── Design mode actions (Chunk 6 of design-mode-redesign plan) ──────
+  //
+  // These 5 actions back the design canvas / layers panel / properties
+  // panel UI of the v6 Figma-lite design mode. The API wrappers
+  // (api.getDesignPage, addDesignElement, etc.) were added in Chunk 5
+  // (src/apps/desktop/src/api/index.ts lines 1295-1503); these store
+  // actions are thin wrappers that call the API and mirror the response
+  // into the local store state — mirroring the kanban-actions section's
+  // pattern above (Chunk 5 of workspace-item-kanban plan).
+  //
+  // The design-mode SSE routing key (`design_element`) is GLOBAL — every
+  // connected client receives every event. The `designSse` store
+  // (src/apps/desktop/src/stores/designSse.ts) handles incoming events
+  // by re-fetching via `fetchDesignElements` below. Page tracking is
+  // wired in Chunk 7 (AppLayout sets the active page id); until then,
+  // `fetchInitialDesign` in designSse.ts is a no-op.
+
+  // Fetch a single design page (with all its elements) and populate
+  // `item.design_elements`. Mirrors `fetchKanbanColumns`'s shape and
+  // error semantics: silently no-ops if the item isn't in the local
+  // store (defensive against stale SSE events after a workspace
+  // switch) and silently preserves the existing elements array on
+  // API failure (best-effort — the next SSE event will trigger
+  // another fetch).
+  async function fetchDesignElements(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+  ): Promise<void> {
+    const item = findItem(workspaceId, itemId)
+    if (!item) return
+    try {
+      const { elements } = await api.getDesignPage(workspaceId, itemId, pageId)
+      item.design_elements = elements
+    } catch (err) {
+      console.error('[workspacesStore.fetchDesignElements] API call failed:', err)
+      // Leave the existing elements array untouched so the UI
+      // doesn't flash to empty on a transient network blip. The
+      // next SSE event will trigger another fetch.
+    }
+  }
+
+  // Add an element to a design page and append it to the local
+  // item's `design_elements` array. The backend returns the full
+  // element with server-assigned id / position / timestamps. We
+  // push (not unshift) to match the backend's ordering (oldest
+  // first by position). Used by the AddDesignElementDialog in
+  // Chunk 7 + by the LLM tool-driven add_element handler.
+  async function addDesignElement(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    body: {
+      name: string
+      type: DesignElement['type']
+      html: string
+      [k: string]: any
+    },
+  ): Promise<DesignElement> {
+    const newElem = await addDesignElementApi(workspaceId, itemId, pageId, body)
+    const item = findItem(workspaceId, itemId)
+    if (item) {
+      if (!item.design_elements) item.design_elements = []
+      item.design_elements.push(newElem)
+    }
+    return newElem
+  }
+
+  // Patch an element's fields (full update — backend applies a
+  // sparse merge). Replaces the local copy in place so the canvas
+  // re-renders the patched element immediately. Used by the
+  // PropertiesPanel (form input changes) and the LLM tool-driven
+  // update_element handler.
+  async function updateDesignElement(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    elementId: string,
+    patch: Partial<DesignElement>,
+  ): Promise<DesignElement> {
+    const updated = await updateDesignElementApi(
+      workspaceId,
+      itemId,
+      pageId,
+      elementId,
+      patch,
+    )
+    const item = findItem(workspaceId, itemId)
+    if (item?.design_elements) {
+      const idx = item.design_elements.findIndex((e) => e.id === elementId)
+      if (idx !== -1) item.design_elements[idx] = updated
+    }
+    return updated
+  }
+
+  // Geometry-only update path (drag/resize fires 60+/sec). The
+  // backend's design_elements_geometry_update PATCH is the
+  // dedicated endpoint — no full element GET is needed. The
+  // response is the same full DesignElement (so the frontend
+  // can sync its local Pinia store).
+  //
+  // We intentionally DON'T mirror the returned element into the
+  // local `design_elements` array — geometry patches arrive at
+  // 60+/sec, and pushing every response through reactive
+  // watchers would flood the canvas. The drag-end handler in
+  // DesignView.vue (Chunk 7) fires a follow-up
+  // `fetchDesignElements` to reconcile local state once the user
+  // releases the mouse.
+  async function updateDesignElementGeometry(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    elementId: string,
+    geometry: {
+      x?: number
+      y?: number
+      width?: number
+      height?: number
+      rotation?: number
+    },
+  ): Promise<DesignElement> {
+    return await updateDesignElementGeometryApi(
+      workspaceId,
+      itemId,
+      pageId,
+      elementId,
+      geometry,
+    )
+  }
+
+  // Delete an element. Idempotent on the backend (returns
+  // `{success: true}` whether the row existed or not). Filters
+  // the local `design_elements` array to remove the row.
+  async function deleteDesignElement(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    elementId: string,
+  ): Promise<void> {
+    await deleteDesignElementApi(workspaceId, itemId, pageId, elementId)
+    const item = findItem(workspaceId, itemId)
+    if (item?.design_elements) {
+      item.design_elements = item.design_elements.filter(
+        (e) => e.id !== elementId,
+      )
     }
   }
 
@@ -1691,6 +1922,13 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     pinTask,
     reorderPinnedTasks,
     addKanbanItem,
+    // NEW (design-mode feature): creates a design-mode workspace item.
+    // POSTs to /api/workspaces/:wsId/items/design and pushes the
+    // returned item (with empty tasks + design_elements) into the
+    // local store, auto-expanding the workspace + selecting the new
+    // item so the user lands in the new DesignView. Plan:
+    // docs/superpowers/plans/2026-06-13-design-mode.md.
+    addDesignItem,
     addKanbanColumn,
     updateKanbanColumn,
     copyKanbanSpecFrom,
@@ -1701,6 +1939,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     updateKanbanItemName,
     fetchKanbanColumns,
     fetchKanbanTasks,
+    // Design mode actions (Chunk 6 of design-mode-redesign plan)
+    fetchDesignElements,
+    addDesignElement,
+    updateDesignElement,
+    updateDesignElementGeometry,
+    deleteDesignElement,
     initializeFromSystemFolder,
     onSessionEvent,
     fetchSystemFolder,

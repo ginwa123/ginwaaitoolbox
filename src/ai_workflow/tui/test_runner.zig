@@ -35,6 +35,9 @@ test {
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     _ = @import("http_handlers/workspace_items_reorder_test.zig");
     _ = @import("http_handlers/task_pin_test.zig");
+    _ = @import("design_io_test.zig");
+    _ = @import("design_model_test.zig");
+    _ = @import("migration_057_test.zig");  // stays at this path; imported by src/migrations/test_runner.zig via relative path
     _ = @import("kanban_model_test.zig");
     _ = @import("kanban_model_test_description.zig");
     _ = @import("kanban_copy_spec_test.zig");
@@ -49,6 +52,16 @@ test {
     _ = @import("http_handlers/kanban_columns_create_test.zig");
     _ = @import("http_handlers/kanban_columns_update_test.zig");
     _ = @import("http_handlers/kanban_columns_delete_test.zig");
+    _ = @import("http_handlers/design_pages_list_test.zig");
+    _ = @import("http_handlers/design_pages_create_test.zig");
+    _ = @import("http_handlers/design_items_create_test.zig");
+    _ = @import("http_handlers/design_pages_get_test.zig");
+    _ = @import("http_handlers/design_elements_create_test.zig");
+    _ = @import("http_handlers/design_elements_update_test.zig");
+    _ = @import("http_handlers/design_elements_delete_test.zig");
+    _ = @import("http_handlers/design_elements_html_get_test.zig");
+    _ = @import("http_handlers/design_elements_html_update_test.zig");
+    _ = @import("http_handlers/design_elements_geometry_update_test.zig");
     _ = @import("http_handlers/kanban_copy_spec_test.zig");
     _ = @import("http_handlers/tasks_move_test.zig");
     _ = @import("http_handlers/tasks_create_kanban_test.zig");
@@ -60,6 +73,7 @@ test {
     _ = @import("get_session_list_test.zig");
     // _ = @import("transform_llm_history_to_agent_messages_test.zig"); // DISABLED - pre-existing type mismatch (TUIHistory vs LLMHistory) on main
     _ = @import("on_event_sent_sanitize_test.zig");
+    _ = @import("on_event_sent_design_test.zig");
     _ = @import("gitignore_vendor_sqlite3_test.zig");
     _ = @import("../../modules/agent/tools/show_preview_test.zig");
     // _ = @import("extract_base64_image_urls_test.zig"); // DISABLED - 9 failing tests (investigation shows std.testing.expectEqualStrings has a bug with literal strings)

@@ -8,6 +8,7 @@ import type {
   SessionEvent,
   KanbanColumnEvent,
   KanbanTaskEvent,
+  DesignElementEvent,
   SseEvent,
   QueueMessageEvent,
 } from '../api'
@@ -16,11 +17,20 @@ import type {
 // from `../api`, but those names don't exist in `api/index.ts` — the
 // actual exports are `KanbanColumnEvent` / `KanbanTaskEvent` and
 // `SseEvent`. We use the real names here; the `SseEventMap` shape
-// (worker / session / kanban / llm / queue) is unchanged.
+// (worker / session / kanban / design / llm / queue) is unchanged.
 type SseEventMap = {
   worker: WorkerEvent
   session: SessionEvent
   kanban: KanbanColumnEvent | KanbanTaskEvent
+  // Design-mode element mutations. The backend emits three granular
+  // event names (`design_element_created` / `_updated` / `_deleted`)
+  // that all share the same `DesignElementEvent` payload — see
+  // src/ai_workflow/tui/on_event_sent_design.zig. The bus routes all
+  // three to this single `design` channel; the consumer can switch
+  // on `event.action` to distinguish them if needed. The
+  // `designSse.ts` Pinia store treats all three uniformly
+  // (re-fetch the page's element list).
+  design: DesignElementEvent
   llm: SseEvent
   queue: QueueMessageEvent
 }
@@ -97,22 +107,30 @@ export function installSseBus(_app?: App): SseBus {
     worker: new Set<Listener<'worker'>>(),
     session: new Set<Listener<'session'>>(),
     kanban: new Set<Listener<'kanban'>>(),
+    design: new Set<Listener<'design'>>(),
     llm: new Set<Listener<'llm'>>(),
     queue: new Set<Listener<'queue'>>(),
   }
 
   const state = shallowRef<SseState>('closed')
 
-  // Single global EventSource carrying ALL 5 channels. The bus does
+  // Single global EventSource carrying ALL 6 channels. The bus does
   // NOT open a second EventSource per chat (the v1 refcount design
   // was reverted; see docs/plans/2026-06-30-single-sse-all-sessions-design.md).
   // Listeners for 'llm' and 'queue' filter by event.session_id on the
   // JS side — defense-in-depth against any backend routing regression.
+  // Design listeners filter by `event.workspace_id` in the
+  // `designSse.ts` store.
   const globalClient: SseClient = createUnifiedSseConnection({
     channels: {
       workers: (e) => dispatch('worker', e),
       sessions: (e) => dispatch('session', e),
       kanban: (e) => dispatch('kanban', e),
+      // Design-mode element events. The `designSse` Pinia store
+      // subscribes via `bus.on('design', cb)` to receive all three
+      // action variants (created/updated/deleted) on the same
+      // callback and re-fetch the page's element list.
+      design: (e) => dispatch('design', e),
       // Bare 'llm' and bare 'queue' — backend broadcasts all sessions'
       // events on central keys. Frontend filter is `event.session_id ===
       // mySessionId.value` inside each listener.

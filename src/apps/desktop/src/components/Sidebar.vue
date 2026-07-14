@@ -11,6 +11,11 @@ import RenameWorkspaceModal from './RenameWorkspaceModal.vue'
 import RenameTaskModal from './RenameTaskModal.vue'
 import AddItemDialog from './AddItemDialog.vue'
 import AddKanbanDialog from './AddKanbanDialog.vue'
+// NEW (design-mode feature): the modal that creates a design
+// workspace item (DesignView's container). Opened via the
+// "+ Add Item → Add Design" dropdown option in WorkspaceList.
+// Plan: docs/superpowers/plans/2026-06-13-design-mode.md.
+import AddDesignDialog from './AddDesignDialog.vue'
 import AddMemoryDialog from './AddMemoryDialog.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import AddTaskDialog from './AddTaskDialog.vue'
@@ -132,6 +137,12 @@ const addItemTargetWorkspaceId = ref<string | null>(null)
 // Reuses `addItemTargetWorkspaceId` as the target workspace (the
 // kanban item is created in that workspace, same as folder/memory).
 const showAddKanbanDialog = ref(false)
+// NEW (design-mode feature): mirrors showAddKanbanDialog for the
+// design-mode flow. The 'design' branch in handleAddItem (below)
+// flips this on, which mounts <AddDesignDialog> below the kanban
+// dialog. See AddDesignDialog.vue for the internal flow.
+// Plan: docs/superpowers/plans/2026-06-13-design-mode.md.
+const showAddDesignDialog = ref(false)
 const showAddMemoryDialog = ref(false)
 const addMemoryTargetWorkspaceId = ref<string | null>(null)
 const showDeleteConfirm = ref(false)
@@ -375,6 +386,12 @@ const handleAddItem = (workspaceId: string, itemType: string) => {
   addItemTargetWorkspaceId.value = workspaceId
   if (itemType === 'folder') showAddItemDialog.value = true
   if (itemType === 'kanban') showAddKanbanDialog.value = true
+  // NEW (design-mode feature): routes the 'design' itemType to
+  // AddDesignDialog. Mirrors the kanban routing above — both
+  // dialogs share the (workspaceId, itemType) routing pattern
+  // emitted by WorkspaceList. Plan:
+  // docs/superpowers/plans/2026-06-13-design-mode.md.
+  if (itemType === 'design') showAddDesignDialog.value = true
   if (itemType === 'memory') {
     addMemoryTargetWorkspaceId.value = workspaceId
     showAddMemoryDialog.value = true
@@ -414,6 +431,32 @@ const handleCloseAddKanbanDialog = () => {
   showAddKanbanDialog.value = false
 }
 
+// NEW (design-mode feature): mirrors handleCreateKanban. User
+// fills in the name + picks a project folder, AddDesignDialog
+// emits `create(name, path)`, we call workspacesStore.addDesignItem
+// (the store action) which POSTs to /api/workspaces/:wsId/items/design
+// and pushes the new item (with empty tasks + design_elements
+// arrays) into the local store. The new item appears in the
+// sidebar immediately and is auto-selected so the user lands in
+// the new DesignView. The path is required so every chat session
+// / design page created under this design item has a cwd to run
+// git / file tools in. Plan:
+// docs/superpowers/plans/2026-06-13-design-mode.md.
+const handleCreateDesign = async (name: string, path: string) => {
+  if (addItemTargetWorkspaceId.value) {
+    await workspacesStore.addDesignItem(
+      addItemTargetWorkspaceId.value,
+      name,
+      path,
+    )
+  }
+  showAddDesignDialog.value = false
+}
+
+const handleCloseAddDesignDialog = () => {
+  showAddDesignDialog.value = false
+}
+
 /**
  * Resolve the cwd to scope a new local memory to. Uses the first
  * folder-type item in the target workspace as the project root
@@ -433,6 +476,7 @@ const resolveCwdForMemory = (workspaceId: string): string => {
   // is what the local-memories backend will scope the file to.
   for (const item of ws.items) {
     if (item.item_type === 'folder' && item.path) return item.path
+    if (item.item_type === 'design' && item.path) return item.path
   }
   return ''
 }
@@ -1135,6 +1179,12 @@ defineExpose({
     <RenameTaskModal :show="showRenameTaskModal" :current-name="renameTargetTaskName" @close="handleCloseTaskRenameModal" @rename="handleConfirmTaskRename" />
     <AddItemDialog :show="showAddItemDialog" @close="handleCloseAddItemDialog" @create="handleCreateItem" />
     <AddKanbanDialog :show="showAddKanbanDialog" @close="handleCloseAddKanbanDialog" @create="handleCreateKanban" />
+    <!-- NEW (design-mode feature): modal for creating a design-mode
+         workspace item. Wired to the 'design' itemType in
+         handleAddItem (above). See AddDesignDialog.vue for the
+         internal flow. Plan:
+         docs/superpowers/plans/2026-06-13-design-mode.md. -->
+    <AddDesignDialog :show="showAddDesignDialog" @close="handleCloseAddDesignDialog" @create="handleCreateDesign" />
     <AddMemoryDialog
       :show="showAddMemoryDialog"
       :cwd="addMemoryTargetWorkspaceId ? resolveCwdForMemory(addMemoryTargetWorkspaceId) : ''"

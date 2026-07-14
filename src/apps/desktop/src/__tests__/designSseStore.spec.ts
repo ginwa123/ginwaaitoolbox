@@ -1,0 +1,180 @@
+/**
+ * Unit tests for the bus-backed designSse Pinia store (Chunk 6 of
+ * docs/superpowers/plans/2026-07-08-design-mode-redesign.md).
+ *
+ * Mirrors kanbanSse.spec.ts byte-for-byte in structure. The store
+ * no longer opens its own EventSource — it subscribes via
+ * `useSseBus().on('design', ...)`. Tests:
+ *   - install the bus via `installSseBus` + swap in a stub global
+ *     client (so we never touch the network in tests)
+ *   - drive design events via `__dispatchSseBus('design', event)` —
+ *     the bus test injection point routes the event through the
+ *     same `dispatch()` function production uses
+ *   - assert the workspace-id filter drops events for other workspaces
+ *   - assert the design dispatch logic calls
+ *     `workspacesStore.fetchDesignElements`
+ *   - assert `closeDesignSse` detaches the listener so events after
+ *     close are NOT delivered
+ *   - assert `initDesignSse` is idempotent (second call doesn't add
+ *     a second listener)
+ *   - assert `closeDesignSse` clears `activeWorkspaceId` so a later
+ *     init can re-bind cleanly
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setActivePinia, createPinia } from 'pinia'
+import { createApp, type App as VueApp } from 'vue'
+
+import {
+  installSseBus,
+  __resetSseBus,
+  __dispatchSseBus,
+  __setSseBusGlobalClient,
+} from '../helpers/sseBus'
+import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
+import type { DesignElementEvent } from '../api'
+import { useDesignSseStore } from '../stores/designSse'
+import { useWorkspacesStore } from '../stores/workspaces'
+import { makeLocalStorageStub } from './helpers'
+
+/**
+ * Test-only stub SseClient. Tracks state-listener callbacks so tests
+ * can drive the bus's `state` ShallowRef transitions to exercise
+ * the `onConnected → fetchInitialDesign` watcher.
+ *
+ * Same shape as the kanban test's stub — the bus's SseClient vtable
+ * is shared across all channel subscribers.
+ */
+function makeStubClient(initial: SseState): SseClient {
+  const stub: any = {
+    close: vi.fn(),
+    reconnect: vi.fn(),
+    getState: () => stub._state,
+    onStateChange: (cb: (s: SseState, info: SseStateInfo) => void) => {
+      stub.__stateListeners.push(cb)
+      return () => {
+        const i = stub.__stateListeners.indexOf(cb)
+        if (i >= 0) stub.__stateListeners.splice(i, 1)
+      }
+    },
+  }
+  stub._state = initial
+  stub.__stateListeners = [] as Array<(s: SseState, info: SseStateInfo) => void>
+  return stub as SseClient
+}
+
+describe('useDesignSseStore (bus-backed)', () => {
+  let app: VueApp
+  let stubClient: SseClient
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: makeLocalStorageStub(),
+      writable: true,
+      configurable: true,
+    })
+
+    // Install the bus BEFORE initDesignSse runs — designSseStore calls
+    // `useSseBus()` inside initDesignSse, which throws if the bus
+    // hasn't been installed. Replace the underlying SseClient with a
+    // stub so we never open a network EventSource in tests.
+    __resetSseBus()
+    app = createApp({})
+    installSseBus(app)
+    stubClient = makeStubClient('connecting')
+    __setSseBusGlobalClient(stubClient)
+  })
+
+  afterEach(() => {
+    // Detach the bus listener so events don't fire into a store whose
+    // Pinia is gone — `__resetSseBus` closes the global client which
+    // also tears down internal state, but explicit closeDesignSse
+    // covers the case where a test crashed before reaching close.
+    try {
+      useDesignSseStore().closeDesignSse()
+    } catch {
+      // store not activated in this test → no-op
+    }
+    __resetSseBus()
+    vi.restoreAllMocks()
+  })
+
+  function dispatch(event: DesignElementEvent): void {
+    __dispatchSseBus('design', event)
+  }
+
+  // ─── Contract: idempotency + state cleanup ────────────────────────────
+  //
+  // The Chunk 6 task spec lists exactly two test contracts:
+  //   1. initDesignSse is idempotent (second call doesn't add a
+  //      second listener — confirmed by counting fetches per
+  //      dispatched event).
+  //   2. closeDesignSse clears activeWorkspaceId (so a later
+  //      initDesignSse can re-bind cleanly).
+
+  it('initDesignSse is idempotent — second call does NOT add a second listener', async () => {
+    // Spy on workspacesStore.fetchDesignElements and count how many
+    // times it fires per dispatched event. If initDesignSse added a
+    // second listener, the count would double.
+    const ws = useWorkspacesStore()
+    const fetchSpy = vi.spyOn(ws, 'fetchDesignElements').mockResolvedValue()
+
+    const store = useDesignSseStore()
+    await store.initDesignSse('ws_1')
+    await store.initDesignSse('ws_1') // 2nd call — should NOT re-subscribe
+
+    dispatch({
+      action: 'updated',
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      page_id: 'page_1',
+      element_id: 'elem_1',
+    } as DesignElementEvent)
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('closeDesignSse clears activeWorkspaceId so a later re-init re-binds cleanly', async () => {
+    // The spec asserts that closeDesignSse nulls out the active
+    // workspace filter — this lets `initDesignSse(newId)` after
+    // close re-register with the new id (verified by dispatching an
+    // event for the new id post-close+reinit and observing the
+    // fetch fire).
+    const ws = useWorkspacesStore()
+    const fetchSpy = vi.spyOn(ws, 'fetchDesignElements').mockResolvedValue()
+
+    const store = useDesignSseStore()
+    await store.initDesignSse('ws_1')
+    expect(store.activeWorkspaceId).toBe('ws_1')
+
+    store.closeDesignSse()
+    // After close, the filter must be cleared.
+    expect(store.activeWorkspaceId).toBe('')
+
+    // Re-init with a different workspace. The listener must be
+    // re-installed (since closeDesignSse detached it) and the
+    // activeWorkspaceId must reflect the new id.
+    await store.initDesignSse('ws_2')
+    expect(store.activeWorkspaceId).toBe('ws_2')
+
+    // ws_1 event after re-init must be dropped (filter is now ws_2).
+    dispatch({
+      action: 'updated',
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      page_id: 'page_1',
+      element_id: 'elem_1',
+    } as DesignElementEvent)
+    expect(fetchSpy).not.toHaveBeenCalled()
+
+    // ws_2 event after re-init must trigger the fetch.
+    dispatch({
+      action: 'updated',
+      workspace_id: 'ws_2',
+      item_id: 'item_1',
+      page_id: 'page_1',
+      element_id: 'elem_1',
+    } as DesignElementEvent)
+    expect(fetchSpy).toHaveBeenCalledWith('ws_2', 'item_1', 'page_1')
+  })
+})
