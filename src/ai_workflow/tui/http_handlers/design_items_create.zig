@@ -113,16 +113,27 @@ fn useCase(
         return error.InsertFailed;
     };
 
-    // Build the response via the existing `makeWorkspaceItemResponse`
-    // helper. The wire shape is `{ id, success }` — the kanban
-    // handler returns a richer CreateKanbanResponse (because the
-    // frontend wants the kanban's default columns in the same
-    // round-trip); design creation only needs to confirm the row
-    // exists so the client can re-fetch via GET /items/:id if it
-    // wants the full shape.
-    const json = http_response.makeWorkspaceItemResponse(allocator, .{
+    // Build the full CreateDesignResponse. The frontend
+// (`workspacesStore.addDesignItem`) spreads this response into
+// the local item entry so the sidebar can render `item.name`
+// immediately without a re-fetch. If we only returned `{id,
+// success}` (the `makeWorkspaceItemResponse` shape), the
+// sidebar would have to fall back to "Untitled project"
+// because the local push would have no name field — the bug
+// the user reported on 2026-07-14.
+//
+// Mirrors the kanban handler's `CreateKanbanResponse` pattern.
+// `position` is a placeholder (0) — the frontend sidebar sorts
+// by created_at on the next reload and doesn't use position yet;
+// computing it here would require a second SELECT for no gain.
+    const json = std.json.Stringify.valueAlloc(allocator, CreateDesignResponse{
         .id = item_id,
-    }) catch {
+        .workspace_id = input.workspace_id,
+        .item_type = "design",
+        .name = trimmed_name,
+        .path = trimmed_path,
+        .position = 0,
+    }, .{}) catch {
         return error.OutOfMemory;
     };
     return json;

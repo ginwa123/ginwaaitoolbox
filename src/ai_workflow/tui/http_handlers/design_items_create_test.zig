@@ -48,7 +48,7 @@ test "design_items_create.zig defines pub fn workspaceItemsCreateDesignHandler" 
 
 // ─── Contract 2: handler uses parseFromSliceLeaky + valueAlloc ───────────
 
-test "design_items_create.zig uses parseFromSliceLeaky + makeWorkspaceItemResponse" {
+test "design_items_create.zig uses parseFromSliceLeaky + valueAlloc" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);
@@ -57,9 +57,21 @@ test "design_items_create.zig uses parseFromSliceLeaky + makeWorkspaceItemRespon
         std.debug.print("\n!! {s} does not use parseFromSliceLeaky !!\n", .{HANDLER_PATH});
         return error.ParseFromSliceLeakyMissing;
     }
-    if (std.mem.indexOf(u8, source, "makeWorkspaceItemResponse") == null) {
-        std.debug.print("\n!! {s} does not use makeWorkspaceItemResponse !!\n", .{HANDLER_PATH});
-        return error.WorkspaceItemResponseMissing;
+    // valueAlloc is required because we return the FULL
+    // CreateDesignResponse (id, workspace_id, item_type, name, path,
+    // position) — not the simpler WorkspaceItemResponse `{id,
+    // success}` shape. The frontend pushes the response into the
+    // local store entry; without `name` in the response, the
+    // sidebar falls back to "Untitled project" (the bug reported on
+    // 2026-07-14). Using makeWorkspaceItemResponse (which only
+    // returns id+success) is therefore a regression of that fix.
+    if (std.mem.indexOf(u8, source, "std.json.Stringify.valueAlloc") == null) {
+        std.debug.print("\n!! {s} does not use std.json.Stringify.valueAlloc !!\n", .{HANDLER_PATH});
+        return error.ValueAllocMissing;
+    }
+    if (std.mem.indexOf(u8, source, "CreateDesignResponse") == null) {
+        std.debug.print("\n!! {s} does not define CreateDesignResponse !!\n", .{HANDLER_PATH});
+        return error.CreateDesignResponseMissing;
     }
 }
 
@@ -110,5 +122,48 @@ test "workspaceItemsCreateDesignHandler is re-exported in http_handlers/mod.zig"
             .{MOD_PATH},
         );
         return error.HandlerReExportMissing;
+    }
+}
+
+// ─── Contract 6: response includes name + workspace_id + path ────────────
+//
+// The frontend (workspacesStore.addDesignItem) does:
+//   const item = await api.createDesign(workspaceId, name, path)
+//   ws.items.push({ ...item, tasks: [], design_elements: [] })
+//
+// For the sidebar to render the right name (not fall back to
+// "Untitled project"), the response MUST carry `name`. Same
+// requirement for `workspace_id`, `item_type`, `path` so the
+// item integrates with the rest of the WorkspaceItem interface.
+// Regression test for the 2026-07-14 "Untitled project" bug.
+
+test "CreateDesignResponse fields include name, workspace_id, path, item_type" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // Find the struct definition block.
+    const struct_start = std.mem.indexOf(u8, source, "pub const CreateDesignResponse = struct") orelse {
+        std.debug.print("\n!! {s} does not define CreateDesignResponse !!\n", .{HANDLER_PATH});
+        return error.CreateDesignResponseMissing;
+    };
+    const struct_end = std.mem.indexOfPos(u8, source, struct_start, "};") orelse {
+        return error.StructEndMissing;
+    };
+    const block = source[struct_start..struct_end];
+
+    // Comptime-known field list + patterns. The `:` suffix is
+    // appended at comptime (the `++` operator on string literals
+    // requires comptime operands) so Zig accepts the call.
+    const fields = [_][]const u8{ "name", "workspace_id", "item_type", "path", "id" };
+    inline for (fields) |field| {
+        const pattern = field ++ ":";
+        if (std.mem.indexOf(u8, block, pattern) == null) {
+            std.debug.print(
+                "\n!! CreateDesignResponse is missing the `{s}:` field !!\n",
+                .{field},
+            );
+            return error.ResponseFieldMissing;
+        }
     }
 }

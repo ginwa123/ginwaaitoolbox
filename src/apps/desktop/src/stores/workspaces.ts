@@ -687,7 +687,31 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       const item = await api.createDesign(workspaceId, name, path)
       const ws = workspaces.value.find((w) => w.id === workspaceId)
       if (ws) {
-        ws.items.push({ ...item, tasks: [], design_elements: [] })
+        // Defensive merge: the backend now returns the full
+        // CreateDesignResponse (id, workspace_id, item_type, name,
+        // path, position) — but if it ever regresses to the bare
+        // {id, success} shape, the sidebar would render "Untitled
+        // project" because `item.name` would be undefined. Fall
+        // back to the form's name/path (we just sent them — they're
+        // the source of truth on the client side) so the UI is
+        // always correct, regardless of what the backend returns.
+        // The kanban flow has the same pattern via `addKanbanItem`
+        // (line ~595) — mirrors the same defense-in-depth.
+        ws.items.push({
+          ...item,
+          // WorkspaceItem interface fields — fall back to the form
+          // values when the response is missing them.
+          // `workspace_id` is intentionally NOT set here — it lives
+          // on the parent Workspace (we found `ws` by `ws.id ===
+          // workspaceId`), and the WorkspaceItem interface doesn't
+          // have a workspace_id field (the parent-workspace lookup
+          // is the source of truth).
+          name: item.name ?? name,
+          item_type: item.item_type ?? 'design',
+          path: item.path ?? path,
+          tasks: [],
+          design_elements: [],
+        })
         // Auto-expand the workspace + select the new item so the
         // user lands in the new DesignView (mirror addKanbanItem).
         if (!ws.expanded) {
