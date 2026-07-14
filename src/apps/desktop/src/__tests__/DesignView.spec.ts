@@ -94,4 +94,31 @@ describe('DesignView.vue static contract', () => {
     expect(source).toContain("localStorage")
     expect(source).toContain("SIDEBAR_WIDTH_KEY")
   })
+
+  // NEW (2026-07-14): top-right chat-toggle. The 💬 button in the
+  // canvas header bar emits `openChat` upward; AppLayout's
+  // handleDesignOpenChat handler finds or creates a "Design Chat"
+  // task on the design item and switches to the 3-column
+  // (DesignView | resize-handle | ChatView) layout. Without this
+  // contract, a future refactor could silently drop the chat
+  // toggle and the user would lose the primary way to interact
+  // with the LLM about the design.
+  it('declares openChat in defineEmits (top-right chat toggle)', () => {
+    // Vue 3 typed-emits syntax allows either `openChat: []` or
+    // `openChat: [] | null` — match either. The event must be
+    // present in the defineEmits<{...}>() type literal.
+    expect(source).toMatch(/openChat:\s*\[\s*\][^,}]*/)
+  })
+
+  it('renders the design-open-chat-button in the canvas header', () => {
+    expect(source).toContain('design-open-chat-button')
+    expect(source).toContain('aria-label="Open design chat"')
+    // The 💬 glyph should appear in the button (visual cue for
+    // chat — same convention used by folder chats in nalar).
+    expect(source).toMatch(/💬/)
+  })
+
+  it('handleOpenChat emits the openChat event', () => {
+    expect(source).toMatch(/handleOpenChat\s*=\s*\([^)]*\)\s*:\s*void\s*=>\s*\{[^}]*emit\('openChat'\)/)
+  })
 })

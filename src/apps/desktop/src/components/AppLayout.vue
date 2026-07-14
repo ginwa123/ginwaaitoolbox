@@ -1011,6 +1011,58 @@ const handleDesignSelectElement = (_elementId: string) => {
   void _elementId
 }
 
+// NEW: design-mode chat toggle (top-right 💬 button in DesignView).
+// Finds or creates a "Design Chat" standard task on the active
+// design item and sets it as the active task, which triggers the
+// 3-column "DesignView | resize-handle | ChatView" template
+// below. Reuses the same chat task across reopens (so history
+// persists) — the look-up is by workspace_item_id + name =
+// 'Design Chat'. The kanban flow uses per-task chat (each task
+// gets its own chat row); design mode uses per-design-item chat
+// (one chat per design, simpler mental model — every page lives
+// under the same chat context, which matches "ask the LLM about
+// the whole design" rather than "ask the LLM about one card").
+//
+// We could mark the task with a dedicated task_type (e.g.
+// 'design_chat') and filter on that, but the existing standard
+// task_type already gives us everything we need (no kanban auto-
+// assign fires because the parent is not a kanban — see the
+// parent_is_kanban check in createStandardTask at task_create.zig
+// ~line 294) and adding a new task_type is a migration. The
+// name-based filter is sufficient for the MVP; if a user renames
+// the task they lose the chat — acceptable for the first cut.
+const DESIGN_CHAT_TASK_NAME = 'Design Chat'
+
+const handleDesignOpenChat = async (): Promise<void> => {
+  const ws = activeWorkspace.value
+  const item = activeWorkspaceItem.value
+  if (!ws || !item || item.item_type !== 'design') return
+
+  // Find an existing "Design Chat" task on this design item. The
+  // task may be in `item.tasks` (loaded by the store) or not yet
+  // loaded (e.g. user just created the design). We optimistically
+  // use the store's local view; if not found, we always POST a
+  // new one and the server's UNIQUE-by-id insert wins (no
+  // duplicates possible because we always pick a fresh task id).
+  const existingTask = item.tasks?.find((t) => t.name === DESIGN_CHAT_TASK_NAME)
+  if (existingTask) {
+    workspacesStore.setActiveTask(existingTask.id)
+    return
+  }
+
+  // Create a fresh standard task. The backend's createStandardTask
+  // is item_type-agnostic for non-kanban parents (the kanban auto-
+  // assign block is gated on parent_is_kanban), so the same
+  // endpoint works for design items with no schema change.
+  const newTaskId = await workspacesStore.addTask(ws.id, item.id, {
+    name: DESIGN_CHAT_TASK_NAME,
+    taskType: 'standard',
+  })
+  if (newTaskId) {
+    workspacesStore.setActiveTask(newTaskId)
+  }
+}
+
 const handleDesignUpdateElement = async (elementId: string, patch: unknown) => {
   const ws = activeWorkspace.value
   const item = activeWorkspaceItem.value
@@ -1464,6 +1516,81 @@ watch(chatSessionCwd, (newCwd) => {
            list re-fetches. DesignView emits page/element mutations
            which we forward to the workspaces store (or api layer
            directly for page create — no store action yet). -->
+      <!-- Design + chat 3-column (NEW, 2026-07-14). Mirrors the
+           kanban+chat 3-column branch above: DesignView on the
+           left (~40%), resize handle in the middle, ChatView on
+           the right. Triggered when an active chat task exists
+           for the active design item (set via the top-right 💬
+           button's open-chat handler). The 3-col must appear
+           BEFORE the single-col DesignView v-else-if so it wins
+           when activeTask is set. The :key on DesignView forces
+           a fresh mount when the user navigates between designs;
+           ChatView uses 'task-<id>' so switching chats within
+           the same design remounts cleanly. -->
+      <div
+        v-if="
+          activeTask &&
+          activeWorkspaceItem &&
+          activeWorkspaceItem.item_type === 'design' &&
+          activeTaskWorkspaceItemId === activeWorkspaceItem.id
+        "
+        class="flex-1 flex min-h-0"
+        data-design-three-column
+      >
+        <div
+          class="flex flex-col h-full min-h-0"
+          :style="kanbanColumnStyle"
+          style="border-right: 1px solid var(--color-border)"
+        >
+          <DesignView
+            :key="'design-' + activeWorkspaceItem.id"
+            :item="activeWorkspaceItem"
+            :workspace-id="activeWorkspace?.id ?? ''"
+            :item-id="activeWorkspaceItem.id"
+            @select-page="handleDesignSelectPage"
+            @add-page="handleDesignAddPage"
+            @select-element="handleDesignSelectElement"
+            @update-element="handleDesignUpdateElement"
+            @delete-element="handleDesignDeleteElement"
+            @open-chat="handleDesignOpenChat"
+          />
+        </div>
+        <div
+          class="shrink-0 w-2 cursor-col-resize relative flex items-center justify-center bg-[var(--color-violet)]/15 hover:bg-[var(--color-violet)]/40 transition-colors"
+          :class="isKanbanResizing ? '!bg-[var(--color-violet)]/60' : ''"
+          data-design-resize-handle
+          data-testid="design-resize-handle"
+          title="Drag to resize"
+          @mousedown="startKanbanResize"
+        >
+          <svg
+            width="14"
+            height="2"
+            viewBox="0 0 14 2"
+            fill="currentColor"
+            class="text-[var(--color-violet)] opacity-70"
+            aria-hidden="true"
+          >
+            <circle cx="3" cy="1" r="1" />
+            <circle cx="7" cy="1" r="1" />
+            <circle cx="11" cy="1" r="1" />
+          </svg>
+        </div>
+        <div class="flex-1 flex flex-col h-full min-w-0 min-h-0">
+          <ChatView
+            :key="'task-' + activeTask.id"
+            :chat-id="activeTask.id"
+            :chat-name="activeTask.name"
+            :type="'task'"
+            :cwd="activeWorkspaceItem.path || ''"
+            :task-id="activeTask.id"
+            :task-name="activeTask.name"
+            :project-name="activeWorkspaceItem.name || ''"
+            :show-header="true"
+            @close="handleCloseTaskView"
+          />
+        </div>
+      </div>
       <DesignView
         v-else-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'design'"
         :key="'design-' + activeWorkspaceItem.id"
@@ -1475,6 +1602,7 @@ watch(chatSessionCwd, (newCwd) => {
         @select-element="handleDesignSelectElement"
         @update-element="handleDesignUpdateElement"
         @delete-element="handleDesignDeleteElement"
+        @open-chat="handleDesignOpenChat"
       />
       <ChatView
         v-else-if="activeChatId.startsWith('chat-')"

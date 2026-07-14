@@ -76,6 +76,13 @@ const emit = defineEmits<{
   updateElement: [elementId: string, patch: Partial<DesignElementApi>]
   deleteElement: [elementId: string]
   htmlChanged: [elementId: string, html: string]
+  // NEW: top-right chat toggle. AppLayout finds or creates a
+  // "Design Chat" task on this design item and sets it as the
+  // active task so the existing 3-column layout (DesignView |
+  // resize-handle | ChatView) renders alongside the canvas.
+  // Plan: docs/superpowers/plans/2026-06-13-design-mode.md
+  // (chat integration, added 2026-07-14 after user feedback).
+  openChat: []
 }>()
 
 const workspacesStore = useWorkspacesStore()
@@ -316,6 +323,17 @@ const handleCanvasClick = (event: MouseEvent): void => {
   selectedElementId.value = null
 }
 
+// NEW: chat-toggle click handler (top-right 💬 button in the
+// canvas header bar). Emits the openChat event upward —
+// AppLayout (the only listener) finds or creates the design's
+// chat task and switches to the 3-column layout. The button
+// itself has no local state; the chat panel's visibility is
+// owned by AppLayout (it shows when activeTaskId is set for
+// this design item, hides when activeTaskId is cleared).
+const handleOpenChat = (): void => {
+  emit('openChat')
+}
+
 const handleAddPage = (): void => {
   emit('addPage')
 }
@@ -468,9 +486,45 @@ const canvasHeight = computed(() => activePage.value?.height ?? 1024)
           >
             {{ activePage.name }}
           </div>
+          <div
+            v-else
+            class="text-xs flex-1"
+            style="color: var(--semantic-text-dim);"
+          >
+            (no page selected)
+          </div>
           <div class="text-xs" style="color: var(--semantic-text-dim);">
             {{ elements.length }} element{{ elements.length === 1 ? '' : 's' }}
           </div>
+          <!--
+            NEW: Chat toggle (top-right of the canvas header bar).
+            Same 💬 icon convention used elsewhere in nalar (folder
+            chats, kanban task chats). Clicking emits openChat → the
+            parent AppLayout finds or creates a "Design Chat" task
+            on this design item and switches to the 3-column layout
+            (DesignView | resize-handle | ChatView). The button is
+            always visible so users can open the chat even before
+            they've added any pages — useful for "ask the LLM to
+            draw me a login page" flows.
+            Plan: docs/superpowers/plans/2026-06-13-design-mode.md
+            (chat toggle, 2026-07-14).
+          -->
+          <button
+            type="button"
+            class="px-2 py-1 rounded text-xs font-medium flex items-center gap-1 transition-opacity duration-150 hover:opacity-100"
+            style="
+              background-color: var(--semantic-active-bg);
+              color: var(--semantic-text);
+              opacity: 0.85;
+            "
+            data-testid="design-open-chat-button"
+            aria-label="Open design chat"
+            title="Open design chat"
+            @click="handleOpenChat"
+          >
+            <span aria-hidden="true">💬</span>
+            <span>Chat</span>
+          </button>
         </div>
 
         <!-- Canvas viewport -->
