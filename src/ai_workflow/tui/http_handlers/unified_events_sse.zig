@@ -19,6 +19,9 @@
 //!   workers        → "workers"
 //!   sessions       → "sessions"
 //!   kanban         → "kanban_column", "kanban_task"
+//!   design_element → "design_element" (central key — all workspaces' design
+//!                    element create/update/delete events; the frontend
+//!                    filters by `data.workspace_id` JS-side)
 //!   llm            → "llm"          (central key — all sessions' LLM events)
 //!   queue          → "queue"        (central key — all sessions' queue events)
 //!
@@ -126,6 +129,15 @@ pub fn parseChannels(allocator: std.mem.Allocator, raw: []const u8) ChannelParse
             try routing_keys.append(allocator, try allocator.dupe(u8, "llm"));
         } else if (std.mem.eql(u8, token, "queue")) {
             try routing_keys.append(allocator, try allocator.dupe(u8, "queue"));
+        } else if (std.mem.eql(u8, token, "design_element")) {
+            // Design-mode element mutations. The frontend
+            // `createUnifiedSseConnection` sends this token; the
+            // backend's `on_event_sent_design.zig` emits
+            // `design_element_created/updated/deleted` on the central
+            // "design_element" routing key. The single key covers all
+            // three granular event types (the action discriminator
+            // tells them apart JS-side).
+            try routing_keys.append(allocator, try allocator.dupe(u8, "design_element"));
         } else {
             return error.UnknownChannel;
         }
@@ -193,6 +205,17 @@ pub const CallbackUnifiedLLMBroadcast = struct {
 pub const CallbackUnifiedQueueBroadcast = struct {
     pub fn callback(data: ai_mod.on_event_sent.SseEvent) void {
         forwardToClients("queue", data);
+    }
+};
+
+/// Callback for the central "design_element" routing key. Forwards
+/// to every client registered under "design_element" — the frontend
+/// listener (`designSse.ts` Pinia store) then filters by
+/// `data.workspace_id` on the JS side and dispatches to the
+/// `workspacesStore.fetchDesignElements` action.
+pub const CallbackUnifiedDesignElementStream = struct {
+    pub fn callback(data: ai_mod.on_event_sent.SseEvent) void {
+        forwardToClients("design_element", data);
     }
 };
 
@@ -268,6 +291,8 @@ pub fn unifiedEventsStreamHandler(
                 event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedLLMBroadcast.callback) catch {};
             } else if (std.mem.eql(u8, rk, "queue")) {
                 event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedQueueBroadcast.callback) catch {};
+            } else if (std.mem.eql(u8, rk, "design_element")) {
+                event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedDesignElementStream.callback) catch {};
             }
         }
 

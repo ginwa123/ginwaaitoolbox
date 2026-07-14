@@ -45,9 +45,9 @@ test "unified_events_sse.zig exists and defines pub fn unifiedEventsStreamHandle
     }
 }
 
-// ─── Contract 2: all 5 channel tokens are recognized ─────────────────────
+// ─── Contract 2: all 6 channel tokens are recognized ─────────────────────
 
-test "unified_events_sse.zig recognizes all 5 channel tokens" {
+test "unified_events_sse.zig recognizes all 6 channel tokens" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);
@@ -61,6 +61,8 @@ test "unified_events_sse.zig recognizes all 5 channel tokens" {
         "\"kanban\"",
         "\"kanban_column\"",
         "\"kanban_task\"",
+        // design_element branch (design-mode v6, Chunk 2 SSE)
+        "eql(u8, token, \"design_element\")",
         // bare 'llm' branch
         "eql(u8, token, \"llm\")",
         // bare 'queue' branch
