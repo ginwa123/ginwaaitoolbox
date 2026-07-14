@@ -1471,6 +1471,91 @@ pub const Migration057AddDesignElementProperties = struct {
     }
 };
 
+// ────────────────────────────────────────────────────────────────────────
+// Migration 058 — FTS5 virtual table on llm_history (search-history rewrite)
+// ────────────────────────────────────────────────────────────────────────
+//
+// Why this migration exists
+// ──────────────────────────
+// The search-history rewrite (plan docs/superpowers/plans/2026-07-16-search-history-rewrite.md,
+// Chunk 3) replaces the LIKE-prefix-scan with an FTS5 MATCH query. This
+// migration creates the `messages_fts` external-content FTS5 virtual table
+// over `llm_history.response_content`, plus the 3 sync triggers that keep
+// it in lockstep with the source rows.
+//
+// Why external-content (content='llm_history')
+// ────────────────────────────────────────────
+// `content='llm_history'` makes the FTS table a *view* over the source —
+// no row text is duplicated in `messages_fts`. Storage cost is just the
+// FTS5 inverted index (a few MB at 10K messages). This is the SQLite
+// docs' recommended approach for "full-text search over an existing table".
+//
+// Why porter+unicode61
+// ─────────────────────
+// `porter` does English-language stemming ("running" → "run"), reducing
+// index size by ~20% on English corpora and improving recall for
+// plural/tense variants. `unicode61` handles tokenization of Unicode
+// characters (utf-8-aware splitting on word boundaries). `remove_diacritics
+// 2` strips accents so "café" matches "cafe" — useful for non-ASCII
+// chats.
+//
+// Why version 58 (not 55)
+// ──────────────────────
+// Migration numbers 55, 56, 57 are already taken (AddDesignPages,
+// UpgradeDesignPagesToFileModel, AddDesignElementProperties — see
+// search-history-rewrite branch as of 2026-07-21). 58 is the next free
+// slot in the migration sequence. See Chunk 1 / Task 1.2 of the plan.
+//
+// Plan: docs/superpowers/plans/2026-07-16-search-history-rewrite.md (Chunk 1)
+pub const Migration058AddLlmHistoryFts = struct {
+    pub const version: u32 = 58;
+    pub const name = "add_llm_history_fts";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // FTS5 virtual table — external content on `llm_history`, so it
+        // doesn't duplicate storage. The three triggers below keep it
+        // in sync with `llm_history` rows. The migration backfills
+        // existing rows into the FTS index.
+        try db.exec(allocator,
+            \\CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            \\    content,
+            \\    content='llm_history',
+            \\    content_rowid='rowid',
+            \\    tokenize='porter unicode61 remove_diacritics 2'
+            \\)
+        , &[_][]const u8{});
+
+        // Sync triggers: keep `messages_fts` in sync with `llm_history`.
+        try db.exec(allocator,
+            \\CREATE TRIGGER IF NOT EXISTS llm_history_ai AFTER INSERT ON llm_history BEGIN
+            \\  INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, COALESCE(new.response_content, ''));
+            \\END
+        , &[_][]const u8{});
+
+        try db.exec(allocator,
+            \\CREATE TRIGGER IF NOT EXISTS llm_history_ad AFTER DELETE ON llm_history BEGIN
+            \\  INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.rowid, COALESCE(old.response_content, ''));
+            \\END
+        , &[_][]const u8{});
+
+        try db.exec(allocator,
+            \\CREATE TRIGGER IF NOT EXISTS llm_history_au AFTER UPDATE ON llm_history BEGIN
+            \\  INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.rowid, COALESCE(old.response_content, ''));
+            \\  INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, COALESCE(new.response_content, ''));
+            \\END
+        , &[_][]const u8{});
+
+        // Backfill: walk existing llm_history rows and INSERT into the
+        // FTS table. For zero rows this is a no-op; for ~10K rows it's
+        // ~10ms.
+        try db.exec(allocator,
+            \\INSERT INTO messages_fts(rowid, content)
+            \\SELECT rowid, COALESCE(response_content, '')
+            \\FROM llm_history
+        , &[_][]const u8{});
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -1673,6 +1758,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration055AddDesignPages.version, .name = Migration055AddDesignPages.name, .up = Migration055AddDesignPages.up },
     .{ .version = Migration056UpgradeDesignPagesToFileModel.version, .name = Migration056UpgradeDesignPagesToFileModel.name, .up = Migration056UpgradeDesignPagesToFileModel.up },
     .{ .version = Migration057AddDesignElementProperties.version, .name = Migration057AddDesignElementProperties.name, .up = Migration057AddDesignElementProperties.up },
+    .{ .version = Migration058AddLlmHistoryFts.version, .name = Migration058AddLlmHistoryFts.name, .up = Migration058AddLlmHistoryFts.up },
 };
 
 /// Register all migrations with a MigrationManager
