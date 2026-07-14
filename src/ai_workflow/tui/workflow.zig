@@ -683,6 +683,86 @@ fn generateSessionNameNew(
     }
 }
 
+// POSIX `nanosleep` — declared `extern "c"` so the call doesn't go
+// through Zig 0.16's Io runtime. We deliberately avoid `std.Io.sleep`
+// because the workflow is dispatched as an `Io.Group.concurrent` task
+// from the event bus; blocking on `std.Io.sleep` inside that context
+// would deadlock the group (the workflow's worker thread is parked in
+// the Io sleep, the nested async tasks need other workers, but the
+// Io.Group can't signal completion while the workflow is parked).
+// Plain `nanosleep` parks the OS thread without involving the Io
+// runtime, so the rest of the group keeps making progress. See
+// `src/modules/agent/tools/bash.zig:4-22` for the canonical precedent.
+//
+// Field names differ between libc implementations: glibc uses
+// `tv_sec`/`tv_nsec`, Darwin and most BSDs use `sec`/`nsec`. We mirror
+// the local `PosixTimespec` shape from `helpers/mod.zig` (sec/nsec)
+// so this works on macOS too.
+const WorkflowNanoSleepTimespec = extern struct {
+    sec: c_long,
+    nsec: c_long,
+};
+extern "c" fn workflowNanosleep(req: *const WorkflowNanoSleepTimespec, rem: ?*WorkflowNanoSleepTimespec) c_int;
+
+/// Sleep for up to `delay_ms` milliseconds, polling
+/// `agentic_loop.isWorkerCancelled` every 50 ms so a user-initiated
+/// cancel returns early. Returns `true` if the delay completed,
+/// `false` if it was interrupted by cancellation.
+///
+/// `delay_ms = 0` is a fast-path no-op (returns `true` immediately) —
+/// avoids one nanosleep call when the user has configured "no delay".
+///
+/// Chunk size: 50 ms balances two concerns:
+/// - Cancellation responsiveness: a cancel fires within 50 ms of
+///   the user clicking (imperceptible).
+/// - CPU overhead: 20 polls/sec is trivial; never spin-busy-waits.
+fn retryDelayMs(
+    allocator: std.mem.Allocator,
+    delay_ms: u32,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    io: std.Io,
+    logger: *logger_mod.Logger,
+) bool {
+    if (delay_ms == 0) return true;
+
+    const deadline_ns: i96 = std.Io.Clock.now(io, .real).nanoseconds +
+        @as(i96, @intCast(delay_ms)) * std.time.ns_per_ms;
+
+    while (true) {
+        // Cancellation check — same shape as the loop-top check at
+        // workflow.zig:276 so the cancel UX is consistent.
+        if (agentic_loop_mod.isWorkerCancelled(agentic_loop_mod.IsWorkerCancelledInput{
+            .allocator = allocator,
+            .db = db,
+            .session_id = session_id,
+        })) {
+            const now_ns = std.Io.Clock.now(io, .real).nanoseconds;
+            const remaining_ns: i96 = @max(deadline_ns - now_ns, 0);
+            const remaining_ms: u32 = @intCast(@divFloor(remaining_ns, std.time.ns_per_ms));
+            logger.infoFmt(
+                "Retry delay interrupted by worker cancellation: session_id={s} remaining={d}ms",
+                .{ session_id, remaining_ms },
+            );
+            return false;
+        }
+        if (std.Io.Clock.now(io, .real).nanoseconds >= deadline_ns) return true;
+
+        const now_ns = std.Io.Clock.now(io, .real).nanoseconds;
+        const remaining_ms: u32 = @intCast(@divFloor(
+            deadline_ns - now_ns,
+            std.time.ns_per_ms,
+        ));
+        const chunk_ms: u32 = if (remaining_ms > 50) 50 else remaining_ms;
+
+        const ts = WorkflowNanoSleepTimespec{
+            .sec = 0,
+            .nsec = chunk_ms * std.time.ns_per_ms,
+        };
+        _ = workflowNanosleep(&ts, null);
+    }
+}
+
 fn callDynamicAgentNew(
     allocator: std.mem.Allocator,
     io: std.Io,

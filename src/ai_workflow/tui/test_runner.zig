@@ -12,6 +12,7 @@ test {
     _ = @import("save_skill_test.zig");
     _ = @import("tool_registry_test.zig"); // NEW
     _ = @import("workflow_compaction_envelope_test.zig");
+    _ = @import("workflow_retry_delay_test.zig");
     _ = @import("compaction_config_threshold_test.zig");
     _ = @import("http_handlers/nalar_config_put_test.zig");
     _ = @import("http_handlers/nalar_config_put_parse_test.zig");
