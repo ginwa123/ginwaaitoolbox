@@ -520,7 +520,15 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // the cause when the retry budget is eventually exhausted.
             last_retry_error = err;
             last_retry_source = "callDynamicAgentNew";
-            logger.errFmt("Error calling dynamic agent: {s} now retrying", .{@errorName(err)});
+            logger.errFmt("Error calling dynamic agent: {s} now retrying after {d}ms delay", .{ @errorName(err), config.retry_delay_ms });
+            // Sleep before the next attempt so the upstream can recover (or
+            // rate-limit window can close). 0 ms = no delay (current
+            // behavior, the default). Interrupted by worker cancellation —
+            // see retryDelayMs for the polling details.
+            if (!retryDelayMs(allocator, config.retry_delay_ms, db, copy_session_id, io, logger)) {
+                logger.infoFmt("WORKFLOW CANCELLED during retry delay: session_id={s}", .{copy_session_id});
+                break;
+            }
             continue;
         };
 
@@ -702,7 +710,13 @@ const WorkflowNanoSleepTimespec = extern struct {
     sec: c_long,
     nsec: c_long,
 };
-extern "c" fn workflowNanosleep(req: *const WorkflowNanoSleepTimespec, rem: ?*WorkflowNanoSleepTimespec) c_int;
+// IMPORTANT: the symbol name MUST match the libc name (`nanosleep`),
+// NOT a Zig-side wrapper. In Zig 0.16 `extern "c" fn` keeps the
+// declared name verbatim — using a wrapper name like
+// `workflowNanosleep` produces a linker error "undefined symbol:
+// workflowNanosleep" because libc exports the symbol as `nanosleep`.
+// (See project memory `zig-extern-c-optional-pointer-return`.)
+extern "c" fn nanosleep(req: *const WorkflowNanoSleepTimespec, rem: ?*WorkflowNanoSleepTimespec) c_int;
 
 /// Sleep for up to `delay_ms` milliseconds, polling
 /// `agentic_loop.isWorkerCancelled` every 50 ms so a user-initiated
@@ -726,7 +740,7 @@ fn retryDelayMs(
 ) bool {
     if (delay_ms == 0) return true;
 
-    const deadline_ns: i96 = std.Io.Clock.now(io, .real).nanoseconds +
+    const deadline_ns: i96 = std.Io.Clock.now(.real, io).nanoseconds +
         @as(i96, @intCast(delay_ms)) * std.time.ns_per_ms;
 
     while (true) {
@@ -737,7 +751,7 @@ fn retryDelayMs(
             .db = db,
             .session_id = session_id,
         })) {
-            const now_ns = std.Io.Clock.now(io, .real).nanoseconds;
+            const now_ns = std.Io.Clock.now(.real, io).nanoseconds;
             const remaining_ns: i96 = @max(deadline_ns - now_ns, 0);
             const remaining_ms: u32 = @intCast(@divFloor(remaining_ns, std.time.ns_per_ms));
             logger.infoFmt(
@@ -746,9 +760,9 @@ fn retryDelayMs(
             );
             return false;
         }
-        if (std.Io.Clock.now(io, .real).nanoseconds >= deadline_ns) return true;
+        if (std.Io.Clock.now(.real, io).nanoseconds >= deadline_ns) return true;
 
-        const now_ns = std.Io.Clock.now(io, .real).nanoseconds;
+        const now_ns = std.Io.Clock.now(.real, io).nanoseconds;
         const remaining_ms: u32 = @intCast(@divFloor(
             deadline_ns - now_ns,
             std.time.ns_per_ms,
@@ -759,7 +773,7 @@ fn retryDelayMs(
             .sec = 0,
             .nsec = chunk_ms * std.time.ns_per_ms,
         };
-        _ = workflowNanosleep(&ts, null);
+        _ = nanosleep(&ts, null);
     }
 }
 

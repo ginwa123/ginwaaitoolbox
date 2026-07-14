@@ -111,3 +111,42 @@ test "workflow.zig retryDelayMs uses raw libc nanosleep, not std.Io.sleep" {
         return error.RetryDelayMsMissingNanosleep;
     }
 }
+
+// ─── Task 3.2: callDynamicAgentNew catch must call retryDelayMs ───
+test "workflow.zig calls retryDelayMs in the callDynamicAgentNew catch" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        WORKFLOW_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| {
+        std.debug.print("!! cannot read {s}: {{}} !!\n", .{WORKFLOW_SOURCE_PATH});
+        return err;
+    };
+    defer std.testing.allocator.free(source);
+
+    // The catch block (after the `last_retry_source = "callDynamicAgentNew";` line)
+    // must call retryDelayMs and read config.retry_delay_ms before `continue`.
+    const marker = std.mem.indexOf(u8, source, "last_retry_source = \"callDynamicAgentNew\";") orelse {
+        std.debug.print("!! callDynamicAgentNew catch block not found in workflow.zig !!\n", .{});
+        return error.RetryCatchBlockNotFound;
+    };
+    // Find the next `continue;` after the catch marker.
+    const continue_pos_raw = std.mem.indexOfPos(u8, source, marker + 1, "continue;") orelse {
+        std.debug.print("!! no `continue;` after callDynamicAgentNew catch marker !!\n", .{});
+        return error.RetryContinueMissing;
+    };
+    const continue_pos: usize = continue_pos_raw;
+    const between = source[marker..continue_pos];
+
+    if (std.mem.indexOf(u8, between, "retryDelayMs(") == null) {
+        std.debug.print(
+            "!! callDynamicAgentNew catch does not call retryDelayMs before continue !!\n", .{});
+        return error.RetryDelayNotCalled;
+    }
+    if (std.mem.indexOf(u8, between, "config.retry_delay_ms") == null) {
+        std.debug.print(
+            "!! callDynamicAgentNew catch does not read config.retry_delay_ms !!\n", .{});
+        return error.RetryDelayConfigNotRead;
+    }
+}
