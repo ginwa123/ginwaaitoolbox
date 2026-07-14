@@ -433,6 +433,7 @@ const resolveCwdForMemory = (workspaceId: string): string => {
   // is what the local-memories backend will scope the file to.
   for (const item of ws.items) {
     if (item.item_type === 'folder' && item.path) return item.path
+    if (item.item_type === 'design' && item.path) return item.path
   }
   return ''
 }
