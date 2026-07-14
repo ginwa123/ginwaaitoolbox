@@ -1526,9 +1526,26 @@ watch(chatSessionCwd, (newCwd) => {
            when activeTask is set. The :key on DesignView forces
            a fresh mount when the user navigates between designs;
            ChatView uses 'task-<id>' so switching chats within
-           the same design remounts cleanly. -->
+           the same design remounts cleanly.
+
+           IMPORTANT: this MUST be `v-else-if` (not `v-if`). The
+           whole main-content chain — code-editor, 3-col kanban,
+           task view, kanban view, this 3-col design, design
+           view, chatview, chats, workspace folder preview — must
+           stay in one v-if/v-else-if chain so the branches are
+           mutually exclusive. If this branch is `v-if` instead,
+           Vue starts a NEW chain here; the kanban branch above
+           (line ~1490) wins for chain A but `currentView ===
+           'workspace'` would also win for chain B, causing the
+           workspace folder preview card to render UNDER the
+           kanban board (regression introduced in commit
+           d0a05eb0 "feat(design): Figma-lite redesign — file-
+           backed HTML + 3 LLM tools", which added this 3-col
+           design block). Regression test:
+           AppLayout.kanban.spec.ts → "kanban renders alone,
+           workspace folder preview is not in DOM". -->
       <div
-        v-if="
+        v-else-if="
           activeTask &&
           activeWorkspaceItem &&
           activeWorkspaceItem.item_type === 'design' &&
@@ -1615,6 +1632,7 @@ watch(chatSessionCwd, (newCwd) => {
       <div
         v-else-if="currentView === 'workspace'"
         class="flex-1 flex flex-col items-center justify-center p-8"
+        data-testid="workspace-folder-preview"
       >
         <div
           v-if="activeWorkspaceItem"
