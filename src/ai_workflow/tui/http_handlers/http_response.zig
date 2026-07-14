@@ -284,8 +284,8 @@ pub const NalarConfigResponse = struct {
     compaction_threshold_percent: ?u8 = null,
     /// Delay in milliseconds before the workflow retries a failed
     /// `callDynamicAgentNew` call. 0 = no delay. Consumed by
-    /// `workflow.zig:518` (the `callDynamicAgentNew` retry catch) and
-    /// `workflow.zig:588` (the `else` finish_reason branch).
+    /// `workflow.zig:513` (the `callDynamicAgentNew` retry catch) and
+    /// `workflow.zig:595` (the `else` finish_reason branch).
     retry_delay_ms: u32 = 0,
 };
 
