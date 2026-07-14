@@ -1057,6 +1057,32 @@ export async function createWorkspaceItem(
   })
 }
 
+/**
+ * Create a new design workspace item (`item_type='design'`). The
+ * `path` is REQUIRED because design elements live as HTML files
+ * under `<path>/.nalar/design/...` (the model layer rejects
+ * element-add with `ItemPathMissing` if path is NULL — see
+ * design_model.zig).
+ *
+ * Mirrors `createKanban(workspaceId, name, path)` but requires the
+ * path (no cwd-less design). Returns the new `WorkspaceItem`.
+ *
+ * POST /api/workspaces/:workspaceId/items/design
+ */
+export async function createDesign(
+  workspaceId: string,
+  name: string,
+  path: string,
+): Promise<WorkspaceItem> {
+  return await apiFetch<WorkspaceItem>(
+    `/workspaces/${workspaceId}/items/design`,
+    {
+      method: 'POST',
+      body: { name, path },
+    },
+  )
+}
+
 export async function deleteWorkspaceItem(
   workspaceId: string,
   itemId: string,

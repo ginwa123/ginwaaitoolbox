@@ -663,6 +663,48 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  /**
+   * Create a new design workspace item and select it.
+   *
+   * `path` is REQUIRED — design elements live as HTML files at
+   * `<path>/.nalar/design/<page>/<element>.html`. The backend's
+   * `POST /api/workspaces/:wid/items/design` rejects an empty
+   * `path` with 400 (PathRequired), and the model's `addElement`
+   * rejects `path IS NULL` with `ItemPathMissing` on first use.
+   * So path is mandatory at both layers.
+   *
+   * After the API call, the new item is pushed into the local store
+   * and `activeWorkspaceItemId` is set to it (so the DesignView
+   * opens immediately). Returns the new item id or undefined on
+   * failure.
+   */
+  async function addDesignItem(
+    workspaceId: string,
+    name: string,
+    path: string,
+  ): Promise<string | undefined> {
+    try {
+      const item = await api.createDesign(workspaceId, name, path)
+      const ws = workspaces.value.find((w) => w.id === workspaceId)
+      if (ws) {
+        ws.items.push({ ...item, tasks: [], design_elements: [] })
+        // Auto-expand the workspace + select the new item so the
+        // user lands in the new DesignView (mirror addKanbanItem).
+        if (!ws.expanded) {
+          ws.expanded = true
+          const expandedWorkspaces = loadExpandedWorkspaces()
+          expandedWorkspaces.add(ws.id)
+          saveExpandedWorkspaces(expandedWorkspaces)
+        }
+      }
+      activeWorkspaceItemId.value = item.id
+      return item.id
+    } catch (err) {
+      console.error('[workspacesStore.addDesignItem] API call failed:', err)
+      return undefined
+    }
+  }
+
   // Backfill (or change) the `path` of a kanban workspace item. Used
   // by the KanbanView "Set project root" banner that surfaces when a
   // kanban was created before the path field existed (the user's
@@ -1856,6 +1898,13 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     pinTask,
     reorderPinnedTasks,
     addKanbanItem,
+    // NEW (design-mode feature): creates a design-mode workspace item.
+    // POSTs to /api/workspaces/:wsId/items/design and pushes the
+    // returned item (with empty tasks + design_elements) into the
+    // local store, auto-expanding the workspace + selecting the new
+    // item so the user lands in the new DesignView. Plan:
+    // docs/superpowers/plans/2026-06-13-design-mode.md.
+    addDesignItem,
     addKanbanColumn,
     updateKanbanColumn,
     copyKanbanSpecFrom,

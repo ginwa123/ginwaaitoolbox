@@ -366,6 +366,12 @@ pub fn main(init: std.process.Init) !void {
     //   PATCH  /items/:item_id/tasks/:task_id/move — move a task across columns
     // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).
     try gs.router.post("/api/workspaces/:workspace_id/items/kanban", ai_mod.http_handlers.workspaceItemsCreateKanbanHandler);
+    // Design workspace-item endpoint (item_type='design').
+    //   POST   /items/design                       — create a design (path is required;
+    //                                              see design_items_create.zig)
+    // See docs/superpowers/plans/2026-07-08-design-mode-redesign.md
+    //   Chunk 8 (AppLayout + Sidebar Wiring).
+    try gs.router.post("/api/workspaces/:workspace_id/items/design", ai_mod.http_handlers.workspaceItemsCreateDesignHandler);
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsListHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsCreateHandler);
     try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id", ai_mod.http_handlers.kanbanColumnsUpdateHandler);
