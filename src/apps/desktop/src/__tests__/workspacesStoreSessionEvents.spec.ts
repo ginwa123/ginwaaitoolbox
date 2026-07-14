@@ -183,9 +183,14 @@ describe('useWorkspacesStore session events (via sseBus)', () => {
 
   it('does NOT touch navigationStore when the updated task is not the active one', async () => {
     const nav = useNavigationStore()
-    nav.setActiveChatName('Other Task Header')
     const ws = await setupHandlersAndSeed()
     ws.setActiveTask('other_task')
+    // Re-apply the header AFTER setActiveTask — as of 2026-07-14,
+    // workspacesStore.setActiveTask calls clearActiveChat on the
+    // navigation store (see the regression test below for the
+    // rationale), so we need to set the header explicitly here to
+    // isolate the "SSE event handler ignores non-active task" contract.
+    nav.setActiveChatName('Other Task Header')
 
     dispatch({
       action: 'updated',
@@ -246,6 +251,50 @@ describe('useWorkspacesStore session events (via sseBus)', () => {
       created_at: '',
       updated_at: '',
     })
+    expect(ws.activeTaskId).toBeNull()
+  })
+
+  // Regression: switching from a chat to a task used to leave the
+  // navigation store's `activeChatId` populated with the prior chat's
+  // id. The next SSE session_created event (broadcast on every
+  // /api/llm/session POST — session_create.zig:230-240) drives
+  // ChatsList.loadChats, which finds the orphan activeChatId in
+  // navigation.sessionId, emits a `navigate chat-<old_id>`, and the
+  // AppLayout drops the user out of the task they were just typing
+  // into and back into the prior chat. Mirrors the navigation
+  // store's own setActiveTask (navigation.ts:123-132), which has
+  // always cleared activeChatId on every set.
+  it('setActiveTask clears navigationStore.activeChatId on non-null taskId', async () => {
+    const ws = await setupHandlersAndSeed()
+    const nav = useNavigationStore()
+    // Simulate "user was viewing a chat, then clicks a task".
+    // navigationStore.setActiveChat prepends `chat-` to the session
+    // id passed in, so passing 'old_session' yields activeChatId
+    // === 'chat-old_session'.
+    nav.setActiveChat('old_session', 'Old Chat')
+    expect(nav.activeChatId).toBe('chat-old_session')
+
+    ws.setActiveTask('task_1')
+
+    expect(nav.activeChatId).toBe('')
+    expect(nav.activeChatName).toBe('')
+    expect(ws.activeTaskId).toBe('task_1')
+  })
+
+  it('setActiveTask(null) also clears navigationStore.activeChatId', async () => {
+    // handleCloseTaskView (AppLayout.vue:501-504) calls
+    // ws.setActiveTask(null) before navigating to view=workspace.
+    // The activeChat clear here mirrors navigationStore.setActiveTask
+    // (navigation.ts:123-132), which clears unconditionally.
+    const ws = await setupHandlersAndSeed()
+    const nav = useNavigationStore()
+    ws.setActiveTask('task_1')
+    nav.setActiveChat('post_close', 'Some Chat')
+
+    ws.setActiveTask(null)
+
+    expect(nav.activeChatId).toBe('')
+    expect(nav.activeChatName).toBe('')
     expect(ws.activeTaskId).toBeNull()
   })
 
