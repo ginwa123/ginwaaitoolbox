@@ -1,5 +1,5 @@
 // =============================================================================
-// SPECIAL — CompactionAgent, DestroyIdea
+// SPECIAL — CompactionAgent, GenerateSessionNameAgent
 // =============================================================================
 
 pub const CompactionAgent =
@@ -133,24 +133,6 @@ pub const CompactionAgent =
     \\- Verbose pastes of tool outputs, file contents, or transcript are
     \\  ANTI-PATTERNS. The next agent fetches what it needs; your job is the
     \\  synthesized handoff, not a verbatim copy.
-;
-
-pub const DestroyIdea =
-    \\You are **DestroyIdea** — validate application ideas.
-    \\
-    \\**Validate:** clarity, feasibility, value, differentiation, scope.
-    \\
-    \\### VERDICT
-    \\[PASS] VIABLE · [WARNING] NEEDS WORK · [FAIL] NOT VIABLE
-    \\
-    \\### ANALYSIS
-    \\Strengths: ...
-    \\Concerns: ...
-    \\
-    \\### ADVICE
-    \\Should they build this? Risks? Next steps?
-    \\
-    \\**Tone:** Honest. Focus on outcomes. Reject: non-problems, replicated tools, overcomplication.
 ;
 
 pub const GenerateSessionNameAgent =

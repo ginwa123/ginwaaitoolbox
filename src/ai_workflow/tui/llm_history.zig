@@ -1601,11 +1601,21 @@ pub const WorkerInfo = struct {
     working_directory: []const u8,
     last_activity: i64,
     last_activity_description: []const u8,
+    /// Bound git worktree path for this worker's session (empty
+    /// when no worktree is bound). Mirrors `sessions.git_worktree_cwd`.
+    /// Populated by `getActiveWorker` / `getWorkerBySessionId` via a
+    /// LEFT JOIN on `sessions`. Rendered into the system prompt's
+    /// `## Active Workers` section so LLM agents see the actual
+    /// working tree the other worker is operating in (not just the
+    /// session's nominal cwd). See plan: doc-less chunk of the
+    /// sprint 2 "git worktree cwd, worker" task.
+    git_worktree_cwd: []const u8,
 
     pub fn deinit(self: *const WorkerInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
         allocator.free(self.working_directory);
         allocator.free(self.last_activity_description);
+        allocator.free(self.git_worktree_cwd);
     }
 
     /// Determine if this worker is a sub-agent by checking if session_id contains "subagent"
@@ -1614,12 +1624,30 @@ pub const WorkerInfo = struct {
     }
 };
 
-/// Get all active workers with their info
+/// Get all active workers with their info.
+///
+/// Selects every `worker` row joined to its `sessions` row (if any)
+/// so callers can render the full agent-prompt "## Active Workers"
+/// block — including the bound git worktree path. The LEFT JOIN
+/// preserves workers whose session row has been deleted (a worker
+/// row may outlive its session), falling back to `''` for
+/// `git_worktree_cwd` (mirrors the COALESCE-on-NULL convention used
+/// for `cwd`, `name`, etc. throughout the codebase).
 pub fn getActiveWorker(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
 ) ![]WorkerInfo {
-    const sql = "SELECT session_id, COALESCE(working_directory, ''), last_activity, COALESCE(last_activity_description, '') FROM worker ORDER BY last_activity DESC";
+    const sql =
+        \\SELECT
+        \\    w.session_id,
+        \\    COALESCE(w.working_directory, ''),
+        \\    w.last_activity,
+        \\    COALESCE(w.last_activity_description, ''),
+        \\    COALESCE(s.git_worktree_cwd, '')
+        \\FROM worker w
+        \\LEFT JOIN sessions s ON s.id = w.session_id
+        \\ORDER BY w.last_activity DESC
+    ;
 
     var rows = try db.query(allocator, sql, &.{});
     defer rows.deinit();
@@ -1637,6 +1665,7 @@ pub fn getActiveWorker(
             .working_directory = try allocator.dupe(u8, row.values[1]),
             .last_activity = last_activity,
             .last_activity_description = try allocator.dupe(u8, row.values[3]),
+            .git_worktree_cwd = try allocator.dupe(u8, row.values[4]),
         };
         try workers.append(allocator, worker);
         row.deinit(allocator);
@@ -1748,12 +1777,29 @@ pub fn deleteQueuedMessagesBySessionId(
 }
 
 /// Get a worker by session_id
+///
+/// Returns `null` when no worker row matches `session_id` (e.g. when
+/// no LLM call has been issued yet for this session, or when the
+/// session/worker has been cancelled). Selects `git_worktree_cwd`
+/// from the matching `sessions` row so callers (e.g. `worker_get`
+/// HTTP handler) can show the bound worktree path; falls back to
+/// `''` when the worker row exists but its session row was deleted.
 pub fn getWorkerBySessionId(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) !?WorkerInfo {
-    const sql = "SELECT session_id, COALESCE(working_directory, ''), last_activity, COALESCE(last_activity_description, '') FROM worker WHERE session_id = ?";
+    const sql =
+        \\SELECT
+        \\    w.session_id,
+        \\    COALESCE(w.working_directory, ''),
+        \\    w.last_activity,
+        \\    COALESCE(w.last_activity_description, ''),
+        \\    COALESCE(s.git_worktree_cwd, '')
+        \\FROM worker w
+        \\LEFT JOIN sessions s ON s.id = w.session_id
+        \\WHERE w.session_id = ?
+    ;
 
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
@@ -1765,13 +1811,13 @@ pub fn getWorkerBySessionId(
             .working_directory = try allocator.dupe(u8, row.values[1]),
             .last_activity = last_activity,
             .last_activity_description = try allocator.dupe(u8, row.values[3]),
+            .git_worktree_cwd = try allocator.dupe(u8, row.values[4]),
         };
         row.deinit(allocator);
         return worker;
     }
     return null;
 }
-
 
 /// Check if a task is currently running (a worker row exists for it).
 ///
@@ -1804,9 +1850,6 @@ pub fn cancelSession(
     const sql = "UPDATE worker SET cancelled = 1 WHERE id = ?";
     try db.exec(allocator, sql, &.{session_id});
 }
-
-
-
 
 /// Struct to hold queued message data including image_url
 pub const QueuedMessage = struct {
@@ -1847,8 +1890,6 @@ pub fn getQueueMessages(
 
     return messages;
 }
-
-
 
 // =============================================================================
 // Session Table Functions (migrated from session_table.zig)
@@ -3295,4 +3336,3 @@ pub fn updateWorkspaceUpdatedAt(allocator: std.mem.Allocator, db: *sqlite.Sqlite
     const sql = "UPDATE workspace_item_tasks SET updated_at = datetime('now') WHERE id = ?";
     try db.exec(allocator, sql, &.{session_id});
 }
-

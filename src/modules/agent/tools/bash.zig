@@ -273,11 +273,27 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     // and we need the pgid for the group-wide kill below. With pgid=0
     // the child IS the leader, so pgid == child.id.
     const child_pgid: std.posix.pid_t = child.id.?;
-    // Cleanup on any early-exit path: kill the whole process group so
-    // bash AND any subshells it spawned close their pipe FDs and the
-    // reader threads can see EOF. `std.posix.kill` with a negative pid
-    // sends to the whole group; ESRCH (group already gone) is fine.
-    errdefer _ = std.posix.kill(-child_pgid, .KILL) catch {};
+    // Cleanup on any early-exit path BEFORE the reader threads exist:
+    // kill the whole process group so bash AND any subshells it spawned
+    // close their pipe FDs. `std.posix.kill` with a negative pid sends
+    // to the whole group; ESRCH (group already gone) is fine.
+    //
+    // `child.wait(io)` then reaps the zombie and — critically — runs
+    // `childCleanupPosix` (via defer in childWaitPosix), which closes
+    // the parent-side stdin/stdout/stderr pipe FDs. Without this, the
+    // pipe FDs leak: `std.posix.kill` is a libc call that doesn't
+    // touch the Zig Child struct, and `std.Io.File` has no destructor
+    // to close the handle on scope exit. The wait may fail if the
+    // process is already gone (`.SRCH` → `error.Unexpected`); the
+    // `catch {}` swallows that — `childCleanupPosix` is still safe
+    // to call when child.id is non-null but the OS has already
+    // reaped the PID, it just `closeFd()`s whatever handles are set.
+    errdefer {
+        _ = std.posix.kill(-child_pgid, .KILL) catch {};
+        // child.wait returns !Term; discard the result. We only care
+        // about the side effect (childCleanupPosix closing pipes).
+        _ = child.wait(io) catch {};
+    }
 
     if (input.stdin_data) |data| {
         if (child.stdin) |stdin| {
@@ -457,9 +473,21 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
                 // subshell bash spawned keeps the pipe FDs open and
                 // the reader thread join below hangs forever.
                 _ = std.posix.kill(-child_pgid, .KILL) catch {};
-                // Do not call child.wait() here; kill invalidates
-                // child.id. The wait happens after the threads join.
-                break :blk if (builtin.os.tag == .windows)
+                // Reap the zombie and close pipe FDs. `std.posix.kill`
+                // is a libc call that doesn't touch the Zig `Child`
+                // struct — `child.id` is still the bash PID. Calling
+                // `child.wait(io)` here runs `childWaitPosix`, which
+                // returns immediately (the child is already a zombie)
+                // with status `.signal = .KILL` and — critically —
+                // triggers `childCleanupPosix` via defer, closing the
+                // parent-side stdin/stdout/stderr pipe FDs.
+                //
+                // Without this call, the pipe FDs leak until process
+                // exit: `File` has no destructor, so dropping the
+                // `child` local at scope exit doesn't close the
+                // handles. This is the same fix applied to the
+                // errdefer paths above.
+                break :blk child.wait(io) catch if (builtin.os.tag == .windows)
                     .{ .unknown = 1 }
                 else
                     .{ .signal = .KILL };
