@@ -15,10 +15,12 @@ import KanbanView from './KanbanView.vue'
 import KanbanColumnEditor from './KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './KanbanSettingsDialog.vue'
 import CopyKanbanSpecDialog from './CopyKanbanSpecDialog.vue'
+import DesignView from './DesignView.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
 import { useKanbanSseStore } from '../stores/kanbanSse'
+import { useDesignSseStore } from '../stores/designSse'
 import * as api from '../api'
 import {
   OPEN_IN_CODE_EDITOR_KEY,
@@ -129,8 +131,32 @@ watch(activeWorkspaceId, async (newId) => {
   }
 }, { immediate: true })
 
+// ─── Design SSE — mirror the kanban pattern ─────────────────────────────
+//
+// Bus-backed design-event subscription (Chunk 6 of
+// design-mode-redesign plan). The store opens its bus listener on the
+// FIRST truthy activeWorkspaceId and just updates the filter on
+// subsequent changes — same ONE-connection-per-app-lifetime contract
+// as the kanban SSE store. The bus itself is installed once by
+// App.vue; this watcher only schedules the subscription.
+//
+// `didInitDesignSse` keeps the SSE idempotent across remounts (e.g.
+// HMR, route changes that briefly tear down AppLayout).
+const designSseStore = useDesignSseStore()
+let didInitDesignSse = false
+watch(activeWorkspaceId, async (newId) => {
+  if (!newId) return
+  if (!didInitDesignSse) {
+    didInitDesignSse = true
+    await designSseStore.initDesignSse(newId)
+  } else {
+    await designSseStore.setActiveWorkspaceId(newId)
+  }
+}, { immediate: true })
+
 onUnmounted(() => {
   kanbanSseStore.closeKanbanSse()
+  designSseStore.closeDesignSse()
 })
 
 // Computed refs from store
@@ -940,6 +966,82 @@ const handleKanbanPinTask = (
   sidebarRef.value?.pinTask(workspaceId, itemId, taskId, isPinned)
 }
 
+// ─── Design mode event handlers (Chunk 8 of design-mode-redesign) ────
+//
+// <DesignView> emits these when the user interacts with the canvas:
+// tabs, layers, properties panel, Monaco editor. We forward them to
+// the workspaces store (and, for page add, the api layer directly
+// because there's no store action for that yet).
+//
+// pageId note: DesignView keeps the active page id in a LOCAL ref
+// (its `activePageId`); the workspaces store does not yet track the
+// active page. The selectPage/selectElement emits are currently
+// noops — the parent doesn't need the info, the child already
+// owns the state. Element mutations need pageId, so we pass '' as
+// a TODO placeholder until the store grows a `activeDesignPageId`
+// ref. For now the user only mutates the page they already have
+// open in DesignView, so passing the empty string would silently
+// fail at the backend — guarded by a console.warn for visibility
+// during development.
+const handleDesignSelectPage = (_pageId: string) => {
+  // TODO (v2): workspacesStore.setActiveDesignPage(_pageId) once the
+  // store tracks the active page. For now DesignView owns the page
+  // state internally; the parent doesn't need to mirror it.
+  void _pageId
+}
+
+const handleDesignAddPage = async () => {
+  const ws = activeWorkspace.value
+  const item = activeWorkspaceItem.value
+  if (!ws || !item) return
+  try {
+    // Name is a placeholder; DesignView's DesignPageTabs will refresh
+    // via the page-list re-fetch on its next mount / page-add emit.
+    // A future iteration can open a rename dialog immediately after.
+    await api.createDesignPage(ws.id, item.id, 'Untitled')
+  } catch (e) {
+    console.error('[handleDesignAddPage] failed:', e)
+  }
+}
+
+const handleDesignSelectElement = (_elementId: string) => {
+  // TODO (v2): workspacesStore.setActiveDesignElement(_elementId) so
+  // other tabs / the right sidebar can show the element's properties.
+  // For now selection state lives inside DesignView.
+  void _elementId
+}
+
+const handleDesignUpdateElement = async (elementId: string, patch: unknown) => {
+  const ws = activeWorkspace.value
+  const item = activeWorkspaceItem.value
+  if (!ws || !item) return
+  // TODO: pageId is tracked in DesignView's local ref; pass it here.
+  // Until then, this handler is a noop on the wire (the call would
+  // 404 on the backend). The geometry-update path inside DesignView
+  // already calls workspacesStore.updateDesignElementGeometry
+  // directly with the right pageId, so drag/resize still works.
+  void elementId
+  void patch
+  console.warn(
+    '[handleDesignUpdateElement] pageId not yet tracked in workspacesStore — using direct DesignView paths',
+  )
+}
+
+const handleDesignDeleteElement = async (elementId: string) => {
+  // Confirmation prompt mirrors KanbanView's column-delete pattern.
+  // The browser's native `confirm` is fine here; the dialog is rare
+  // enough that a custom modal would be overkill.
+  if (!confirm('Delete this element?')) return
+  const ws = activeWorkspace.value
+  const item = activeWorkspaceItem.value
+  if (!ws || !item) return
+  // TODO (v2): pass pageId once the store tracks the active page.
+  console.warn(
+    '[handleDesignDeleteElement] pageId not yet tracked in workspacesStore — pass via store ref',
+  )
+  void elementId
+}
+
 // Right sidebar cwd - show when chat is open OR task is active
 const rightSidebarCwd = computed(() => {
   if (activeTask.value && activeWorkspaceItem.value?.path) {
@@ -1354,6 +1456,25 @@ watch(chatSessionCwd, (newCwd) => {
         @pin-task="handleKanbanPinTask"
         @open-settings="handleOpenKanbanSettings"
         @rename-item="handleKanbanRenameItem"
+      />
+      <!-- Design view (Chunk 8 of design-mode-redesign). Mirrors the
+           single-column kanban branch above: full-bleed render when
+           a design workspace item is active and no chat is open.
+           The :key forces a fresh mount on item switch so the page
+           list re-fetches. DesignView emits page/element mutations
+           which we forward to the workspaces store (or api layer
+           directly for page create — no store action yet). -->
+      <DesignView
+        v-else-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'design'"
+        :key="'design-' + activeWorkspaceItem.id"
+        :item="activeWorkspaceItem"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
+        @select-page="handleDesignSelectPage"
+        @add-page="handleDesignAddPage"
+        @select-element="handleDesignSelectElement"
+        @update-element="handleDesignUpdateElement"
+        @delete-element="handleDesignDeleteElement"
       />
       <ChatView
         v-else-if="activeChatId.startsWith('chat-')"
