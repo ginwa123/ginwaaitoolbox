@@ -70,6 +70,27 @@ pub const HttpClient = struct {
             .stderr = .pipe,
         });
 
+        // FIX 2026-07-14: close the pipe FDs on EVERY exit path. In Zig 0.16
+        // the stdlib has NO `child.deinit(io)` and `child.kill(io)` does NOT
+        // close the pipes either (it only sends SIGTERM + waitpid). Without
+        // this defer, any error between spawn and `child.wait(self.io)` —
+        // e.g. `try stdout_list.toOwnedSlice` failing on OOM — drops `child`
+        // on the floor and leaks 2 FDs (stdout + stderr). Empirically:
+        // 50 errored spawns -> 112 FDs in the process vs 14 baseline.
+        // After `wait()` succeeds, `child.stdout`/`child.stderr` are nulled
+        // by `childCleanupPosix`, so this `defer` is a no-op on the happy
+        // path — only the error path actually closes anything.
+        defer {
+            if (child.stdout) |out| {
+                out.close(self.io);
+                child.stdout = null;
+            }
+            if (child.stderr) |err_pipe| {
+                err_pipe.close(self.io);
+                child.stderr = null;
+            }
+        }
+
         // Read stdout
         var stdout_list: std.ArrayList(u8) = .empty;
         errdefer stdout_list.deinit(self.allocator);
@@ -202,6 +223,22 @@ pub const HttpClient = struct {
             .stdout = .pipe,
             .stderr = .pipe,
         });
+
+        // FIX 2026-07-14: close the pipe FDs on EVERY exit path. See the
+        // matching comment in `getWithCurl` for the full rationale — the
+        // Zig 0.16 stdlib has no `child.deinit` and `child.kill` does not
+        // close the pipes either, so any error between spawn and wait leaks
+        // 2 FDs per MCP / design-context HTTP call.
+        defer {
+            if (child.stdout) |out| {
+                out.close(self.io);
+                child.stdout = null;
+            }
+            if (child.stderr) |err_pipe| {
+                err_pipe.close(self.io);
+                child.stderr = null;
+            }
+        }
 
         // Read stdout - use dynamic buffer that grows as needed
         var stdout_list: std.ArrayList(u8) = .empty;
