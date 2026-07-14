@@ -152,6 +152,71 @@ test "notifyWithPath returns BinaryNotFound for an empty path" {
 }
 
 // ---------------------------------------------------------------------------
+// notifyWithPath positive path: spawn /bin/true (exits immediately) to
+// verify the spawn-and-reap pipeline works. Without the reaper thread
+// (see static-contract test below), /bin/true exits so fast that we
+// can't observe the bug from inside the test process; the static
+// contract test pins the structural fix.
+// ---------------------------------------------------------------------------
+
+test "notifyWithPath with /bin/true returns success and does not leak" {
+    if (builtin.os.tag == .windows) return; // /bin/true not on Windows
+    const allocator = testing.allocator;
+    // /bin/true exits immediately. If the function blocks on a
+    // synchronous child.wait, the test still passes (the wait is
+    // microseconds). The real verification is the static-contract
+    // test below — that test catches the structural regression of
+    // removing the reaper thread.
+    try notifications.notifyWithPath(testing.io, allocator, "/bin/true", "T", "B");
+    // No explicit assertion needed: returning from notifyWithPath
+    // without error is the success criterion.
+}
+
+// ---------------------------------------------------------------------------
+// Static-contract regression test for the notify-send zombie bug.
+//
+// Without the per-notification reaper thread, every spawned
+// notify-send becomes a zombie (state Z) in the parent's process
+// table forever — glibc >= 2.34 leaves SIGCHLD at default, which does
+// NOT auto-reap. The fix is to spawn a detached Thread that calls
+// `child.wait(io)` so the OS can reap the child when it exits.
+//
+// These two substring checks lock the structural fix in place so a
+// future refactor can't silently remove the reaper.
+// ---------------------------------------------------------------------------
+
+test "notifyWithArgv source spawns a reaper thread to prevent zombie accumulation" {
+    const source = @embedFile("notifications.zig");
+
+    if (std.mem.indexOf(u8, source, "std.Thread.spawn") == null) {
+        std.debug.print(
+            "FAIL: notifyWithArgv no longer spawns a reaper thread — " ++
+                "notify-send children will accumulate as zombies.\n",
+            .{},
+        );
+        return error.ReaperThreadMissing;
+    }
+    if (std.mem.indexOf(u8, source, "child.wait") == null) {
+        std.debug.print(
+            "FAIL: notifyWithArgv no longer calls child.wait — " ++
+                "notify-send children will accumulate as zombies.\n",
+            .{},
+        );
+        return error.ChildWaitMissing;
+    }
+    // The reaper function must be called by the thread — guard against
+    // a future "spawn a thread that does nothing" regression.
+    if (std.mem.indexOf(u8, source, "reapChild") == null) {
+        std.debug.print(
+            "FAIL: notifyWithArgv spawns a thread but the reaper function " ++
+                "is missing or renamed — zombies will accumulate.\n",
+            .{},
+        );
+        return error.ReaperFunctionMissing;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // buildCommand leak regression (static contract — protects against
 // future refactors that drop the explicit allocator.free calls in the
 // .macos branch). The test only checks the source text; it does not
