@@ -132,27 +132,73 @@ pub fn notifyWithPath(io: std.Io, allocator: std.mem.Allocator, path: []const u8
     return notifyWithArgv(io, argv);
 }
 
+/// Args passed to the reaper thread. The struct is copied onto the
+/// thread's stack for the thread's lifetime, so no heap allocation
+/// is needed. `io` is a fat pointer (vtable + userdata) and `child`
+/// is a small handle struct; both are cheap to copy.
+const ReaperArgs = struct {
+    io: std.Io,
+    child: std.process.Child,
+};
+
+/// One-shot reaper thread: blocks on `child.wait` so the OS can reap
+/// the child when it exits. Fire-and-forget for the LLM workflow — we
+/// don't care about the exit status (a toast notification failing
+/// is not actionable), so any error from `wait` is silently ignored.
+///
+/// Note: Zig function parameters are const-by-default. Since
+/// `child.wait(io)` requires `*Child` (mutable, because it nulls
+/// `child.id` to mark the child as reaped), we copy into a `var`
+/// local first.
+fn reapChild(args: ReaperArgs) void {
+    var local = args;
+    _ = local.child.wait(local.io) catch {};
+}
+
 fn notifyWithArgv(io: std.Io, argv: []const []const u8) NotifyError!void {
     // Any spawn failure (file not found, permission denied, etc.) is
     // collapsed into `BinaryNotFound` so the LLM workflow logs it and
     // moves on. Surfacing the raw error would interrupt the LLM.
-    const child = std.process.spawn(io, .{
+    // Declared as `var` so `child.kill(io)` (in the spawn-failure
+    // fallback below) has a mutable pointer to work with.
+    var child = std.process.spawn(io, .{
         .argv = argv,
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,
     }) catch return error.BinaryNotFound;
-
-    // Fire-and-forget. We deliberately don't call `child.wait(io)` so
-    // a slow toast library can't block the LLM workflow. The OS reaps
-    // the child when it exits. The parent's process table will hold
-    // the zombie briefly; this is acceptable for short-lived
-    // notification daemons.
-    //
-    // We must reference `child` so the compiler doesn't warn that the
-    // `spawn` result is unused — the variable is intentionally leaked
-    // for the fire-and-forget pattern.
     if (child.id == null) return error.BinaryNotFound;
+
+    // Fire-and-forget from the LLM workflow's perspective: we must
+    // not block waiting for notify-send to exit (a slow toast library
+    // would freeze the chat). But dropping the `Child` without
+    // reaping leaves the child as a zombie (state Z) in the parent's
+    // process table forever — SIGCHLD is left at its default behavior
+    // on glibc >= 2.34, which does NOT auto-reap.
+    //
+    // Fix: spawn a one-shot reaper thread that calls `child.wait(io)`
+    // and then exits. The thread is detached so we don't have to
+    // join it. Each notification costs ~8 KB of thread stack, bounded
+    // by the rate of LLM completions.
+    //
+    // We deliberately do NOT use `signal(SIGCHLD, SIG_IGN)` because
+    // that's process-global and would break `child.wait(io)` in
+    // bash.zig + HttpClient.zig, which rely on default SIGCHLD
+    // behavior to reap their own children.
+    const args = ReaperArgs{ .io = io, .child = child };
+    if (std.Thread.spawn(.{}, reapChild, .{args})) |thread| {
+        thread.detach();
+    } else |_| {
+        // Thread spawn failed (out of memory / thread limit). Fall
+        // back to inline `child.kill(io)` to at least prevent zombie
+        // accumulation. `child.kill(io)` in Zig 0.16 returns void,
+        // blocks until the child is reaped, and closes the pipe FDs
+        // via childCleanupPosix — so the LLM workflow briefly blocks
+        // here (~1-10ms) but no zombie leaks. This is a worst-case
+        // safety net; in practice std.Thread.spawn only fails under
+        // extreme resource pressure.
+        child.kill(io);
+    }
 }
 
 /// Truncate `body` to `max` characters, appending an ellipsis when
