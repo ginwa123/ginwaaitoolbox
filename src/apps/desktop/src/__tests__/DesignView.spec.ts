@@ -110,12 +110,31 @@ describe('DesignView.vue static contract', () => {
     expect(source).toMatch(/openChat:\s*\[\s*\][^,}]*/)
   })
 
-  it('renders the design-open-chat-button in the canvas header', () => {
+  it('renders the design-open-chat-button in the top-level toolbar', () => {
     expect(source).toContain('design-open-chat-button')
     expect(source).toContain('aria-label="Open design chat"')
     // The 💬 glyph should appear in the button (visual cue for
     // chat — same convention used by folder chats in nalar).
     expect(source).toMatch(/💬/)
+  })
+
+  it('chat button lives in a TOP-LEVEL toolbar that always renders', () => {
+    // Regression test for the 2026-07-14 bug: the chat button
+    // was initially placed inside the canvas header bar, which
+    // only renders when pages.length > 0. Users on the empty
+    // state ("No pages yet") couldn't reach the chat. The fix
+    // moves the button to a top-level toolbar (`design-toolbar`)
+    // that renders unconditionally, ABOVE DesignPageTabs.
+    expect(source).toContain('design-toolbar')
+    // Find the LAST occurrence of <DesignPageTabs (skips the
+    // docstring at the top of the file that mentions it
+    // descriptively). The last occurrence is the actual Vue
+    // template usage, which must come AFTER the toolbar.
+    const lastTabsIdx = source.lastIndexOf('<DesignPageTabs')
+    const toolbarIdx = source.lastIndexOf('data-testid="design-toolbar"')
+    expect(lastTabsIdx).toBeGreaterThan(-1)
+    expect(toolbarIdx).toBeGreaterThan(-1)
+    expect(toolbarIdx).toBeLessThan(lastTabsIdx)
   })
 
   it('handleOpenChat emits the openChat event', () => {
