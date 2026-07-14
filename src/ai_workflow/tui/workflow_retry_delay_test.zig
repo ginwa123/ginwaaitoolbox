@@ -150,3 +150,46 @@ test "workflow.zig calls retryDelayMs in the callDynamicAgentNew catch" {
         return error.RetryDelayConfigNotRead;
     }
 }
+
+// ─── Task 3.3: finish_reason else branch must call retryDelayMs ───
+test "workflow.zig calls retryDelayMs in the finish_reason else branch" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        WORKFLOW_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| {
+        std.debug.print("!! cannot read {s}: {{}} !!\n", .{WORKFLOW_SOURCE_PATH});
+        return err;
+    };
+    defer std.testing.allocator.free(source);
+
+    // The else branch handles finish_reason values other than
+    // .stop / .length / .tool_calls. Find the else marker (after
+    // `} else if (finish_reason == .tool_calls) {`).
+    const tool_calls_marker = std.mem.indexOf(u8, source, "} else if (finish_reason == .tool_calls) {") orelse {
+        std.debug.print(
+            "!! tool_calls finish_reason branch not found in workflow.zig !!\n", .{});
+        return error.ToolCallsBranchNotFound;
+    };
+    // The else branch is the next `} else {` (with leading brace+space) after tool_calls.
+    const else_marker = std.mem.indexOfPos(u8, source, tool_calls_marker + 1, "} else {") orelse {
+        std.debug.print("!! finish_reason else branch not found in workflow.zig !!\n", .{});
+        return error.ElseBranchNotFound;
+    };
+    // Look at a 500-byte window from the else marker — enough to cover
+    // the retry_count += 1, retryDelayMs call, and break statements.
+    const window_end: usize = @min(else_marker + 500, source.len);
+    const else_block = source[else_marker..window_end];
+
+    if (std.mem.indexOf(u8, else_block, "retryDelayMs(") == null) {
+        std.debug.print(
+            "!! finish_reason else branch does not call retryDelayMs !!\n", .{});
+        return error.RetryDelayNotCalledInElse;
+    }
+    if (std.mem.indexOf(u8, else_block, "retry_count += 1;") == null) {
+        std.debug.print(
+            "!! finish_reason else branch does not increment retry_count !!\n", .{});
+        return error.RetryCountNotIncrementedInElse;
+    }
+}

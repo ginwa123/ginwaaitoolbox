@@ -594,6 +594,14 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, copy_selected_profile_model);
             } else {
                 retry_count += 1;
+                // Same delay policy as the callDynamicAgentNew catch —
+                // sleep before the loop restarts so we don't hammer the
+                // upstream when it returns an unexpected finish_reason
+                // repeatedly. Interrupted by worker cancellation.
+                if (!retryDelayMs(allocator, config.retry_delay_ms, db, copy_session_id, io, logger)) {
+                    logger.infoFmt("WORKFLOW CANCELLED during retry delay (finish_reason else): session_id={s}", .{copy_session_id});
+                    break;
+                }
                 break;
             }
 
