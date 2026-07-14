@@ -37,6 +37,7 @@ import SetGitWorktree from './tool_outputs/SetGitWorktree.vue'
 import ReadCompactedMessages from './tool_outputs/ReadCompactedMessages.vue'
 import KanbanMove from './tool_outputs/KanbanMove.vue'
 import KanbanList from './tool_outputs/KanbanList.vue'
+import ShowPreview from './tool_outputs/ShowPreview.vue'
 import PreviewSidePanel from './PreviewSidePanel.vue'
 import SubAgentPeekPanel from './nalar/SubAgentPeekPanel.vue'
 import { useNavigationStore } from '../stores/navigation'
@@ -595,18 +596,26 @@ const hasMoreMessages = ref(true)
 const isAtBottom = ref(true)
 
 // Preview side panel: derived list + UI state. The panel subscribes to
-// every tool message whose `tool_name === 'show_preview'`; it auto-opens
-// and un-dismisses when a NEW preview arrives (so the user doesn't have
-// to re-open it after dismissing) and resets when switching chats (so
-// the next chat starts with a clean panel). The wrapper has its own
-// `v-if="previews.length > 0"` so the panel itself disappears when the
-// filtered list is empty — the `previewPanelDismissed` flag on the
-// parent is the "user clicked ✕" exit, which persists across the same
-// chat until a new preview arrives (the watcher below re-clears it).
+// every tool message whose `tool_name === 'show_preview'`. It defaults
+// to COLLAPSED (renders as a small `w-8` tab on the right edge) so the
+// chat view stays focused on messages — auto-opening the panel every
+// time the assistant produces a `show_preview` was disruptive and hid
+// the chat. The user explicitly opens it either by:
+//
+//   1. Clicking the collapsed tab (which expands it via the
+//      `v-model:collapsed` binding), or
+//   2. Clicking a `show_preview` tool message bubble in the chat
+//      (handled by `openPreviewForMessage` below, which both
+//      un-collapses and sets `previewToShowId` to jump to that tab).
+//
+// The user can dismiss the panel entirely with the ✕ button (sets
+// `previewPanelDismissed = true`, mounts the panel). The wrapper has its
+// own `v-if="previews.length > 0"` so the panel disappears when the
+// filtered list is empty.
 const showPreviewMessages = computed(() =>
   messages.value.filter((m) => m.tool_name === 'show_preview' && m.is_output === true)
 )
-const previewPanelCollapsed = ref(false)
+const previewPanelCollapsed = ref(true)
 const previewPanelDismissed = ref(false)
 // When the user clicks a `show_preview` message bubble in the chat,
 // this gets set to the bubble's `msg.id`. The PreviewSidePanel
@@ -614,23 +623,18 @@ const previewPanelDismissed = ref(false)
 // it on next-render — keeping it set lets the user click the
 // same bubble repeatedly and reliably re-jump the panel to it.
 // It's cleared by ChatView's `watch(() => props.chatId)` reset
-// and (defensively) when the panel reports the preview no longer
-// matches a current preview (the watcher's no-op behavior).
+// (avoids stale focus id from the previous chat dictating the
+// new chat's panel tab).
 const previewToShowId = ref<string | null>(null)
-
-watch(showPreviewMessages, (newArr, oldArr) => {
-  // Auto-open + un-dismiss whenever a new preview lands in this chat.
-  if ((newArr?.length ?? 0) > (oldArr?.length ?? 0)) {
-    previewPanelCollapsed.value = false
-    previewPanelDismissed.value = false
-  }
-})
 
 // Click handler for `show_preview` message bubbles in the chat.
 // The bubble is rendered *collapsed* (no expand toggle — that would
 // make the user click twice: once to expand, once to view). Instead,
 // the click directly opens the right-side preview panel, jumping to
-// the preview that corresponds to the clicked message id.
+// the preview that corresponds to the clicked message id. This is
+// the ONLY path that un-collapses the panel automatically; new
+// previews arriving in the chat do NOT auto-open it (see comment
+// block above).
 const openPreviewForMessage = (msgId: string) => {
   previewPanelCollapsed.value = false
   previewPanelDismissed.value = false
@@ -640,11 +644,12 @@ const openPreviewForMessage = (msgId: string) => {
 watch(
   () => props.chatId,
   () => {
-    // Switching chats resets the panel state — previews from the
-    // previous chat are no longer relevant, and the user shouldn't
-    // carry the dismissed/collapsed flag into the new chat.
-    previewPanelCollapsed.value = false
-    previewPanelDismissed.value = false
+    // Switching chats clears `previewToShowId` so a stale focus id from
+    // the previous chat doesn't dictate the new chat's panel tab. We
+    // intentionally do NOT touch `previewPanelCollapsed` or
+    // `previewPanelDismissed` here — the user's expanded/collapsed
+    // preference persists across chats (consistent with the
+    // "auto-open is opt-in, via the click handler" policy).
     previewToShowId.value = null
   },
 )
@@ -2382,35 +2387,20 @@ const compactSession = async () => {
                               2. Un-collapses the panel.
                               3. Jumps the panel to the matching
                                  preview tab via the `focusId` prop.
-                            We do NOT render an expandable body — the
-                            existing inline summary (renderResponse →
-                            tool-inline) is the entire bubble. The
-                            user's mental model: "the bubble is just
-                            a bookmark; the panel is the content."
+                            We delegate the visual rendering to
+                            `<ShowPreview>` (which parses the XML
+                            envelope into a header line matching the
+                            rest of the tool cards); the click handler
+                            just calls `openPreviewForMessage` to
+                            focus the matching tab in the side panel.
                           -->
-                          <button
+                          <ShowPreview
                             v-else-if="msg.tool_name === 'show_preview'"
-                            type="button"
-                            class="tool-summary show-preview-bubble"
-                            :data-testid="`show-preview-bubble-${msg.id}`"
-                            :title="`Click to open in side panel`"
-                            style="cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background-color 0.15s; text-align: left; width: 100%; border: none; background: transparent; font: inherit; color: inherit;"
-                            @click="openPreviewForMessage(msg.id)"
-                          >
-                            <span
-                              v-html="
-                                renderResponse(
-                                  msg.content,
-                                  msg.role,
-                                  msg.tool_name,
-                                  msg.diffview_before,
-                                  msg.diffview_after,
-                                  msg.finish_reason,
-                                  msg.tool_calls_json,
-                                )
-                              "
-                            ></span>
-                          </button>
+                            :content="innerToolData(msg)"
+                            :message-id="msg.id"
+                            :parameters="getParametersForMessage(msg)"
+                            @open="openPreviewForMessage($event)"
+                          />
                           <div v-else class="tool-expandable">
                             <button
                               class="tool-summary"
@@ -2833,8 +2823,10 @@ const compactSession = async () => {
       persisted to localStorage as `nalar-preview-panel-width`)
       — adding `flex-1` would let it grow and crowd out the messages.
       The `v-if="!previewPanelDismissed"` stays mounted only until
-      the user clicks ✕ (or a new preview arrives, which the
-      watcher above clears).
+      the user clicks ✕. The panel DEFAULTS to collapsed (renders as
+      a tab) and stays that way until the user clicks the tab to
+      expand or clicks a `show_preview` bubble in the chat — we
+      deliberately do NOT auto-open on new preview arrivals.
     -->
     <PreviewSidePanel
       v-if="!previewPanelDismissed"

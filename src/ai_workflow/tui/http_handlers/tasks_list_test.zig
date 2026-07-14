@@ -35,7 +35,7 @@ const text_normalize = nalarcore.helpers.text_normalize;
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/tasks_list.zig";
 const LLM_HISTORY_PATH = "src/ai_workflow/tui/llm_history.zig";
 const HTTP_RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
-const MIGRATION_PATH = "src/ai_workflow/tui/migration.zig";
+const MIGRATION_PATH = "src/migrations/migration.zig";
 
 /// Read a source file from disk, relative to the project root
 /// (which is the cwd when `zig build test:ai_workflow:tui` runs).

@@ -11,12 +11,6 @@ pub const SubAgentInput = struct {
     tools: ?[]const []const u8 = null, // optional list of tool names to allow
     timeout_seconds: ?u32 = null, // optional timeout for this sub-agent (0 = no timeout)
     inherited_context: ?[]const u8 = null, // optional mode string for parent history inheritance
-    /// Required: name of a sub-agent from `LlmConfig.sub_agents` to
-    /// load this sub-agent's specialized config (model, base_url,
-    /// api_key, url_style, thinking, temperature, system_prompt).
-    /// Also used as the sub-agent's label in the result XML.
-    /// Length is capped at 256 chars as a parse-time guard against
-    /// absurdly long input. `SubAgentsInput.deinit` frees this dupe.
     agent_name: []const u8,
 };
 

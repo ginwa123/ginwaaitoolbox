@@ -75,6 +75,36 @@ pub const HttpRequest = struct {
     pub fn writeSSEEvent(self: *const HttpRequest, event: []const u8) void {
         _ = linux.write(self._client_fd, event.ptr, event.len);
     }
+
+    /// Free all heap-owned data:
+    /// - `path` was allocated by `urlDecode` in `parseRequest`
+    /// - `query` keys + values were URL-decoded (heap-owned)
+    /// - `headers`, `params` maps own their buckets; their entries are
+    ///   slices into `raw` (request_data) or into `path`, so no per-entry free
+    ///
+    /// Production usage (http_server.zig handle function) does NOT call this
+    /// because the per-request arena reaps everything. This method exists for
+    /// test code (where `std.testing.allocator` enforces leak detection) and
+    /// for non-arena callers that want explicit ownership.
+    pub fn deinit(self: *HttpRequest, allocator: std.mem.Allocator) void {
+        // `path` was always allocated by `urlDecode` in `parseRequest` (even
+        // for empty inputs the function allocates `decoded_len` bytes, which
+        // can be 0). Free unconditionally.
+        allocator.free(self.path);
+
+        // Query keys + values are heap-allocated URL-decoded strings
+        // (see `parseRequest` body). Free each before deiniting the map
+        // (which only frees the bucket array).
+        var qit = self.query.iterator();
+        while (qit.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        self.query.deinit();
+
+        self.headers.deinit();
+        self.params.deinit();
+    }
 };
 
 /// HTTP Response builder
@@ -110,6 +140,26 @@ pub const HttpResponse = struct {
         copy.headers.put("Content-Type", "application/json") catch @panic("OOM");
         copy.headers.put("Content-Length", len_str) catch @panic("OOM");
         return copy;
+    }
+
+    /// Free all heap-owned data: the headers map and any header values
+    /// that were allocated by `withBody` / `withJson` (Content-Length and
+    /// Content-Type). Header keys/values from `headers.put(...)` are
+    /// caller-owned (caller frees the key + value strings).
+    ///
+    /// Production usage in http_server.zig does NOT call this because
+    /// the per-request arena reaps everything. This method exists for
+    /// test code (where `std.testing.allocator` enforces leak detection)
+    /// and for non-arena callers that want explicit ownership.
+    pub fn deinit(self: *HttpResponse) void {
+        // The standard helper methods (withBody/withJson) use
+        // std.fmt.allocPrint(allocator, "{}", .{n}) for the
+        // Content-Length value, which is heap-owned. Content-Type is
+        // a string literal ("application/json") so no free needed.
+        if (self.headers.fetchRemove("Content-Length")) |kv| {
+            self.allocator.free(kv.value);
+        }
+        self.headers.deinit();
     }
 
     pub fn toBytes(self: HttpResponse) ![]u8 {

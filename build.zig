@@ -43,15 +43,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const http_dep = b.dependency("httpz", .{ .target = target, .optimize = optimize });
-
     const mod = b.addModule("nalarcore", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
 
     mod.addImport("nalarcore", mod);
-    mod.addImport("httpz", http_dep.module("httpz"));
     // Platform-specific link libs (sqlite3/ssl/crypto on Linux,
     // vendored sqlite3.c on Windows/macOS) are added below in the
     // test/dev-exe/inline-exe setup blocks. They propagate to every
@@ -83,13 +80,21 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("ssl", .{});
         exe.root_module.linkSystemLibrary("crypto", .{});
         exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    } else if (target.result.os.tag == .macos) {
+        // macOS uses Homebrew's system libsqlite3 (see shared `mod` setup).
+        // The `mod` already provides the -lsqlite3 link + brew include
+        // path via the imports array, so the executable inherits them —
+        // re-linking here would be redundant but is kept for symmetry with
+        // the Linux branch and to make the platform intent explicit at
+        // the call site.
+        exe.root_module.linkSystemLibrary("sqlite3", .{});
     } else if (target.result.os.tag == .windows) {
-        // Vendor sqlite3 amalgamation for Windows. On macOS the shared
-        // `mod` already has sqlite3.c attached (added once at the
-        // shared-module post-setup), so this executable inherits it
-        // via the `imports` array — duplicating it here would emit
-        // two sqlite3.o copies and fail with "duplicate symbol
-        // definition".
+        // Vendor sqlite3 amalgamation for Windows. The shared `mod` does
+        // NOT compile sqlite3.c on Windows (the Linux/macOS branches
+        // above use system libs, the `else` branch handles cross-compile
+        // targets but this native-Windows path doesn't go through it).
+        // Compile the amalgamation directly here so sqlite3 symbols
+        // resolve at link time.
         exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
         exe.root_module.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),
@@ -404,6 +409,27 @@ pub fn build(b: *std.Build) void {
         mod.linkSystemLibrary("ssl", .{});
         mod.linkSystemLibrary("crypto", .{});
         mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    } else if (target.result.os.tag == .macos) {
+        // macOS native (Apple Silicon + Intel): use the system libsqlite3
+        // provided by Homebrew. The vendored amalgamation compiled into
+        // our binary panics on arm64 with:
+        //   "member access within misaligned address ... for type
+        //    'LookasideSlot', which requires 8 byte alignment"
+        //   (vendor/sqlite3/sqlite3.c:32137, sqlite3DbMallocRawNN).
+        // The system dylib is aligned correctly and works out of the box.
+        // Homebrew's keg-only layout puts headers at
+        //   <prefix>/opt/sqlite/include  (sqlite3.h, sqlite3ext.h)
+        // and the lib at  <prefix>/opt/sqlite/lib/libsqlite3.dylib.
+        // Default prefix: /opt/homebrew (Apple Silicon). Override with
+        // `-Dsqlite-prefix=/path` for Intel (/usr/local) or custom installs.
+        const sqlite_prefix = b.option(
+            []const u8,
+            "sqlite-prefix",
+            "Homebrew prefix for the sqlite3 keg (default: /opt/homebrew)",
+        ) orelse "/opt/homebrew";
+        mod.linkSystemLibrary("sqlite3", .{});
+        mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/sqlite/include", .{sqlite_prefix}) });
+        mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/opt/sqlite/lib", .{sqlite_prefix}) });
     } else {
         // The cross-compile targets (or non-Linux host builds) need the
         // vendored sqlite3 amalgamation to satisfy sqlite3_* references
@@ -515,13 +541,16 @@ pub fn build(b: *std.Build) void {
         dev_exe.root_module.linkSystemLibrary("sqlite3", .{});
         dev_exe.root_module.linkSystemLibrary("ssl", .{});
         dev_exe.root_module.linkSystemLibrary("crypto", .{});
+    } else if (target.result.os.tag == .macos) {
+        // macOS uses Homebrew's system libsqlite3 (see shared `mod`
+        // setup). The `mod` already provides the -lsqlite3 link + brew
+        // include path via the imports array, so nalar-dev inherits them.
+        dev_exe.root_module.linkSystemLibrary("sqlite3", .{});
     } else if (target.result.os.tag == .windows) {
-        // Vendor sqlite3 amalgamation for Windows. On macOS the shared
-        // `mod` already has sqlite3.c attached (added once at the
-        // shared-module post-setup), so this executable inherits it
-        // via the `imports` array — duplicating it here would emit
-        // two sqlite3.o copies and fail with "duplicate symbol
-        // definition".
+        // Vendor sqlite3 amalgamation for Windows. The shared `mod`
+        // does NOT compile sqlite3.c on Windows, so the amalgamation
+        // is added directly here for nalar-dev to satisfy sqlite3
+        // references.
         dev_exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
         dev_exe.root_module.addCSourceFile(.{
             .file = b.path("vendor/sqlite3/sqlite3.c"),

@@ -4,9 +4,10 @@
 //! handler that maps the outcome + errors to status codes / JSON.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const mod = @import("mod.zig");
+const nalarcore = mod.nalarcore;
 const gserverz = nalarcore.gserverz;
-const http_response = @import("http_response.zig");
+const http_response = mod.http_response;
 
 pub const WorkspaceGetError = error{
     IdRequired,
@@ -108,3 +109,4 @@ pub fn workspaceGetHandler(
         },
     }
 }
+

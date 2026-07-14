@@ -83,6 +83,14 @@ function makeShowPreviewMessage(id: string) {
   return {
     id,
     role: 'tool',
+    // is_output=true is REQUIRED for ChatView's `showPreviewMessages`
+    // filter (ChatView.vue:607) to include the message in the
+    // preview side panel's `:previews` prop. Without it, the panel
+    // hides itself (preview-side-panel v-if="previews.length > 0")
+    // and the assertion below on data-testid="preview-side-panel"
+    // never sees the element. (Pre-existing bug — this test was
+    // failing on main too before the ShowPreview refactor.)
+    is_output: true,
     tool_name: 'show_preview',
     content: `<tool><name>show_preview</name><parameters><content_type>markdown</content_type><content># Title</content></parameters><success>true</success><data><show_preview><status>shown</status><preview_id>pv_${id}</preview_id><content_type>markdown</content_type><content_length>7</content_length></show_preview></data></tool>`,
     timestamp: new Date(),
@@ -173,7 +181,7 @@ describe('ChatView show_preview bubble click', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders show_preview tool messages as a clickable button (not the generic expandable fallback)', async () => {
+  it('renders show_preview tool messages as a clickable card (delegated to <ShowPreview>, not the generic expandable fallback)', async () => {
     installChatViewMocks()
     wrapper = await mountChatView('session_bubble_render')
 
@@ -183,11 +191,14 @@ describe('ChatView show_preview bubble click', () => {
     await nextTick()
     await nextTick()
 
-    // The bubble has the data-testid derived from the message id.
-    const bubble = wrapper!.find('[data-testid="show-preview-bubble-msg-sp-1"]')
-    expect(bubble.exists()).toBe(true)
-    // And it's a <button> (not the generic expandable <div>).
-    expect(bubble.element.tagName).toBe('BUTTON')
+    // The card has the data-testid derived from the message id.
+    const card = wrapper!.find('[data-testid="show-preview-card-msg-sp-1"]')
+    expect(card.exists()).toBe(true)
+    // It renders as a `<div role="button">` so keyboard users can
+    // focus + activate it (Enter / Space). It's NOT the generic
+    // expandable <div> fallback and NOT the old raw `<button>`.
+    expect(card.attributes('role')).toBe('button')
+    expect(card.attributes('tabindex')).toBe('0')
 
     // Since the injected message is a `show_preview` tool message, the
     // side panel also appears (driven by `showPreviewMessages` =
@@ -217,9 +228,9 @@ describe('ChatView show_preview bubble click', () => {
     vm.previewPanelCollapsed = true
     await nextTick()
 
-    const bubble = wrapper!.find('[data-testid="show-preview-bubble-msg-sp-2"]')
-    expect(bubble.exists()).toBe(true)
-    await bubble.trigger('click')
+    const card = wrapper!.find('[data-testid="show-preview-card-msg-sp-2"]')
+    expect(card.exists()).toBe(true)
+    await card.trigger('click')
     await nextTick()
 
     // Panel state should be cleared by the click handler:
@@ -240,8 +251,8 @@ describe('ChatView show_preview bubble click', () => {
     vm.messages = [makeShowPreviewMessage('msg-sp-3')]
     await nextTick()
 
-    const bubble = wrapper!.find('[data-testid="show-preview-bubble-msg-sp-3"]')
-    await bubble.trigger('click')
+    const card = wrapper!.find('[data-testid="show-preview-card-msg-sp-3"]')
+    await card.trigger('click')
     await nextTick()
     expect(vm.previewToShowId).toBe('msg-sp-3')
 
@@ -251,5 +262,87 @@ describe('ChatView show_preview bubble click', () => {
     await nextTick()
     await nextTick()
     expect(vm.previewToShowId).toBeNull()
+  })
+
+  // Regression test for the "auto-open is opt-in" change (2026-07-12):
+  // The preview side panel used to auto-open whenever a NEW
+  // `show_preview` tool message arrived in the chat. This was
+  // disruptive — the panel slid open mid-message and crowded the
+  // chat. The new behavior keeps the panel COLLAPSED by default;
+  // it only opens when the user explicitly clicks a `show_preview`
+  // bubble (via `openPreviewForMessage`). This test verifies that
+  // injecting N previews back-to-back leaves the panel in the
+  // collapsed state throughout.
+  it('does NOT auto-open the preview side panel when new show_preview messages arrive', async () => {
+    installChatViewMocks()
+    wrapper = await mountChatView('session_bubble_noauto')
+
+    const vm = wrapper!.vm as unknown as {
+      messages: unknown[]
+      previewPanelCollapsed: boolean
+      previewPanelDismissed: boolean
+    }
+
+    // Initial state: panel defaults to COLLAPSED (was the bug — used
+    // to default to expanded).
+    expect(vm.previewPanelCollapsed).toBe(true)
+    expect(vm.previewPanelDismissed).toBe(false)
+
+    // Inject the first show_preview message — panel still collapsed.
+    vm.messages = [makeShowPreviewMessage('msg-noauto-1')]
+    await nextTick()
+    await nextTick()
+    expect(vm.previewPanelCollapsed).toBe(true)
+
+    // Inject a second show_preview message — panel still collapsed
+    // (the watcher that used to flip it to false is gone).
+    vm.messages.push(makeShowPreviewMessage('msg-noauto-2'))
+    await nextTick()
+    await nextTick()
+    expect(vm.previewPanelCollapsed).toBe(true)
+
+    // Inject a third — same. Verifies the watcher does NOT trigger
+    // even when the array length grows multiple times in a session.
+    vm.messages.push(makeShowPreviewMessage('msg-noauto-3'))
+    await nextTick()
+    await nextTick()
+    expect(vm.previewPanelCollapsed).toBe(true)
+  })
+
+  // Regression test for the "user click still opens" half of the
+  // opt-in policy (companion to the noauto test above). The
+  // `openPreviewForMessage` click handler is the ONLY path that
+  // un-collapses the panel; new previews arriving in the chat
+  // don't, but the user can still pop the panel open by clicking
+  // a `show_preview` bubble. This test verifies that.
+  it('still opens the panel when the user explicitly clicks a show_preview bubble', async () => {
+    installChatViewMocks()
+    wrapper = await mountChatView('session_bubble_clickopens')
+
+    const vm = wrapper!.vm as unknown as {
+      messages: unknown[]
+      previewPanelCollapsed: boolean
+      previewPanelDismissed: boolean
+      previewToShowId: string | null
+    }
+
+    // Inject a show_preview message. The panel starts collapsed
+    // (verified by the test above); the click handler is the only
+    // way to open it.
+    vm.messages = [makeShowPreviewMessage('msg-clickopens-1')]
+    await nextTick()
+    await nextTick()
+    expect(vm.previewPanelCollapsed).toBe(true)
+
+    // User clicks the bubble — panel un-collapses and focusId
+    // is set to the clicked message id.
+    const card = wrapper!.find('[data-testid="show-preview-card-msg-clickopens-1"]')
+    expect(card.exists()).toBe(true)
+    await card.trigger('click')
+    await nextTick()
+
+    expect(vm.previewPanelCollapsed).toBe(false)
+    expect(vm.previewPanelDismissed).toBe(false)
+    expect(vm.previewToShowId).toBe('msg-clickopens-1')
   })
 })

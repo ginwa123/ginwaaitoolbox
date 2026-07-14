@@ -1,5 +1,25 @@
 const std = @import("std");
 const builtin = @import("builtin");
+
+// POSIX `nanosleep(req, rem)` — declared as `extern "c"` so the call
+// doesn't go through Zig 0.16's Io runtime. We deliberately avoid
+// `std.Io.sleep` here because the bash tool is invoked from the AI
+// workflow, which itself runs as an `Io.Group` concurrent task. Blocking
+// on `std.Io.sleep` inside that context would dead-lock the group
+// (the workflow task can't make progress while a nested Io task waits
+// for a worker that the blocked workflow IS). Plain `nanosleep` parks
+// the OS thread without involving the Io runtime, so the rest of the
+// group keeps making progress.
+//
+// Field names differ between libc implementations: glibc uses `tv_sec`/
+// `tv_nsec`, Darwin and most BSDs use `sec`/`nsec`. We mirror the local
+// `PosixTimespec` shape from helpers/mod.zig (sec/nsec) so this works
+// on macOS too.
+const NanoSleepTimespec = extern struct {
+    sec: c_long,
+    nsec: c_long,
+};
+extern "c" fn nanosleep(req: *const NanoSleepTimespec, rem: ?*NanoSleepTimespec) c_int;
 const schemas = @import("schemas.zig");
 const BashInput = schemas.BashInput;
 const BashOutput = schemas.BashOutput;
@@ -13,6 +33,11 @@ pub const CommandForbidden = error{
     /// Command contains forbidden patterns that produce unbounded output
     CommandForbidden,
 };
+
+/// Returned by `execute_bash` when the caller omits `mandatory_timeout`.
+/// The bash tool is treated as unsafe-without-an-explicit-deadline because
+/// forgetting to set a timeout lets runaway commands hang the agent.
+pub const MandatoryTimeoutMissing = error{MandatoryTimeoutMissing};
 
 /// Detects forbidden command patterns that produce unbounded output
 fn isForbiddenCommand(command: []const u8) bool {
@@ -103,6 +128,20 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     // --- Forbidden pattern check ---
     if (isForbiddenCommand(command)) {
         return error.CommandForbidden;
+    }
+
+    // --- Mandatory-timeout check (foreground only) ---
+    // The background path does not use the timeout (the process detaches
+    // via nohup and runs forever), so we skip the check there. But the
+    // foreground path MUST have an explicit deadline — the previous design
+    // defaulted to 30 s which silently masked runaway commands. Returning
+    // an error forces the LLM (and any other caller) to think about how
+    // long the command is allowed to take.
+    if (!input.background and input.mandatory_timeout == null) {
+        return error.MandatoryTimeoutMissing;
+    }
+    if (input.mandatory_timeout) |t| {
+        if (t == 0) return error.MandatoryTimeoutMissing;
     }
 
     // --- Self-kill protection check ---
@@ -202,23 +241,59 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     // --- Foreground mode ---
     const max_output = input.max_output orelse 20 * 1024; // 20KB default
     const max_lines = input.max_lines orelse 1000;
-    const timeout_sec = input.timeout orelse 30;
+    // Mandatory: validated at the top of execute_bash.
+    const timeout_sec = input.mandatory_timeout.?;
 
-    // .pgid removed: default null. child.kill kills the immediate child, which
-    // is the correct behavior for a tool. Subprocesses are reparented on exit.
+    // .pgid = 0: place the spawned `bash` in its own process group (pgid
+    // == bash's PID). Any descendants bash spawns (subshells via `( )`,
+    // `|&`, backgrounded `&`, pipes — all of which happen a lot in agent
+    // bash commands) inherit that group. When the timeout fires we send
+    // SIGKILL to the negative pgid via `std.posix.kill(-pgid, .KILL)`,
+    // which terminates the whole tree in one syscall. Without this,
+    // `child.kill()` only kills the immediate `bash`; descendants get
+    // reparented to init (PID 1) but keep the pipe FDs to us open, so
+    // `stdout_thread.join()` / `stderr_thread.join()` block forever
+    // waiting for pipe EOF that never arrives — and nalar appears
+    // "stuck" on any agent command that exercises a subshell.
+    //
+    // This is more visible on macOS bash 3.2 than on Linux glibc bash
+    // because macOS ships bash 3.2 (the comment at line 596 already
+    // notes this) and the smoke-test commands that work on Linux tend
+    // to be single-process. Any real agent command (rg | head, ls -laR,
+    // timeouts, multi-stage builds) hits the subshell path and hangs.
     var child = try std.process.spawn(io, .{
         .argv = &.{ "bash", "-c", command },
         .cwd = if (input.cwd) |cwd| .{ .path = cwd } else .inherit,
         .stdin = if (input.stdin_data != null) .pipe else .close,
         .stdout = .pipe,
         .stderr = .pipe,
+        .pgid = 0,
     });
-    // Cleanup on any early-exit path: if the function returns an error
-    // before reaching the success path (which calls child.wait directly),
-    // kill the child so the OS can reap it. Zig 0.16's child.kill is a
-    // no-op when child.id is already null, so it's safe to call after
-    // a timeout-triggered kill in the success path.
-    errdefer _ = child.kill(io);
+    // Snapshot the pgid immediately — `child.kill()` nulls `child.id`,
+    // and we need the pgid for the group-wide kill below. With pgid=0
+    // the child IS the leader, so pgid == child.id.
+    const child_pgid: std.posix.pid_t = child.id.?;
+    // Cleanup on any early-exit path BEFORE the reader threads exist:
+    // kill the whole process group so bash AND any subshells it spawned
+    // close their pipe FDs. `std.posix.kill` with a negative pid sends
+    // to the whole group; ESRCH (group already gone) is fine.
+    //
+    // `child.wait(io)` then reaps the zombie and — critically — runs
+    // `childCleanupPosix` (via defer in childWaitPosix), which closes
+    // the parent-side stdin/stdout/stderr pipe FDs. Without this, the
+    // pipe FDs leak: `std.posix.kill` is a libc call that doesn't
+    // touch the Zig Child struct, and `std.Io.File` has no destructor
+    // to close the handle on scope exit. The wait may fail if the
+    // process is already gone (`.SRCH` → `error.Unexpected`); the
+    // `catch {}` swallows that — `childCleanupPosix` is still safe
+    // to call when child.id is non-null but the OS has already
+    // reaped the PID, it just `closeFd()`s whatever handles are set.
+    errdefer {
+        _ = std.posix.kill(-child_pgid, .KILL) catch {};
+        // child.wait returns !Term; discard the result. We only care
+        // about the side effect (childCleanupPosix closing pipes).
+        _ = child.wait(io) catch {};
+    }
 
     if (input.stdin_data) |data| {
         if (child.stdin) |stdin| {
@@ -231,7 +306,6 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     }
 
     const timeout_ns = @as(u64, timeout_sec) * std.time.ns_per_s;
-    const start_time = std.Io.Timestamp.now(io, .real).nanoseconds;
 
     var stdout_data: std.ArrayList(u8) = .empty;
     var stderr_data: std.ArrayList(u8) = .empty;
@@ -351,7 +425,10 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     // pipes and the kill never runs. The errdefer at line 220 handles
     // the pre-spawn case where these threads don't exist yet.
     errdefer {
-        _ = child.kill(io);
+        // Kill the entire process group so descendants close their pipe
+        // FDs; without this the joins below hang on EOF that's never
+        // delivered. See the long comment at the spawn site.
+        _ = std.posix.kill(-child_pgid, .KILL) catch {};
         stdout_thread.join();
         stderr_thread.join();
     }
@@ -359,22 +436,74 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     var timeout_hit = false;
     var child_term: ?std.process.Child.Term = null;
 
-    while (true) {
-        const elapsed = std.Io.Timestamp.now(io, .real).nanoseconds - start_time;
-        if (elapsed > timeout_ns) {
-            timeout_hit = true;
-            _ = child.kill(io);
-            // Do not call child.wait() here; kill() invalidates child.id.
-            // The wait happens after the threads join below.
-            child_term = if (builtin.os.tag == .windows) .{ .unknown = 1 } else .{ .signal = .KILL };
-            break;
+    // Race the deadline against child completion WITHOUT std.Io.Select.
+    //
+    // The previous implementation used `select.async(...)` +
+    // `select.await(...)` to wait on the timeout and the EOF flags
+    // concurrently. That design deadlocks when this function is called
+    // from an Io worker context (the AI workflow is dispatched as an
+    // `Io.Group.concurrent` task from the event bus): the workflow's
+    // worker thread blocks in `select.await`, the nested async tasks
+    // need other workers, but the `Io.Group` containing the workflow
+    // task can't signal completion while the workflow is parked in
+    // `await`. The async children starve and the workflow never returns
+    // — nalar appears "stuck" on any bash tool call from the AI.
+    //
+    // Replacement: a plain `std.Thread.sleep` deadline race. We poll the
+    // EOF flags set by the reader threads every 10 ms until both report
+    // EOF, OR the wall-clock deadline elapses — whichever comes first.
+    // Neither call goes through the Io runtime, so there's no
+    // re-entrancy. Safe to call from any context (test runner, Io
+    // worker, plain thread).
+    const deadline_ns = std.Io.Timestamp.now(io, .real).nanoseconds + @as(i64, @intCast(timeout_ns));
+    child_term = blk: {
+        while (true) {
+            // Child done? Both EOF flags set means the pipes are closed
+            // AND the reader threads have flushed — at that point bash
+            // has either exited or is about to be reaped; either way
+            // child.wait() will return quickly.
+            if (stdout_eof.load(.acquire) and stderr_eof.load(.acquire)) {
+                break :blk child.wait(io) catch .{ .unknown = 1 };
+            }
+            // Deadline reached?
+            if (std.Io.Timestamp.now(io, .real).nanoseconds >= deadline_ns) {
+                timeout_hit = true;
+                // Kill the entire process group, not just bash — see
+                // the long comment at the spawn site. Otherwise any
+                // subshell bash spawned keeps the pipe FDs open and
+                // the reader thread join below hangs forever.
+                _ = std.posix.kill(-child_pgid, .KILL) catch {};
+                // Reap the zombie and close pipe FDs. `std.posix.kill`
+                // is a libc call that doesn't touch the Zig `Child`
+                // struct — `child.id` is still the bash PID. Calling
+                // `child.wait(io)` here runs `childWaitPosix`, which
+                // returns immediately (the child is already a zombie)
+                // with status `.signal = .KILL` and — critically —
+                // triggers `childCleanupPosix` via defer, closing the
+                // parent-side stdin/stdout/stderr pipe FDs.
+                //
+                // Without this call, the pipe FDs leak until process
+                // exit: `File` has no destructor, so dropping the
+                // `child` local at scope exit doesn't close the
+                // handles. This is the same fix applied to the
+                // errdefer paths above.
+                break :blk child.wait(io) catch if (builtin.os.tag == .windows)
+                    .{ .unknown = 1 }
+                else
+                    .{ .signal = .KILL };
+            }
+            // Sleep 10 ms — blocking the OS thread via raw libc
+            // `nanosleep`, NOT through the Io runtime. This is exactly
+            // the kind of code that triggered the re-entrancy deadlock
+            // in the Io.Select version (the worker thread couldn't run
+            // the nested Io sleep async, blocking the parent group).
+            const ts = NanoSleepTimespec{
+                .sec = 0,
+                .nsec = 10 * std.time.ns_per_ms,
+            };
+            _ = nanosleep(&ts, null);
         }
-        if (stdout_eof.load(.acquire) and stderr_eof.load(.acquire)) {
-            child_term = child.wait(io) catch .{ .unknown = 1 };
-            break;
-        }
-        try std.Io.sleep(io, .{ .nanoseconds = 10 * std.time.ns_per_ms }, .real);
-    }
+    };
 
     stdout_thread.join();
     stderr_thread.join();
@@ -389,39 +518,23 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         .unknown => -1,
     };
 
-    // Truncate output by line count if max_lines was exceeded
-    var stdout_lines_to_keep = stdout_data.items.len;
-    const stdout_truncation_needed = stdout_line_count > max_lines;
-    if (stdout_truncation_needed) {
-        var count: usize = 0;
-        for (stdout_data.items, 0..) |byte, i| {
-            if (byte == '\n') {
-                count += 1;
-                if (count == max_lines) {
-                    stdout_lines_to_keep = i + 1;
-                    break;
-                }
-            }
-        }
-    }
+    // Truncate output by BYTE count if max_output was exceeded. Byte-based
+    // truncation protects against a single huge line (e.g. generated code
+    // dumped with no newlines) blowing up the context window — line-based
+    // truncation would keep the entire huge line, but byte-based truncation
+    // caps at max_output regardless of line structure. The reader thread
+    // already enforces the byte limit at read time; this is the defensive
+    // post-read re-check for any data that slipped past (e.g. reader's
+    // line-count branch overshot the byte limit when both triggers fired
+    // in the same iteration).
+    const stdout_truncation_needed = stdout_data.items.len > max_output;
+    const stderr_truncation_needed = stderr_data.items.len > max_output;
 
-    // Truncate stderr by line count
-    var stderr_lines_to_keep = stderr_data.items.len;
-    const stderr_truncation_needed = stderr_line_count > max_lines;
-    if (stderr_truncation_needed) {
-        var count: usize = 0;
-        for (stderr_data.items, 0..) |byte, i| {
-            if (byte == '\n') {
-                count += 1;
-                if (count == max_lines) {
-                    stderr_lines_to_keep = i + 1;
-                    break;
-                }
-            }
-        }
-    }
-
-    const was_truncated = stdout_truncation_needed or stderr_truncation_needed or (stdout_data.items.len >= max_output or stderr_data.items.len >= max_output);
+    // Use the reader's actual truncation signal for the user-facing flag.
+    // The reader truncates to exactly max_output bytes (or earlier via
+    // line-count), so `data.len > max_output` only catches the rare overshoot;
+    // the reader's flag captures BOTH paths (byte cap and line cap).
+    const was_truncated = stdout_truncated or stderr_truncated;
 
     // Allocate command on heap to avoid dangling pointer to stack buffer
     const command_copy = try allocator.dupe(u8, command);
@@ -432,7 +545,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     const stdout_copy = if (stdout_data.items.len == 0)
         try allocator.dupe(u8, "No output produced.")
     else if (stdout_truncation_needed)
-        try allocator.dupe(u8, stdout_data.items[0..stdout_lines_to_keep])
+        try allocator.dupe(u8, stdout_data.items[0..max_output])
     else
         try allocator.dupe(u8, stdout_data.items);
     errdefer allocator.free(stdout_copy);
@@ -440,7 +553,7 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     const stderr_copy = if (stderr_data.items.len == 0)
         try allocator.dupe(u8, "No errors.")
     else if (stderr_truncation_needed)
-        try allocator.dupe(u8, stderr_data.items[0..stderr_lines_to_keep])
+        try allocator.dupe(u8, stderr_data.items[0..max_output])
     else
         try allocator.dupe(u8, stderr_data.items);
     errdefer allocator.free(stderr_copy);
@@ -537,6 +650,20 @@ pub const bash_tool = AgentTool{
                     .description = "Absolute working directory. Always set explicitly.",
                 },
                 .{
+                    .name = "mandatory_timeout",
+                    .type = "number",
+                    .description =
+                    \\REQUIRED. Maximum wall-clock seconds the command is allowed
+                    \\to run. When the deadline elapses the bash process is killed
+                    \\(SIGKILL on POSIX, TerminateProcess on Windows) so the agent
+                    \\cannot hang on a runaway command. There is no default — the
+                    \\tool returns `MandatoryTimeoutMissing` if you omit this.
+                    \\Pick a value that matches what the command realistically
+                    \\needs (a few seconds for ls/cat, 30–60 s for builds,
+                    \\300+ s for long compilations).
+                    ,
+                },
+                .{
                     .name = "max_output",
                     .type = "number",
                     .description = "Maximum stdout+stderr bytes. Default: 20480 (20KB). Output exceeding this limit is truncated.",
@@ -554,6 +681,9 @@ pub const bash_tool = AgentTool{
                     \\Returns PID and log path in stdout.
                     \\Example stdout: "PID: 12345\nLog: /tmp/bg_1234567890.log"
                     \\Use PID to check status (ps -p <PID>) or kill (kill <PID>).
+                    \\Note: when background=true the mandatory_timeout field is
+                    \\ignored (the detached process has no deadline enforced by
+                    \\this tool — the caller is responsible for killing it later).
                     ,
                 },
                 .{
@@ -571,7 +701,7 @@ pub const bash_tool = AgentTool{
                     ,
                 },
             },
-            .required = &.{ "command", "cwd" },
+            .required = &.{ "command", "cwd", "mandatory_timeout" },
         },
     },
 };

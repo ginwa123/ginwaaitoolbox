@@ -27,7 +27,7 @@ const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
-const migrations = nalarcore.migrations;
+const migrations = nalarcore.migrations_mod.migration;
 
 const Migration055AddDesignPages = migrations.Migration055AddDesignPages;
 const Migration056UpgradeDesignPagesToFileModel = migrations.Migration056UpgradeDesignPagesToFileModel;

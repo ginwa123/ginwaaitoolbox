@@ -4,7 +4,7 @@ const workflow = @import("workflow.zig");
 const agent = @import("nalarcore").agent;
 const sqlite = @import("nalarcore").sqlite;
 const llm_history = @import("llm_history.zig");
-const logger_mod = @import("nalarcore").logger;
+const logger_mod = @import("nalarcore").loggermod;
 
 /// Build a minimal in-memory SQLite DB with the tables that
 /// compactMessageInMemoryNew touches: llm_history (for saveMessage +
@@ -24,7 +24,7 @@ fn setupDb() !struct {
 
     // Minimal schema — exactly the columns saveMessage writes and
     // markMessageNotForLlmRun updates. ORDER matches the production
-    // CREATE TABLE in src/ai_workflow/tui/migration.zig (latest rev).
+    // CREATE TABLE in src/migrations/migration.zig (latest rev).
     try db.exec(alloc,
         \\CREATE TABLE llm_history (
         \\  id TEXT PRIMARY KEY,

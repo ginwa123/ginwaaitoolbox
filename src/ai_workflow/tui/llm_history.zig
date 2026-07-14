@@ -2,7 +2,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const agent = nalarcore.agent;
-const logger_mod = nalarcore.logger;
+const logger_mod = nalarcore.loggermod;
 const helpers = nalarcore.helpers;
 const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("nalarcore").llm_models;
@@ -1601,11 +1601,21 @@ pub const WorkerInfo = struct {
     working_directory: []const u8,
     last_activity: i64,
     last_activity_description: []const u8,
+    /// Bound git worktree path for this worker's session (empty
+    /// when no worktree is bound). Mirrors `sessions.git_worktree_cwd`.
+    /// Populated by `getActiveWorker` / `getWorkerBySessionId` via a
+    /// LEFT JOIN on `sessions`. Rendered into the system prompt's
+    /// `## Active Workers` section so LLM agents see the actual
+    /// working tree the other worker is operating in (not just the
+    /// session's nominal cwd). See plan: doc-less chunk of the
+    /// sprint 2 "git worktree cwd, worker" task.
+    git_worktree_cwd: []const u8,
 
     pub fn deinit(self: *const WorkerInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
         allocator.free(self.working_directory);
         allocator.free(self.last_activity_description);
+        allocator.free(self.git_worktree_cwd);
     }
 
     /// Determine if this worker is a sub-agent by checking if session_id contains "subagent"
@@ -1614,12 +1624,30 @@ pub const WorkerInfo = struct {
     }
 };
 
-/// Get all active workers with their info
+/// Get all active workers with their info.
+///
+/// Selects every `worker` row joined to its `sessions` row (if any)
+/// so callers can render the full agent-prompt "## Active Workers"
+/// block — including the bound git worktree path. The LEFT JOIN
+/// preserves workers whose session row has been deleted (a worker
+/// row may outlive its session), falling back to `''` for
+/// `git_worktree_cwd` (mirrors the COALESCE-on-NULL convention used
+/// for `cwd`, `name`, etc. throughout the codebase).
 pub fn getActiveWorker(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
 ) ![]WorkerInfo {
-    const sql = "SELECT session_id, COALESCE(working_directory, ''), last_activity, COALESCE(last_activity_description, '') FROM worker ORDER BY last_activity DESC";
+    const sql =
+        \\SELECT
+        \\    w.session_id,
+        \\    COALESCE(w.working_directory, ''),
+        \\    w.last_activity,
+        \\    COALESCE(w.last_activity_description, ''),
+        \\    COALESCE(s.git_worktree_cwd, '')
+        \\FROM worker w
+        \\LEFT JOIN sessions s ON s.id = w.session_id
+        \\ORDER BY w.last_activity DESC
+    ;
 
     var rows = try db.query(allocator, sql, &.{});
     defer rows.deinit();
@@ -1637,48 +1665,13 @@ pub fn getActiveWorker(
             .working_directory = try allocator.dupe(u8, row.values[1]),
             .last_activity = last_activity,
             .last_activity_description = try allocator.dupe(u8, row.values[3]),
+            .git_worktree_cwd = try allocator.dupe(u8, row.values[4]),
         };
         try workers.append(allocator, worker);
         row.deinit(allocator);
     }
 
     return try workers.toOwnedSlice(allocator);
-}
-
-/// Register or update a worker
-pub fn upsertWorker(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    worker_id: []const u8,
-    session_id: []const u8,
-    working_directory: []const u8,
-) !void {
-    // Check if worker exists to determine action
-    const check_sql = "SELECT id FROM worker WHERE id = ?";
-    var rows = try db.query(allocator, check_sql, &.{worker_id});
-    defer rows.deinit();
-    const exists = (try rows.next()) != null;
-
-    const sql = "INSERT OR REPLACE INTO worker (id, session_id, working_directory, last_activity, last_activity_description) VALUES (?, ?, ?, strftime('%s', 'now'), '')";
-    try db.exec(allocator, sql, &.{ worker_id, session_id, working_directory });
-
-    // Also ensure session exists in sessions table (for JOIN queries)
-    // Use INSERT OR IGNORE to handle cases where session might already exist
-    const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, created_at, updated_at) VALUES (?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
-    try db.exec(allocator, session_sql, &.{ session_id, session_id });
-
-    // Emit worker event
-    const action = if (exists) "updated" else "created";
-    const now_timestamp: i64 = helpers.unixTimestamp();
-    on_event_sent.onEventSendWorkers(allocator, .{
-        .action = action,
-        .id = worker_id,
-        .session_id = session_id,
-        .working_directory = working_directory,
-        .last_activity = now_timestamp,
-        .last_activity_description = "",
-        .created_at = "",
-    }) catch {};
 }
 
 /// Update worker's last activity timestamp with description
@@ -1702,16 +1695,6 @@ pub fn updateWorkerActivityWithDescription(
         .last_activity_description = description,
         .created_at = "",
     }) catch {};
-}
-
-/// Update worker's last activity timestamp
-pub fn updateWorkerActivity(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    worker_id: []const u8,
-) !void {
-    const sql = "UPDATE worker SET last_activity = strftime('%s', 'now') WHERE id = ?";
-    try db.exec(allocator, sql, &.{worker_id});
 }
 
 /// Remove a worker
@@ -1794,12 +1777,29 @@ pub fn deleteQueuedMessagesBySessionId(
 }
 
 /// Get a worker by session_id
+///
+/// Returns `null` when no worker row matches `session_id` (e.g. when
+/// no LLM call has been issued yet for this session, or when the
+/// session/worker has been cancelled). Selects `git_worktree_cwd`
+/// from the matching `sessions` row so callers (e.g. `worker_get`
+/// HTTP handler) can show the bound worktree path; falls back to
+/// `''` when the worker row exists but its session row was deleted.
 pub fn getWorkerBySessionId(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) !?WorkerInfo {
-    const sql = "SELECT session_id, COALESCE(working_directory, ''), last_activity, COALESCE(last_activity_description, '') FROM worker WHERE session_id = ?";
+    const sql =
+        \\SELECT
+        \\    w.session_id,
+        \\    COALESCE(w.working_directory, ''),
+        \\    w.last_activity,
+        \\    COALESCE(w.last_activity_description, ''),
+        \\    COALESCE(s.git_worktree_cwd, '')
+        \\FROM worker w
+        \\LEFT JOIN sessions s ON s.id = w.session_id
+        \\WHERE w.session_id = ?
+    ;
 
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
@@ -1811,22 +1811,12 @@ pub fn getWorkerBySessionId(
             .working_directory = try allocator.dupe(u8, row.values[1]),
             .last_activity = last_activity,
             .last_activity_description = try allocator.dupe(u8, row.values[3]),
+            .git_worktree_cwd = try allocator.dupe(u8, row.values[4]),
         };
         row.deinit(allocator);
         return worker;
     }
     return null;
-}
-
-/// Check if a session is currently running (exists in worker table)
-pub fn isSessionRunning(
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-) bool {
-    const sql = "SELECT 1 FROM worker WHERE id = ? LIMIT 1";
-    var rows = db.query(std.heap.c_allocator, sql, &.{session_id}) catch return false;
-    defer rows.deinit();
-    return (rows.next() catch return false) != null;
 }
 
 /// Check if a task is currently running (a worker row exists for it).
@@ -1859,95 +1849,6 @@ pub fn cancelSession(
 ) !void {
     const sql = "UPDATE worker SET cancelled = 1 WHERE id = ?";
     try db.exec(allocator, sql, &.{session_id});
-}
-
-/// Check if a session is cancelled
-pub fn isSessionCancelled(
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-) bool {
-    const sql = "SELECT cancelled FROM worker WHERE id = ?";
-    var rows = db.query(std.heap.c_allocator, sql, &.{session_id}) catch return false;
-    defer rows.deinit();
-    if (rows.next() catch return false) |row| {
-        const cancelled = std.fmt.parseInt(i32, row.values[0], 10) catch 0;
-        return cancelled == 1;
-    }
-    return false;
-}
-
-/// Mark session as idle (remove from worker table) and emit SSE "deleted" event
-pub fn markSessionIdle(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-) !void {
-    const sql = "DELETE FROM worker WHERE id = ?";
-    try db.exec(allocator, sql, &.{session_id});
-
-    // Emit worker deleted event so connected SSE clients can drop the entry
-    on_event_sent.onEventSendWorkers(allocator, .{
-        .action = "deleted",
-        .id = session_id,
-        .session_id = "",
-        .working_directory = "",
-        .last_activity = 0,
-        .last_activity_description = "",
-        .created_at = "",
-    }) catch {};
-}
-
-/// Queue a message for a session and emit SSE event to notify connected clients
-pub fn queueMessage(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-    message: []const u8,
-    image_url: []const u8,
-) !void {
-    const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(std.Options.debug_io, .real).nanoseconds});
-    defer allocator.free(id);
-
-    const sql = "INSERT INTO session_queue_messages (id, session_id, message, image_url) VALUES (?, ?, ?, ?)";
-    const copy_image_url = try allocator.dupe(u8, image_url);
-    defer allocator.free(copy_image_url);
-
-    try db.exec(allocator, sql, &.{ id, session_id, message, copy_image_url });
-
-    // Emit SSE event to notify connected clients
-    const di = nalarcore.getSingleton() catch return;
-    const event_bus = di.event_bus;
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
-
-    const payload = .{
-        .action = "queued",
-        .id = id,
-        .message = message,
-        .session_id = session_id,
-        .image_url = image_url,
-    };
-    try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
-        .whitespace = .indent_4,
-    })});
-
-    const data_copy = try allocator.dupe(u8, buf.items);
-    const event = ai_mod.on_event_sent.SseEvent{
-        .session_id = session_id,
-        .data = data_copy,
-        .event_type = "queue_queued",
-    };
-
-    // Per-session emit (kept for any future server-side fan-out that
-    // needs only this session's queue messages).
-    const key = try std.fmt.allocPrint(allocator, "queue_messages_{s}", .{session_id});
-    defer allocator.free(key);
-    event_bus.emit(ai_mod.on_event_sent.SseEvent, key, event);
-    // Central broadcast: subscribers to bare "queue" receive ALL sessions'
-    // queue messages. The frontend listener filter narrows to the current
-    // session_id on the JS side.
-    event_bus.emit(ai_mod.on_event_sent.SseEvent, "queue", event);
 }
 
 /// Struct to hold queued message data including image_url
@@ -1988,67 +1889,6 @@ pub fn getQueueMessages(
     }
 
     return messages;
-}
-
-/// Delete a specific queued message and emit SSE event
-pub fn deleteQueuedMessage(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-    message: []const u8,
-) !void {
-    const sql = "DELETE FROM session_queue_messages WHERE session_id = ? AND message = ? ";
-    try db.exec(allocator, sql, &.{ session_id, message });
-
-    // Emit SSE event to notify connected clients
-    const di = nalarcore.getSingleton() catch return;
-    const event_bus = di.event_bus;
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
-
-    const payload = .{
-        .action = "deleted",
-        .message = message,
-        .session_id = session_id,
-    };
-    try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
-        .whitespace = .indent_4,
-    })});
-
-    const data_copy = try allocator.dupe(u8, buf.items);
-    const event = ai_mod.on_event_sent.SseEvent{
-        .session_id = session_id,
-        .data = data_copy,
-        .event_type = "queue_deleted",
-    };
-
-    // Per-session emit (kept for any future server-side fan-out that
-    // needs only this session's queue messages).
-    const key = try std.fmt.allocPrint(allocator, "queue_messages_{s}", .{session_id});
-    defer allocator.free(key);
-    event_bus.emit(ai_mod.on_event_sent.SseEvent, key, event);
-    // Central broadcast: subscribers to bare "queue" receive ALL sessions'
-    // queue messages (including deletes). The frontend listener filter
-    // narrows to the current session_id on the JS side.
-    event_bus.emit(ai_mod.on_event_sent.SseEvent, "queue", event);
-}
-
-/// Check if session has queued messages
-pub fn hasQueuedMessages(
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-) bool {
-    const sql = "SELECT 1 FROM session_queue_messages WHERE session_id = ? LIMIT 1";
-    var rows = db.query(std.heap.c_allocator, sql, &.{session_id}) catch return false;
-    defer rows.deinit();
-
-    if (rows.next() catch return false) |row| {
-        const queued = std.fmt.parseInt(i32, row.values[0], 10) catch 0;
-        return queued == 1;
-    }
-
-    return false;
 }
 
 // =============================================================================
@@ -3495,29 +3335,4 @@ pub fn updateSessionUpdatedAt(allocator: std.mem.Allocator, db: *sqlite.SqliteBa
 pub fn updateWorkspaceUpdatedAt(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) !void {
     const sql = "UPDATE workspace_item_tasks SET updated_at = datetime('now') WHERE id = ?";
     try db.exec(allocator, sql, &.{session_id});
-}
-
-pub fn isTaskKanban(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) !bool {
-    var is_kanban: bool = false;
-    // Filter on `wit.id` (the canonical session id for kanban /
-    // routine tasks per Migration 052's `task.id == session.id`
-    // convention), not on `session_id` — that column was dropped
-    // by Migration 052 and would return "no such column" against
-    // post-migration production data.
-    const sql =
-        \\
-        \\SELECT 1 FROM workspace_item_tasks wit
-        \\JOIN workspace_items wi ON wit.workspace_item_id = wi.id
-        \\WHERE wit.id = ? AND wi.item_type = 'kanban'
-    ;
-
-    var rows = try db.query(allocator, sql, &.{session_id});
-    defer rows.deinit();
-
-    if (try rows.next()) |row| {
-        row.deinit(allocator);
-        is_kanban = true;
-    }
-
-    return is_kanban;
 }

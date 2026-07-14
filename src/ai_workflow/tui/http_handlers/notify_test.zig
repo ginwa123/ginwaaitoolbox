@@ -1,8 +1,9 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
-const gserverz = root_mod.gserverz;
-const http_response = root_mod.http_response;
-const notifications = @import("../notifications.zig");
+const mod = @import("mod.zig");
+const nalarcore = mod.nalarcore;
+const gserverz = nalarcore.gserverz;
+const http_response = nalarcore.http_response;
+const notifications = nalarcore.notifications_mod;
 
 /// POST /api/notify/test
 ///

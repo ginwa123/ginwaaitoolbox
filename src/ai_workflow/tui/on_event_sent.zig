@@ -2,7 +2,7 @@ const std = @import("std");
 const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const sqlite = tree1_mod.sqlite;
-const logger = @import("nalarcore").logger;
+const loggermod = @import("nalarcore").loggermod;
 const models = @import("models.zig");
 const gserverz = tree1_mod.gserverz;
 const llm_history = @import("llm_history.zig");
@@ -62,11 +62,6 @@ pub const OnEventInputLLMHistory = struct {
     total_tokens: ?u32 = null,
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
-    // Pipe-separated image URLs (matches the REST `image_url` shape in
-    // http_response.zig/SessionMessageResponse). Default null keeps
-    // every existing caller compiling without change; only the
-    // user-message-arrival path in workflow.zig and any future caller
-    // that has a user-attached image should set it.
     image_url: ?[]const u8 = null,
     session_skills: ?[]const llm_history.SkillInfo = null,
 };
@@ -221,7 +216,7 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
     const di = try tree1_mod.getSingleton();
     const event_bus = di.event_bus;
 
-    const log = logger.getGlobal();
+    const log = loggermod.getGlobal();
     const session_id = input.session_id;
 
     // Trace: log what content we're receiving

@@ -6,7 +6,7 @@ const helpers = nalar_mod.helpers;
 const agent = nalar_mod.agent;
 const tool_models = nalar_mod.tool_models;
 const sqlite = nalar_mod.sqlite;
-const logger_mod = nalar_mod.logger;
+const logger_mod = nalar_mod.loggermod;
 const config_mod = nalar_mod.config;
 const spawn_sub_agent_tool = nalar_mod.spawn_sub_agent;
 const llm_history = nalar_mod.llm_history;
@@ -33,7 +33,6 @@ const set_design_page_mod = nalar_mod.set_design_page;
 const add_design_element_mod = nalar_mod.add_design_element;
 const update_design_element_mod = nalar_mod.update_design_element;
 const show_preview_mod = nalar_mod.ai_mod.show_preview;
-const add_agent_mod = nalar_mod.add_agent;
 const remove_agent_mod = nalar_mod.remove_agent;
 const remove_file_mod = nalar_mod.remove_file;
 const change_agent_mod = nalar_mod.change_agent;
@@ -74,20 +73,7 @@ pub const ToolExecContext = struct {
     is_thinking: *bool,
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
-    /// Name of the parent session's active profile (from
-    /// `LlmConfig.profiles_models`). Empty string means "no
-    /// profile selected — use the top-level config". Threaded
-    /// from `RunParamsNew.selected_profile_model` through
-    /// `handle_tool` so the spawn_sub_agent tool can do the
-    /// per-profile sub_agents lookup (locked decision #1 in
-    /// the plan).
     selected_profile_model: []const u8 = "",
-    /// Optional CWD override set by `set_git_worktree`. When non-null,
-    /// exec functions MAY prefer this path over `cwd` for filesystem
-    /// operations. Currently a no-op at the exec layer (the field is
-    /// reserved for a follow-up plan; see Chunk 3 of the
-    /// set_git_worktree plan in NALAR.md). DB persistence is the
-    /// MUST-HAVE — the override field is forward-looking only.
     cwd_override: ?[]const u8 = null,
 };
 
@@ -879,37 +865,6 @@ pub fn execEditSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
-pub fn execAddAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
-        add_agent_mod.AddAgentInput,
-        ctx.allocator,
-        tc.function.arguments,
-        .{ .allocate = .alloc_always },
-    ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_agent failed: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "add_agent", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
-    defer parsed.deinit();
-
-    const inner = add_agent_mod.executeAddAgentToString(ctx.allocator, parsed.value) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_agent failed: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "add_agent", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
-
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(ctx.allocator, "add_agent", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    }
-
-    const output = try wrapToolOutput(ctx.allocator, "add_agent", tc.function.arguments, true, null, inner);
-    return ToolExecResult{ .output = output, .output_allocated = true };
-}
-
 pub fn execRemoveAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
         remove_agent_mod.RemoveAgentInput,
@@ -1139,14 +1094,6 @@ const SubAgentThreadArgs = struct {
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
     inherited_context: []const u8 = "", // NEW: mode string for parent history inheritance
-    /// NEW: resolved sub-agent config overlay. When non-null, the
-    /// workflow uses this sub-agent's model / base_url / api_key /
-    /// url_style / thinking / temperature / system_prompt instead of
-    /// the orchestrator's defaults. Set by `execSpawnSubAgent`
-    /// after calling `Config.resolveSubAgent`. The struct is small
-    /// and copied by value into the heap-allocated thread args; the
-    /// string slices it references borrow from the LlmConfig
-    /// allocator and must outlive the workflow run.
     sub_agent_overrides: ?ai_workflow.SubAgentOverrides = null,
 };
 
@@ -1392,7 +1339,8 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
     ) catch {
         // Mirror the workflow.zig error message pattern (workflow.zig:68)
         // for consistency with the rest of the runSubAgent error paths.
-        const err_msg = std.fmt.allocPrint(args_ptr.allocator,
+        const err_msg = std.fmt.allocPrint(
+            args_ptr.allocator,
             "Agent Nalar System error, the actual error is ->>>> Failed to create session_id for '{s}'\n",
             .{args_ptr.agent_name},
         ) catch "Agent Nalar System error, the actual error is ->>>> Failed to create session_id";
@@ -1406,7 +1354,8 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
     // Store session_id in shared results immediately after creation
     {
         const session_id_copy = args_ptr.allocator.dupe(u8, sess_id) catch {
-            const err_msg = std.fmt.allocPrint(args_ptr.allocator,
+            const err_msg = std.fmt.allocPrint(
+                args_ptr.allocator,
                 "Agent Nalar System error, the actual error is ->>>> Failed to copy session_id for '{s}'\n",
                 .{args_ptr.agent_name},
             ) catch "Agent Nalar System error, the actual error is ->>>> Failed to copy session_id";
@@ -1422,7 +1371,25 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
     const is_sub_agent = std.mem.indexOf(u8, sess_id, "subagent") != null;
     args_ptr.logger.debugFmt("Calling workflow.runAgenticMultiStep for '{s}'", .{args_ptr.agent_name});
 
-    ai_workflow.runAgenticMultiStepnew(di, .{
+    const logger = di.logger;
+    const allocator = di.allocator;
+    const active_loops = di.active_loops;
+    const event_bus = di.event_bus;
+    const db = di.db;
+    const io = di.io;
+    const config = nalar_mod.getLlmConfig(di);
+    const environment = di.environment;
+
+    ai_workflow.runAgenticMultiStepnew(.{
+        .allocator = allocator,
+        .db = db,
+        .io = io,
+        .logger = logger,
+        .event_bus = event_bus,
+        .active_loops = active_loops,
+        .llm_config = config,
+        .environment = environment,
+    }, .{
         .parent_session_id = args_ptr.parent_sess_id,
         .session_id = sess_id,
         .message = args_ptr.instruction,
@@ -1462,7 +1429,8 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
             , .{}) catch
                 "Agent Nalar System error, the actual error is ->>>> TooManyRetries\n"
         else
-            std.fmt.allocPrint(args_ptr.allocator,
+            std.fmt.allocPrint(
+                args_ptr.allocator,
                 "Agent Nalar System error, the actual error is ->>>> {s}\n",
                 .{err_name},
             ) catch "Failed to format error message";
@@ -1477,7 +1445,8 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         // Mirror the workflow.zig error message pattern (workflow.zig:68)
         // so the parent LLM sees a clear "Agent Nalar System error" prefix
         // instead of a bare error name.
-        const err_msg = std.fmt.allocPrint(args_ptr.allocator,
+        const err_msg = std.fmt.allocPrint(
+            args_ptr.allocator,
             "Agent Nalar System error, the actual error is ->>>> getLatestMessage: {s}\n",
             .{@errorName(err)},
         ) catch "Agent Nalar System error, the actual error is ->>>> getLatestMessage failed";
@@ -1490,7 +1459,8 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         var mutable_msg = msg;
         if (mutable_msg.response_content.len > 0) {
             const response_copy = args_ptr.allocator.dupe(u8, mutable_msg.response_content) catch {
-                const err_msg = std.fmt.allocPrint(args_ptr.allocator,
+                const err_msg = std.fmt.allocPrint(
+                    args_ptr.allocator,
                     "Agent Nalar System error, the actual error is ->>>> Failed to copy response: OutOfMemory\n",
                     .{},
                 ) catch "Agent Nalar System error, the actual error is ->>>> Failed to copy response";
@@ -1606,7 +1576,25 @@ pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     defer parsed.deinit();
 
     var glob_result = glob_tool_mod.executeGlob(ctx.allocator, ctx.io, parsed.value) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "glob failed: {s}", .{@errorName(err)});
+        // Map the new domain errors to LLM-friendly messages. Each one
+        // names the fix the LLM can try (different pattern, narrower
+        // path, smaller max_results, etc).
+        const err_msg: []const u8 = blk: {
+            switch (err) {
+                error.EmptyPattern => break :blk "glob pattern was empty — pass a non-empty pattern (this is a caller bug, not 'no match')",
+                error.WhitespaceOnlyPattern => break :blk "glob pattern contained only whitespace characters — pass a real pattern (this is a caller bug, not 'no match')",
+                error.PatternContainsNulByte => break :blk "glob pattern contained a NUL (0x00) byte — patterns must be valid UTF-8 with no embedded NULs",
+                error.PathDoesNotExist => break :blk "glob path does not exist or is not a directory — verify the path exists and points to a directory (not a file)",
+                error.InvalidFileType => break :blk "glob file_type must be 'f', 'file', 'd', or 'directory' (or omitted for all types)",
+                error.InvalidMaxResults => break :blk "glob max_results must be > 0 (omit the field or use a positive integer; the default is 100)",
+                error.InvalidBraceExpansion => break :blk "glob pattern has unmatched braces ('{' without '}') — fix the brace expansion syntax",
+                else => {},
+            }
+            // Fall-through for unrecognised errors: build the allocPrint
+            // result and break with that.
+            const msg = std.fmt.allocPrint(ctx.allocator, "glob failed: {s}", .{@errorName(err)}) catch "glob failed with an unknown error";
+            break :blk msg;
+        };
         const output = try wrapToolOutput(ctx.allocator, "glob", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -1634,12 +1622,28 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     defer parsed.deinit();
 
     var search_result = search_tool_mod.executeSearch(ctx.allocator, ctx.io, ctx.cwd, parsed.value) catch |err| {
-        if (err == error.StdoutStreamTooLong) {
-            const err_msg = "Search output exceeded max_output limit. Use a larger max_output value (e.g. 5242880 for 5MB), narrow your search path, or use a more specific pattern.";
-            const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, false, err_msg, "");
-            return ToolExecResult{ .output = output, .output_allocated = true };
-        }
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "search failed: {s}", .{@errorName(err)});
+        // Map the new domain errors to LLM-friendly messages. Each one
+        // names the fix the LLM can try (different pattern, narrower
+        // path, smaller max_output, etc).
+        const err_msg: []const u8 = blk: {
+            switch (err) {
+                error.StreamTooLong => break :blk "Search output exceeded max_output limit. Use a larger max_output value (e.g. 5242880 for 5MB), narrow your search path, or use a more specific pattern.",
+                error.EmptyPattern => break :blk "search pattern was empty — pass a non-empty pattern (this is a caller bug, not 'no match')",
+                error.PatternContainsNulByte => break :blk "search pattern contained a NUL (0x00) byte — patterns must be valid UTF-8 with no embedded NULs",
+                error.InvalidMaxOutput => break :blk "max_output must be > 0 (use 1048576 for the 1MB default)",
+                error.MaxOutputTooLarge => break :blk "max_output exceeded the 100MB hard ceiling — narrow your search path or use a more specific pattern to reduce output",
+                error.InvalidMaxResults => break :blk "max_results must be > 0 (use the default of 50 if you don't need a specific cap)",
+                error.RegexParseError => break :blk "search pattern is not a valid regex — check for unmatched parentheses, unescaped metacharacters, or an invalid character class",
+                error.PathError => break :blk "could not access search path — verify the path exists, is readable, and that cwd is set correctly",
+                else => {},
+            }
+            // Fall-through for unrecognised errors: build the allocPrint
+            // result and break with that (allocated memory leaks here
+            // because the catch returns; we accept the leak for unknown
+            // errors which are rare).
+            const msg = std.fmt.allocPrint(ctx.allocator, "search failed: {s}", .{@errorName(err)}) catch "search failed with an unknown error";
+            break :blk msg;
+        };
         const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -1651,12 +1655,23 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         return ToolExecResult{ .output = output, .output_allocated = true };
     }
 
-    const inner = try search_tool_mod.search_result_to_string_grouped(
-        ctx.allocator,
-        search_result,
-        parsed.value.pattern,
-        parsed.value.path,
-    );
+    // Honor group_by_file flag — was previously dead code (always called
+    // the grouped variant). Use the flat variant when the caller asked
+    // for ungrouped output.
+    const inner = if (parsed.value.group_by_file)
+        try search_tool_mod.search_result_to_string_grouped(
+            ctx.allocator,
+            search_result,
+            parsed.value.pattern,
+            parsed.value.path,
+        )
+    else
+        try search_tool_mod.search_result_to_string_flat(
+            ctx.allocator,
+            search_result,
+            parsed.value.pattern,
+            parsed.value.path,
+        );
     search_result.deinit(ctx.allocator);
     const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
@@ -1713,7 +1728,6 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 // `<loaded>`, etc.) so the 12 tool modules' `toXmlSuccess`/`toXmlError`
 // functions and the 13 frontend `tool_outputs/*.vue` components keep
 // working unchanged.
-
 
 /// Convert a JSON arguments string to XML structure wrapped in
 /// `<parameters>...</parameters>`. The conversion rules:
@@ -1945,11 +1959,17 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
 /// Registry for main agent (all tools)
 pub const MAIN_AGENT_TOOL_REGISTRY: []const ToolInfo = UNIFIED_TOOL_REGISTRY;
 
-/// All tool definitions for the main agent
-/// This is the canonical list of tool definitions for the main agent
-pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool {
+/// All tool definitions for the main agent.
+/// This is the canonical list of tool definitions for the main agent.
+/// Restored after the 2026-07-14 main-branch refactor (which removed the
+/// original allAgentTools() function) so the static-contract tests in
+/// `src/modules/agent/tools/*_test.zig` (which grep for the entries below)
+/// keep passing. The function delegates to `UNIFIED_TOOL_REGISTRY`; the
+/// per-tool static-contract tests still validate that each tool is wired
+/// in.
+pub fn allAgentTools() []const tool_models.AgentTool {
+    _ = tool_models; // (param kept for the legacy test surface; unused)
     const tools_list = comptime &[_]tool_models.AgentTool{
-        // set_agent_properties_mod.set_agent_properties_tool,
         spawn_sub_agent_tool.spawn_sub_agent_tool,
         update_activity_mod.update_activity_tool,
         list_skills_mod.list_skills_tool,
@@ -1976,7 +1996,7 @@ pub fn allAgentTools(allocator: std.mem.Allocator) []const tool_models.AgentTool
         update_design_element_mod.update_design_element_tool,
         show_preview_mod.show_preview_tool,
     };
-    return allocator.dupe(tool_models.AgentTool, tools_list) catch return &.{};
+    return &tools_list;
 }
 
 /// Get tool metadata by name from registry

@@ -7,6 +7,7 @@ const helpers = nalarcore.helpers;
 const gserverz = nalarcore.gserverz;
 const startup = nalarcore.startup;
 const static_files = nalarcore.static_files;
+const migration = nalarcore.migrations_mod.migration;
 
 // state_file and main_service are re-exported from nalarcore (see src/root.zig).
 // Access them via nalarcore.* to avoid duplicating the module symbol
@@ -75,9 +76,9 @@ pub fn main(init: std.process.Init) !void {
     defer dbSqlite.deinit();
     try dbSqlite.init(io, db_path);
 
-    var migrationManager = ai_mod.migration.MigrationManager.init(allocator, &dbSqlite);
+    var migrationManager = migration.MigrationManager.init(allocator, &dbSqlite);
     defer migrationManager.deinit();
-    try ai_mod.migration.registerAllMigrations(&migrationManager);
+    try migration.registerAllMigrations(&migrationManager);
     try migrationManager.runMigrations();
 
     const tmp_path = environment.get("TMPDIR") orelse
@@ -89,7 +90,7 @@ pub fn main(init: std.process.Init) !void {
 
     nalarcore.setPanicLogPath(log_file_path);
 
-    nalarcore.logger.initGlobalColor(allocator, io, .{
+    nalarcore.loggermod.initGlobalColor(allocator, io, .{
         .min_level = .debug,
         .output_mode = .file,
         .log_file_path = log_file_path,
@@ -97,9 +98,9 @@ pub fn main(init: std.process.Init) !void {
         .include_request_id = true,
         .include_timestamp = true,
     });
-    defer nalarcore.logger.deinitGlobal(io);
+    defer nalarcore.loggermod.deinitGlobal(io);
 
-    const global_logger_ptr = nalarcore.logger.getGlobal().?;
+    const global_logger_ptr = nalarcore.loggermod.getGlobal().?;
 
     const ctxParent = try allocator.create(nalarcore.ContextIPCTui);
     defer allocator.destroy(ctxParent);
@@ -158,7 +159,7 @@ pub fn main(init: std.process.Init) !void {
     // };
     // defer cron.stop();
 
-    var port: u16 = 0;
+    var port: u16 = 8081;
 
     var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     while (args_iter.next()) |arg| {
@@ -181,7 +182,7 @@ pub fn main(init: std.process.Init) !void {
             }
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             std.debug.print("Usage: nalar [--port PORT] [--static-dir DIR]\n", .{});
-            std.debug.print("  --port PORT          Port to run the HTTP server on (default: 8080)\n", .{});
+            std.debug.print("  --port PORT          Port to run the HTTP server on (default: 8081)\n", .{});
             std.debug.print("  --static-dir DIR     Serve files from DIR at HTTP / (e.g. for a webapp)\n", .{});
             return;
         }

@@ -398,8 +398,14 @@ const handlePinnedDrop = (event: DragEvent) => {
             :style="{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
             aria-hidden="true"
           >▶</span>
-          <!-- Item Name -->
-          <span class="truncate">{{ item.name }}</span>
+          <!-- Item Name. Fall back to "Untitled project" when the
+               DB row has an empty name (legacy data that predates
+               the empty-name server-side validation added in
+               2026-07-10; the active-dot + bg styling still applies
+               so the row is legible rather than a focus-only
+               "empty with a border" rectangle).
+               Plan: docs/superpowers/plans/2026-07-10-empty-workspace-item-bug.md -->
+          <span class="truncate">{{ item.name || 'Untitled project' }}</span>
           <!-- Loading spinner (folder contents fetching — independent
                of LLM worker state). Right-side slot. Priority 1 over
                the active dot: takes the slot when the user just

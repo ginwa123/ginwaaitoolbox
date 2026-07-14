@@ -979,9 +979,22 @@ pub const Agent = struct {
                 // CLOCK_MONOTONIC is a POSIX thing. std.c.clock_gettime
                 // cannot be referenced on Windows in Zig 0.16 (clockid_t is
                 // void there), so we declare our own extern in helpers/mod.zig
-                // and use it here. CLOCK_MONOTONIC = 1 on Linux glibc + macOS.
+                // and use it here.
+                //
+                // CLOCK_MONOTONIC = 1 works on Linux glibc but returns
+                // EINVAL on macOS arm64 (the Darwin kernel routes that
+                // clock ID differently — it expects CLOCK_UPTIME_RAW = 8
+                // for the "seconds since boot" semantic). The unchecked
+                // `_ =` was masking the failure, leaving ts uninitialized
+                // and producing a garbage `sec * 1000` that overflowed i64.
+                // Probe CLOCK_MONOTONIC first; on EINVAL, retry with
+                // CLOCK_UPTIME_RAW (8). Both clocks increase monotonically,
+                // so the StreamWatchdog's relative-time accounting is
+                // unaffected by the swap.
                 var ts: helpers.PosixTimespec = undefined;
-                _ = helpers.clock_gettime(1, &ts);
+                if (helpers.clock_gettime(1, &ts) != 0) {
+                    _ = helpers.clock_gettime(8, &ts);
+                }
                 const sec: i64 = @intCast(ts.sec);
                 return sec * 1000 + @divFloor(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
             }

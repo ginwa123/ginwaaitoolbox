@@ -96,7 +96,7 @@ pub const ContextIPCTui = struct {
     io: std.Io,
     db: *sqlite.SqliteBackend,
     llm_config_holder: LlmConfigHolder,
-    logger: *logger.Logger,
+    logger: *loggermod.Logger,
     environment: ?*const std.process.Environ.Map,
     active_loops: *ai_mod.active_loops,
     event_bus: *event_bus.EventBus,
@@ -376,12 +376,10 @@ pub const list_agents = @import("modules/agent/tools/list_agents.zig");
 pub const set_agent_properties = @import("modules/agent/tools/set_agent_properties.zig");
 
 pub const http_client = @import("modules/http/HttpClient.zig");
-pub const logger = @import("modules/logger/Logger.zig");
-pub const migrations = @import("ai_workflow/tui/migration.zig");
+pub const loggermod = @import("modules/logger/Logger.zig");
 pub const skill_mod = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
 pub const edit_skill = @import("modules/agent/tools/edit_skill.zig");
-pub const add_agent = @import("modules/agent/tools/add_agent.zig");
 pub const remove_agent = @import("modules/agent/tools/remove_agent.zig");
 pub const set_git_worktree = @import("modules/agent/tools/set_git_worktree.zig");
 pub const kanban_list = @import("modules/agent/tools/kanban_list.zig");
@@ -432,13 +430,21 @@ pub const event_bus = @import("modules/event_bus/src/event.zig");
 pub const static_files = @import("modules/static_files.zig");
 
 pub const startup = @import("startup.zig");
+pub const agentic_loop_mod = @import("ai_workflow/tui/agentic_loop/mod.zig");
+
+pub const notifications_mod = @import("modules/notification/notifications.zig");
+pub const migrations_mod = @import("migrations/mod.zig");
 
 test {
     _ = @import("ai_workflow/tui/test_runner.zig");
     _ = @import("modules/agent/test_runner.zig");
+    _ = @import("modules/databases/test_runner.zig");
+    _ = @import("modules/event_bus/src/test_runner.zig");
     _ = @import("modules/http/test_runner.zig");
     _ = @import("modules/logger/test_runner.zig"); // needs Zig 0.16 API updates
     _ = @import("modules/custom_http_server/src/test_session_lifecycle.zig");
     _ = @import("modules/custom_http_server/src/sse_chunked_test.zig");
     _ = @import("modules/test_runner.zig");
+    _ = @import("modules/notification/test_runner.zig");
+    _ = @import("migrations/test_runner.zig");
 }

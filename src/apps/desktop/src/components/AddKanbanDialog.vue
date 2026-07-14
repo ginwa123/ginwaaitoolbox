@@ -24,7 +24,7 @@
     emits:  close, create(name: string, path: string)
 -->
 <script setup lang="ts">
-import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { getSystemFolder, listFolder, type FolderEntry } from '../api'
 import FilePickerDialog from './FilePickerDialog.vue'
 
@@ -43,6 +43,17 @@ const name = ref('')
 const selectedPath = ref('')
 const showPicker = ref(false)
 const nameInput = ref<HTMLInputElement | null>(null)
+// Same "touched + visible error" UX as AddItemDialog. After the
+// user types (or blurs) the name field empty/whitespace, the
+// dialog shows "Name is required" below the input so the disabled
+// Add button is self-explanatory. Plan:
+// docs/superpowers/plans/2026-07-10-empty-workspace-item-bug.md.
+const nameTouched = ref(false)
+const nameError = computed<string | null>(() => {
+  if (!nameTouched.value) return null
+  if (name.value.trim().length === 0) return 'Name is required'
+  return null
+})
 
 // ─── Picker data source ────────────────────────────────────────────────────
 
@@ -90,6 +101,8 @@ watch(() => props.show, async (show) => {
     name.value = ''
     selectedPath.value = ''
     showPicker.value = false
+    // Reset the touched flag so the error doesn't flash on first open.
+    nameTouched.value = false
     await nextTick()
     nameInput.value?.focus()
   }
@@ -164,14 +177,25 @@ onBeforeUnmount(() => {
               type="text"
               placeholder="Sprint 12"
               data-testid="add-kanban-name"
+              :aria-invalid="nameError !== null"
               class="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200"
-              style="
-                background-color: var(--semantic-sidebar-bg);
-                border: 1px solid var(--color-border);
-                color: var(--semantic-text);
-              "
+              :style="{
+                backgroundColor: 'var(--semantic-sidebar-bg)',
+                border: `1px solid ${nameError ? 'var(--color-red)' : 'var(--color-border)'}`,
+                color: 'var(--semantic-text)',
+              }"
+              @input="nameTouched = true"
+              @blur="nameTouched = true"
               @keyup.enter="handleCreate"
             />
+            <p
+              v-if="nameError"
+              class="text-xs mt-1"
+              data-testid="add-kanban-name-error"
+              style="color: var(--color-red);"
+            >
+              {{ nameError }}
+            </p>
           </div>
 
           <!-- Project Root (folder picker) -->

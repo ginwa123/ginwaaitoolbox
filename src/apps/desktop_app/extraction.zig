@@ -23,10 +23,14 @@
 //   * `std.fs.cwd()` is gone in 0.16; the new API is `std.Io.Dir.cwd()`
 //     which requires an Io handle. For a build/CLI-style helper that
 //     just needs `mkdir` + `open` + `write` + `deleteTree` in a
-//     synchronous flow, raw `std.os.linux.*` syscalls are simpler —
-//     they don't need an Io runtime and they're blocking, which is
-//     what we want here. This matches the patterns already used in
-//     subprocess.zig / path_resolve.zig / subprocess_test.zig.
+//     synchronous flow, the libc `std.c.*` wrappers are simpler than
+//     dragging in an Io runtime — they don't need io, they're blocking,
+//     and they work cross-platform (Linux + macOS + Windows). The
+//     earlier version of this file used raw `std.os.linux.*` syscalls
+//     which compile fine on macOS but invoke Linux syscall numbers that
+//     don't exist on the Darwin kernel — the process gets killed with
+//     SIGSYS the moment the first `faccessat` runs. The libc wrappers
+//     fix that without an Io dependency.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -193,15 +197,22 @@ fn copyToNull(buf: *[std.fs.max_path_bytes:0]u8, path: []const u8) [*:0]const u8
 /// `mkdir -p` for an absolute path. Walks the path component by
 /// component, calling `mkdir(2)` for each missing segment. EEXIST
 /// (segment already exists) is treated as success.
+///
+/// Uses libc (`std.c.*`) for portability — works on Linux + macOS + Windows
+/// without an Io runtime. The previous version called `std.os.linux.*` syscalls
+/// directly, which compile on macOS but invoke Linux syscall numbers that don't
+/// exist on the Darwin kernel (the process dies with SIGSYS = "Bad system call"
+/// the first time the syscall instruction runs).
 fn makePathAbsolute(path: []const u8) !void {
     if (path.len == 0 or (path.len == 1 and path[0] == '.')) return;
 
     var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
     const path_z = copyToNull(&path_buf, path);
 
-    // If the path already exists, we're done.
-    const acc_rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, path_z, 0, 0);
-    if (acc_rc == 0) return;
+    // If the path already exists, we're done. `std.c.faccessat` returns
+    // 0 on success (path is accessible), -1 with errno=ENOENT otherwise.
+    // `F_OK` (== 0) means "test for existence" — we don't care about R/W.
+    if (std.c.faccessat(std.c.AT.FDCWD, path_z, std.c.F_OK, 0) == 0) return;
 
     // Recurse on the parent first.
     if (std.fs.path.dirname(path)) |parent| {
@@ -209,26 +220,36 @@ fn makePathAbsolute(path: []const u8) !void {
     }
 
     // Now mkdir this path. EEXIST is fine (a concurrent creator).
-    // The Zig 0.16 `std.os.linux.mkdir` returns `usize`; on failure
-    // the value is `-errno` (cast to usize via two's-complement
-    // bitcast). We negate back to `isize` and compare against the
-    // EEXIST errno number (17) via @intFromEnum.
-    const rc = std.os.linux.mkdir(path_z, 0o755);
-    if (rc != 0) {
-        const rc_signed: isize = @bitCast(rc);
-        const errno: usize = @intCast(-rc_signed);
-        if (errno == @intFromEnum(std.os.linux.E.EXIST)) return;
-        return error.MkdirFailed;
-    }
+    // `std.c.mkdir` returns 0 on success, -1 on failure with errno set
+    // (libc convention). The Zig 0.16 `std.c.errno(rc)` helper returns
+    // `.SUCCESS` when rc != -1, or the actual errno enum (`.E.EXIST`,
+    // `.E.ACCES`, etc.) when rc == -1.
+    const mkdir_rc = std.c.mkdir(path_z, 0o755);
+    if (mkdir_rc == 0) return;
+    if (std.c.errno(mkdir_rc) == std.c.E.EXIST) return;
+    return error.MkdirFailed;
 }
 
 /// Create (or truncate) a file at an absolute path and write the
 /// given bytes. Returns nothing on success; on write error the
 /// partial file is left on disk (the caller can `deleteTree` to
 /// clean up).
+///
+/// Uses libc `std.c.*` for cross-platform file I/O. The `O_WRONLY`,
+/// `O_CREAT`, `O_TRUNC`, `O_CLOEXEC` constants come from libc's
+/// `<fcntl.h>` (via `std.c`) and have the correct values for each
+/// platform — on aarch64-Linux O_CLOEXEC is `0o2000000`; on
+/// aarch64-Darwin it's `0x10000000`. The previous `std.os.linux.O`
+/// struct-of-flags style only worked on Linux.
 fn writeFileAbsolute(path: []const u8, content: []const u8) !void {
-    // O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC
-    const flags: std.os.linux.O = .{
+    // `std.c.O` is a Zig packed struct mirroring the kernel's open-flag
+    // bits for the target platform (on Linux it points to `linux.O`;
+    // on macOS it's a different packed struct with the same conceptual
+    // fields — `ACCMODE`, `CREAT`, `TRUNC`, `CLOEXEC`). The struct
+    // layout (bit positions for O_CLOEXEC etc.) differs across platforms
+    // but the field names are portable. We bit-cast to `c_int` for
+    // `std.c.open`, which expects the raw integer the kernel uses.
+    const flags: std.c.O = .{
         .ACCMODE = .WRONLY,
         .CREAT = true,
         .TRUNC = true,
@@ -238,23 +259,28 @@ fn writeFileAbsolute(path: []const u8, content: []const u8) !void {
     var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
     const path_z = copyToNull(&path_buf, path);
 
-    const fd_rc = std.os.linux.open(path_z, flags, 0o644);
-    if (fd_rc > std.math.maxInt(i32)) return error.OpenOutFailed;
-    const fd: i32 = @intCast(fd_rc);
-    defer _ = std.os.linux.close(fd);
+    // `std.c.open` returns -1 on failure (with errno set) or the new fd.
+    const fd = std.c.open(path_z, @bitCast(flags), @as(c_int, 0o644));
+    if (fd == -1) return error.OpenOutFailed;
+    defer _ = std.c.close(fd);
 
     var written: usize = 0;
     while (written < content.len) {
-        const n_rc = std.os.linux.write(fd, content[written..].ptr, content.len - written);
-        if (n_rc > std.math.maxInt(usize)) return error.WriteFailed;
-        const n: usize = @intCast(n_rc);
+        // `std.c.write` returns `isize` (bytes written) or -1 on error.
+        const n: isize = std.c.write(fd, content[written..].ptr, content.len - written);
+        if (n == -1) return error.WriteFailed;
         if (n == 0) return error.WriteFailed;
-        written += n;
+        written += @intCast(n);
     }
 }
 
-/// `rm -rf` via `getdents64` + `unlinkat`. Best-effort: errors are
-/// logged but not propagated.
+/// `rm -rf` via libc `opendir` / `readdir` / `closedir` + `unlink` / `rmdir`.
+/// Best-effort: errors are logged but not propagated.
+///
+/// Uses libc (`std.c.*`) instead of Linux `getdents64` + `unlinkat` syscalls
+/// because the Linux raw syscalls compile fine on macOS but invoke Linux
+/// syscall numbers that don't exist on the Darwin kernel (SIGSYS on first
+/// call). The libc `readdir` is the cross-platform equivalent.
 fn deleteTreeBestEffort(path: []const u8) void {
     deleteTreeRecursive(path) catch |err| {
         std.log.warn("Failed to clean up temp dir {s}: {s}", .{ path, @errorName(err) });
@@ -262,68 +288,67 @@ fn deleteTreeBestEffort(path: []const u8) void {
 }
 
 fn deleteTreeRecursive(path: []const u8) !void {
-    // Open the directory (O_DIRECTORY | O_RDONLY | O_CLOEXEC).
     var dir_path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
     const dir_path_z = copyToNull(&dir_path_buf, path);
-    const dir_fd_rc = std.os.linux.open(
-        dir_path_z,
-        .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true },
-        0,
-    );
-    if (dir_fd_rc > std.math.maxInt(i32)) return error.OpenDirFailed;
-    const dir_fd: i32 = @intCast(dir_fd_rc);
-    defer _ = std.os.linux.close(dir_fd);
 
-    // Iterate the entries and recursively delete children. We need
-    // a stable scratch buffer to hold the child path "<path>/<name>".
+    // `opendir` returns null on failure (with errno set) or a `*DIR`.
+    const dir = std.c.opendir(dir_path_z) orelse return error.OpenDirFailed;
+    defer _ = std.c.closedir(dir);
+
+    // Iterate entries. `std.c.readdir` returns `?*dirent`; null = end of stream
+    // (errno unchanged) or error (errno set). We treat null as end-of-stream
+    // for cleanup purposes — the final rmdir() will fail if the dir is
+    // genuinely non-empty, which is fine (best-effort cleanup at shutdown).
     var child_path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
 
-    var buf: [4096]u8 align(@alignOf(std.os.linux.dirent64)) = undefined;
-    while (true) {
-        const n_rc = std.os.linux.getdents64(dir_fd, &buf, buf.len);
-        if (n_rc > std.math.maxInt(usize)) return error.GetDentsFailed;
-        const n: usize = @intCast(n_rc);
-        if (n == 0) break;
+    while (std.c.readdir(dir)) |entry| {
+        // The libc `dirent` struct uses the field name `name` (NOT `d_name`,
+        // which is a glibc extension we don't have here) on both Linux
+        // and macOS. Linux's `name: [256]u8` is NUL-terminated by the
+        // kernel; macOS's `name: [1024]u8` is NOT NUL-terminated but is
+        // accompanied by a `namlen: u16` field giving the actual byte
+        // count. Branch on builtin.os.tag to handle both correctly.
+        const name = switch (builtin.os.tag) {
+            .macos => entry.name[0..entry.namlen],
+            else => blk: {
+                // Linux / *BSD: kernel guarantees NUL termination in the
+                // fixed-size `name` array.
+                var end: usize = 0;
+                while (end < entry.name.len and entry.name[end] != 0) : (end += 1) {}
+                break :blk entry.name[0..end];
+            },
+        };
 
-        var pos: usize = 0;
-        while (pos < n) {
-            const entry: *align(1) const std.os.linux.dirent64 = @ptrCast(&buf[pos]);
-            const name_ptr: [*]const u8 = &entry.name;
-            const reclen_usize: usize = @as(usize, @intCast(entry.reclen));
-            const name_offset: usize = @offsetOf(std.os.linux.dirent64, "name");
-            const name_max_len: usize = reclen_usize - name_offset;
-            const name = std.mem.sliceTo(name_ptr[0..name_max_len], 0);
+        // Skip "." and "..".
+        if (name.len == 0) continue;
+        if (name.len == 1 and name[0] == '.') continue;
+        if (name.len == 2 and name[0] == '.' and name[1] == '.') continue;
 
-            // Skip "." and "..".
-            if (name.len > 0 and !(name.len == 1 and name[0] == '.') and
-                !(name.len == 2 and name[0] == '.' and name[1] == '.'))
-            {
-                // Build "<path>/<name>" into a stack buffer.
-                if (path.len + 1 + name.len >= child_path_buf.len) return error.NameTooLong;
-                @memcpy(child_path_buf[0..path.len], path);
-                child_path_buf[path.len] = '/';
-                @memcpy(child_path_buf[path.len + 1 ..][0..name.len], name);
-                const child_path = child_path_buf[0 .. path.len + 1 + name.len];
+        // Build "<path>/<name>" into a stack buffer.
+        if (path.len + 1 + name.len >= child_path_buf.len) return error.NameTooLong;
+        @memcpy(child_path_buf[0..path.len], path);
+        child_path_buf[path.len] = '/';
+        @memcpy(child_path_buf[path.len + 1 ..][0..name.len], name);
+        const child_path = child_path_buf[0 .. path.len + 1 + name.len];
 
-                if (entry.type == std.os.linux.DT.DIR) {
-                    // Recurse, then rmdir.
-                    try deleteTreeRecursive(child_path);
-                    var child_z: [std.fs.max_path_bytes:0]u8 = undefined;
-                    const child_z_ptr = copyToNull(&child_z, child_path);
-                    _ = std.os.linux.unlinkat(dir_fd, child_z_ptr, std.os.linux.AT.REMOVEDIR);
-                } else {
-                    // unlinkat relative to the parent dir.
-                    var child_z: [std.fs.max_path_bytes:0]u8 = undefined;
-                    const child_z_ptr = copyToNull(&child_z, name);
-                    _ = std.os.linux.unlinkat(dir_fd, child_z_ptr, 0);
-                }
-            }
+        var child_z: [std.fs.max_path_bytes:0]u8 = undefined;
+        const child_z_ptr = copyToNull(&child_z, child_path);
 
-            pos += entry.reclen;
+        // `entry.type` is the libc dirent's `d_type` field — the
+        // file-type discriminator (DT_DIR=4, DT_REG=8, etc.). Same
+        // values on Linux + macOS via `std.c.DT`.
+        if (entry.type == std.c.DT.DIR) {
+            // Recurse, then rmdir.
+            try deleteTreeRecursive(child_path);
+            _ = std.c.rmdir(child_z_ptr);
+        } else {
+            // unlink relative to the (now-recursively-emptied) parent dir.
+            _ = std.c.unlink(child_z_ptr);
         }
     }
 
-    // Finally rmdir the now-empty directory itself.
-    const rm_rc = std.os.linux.unlinkat(std.os.linux.AT.FDCWD, dir_path_z, std.os.linux.AT.REMOVEDIR);
-    _ = rm_rc; // best-effort
+    // Finally rmdir the now-empty directory itself. Best-effort: a non-zero
+    // return (e.g. ENOTEMPTY because of a race) is swallowed by the caller
+    // via deleteTreeBestEffort.
+    _ = std.c.rmdir(dir_path_z);
 }

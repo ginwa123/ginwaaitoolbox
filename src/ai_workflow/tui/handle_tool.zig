@@ -1,7 +1,7 @@
 const std = @import("std");
 const nalar = @import("nalarcore");
 const agent = nalar.agent;
-const logger_mod = nalar.logger;
+const logger_mod = nalar.loggermod;
 const sqlite = nalar.sqlite;
 const config_mod = nalar.config;
 const tool_registry = @import("tool_registry.zig");
@@ -40,12 +40,6 @@ const ToolContext = struct {
     is_thinking: *bool,
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
-    /// Name of the parent session's active profile (from
-    /// `LlmConfig.profiles_models`). Threaded through from
-    /// `RunParamsNew.selected_profile_model` so tools that need
-    /// the profile context (e.g. `spawn_sub_agent`'s per-profile
-    /// sub_agents lookup) can see it. Empty string means "no
-    /// profile selected — use the top-level config".
     selected_profile_model: []const u8 = "",
 };
 
@@ -58,11 +52,71 @@ pub const DiffViewParseResult = struct {
     content_without_diffview: []const u8,
     /// Whether a diff_view section was found and removed
     diff_view_found: bool,
-    /// The before content extracted from <before> tag (null if not found)
+    /// The before content extracted from <before> tag, XML-unescaped
+    /// (`&quot;` → `"`, `&lt;` → `<`, `&gt;` → `>`, `&apos;` → `'`, `&amp;` → `&`).
+    /// Null if the tag wasn't found. If `diff_view_found` is true, this is
+    /// ALWAYS an allocated buffer that the caller MUST free.
     before: ?[]const u8,
-    /// The after content extracted from <after> tag (null if not found)
+    /// The after content extracted from <after> tag, XML-unescaped (see `before`).
+    /// Null if the tag wasn't found. If `diff_view_found` is true, this is
+    /// ALWAYS an allocated buffer that the caller MUST free.
     after: ?[]const u8,
 };
+
+/// Decode XML entities produced by the backend's `xmlEscape` (its inverse).
+/// Mirrors the same entity set: `&lt;` → `<`, `&gt;` → `>`, `&quot;` → `"`,
+/// `&apos;` → `'`, `&amp;` → `&`. The order of replacements matters —
+/// `&amp;` MUST be replaced LAST, otherwise the other replacements would
+/// double-decode `&amp;`-prefixed entities (e.g. `&amp;quot;` would incorrectly
+/// become `"` instead of `&quot;`).
+pub fn xmlUnescape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    // Fast path: if there are no `&` at all, no entity can be present — return
+    // a dupe so the caller's allocator invariant (always-allocated when
+    // diff_view_found is true) still holds. This avoids the 5 string scans
+    // for the common case (diff_view content rarely contains entities).
+    if (std.mem.indexOfScalar(u8, s, '&') == null) {
+        return try allocator.dupe(u8, s);
+    }
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < s.len) {
+        if (s[i] == '&') {
+            // Try each entity in turn; order doesn't matter except for `&amp;`
+            // which must be tried LAST (so we don't prematurely decode it).
+            // Bounds check: `i + N <= s.len` ensures the slice has N chars.
+            if (i + 4 <= s.len and std.mem.eql(u8, s[i..][0..4], "&lt;")) {
+                try out.append(allocator, '<');
+                i += 4;
+            } else if (i + 4 <= s.len and std.mem.eql(u8, s[i..][0..4], "&gt;")) {
+                try out.append(allocator, '>');
+                i += 4;
+            } else if (i + 6 <= s.len and std.mem.eql(u8, s[i..][0..6], "&quot;")) {
+                try out.append(allocator, '"');
+                i += 6;
+            } else if (i + 6 <= s.len and std.mem.eql(u8, s[i..][0..6], "&apos;")) {
+                try out.append(allocator, '\'');
+                i += 6;
+            } else if (i + 5 <= s.len and std.mem.eql(u8, s[i..][0..5], "&amp;")) {
+                try out.append(allocator, '&');
+                i += 5;
+            } else {
+                // Unknown entity (or partial match at end of string) — emit
+                // the literal `&` and advance one byte. The downstream
+                // consumer will see it as-is.
+                try out.append(allocator, '&');
+                i += 1;
+            }
+        } else {
+            try out.append(allocator, s[i]);
+            i += 1;
+        }
+    }
+
+    return try out.toOwnedSlice(allocator);
+}
 
 /// Parses diff_view XML from a text_replace tool result.
 /// Extracts before/after content and returns content with diff_view section removed.
@@ -84,21 +138,34 @@ pub fn parseDiffViewFromResult(allocator: std.mem.Allocator, content: []const u8
 
     const dv_content = content[dv_start.? + 10 .. dv_end.?]; // 10 = len("<diff_view>")
 
-    // Extract before content
+    // Extract before content. Inner slices point into `content` which holds
+    // XML-encoded entities (`&quot;`, `&lt;`, ...); we MUST unescape them
+    // before returning so the consumer sees the original byte-level content.
+    // Without this, a source-code diff with `"` / `<` / `>` / `&` would
+    // render literally as `&quot;` / `&lt;` / `&gt;` / `&amp;` in the UI
+    // (bug: "diff view shows &quot; instead of ""). See parse_diff_view_test.zig
+    // for regression coverage.
     var before_val: ?[]const u8 = null;
+    var before_allocated = false;
     if (std.mem.indexOf(u8, dv_content, "<before>")) |b_start| {
         const b_content_start = b_start + 8; // 8 = len("<before>")
         if (std.mem.indexOf(u8, dv_content, "</before>")) |b_end| {
-            before_val = dv_content[b_content_start..b_end];
+            const raw = dv_content[b_content_start..b_end];
+            before_val = try xmlUnescape(allocator, raw);
+            before_allocated = true;
+            errdefer if (before_allocated) allocator.free(before_val.?);
         }
     }
 
-    // Extract after content
     var after_val: ?[]const u8 = null;
+    var after_allocated = false;
     if (std.mem.indexOf(u8, dv_content, "<after>")) |a_start| {
         const a_content_start = a_start + 7; // 7 = len("<after>")
         if (std.mem.indexOf(u8, dv_content, "</after>")) |a_end| {
-            after_val = dv_content[a_content_start..a_end];
+            const raw = dv_content[a_content_start..a_end];
+            after_val = try xmlUnescape(allocator, raw);
+            after_allocated = true;
+            errdefer if (after_allocated) allocator.free(after_val.?);
         }
     }
 
@@ -327,10 +394,6 @@ pub fn handle_tool(
     config: *const config_mod.LlmConfig,
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
-    /// Parent session's active profile (from
-    /// `LlmConfig.profiles_models`). Threaded through to
-    /// `ToolContext.selected_profile_model` so tools like
-    /// `spawn_sub_agent` can do per-profile sub_agents lookup.
     selected_profile_model: []const u8,
 ) !void {
 
@@ -534,10 +597,16 @@ fn saveAndSendToolResult(
         .diffview_before = diffview_before,
     });
 
-    // Free the allocated content_after_diff_view
+    // Free the allocated content_after_diff_view.
+    // `before` and `after` are also allocations owned by this caller (since
+    // parseDiffViewFromResult now always allocates them — so it can unescape
+    // XML entities like `&quot;` → `"` before returning the original byte
+    // content for storage). See handle_tool.zig parseDiffViewFromResult.
     if (content_modified_allocated) |allocated| {
         allocator.free(allocated);
     }
+    if (diffview_before) |before| allocator.free(before);
+    if (diffview_after) |after| allocator.free(after);
 
     try sendSSEForLatestMessage(allocator, db, session_id, cwd, agent_name, parent_session_id, temperature, is_thinking, false, true, null);
 }

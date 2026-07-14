@@ -7,7 +7,6 @@ const session_helpers = llm_history;
 const sqlite = tree1_mod.sqlite;
 const prompt = tree1_mod.prompt;
 const TUIHistory = @import("models.zig").TUIHistory;
-const transform_llm_history_to_agent_messages = @import("transform_llm_history_to_agent_messages.zig");
 const tool_models = tree1_mod.tool_models;
 const config_mod = tree1_mod.config;
 const http_client = tree1_mod.http_client;
@@ -21,6 +20,7 @@ const AgentTool = tool_models.AgentTool;
 const AgentToolFunction = tool_models.AgentToolFunction;
 const ToolParameters = tool_models.ToolParameters;
 const ToolProperty = tool_models.ToolProperty;
+const agentic_loop = @import("agentic_loop/mod.zig");
 
 pub fn buildMessages(
     allocator: std.mem.Allocator,
@@ -29,7 +29,7 @@ pub fn buildMessages(
     cwd: []const u8,
     session_id: []const u8,
     parent_session_id: []const u8,
-    historyMessages: []TUIHistory,
+    historyMessages: []agentic_loop.LLMHistory,
     tools: []tool_models.AgentTool,
     inherited_context_mode: []const u8,
     /// Optional explicit "active agent configuration" to inject as
@@ -148,7 +148,7 @@ pub fn buildMessages(
 
     try allMessages.append(allocator, systemMessage);
     for (historyMessages) |hist| {
-        const agentMsgs = try transform_llm_history_to_agent_messages.transform_llm_history_to_agent_message(allocator, hist);
+        const agentMsgs = try agentic_loop.parsing_mod.transformLLMHistoryToAgentMessage(allocator, hist);
         for (agentMsgs) |msg| {
             try allMessages.append(allocator, msg);
         }
@@ -192,6 +192,13 @@ fn buildActivityInfo(allocator: std.mem.Allocator, io: std.Io, db: *sqlite.Sqlit
             try result.appendSlice(allocator, " @ ");
             try result.appendSlice(allocator, worker.working_directory);
         }
+
+        if (worker.git_worktree_cwd.len > 0) {
+            try result.appendSlice(allocator, " (git worktree: ");
+            try result.appendSlice(allocator, worker.git_worktree_cwd);
+            try result.appendSlice(allocator, ")");
+        }
+
         if (worker.last_activity > 0) {
             const now: i64 = @intCast(@divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds, 1_000_000_000));
             const diff_secs = now - worker.last_activity;
@@ -932,7 +939,8 @@ pub fn BuildWorkspaceContext(
         }
 
         if (sib.truncated_tasks_count > 0) {
-            const footer = try std.fmt.allocPrint(allocator,
+            const footer = try std.fmt.allocPrint(
+                allocator,
                 "    … and {d} more task{s} under this item\n",
                 .{ sib.truncated_tasks_count, if (sib.truncated_tasks_count == 1) "" else "s" },
             );
@@ -942,7 +950,8 @@ pub fn BuildWorkspaceContext(
     }
 
     if (ctx.truncated_items_count > 0) {
-        const footer = try std.fmt.allocPrint(allocator,
+        const footer = try std.fmt.allocPrint(
+            allocator,
             "\n… and {d} more item{s} in this workspace (cap: {d} shown).\n",
             .{ ctx.truncated_items_count, if (ctx.truncated_items_count == 1) "" else "s", llm_history.MAX_SIBLING_ITEMS },
         );
@@ -1110,7 +1119,8 @@ pub fn BuildKanbanStatusPrompt(
             }
         }
         if (cols.len > MAX_KANBAN_COLUMNS) {
-            const footer = try std.fmt.allocPrint(allocator,
+            const footer = try std.fmt.allocPrint(
+                allocator,
                 "… and {d} more columns (cap: {d} shown).\n",
                 .{ cols.len - MAX_KANBAN_COLUMNS, MAX_KANBAN_COLUMNS },
             );

@@ -2,7 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const prompts = @import("prompts/prompts.zig");
 const memory_prompts = @import("prompts/memory.zig");
-const browsing = @import("prompts/browsing.zig");
 const tool_list_skills_mod = @import("tools/list_skills.zig");
 const tool_models = @import("Agent.zig");
 const tool_memories_mod = @import("tools/memories.zig");
@@ -25,51 +24,19 @@ fn getCurrentOs() []const u8 {
 // Re-export all prompts for easy access
 pub const UniversalRules = prompts.UniversalRules;
 pub const PromptAutoFix = prompts.PromptAutoFix;
-pub const DynamicProperties = prompts.DynamicProperties;
 pub const Agent = prompts.Agent;
 pub const ParallelWork = prompts.ParallelWork;
-pub const Research = prompts.Research;
-pub const ResearchTriggers = prompts.ResearchTriggers;
-pub const FileEditingRules = prompts.FileEditingRules;
-pub const ChangeAgent = prompts.ChangeAgent;
-pub const SpecializationTable = prompts.SpecializationTable;
 pub const Classification = prompts.Classification;
 pub const Execution = prompts.Execution;
 pub const Escalation = prompts.Escalation;
-pub const PlanBlock = prompts.PlanBlock;
-pub const TDD = prompts.TDD;
 pub const MemoryPrompt = prompts.MemoryPrompt;
 pub const NalarMdAutoUpdate = prompts.NalarMdAutoUpdate;
 pub const GitPrompt = prompts.GitPrompt;
 pub const GlobalMemorySystem = prompts.GlobalMemorySystem;
 pub const CompactionAgent = prompts.CompactionAgent;
 pub const GenerateSessionNameAgent = prompts.GenerateSessionNameAgent;
-pub const SkillsUsage = prompts.SkillsUsage;
-pub const SkillsTriggers = prompts.SkillsTriggers;
-pub const ProceduralMemory = prompts.ProceduralMemory;
 pub const ResponseFormatting = prompts.ResponseFormatting;
 pub const UpdateActivityRule = prompts.UpdateActivityRule;
-
-pub const ThinkBeforeCoding = prompts.ThinkBeforeCoding;
-pub const SimplicityFirst = prompts.SimplicityFirst;
-pub const SurgicalChanges = prompts.SurgicalChanges;
-pub const GoalDrivenExecution = prompts.GoalDrivenExecution;
-pub const SuccessCriteria = prompts.SuccessCriteria;
-pub const AntiPatterns = prompts.AntiPatterns;
-pub const NalarBrowserPrompt = browsing.NalarBrowserPrompt;
-
-// Agentic Coding enhancements
-pub const AutonomousBehavior = prompts.AutonomousBehavior;
-pub const DeepResearch = prompts.DeepResearch;
-pub const QualityGates = prompts.QualityGates;
-pub const ErrorRecovery = prompts.ErrorRecovery;
-pub const ToolChaining = prompts.ToolChaining;
-pub const ContextAwareness = prompts.ContextAwareness;
-pub const ProactiveLearning = prompts.ProactiveLearning;
-pub const DecisionFramework = prompts.DecisionFramework;
-pub const AggressiveDelegation = prompts.AggressiveDelegation;
-pub const IterationMindset = prompts.IterationMindset;
-pub const SafetyFirst = prompts.SafetyFirst;
 
 // =============================================================================
 // PROMPT BUILDERS
@@ -119,51 +86,15 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
     .{ .name = "prompt_auto_fix", .content = PromptAutoFix },
     .{ .name = "agent_directive", .content = Agent },
     .{ .name = "parallel_work", .content = ParallelWork },
-    // .{ .name = "autonomous_behavior", .content = AutonomousBehavior },
-    // .{ .name = "change_agent", .content = ChangeAgent },
-    // .{ .name = "specialization_table", .content = SpecializationTable },
-    // .{ .name = "aggressive_delegation", .content = AggressiveDelegation },
-    // .{ .name = "tool_chaining", .content = ToolChaining },
 
     // === Skills system ===
     .{ .name = "skills_system", .content = memory_prompts.skills_system_prompt },
-    // .{ .name = "skills_usage", .content = SkillsUsage },
-    // .{ .name = "skills_triggers", .content = SkillsTriggers },
-    // .{ .name = "procedural_memory", .content = ProceduralMemory },
-
-    // === Tooling & research ===
-    // .{ .name = "research", .content = Research },
-    // .{ .name = "research_triggers", .content = ResearchTriggers },
-    // .{ .name = "deep_research", .content = DeepResearch },
-    // .{ .name = "file_editing", .content = FileEditingRules },
-    // .{ .name = "dynamic_properties", .content = DynamicProperties, .requires_tool = "set_agent_properties" },
-    // .{ .name = "nalar_browser", .content = NalarBrowserPrompt, .requires_tool = "browse" },
 
     // === Workflow: classify → plan → execute → escalate ===
     .{ .name = "classification", .content = Classification },
-    // .{ .name = "plan_block", .content = PlanBlock },
-    // .{ .name = "tdd", .content = TDD },
     .{ .name = "execution", .content = Execution },
     .{ .name = "escalation", .content = Escalation },
 
-    // === SECONDARY: When you do work yourself (Philosophy A) ===
-    // Demoted behind the orchestrator narrative. These still apply when
-    // the agent (or a sub-agent it spawns) actually writes code, but the
-    // *default* posture is: "delegate this to a sub-agent who will follow
-    // these rules", not "do it yourself and follow these rules."
-    // .{ .name = "think_before_coding", .content = ThinkBeforeCoding },
-    // .{ .name = "simplicity_first", .content = SimplicityFirst },
-    // .{ .name = "surgical_changes", .content = SurgicalChanges },
-    // .{ .name = "goal_driven", .content = GoalDrivenExecution },
-    // .{ .name = "success_criteria", .content = SuccessCriteria },
-    // .{ .name = "anti_patterns", .content = AntiPatterns },
-    // .{ .name = "decision_framework", .content = DecisionFramework },
-    // .{ .name = "quality_gates", .content = QualityGates },
-    // .{ .name = "error_recovery", .content = ErrorRecovery },
-    // .{ .name = "context_awareness", .content = ContextAwareness },
-    // .{ .name = "proactive_learning", .content = ProactiveLearning },
-    // .{ .name = "iteration_mindset", .content = IterationMindset },
-    // .{ .name = "safety_first", .content = SafetyFirst },
 
     // === Memory & docs ===
     .{ .name = "memory_prompt", .content = MemoryPrompt },

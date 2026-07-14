@@ -36,4 +36,11 @@ test {
 
     // Bash tool cross-platform tests
     _ = @import("tools/bash_test.zig");
+
+    // Search tool edge cases (validation + behavioral + static-contract)
+    _ = @import("tools/search_test.zig");
+
+    // Write file tool edge cases (sanity + content shape + path shape +
+    // ownership + XML serialization + tool schema contract)
+    _ = @import("tools/write_file_test.zig");
 }

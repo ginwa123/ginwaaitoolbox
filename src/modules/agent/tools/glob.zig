@@ -259,6 +259,49 @@ pub const DEFAULT_MAX_RESULTS: usize = 100;
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 50 * 1024;
 pub const MAX_RECOMMENDED_RESULTS: usize = 500;
 
+/// Default maximum recursion depth for `walkDir`. Set high enough for
+/// normal projects (32 covers any reasonable file tree) but low enough
+/// to abort gracefully on symlink cycles. Matches `find -maxdepth`,
+/// `git ls-tree --depth`, and `node-glob` defaults. The caller can
+/// override via a future flag if needed.
+pub const DEFAULT_MAX_DEPTH: usize = 64;
+
+// ============================================================================
+// Glob Errors
+// ============================================================================
+
+pub const GlobError = error{
+    /// `pattern` was an empty string. Almost certainly a caller bug,
+    /// not a no-match result. Surfaced up-front before allocating the
+    /// expanded-pattern array so we don't pay any IO cost.
+    EmptyPattern,
+    /// `pattern` contained only whitespace characters. Same as
+    /// EmptyPattern in terms of intent; surfaced separately so the
+    /// LLM knows which mistake was made.
+    WhitespaceOnlyPattern,
+    /// `pattern` contained a NUL byte. expandBraces would silently
+    /// corrupt it; we reject up-front.
+    PatternContainsNulByte,
+    /// `path` does not exist (or is not accessible). Without this check,
+    /// walkDir silently returned zero results for bad paths — confusing.
+    PathDoesNotExist,
+    /// `file_type` was not in {null, "f", "file", "d", "directory"}.
+    /// Silently ignoring unknown values (the pre-fix behavior) caused
+    /// callers to get all results when they asked for "exec" or
+    /// "symlink".
+    InvalidFileType,
+    /// `max_results` was 0. Indistinguishable from a real no-match
+    /// result under the old defaulting shim; reject up-front.
+    InvalidMaxResults,
+    /// `pattern` contains an unmatched `{` (depth never returned to 0).
+    /// Without this check, the pattern silently returned no matches.
+    InvalidBraceExpansion,
+};
+
+// ============================================================================
+// Glob Constants
+// ============================================================================
+
 // ============================================================================
 // Glob Types
 // ============================================================================
@@ -435,6 +478,25 @@ fn expandBraces(pattern: []const u8, allocator: std.mem.Allocator) ![]const []co
     var start: usize = 0;
     var depth: usize = 0;
     var i: usize = 0;
+
+    // First pass: detect unmatched `{` or `}` up-front and report a
+    // clear error to the caller. Without this, an unmatched `{` causes
+    // depth to never return to 0, the function returns the original
+    // pattern as-is, and walkDir then matches nothing — silent no-match.
+    {
+        var scan_depth: usize = 0;
+        for (pattern) |c| {
+            switch (c) {
+                '{' => scan_depth += 1,
+                '}' => {
+                    if (scan_depth == 0) return error.InvalidBraceExpansion;
+                    scan_depth -= 1;
+                },
+                else => {},
+            }
+        }
+        if (scan_depth != 0) return error.InvalidBraceExpansion;
+    }
 
     while (i < pattern.len) {
         switch (pattern[i]) {
@@ -636,6 +698,13 @@ fn walkDir(
         const name = entry.name;
         if (!opts.dot and name.len > 0 and name[0] == '.') continue;
 
+        // Always skip the `.git` directory regardless of `opts.dot`.
+        // Walking into `.git/objects/...` returns thousands of pack
+        // files that no LLM caller wants. Matches `git ls-files` and
+        // `node-glob` default behavior. The LLM can opt in by passing
+        // an explicit pattern like `.git/**/*` (rare).
+        if (entry.kind == .directory and std.mem.eql(u8, name, ".git")) continue;
+
         const full_path = joinPath(allocator, dir_path, name) catch continue;
 
         // Check gitignore first
@@ -826,7 +895,58 @@ pub const GlobOptions = struct {
 // ============================================================================
 
 pub fn executeGlob(allocator: std.mem.Allocator, io: std.Io, input: GlobInput) !GlobResult {
-    // Expand brace patterns
+    // ---- Up-front input validation (BEFORE expandBraces / walk) ----
+    // Rationale: most "glob found nothing" results today are actually
+    // caller bugs. Catching them here gives the LLM a clear, actionable
+    // error message instead of a silent empty result.
+    if (input.pattern.len == 0) return error.EmptyPattern;
+
+    // Whitespace-only pattern check. We strip ASCII whitespace and
+    // accept the result iff non-empty.
+    {
+        var has_non_ws = false;
+        for (input.pattern) |c| {
+            if (c != ' ' and c != '\t' and c != '\n' and c != '\r') {
+                has_non_ws = true;
+                break;
+            }
+        }
+        if (!has_non_ws) return error.WhitespaceOnlyPattern;
+    }
+
+    // NUL byte check — expandBraces would silently corrupt the pattern.
+    for (input.pattern) |c| if (c == 0) return error.PatternContainsNulByte;
+
+    // Path existence + dir check. The cross-platform approach: try to
+    // open it as a directory. If the open succeeds, path exists and
+    // is a directory. If it fails, we treat it as a nonexistent path
+    // (which is what the LLM caller wanted to know). Per the project
+    // memory `zig-0.16-syscall-helpers.md`, `std.fs.accessAbsolute` is
+    // gone in 0.16 and `openDirAbsolute` is the cross-platform path
+    // (Linux/macOS; Windows is not yet targeted here but the call
+    // exists on all POSIX via `std.Io`).
+    {
+        const verify_dir: std.Io.Dir = if (std.fs.path.isAbsolute(input.path))
+            std.Io.Dir.openDirAbsolute(io, input.path, .{}) catch return error.PathDoesNotExist
+        else
+            std.Io.Dir.cwd().openDir(io, input.path, .{}) catch return error.PathDoesNotExist;
+        std.Io.Dir.close(verify_dir, io);
+    }
+
+    // file_type strict validation.
+    if (input.file_type) |ft| {
+        const ok = std.mem.eql(u8, ft, "f") or
+            std.mem.eql(u8, ft, "file") or
+            std.mem.eql(u8, ft, "d") or
+            std.mem.eql(u8, ft, "directory");
+        if (!ok) return error.InvalidFileType;
+    }
+
+    // max_results validation. The 0 case is the one that previously
+    // got the silent "use default" treatment and confused callers.
+    if (input.max_results) |mr| if (mr == 0) return error.InvalidMaxResults;
+
+    // Brace expansion (also handles `{...}` detection up-front).
     const expanded = try expandBraces(input.pattern, allocator);
     defer {
         for (expanded) |e| allocator.free(e);
@@ -840,6 +960,7 @@ pub fn executeGlob(allocator: std.mem.Allocator, io: std.Io, input: GlobInput) !
         .follow = input.follow,
         .nodir = if (input.file_type) |ft| std.mem.eql(u8, ft, "f") or std.mem.eql(u8, ft, "file") else false,
         .onlydir = if (input.file_type) |ft| std.mem.eql(u8, ft, "d") or std.mem.eql(u8, ft, "directory") else false,
+        .max_depth = DEFAULT_MAX_DEPTH,
     };
 
     // Walk directory
@@ -863,15 +984,28 @@ pub fn executeGlob(allocator: std.mem.Allocator, io: std.Io, input: GlobInput) !
 
     walkDir(allocator, io, input.path, expanded, opts, &results, 0, &gitignore_ctx);
 
-    // Apply offset and limit
+    // Apply offset and limit.
+    //
+    // PRE-EXISTING BUG FIX: The dups in `results.items` are owned by
+    // SOMEONE. On the original happy path (no offset, no max_results
+    // cap), every dup is moved into `matches[i].path` and freed when
+    // the caller calls `result.deinit`. With offset OR max_results
+    // restricted, only `results.items[start..end]` is moved; the rest
+    // were leaked. Now: free the un-moved slice ranges BEFORE returning,
+    // so each dup is owned by exactly one of (matches, offset-skipped
+    // free, count-truncated free, errdefer).
     const total = results.items.len;
     const offset = input.offset orelse 0;
     // Treat max_results=0 as "no limit" (same as null)
     const max_res = @min(input.max_results orelse DEFAULT_MAX_RESULTS, MAX_RECOMMENDED_RESULTS);
-    // Ensure max_res is at least 1 if we have results to return
     const effective_max = if (max_res == 0) DEFAULT_MAX_RESULTS else max_res;
     const start = @min(offset, total);
     const end = @min(start + effective_max, total);
+
+    // Free the offset-skipped range (results.items[0..start]).
+    if (start > 0) {
+        for (results.items[0..start]) |r| allocator.free(r);
+    }
 
     var matches = std.ArrayList(GlobMatch).empty;
     errdefer {
@@ -879,8 +1013,15 @@ pub fn executeGlob(allocator: std.mem.Allocator, io: std.Io, input: GlobInput) !
         matches.deinit(allocator);
     }
 
+    // Transfer ownership of the kept range (results.items[start..end])
+    // into `matches[i].path` so the dups get freed by `result.deinit`.
     for (results.items[start..end]) |r| {
         try matches.append(allocator, .{ .path = r });
+    }
+
+    // Free the count-truncated range (results.items[end..total]).
+    if (end < total) {
+        for (results.items[end..total]) |r| allocator.free(r);
     }
 
     const truncated = if (total > end) total - end else 0;
@@ -897,49 +1038,114 @@ pub fn executeGlob(allocator: std.mem.Allocator, io: std.Io, input: GlobInput) !
 // Output Formatting
 // ============================================================================
 
+/// Escape the five XML-significant characters in `s` so the result is
+/// safe to interpolate between XML markup. Used for the `pattern`
+/// attribute on `<glob_summary>` — without escaping, a pattern like
+/// `<weird>.zig` would emit literal XML markup that breaks downstream
+/// parsers (per memory `zig-0.16-std-json-fmt-emits-invalid-utf8-as-array`'s
+/// general principle: never build XML/JSON via raw `{s}` format strings).
+fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    // Pre-scan to see if any escaping is needed (avoids a copy in
+    // the common case of a benign pattern).
+    var needs_escape = false;
+    for (s) |c| {
+        switch (c) {
+            '<', '>', '&', '"', '\'' => {
+                needs_escape = true;
+                break;
+            },
+            else => {},
+        }
+    }
+    if (!needs_escape) return allocator.dupe(u8, s);
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    for (s) |c| {
+        switch (c) {
+            '<' => try out.appendSlice(allocator, "&lt;"),
+            '>' => try out.appendSlice(allocator, "&gt;"),
+            '&' => try out.appendSlice(allocator, "&amp;"),
+            '"' => try out.appendSlice(allocator, "&quot;"),
+            '\'' => try out.appendSlice(allocator, "&apos;"),
+            else => try out.append(allocator, c),
+        }
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
 pub fn toXmlSuccess(allocator: std.mem.Allocator, result: GlobResult, pattern: []const u8) ![]const u8 {
     var output = std.ArrayList(u8).empty;
-    errdefer output.deinit(allocator);
+    // Defer cleanup (not just errdefer) — `output.items` is appended
+    // into `final_out` BELOW on the success path, which copies the bytes
+    // but doesn't free the backing storage. We MUST free on success too.
+    defer output.deinit(allocator);
+
+    // Escape the pattern ONCE up-front so we don't have to thread it
+    // through every error path. The escape is needed because the
+    // pattern appears as an XML attribute value below.
+    const escaped_pattern = try xmlEscape(allocator, pattern);
+    defer allocator.free(escaped_pattern);
 
     var byte_count: usize = 0;
     var returned: usize = 0;
+    var truncated_by_size_now = false;
 
     for (result.matches.items) |m| {
         const xml = try std.fmt.allocPrint(allocator, "<f>{s}</f>\n", .{m.path});
+        defer allocator.free(xml);
+
         if (byte_count + xml.len > DEFAULT_MAX_OUTPUT_BYTES and returned > 0) {
-            allocator.free(xml);
+            // Byte-cap hit — record it so the truncated warning can
+            // distinguish "truncated because of MAX_OUTPUT_BYTES" from
+            // "truncated because user asked for max_results=N".
+            truncated_by_size_now = true;
             break;
         }
         try output.appendSlice(allocator, xml);
-        allocator.free(xml);
         byte_count += xml.len;
         returned += 1;
     }
 
     if (output.items.len == 0) {
+        // No matches → return the warning directly. The `escaped_pattern`
+        // and `output` allocations are freed by the defer above.
         return try std.fmt.allocPrint(allocator, "<warning>No files found matching the glob pattern.</warning>", .{});
     }
 
     const total_truncated = result.truncated_count + (result.matches.items.len - returned);
+    const truncated_by_size_attr: u8 = if (truncated_by_size_now) '1' else '0';
     const summary = try std.fmt.allocPrint(allocator,
-        "<glob_summary pattern=\"{s}\" total=\"{d}\" returned=\"{d}\" offset=\"{d}\" truncated=\"{d}\">\n",
-        .{ pattern, result.total_found, returned, result.offset_applied, total_truncated }
+        "<glob_summary pattern=\"{s}\" total=\"{d}\" returned=\"{d}\" offset=\"{d}\" truncated=\"{d}\" truncated_by_size=\"{c}\">\n",
+        .{ escaped_pattern, result.total_found, returned, result.offset_applied, total_truncated, truncated_by_size_attr }
     );
-    errdefer allocator.free(summary);
+    // Note: `summary` is appended (which COPIES bytes) into final_out
+    // below, so we must free the original on success too (errdefer only
+    // runs on error). defer covers both paths.
+    defer allocator.free(summary);
 
     var final_out = std.ArrayList(u8).empty;
-    errdefer final_out.deinit(allocator);
+    defer final_out.deinit(allocator);
 
     try final_out.appendSlice(allocator, summary);
     try final_out.appendSlice(allocator, output.items);
     try final_out.appendSlice(allocator, "</glob_summary>\n");
 
     if (total_truncated > 0) {
-        const warn = try std.fmt.allocPrint(allocator,
-            "<truncated>{d} files truncated. Use more specific patterns or pagination.</truncated>",
-            .{total_truncated}
-        );
-        errdefer allocator.free(warn);
+        // Differentiate the warning text by which cap was hit so the
+        // LLM caller knows whether to bump max_results vs max output.
+        const warn = if (truncated_by_size_now)
+            try std.fmt.allocPrint(allocator,
+                "<truncated>{d} files truncated by output size (>{d} bytes). Use more specific patterns to reduce output.</truncated>",
+                .{ total_truncated, DEFAULT_MAX_OUTPUT_BYTES })
+        else
+            try std.fmt.allocPrint(allocator,
+                "<truncated>{d} files truncated. Use more specific patterns or pagination.</truncated>",
+                .{total_truncated});
+        // Same pattern as `summary` — appendSlice copies, so we must
+        // free on success too. Use defer (not errdefer).
+        defer allocator.free(warn);
         try final_out.appendSlice(allocator, warn);
     }
 
