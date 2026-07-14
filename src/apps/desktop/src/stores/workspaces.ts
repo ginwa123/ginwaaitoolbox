@@ -1203,6 +1203,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
   // Set active task - also ensures parent workspace is expanded
   function setActiveTask(taskId: string | null) {
+    // FIX (2026-07-14): clear the navigation store's active chat so a
+    // subsequent SSE session_created event (fired on every send) cannot
+    // navigate back into the previous chat when the user is typing into
+    // a task. Mirrors navigationStore.setActiveTask (navigation.ts:123).
+    useNavigationStore().clearActiveChat()
+
     activeTaskId.value = taskId
     if (taskId) {
       // Find parent workspace and item, then expand workspace
