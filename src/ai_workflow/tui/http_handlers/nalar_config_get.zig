@@ -115,6 +115,7 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             // 2026-07-07-compaction-inline.
             .max_capacity_token_model = cfg.max_capacity_token_model,
             .compaction_threshold_percent = cfg.compaction_threshold_percent,
+            .retry_delay_ms = cfg.retry_delay_ms,
             // The compaction-related fields were moved to per-profile in
             // Chunk 7. Frontend reads `profiles` map directly and shows
             // one row per profile (see CompactionSection.vue).
@@ -153,6 +154,9 @@ const ConfigJson = struct {
     max_capacity_token_model: ?u32 = null,
     /// Optional top-level compaction threshold (see LlmConfigJson).
     compaction_threshold_percent: ?u8 = null,
+    /// Delay in milliseconds before retrying a failed workflow call.
+    /// See `LlmConfig.retry_delay_ms` for semantics.
+    retry_delay_ms: u32 = 0,
 };
 
 fn parseTemperatureOrAuto(value: json.Value) f64 {
