@@ -183,6 +183,13 @@ fn buildActivityInfo(allocator: std.mem.Allocator, io: std.Io, db: *sqlite.Sqlit
             try result.appendSlice(allocator, " @ ");
             try result.appendSlice(allocator, worker.working_directory);
         }
+
+        if (worker.git_worktree_cwd.len > 0) {
+            try result.appendSlice(allocator, " (git worktree: ");
+            try result.appendSlice(allocator, worker.git_worktree_cwd);
+            try result.appendSlice(allocator, ")");
+        }
+
         if (worker.last_activity > 0) {
             const now: i64 = @intCast(@divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds, 1_000_000_000));
             const diff_secs = now - worker.last_activity;

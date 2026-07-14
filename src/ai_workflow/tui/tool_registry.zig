@@ -70,20 +70,7 @@ pub const ToolExecContext = struct {
     is_thinking: *bool,
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
-    /// Name of the parent session's active profile (from
-    /// `LlmConfig.profiles_models`). Empty string means "no
-    /// profile selected — use the top-level config". Threaded
-    /// from `RunParamsNew.selected_profile_model` through
-    /// `handle_tool` so the spawn_sub_agent tool can do the
-    /// per-profile sub_agents lookup (locked decision #1 in
-    /// the plan).
     selected_profile_model: []const u8 = "",
-    /// Optional CWD override set by `set_git_worktree`. When non-null,
-    /// exec functions MAY prefer this path over `cwd` for filesystem
-    /// operations. Currently a no-op at the exec layer (the field is
-    /// reserved for a follow-up plan; see Chunk 3 of the
-    /// set_git_worktree plan in NALAR.md). DB persistence is the
-    /// MUST-HAVE — the override field is forward-looking only.
     cwd_override: ?[]const u8 = null,
 };
 
@@ -958,14 +945,6 @@ const SubAgentThreadArgs = struct {
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
     inherited_context: []const u8 = "", // NEW: mode string for parent history inheritance
-    /// NEW: resolved sub-agent config overlay. When non-null, the
-    /// workflow uses this sub-agent's model / base_url / api_key /
-    /// url_style / thinking / temperature / system_prompt instead of
-    /// the orchestrator's defaults. Set by `execSpawnSubAgent`
-    /// after calling `Config.resolveSubAgent`. The struct is small
-    /// and copied by value into the heap-allocated thread args; the
-    /// string slices it references borrow from the LlmConfig
-    /// allocator and must outlive the workflow run.
     sub_agent_overrides: ?ai_workflow.SubAgentOverrides = null,
 };
 

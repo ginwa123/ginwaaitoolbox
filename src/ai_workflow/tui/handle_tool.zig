@@ -40,12 +40,6 @@ const ToolContext = struct {
     is_thinking: *bool,
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
-    /// Name of the parent session's active profile (from
-    /// `LlmConfig.profiles_models`). Threaded through from
-    /// `RunParamsNew.selected_profile_model` so tools that need
-    /// the profile context (e.g. `spawn_sub_agent`'s per-profile
-    /// sub_agents lookup) can see it. Empty string means "no
-    /// profile selected — use the top-level config".
     selected_profile_model: []const u8 = "",
 };
 
@@ -400,10 +394,6 @@ pub fn handle_tool(
     config: *const config_mod.LlmConfig,
     environment: ?*const std.process.Environ.Map,
     active_loops: *models.ActiveLoops,
-    /// Parent session's active profile (from
-    /// `LlmConfig.profiles_models`). Threaded through to
-    /// `ToolContext.selected_profile_model` so tools like
-    /// `spawn_sub_agent` can do per-profile sub_agents lookup.
     selected_profile_model: []const u8,
 ) !void {
 
