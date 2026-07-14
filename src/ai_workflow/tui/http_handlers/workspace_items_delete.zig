@@ -1,6 +1,7 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
+const design_io = @import("../design_io.zig");
 const gserverz = nalarcore.gserverz;
 const ai_mod = nalarcore.ai_mod;
 
@@ -57,6 +58,42 @@ fn useCase(
 
     if (existing == null) return error.WorkspaceItemNotFound;
     defer existing.?.deinit(allocator);
+
+    // For design items, rmdir the .nalar/design/ folder from disk
+    // BEFORE the SQL DELETE. The DB row's FK ON DELETE CASCADE on
+    // design_pages takes care of the row cleanup, but the on-disk
+    // HTML files would otherwise be orphaned (the DB has no
+    // awareness of them). The path is `<workspace_item.path>/.nalar/design/`
+    // per design_io.atomicWriteFile's convention.
+    //
+    // Best-effort: a failure to rmdir the folder is logged but does
+    // NOT fail the delete — the SQL row cleanup is the source of
+    // truth, and the user can re-run with `rm -rf` if they care
+    // about the orphan files. The user has already confirmed the
+    // delete via the Sidebar's openDeleteConfirm dialog, so we
+    // don't want to error out for a non-critical cleanup step.
+    if (existing.?.item_type) |it| {
+        if (std.mem.eql(u8, it, "design")) {
+            if (existing.?.path) |p| {
+                if (p.len > 0) {
+                    var folder_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+                    const folder_path = std.fmt.bufPrint(
+                        &folder_path_buf,
+                        "{s}/.nalar/design",
+                        .{p},
+                    ) catch null;
+                    if (folder_path) |fp| {
+                        design_io.deleteDirectoryRecursively(allocator, fp) catch |err| {
+                            std.log.warn(
+                                "failed to rmdir design folder {s} on item delete: {{s}}",
+                                .{ fp, @errorName(err) },
+                            );
+                        };
+                    }
+                }
+            }
+        }
+    }
 
     // Delete the item
     ai_mod.workspace_items.deleteWorkspaceItem(allocator, sqlite_db, item_id) catch {

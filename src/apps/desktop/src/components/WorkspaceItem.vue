@@ -432,8 +432,12 @@ const handlePinnedDrop = (event: DragEvent) => {
              kanban items because (a) kanban adds tasks through its own
              column-based UI, not the generic task picker, and (b)
              deleting a kanban requires column cleanup first — the
-             bare delete handler doesn't do that. -->
-        <template v-if="item.item_type !== 'kanban' && item.item_type !== 'design'">
+             bare delete handler doesn't do that. Design items DO
+             show the buttons: the backend's deleteWorkspaceItem
+             handler cascades the design_pages rows via FK ON DELETE
+             CASCADE and rmdirs the .nalar/design/ folder from disk
+             (see workspace_items_delete.zig + design_io.deleteDirectoryRecursively). -->
+        <template v-if="item.item_type !== 'kanban'">
           <button
             @click="handleAddTask"
             class="w-5 h-5 text-sm leading-none flex items-center justify-center rounded opacity-0 group-hover/item:opacity-100 transition-opacity duration-150 hover:text-green-400"
