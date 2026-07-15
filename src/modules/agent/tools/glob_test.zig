@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 const glob = @import("glob.zig");
 
 test "gitignore parse line" {
@@ -814,4 +815,172 @@ test "tool_registry.zig maps new GlobErrors to LLM-friendly messages" {
     try std.testing.expect(std.mem.indexOf(u8, source, "error.InvalidFileType") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "error.InvalidMaxResults") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "error.InvalidBraceExpansion") != null);
+}
+
+// =============================================================================
+// respect_ignore_files tests (TDD: these reference a not-yet-existing field)
+// =============================================================================
+//
+// Mirrors PR #96 (search's respect_ignore_files). Same default (true),
+// same semantics (false disables ignore-file filtering).
+
+test "glob: respect_ignore_files = false does NOT return a validation error" {
+    const allocator = std.testing.allocator;
+
+    // The boolean should flow through executeGlob without triggering
+    // any of the up-front validators (EmptyPattern, etc). Use a benign
+    // input that walks a real tmpdir; if the field is wired right, this
+    // returns Ok (possibly 0 matches in an empty dir).
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "*.txt",
+        .path = ".",
+        .respect_ignore_files = false,
+    });
+    defer result.deinit(allocator);
+
+    // Test passes if executeGlob returned Ok (i.e., the `try` above
+    // didn't propagate an error). matches count can be 0 for an empty dir.
+    try std.testing.expect(result.matches.items.len >= 0);
+}
+
+test "glob: respect_ignore_files = true (default) skips .gitignored paths" {
+    const allocator = std.testing.allocator;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    // NOTE: glob's gitignore parser has a pre-existing limitation where
+    // trailing-`/` directory-only patterns are not checked against
+    // directories during the walk (see GitignoreContext.isIgnored's
+    // `if (entry.directory_only) continue;` short-circuit). Use a
+    // pattern WITHOUT trailing slash so the .gitignore rule applies.
+    try tmpdir.dir.writeFile(std.testing.io, .{
+        .sub_path = ".gitignore",
+        .data = "node_modules\n",
+    });
+    try tmpdir.dir.createDirPath(std.testing.io, "node_modules");
+    try tmpdir.dir.writeFile(std.testing.io, .{
+        .sub_path = "node_modules/secret.js",
+        .data = "// MARKER_TOKEN_GITIGNORE_GLOB\n",
+    });
+    try tmpdir.dir.writeFile(std.testing.io, .{
+        .sub_path = "app.js",
+        .data = "// MARKER_TOKEN_GITIGNORE_GLOB\n",
+    });
+
+    // Zig 0.16: testing.TmpDir.sub_path is just the basename; resolve full path.
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(std.testing.io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "**/*.js",
+        .path = tmpdir_path,
+    });
+    defer result.deinit(allocator);
+
+    // Default = true respects .gitignore, so only app.js matches.
+    // node_modules/secret.js is skipped because of the .gitignore rule.
+    try std.testing.expectEqual(@as(usize, 1), result.matches.items.len);
+    try std.testing.expect(std.mem.endsWith(u8, result.matches.items[0].path, "/app.js"));
+}
+
+test "glob: respect_ignore_files = false includes .gitignored paths" {
+    const allocator = std.testing.allocator;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    try tmpdir.dir.writeFile(std.testing.io, .{
+        .sub_path = ".gitignore",
+        .data = "node_modules/\n",
+    });
+    try tmpdir.dir.createDirPath(std.testing.io, "node_modules");
+    try tmpdir.dir.writeFile(std.testing.io, .{
+        .sub_path = "node_modules/secret.js",
+        .data = "// MARKER_TOKEN_NOIGNORE_GLOB\n",
+    });
+    try tmpdir.dir.writeFile(std.testing.io, .{
+        .sub_path = "app.js",
+        .data = "// MARKER_TOKEN_NOIGNORE_GLOB\n",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(std.testing.io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "**/*.js",
+        .path = tmpdir_path,
+        .respect_ignore_files = false,
+    });
+    defer result.deinit(allocator);
+
+    // Both files matched — .gitignore was un-respected (no GitignoreContext
+    // was created, walkDir skipped filtering).
+    try std.testing.expectEqual(@as(usize, 2), result.matches.items.len);
+
+    var saw_app = false;
+    var saw_secret = false;
+    for (result.matches.items) |m| {
+        if (std.mem.endsWith(u8, m.path, "/app.js")) saw_app = true;
+        if (std.mem.endsWith(u8, m.path, "/node_modules/secret.js")) saw_secret = true;
+    }
+    try std.testing.expect(saw_app);
+    try std.testing.expect(saw_secret);
+}
+
+test "glob: respect_ignore_files = false also un-respects .ignore / .rgignore" {
+    const allocator = std.testing.allocator;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    // NOTE: glob's gitignore parser has a pre-existing limitation with
+    // trailing-`/` directory-only patterns (see GitignoreContext.isIgnored
+    // short-circuit). Use a pattern WITHOUT trailing slash so the .ignore
+    // rule applies.
+    try tmpdir.dir.writeFile(std.testing.io, .{
+        .sub_path = ".ignore",
+        .data = "build_artifacts\n",
+    });
+    try tmpdir.dir.createDirPath(std.testing.io, "build_artifacts");
+    try tmpdir.dir.writeFile(std.testing.io, .{
+        .sub_path = "build_artifacts/cached.dat",
+        .data = "MARKER_TOKEN_IGNORE_GLOB\n",
+    });
+    try tmpdir.dir.writeFile(std.testing.io, .{
+        .sub_path = "main.txt",
+        .data = "MARKER_TOKEN_IGNORE_GLOB\n",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(std.testing.io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try glob.executeGlob(allocator, std.testing.io, .{
+        .pattern = "**/*",
+        .path = tmpdir_path,
+        .respect_ignore_files = false,
+    });
+    defer result.deinit(allocator);
+
+    // With respect_ignore_files=false, the walker lists every file —
+    // including the .ignore file itself (3 files: main.txt,
+    // build_artifacts/cached.dat, .ignore). The key assertion is that
+    // BOTH the expected data files appear (proving build_artifacts/
+    // was walked despite the .ignore rule).
+    try std.testing.expectEqual(@as(usize, 3), result.matches.items.len);
+
+    var saw_main = false;
+    var saw_cached = false;
+    for (result.matches.items) |m| {
+        if (std.mem.endsWith(u8, m.path, "/main.txt")) saw_main = true;
+        if (std.mem.endsWith(u8, m.path, "/build_artifacts/cached.dat")) saw_cached = true;
+    }
+    try std.testing.expect(saw_main);
+    try std.testing.expect(saw_cached);
 }
