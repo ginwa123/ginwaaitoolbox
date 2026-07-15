@@ -315,6 +315,12 @@ pub const GlobInput = struct {
     ignore_case: bool = false,
     file_type: ?[]const u8 = null,
     follow: bool = false,
+    /// When true (default), the tool respects .gitignore / .ignore / .rgignore
+    /// (using glob's own custom parser — supports `!` negation, `/` anchors).
+    /// When false, no ignore-file filtering is applied, so the tool will
+    /// list files in `node_modules/`, `build/`, `.git/`, etc. Mirrors the
+    /// search tool's `respect_ignore_files` parameter (#96).
+    respect_ignore_files: bool = true,
 };
 
 pub const GlobMatch = struct {
@@ -978,11 +984,17 @@ pub fn executeGlob(allocator: std.mem.Allocator, io: std.Io, input: GlobInput) !
     }
     defer results.deinit(allocator);
 
-    // Create gitignore context for the root search path
-    var gitignore_ctx = GitignoreContext.init(input.path);
-    defer gitignore_ctx.deinit(allocator);
+    // Create gitignore context only when respect_ignore_files is true.
+    // walkDir's gitignore_ctx slot is already nullable; the if-guards
+    // inside walkDir (lines 677-678, 712-715) light up automatically.
+    var gitignore_ctx_holder: ?GitignoreContext = if (input.respect_ignore_files)
+        GitignoreContext.init(input.path)
+    else
+        null;
+    defer if (gitignore_ctx_holder) |*c| c.deinit(allocator);
+    const gitignore_ctx: ?*GitignoreContext = if (gitignore_ctx_holder) |*c| c else null;
 
-    walkDir(allocator, io, input.path, expanded, opts, &results, 0, &gitignore_ctx);
+    walkDir(allocator, io, input.path, expanded, opts, &results, 0, gitignore_ctx);
 
     // Apply offset and limit.
     //
@@ -1169,6 +1181,8 @@ pub const glob_tool = AgentTool{
         \\  - Respects .gitignore rules from the search path and subdirectories
         \\  - Files matching gitignore patterns are automatically excluded
         \\  - Use hidden=true to include hidden files (still respects gitignore if file is not gitignored)
+        \\  - respect_ignore_files: default true. Set false to list gitignored paths
+        \\    (node_modules/, build/, .git/, etc.).
         \\
         \\Glob patterns supported:
         \\  * - Match any characters (except /)
@@ -1220,6 +1234,11 @@ pub const glob_tool = AgentTool{
                     .name = "follow",
                     .type = "boolean",
                     .description = "Follow symlinks. Default: false",
+                },
+                .{
+                    .name = "respect_ignore_files",
+                    .type = "boolean",
+                    .description = "Respect .gitignore/.ignore/.rgignore (glob's custom parser). Default: true. Set false to list gitignored paths (node_modules/, build/, .git/, etc.).",
                 },
             },
             .required = &.{},
