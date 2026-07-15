@@ -28,6 +28,13 @@ pub const LlmConfig = struct {
     /// the backend (notify-send / osascript / PowerShell) so they work
     /// even when the desktop app's browser is closed.
     notify_on_complete: bool = true,
+    /// Delay in milliseconds that the workflow sleeps before retrying a
+    /// failed `callDynamicAgentNew` call. 0 = no delay (current behavior,
+    /// the retry fires immediately on the next loop iteration). Upper
+    /// bound is 60 000 ms (1 min) — beyond that, the user should cancel
+    /// and start a new session. Range-validated at the HTTP layer.
+    /// Plan 2026-07-15-retry-delay.
+    retry_delay_ms: u32 = 0,
     /// Optional top-level override for the context window (in tokens).
     /// `null` = fall through to the per-profile override
     /// (`LlmProfile.max_capacity_tokens`), then to the built-in
@@ -212,6 +219,10 @@ pub const LlmConfig = struct {
         /// with `finish_reason === 'stop'`. Default false (user must
         /// explicitly enable in config to avoid surprise notifications).
         notify_on_complete: bool = false,
+        /// Delay in milliseconds before retrying a failed workflow call.
+        /// See `LlmConfig.retry_delay_ms` for semantics. Plan
+        /// 2026-07-15-retry-delay.
+        retry_delay_ms: u32 = 0,
         /// Optional top-level override for the context window (in tokens).
         /// Null = fall through to the per-profile override, then built-in.
         max_capacity_token_model: ?u32 = null,
@@ -371,6 +382,7 @@ pub const LlmConfig = struct {
             .url_style = try allocator.dupe(u8, config_json.url_style),
             .model_compaction_size_kb = config_json.model_compaction_size_kb,
             .notify_on_complete = config_json.notify_on_complete,
+            .retry_delay_ms = config_json.retry_delay_ms,
             // Top-level compaction defaults — restored in plan
             // 2026-07-07-compaction-inline. Persisted as raw optional
             // values; cascade logic in `maxCapacityForModel` /
@@ -1255,6 +1267,7 @@ pub const LlmConfig = struct {
         \\  "url_style": "openai",
         \\  "model_compaction_size_kb": 100,
         \\  "notify_on_complete": false,
+        \\  "retry_delay_ms": 0,
         \\  "max_capacity_token_model": null,
         \\  "compaction_threshold_percent": null
         \\}

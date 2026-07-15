@@ -119,6 +119,8 @@ function syncFromConfig() {
     // Null = no top-level override (fall through to per-profile → built-in).
     max_capacity_token_model: c.max_capacity_token_model ?? null,
     compaction_threshold_percent: c.compaction_threshold_percent ?? null,
+    // Workflow retry delay — plan 2026-07-15-retry-delay.
+    retry_delay_ms: c.retry_delay_ms ?? 0,
   }
   profilesList.value = Object.entries(c.profiles ?? {}).map(([name, p]) => ({
     name,
@@ -167,6 +169,8 @@ function syncToConfig() {
     // Unconditional spread so `null` is preserved (cascade wildcard).
     max_capacity_token_model: d.max_capacity_token_model,
     compaction_threshold_percent: d.compaction_threshold_percent,
+    // Workflow retry delay — plan 2026-07-15-retry-delay.
+    retry_delay_ms: d.retry_delay_ms,
     // Per-profile compaction overrides still live on `profiles` below.
     ...(Object.keys(profiles).length > 0 ? { profiles } : {}),
     ...(activeProfile.value ? { active_profile: activeProfile.value } : {}),
@@ -262,6 +266,8 @@ function emptyDefaults(): DefaultsConfig {
     // null = cascade wildcard (fall through to per-profile → built-in).
     max_capacity_token_model: null,
     compaction_threshold_percent: null,
+    // Workflow retry delay — plan 2026-07-15-retry-delay.
+    retry_delay_ms: 0,
   }
 }
 

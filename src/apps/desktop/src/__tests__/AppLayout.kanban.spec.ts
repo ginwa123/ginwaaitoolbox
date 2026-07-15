@@ -578,4 +578,39 @@ describe('AppLayout — kanban survives route navigation (regression: activeWork
     expect(view.exists()).toBe(true)
     wrapper.unmount()
   })
+
+  // Regression guard for commit d0a05eb0 ("feat(design): Figma-
+  // lite redesign — file-backed HTML + 3 LLM tools", PR #90).
+  // That commit added the design+chat 3-column branch at line
+  // ~1530 but accidentally typed `v-if` instead of `v-else-if`.
+  // The typo split the main-content chain in two: chain A still
+  // renders the kanban view (line ~1490), and chain B (the new
+  // chain starting at the typo'd `v-if`) renders the workspace
+  // folder preview at line ~1616 because `currentView === 'workspace'`
+  // is the first branch in chain B that's true. The user sees
+  // the kanban board above the workspace folder card (the
+  // "strange UI at the bottom" report from task 1784047851096).
+  //
+  // Fix: that block is now `v-else-if` (merged back into chain A).
+  // This test pins the contract: when the active workspace item
+  // is a kanban AND the URL is ?view=workspace, only the kanban
+  // view renders — the workspace folder preview's
+  // data-testid="workspace-folder-preview" must NOT be in the DOM.
+  it('kanban renders alone — workspace folder preview is NOT in the DOM (?view=workspace + kanban active)', async () => {
+    const kanban = makeKanbanItem()
+    const wrapper = mountAppLayout([
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace,
+    ])
+    const ws = useWorkspacesStore()
+    ws.setActiveWorkspaceItem(KANBAN_ID)
+    await nextTick()
+    // Kanban view is rendered (sanity — passes pre-fix too).
+    expect(wrapper.find('[data-kanban-view="stub"]').exists()).toBe(true)
+    // THE actual regression assertion: workspace folder preview
+    // must NOT be in the DOM. Pre-fix this assertion failed because
+    // the typo'd `v-if` started a second chain that also evaluated
+    // `currentView === 'workspace'` to true.
+    expect(wrapper.find('[data-testid="workspace-folder-preview"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
 })

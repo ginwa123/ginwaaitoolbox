@@ -40,6 +40,9 @@ fn makeConfig(allocator: std.mem.Allocator, model: []const u8) !*LlmConfig {
         // non-null to verify the PUT handler applies them.
         .max_capacity_token_model = null,
         .compaction_threshold_percent = null,
+        // Workflow retry backoff in ms (plan 2026-07-15-retry-delay,
+        // Task 1.1). 0 = no delay (current behavior).
+        .retry_delay_ms = 0,
         .mcpServers_parsed = null,
         .mcp_servers = LlmConfig.McpServersMap.init(allocator),
         .profiles_models = LlmConfig.ProfilesMap.init(allocator),
@@ -366,5 +369,54 @@ test "PUT handler writes top-level compaction_threshold_percent to top-level JSO
     if (std.mem.indexOf(u8, source, "config_json.compaction_threshold_percent = tp") == null) {
         std.debug.print("!! PUT handler doesn't write top-level compaction_threshold_percent to config_json !!\n", .{});
         return error.TopLevelThresholdWriteMissing;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 8. Top-level retry_delay_ms (plan 2026-07-15-retry-delay, Task 1.3)
+// ---------------------------------------------------------------------------
+//
+// The PUT handler must:
+//   (a) declare `retry_delay_ms: ?u32 = null` in `ConfigInput` so the
+//       JSON parser binds the field, and
+//   (b) write `input.retry_delay_ms` to `config_json.retry_delay_ms`
+//       in the apply block, clamping to [0, 60_000] ms.
+// The 0 ms case is allowed (means "no delay", current behavior).
+//
+// These are static-contract tests — the handler is too integration-heavy
+// to spin up behaviourally in this file (see header comment).
+
+test "PUT ConfigInput declares top-level retry_delay_ms as optional u32" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    // 4-space indent matches the existing top-level field pattern
+    // (max_capacity_token_model, compaction_threshold_percent).
+    if (std.mem.indexOf(u8, source, "    retry_delay_ms: ?u32 = null,") == null) {
+        std.debug.print("!! ConfigInput missing top-level retry_delay_ms optional field !!\n", .{});
+        return error.ConfigInputMissingRetryDelayMs;
+    }
+}
+
+test "PUT handler writes top-level retry_delay_ms to top-level JSON" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "config_json.retry_delay_ms = ") == null) {
+        std.debug.print("!! PUT handler doesn't write top-level retry_delay_ms to config_json !!\n", .{});
+        return error.RetryDelayWriteMissing;
+    }
+}
+
+test "PUT handler clamps retry_delay_ms to 60_000 ms (range upper bound)" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+    // The apply block must contain a `60_000` clamp. We allow either
+    //   `if (ms > 60_000)` or `if (ms > 60000)` — both are typical
+    // Zig styles — but the upper-bound constant must appear.
+    if (std.mem.indexOf(u8, source, "60_000") == null and std.mem.indexOf(u8, source, "60000") == null) {
+        std.debug.print("!! PUT handler doesn't clamp retry_delay_ms to 60_000 !!\n", .{});
+        return error.RetryDelayClampMissing;
     }
 }

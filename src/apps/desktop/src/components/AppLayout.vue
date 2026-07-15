@@ -16,6 +16,7 @@ import KanbanColumnEditor from './KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './KanbanSettingsDialog.vue'
 import CopyKanbanSpecDialog from './CopyKanbanSpecDialog.vue'
 import DesignView from './DesignView.vue'
+import WorkspaceItemMemoriesView from './WorkspaceItemMemoriesView.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
@@ -1526,9 +1527,26 @@ watch(chatSessionCwd, (newCwd) => {
            when activeTask is set. The :key on DesignView forces
            a fresh mount when the user navigates between designs;
            ChatView uses 'task-<id>' so switching chats within
-           the same design remounts cleanly. -->
+           the same design remounts cleanly.
+
+           IMPORTANT: this MUST be `v-else-if` (not `v-if`). The
+           whole main-content chain — code-editor, 3-col kanban,
+           task view, kanban view, this 3-col design, design
+           view, chatview, chats, workspace folder preview — must
+           stay in one v-if/v-else-if chain so the branches are
+           mutually exclusive. If this branch is `v-if` instead,
+           Vue starts a NEW chain here; the kanban branch above
+           (line ~1490) wins for chain A but `currentView ===
+           'workspace'` would also win for chain B, causing the
+           workspace folder preview card to render UNDER the
+           kanban board (regression introduced in commit
+           d0a05eb0 "feat(design): Figma-lite redesign — file-
+           backed HTML + 3 LLM tools", which added this 3-col
+           design block). Regression test:
+           AppLayout.kanban.spec.ts → "kanban renders alone,
+           workspace folder preview is not in DOM". -->
       <div
-        v-if="
+        v-else-if="
           activeTask &&
           activeWorkspaceItem &&
           activeWorkspaceItem.item_type === 'design' &&
@@ -1614,51 +1632,82 @@ watch(chatSessionCwd, (newCwd) => {
       <Chats v-else-if="currentView === 'chat'" />
       <div
         v-else-if="currentView === 'workspace'"
-        class="flex-1 flex flex-col items-center justify-center p-8"
+        class="flex-1 flex flex-col"
+        data-testid="workspace-folder-preview"
       >
+        <!-- Memories view: only when path is truthy AND the item is
+             NOT a kanban/design (those have their own dedicated views
+             and a tab in settings for memories). The `item_type !== 'kanban'
+             check is defensive — the kanban/design branches above should
+             win first in the v-else-if chain, but the explicit guard
+             prevents the memories view from ever rendering in those
+             cases even if the chain order changes in the future.
+             The item's own header (🧠 + name + path) lives inside
+             WorkspaceItemMemoriesView, so no outer header is needed. -->
         <div
-          v-if="activeWorkspaceItem"
-          class="w-full max-w-2xl p-8 rounded-xl text-center"
-          style="
-            background: linear-gradient(
-              135deg,
-              var(--semantic-card-bg),
-              var(--semantic-sidebar-bg)
-            );
-            border: 1px solid var(--color-border);
+          v-if="
+            activeWorkspaceItem &&
+            activeWorkspaceItem.path &&
+            activeWorkspaceItem.item_type !== 'kanban' &&
+            activeWorkspaceItem.item_type !== 'design'
           "
+          class="flex-1 min-h-0"
+        >
+          <WorkspaceItemMemoriesView
+            :key="activeWorkspaceItem.id"
+            :cwd="activeWorkspaceItem.path"
+            :item-name="activeWorkspaceItem.name"
+          />
+        </div>
+
+        <!-- No-path fallback: keep today's centered card -->
+        <div
+          v-else-if="activeWorkspaceItem"
+          class="flex-1 flex flex-col items-center justify-center p-8"
         >
           <div
-            class="w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center"
-            style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue))"
+            class="w-full max-w-2xl p-8 rounded-xl text-center"
+            style="
+              background: linear-gradient(
+                135deg,
+                var(--semantic-card-bg),
+                var(--semantic-sidebar-bg)
+              );
+              border: 1px solid var(--color-border);
+            "
           >
-            <svg
-              class="w-8 h-8"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              style="color: var(--color-bg)"
+            <div
+              class="w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center"
+              style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue))"
             >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-              />
-            </svg>
-          </div>
-          <h2 class="text-2xl font-bold mb-2" style="color: var(--semantic-text)">
-            {{ activeWorkspaceItem.name }}
-          </h2>
-          <p class="text-sm mb-4" style="color: var(--semantic-text-muted)">
-            {{ workspacesStore.activeWorkspace?.name }}
-          </p>
-          <div
-            v-if="activeWorkspaceItem.path"
-            class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
-            style="background-color: var(--semantic-active-bg); color: var(--semantic-text-muted)"
-          >
-            <span>{{ activeWorkspaceItem.path }}</span>
+              <svg
+                class="w-8 h-8"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                style="color: var(--color-bg)"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                />
+              </svg>
+            </div>
+            <h2 class="text-2xl font-bold mb-2" style="color: var(--semantic-text)">
+              {{ activeWorkspaceItem.name }}
+            </h2>
+            <p class="text-sm mb-4" style="color: var(--semantic-text-muted)">
+              {{ workspacesStore.activeWorkspace?.name }}
+            </p>
+            <div
+              v-if="activeWorkspaceItem.path"
+              class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
+              style="background-color: var(--semantic-active-bg); color: var(--semantic-text-muted)"
+            >
+              <span>{{ activeWorkspaceItem.path }}</span>
+            </div>
           </div>
         </div>
 

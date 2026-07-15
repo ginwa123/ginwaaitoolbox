@@ -282,6 +282,11 @@ pub const NalarConfigResponse = struct {
     /// Optional top-level compaction threshold as a percentage (0-100).
     /// `null` = fall through to per-profile override, then built-in 80.
     compaction_threshold_percent: ?u8 = null,
+    /// Delay in milliseconds before the workflow retries a failed
+    /// `callDynamicAgentNew` call. 0 = no delay. Consumed by
+    /// `workflow.zig:513` (the `callDynamicAgentNew` retry catch) and
+    /// `workflow.zig:595` (the `else` finish_reason branch).
+    retry_delay_ms: u32 = 0,
 };
 
 /// Wire format for a single sub-agent entry. Mirrors

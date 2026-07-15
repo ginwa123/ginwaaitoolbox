@@ -30,11 +30,16 @@
 import { ref, watch, nextTick } from 'vue'
 import KanbanColumnEditor from './KanbanColumnEditor.vue'
 import InlineEditableText from './InlineEditableText.vue'
+import WorkspaceItemMemoriesView from './WorkspaceItemMemoriesView.vue'
 import type { WorkspaceItem } from '../stores/workspaces'
+
+type SettingsMode = 'columns' | 'memories'
+const settingsMode = ref<SettingsMode>('columns')
 
 const props = defineProps<{
   show: boolean
   item: WorkspaceItem | null
+  initialMode?: SettingsMode
 }>()
 
 const emit = defineEmits<{
@@ -152,6 +157,23 @@ watch(
   },
 )
 
+// Sync settingsMode when the dialog opens, respecting initialMode.
+// `immediate: true` so the watcher fires on first render (without
+// it, the watcher only fires on changes and the initial-mount
+// `settingsMode = 'columns'` ref default would stick even when
+// initialMode is 'memories' — see the Vue 3 watcher-on-mount-time
+// pitfall in the project memory
+// `nalar-vue-async-onmounted-test-timing.md`).
+watch(
+  () => [props.show, props.initialMode] as const,
+  ([show, initialMode]) => {
+    if (show) {
+      settingsMode.value = initialMode ?? 'columns'
+    }
+  },
+  { immediate: true },
+)
+
 const handleClose = () => {
   emit('close')
 }
@@ -196,7 +218,13 @@ const sortedColumns = () => {
         />
 
         <!-- Dialog Card (wider than the column editor — accommodates
-             the column list + per-row edit/delete actions) -->
+             the column list + per-row edit/delete actions).
+             Height is `min(80vh, calc(100vh - 2rem))` (NOT max-height)
+             so the card is always bounded — required for the inner
+             `flex-1` panels and `overflow-y-auto` children to
+             actually scroll. With `max-height`, the card grows to fit
+             its content and the inner panels never have a bounded
+             height to scroll inside (a common flex-overflow footgun). -->
         <div
           class="relative w-full max-w-2xl mx-4 rounded-xl shadow-2xl flex flex-col overflow-hidden"
           style="
@@ -205,7 +233,7 @@ const sortedColumns = () => {
             box-shadow:
               0 1px 2px rgba(0, 0, 0, 0.4),
               0 8px 24px rgba(0, 0, 0, 0.35);
-            max-height: 80vh;
+            height: min(80vh, calc(100vh - 2rem));
           "
         >
           <!-- Header -->
@@ -252,12 +280,50 @@ const sortedColumns = () => {
             </p>
           </div>
 
-          <!-- Add Column inline form -->
+          <!-- Tab strip: Columns | Local Memories. The memories tab only
+               renders when the kanban has a `path` set (otherwise local
+               memories have nowhere to live). Hidden in the no-path case
+               so the existing columns UI stays clean.
+               Plan: docs/superpowers/plans/2026-07-21-local-memories-workspace-item.md (Task 4) -->
           <div
-            class="px-5 py-4 shrink-0"
-            style="border-bottom: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);"
-            data-testid="kanban-settings-add-form"
+            v-if="item?.path"
+            class="flex gap-1 px-5 pt-3 pb-0 shrink-0"
+            style="border-bottom: 1px solid var(--color-border);"
+            data-testid="kanban-settings-tabs"
           >
+            <button
+              type="button"
+              @click="settingsMode = 'columns'"
+              data-testid="kanban-settings-tab-columns"
+              class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
+              :style="settingsMode === 'columns'
+                ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
+                : 'background-color: transparent; color: var(--semantic-text-muted);'"
+            >Columns</button>
+            <button
+              type="button"
+              @click="settingsMode = 'memories'"
+              data-testid="kanban-settings-tab-memories"
+              class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
+              :style="settingsMode === 'memories'
+                ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
+                : 'background-color: transparent; color: var(--semantic-text-muted);'"
+            >🧠 Local Memories</button>
+          </div>
+
+          <!-- Columns tab body (add-form + columns list + copy-spec footer).
+               Wrapped in v-if so the memories tab can swap it out via
+               settingsMode. The KanbanColumnEditor lives OUTSIDE this
+               wrapper at the bottom of the template so its state stays
+               independent of which tab is showing.
+               Plan: docs/superpowers/plans/2026-07-21-local-memories-workspace-item.md (Task 4) -->
+          <template v-if="settingsMode === 'columns'">
+            <!-- Add Column inline form -->
+            <div
+              class="px-5 py-4 shrink-0"
+              style="border-bottom: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);"
+              data-testid="kanban-settings-add-form"
+            >
             <h4
               class="text-xs font-semibold mb-2"
               style="color: var(--semantic-text-dim);"
@@ -405,6 +471,34 @@ const sortedColumns = () => {
               style="color: var(--semantic-text-dim);"
             >
               Bulk-copy column names + descriptions from another kanban in this workspace. Tasks are not copied.
+            </p>
+          </div>
+          </template>
+
+          <!-- Local Memories tab body. Renders the existing
+               WorkspaceItemMemoriesView inside the dialog so the user
+               can manage per-kanban memories without leaving settings.
+               Falls back to a friendly hint when the kanban has no path
+               (defensive — the tab strip is hidden in this case, but
+               initialMode could still select it programmatically).
+               Plan: docs/superpowers/plans/2026-07-21-local-memories-workspace-item.md (Task 4) -->
+          <div
+            v-else-if="settingsMode === 'memories' && item?.path"
+            class="flex-1 min-h-0 overflow-hidden"
+            data-testid="kanban-settings-memories-panel"
+          >
+            <WorkspaceItemMemoriesView
+              :cwd="item.path"
+              :item-name="item.name"
+            />
+          </div>
+          <div
+            v-else-if="settingsMode === 'memories' && !item?.path"
+            class="flex-1 flex items-center justify-center p-8"
+            data-testid="kanban-settings-memories-no-path"
+          >
+            <p class="text-sm" style="color: var(--semantic-text-dim);">
+              No directory is set on this kanban — pick one when creating the kanban to enable local memories.
             </p>
           </div>
         </div>
