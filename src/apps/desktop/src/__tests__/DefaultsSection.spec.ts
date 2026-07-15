@@ -15,6 +15,8 @@ const baseConfig = {
   // Plan 2026-07-07-compaction-inline: top-level compaction defaults.
   max_capacity_token_model: null as number | null,
   compaction_threshold_percent: null as number | null,
+  // Plan 2026-07-15-retry-delay: workflow retry delay (ms).
+  retry_delay_ms: 0,
 }
 
 describe('DefaultsSection', () => {
@@ -148,5 +150,35 @@ describe('DefaultsSection', () => {
     await slider.setValue('150')  // try to set > 100
     const emitted = wrapper.emitted('update:modelValue')?.[0]?.[0] as typeof baseConfig
     expect(emitted.compaction_threshold_percent).toBe(100)  // clamped
+  })
+
+  // ─── Plan 2026-07-15-retry-delay: Workflow behavior ───
+
+  it('renders the retry-delay input with the current value', () => {
+    const wrapper = mount(DefaultsSection, {
+      props: { modelValue: { ...baseConfig, retry_delay_ms: 7500 } },
+    })
+    const input = wrapper.find('[data-testid="retry-delay-input"]')
+    expect((input.element as HTMLInputElement).value).toBe('7500')
+  })
+
+  it('emits update:modelValue when retry_delay_ms changes', async () => {
+    const wrapper = mount(DefaultsSection, {
+      props: { modelValue: { ...baseConfig } },
+    })
+    const input = wrapper.find('[data-testid="retry-delay-input"]')
+    await input.setValue('3000')
+    const emitted = wrapper.emitted('update:modelValue')?.[0]?.[0] as typeof baseConfig
+    expect(emitted.retry_delay_ms).toBe(3000)
+  })
+
+  it('clamps retry_delay_ms to 0..60000 on input', async () => {
+    const wrapper = mount(DefaultsSection, {
+      props: { modelValue: { ...baseConfig } },
+    })
+    const input = wrapper.find('[data-testid="retry-delay-input"]')
+    await input.setValue('120000')
+    const emitted = wrapper.emitted('update:modelValue')?.[0]?.[0] as typeof baseConfig
+    expect(emitted.retry_delay_ms).toBe(60000)
   })
 })

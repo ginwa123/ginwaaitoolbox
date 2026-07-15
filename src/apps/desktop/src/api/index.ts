@@ -1915,12 +1915,19 @@ export interface SessionEvent {
 }
 
 // Queue messages SSE event types
-export interface QueueMessageEvent {
-  action: 'queued' | 'deleted'
-  id?: string
-  message: string
-  session_id: string
-}
+export type QueueMessageEvent =
+  | {
+      action: 'queued'
+      id: string
+      message: string
+      image_url?: string
+      session_id: string
+    }
+  | {
+      action: 'deleted'
+      id: string
+      session_id: string
+    }
 
 // GET queued messages
 export interface QueuedMessage {
@@ -2423,6 +2430,14 @@ export interface NalarConfig {
    * Mirrors `LlmConfig.compaction_threshold_percent`.
    */
   compaction_threshold_percent?: number | null
+  /**
+   * Delay in milliseconds before the workflow retries a failed
+   * `callDynamicAgentNew` call. 0 = no delay (current behavior, the
+   * retry fires immediately on the next loop iteration). Range: 0–60 000.
+   * The backend clamps values > 60 000 to 60 000. Mirrors
+   * `LlmConfig.retry_delay_ms` in `Config.zig`.
+   */
+  retry_delay_ms?: number
   // Per-profile compaction overrides (`max_capacity_tokens` /
   // `compaction_threshold_percent`) live on `NalarProfile` (Chunk
   // 7.6) and remain there. Both layers coexist.

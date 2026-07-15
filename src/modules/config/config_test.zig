@@ -415,6 +415,41 @@ test "LlmConfig: url_style defaults to openai when missing from JSON" {
 }
 
 // ---------------------------------------------------------------------------
+// retry_delay_ms: workflow retry backoff in milliseconds. 0 = no delay
+// (current behavior). Plan 2026-07-15-retry-delay. Defaults to 0 when
+// missing so existing config files load without surprises.
+// ---------------------------------------------------------------------------
+
+test "LlmConfig: retry_delay_ms defaults to 0 when missing from JSON" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b" }
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), cfg.retry_delay_ms);
+}
+
+test "LlmConfig: retry_delay_ms reads from JSON when present" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "retry_delay_ms": 5000
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(@as(u32, 5000), cfg.retry_delay_ms);
+}
+
+// ---------------------------------------------------------------------------
 // model_compaction_size_kb: session-compactor threshold (consumed by
 // `session_compact.zig:57`). No UI — power users edit config.json.
 // ---------------------------------------------------------------------------
@@ -1162,6 +1197,9 @@ test "init auto-creates config.json when default path does not exist (path=null)
     try std.testing.expect(std.mem.indexOf(u8, content, "\"api_key\": \"\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "\"url_style\": \"openai\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "\"model_compaction_size_kb\": 100") != null);
+    // Plan 2026-07-15-retry-delay: top-level `retry_delay_ms` is
+    // auto-created as 0 (the documented default = no delay).
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"retry_delay_ms\": 0") != null);
     // Plan 2026-07-07-compaction-inline: top-level
     // `max_capacity_token_model` and `compaction_threshold_percent`
     // are RESTORED as null defaults in the auto-created file. The
