@@ -38,6 +38,7 @@ import ReadCompactedMessages from './tool_outputs/ReadCompactedMessages.vue'
 import KanbanMove from './tool_outputs/KanbanMove.vue'
 import KanbanList from './tool_outputs/KanbanList.vue'
 import ShowPreview from './tool_outputs/ShowPreview.vue'
+import SearchHistory from './tool_outputs/SearchHistory.vue'
 import PreviewSidePanel from './PreviewSidePanel.vue'
 import SubAgentPeekPanel from './nalar/SubAgentPeekPanel.vue'
 import { useNavigationStore } from '../stores/navigation'
@@ -2286,6 +2287,11 @@ const compactSession = async () => {
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                             :cwd="cwd"
+                          />
+                          <SearchHistory
+                            v-else-if="msg.tool_name === 'search_history'"
+                            :content="innerToolData(msg)"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />
                           <Glob
                             v-else-if="msg.tool_name === 'glob'"
