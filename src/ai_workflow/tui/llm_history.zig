@@ -1252,7 +1252,7 @@ pub fn getMessages(
 /// Options for filtering `getCompactedMessages`.
 pub const CompactedMessagesOptions = struct {
     /// When non-null, only return messages whose id is in this list.
-    /// Used by `read_compacted_messages(message_ids=[...])`.
+    /// Used by `search_history` (mode="session", message_ids=[...]).
     message_ids: ?[]const []const u8 = null,
     /// When non-null, only return messages with `role` matching this value
     /// (e.g. "user", "assistant", "tool").
@@ -1262,7 +1262,7 @@ pub const CompactedMessagesOptions = struct {
     /// When non-null, only return messages with `created_at <= until`.
     until: ?[]const u8 = null,
     /// Max number of rows to return. Defaults to 100 for safety — the
-    /// caller can request up to 1000 explicitly. The read_compacted_messages
+    /// caller can request up to 1000 explicitly. The `search_history`
     /// tool wraps this in its own user-facing limit parameter.
     limit: ?u32 = 100,
     /// When `true`, include ALL messages for the session regardless of
@@ -1278,7 +1278,7 @@ pub const CompactedMessagesOptions = struct {
 };
 
 /// Lighter-weight return struct than `TUIHistory` — only the fields the
-/// `read_compacted_messages` tool actually surfaces. Avoids the
+/// `search_history` tool actually surfaces. Avoids the
 /// ~30-field TUIHistory struct, which has columns that don't exist
 /// in a minimal test schema (e.g. `diffview_before`) and would force
 /// every test to seed them.

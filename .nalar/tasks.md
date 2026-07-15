@@ -149,3 +149,17 @@ The handler is now ~80 lines: 9 numbered phases, each a single named call to a s
 - [x] zig build test 628/631 pass (no regression from baseline)
 - [x] All 5 use-case tests (removeProfileFromConfig) still pass — confirms no behavior change to the pure function
 - [x] Pre-existing `install:linux:system` failure unchanged (separate, pre-existing issue per `nalar-build-cross-compile-blocked.md`)
+
+## [active] 2026-07-16 — search_history rewrite plan
+- [x] Plan written to docs/superpowers/plans/2026-07-16-search-history-rewrite.md (1731 lines)
+- [x] Plan revision: mode="session" returns ALL is_feed_to_llm values (added include_all field)
+- [x] Worktree created at .worktrees/search-history-rewrite on branch worktree/search-history-rewrite
+- [x] Baseline verified: 1566/1569 tests pass (3 skipped, 0 failures)
+- [x] Chunk 1: Schema + build.zig (Migration 058 + -DSQLITE_ENABLE_FTS5) — DONE + spec-compliant (3 commits: 02a9e9a7, 5e286216, 972a4623). Migration renumbered from 055 → 058 because 055-057 already taken by AddDesignPages/UpgradeDesignPagesToFileModel/AddDesignElementProperties.
+- [ ] Chunk 2: llm_history.zig additions (SearchOptions + SearchHit + searchMessagesFts + getCompactedMessages include_all toggle) — DISPATCHED but the LLM dispatcher hit TooManyRetries during the subagent call. No commits landed.
+- [ ] Chunk 3: search_history tool file (search_history.zig + _test.zig) — NOT STARTED
+- [ ] Chunk 4: Tool wiring (tool_registry + tools_equipped + root.zig + test_runners + delete old files) — NOT STARTED
+- [ ] Chunk 5: Smoke test + final verification — NOT STARTED
+
+## System note
+Multiple parallel subagent dispatches triggered LLM API `TooManyRetries` errors. Two consecutive dispatcher failures. Consider switching to me executing the remaining chunks directly (the plan is detailed enough that I can do the implementation myself with text_replace + bash, no need for another subagent round).

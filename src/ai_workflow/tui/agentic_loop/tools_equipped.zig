@@ -11,7 +11,7 @@ const write_file_mod = nalarcore.write_file;
 const list_skills_mod = nalarcore.list_skills_tool;
 const memories_mod = nalarcore.memories;
 const list_memory_mod = nalarcore.list_memory_tool;
-const read_compacted_messages_mod = nalarcore.read_compacted_messages_tool;
+const search_history_mod = nalarcore.search_history_tool;
 const get_skill_mod = nalarcore.get_skill_tool;
 const view_skill_mod = nalarcore.view_skill_tool;
 const remove_skill_mod = nalarcore.remove_skill_tool;
@@ -47,7 +47,7 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         update_activity_mod.update_activity_tool,
         list_skills_mod.list_skills_tool,
         list_memory_mod.list_memory_tool,
-        read_compacted_messages_mod.read_compacted_messages_tool,
+        search_history_mod.search_history_tool,
         view_skill_mod.view_skill_tool,
         get_skill_mod.get_skill_tool,
         remove_skill_mod.remove_skill_tool,

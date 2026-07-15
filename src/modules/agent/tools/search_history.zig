@@ -157,8 +157,14 @@ pub fn execute_search_history(
         var xml: std.ArrayList(u8) = .empty;
         errdefer xml.deinit(allocator);
 
+        // The escaped-query string is bound to a local so the allocation
+        // can be tracked and freed — passing the inline `try xmlEscape(...)`
+        // directly as a {s} arg to xml.print would leak it (the result is
+        // a heap-owned slice with no name to bind a defer to).
+        const escaped_query = try xmlEscape(allocator, input.query);
+        defer allocator.free(escaped_query);
         try xml.print(allocator, "<search_history mode=\"text\">\n  <query>{s}</query>\n  <count>{d}</count>\n  <results>\n",
-            .{ try xmlEscape(allocator, input.query), hits.len });
+            .{ escaped_query, hits.len });
         for (hits) |h| {
             const id_e = try xmlEscape(allocator, h.id);
             defer allocator.free(id_e);
@@ -226,8 +232,12 @@ pub fn execute_search_history(
     var xml: std.ArrayList(u8) = .empty;
     errdefer xml.deinit(allocator);
 
+    // Bind escaped session_id to a local so the allocation can be freed —
+    // same leak pattern as the text-mode header above.
+    const escaped_session_id = try xmlEscape(allocator, input.session_id);
+    defer allocator.free(escaped_session_id);
     try xml.print(allocator, "<search_history mode=\"session\">\n  <session_id>{s}</session_id>\n  <count>{d}</count>\n  <message_index>\n",
-        .{ try xmlEscape(allocator, input.session_id), messages.len });
+        .{ escaped_session_id, messages.len });
 
     for (messages) |m| {
         const id_e = try xmlEscape(allocator, m.id);
