@@ -53,7 +53,11 @@ fn setupDb() !struct {
         \\  tool_name TEXT,
         \\  diffview_before TEXT,
         \\  diffview_after TEXT,
-        \\  image_url TEXT
+        \\  image_url TEXT,
+        \\  -- Mirrors Migration 059 in production: a regular TEXT column
+        \\  -- populated by application code (NOT triggers). Default
+        \\  -- to `datetime('now')` UTC for tests that don't pass it.
+        \\  created_iso TEXT DEFAULT (datetime('now'))
         \\)
     , &.{});
     try db.exec(alloc,

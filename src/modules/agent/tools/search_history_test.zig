@@ -29,31 +29,13 @@ fn setupDb() !TestCtx {
         \\  is_feed_to_llm INTEGER DEFAULT 1,
         \\  agent TEXT,
         \\  created_at TEXT DEFAULT (datetime('now')),
-        \\  -- Mirrors Migration 059 in production: a regular TEXT column
-        \\  -- populated by an INSERT trigger. STORED GENERATED columns
-        \\  -- can't be used because `datetime(..., 'localtime')` is
-        \\  -- non-deterministic (depends on the system timezone); SQLite
-        \\  -- silently DROPS such columns from CREATE TABLE. Tests filter
-        \\  -- on this column via the public since/until options.
-        \\  created_iso TEXT
+        \\  -- Mirrors Migration 059 in production: a regular TEXT column.
+        \\  -- No INSERT trigger — production populates it from application
+        \\  -- code in `saveMessage`. Default to `now` localtime so tests that
+        \\  -- don't specify `created_iso` get a sensible value matching
+        \\  -- `created_at`'s default of `datetime('now')`.
+        \\  created_iso TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now'))
         \\)
-    , &.{});
-    // Trigger: mirror Migration 059's INSERT trigger that populates
-    // created_iso from created_at. CAST(... AS REAL) / 1000000 keeps the
-    // microsecond Unix timestamp in the valid datetime() range.
-    try db.exec(alloc,
-        \\CREATE TRIGGER trg_iso_ins
-        \\AFTER INSERT ON llm_history
-        \\FOR EACH ROW
-        \\WHEN NEW.created_at IS NOT NULL AND NEW.created_at != ''
-        \\BEGIN
-        \\    UPDATE llm_history
-        \\    SET created_iso = datetime(
-        \\        CAST(NEW.created_at AS REAL) / 1000000,
-        \\        'unixepoch', 'localtime'
-        \\    )
-        \\    WHERE rowid = NEW.rowid;
-        \\END
     , &.{});
     try db.exec(alloc,
         \\CREATE VIRTUAL TABLE messages_fts USING fts5(

@@ -7,6 +7,7 @@ const std = @import("std");
 const testing = std.testing;
 const sqlite = @import("nalarcore").sqlite;
 const llm_history = @import("nalarcore").llm_history;
+const helpers = @import("nalarcore").helpers;
 
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
@@ -34,31 +35,15 @@ fn setupDb() !TestCtx {
         \\  is_feed_to_llm INTEGER DEFAULT 1,
         \\  agent TEXT,
         \\  created_at TEXT DEFAULT (datetime('now')),
-        \\  -- Mirrors Migration 059 in production: a regular TEXT column
-        \\  -- populated by an INSERT trigger. STORED GENERATED columns
-        \\  -- can't be used here because `datetime(..., 'localtime')` is
-        \\  -- non-deterministic (depends on the system timezone); SQLite
-        \\  -- silently DROPS such columns from CREATE TABLE. Tests filter
-        \\  -- on this column via the public since/until options.
-        \\  created_iso TEXT
+        \\  -- Mirrors Migration 059 in production: a regular TEXT column.
+        \\  -- No INSERT trigger — production populates it from application
+        \\  -- code in `saveMessage`. For test convenience, default to
+        \\  -- 'now localtime' (matching `created_at`'s default of 'now').
+        \\  -- Tests that need specific timestamps pass `created_at` AND
+        \\  -- `created_iso` explicitly via a sub-SELECT that mirrors the
+        \\  -- production conversion.
+        \\  created_iso TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now'))
         \\)
-    , &.{});
-    // Trigger: mirror Migration 059's INSERT trigger that populates
-    // created_iso from created_at. CAST(... AS REAL) / 1000000 keeps the
-    // microsecond Unix timestamp in the valid datetime() range.
-    try db.exec(alloc,
-        \\CREATE TRIGGER trg_iso_ins
-        \\AFTER INSERT ON llm_history
-        \\FOR EACH ROW
-        \\WHEN NEW.created_at IS NOT NULL AND NEW.created_at != ''
-        \\BEGIN
-        \\    UPDATE llm_history
-        \\    SET created_iso = datetime(
-        \\        CAST(NEW.created_at AS REAL) / 1000000,
-        \\        'unixepoch', 'localtime'
-        \\    )
-        \\    WHERE rowid = NEW.rowid;
-        \\END
     , &.{});
     try db.exec(alloc,
         \\CREATE VIRTUAL TABLE messages_fts USING fts5(
@@ -292,7 +277,7 @@ test "getCompactedMessages: include_all=true returns live AND compacted rows" {
 //
 // We seed with two known microsecond timestamps and compute the
 // expected `created_iso` via the SAME SQLite expression the migration
-// uses (`datetime(N / 1000000, 'unixepoch', 'localtime')`). This keeps
+// uses (`datetime(N / 1000000, 'unixepoch')`). This keeps
 // the test timezone-agnostic: both the seed and the filter go through
 // the same localtime conversion, so they agree regardless of TZ.
 // ────────────────────────────────────────────────────────────────────────
@@ -309,17 +294,25 @@ test "searchMessagesFts: filters by since using ISO date string (regression for 
     const old_micros: []const u8 = "1780000000000000"; // ~2026-05-29 17:33 UTC
     const new_micros: []const u8 = "1785000000000000"; // ~2026-06-23 12:40 UTC
 
+    // Production code in `saveMessage` computes `created_iso` from
+    // `created_at` via libc `localtime_r` + `strftime`. The exact
+    // SQLite expression that matches that conversion is
+    // `datetime(<micros>/1000000, 'unixepoch')` — but
+    // our test schema uses `substr(micros, 1, 10)` (the migration's
+    // backfill expression) for consistency with the migration's
+    // idempotent backfill. This drops microsecond precision but is
+    // fine for `since`/`until` tests at minute granularity.
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) " ++
-        "VALUES ('h_old','s1','user','old message',?)", &.{old_micros});
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, created_iso) " ++
+        "VALUES ('h_old','s1','user','old message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ old_micros, old_micros });
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) " ++
-        "VALUES ('h_new','s1','user','new message',?)", &.{new_micros});
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, created_iso) " ++
+        "VALUES ('h_new','s1','user','new message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ new_micros, new_micros });
 
     // Compute the ISO date for `new_micros` using the SAME expression the
     // migration uses — that's what `created_iso` will contain.
     var iso_q = try s.db.queryRow(alloc,
-        "SELECT datetime(? / 1000000, 'unixepoch', 'localtime')",
+        "SELECT datetime(? / 1000000, 'unixepoch')",
         &.{new_micros});
     defer iso_q.deinit(alloc);
     const new_iso = iso_q.values[0];
@@ -350,15 +343,17 @@ test "searchMessagesFts: filters by until using ISO date string (regression for 
     const new_micros: []const u8 = "1785000000000000";
 
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) " ++
-        "VALUES ('h_old','s1','user','old message',?)", &.{old_micros});
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, created_iso) " ++
+        "VALUES ('h_old','s1','user','old message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ old_micros, old_micros });
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) " ++
-        "VALUES ('h_new','s1','user','new message',?)", &.{new_micros});
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, created_iso) " ++
+        "VALUES ('h_new','s1','user','new message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ new_micros, new_micros });
 
     // Compute the ISO for `old_micros` — `until=old_iso` should keep only h_old.
+    // Use the same `substr(_,1,10)` expression as the inserted rows so
+    // the lex comparison matches exactly.
     var iso_q = try s.db.queryRow(alloc,
-        "SELECT datetime(? / 1000000, 'unixepoch', 'localtime')",
+        "SELECT datetime(substr(? ,1, 10), 'unixepoch')",
         &.{old_micros});
     defer iso_q.deinit(alloc);
     const old_iso = iso_q.values[0];
@@ -387,18 +382,20 @@ test "searchMessagesFts: since AND until together produce a date range (regressi
     const new_micros: []const u8 = "1785000000000000";
 
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) " ++
-        "VALUES ('h_old','s1','user','old message',?)", &.{old_micros});
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, created_iso) " ++
+        "VALUES ('h_old','s1','user','old message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ old_micros, old_micros });
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) " ++
-        "VALUES ('h_mid','s1','user','mid message',?)", &.{mid_micros});
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, created_iso) " ++
+        "VALUES ('h_mid','s1','user','mid message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ mid_micros, mid_micros });
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) " ++
-        "VALUES ('h_new','s1','user','new message',?)", &.{new_micros});
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, created_iso) " ++
+        "VALUES ('h_new','s1','user','new message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ new_micros, new_micros });
 
+    // Use the same substr(_,1,10) expression as the inserted rows so the
+    // lex comparison matches exactly.
     var iso_q = try s.db.queryRow(alloc,
-        \\SELECT datetime(? / 1000000, 'unixepoch', 'localtime') AS since_iso,
-        \\       datetime(? / 1000000, 'unixepoch', 'localtime') AS until_iso
+        \\SELECT datetime(substr(? ,1,10), 'unixepoch') AS since_iso,
+        \\       datetime(substr(? ,1,10), 'unixepoch') AS until_iso
     , &.{ mid_micros, new_micros });
     defer iso_q.deinit(alloc);
     const since_iso = iso_q.values[0];

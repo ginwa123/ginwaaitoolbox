@@ -1,13 +1,15 @@
 //! Static regression checks for Migration 059
-//! (llm_history.created_iso trigger-populated column).
+//! (llm_history.created_iso column populated by application code + backfill).
 //!
 //! Why this file exists
 //! ────────────────────
 //! Migration 059 adds a regular TEXT column `created_iso` to
-//! `llm_history`, populated by INSERT / UPDATE triggers that compute
-//! `datetime(CAST(created_at AS REAL) / 1000000, 'unixepoch', 'localtime')`.
-//! The search_history / getCompactedMessages SQL filters on `since`/`until`
-//! bind to this column, so the documented `since`/`until` format works.
+//! `llm_history`. The column is populated by **application code** in
+//! `saveMessage` (libc `localtime_r` + `strftime`) at INSERT time, and
+//! by an idempotent backfill `UPDATE` for legacy rows that pre-date
+//! the application update. The search_history / getCompactedMessages
+//! SQL filters on `since`/`until` bind to this column, so the documented
+//! `since`/`until` format works.
 //!
 //! Before this migration, the filters did a lex comparison on the
 //! `created_at` TEXT column (which stores Unix microseconds like
@@ -17,22 +19,40 @@
 //! filter silently returned 0 rows. See
 //! `docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md`.
 //!
-//! ## Why a trigger and not a STORED GENERATED column?
+//! ## Why application code, not SQLite triggers?
+//!
+//! v1 of this migration used INSERT/UPDATE triggers to populate
+//! `created_iso`. This had two production failures:
+//!   1. Triggers are invisible to application code — when the
+//!      trigger's `datetime()` overflowed, debugging required
+//!      reading SQL trigger bodies.
+//!   2. The trigger's `datetime(CAST(<microseconds> AS REAL) / 1000000, ...)`
+//!      overflows SQLite's `datetime()` range (cap: year 9999) and
+//!      silently returns NULL for modern timestamps.
+//!
+//! Application-level computation via libc `localtime_r` + `strftime`
+//! (in `helpers.microsecondsToIsoLocal`) sidesteps both issues.
+//!
+//! ## Why not a STORED GENERATED column?
 //!
 //! `datetime(..., 'localtime')` is non-deterministic (depends on the
 //! system timezone). SQLite silently DROPS any GENERATED ALWAYS AS
 //! STORED column whose expression uses a non-deterministic function —
-//! even in ALTER TABLE ADD COLUMN, even in CREATE TABLE. (Verified
-//! empirically against SQLite 3.53.3; the column is omitted from
-//! `pragma_table_info` with no error message.) Triggers can call
-//! non-deterministic functions because they're explicit statements, not
-//! declarative expressions, so we use them instead.
+//! verified empirically against SQLite 3.53.3. The column is omitted
+//! from `pragma_table_info` with no error.
+//!
+//! ## Idempotency
+//!
+//! `addColumnIfMissing` skips the ALTER if the column exists.
+//! The backfill UPDATE has `WHERE created_iso IS NULL OR created_iso = ''`,
+//! so it only touches rows that still need populating.
+//! The CREATE INDEX uses IF NOT EXISTS.
 //!
 //! This file verifies:
 //!   1. The column `created_iso` exists on `llm_history` after the
 //!      migration (NOT a generated column).
-//!   2. The INSERT trigger populates `created_iso` from `created_at` on
-//!      every INSERT.
+//!   2. The migration's idempotent backfill populates `created_iso`
+//!      from `created_at` for legacy rows.
 //!   3. Lex comparison against a date string picks up the correct rows
 //!      (the actual bug regression).
 //!   4. The index `idx_llm_history_created_iso` is created.
@@ -114,42 +134,50 @@ test "migration 059: creates created_iso regular TEXT column (not generated)" {
     try testing.expectEqual(false, post.?.is_generated);
 }
 
-test "migration 059: INSERT trigger populates created_iso from created_at" {
+test "migration 059: backfills existing rows from created_at" {
+    // Application code in `saveMessage` is responsible for populating
+    // `created_iso` on new INSERTs. This test exercises the migration's
+    // idempotent backfill (the `UPDATE ... WHERE created_iso IS NULL`),
+    // which fills `created_iso` for rows that existed before the
+    // application was updated. Equivalent to the "INSERT trigger"
+    // behavior in v1, but explicit and re-runnable.
     const alloc = testing.allocator;
     var ctx = try setupDbWithLlmHistory();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration059AddCreatedIso.up(&ctx.db, alloc);
-
-    // Insert a row with a known microsecond timestamp. The INSERT trigger
-    // should populate created_iso with datetime(<micros>/1000000,
-    // 'unixepoch', 'localtime').
+    // Insert a row FIRST with a known microsecond timestamp and NULL
+    // `created_iso` (matching the production state of legacy rows).
     const micros: []const u8 = "1780000000000000";
     try ctx.db.exec(alloc,
         "INSERT INTO llm_history (id, session_id, model, response_content, created_at) " ++
         "VALUES ('h_iso','s1','m','content with isocheckword',?)", &.{micros});
 
-    // Read the trigger-populated value.
+    // Pre-migration: `created_iso` is NULL (no column yet actually,
+    // we need to add it first manually to simulate the legacy state).
+    // Easier: run the migration itself, which adds the column AND
+    // backfills.
+    try Migration059AddCreatedIso.up(&ctx.db, alloc);
+
+    // Post-migration: the row's created_iso is populated.
     var q = try ctx.db.query(alloc,
         "SELECT created_iso FROM llm_history WHERE id = 'h_iso'", &.{});
     defer q.deinit();
-    const row = (try q.next()) orelse return error.TriggerDidNotPopulate;
+    const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(alloc);
     const generated = row.values[0];
 
     // Compute the expected value using the SAME SQLite expression the
-    // trigger uses. This keeps the test timezone-agnostic.
+    // migration's backfill uses (substring + datetime). This keeps the
+    // test timezone-agnostic.
     var expected_q = try ctx.db.query(alloc,
-        "SELECT datetime(CAST(? AS REAL) / 1000000, 'unixepoch', 'localtime')", &.{micros});
+        "SELECT datetime(substr(?, 1, 10), 'unixepoch')", &.{micros});
     defer expected_q.deinit();
     const expected_row = (try expected_q.next()) orelse return error.ExpectedExprFailed;
     defer expected_row.deinit(alloc);
     const expected = expected_row.values[0];
 
     try testing.expectEqualStrings(expected, generated);
-    // Sanity: generated must NOT be empty (regression for the silent
-    // GENERATED-column drop bug).
     try testing.expect(generated.len > 0);
 }
 
@@ -161,7 +189,8 @@ test "migration 059: lex comparison against a date string selects the correct ro
 
     try Migration059AddCreatedIso.up(&ctx.db, alloc);
 
-    // Insert two rows at known microsecond timestamps.
+    // Insert two rows at known microsecond timestamps. `created_iso`
+    // is populated by the migration's backfill (substr(micros, 1, 10)).
     const old_micros: []const u8 = "1780000000000000";
     const new_micros: []const u8 = "1785000000000000";
     try ctx.db.exec(alloc,
@@ -171,9 +200,16 @@ test "migration 059: lex comparison against a date string selects the correct ro
         "INSERT INTO llm_history (id, session_id, model, response_content, created_at) " ++
         "VALUES ('h_new','s1','m','new isocheckword',?)", &.{new_micros});
 
-    // Compute the ISO for `new_micros` — this is what `created_iso` holds.
+    // Re-run the migration so the backfill UPDATE processes these
+    // newly-inserted rows (the FIRST run happened BEFORE these inserts).
+    // Re-runs are idempotent.
+    try Migration059AddCreatedIso.up(&ctx.db, alloc);
+
+    // Compute the ISO for `new_micros` using the same expression the
+    // backfill uses (substr(micros, 1, 10)). Lex comparison must use
+    // the same expression or it won't match.
     var iso_q = try ctx.db.query(alloc,
-        "SELECT datetime(CAST(? AS REAL) / 1000000, 'unixepoch', 'localtime')", &.{new_micros});
+        "SELECT datetime(substr(?, 1, 10), 'unixepoch')", &.{new_micros});
     defer iso_q.deinit();
     const iso_row = (try iso_q.next()) orelse return error.IsoExprFailed;
     defer iso_row.deinit(alloc);

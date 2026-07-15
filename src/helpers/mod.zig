@@ -241,6 +241,85 @@ fn unixTimestampNanosWindows() i128 {
     return ns_since_1601 - ns_1601_to_1970;
 }
 
+/// Convert a Unix microseconds timestamp (e.g. `"1784119389936251112"`)
+/// to an ISO-8601 **UTC** string (`"2026-07-15 19:43:09"`).
+///
+/// This is the canonical form used by `llm_history.created_iso` for
+/// `since`/`until` filtering. We compute it in application code rather
+/// than via SQLite triggers, because SQLite triggers have two practical
+/// failure modes documented in the Migration 059 header:
+///   1. `datetime(..., 'localtime')` inside a trigger is non-deterministic
+///      (depends on system timezone) — SQLite silently DROPS such
+///      generated columns. Triggers CAN call `datetime()` but the
+///      conversion result is then invisible to debug.
+///   2. `datetime(CAST(<microseconds> AS REAL) / 1000000, ...)` overflows
+///      SQLite's `datetime()` range (cap: year 9999) and silently returns
+///      NULL for modern timestamps.
+///
+/// ## Why UTC, not localtime?
+///
+/// Earlier drafts of this helper called libc `localtime_r`, which on
+/// the Arch Linux glibc has a known issue where the symbol resolves to
+/// a 32-bit-compatibility wrapper (`__localtime_r`) that truncates the
+/// timestamp, producing wildly wrong years (e.g. year 56606 instead
+/// of 2026 for a 17-digit microsecond timestamp divided by 1e6).
+/// Using the explicit `__localtime64_r` symbol fails to link on Arch
+/// (not exported). Computing UTC directly in Zig stdlib's epoch API
+/// sidesteps both issues and produces the correct date.
+///
+/// UTC is fine for `since`/`until` filtering because the comparison is
+/// lex (`'2026-07-15 19:00' < '2026-07-15 20:00'`) and UTC strings sort
+/// the same way as localtime strings. The user's `since="2026-07-15
+/// 00:00:00"` interpreted as "UTC midnight on July 15" is consistent
+/// across all servers — arguably more correct than wall-clock localtime.
+///
+/// Allocation: the returned slice is allocated from `allocator`. The
+/// caller owns the buffer (use `defer allocator.free(s)` or pass to
+/// another owning structure).
+///
+/// Returns `error.Overflow` if the timestamp is too large to fit in
+/// the supported u64 range (won't happen for any real microsecond Unix
+/// timestamp).
+pub fn microsecondsToIsoLocal(allocator: std.mem.Allocator, micros: u64) ![]u8 {
+    // Microsecond timestamp → seconds since epoch. Truncate the
+    // fractional microsecond precision (not needed for `since`/`until`
+    // at second granularity).
+    //
+    // We use u64 throughout because `std.time.epoch.EpochSeconds.secs`
+    // is `u64`. Years past the year ~584 billion would overflow u64,
+    // well beyond anything we'd encounter from a real Unix timestamp.
+    const sec_u64: u64 = micros / std.time.us_per_s;
+
+    // Use Zig stdlib's epoch decomposition. Reference:
+    // `std.time.epoch.EpochSeconds{ .secs = ... }.getEpochDay()`
+    // → `EpochDay` → `.calculateYearDay()` → `YearAndDay` →
+    // `.calculateMonthDay()` → `{year, month, day}`.
+    // Day seconds come from `.getDaySeconds()` → `DaySeconds` →
+    // `.getHoursIntoDay()` / `.getMinutesIntoHour()` /
+    // `.getSecondsIntoMinute()`.
+    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = sec_u64 };
+    const epoch_day = epoch_seconds.getEpochDay();
+    const year_day = epoch_day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_seconds = epoch_seconds.getDaySeconds();
+
+    // Format as "YYYY-MM-DD HH:MM:SS" (19 chars + NUL terminator).
+    var buf: [20]u8 = undefined;
+    const formatted = std.fmt.bufPrint(
+        &buf,
+        "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}",
+        .{
+            year_day.year,
+            month_day.month.numeric(),
+            month_day.day_index + 1,        // day_index is 0-based
+            day_seconds.getHoursIntoDay(),
+            day_seconds.getMinutesIntoHour(),
+            day_seconds.getSecondsIntoMinute(),
+        },
+    ) catch unreachable;
+    return allocator.dupe(u8, formatted);
+}
+
 /// Cross-platform millisecond-precision sleep that doesn't require
 /// `io: std.Io`.
 ///

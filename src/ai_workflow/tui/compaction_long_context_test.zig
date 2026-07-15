@@ -43,7 +43,10 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\  tool_name TEXT,
         \\  diffview_before TEXT,
         \\  diffview_after TEXT,
-        \\  image_url TEXT
+        \\  image_url TEXT,
+        \\  -- Mirrors Migration 059: regular TEXT column populated by
+        \\  -- application code (defaults to now UTC in tests).
+        \\  created_iso TEXT DEFAULT (datetime('now'))
         \\)
     , &.{});
     try db.exec(alloc,

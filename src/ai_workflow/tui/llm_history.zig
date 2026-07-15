@@ -1027,6 +1027,16 @@ pub fn saveMessage(
     const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(created_at);
 
+    // Compute `created_iso` (the localtime-formatted ISO string for
+    // the `since`/`until` filter columns) IN APPLICATION CODE rather than
+    // via SQLite triggers. See Migration 059 header for why.
+    //
+    // We parse the microsecond string (which we just allocated as
+    // `created_at`) and pass it through `microsecondsToIsoLocal`.
+    const created_at_us: u64 = std.fmt.parseInt(u64, created_at, 10) catch 0;
+    const created_iso = try helpers.microsecondsToIsoLocal(allocator, created_at_us);
+    defer allocator.free(created_iso);
+
     const contentStr = input.content orelse "";
     const finishReasonStr = input.finish_reason orelse "null";
     const roleStr = input.role orelse "assistant";
@@ -1062,6 +1072,7 @@ pub fn saveMessage(
         \\    temperature,
         \\    is_thinking,
         \\    created_at,
+        \\    created_iso,
         \\    parent_session_id,
         \\    parent_id,
         \\    prompt_tokens,
@@ -1076,7 +1087,7 @@ pub fn saveMessage(
         \\) VALUES (
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        \\    ?, ?, ?, ?, ?, ?
+        \\    ?, ?, ?, ?, ?, ?, ?
         \\)
     ;
 
@@ -1140,7 +1151,7 @@ pub fn saveMessage(
     }
     defer if (copy_image_urls) |c| allocator.free(c);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
 
     try db.exec(allocator, sql, sqlArgs);
 
