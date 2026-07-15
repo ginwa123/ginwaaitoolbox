@@ -353,7 +353,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     .is_emit_sse = true,
                     .event_bus = event_bus,
                     .session_id = copy_session_id,
-                    .message = queued.message,
+                    .id = queued.id,
                 });
             }
         }
