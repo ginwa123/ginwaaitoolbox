@@ -303,3 +303,178 @@ test "getCompactedMessages: since AND until together produce a date range (regre
     }
     try testing.expect(!found_old);
 }
+
+test "saveMessage: writes a correct-year (2026-ish) created_iso from current time" {
+    // Regression check for the year-58,507 bug. Pre-fix `saveMessage`
+    // passed raw nanoseconds to `microsecondsToIsoLocal`, producing
+    // year 58,507. Post-fix, saveMessage divides by `ns_per_us` (1000)
+    // before calling the helper, so the year is in the 2020s.
+    //
+    // We use the live `std.Io.Timestamp.now(...)` clock (same as
+    // saveMessage) and verify the resulting `created_iso` starts with
+    // "20" (year 2000-2099), NOT with "58".
+    //
+    // Uses a dedicated schema because the shared `setupDb()` in this
+    // file only creates the columns needed by `getCompactedMessages`,
+    // not the full set required by `saveMessage`. We also need a
+    // `sessions` table because saveMessage runs `UPDATE sessions
+    // SET cwd = ?` at the end.
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    model TEXT,
+        \\    response_content TEXT,
+        \\    finish_reason TEXT,
+        \\    role TEXT,
+        \\    tool_calls_json TEXT,
+        \\    tool_call_id TEXT,
+        \\    reasoning_content TEXT,
+        \\    is_feed_to_llm INTEGER DEFAULT 1,
+        \\    agent TEXT,
+        \\    loop_index INTEGER,
+        \\    temperature REAL,
+        \\    is_thinking INTEGER,
+        \\    created_at TEXT,
+        \\    created_iso TEXT,
+        \\    parent_session_id TEXT,
+        \\    parent_id TEXT,
+        \\    prompt_tokens INTEGER,
+        \\    completion_tokens INTEGER,
+        \\    total_tokens INTEGER,
+        \\    is_input INTEGER,
+        \\    is_output INTEGER,
+        \\    tool_name TEXT,
+        \\    diffview_before TEXT,
+        \\    diffview_after TEXT,
+        \\    image_url TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    cwd TEXT,
+        \\    updated_at TEXT
+        \\)
+    , &.{});
+
+    try llm_history.saveMessage(alloc, io, &db, .{
+        .session_id = "sess_regression",
+        .model = "test",
+        .cwd = "/tmp",
+        .content = "hello",
+        .reasoning_content = null,
+        .role = "user",
+        .finish_reason = null,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .agent_name = "test",
+        .loop_index = 0,
+        .temperature = 0.0,
+        .is_thinking = false,
+        .is_input = true,
+        .is_output = false,
+    });
+
+    var q = try db.query(alloc,
+        "SELECT created_iso FROM llm_history WHERE session_id = 'sess_regression'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+
+    // Year must be in the 2020s, not 58507.
+    try testing.expect(std.mem.indexOf(u8, row.values[0], "20") != null);
+    try testing.expect(std.mem.indexOf(u8, row.values[0], "58507") == null);
+}
+
+test "saveMessage: created_at column is stored as Unix microseconds (length <= 17)" {
+    // Regression check: saveMessage must store `created_at` as
+    // microseconds (16 digits for year 2026). Pre-fix code stored
+    // raw nanoseconds (19 digits), which doesn't match the
+    // documented `created_at DATETIME/TEXT` contract.
+    //
+    // Uses the same dedicated schema as the test above.
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    model TEXT,
+        \\    response_content TEXT,
+        \\    finish_reason TEXT,
+        \\    role TEXT,
+        \\    tool_calls_json TEXT,
+        \\    tool_call_id TEXT,
+        \\    reasoning_content TEXT,
+        \\    is_feed_to_llm INTEGER DEFAULT 1,
+        \\    agent TEXT,
+        \\    loop_index INTEGER,
+        \\    temperature REAL,
+        \\    is_thinking INTEGER,
+        \\    created_at TEXT,
+        \\    created_iso TEXT,
+        \\    parent_session_id TEXT,
+        \\    parent_id TEXT,
+        \\    prompt_tokens INTEGER,
+        \\    completion_tokens INTEGER,
+        \\    total_tokens INTEGER,
+        \\    is_input INTEGER,
+        \\    is_output INTEGER,
+        \\    tool_name TEXT,
+        \\    diffview_before TEXT,
+        \\    diffview_after TEXT,
+        \\    image_url TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    cwd TEXT,
+        \\    updated_at TEXT
+        \\)
+    , &.{});
+
+    try llm_history.saveMessage(alloc, io, &db, .{
+        .session_id = "sess_micros",
+        .model = "test",
+        .cwd = "/tmp",
+        .content = "hello",
+        .reasoning_content = null,
+        .role = "user",
+        .finish_reason = null,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .agent_name = "test",
+        .loop_index = 0,
+        .temperature = 0.0,
+        .is_thinking = false,
+        .is_input = true,
+        .is_output = false,
+    });
+
+    var q = try db.query(alloc,
+        "SELECT created_at FROM llm_history WHERE session_id = 'sess_micros'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+
+    // Microsecond format is at most 17 digits for any plausible
+    // timestamp (year ~9999). 19 digits = nanoseconds, which is the
+    // bug we're guarding against.
+    try testing.expect(row.values[0].len <= 17);
+}

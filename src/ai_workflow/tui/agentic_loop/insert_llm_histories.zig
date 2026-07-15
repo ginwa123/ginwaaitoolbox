@@ -4,6 +4,7 @@ const nalarcore = mod.nalarcore;
 const sqlite = nalarcore.sqlite;
 const logger_mod = nalarcore.loggermod;
 const agent = nalarcore.agent;
+const helpers = nalarcore.helpers;
 const LLMHistory = mod.LLMHistory;
 const event_bus_mod = nalarcore.event_bus;
 const onEventSendLLMHistory = mod.onEventSendLLMHistory;
@@ -42,10 +43,26 @@ pub fn inserLLMHistories(
     const finish_reason = input.finish_reason;
     const reasoning_content = input.reasoning_content;
 
-    const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+    // Sample the timestamp ONCE for both `id` and `created_at`. The
+    // `created_at` column stores Unix **microseconds** (see Migration
+    // 059 header), but the stdlib only exposes `.nanoseconds`, so we
+    // divide by `std.time.ns_per_us` to convert. The pre‑fix code
+    // stored the raw nanosecond string AND never set `created_iso`,
+    // so every row inserted via this path had NULL `created_iso` AND
+    // any future fix‑up would have produced year 58,507 for them.
+    const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+    const id = try std.fmt.allocPrint(allocator, "{}", .{now_ns});
     defer allocator.free(id);
-    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+    const created_at_us: u64 = @intCast(@divTrunc(now_ns, std.time.ns_per_us));
+    const created_at = try std.fmt.allocPrint(allocator, "{}", .{created_at_us});
     defer allocator.free(created_at);
+
+    // Compute `created_iso` for the `since`/`until` filters. Mirrors
+    // the conversion in `llm_history.saveMessage`. We pass the
+    // microsecond value (NOT raw nanoseconds) so the helper's
+    // division by us_per_s produces correct year 2026.
+    const created_iso = try helpers.microsecondsToIsoLocal(allocator, created_at_us);
+    defer allocator.free(created_iso);
 
     const contentStr = input.response_content;
     const finishReasonStr = input.finish_reason;
@@ -78,6 +95,7 @@ pub fn inserLLMHistories(
         \\    temperature,
         \\    is_thinking,
         \\    created_at,
+        \\    created_iso,
         \\    parent_session_id,
         \\    parent_id,
         \\    prompt_tokens,
@@ -92,7 +110,7 @@ pub fn inserLLMHistories(
         \\) VALUES (
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        \\    ?, ?, ?, ?, ?, ?
+        \\    ?, ?, ?, ?, ?, ?, ?
         \\)
     ;
 
@@ -156,7 +174,7 @@ pub fn inserLLMHistories(
     }
     defer if (copy_image_urls) |c| allocator.free(c);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
 
     try db.exec(allocator, sql, sqlArgs);
 
@@ -281,6 +299,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\    temperature REAL,
         \\    is_thinking INTEGER,
         \\    created_at TEXT,
+        \\    created_iso TEXT,
         \\    parent_session_id TEXT,
         \\    parent_id TEXT,
         \\    prompt_tokens INTEGER,

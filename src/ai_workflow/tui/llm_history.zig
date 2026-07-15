@@ -1022,18 +1022,35 @@ pub fn saveMessage(
     db: *sqlite.SqliteBackend,
     input: SaveMessageInput,
 ) !void {
-    const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+    // Get the current timestamp ONCE (two separate `Timestamp.now` calls
+    // can return nanoseconds that differ by 1+, which would make `id`
+    // and `created_at` disagree). We use it for both fields.
+    //
+    // The `llm_history.created_at` column is documented as Unix
+    // microseconds since the epoch (see Migration 059 header), but the
+    // stdlib exposes `Timestamp.now(...).nanoseconds` (an i96, 19
+    // decimal digits for any post‑1970 timestamp). We divide by
+    // `std.time.ns_per_us` (1000) to convert nanoseconds → microseconds
+    // so the column matches its documented format AND the helper
+    // `helpers.microsecondsToIsoLocal` produces a correct year (year
+    // 2026, not year 58,507). The pre‑fix code passed the raw
+    // nanoseconds string straight to the microseconds helper,
+    // producing year 58,507 for every row inserted since the v2
+    // migration landed.
+    const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+    const id = try std.fmt.allocPrint(allocator, "{}", .{now_ns});
     defer allocator.free(id);
-    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+    const created_at_us: u64 = @intCast(@divTrunc(now_ns, std.time.ns_per_us));
+    const created_at = try std.fmt.allocPrint(allocator, "{}", .{created_at_us});
     defer allocator.free(created_at);
 
-    // Compute `created_iso` (the localtime-formatted ISO string for
-    // the `since`/`until` filter columns) IN APPLICATION CODE rather than
+    // Compute `created_iso` (the UTC‑formatted ISO string for the
+    // `since`/`until` filter columns) IN APPLICATION CODE rather than
     // via SQLite triggers. See Migration 059 header for why.
     //
-    // We parse the microsecond string (which we just allocated as
-    // `created_at`) and pass it through `microsecondsToIsoLocal`.
-    const created_at_us: u64 = std.fmt.parseInt(u64, created_at, 10) catch 0;
+    // We pass the microsecond value (NOT the raw nanosecond string)
+    // to `microsecondsToIsoLocal`, which divides by us_per_s to get
+    // seconds — passing nanoseconds directly produced year 58,507.
     const created_iso = try helpers.microsecondsToIsoLocal(allocator, created_at_us);
     defer allocator.free(created_iso);
 
