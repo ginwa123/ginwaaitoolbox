@@ -1265,6 +1265,16 @@ pub const CompactedMessagesOptions = struct {
     /// caller can request up to 1000 explicitly. The read_compacted_messages
     /// tool wraps this in its own user-facing limit parameter.
     limit: ?u32 = 100,
+    /// When `true`, include ALL messages for the session regardless of
+    /// `is_feed_to_llm` (live + compacted). When `false` (default),
+    /// restrict to `is_feed_to_llm = 0` (compacted only) — the original
+    /// semantic, preserved for compaction-test callers.
+    ///
+    /// Used by `search_history mode="session"` to return the full
+    /// conversation history. The LLM may want to re-read messages
+    /// still in its live context (e.g. "show me what I said earlier
+    /// today"), not just compacted ones.
+    include_all: bool = false,
 };
 
 /// Lighter-weight return struct than `TUIHistory` — only the fields the
@@ -1296,12 +1306,59 @@ pub const CompactedMessage = struct {
     }
 };
 
-/// Return messages marked `is_feed_to_llm = 0` for the given session.
-/// This is the inverse of `getMessages` (line 1076): where `getMessages`
-/// returns the messages the LLM sees, `getCompactedMessages` returns
-/// the messages the LLM does NOT see (the ones dropped by compaction).
+/// Options for `searchMessagesFts`. Mirrors the shape of
+/// `CompactedMessagesOptions` so callers can build either kind of query
+/// with a consistent input.
+pub const SearchOptions = struct {
+    /// When non-null, only return hits whose `llm_history.session_id` equals this.
+    /// Useful for "search within this conversation only".
+    session_id: ?[]const u8 = null,
+    /// When non-null, exact-match filter on `llm_history.role` ("user", "assistant", "tool").
+    role: ?[]const u8 = null,
+    /// When non-null, lower bound on `created_at` (inclusive, lex-sort = chrono-sort).
+    since: ?[]const u8 = null,
+    /// When non-null, upper bound on `created_at` (inclusive).
+    until: ?[]const u8 = null,
+    /// Max rows to return. Defaults to 20 for safety; the caller can
+    /// request up to 200 (the tool layer caps there). The FTS ranking
+    /// does the rest of the filtering.
+    limit: ?u32 = 20,
+};
+
+/// One FTS hit. Mirrors `CompactedMessage` but adds `snippet` (the
+/// FTS5-generated preview with `[match]` markers around matched tokens).
+pub const SearchHit = struct {
+    id: []const u8,
+    session_id: []const u8,
+    role: []const u8,
+    snippet: []const u8,
+    tool_call_id: ?[]const u8,
+    tool_name: ?[]const u8,
+    created_at: []const u8,
+
+    pub fn deinit(self: *const SearchHit, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.session_id);
+        allocator.free(self.role);
+        allocator.free(self.snippet);
+        allocator.free(self.created_at);
+        if (self.tool_call_id) |t| allocator.free(t);
+        if (self.tool_name) |t| allocator.free(t);
+    }
+};
+
+/// Return messages for the given session.
 ///
-/// Filter semantics:
+/// Default behavior (when `opts.include_all == false`): returns ONLY
+/// messages marked `is_feed_to_llm = 0` — the ones dropped from the
+/// live LLM context by compaction. This is the inverse of `getMessages`
+/// (line 1076).
+///
+/// With `opts.include_all == true`: returns ALL messages for the
+/// session regardless of `is_feed_to_llm`. Used by `search_history`
+/// `mode="session"` to browse the full conversation history.
+///
+/// Filter semantics (identical regardless of `include_all`):
 /// - `message_ids`: when non-null, IN-clause filter (skipped if empty).
 /// - `role`: exact match on `llm_history.role`.
 /// - `since` / `until`: lexicographic comparison on the
@@ -1322,7 +1379,10 @@ pub fn getCompactedMessages(
     const effective_limit = opts.limit orelse 100;
 
     // Build the WHERE clause incrementally. Each filter appends
-    // AND <clause> to the base `h.session_id = ? AND h.is_feed_to_llm = 0`.
+    // AND <clause> to the base `h.session_id = ?`.
+    // `is_feed_to_llm = 0` is appended UNLESS `opts.include_all` is set;
+    // `search_history` mode="session" passes include_all=true to browse
+    // the full conversation history.
     var sql: std.ArrayList(u8) = .empty;
     defer sql.deinit(allocator);
     try sql.appendSlice(allocator,
@@ -1334,8 +1394,11 @@ pub fn getCompactedMessages(
         \\    COALESCE(h.created_at, '')
         \\FROM llm_history h
         \\WHERE h.session_id = ?
-        \\  AND h.is_feed_to_llm = 0
     );
+
+    if (!opts.include_all) {
+        try sql.appendSlice(allocator, " AND h.is_feed_to_llm = 0");
+    }
 
     var bind_values: std.ArrayList([]const u8) = .empty;
     defer bind_values.deinit(allocator);
@@ -1399,6 +1462,97 @@ pub fn getCompactedMessages(
             .created_at = try allocator.dupe(u8, row.values[8]),
         };
         try results.append(allocator, msg);
+    }
+
+    return try results.toOwnedSlice(allocator);
+}
+
+/// Full-text search over `llm_history.response_content` using SQLite FTS5.
+///
+/// Joins the `messages_fts` virtual table to `llm_history` and returns
+/// ranked hits with a 10-token snippet around each match. Ranking is
+/// FTS5's default BM25.
+///
+/// Filter semantics mirror `getCompactedMessages`:
+/// - `session_id`: exact match on `llm_history.session_id`
+/// - `role`: exact match on `llm_history.role`
+/// - `since`/`until`: lex-sort = chrono-sort on `created_at`
+/// - `limit`: clamps the row count (defaults to 20)
+///
+/// Caller owns the returned slice. Free with `hit[i].deinit(allocator)`
+/// for each hit and `allocator.free(hits)` for the outer slice.
+pub fn searchMessagesFts(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    query: []const u8,
+    opts: SearchOptions,
+) ![]SearchHit {
+    const effective_limit = opts.limit orelse 20;
+
+    var sql: std.ArrayList(u8) = .empty;
+    defer sql.deinit(allocator);
+    try sql.appendSlice(allocator,
+        \\SELECT
+        \\    h.id, h.session_id, COALESCE(h.role, 'assistant'),
+        \\    snippet(messages_fts, 0, '[', ']', '...', 10),
+        \\    h.tool_call_id, h.tool_name,
+        \\    COALESCE(h.created_at, '')
+        \\FROM messages_fts
+        \\JOIN llm_history h ON h.rowid = messages_fts.rowid
+        \\WHERE messages_fts MATCH ?
+    );
+
+    var bind_values: std.ArrayList([]const u8) = .empty;
+    defer bind_values.deinit(allocator);
+    try bind_values.append(allocator, query);
+
+    if (opts.session_id) |sid| {
+        try sql.appendSlice(allocator, " AND h.session_id = ?");
+        try bind_values.append(allocator, sid);
+    }
+
+    if (opts.role) |r| {
+        try sql.appendSlice(allocator, " AND h.role = ?");
+        try bind_values.append(allocator, r);
+    }
+
+    if (opts.since) |s| {
+        try sql.appendSlice(allocator, " AND h.created_at >= ?");
+        try bind_values.append(allocator, s);
+    }
+
+    if (opts.until) |u| {
+        try sql.appendSlice(allocator, " AND h.created_at <= ?");
+        try bind_values.append(allocator, u);
+    }
+
+    try sql.appendSlice(allocator, " ORDER BY rank");
+    try sql.print(allocator, " LIMIT {d}", .{effective_limit});
+
+    var rows = try db.query(allocator, sql.items, bind_values.items);
+    defer rows.deinit();
+
+    var results: std.ArrayList(SearchHit) = .empty;
+    errdefer {
+        for (results.items) |h| {
+            var copy = h;
+            copy.deinit(allocator);
+        }
+        results.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        defer row.deinit(allocator);
+        const hit = SearchHit{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .session_id = try allocator.dupe(u8, row.values[1]),
+            .role = try allocator.dupe(u8, row.values[2]),
+            .snippet = try allocator.dupe(u8, row.values[3]),
+            .tool_call_id = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .tool_name = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .created_at = try allocator.dupe(u8, row.values[6]),
+        };
+        try results.append(allocator, hit);
     }
 
     return try results.toOwnedSlice(allocator);
