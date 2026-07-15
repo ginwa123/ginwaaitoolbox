@@ -153,6 +153,14 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         if (tp > 100) return error.InvalidThresholdPercent;
         config_json.compaction_threshold_percent = tp;
     }
+    // retry_delay_ms: clamp to [0, 60_000]. Values > 60_000 would let a
+    // user lock themselves out of cancelable recovery (one cancellation
+    // attempt would have to wait the full delay). Values < 0 are
+    // impossible at the type level (u32). `null` means "no change" so
+    // an omit-from-PUT doesn't reset the existing value.
+    if (input.retry_delay_ms) |ms| {
+        config_json.retry_delay_ms = if (ms > 60_000) 60_000 else ms;
+    }
 
     // Handle profiles - accept BOTH the on-disk shape (object map) and the
     // granular change-list shape (array of ProfileChange). The frontend's
@@ -405,6 +413,12 @@ profiles: ?json.Value = null,
     /// through to per-profile override, then built-in 80. Values > 100
     /// are rejected with `error.InvalidThresholdPercent`.
     compaction_threshold_percent: ?u8 = null,
+    /// Delay in milliseconds before retrying a failed workflow call.
+    /// Range-validated at apply time: 0 ≤ value ≤ 60_000. `null` means
+    /// "no change" so an omit-from-PUT doesn't reset the existing
+    /// value. Matches `LlmConfig.retry_delay_ms` (Config.zig) and the
+    /// GET handler's `ConfigJson` shape.
+    retry_delay_ms: ?u32 = null,
     // Note: per-profile compaction overrides (max_capacity_tokens,
     // compaction_threshold_percent) live on `ProfileChange` below.
     // Both layers coexist: top-level for Defaults tab, per-profile for
@@ -465,6 +479,10 @@ const ConfigJson = struct {
     /// Top-level compaction threshold. Restored in plan
     /// 2026-07-07-compaction-inline. `null` is the cascade wildcard.
     compaction_threshold_percent: ?u8 = null,
+    /// Delay in milliseconds before retrying a failed workflow call.
+    /// Mirrors `LlmConfig.retry_delay_ms` (Config.zig). Clamped to
+    /// [0, 60_000] by the apply block. Default 0 = no delay.
+    retry_delay_ms: u32 = 0,
     /// Top-level sub-agents array (snake_case, matches NALAR.md JSON
     /// convention). Parsed into the typed `LlmConfig.SubAgentJson` shape
     /// (borrowed from the parsed file content), or replaced by an

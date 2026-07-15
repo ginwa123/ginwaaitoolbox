@@ -18,6 +18,10 @@ export interface DefaultsConfig {
    * `null` = no top-level override (fall through to per-profile → 80).
    * Added in plan 2026-07-07-compaction-inline. */
   compaction_threshold_percent: number | null
+  /** Delay in milliseconds before the workflow retries a failed LLM
+   * call. 0 = no delay (default). Range: 0–60 000. Added in plan
+   * 2026-07-15-retry-delay. */
+  retry_delay_ms: number
 }
 
 const props = defineProps<{ modelValue: DefaultsConfig }>()
@@ -302,6 +306,38 @@ function setThresholdOverride(on: boolean) {
             <span>80% (default)</span>
             <span>Always</span>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Workflow behavior — plan 2026-07-15-retry-delay -->
+    <section>
+      <h3 :class="sectionHeader" :style="sectionHeaderStyle">── Workflow behavior ──</h3>
+      <div class="space-y-4">
+        <div>
+          <label :class="labelBase" :style="labelStyle">Retry delay (ms)</label>
+          <input
+            :value="modelValue.retry_delay_ms"
+            @input="
+              update(
+                'retry_delay_ms',
+                Math.max(0, Math.min(60000, parseInt(($event.target as HTMLInputElement).value, 10) || 0)),
+              )
+            "
+            type="number"
+            min="0"
+            max="60000"
+            step="100"
+            placeholder="0"
+            :class="inputBase"
+            :style="inputStyle"
+            data-testid="retry-delay-input"
+          />
+          <p class="text-xs mt-1" :style="helperStyle">
+            Milliseconds to wait before retrying a failed LLM call. 0 = no delay (retry immediately).
+            Useful when the upstream rate-limits and you want to back off instead of hammering it.
+            Max 60 000 ms (1 min) — beyond that, cancel and start a new session.
+          </p>
         </div>
       </div>
     </section>

@@ -244,7 +244,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         .is_emit_sse = true,
     });
 
-    var retry_count: usize = 0;
+    var retry_count: u32 = 0;
     // Track the most recent retry error so the AI agent can understand WHY
     // retries were happening when the budget is exhausted. Without this,
     // "TooManyRetries" is ambiguous — the AI doesn't know if the cause was
@@ -520,7 +520,20 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // the cause when the retry budget is eventually exhausted.
             last_retry_error = err;
             last_retry_source = "callDynamicAgentNew";
-            logger.errFmt("Error calling dynamic agent: {s} now retrying", .{@errorName(err)});
+            logger.errFmt("Error calling dynamic agent: {s} now retrying after {d}ms delay", .{ @errorName(err), config.retry_delay_ms });
+            // Save a per-retry diagnostic to chat history so the user sees
+            // each attempt live AND the AI has the full retry progression
+            // in context for its next turn (instead of only learning about
+            // retries after the budget is exhausted).
+            try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, effective_model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "callDynamicAgentNew", @errorName(err), config.retry_delay_ms);
+            // Sleep before the next attempt so the upstream can recover (or
+            // rate-limit window can close). 0 ms = no delay (current
+            // behavior, the default). Interrupted by worker cancellation —
+            // see retryDelayMs for the polling details.
+            if (!retryDelayMs(allocator, config.retry_delay_ms, db, copy_session_id, io, logger)) {
+                logger.infoFmt("WORKFLOW CANCELLED during retry delay: session_id={s}", .{copy_session_id});
+                break;
+            }
             continue;
         };
 
@@ -586,6 +599,18 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, copy_selected_profile_model);
             } else {
                 retry_count += 1;
+                // Save a per-retry diagnostic (no `err` here — unexpected
+                // finish_reason has no underlying error name, so use the
+                // source label as the diagnostic).
+                try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, effective_model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "finish_reason else", "unexpected finish_reason", config.retry_delay_ms);
+                // Same delay policy as the callDynamicAgentNew catch —
+                // sleep before the loop restarts so we don't hammer the
+                // upstream when it returns an unexpected finish_reason
+                // repeatedly. Interrupted by worker cancellation.
+                if (!retryDelayMs(allocator, config.retry_delay_ms, db, copy_session_id, io, logger)) {
+                    logger.infoFmt("WORKFLOW CANCELLED during retry delay (finish_reason else): session_id={s}", .{copy_session_id});
+                    break;
+                }
                 break;
             }
 
@@ -680,6 +705,168 @@ fn generateSessionNameNew(
 
         logger.debugFmt("[SESSION NAME] Generated session name: {s}", .{stripped_content});
         if (needs_free) allocator.free(stripped_content);
+    }
+}
+
+/// Save a per-retry diagnostic message to chat history so the user
+/// sees each retry attempt live in their chat (instead of only
+/// learning about retries via the final TooManyRetries summary)
+/// AND the AI agent has the full retry history in context for its
+/// next turn.
+///
+/// Called from BOTH retry paths (callDynamicAgentNew catch + else
+/// finish_reason branch). The message is marked `is_input: true` so
+/// it appears in the chat list as a user-side entry, and
+/// `is_feed_to_llm: true` so the LLM sees the progression. Each
+/// retry is ~80 chars; the worst case (11 retries) adds ~1 KB of
+/// context — an acceptable cost for full agent visibility into what
+/// has been failing.
+///
+/// Format: `[Retry {attempt}/{max}] {error_name} ({source}). Retrying in {delay_ms}ms.`
+/// — terse on purpose, since up to 10 of these accumulate in chat.
+///
+/// `attempt` is 1-based (after the increment). `max_attempts` is the
+/// retry budget (currently 10, matching the `retry_count > 10` bail).
+fn saveRetryAttemptMessage(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    event_bus: *event_bus_mod.EventBus,
+    logger: *logger_mod.Logger,
+    io: std.Io,
+    cwd: []const u8,
+    session_id: []const u8,
+    parent_session_id: []const u8,
+    effective_model: []const u8,
+    effective_agent_name: []const u8,
+    agent_temperature: f32,
+    isThinking: bool,
+    loop_counter: u32,
+    attempt: u32,
+    max_attempts: u32,
+    source: []const u8,
+    error_name: []const u8,
+    delay_ms: u32,
+) !void {
+    const content = std.fmt.allocPrint(allocator,
+        \\[Retry {d}/{d}] {s} ({s}). Retrying in {d}ms.
+    , .{ attempt, max_attempts, error_name, source, delay_ms }) catch |err| blk: {
+        logger.errFmt("Failed to format retry diagnostic: {s}", .{@errorName(err)});
+        break :blk "[Retry error: formatting failed]";
+    };
+    errdefer allocator.free(content);
+
+    logger.errFmt("Retry {d}/{d}: {s} ({s}). Retrying in {d}ms.", .{ attempt, max_attempts, error_name, source, delay_ms });
+
+    try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{
+        .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+        .session_id = session_id,
+        .model = effective_model,
+        .response_content = content,
+        .reasoning_content = null,
+        .role = agent.Role.user.to_str(),
+        .finish_reason = "null",
+        .tool_calls_json = "",
+        .tool_call_id = null,
+        .agent = effective_agent_name,
+        .loop_index = loop_counter,
+        .temperature = agent_temperature,
+        .is_thinking = isThinking,
+        .prompt_tokens = 0,
+        .completion_tokens = 0,
+        .total_tokens = 0,
+        .parent_id = parent_session_id,
+        .parent_session_id = parent_session_id,
+        .is_input = true,
+        .is_output = false,
+        .is_feed_to_llm = true,
+        .image_urls = null,
+        .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+    } });
+}
+
+// POSIX `nanosleep` — declared `extern "c"` so the call doesn't go
+// through Zig 0.16's Io runtime. We deliberately avoid `std.Io.sleep`
+// because the workflow is dispatched as an `Io.Group.concurrent` task
+// from the event bus; blocking on `std.Io.sleep` inside that context
+// would deadlock the group (the workflow's worker thread is parked in
+// the Io sleep, the nested async tasks need other workers, but the
+// Io.Group can't signal completion while the workflow is parked).
+// Plain `nanosleep` parks the OS thread without involving the Io
+// runtime, so the rest of the group keeps making progress. See
+// `src/modules/agent/tools/bash.zig:4-22` for the canonical precedent.
+//
+// Field names differ between libc implementations: glibc uses
+// `tv_sec`/`tv_nsec`, Darwin and most BSDs use `sec`/`nsec`. We mirror
+// the local `PosixTimespec` shape from `helpers/mod.zig` (sec/nsec)
+// so this works on macOS too.
+const WorkflowNanoSleepTimespec = extern struct {
+    sec: c_long,
+    nsec: c_long,
+};
+// IMPORTANT: the symbol name MUST match the libc name (`nanosleep`),
+// NOT a Zig-side wrapper. In Zig 0.16 `extern "c" fn` keeps the
+// declared name verbatim — using a wrapper name like
+// `workflowNanosleep` produces a linker error "undefined symbol:
+// workflowNanosleep" because libc exports the symbol as `nanosleep`.
+// (See project memory `zig-extern-c-optional-pointer-return`.)
+extern "c" fn nanosleep(req: *const WorkflowNanoSleepTimespec, rem: ?*WorkflowNanoSleepTimespec) c_int;
+
+/// Sleep for up to `delay_ms` milliseconds, polling
+/// `agentic_loop.isWorkerCancelled` every 50 ms so a user-initiated
+/// cancel returns early. Returns `true` if the delay completed,
+/// `false` if it was interrupted by cancellation.
+///
+/// `delay_ms = 0` is a fast-path no-op (returns `true` immediately) —
+/// avoids one nanosleep call when the user has configured "no delay".
+///
+/// Chunk size: 50 ms balances two concerns:
+/// - Cancellation responsiveness: a cancel fires within 50 ms of
+///   the user clicking (imperceptible).
+/// - CPU overhead: 20 polls/sec is trivial; never spin-busy-waits.
+fn retryDelayMs(
+    allocator: std.mem.Allocator,
+    delay_ms: u32,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    io: std.Io,
+    logger: *logger_mod.Logger,
+) bool {
+    if (delay_ms == 0) return true;
+
+    const deadline_ns: i96 = std.Io.Clock.now(.real, io).nanoseconds +
+        @as(i96, @intCast(delay_ms)) * std.time.ns_per_ms;
+
+    while (true) {
+        // Cancellation check — same shape as the loop-top check at
+        // workflow.zig:276 so the cancel UX is consistent.
+        if (agentic_loop_mod.isWorkerCancelled(agentic_loop_mod.IsWorkerCancelledInput{
+            .allocator = allocator,
+            .db = db,
+            .session_id = session_id,
+        })) {
+            const now_ns = std.Io.Clock.now(.real, io).nanoseconds;
+            const remaining_ns: i96 = @max(deadline_ns - now_ns, 0);
+            const remaining_ms: u32 = @intCast(@divFloor(remaining_ns, std.time.ns_per_ms));
+            logger.infoFmt(
+                "Retry delay interrupted by worker cancellation: session_id={s} remaining={d}ms",
+                .{ session_id, remaining_ms },
+            );
+            return false;
+        }
+        if (std.Io.Clock.now(.real, io).nanoseconds >= deadline_ns) return true;
+
+        const now_ns = std.Io.Clock.now(.real, io).nanoseconds;
+        const remaining_ms: u32 = @intCast(@divFloor(
+            deadline_ns - now_ns,
+            std.time.ns_per_ms,
+        ));
+        const chunk_ms: u32 = if (remaining_ms > 50) 50 else remaining_ms;
+
+        const ts = WorkflowNanoSleepTimespec{
+            .sec = 0,
+            .nsec = chunk_ms * std.time.ns_per_ms,
+        };
+        _ = nanosleep(&ts, null);
     }
 }
 
