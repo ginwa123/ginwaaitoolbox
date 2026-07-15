@@ -55,6 +55,11 @@ pub const SearchInput = struct {
     max_output: ?usize = 1024 * 1024, // default 1MB
     group_by_file: bool = true, // when true, results are grouped by file
     cwd: ?[]const u8 = null,
+    /// When true (default), ripgrep respects .gitignore / .ignore / .rgignore.
+    /// When false, appends `--no-ignore` to rg's argv so it searches
+    /// gitignored paths (build/, node_modules/, etc.). Mirrors rg's
+    /// --no-ignore flag, which disables ALL ignore-file filtering.
+    respect_ignore_files: bool = true,
 };
 
 pub const SearchResult = struct {
@@ -149,12 +154,23 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     // which is an attacker-controlled flag surface on multi-user systems.
     // `--no-messages` suppresses ripgrep's stderr (we surface the errors
     // ourselves via the exit-code mapping below).
-    const argv = &[_][]const u8{
+    const argv: []const []const u8 = if (input.respect_ignore_files) &[_][]const u8{
         "rg",
         "--json",
         "--line-number",
         "--no-config",
         "--no-messages",
+        "-e",
+        input.pattern,
+        "--",
+        input.path,
+    } else &[_][]const u8{
+        "rg",
+        "--json",
+        "--line-number",
+        "--no-config",
+        "--no-messages",
+        "--no-ignore",
         "-e",
         input.pattern,
         "--",
@@ -544,6 +560,8 @@ pub const search_tool = AgentTool{
         \\- pattern must be non-empty and contain no NUL bytes.
         \\- max_output is hard-capped at 100MB.
         \\- max_results and max_output must be > 0.
+        \\- respect_ignore_files: default true (respects .gitignore/.ignore/.rgignore).
+        \\  Set false to search gitignored paths (build/, node_modules/, .git/).
         \\
         \\- Use this to locate symbols, functions, or types before reading.
         \\- Prefer this over bash+rg for code navigation.
@@ -590,6 +608,11 @@ pub const search_tool = AgentTool{
                     .name = "cwd",
                     .type = "string",
                     .description = "Current working directory, default is cwd projects selected",
+                },
+                .{
+                    .name = "respect_ignore_files",
+                    .type = "boolean",
+                    .description = "Respect .gitignore/.ignore/.rgignore. Default: true. Set false to search gitignored paths (build/, node_modules/, .git/, etc.).",
                 },
             },
             .required = &.{ "pattern", "path" },
