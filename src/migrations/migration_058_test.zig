@@ -3,11 +3,12 @@
 //!
 //! Why this file exists
 //! ────────────────────
-//! Migration 058 creates `messages_fts` (external-content FTS5 over
-//! `llm_history.response_content`) plus 3 sync triggers. This file
-//! verifies:
+//! Migration 058 creates `messages_fts` (a non-external-content FTS5 table
+//! over `llm_history.response_content` — content is duplicated so that
+//! the FTS5 `snippet()` and `highlight()` helper functions work) plus
+//! 3 sync triggers. This file verifies:
 //!   1. The virtual table is created with the correct configuration
-//!      (external content, porter+unicode61 tokenizer, content_rowid='rowid')
+//!      (porter+unicode61 tokenizer)
 //!   2. Exactly 3 triggers exist on `llm_history` (INSERT/UPDATE/DELETE)
 //!   3. Pre-existing rows in `llm_history` are backfilled into the FTS index
 //!   4. New INSERTs into `llm_history` are auto-indexed (trigger fires)
