@@ -177,9 +177,11 @@ test "workflow.zig calls retryDelayMs in the finish_reason else branch" {
         std.debug.print("!! finish_reason else branch not found in workflow.zig !!\n", .{});
         return error.ElseBranchNotFound;
     };
-    // Look at a 500-byte window from the else marker — enough to cover
-    // the retry_count += 1, retryDelayMs call, and break statements.
-    const window_end: usize = @min(else_marker + 500, source.len);
+    // Look at a 1500-byte window from the else marker — enough to cover
+    // retry_count += 1, saveRetryAttemptMessage call, retryDelayMs call,
+    // and break statements (the saveRetryAttemptMessage call alone is
+    // ~600 chars due to its many positional args).
+    const window_end: usize = @min(else_marker + 1500, source.len);
     const else_block = source[else_marker..window_end];
 
     if (std.mem.indexOf(u8, else_block, "retryDelayMs(") == null) {
@@ -191,5 +193,137 @@ test "workflow.zig calls retryDelayMs in the finish_reason else branch" {
         std.debug.print(
             "!! finish_reason else branch does not increment retry_count !!\n", .{});
         return error.RetryCountNotIncrementedInElse;
+    }
+    if (std.mem.indexOf(u8, else_block, "saveRetryAttemptMessage(") == null) {
+        std.debug.print(
+            "!! finish_reason else branch does not save retry diagnostic to chat !!\n", .{});
+        return error.RetryDiagnosticNotSavedInElse;
+    }
+}
+
+// ─── Per-retry diagnostic message (saved to chat history) ───
+//
+// Verifies the workflow saves a per-retry user-role message into
+// `llm_history` so the user sees each retry attempt live in their
+// chat AND the AI agent has the full retry progression in context
+// (instead of only learning about retries after the TooManyRetries
+// bail). Decision: `is_input: true` (renders as user-side chat
+// entry) + `is_feed_to_llm: true` (AI sees it on next turn).
+test "workflow.zig declares saveRetryAttemptMessage helper" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        WORKFLOW_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| {
+        std.debug.print("!! cannot read {s}: {{}} !!\n", .{WORKFLOW_SOURCE_PATH});
+        return err;
+    };
+    defer std.testing.allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "fn saveRetryAttemptMessage(") == null) {
+        std.debug.print(
+            "!! workflow.zig does not declare saveRetryAttemptMessage helper !!\n", .{});
+        return error.SaveRetryAttemptMessageMissing;
+    }
+}
+
+test "workflow.zig per-retry message is feed_to_llm (so AI sees full retry history)" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        WORKFLOW_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| {
+        std.debug.print("!! cannot read {s}: {{}} !!\n", .{WORKFLOW_SOURCE_PATH});
+        return err;
+    };
+    defer std.testing.allocator.free(source);
+
+    // The saveRetryAttemptMessage helper must call insertLLMHistories
+    // with `is_feed_to_llm: true` so the AI agent has the full retry
+    // history in context on its next turn.
+    const fn_start = std.mem.indexOf(u8, source, "fn saveRetryAttemptMessage(") orelse
+        return error.SaveRetryAttemptMessageMissing;
+    const fn_end = std.mem.indexOfPos(u8, source, fn_start + 1, "\nfn ") orelse source.len;
+    const body = source[fn_start..fn_end];
+
+    if (std.mem.indexOf(u8, body, "is_feed_to_llm = true") == null) {
+        std.debug.print(
+            "!! saveRetryAttemptMessage uses is_feed_to_llm: false — AI won't see retry history !!\n", .{});
+        return error.RetryMessageNotFedToLlm;
+    }
+    if (std.mem.indexOf(u8, body, "is_input = true") == null) {
+        std.debug.print(
+            "!! saveRetryAttemptMessage is_input: false — message won't render as user-side entry !!\n", .{});
+        return error.RetryMessageNotUserInput;
+    }
+    if (std.mem.indexOf(u8, body, "agent.Role.user.to_str()") == null) {
+        std.debug.print(
+            "!! saveRetryAttemptMessage role != user — chat list won't show it !!\n", .{});
+        return error.RetryMessageWrongRole;
+    }
+    if (std.mem.indexOf(u8, body, "[Retry {d}/{d}]") == null) {
+        std.debug.print(
+            "!! saveRetryAttemptMessage format missing [Retry X/Y] prefix !!\n", .{});
+        return error.RetryMessageFormatWrong;
+    }
+}
+
+test "workflow.zig calls saveRetryAttemptMessage in callDynamicAgentNew catch" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        WORKFLOW_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| {
+        std.debug.print("!! cannot read {s}: {{}} !!\n", .{WORKFLOW_SOURCE_PATH});
+        return err;
+    };
+    defer std.testing.allocator.free(source);
+
+    // The catch block must call saveRetryAttemptMessage between the
+    // retry_count += 1 line and the retryDelayMs call.
+    const marker = std.mem.indexOf(u8, source, "last_retry_source = \"callDynamicAgentNew\";") orelse
+        return error.RetryCatchBlockNotFound;
+    const continue_pos = std.mem.indexOfPos(u8, source, marker + 1, "continue;") orelse
+        return error.RetryContinueMissing;
+    const between = source[marker..continue_pos];
+    if (std.mem.indexOf(u8, between, "saveRetryAttemptMessage(") == null) {
+        std.debug.print(
+            "!! callDynamicAgentNew catch does not save retry diagnostic to chat !!\n", .{});
+        return error.RetryDiagnosticNotSavedInCatch;
+    }
+}
+
+test "workflow.zig calls saveRetryAttemptMessage in finish_reason else branch" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        WORKFLOW_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| {
+        std.debug.print("!! cannot read {s}: {{}} !!\n", .{WORKFLOW_SOURCE_PATH});
+        return err;
+    };
+    defer std.testing.allocator.free(source);
+
+    // Anchor on the tool_calls branch (preceding the else we care about).
+    const tool_calls_marker = std.mem.indexOf(u8, source, "} else if (finish_reason == .tool_calls) {") orelse {
+        std.debug.print(
+            "!! tool_calls finish_reason branch not found in workflow.zig !!\n", .{});
+        return error.ToolCallsBranchNotFound;
+    };
+    const else_marker = std.mem.indexOfPos(u8, source, tool_calls_marker + 1, "} else {") orelse {
+        std.debug.print("!! finish_reason else branch not found in workflow.zig !!\n", .{});
+        return error.ElseBranchNotFound;
+    };
+    // Look at a 1500-byte window to capture retry_count + saveRetryAttemptMessage + delay block.
+    const window_end: usize = @min(else_marker + 1500, source.len);
+    const window = source[else_marker..window_end];
+    if (std.mem.indexOf(u8, window, "saveRetryAttemptMessage(") == null) {
+        std.debug.print(
+            "!! finish_reason else branch does not save retry diagnostic to chat !!\n", .{});
+        return error.RetryDiagnosticNotSavedInElse;
     }
 }

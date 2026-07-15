@@ -244,7 +244,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         .is_emit_sse = true,
     });
 
-    var retry_count: usize = 0;
+    var retry_count: u32 = 0;
     // Track the most recent retry error so the AI agent can understand WHY
     // retries were happening when the budget is exhausted. Without this,
     // "TooManyRetries" is ambiguous — the AI doesn't know if the cause was
@@ -521,6 +521,11 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             last_retry_error = err;
             last_retry_source = "callDynamicAgentNew";
             logger.errFmt("Error calling dynamic agent: {s} now retrying after {d}ms delay", .{ @errorName(err), config.retry_delay_ms });
+            // Save a per-retry diagnostic to chat history so the user sees
+            // each attempt live AND the AI has the full retry progression
+            // in context for its next turn (instead of only learning about
+            // retries after the budget is exhausted).
+            try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, effective_model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "callDynamicAgentNew", @errorName(err), config.retry_delay_ms);
             // Sleep before the next attempt so the upstream can recover (or
             // rate-limit window can close). 0 ms = no delay (current
             // behavior, the default). Interrupted by worker cancellation —
@@ -594,6 +599,10 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, copy_selected_profile_model);
             } else {
                 retry_count += 1;
+                // Save a per-retry diagnostic (no `err` here — unexpected
+                // finish_reason has no underlying error name, so use the
+                // source label as the diagnostic).
+                try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, effective_model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "finish_reason else", "unexpected finish_reason", config.retry_delay_ms);
                 // Same delay policy as the callDynamicAgentNew catch —
                 // sleep before the loop restarts so we don't hammer the
                 // upstream when it returns an unexpected finish_reason
@@ -697,6 +706,82 @@ fn generateSessionNameNew(
         logger.debugFmt("[SESSION NAME] Generated session name: {s}", .{stripped_content});
         if (needs_free) allocator.free(stripped_content);
     }
+}
+
+/// Save a per-retry diagnostic message to chat history so the user
+/// sees each retry attempt live in their chat (instead of only
+/// learning about retries via the final TooManyRetries summary)
+/// AND the AI agent has the full retry history in context for its
+/// next turn.
+///
+/// Called from BOTH retry paths (callDynamicAgentNew catch + else
+/// finish_reason branch). The message is marked `is_input: true` so
+/// it appears in the chat list as a user-side entry, and
+/// `is_feed_to_llm: true` so the LLM sees the progression. Each
+/// retry is ~80 chars; the worst case (11 retries) adds ~1 KB of
+/// context — an acceptable cost for full agent visibility into what
+/// has been failing.
+///
+/// Format: `[Retry {attempt}/{max}] {error_name} ({source}). Retrying in {delay_ms}ms.`
+/// — terse on purpose, since up to 10 of these accumulate in chat.
+///
+/// `attempt` is 1-based (after the increment). `max_attempts` is the
+/// retry budget (currently 10, matching the `retry_count > 10` bail).
+fn saveRetryAttemptMessage(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    event_bus: *event_bus_mod.EventBus,
+    logger: *logger_mod.Logger,
+    io: std.Io,
+    cwd: []const u8,
+    session_id: []const u8,
+    parent_session_id: []const u8,
+    effective_model: []const u8,
+    effective_agent_name: []const u8,
+    agent_temperature: f32,
+    isThinking: bool,
+    loop_counter: u32,
+    attempt: u32,
+    max_attempts: u32,
+    source: []const u8,
+    error_name: []const u8,
+    delay_ms: u32,
+) !void {
+    const content = std.fmt.allocPrint(allocator,
+        \\[Retry {d}/{d}] {s} ({s}). Retrying in {d}ms.
+    , .{ attempt, max_attempts, error_name, source, delay_ms }) catch |err| blk: {
+        logger.errFmt("Failed to format retry diagnostic: {s}", .{@errorName(err)});
+        break :blk "[Retry error: formatting failed]";
+    };
+    errdefer allocator.free(content);
+
+    logger.errFmt("Retry {d}/{d}: {s} ({s}). Retrying in {d}ms.", .{ attempt, max_attempts, error_name, source, delay_ms });
+
+    try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{
+        .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+        .session_id = session_id,
+        .model = effective_model,
+        .response_content = content,
+        .reasoning_content = null,
+        .role = agent.Role.user.to_str(),
+        .finish_reason = "null",
+        .tool_calls_json = "",
+        .tool_call_id = null,
+        .agent = effective_agent_name,
+        .loop_index = loop_counter,
+        .temperature = agent_temperature,
+        .is_thinking = isThinking,
+        .prompt_tokens = 0,
+        .completion_tokens = 0,
+        .total_tokens = 0,
+        .parent_id = parent_session_id,
+        .parent_session_id = parent_session_id,
+        .is_input = true,
+        .is_output = false,
+        .is_feed_to_llm = true,
+        .image_urls = null,
+        .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+    } });
 }
 
 // POSIX `nanosleep` — declared `extern "c"` so the call doesn't go
