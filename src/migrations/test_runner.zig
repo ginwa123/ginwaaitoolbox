@@ -23,5 +23,6 @@ test {
     _ = @import("migration_053_test.zig");
     _ = @import("migration_054_test.zig");
     _ = @import("migration_058_test.zig");  // FTS5 on llm_history for search-history rewrite
+    _ = @import("migration_059_test.zig");  // created_iso STORED generated column (since/until fix)
     _ = @import("../ai_workflow/tui/migration_057_test.zig");  // v6 design element properties — kept at old path on this branch
 }

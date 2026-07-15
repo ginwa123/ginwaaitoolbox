@@ -1774,6 +1774,130 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration056UpgradeDesignPagesToFileModel.version, .name = Migration056UpgradeDesignPagesToFileModel.name, .up = Migration056UpgradeDesignPagesToFileModel.up },
     .{ .version = Migration057AddDesignElementProperties.version, .name = Migration057AddDesignElementProperties.name, .up = Migration057AddDesignElementProperties.up },
     .{ .version = Migration058AddLlmHistoryFts.version, .name = Migration058AddLlmHistoryFts.name, .up = Migration058AddLlmHistoryFts.up },
+    .{ .version = Migration059AddCreatedIso.version, .name = Migration059AddCreatedIso.name, .up = Migration059AddCreatedIso.up },
+};
+
+/// Migration 059 — Add a `created_iso` column to `llm_history` (populated
+/// by INSERT/UPDATE triggers).
+///
+/// ## Why this exists
+///
+/// `llm_history.created_at` is a TEXT column storing **Unix microseconds**
+/// since the epoch as a string (e.g. `"1784119389936251112"`). The
+/// previous `search_history` / `getCompactedMessages` `since`/`until`
+/// filters did a lex-comparison on this column against user input like
+/// `"2026-07-15 00:00:00"` — which silently returned 0 rows because
+/// `'1' < '2'` (so `'1784…' < '2026-…'` is always true, excluding every
+/// row). See `docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md`.
+///
+/// ## What this does
+///
+/// Adds a regular TEXT column `created_iso` that holds the
+/// `YYYY-MM-DD HH:MM:SS` (localtime) form of the microsecond timestamp,
+/// populated by INSERT and UPDATE triggers. The triggers use
+/// `datetime(..., 'localtime')` which is **not** allowed inside a
+/// STORED generated column expression (SQLite requires generated
+/// column expressions to be deterministic — `localtime` depends on
+/// the system timezone), so we go with triggers instead.
+///
+/// The query SQL (`WHERE created_iso >= ?`) stays identical to what
+/// it would be for a generated column.
+///
+/// ## Timezone choice
+///
+/// We use `'localtime'` (not `'utc'`) to match the project's convention
+/// elsewhere: `created_at` reflects the user's wall-clock time, and
+/// date strings in tool calls are interpreted in the user's locale.
+pub const Migration059AddCreatedIso = struct {
+    pub const version: u32 = 59;
+    pub const name = "add_llm_history_created_iso";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Add a regular TEXT column. SQLite does NOT allow ALTER TABLE
+        // ADD COLUMN with a non-deterministic GENERATED ALWAYS AS
+        // expression (such as datetime(..., 'localtime')), so we use
+        // a plain column and populate it via triggers below.
+        //
+        // We use `addColumnIfMissing` (which checks pragma_table_info)
+        // for idempotency on re-runs.
+        try addColumnIfMissing(
+            db,
+            allocator,
+            "llm_history",
+            "created_iso",
+            "created_iso TEXT",
+        );
+
+        // INSERT trigger: every new row gets its `created_iso` computed
+        // from `created_at`. We use CAST(... AS REAL) / 1000000 so SQLite
+        // treats the microsecond integer as fractional seconds — otherwise
+        // `datetime(<integer>, 'unixepoch', 'localtime')` overflows past
+        // year 9999 and returns NULL.
+        //
+        // If `created_at` is NULL/empty, we fall back to `datetime('now',
+        // 'localtime')` to match the column default.
+        try db.exec(allocator,
+            \\CREATE TRIGGER IF NOT EXISTS trg_llm_history_iso_ins
+            \\AFTER INSERT ON llm_history
+            \\FOR EACH ROW
+            \\BEGIN
+            \\    UPDATE llm_history
+            \\    SET created_iso = datetime(
+            \\        CAST(NEW.created_at AS REAL) / 1000000,
+            \\        'unixepoch', 'localtime'
+            \\    )
+            \\    WHERE rowid = NEW.rowid
+            \\    AND NEW.created_at IS NOT NULL AND NEW.created_at != '';
+            \\
+            \\    UPDATE llm_history
+            \\    SET created_iso = datetime('now', 'localtime')
+            \\    WHERE rowid = NEW.rowid
+            \\    AND (NEW.created_at IS NULL OR NEW.created_at = '');
+            \\END
+        , &[_][]const u8{});
+
+        // UPDATE trigger: if `created_at` changes (rare but possible
+        // for backfills or test fixtures), recompute `created_iso`.
+        try db.exec(allocator,
+            \\CREATE TRIGGER IF NOT EXISTS trg_llm_history_iso_upd
+            \\AFTER UPDATE OF created_at ON llm_history
+            \\FOR EACH ROW
+            \\WHEN NEW.created_at IS NOT NULL AND NEW.created_at != ''
+            \\BEGIN
+            \\    UPDATE llm_history
+            \\    SET created_iso = datetime(
+            \\        CAST(NEW.created_at AS REAL) / 1000000,
+            \\        'unixepoch', 'localtime'
+            \\    )
+            \\    WHERE rowid = NEW.rowid;
+            \\END
+        , &[_][]const u8{});
+
+        // Backfill existing rows. The triggers above only fire for new
+        // INSERTs / UPDATEs; rows that pre-date the migration need an
+        // explicit UPDATE pass to populate `created_iso`. We use a CASE
+        // to handle NULL/empty `created_at` values (treat them as
+        // 'now' localtime, matching the trigger's behavior).
+        try db.exec(allocator,
+            \\UPDATE llm_history
+            \\SET created_iso = CASE
+            \\    WHEN created_at IS NULL OR created_at = ''
+            \\        THEN datetime('now', 'localtime')
+            \\    ELSE datetime(
+            \\        CAST(created_at AS REAL) / 1000000,
+            \\        'unixepoch', 'localtime'
+            \\    )
+            \\END
+            \\WHERE created_iso IS NULL OR created_iso = ''
+        , &[_][]const u8{});
+
+        // Index for the common "find messages after timestamp X" query.
+        // The LLM asks for `since="2026-07-15 00:00:00"` frequently; an
+        // index makes that O(log n) instead of a table scan.
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_llm_history_created_iso ON llm_history(created_iso)",
+            &[_][]const u8{});
+    }
 };
 
 /// Register all migrations with a MigrationManager

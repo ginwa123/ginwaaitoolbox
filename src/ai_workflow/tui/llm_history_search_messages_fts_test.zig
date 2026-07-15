@@ -33,8 +33,32 @@ fn setupDb() !TestCtx {
         \\  tool_name TEXT,
         \\  is_feed_to_llm INTEGER DEFAULT 1,
         \\  agent TEXT,
-        \\  created_at TEXT DEFAULT (datetime('now'))
+        \\  created_at TEXT DEFAULT (datetime('now')),
+        \\  -- Mirrors Migration 059 in production: a regular TEXT column
+        \\  -- populated by an INSERT trigger. STORED GENERATED columns
+        \\  -- can't be used here because `datetime(..., 'localtime')` is
+        \\  -- non-deterministic (depends on the system timezone); SQLite
+        \\  -- silently DROPS such columns from CREATE TABLE. Tests filter
+        \\  -- on this column via the public since/until options.
+        \\  created_iso TEXT
         \\)
+    , &.{});
+    // Trigger: mirror Migration 059's INSERT trigger that populates
+    // created_iso from created_at. CAST(... AS REAL) / 1000000 keeps the
+    // microsecond Unix timestamp in the valid datetime() range.
+    try db.exec(alloc,
+        \\CREATE TRIGGER trg_iso_ins
+        \\AFTER INSERT ON llm_history
+        \\FOR EACH ROW
+        \\WHEN NEW.created_at IS NOT NULL AND NEW.created_at != ''
+        \\BEGIN
+        \\    UPDATE llm_history
+        \\    SET created_iso = datetime(
+        \\        CAST(NEW.created_at AS REAL) / 1000000,
+        \\        'unixepoch', 'localtime'
+        \\    )
+        \\    WHERE rowid = NEW.rowid;
+        \\END
     , &.{});
     try db.exec(alloc,
         \\CREATE VIRTUAL TABLE messages_fts USING fts5(
@@ -255,4 +279,149 @@ test "getCompactedMessages: include_all=true returns live AND compacted rows" {
         alloc.free(all_rows);
     }
     try testing.expectEqual(@as(usize, 2), all_rows.len);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Regression tests for the since/until bug
+// (docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md).
+//
+// These exercise the filter on `created_iso` (the STORED generated column
+// added by Migration 059) instead of `created_at` (which stores Unix
+// microseconds — lex-comparing that against a date string silently
+// returns 0 rows because '1' < '2' in ASCII order).
+//
+// We seed with two known microsecond timestamps and compute the
+// expected `created_iso` via the SAME SQLite expression the migration
+// uses (`datetime(N / 1000000, 'unixepoch', 'localtime')`). This keeps
+// the test timezone-agnostic: both the seed and the filter go through
+// the same localtime conversion, so they agree regardless of TZ.
+// ────────────────────────────────────────────────────────────────────────
+
+test "searchMessagesFts: filters by since using ISO date string (regression for since/until bug)" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    // Seed: two messages at known microsecond timestamps.
+    // Pick values that are unambiguously different from each other and
+    // survive any timezone (we never assert the literal ISO string —
+    // only that the filter on it works).
+    const old_micros: []const u8 = "1780000000000000"; // ~2026-05-29 17:33 UTC
+    const new_micros: []const u8 = "1785000000000000"; // ~2026-06-23 12:40 UTC
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) " ++
+        "VALUES ('h_old','s1','user','old message',?)", &.{old_micros});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) " ++
+        "VALUES ('h_new','s1','user','new message',?)", &.{new_micros});
+
+    // Compute the ISO date for `new_micros` using the SAME expression the
+    // migration uses — that's what `created_iso` will contain.
+    var iso_q = try s.db.queryRow(alloc,
+        "SELECT datetime(? / 1000000, 'unixepoch', 'localtime')",
+        &.{new_micros});
+    defer iso_q.deinit(alloc);
+    const new_iso = iso_q.values[0];
+
+    // FTS match for "message" — both rows match. Filter on since=new_iso
+    // should return only `h_new`.
+    const hits = try llm_history.searchMessagesFts(alloc, &s.db, "message", .{
+        .since = new_iso,
+    });
+    defer {
+        for (hits) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(hits);
+    }
+    try testing.expectEqual(@as(usize, 1), hits.len);
+    try testing.expectEqualStrings("h_new", hits[0].id);
+    try testing.expectEqual(@as(u32, 1), hits[0].total_count); // only 1 row after filter
+}
+
+test "searchMessagesFts: filters by until using ISO date string (regression for since/until bug)" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    const old_micros: []const u8 = "1780000000000000";
+    const new_micros: []const u8 = "1785000000000000";
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) " ++
+        "VALUES ('h_old','s1','user','old message',?)", &.{old_micros});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) " ++
+        "VALUES ('h_new','s1','user','new message',?)", &.{new_micros});
+
+    // Compute the ISO for `old_micros` — `until=old_iso` should keep only h_old.
+    var iso_q = try s.db.queryRow(alloc,
+        "SELECT datetime(? / 1000000, 'unixepoch', 'localtime')",
+        &.{old_micros});
+    defer iso_q.deinit(alloc);
+    const old_iso = iso_q.values[0];
+
+    const hits = try llm_history.searchMessagesFts(alloc, &s.db, "message", .{
+        .until = old_iso,
+    });
+    defer {
+        for (hits) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(hits);
+    }
+    try testing.expectEqual(@as(usize, 1), hits.len);
+    try testing.expectEqualStrings("h_old", hits[0].id);
+}
+
+test "searchMessagesFts: since AND until together produce a date range (regression)" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    const old_micros: []const u8 = "1780000000000000";
+    const mid_micros: []const u8 = "1783000000000000";
+    const new_micros: []const u8 = "1785000000000000";
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) " ++
+        "VALUES ('h_old','s1','user','old message',?)", &.{old_micros});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) " ++
+        "VALUES ('h_mid','s1','user','mid message',?)", &.{mid_micros});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at) " ++
+        "VALUES ('h_new','s1','user','new message',?)", &.{new_micros});
+
+    var iso_q = try s.db.queryRow(alloc,
+        \\SELECT datetime(? / 1000000, 'unixepoch', 'localtime') AS since_iso,
+        \\       datetime(? / 1000000, 'unixepoch', 'localtime') AS until_iso
+    , &.{ mid_micros, new_micros });
+    defer iso_q.deinit(alloc);
+    const since_iso = iso_q.values[0];
+    const until_iso = iso_q.values[1];
+
+    const hits = try llm_history.searchMessagesFts(alloc, &s.db, "message", .{
+        .since = since_iso,
+        .until = until_iso,
+    });
+    defer {
+        for (hits) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(hits);
+    }
+    try testing.expectEqual(@as(usize, 2), hits.len);
+    // Expectation: h_mid and h_new (the "since..until" inclusive window)
+    // — but order is by rank, which is the same as no ORDER BY since
+    // the MATCH score ties. Check that both are present.
+    var ids: [2][]const u8 = undefined;
+    for (hits, 0..) |h, i| ids[i] = h.id;
+    // Both h_mid and h_new should be present (h_old should not).
+    try testing.expect(std.mem.indexOf(u8, ids[0], "h_old") == null or
+        std.mem.indexOf(u8, ids[1], "h_old") == null);
 }

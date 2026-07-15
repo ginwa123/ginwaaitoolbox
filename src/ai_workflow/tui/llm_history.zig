@@ -1391,9 +1391,17 @@ pub const SearchHit = struct {
 /// - `message_ids`: when non-null, IN-clause filter (skipped if empty).
 /// - `role`: exact match on `llm_history.role`.
 /// - `since` / `until`: lexicographic comparison on the
-///   `created_at` string (which is in `YYYY-MM-DD HH:MM:SS` format from
-///   `datetime('now')`, so lex-sort = chrono-sort). Matches the
-///   existing cursor convention in `getSessionListWithCursor`.
+///   `created_iso` string (which is a regular TEXT column populated by
+///   INSERT/UPDATE triggers installed by Migration 059 — they compute
+///   `datetime(CAST(created_at AS REAL) / 1000000, 'unixepoch',
+///   'localtime')` — in `YYYY-MM-DD HH:MM:SS` format, so
+///   lex-sort = chrono-sort). NOTE: we filter on `created_iso`, NOT
+///   `created_at`, because `created_at` stores Unix microseconds as a
+///   TEXT string (e.g. `"1784119389936251112"`) and lex-comparing that
+///   against a user-supplied date string like `"2026-07-15 00:00:00"`
+///   silently returns 0 rows (since `'1' < '2'`). The column is
+///   indexable so the filter is O(log n). See
+///   `docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md`.
 /// - `limit`: clamps the row count (defaults to 100).
 ///
 /// Returned slice's elements are heap-allocated via `allocator.dupe`;
@@ -1452,12 +1460,12 @@ pub fn getCompactedMessages(
     }
 
     if (opts.since) |s| {
-        try sql.appendSlice(allocator, " AND h.created_at >= ?");
+        try sql.appendSlice(allocator, " AND h.created_iso >= ?");
         try bind_values.append(allocator, s);
     }
 
     if (opts.until) |u| {
-        try sql.appendSlice(allocator, " AND h.created_at <= ?");
+        try sql.appendSlice(allocator, " AND h.created_iso <= ?");
         try bind_values.append(allocator, u);
     }
 
@@ -1564,12 +1572,12 @@ pub fn searchMessagesFts(
     }
 
     if (opts.since) |s| {
-        try sql.appendSlice(allocator, " AND h.created_at >= ?");
+        try sql.appendSlice(allocator, " AND h.created_iso >= ?");
         try bind_values.append(allocator, s);
     }
 
     if (opts.until) |u| {
-        try sql.appendSlice(allocator, " AND h.created_at <= ?");
+        try sql.appendSlice(allocator, " AND h.created_iso <= ?");
         try bind_values.append(allocator, u);
     }
 
