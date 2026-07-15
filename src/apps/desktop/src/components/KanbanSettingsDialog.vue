@@ -218,7 +218,13 @@ const sortedColumns = () => {
         />
 
         <!-- Dialog Card (wider than the column editor — accommodates
-             the column list + per-row edit/delete actions) -->
+             the column list + per-row edit/delete actions).
+             Height is `min(80vh, calc(100vh - 2rem))` (NOT max-height)
+             so the card is always bounded — required for the inner
+             `flex-1` panels and `overflow-y-auto` children to
+             actually scroll. With `max-height`, the card grows to fit
+             its content and the inner panels never have a bounded
+             height to scroll inside (a common flex-overflow footgun). -->
         <div
           class="relative w-full max-w-2xl mx-4 rounded-xl shadow-2xl flex flex-col overflow-hidden"
           style="
@@ -227,7 +233,7 @@ const sortedColumns = () => {
             box-shadow:
               0 1px 2px rgba(0, 0, 0, 0.4),
               0 8px 24px rgba(0, 0, 0, 0.35);
-            max-height: 80vh;
+            height: min(80vh, calc(100vh - 2rem));
           "
         >
           <!-- Header -->
