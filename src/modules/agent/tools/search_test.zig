@@ -90,6 +90,25 @@ test "search: head AND tail both set returns HeadAndTailMutuallyExclusive error"
     try testing.expectError(error.HeadAndTailMutuallyExclusive, result);
 }
 
+test "search: respect_ignore_files = false does NOT return a validation error" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    const result = search.executeSearch(allocator, io, "/tmp", .{
+        .pattern = "anything",
+        .path = ".",
+        .respect_ignore_files = false,
+    });
+
+    // Either success (Ok with possibly 0 matches in /tmp) or a rg-spawn
+    // error is acceptable. What matters is NO SearchError domain variant
+    // fires (those would mean validation rejected the field).
+    _ = result catch |err| switch (err) {
+        error.FileNotFound, error.PathError, error.AccessDenied => {},
+        else => return err,
+    };
+}
+
 // =============================================================================
 // Behavioral tests (with ripgrep invocation)
 // =============================================================================
@@ -107,6 +126,14 @@ fn requiresRg() bool {
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return false;
     // Check rg is on PATH via a probe — cheap, no fs mutation.
     return true;
+}
+
+/// Strip the `./` prefix that rg adds to relative paths when invoked with
+/// `path = "."`. Used by the respect_ignore_files tests to compare match
+/// files against expected basenames regardless of rg's prefix convention.
+fn stripDotSlash(s: []const u8) []const u8 {
+    if (s.len >= 2 and s[0] == '.' and s[1] == '/') return s[2..];
+    return s;
 }
 
 test "search: pattern starting with -- is NOT interpreted as rg flag" {
@@ -332,6 +359,152 @@ test "search: max_results cap honored" {
 
     try testing.expect(result.matches.items.len <= 5);
     try testing.expect(result.matches.items.len > 0);
+}
+
+test "search: respect_ignore_files = true (default) skips .gitignored dirs" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = ".gitignore",
+        .data = "node_modules/\n",
+    });
+    try tmpdir.dir.createDirPath(io, "node_modules");
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "node_modules/secret.js",
+        .data = "MARKER_TOKEN_NODE_MODULES\n",
+    });
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "app.js",
+        .data = "MARKER_TOKEN_NODE_MODULES\n",
+    });
+
+    // Zig 0.16: testing.TmpDir.sub_path is just the basename; resolve full path via realPath.
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, "/tmp", .{
+        .pattern = "MARKER_TOKEN_NODE_MODULES",
+        .path = ".",
+        .cwd = tmpdir_path,
+    });
+    defer result.deinit(allocator);
+
+    // Exactly 1 match — only app.js. node_modules/secret.js was skipped.
+    try testing.expectEqual(@as(usize, 1), result.matches.items.len);
+    // rg with path="." returns paths prefixed with "./"; strip it for the
+    // filename comparison.
+    const match_file = stripDotSlash(result.matches.items[0].file);
+    try testing.expectEqualStrings("app.js", match_file);
+}
+
+test "search: respect_ignore_files = false searches .gitignored dirs" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = ".gitignore",
+        .data = "node_modules/\n",
+    });
+    try tmpdir.dir.createDirPath(io, "node_modules");
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "node_modules/secret.js",
+        .data = "MARKER_TOKEN_NODE_MODULES_FALSE\n",
+    });
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "app.js",
+        .data = "MARKER_TOKEN_NODE_MODULES_FALSE\n",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, "/tmp", .{
+        .pattern = "MARKER_TOKEN_NODE_MODULES_FALSE",
+        .path = ".",
+        .cwd = tmpdir_path,
+        .respect_ignore_files = false,
+    });
+    defer result.deinit(allocator);
+
+    // Both files matched — .gitignore was un-respected via --no-ignore
+    try testing.expectEqual(@as(usize, 2), result.matches.items.len);
+
+    // Collect filenames (order from rg is not guaranteed) and assert each
+    // expected file is present. rg with path="." prefixes matches with
+    // "./" — use stripDotSlash to normalize.
+    var saw_app = false;
+    var saw_node_modules = false;
+    for (result.matches.items) |m| {
+        const f = stripDotSlash(m.file);
+        if (std.mem.eql(u8, f, "app.js")) saw_app = true;
+        if (std.mem.eql(u8, f, "node_modules/secret.js")) saw_node_modules = true;
+    }
+    try testing.expect(saw_app);
+    try testing.expect(saw_node_modules);
+}
+
+test "search: respect_ignore_files = false also un-respects .ignore / .rgignore" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = ".ignore",
+        .data = "build_artifacts/\n",
+    });
+    try tmpdir.dir.createDirPath(io, "build_artifacts");
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "build_artifacts/cached.dat",
+        .data = "MARKER_TOKEN_IGNORE_FILE\n",
+    });
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "main.txt",
+        .data = "MARKER_TOKEN_IGNORE_FILE\n",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, "/tmp", .{
+        .pattern = "MARKER_TOKEN_IGNORE_FILE",
+        .path = ".",
+        .cwd = tmpdir_path,
+        .respect_ignore_files = false,
+    });
+    defer result.deinit(allocator);
+
+    // Both files matched — .ignore was un-respected via --no-ignore
+    try testing.expectEqual(@as(usize, 2), result.matches.items.len);
+
+    // Per-filename check (rg match order is not guaranteed). rg with
+    // path="." prefixes matches with "./" — use stripDotSlash to normalize.
+    var saw_main = false;
+    var saw_cached = false;
+    for (result.matches.items) |m| {
+        const f = stripDotSlash(m.file);
+        if (std.mem.eql(u8, f, "main.txt")) saw_main = true;
+        if (std.mem.eql(u8, f, "build_artifacts/cached.dat")) saw_cached = true;
+    }
+    try testing.expect(saw_main);
+    try testing.expect(saw_cached);
 }
 
 // =============================================================================
