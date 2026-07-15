@@ -12,10 +12,10 @@ pub const DeleteQueueMessagesInput = struct {
     is_emit_sse: bool,
     event_bus: ?*event_bus_mod.EventBus,
     session_id: []const u8,
-    message: []const u8,
+    id: []const u8,
 };
 
-/// Delete a specific queued message and emit SSE event
+/// Delete a specific queued message by id and emit SSE event
 pub fn deleteQueuedMessage(
     obj: DeleteQueueMessagesInput,
 ) !void {
@@ -24,11 +24,11 @@ pub fn deleteQueuedMessage(
     const event_bus = obj.event_bus;
 
     const session_id = obj.session_id;
-    const message = obj.message;
+    const id = obj.id;
     const is_emit_sse = obj.is_emit_sse;
 
-    const sql = "DELETE FROM session_queue_messages WHERE session_id = ? AND message = ? ";
-    try db.exec(allocator, sql, &.{ session_id, message });
+    const sql = "DELETE FROM session_queue_messages WHERE session_id = ? AND id = ? ";
+    try db.exec(allocator, sql, &.{ session_id, id });
 
     if (is_emit_sse) {
         if (event_bus) |ev| {
@@ -37,7 +37,7 @@ pub fn deleteQueuedMessage(
 
             const payload = .{
                 .action = "deleted",
-                .message = message,
+                .id = id,
                 .session_id = session_id,
             };
             try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
@@ -85,7 +85,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     return .{ .db = db, .threaded = threaded };
 }
 
-test "deleteQueuedMessage removes the matching (session_id, message) row" {
+test "deleteQueuedMessage removes the matching (session_id, id) row" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
@@ -99,7 +99,7 @@ test "deleteQueuedMessage removes the matching (session_id, message) row" {
         .is_emit_sse = false,
         .event_bus = null,
         .session_id = "s1",
-        .message = "hello",
+        .id = "m1",
     });
 
     var q = try s.db.query(testing.allocator, "SELECT 1 FROM session_queue_messages", &.{});
@@ -115,18 +115,26 @@ test "deleteQueuedMessage is a no-op when the row does not exist" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    // No INSERT — DELETE matching zero rows is not an error.
+    // No INSERT — DELETE matching zero rows is not an error. Tighten
+    // the assertion: after the call, the table is still empty (count=0)
+    // — proves the function did not accidentally delete a phantom row.
     try deleteQueuedMessage(.{
         .allocator = testing.allocator,
         .db = &s.db,
         .is_emit_sse = false,
         .event_bus = null,
         .session_id = "s1",
-        .message = "never queued",
+        .id = "m_missing",
     });
+
+    var q = try s.db.query(testing.allocator, "SELECT COUNT(*) FROM session_queue_messages", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(testing.allocator);
+    try testing.expectEqualStrings("0", row.values[0]);
 }
 
-test "deleteQueuedMessage filters by both session_id and message" {
+test "deleteQueuedMessage filters by both session_id and id" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
@@ -137,14 +145,14 @@ test "deleteQueuedMessage filters by both session_id and message" {
         \\('m3', 's1', 'goodbye', '')
     , &.{});
 
-    // Delete only the (s1, hello) row.
+    // Delete only the (s1, id=m1) row.
     try deleteQueuedMessage(.{
         .allocator = testing.allocator,
         .db = &s.db,
         .is_emit_sse = false,
         .event_bus = null,
         .session_id = "s1",
-        .message = "hello",
+        .id = "m1",
     });
 
     var q = try s.db.query(testing.allocator, "SELECT COUNT(*) FROM session_queue_messages", &.{});
@@ -189,7 +197,7 @@ test "deleteQueuedMessage with is_emit_sse=true and event_bus=null is a safe no-
         .is_emit_sse = true,
         .event_bus = null,
         .session_id = "s1",
-        .message = "hello",
+        .id = "m1",
     });
 
     var q = try s.db.query(testing.allocator, "SELECT 1 FROM session_queue_messages", &.{});
