@@ -1617,25 +1617,24 @@ watch(chatSessionCwd, (newCwd) => {
         v-else-if="currentView === 'workspace'"
         class="flex-1 flex flex-col"
       >
-        <!-- Compact header card (always shown when an item is active) -->
+        <!-- Memories view: only when path is truthy AND the item is
+             NOT a kanban/design (those have their own dedicated views
+             and a tab in settings for memories). The `item_type !== 'kanban'
+             check is defensive — the kanban/design branches above should
+             win first in the v-else-if chain, but the explicit guard
+             prevents the memories view from ever rendering in those
+             cases even if the chain order changes in the future.
+             The item's own header (🧠 + name + path) lives inside
+             WorkspaceItemMemoriesView, so no outer header is needed. -->
         <div
-          v-if="activeWorkspaceItem"
-          class="px-6 py-3 flex items-center justify-between gap-3 shrink-0"
-          style="border-bottom: 1px solid var(--color-border);"
+          v-if="
+            activeWorkspaceItem &&
+            activeWorkspaceItem.path &&
+            activeWorkspaceItem.item_type !== 'kanban' &&
+            activeWorkspaceItem.item_type !== 'design'
+          "
+          class="flex-1 min-h-0"
         >
-          <div class="flex flex-col min-w-0">
-            <h2 class="text-lg font-semibold truncate" style="color: var(--semantic-text);">
-              {{ activeWorkspaceItem.name }}
-            </h2>
-            <p class="text-xs truncate" style="color: var(--semantic-text-dim);">
-              {{ workspacesStore.activeWorkspace?.name }}
-              <span v-if="activeWorkspaceItem.path"> · {{ activeWorkspaceItem.path }}</span>
-            </p>
-          </div>
-        </div>
-
-        <!-- Memories view: only when path is truthy -->
-        <div v-if="activeWorkspaceItem && activeWorkspaceItem.path" class="flex-1 min-h-0">
           <WorkspaceItemMemoriesView
             :key="activeWorkspaceItem.id"
             :cwd="activeWorkspaceItem.path"
