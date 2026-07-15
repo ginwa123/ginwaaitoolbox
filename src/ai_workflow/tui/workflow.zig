@@ -1065,7 +1065,7 @@ pub fn compactMessageInMemoryNew(
 /// the dropped messages after compaction. The envelope has three
 /// sections: <metadata> (compaction event facts), <message_index>
 /// (id+role+preview for every dropped message so the agent can
-/// reference them later via read_compacted_messages), and <summary>
+/// reference them later via search_history), and <summary>
 /// (the compactor's output, preserved verbatim).
 ///
 /// `dropped_messages` is the slice of messages that will be marked
@@ -1117,7 +1117,7 @@ fn buildCompactionEnvelope(
     // we keep the most RECENT dropped messages since those are most
     // likely to be relevant to what the agent does next, and note how
     // many older entries were omitted (full content still recoverable
-    // from the DB via read_compacted_messages / session_id).
+    // from the DB via search_history / session_id).
     try env.appendSlice(allocator, "  <message_index>\n");
 
     const show_count = @min(dropped_messages.len, MAX_INDEX_ENTRIES);
@@ -1127,7 +1127,7 @@ fn buildCompactionEnvelope(
     if (omitted_count > 0) {
         try env.print(
             allocator,
-            "    <truncated_entries count=\"{d}\" note=\"older entries omitted from index; use read_compacted_messages with session_id to fetch full history from DB\"/>\n",
+            "    <truncated_entries count=\"{d}\" note=\"older entries omitted from index; use search_history with session_id to fetch full history from DB\"/>\n",
             .{omitted_count},
         );
     }
@@ -1155,7 +1155,7 @@ fn buildCompactionEnvelope(
         // For tool-result messages, surface tool_call_id so the agent
         // can match results back to calls. (tool_name is not available
         // on the in-memory AgentMessage struct in this codebase; the
-        // read_compacted_messages tool can fetch it from the DB row.)
+        // search_history tool can fetch it from the DB row.)
         if (msg.role == .tool) {
             const tcid = msg.tool_call_id orelse "";
             const tcid_escaped = try helpers.xml_escape(allocator, tcid);

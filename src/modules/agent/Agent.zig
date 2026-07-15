@@ -471,7 +471,7 @@ pub const AgentMessage = struct {
     /// workflow.zig:1046-1064). Populated by
     /// `transform_llm_history_to_agent_message` for messages loaded from
     /// the DB. Used by `buildCompactionEnvelope` to embed real ids in
-    /// the `<compact_messages>` envelope so `read_compacted_messages`
+    /// the `<compact_messages>` envelope so `search_history`
     /// can find them.
     id: ?[]const u8 = null,
     role: Role,

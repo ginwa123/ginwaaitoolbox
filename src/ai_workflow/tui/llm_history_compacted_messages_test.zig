@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const llm_history = @import("llm_history.zig");
 const sqlite = @import("nalarcore").sqlite;
+const helpers = @import("nalarcore").helpers;
 
 fn setupDb() !struct {
     db: sqlite.SqliteBackend,
@@ -26,7 +27,19 @@ fn setupDb() !struct {
         \\  tool_name TEXT,
         \\  is_feed_to_llm INTEGER DEFAULT 1,
         \\  agent TEXT,
-        \\  created_at TEXT DEFAULT (datetime('now'))
+        \\  created_at TEXT DEFAULT (datetime('now')),
+        \\  -- Mirrors Migration 059 in production: a regular TEXT column
+        \\  -- populated by INSERT/UPDATE triggers. We CAN'T use a STORED
+        \\  -- GENERATED ALWAYS AS column here because `datetime(...,
+        \\  -- 'localtime')` is non-deterministic (depends on the system
+        \\  -- timezone) — SQLite silently DROPS such columns from CREATE
+        \\  -- TABLE / ALTER TABLE ADD COLUMN. Production uses triggers for
+        \\  -- the same reason. The since/until filters on
+        \\  -- getCompactedMessages bind to this column, so the test
+        \\  -- schema must include it. The seedMessage helper below
+        \\  -- explicitly populates `created_iso` (mirrors the
+        \\  -- application code in `saveMessage`).
+        \\  created_iso TEXT
         \\)
     , &.{});
     return .{ .db = db, .threaded = threaded };
@@ -37,13 +50,50 @@ fn teardownDb(s: *@TypeOf(setupDb() catch unreachable)) void {
     s.threaded.deinit();
 }
 
-fn seedMessage(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, id: []const u8, sess: []const u8, role: []const u8, content: []const u8, is_feed: u8, created_at: []const u8) !void {
+fn seedMessage(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    sess: []const u8,
+    role: []const u8,
+    content: []const u8,
+    is_feed: u8,
+    created_at: []const u8,
+) !void {
     const feed_str = if (is_feed == 1) "1" else "0";
+
+    // `created_at` is either:
+    //   - A microsecond timestamp string (e.g. "1785000000000000"), OR
+    //   - A pre-formatted ISO localtime string (e.g. "2025-01-01 00:01:00").
+    //
+    // Production code computes `created_iso` from the microsecond
+    // `created_at`. To match, we apply `helpers.microsecondsToIsoLocal`
+    // when the input is microseconds and reuse the same string when
+    // it's already ISO.
+    var created_iso_buf: [20]u8 = undefined;
+    const created_iso_len: usize = blk: {
+        if (created_at.len >= 10 and std.mem.indexOfScalar(u8, created_at, '-') == null) {
+            // Looks like a microsecond integer — convert via the helper.
+            const micros = std.fmt.parseInt(u64, created_at, 10) catch 0;
+            const iso = try helpers.microsecondsToIsoLocal(alloc, micros);
+            defer alloc.free(iso);
+            const len = iso.len;
+            if (len > created_iso_buf.len) return error.TimestampTooLong;
+            @memcpy(created_iso_buf[0..len], iso);
+            break :blk len;
+        }
+        // Already ISO-formatted (e.g. tests using literal "YYYY-MM-DD HH:MM:SS").
+        if (created_at.len > created_iso_buf.len) return error.TimestampTooLong;
+        @memcpy(created_iso_buf[0..created_at.len], created_at);
+        break :blk created_at.len;
+    };
+    const created_iso: []const u8 = created_iso_buf[0..created_iso_len];
+
     const sql =
-        \\INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm, created_at)
-        \\VALUES (?, ?, ?, ?, ?, ?)
+        \\INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm, created_at, created_iso)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?)
     ;
-    try db.exec(alloc, sql, &.{ id, sess, role, content, feed_str, created_at });
+    try db.exec(alloc, sql, &.{ id, sess, role, content, feed_str, created_at, created_iso });
 }
 
 test "getCompactedMessages: returns only is_feed_to_llm=0 messages for session" {
@@ -129,4 +179,127 @@ test "getCompactedMessages: returns empty slice when session has no compacted me
         alloc.free(results);
     }
     try testing.expectEqual(@as(usize, 0), results.len);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Regression tests for the since/until bug
+// (docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md).
+//
+// The bug: `created_at` stores Unix microseconds as TEXT (e.g.
+// `"1784119389936251112"`). The previous SQL did a lex comparison on
+// this column against user input like `"2026-07-15 00:00:00"`, which
+// silently returned 0 rows because `'1' < '2'` (so `'1784…' < '2026-…'`
+// always evaluated true, excluding every row).
+//
+// The fix: filter on `created_iso`, a STORED generated column produced
+// by `datetime(created_at / 1000000, 'unixepoch')` at
+// write time. These tests verify both halves of the fix:
+//   1. ISO date strings actually filter rows (no longer silently 0).
+//   2. Lex-correct ordering of the generated column preserves
+//      chronological filter semantics.
+// ────────────────────────────────────────────────────────────────────────
+
+test "getCompactedMessages: filters by since using ISO date string (regression)" {
+    var s = try setupDb();
+    defer teardownDb(&s);
+    const alloc = testing.allocator;
+
+    // Two compacted messages at known microsecond timestamps. They
+    // compare against `is_feed_to_llm=0` so they pass the default filter.
+    const old_micros: []const u8 = "1780000000000000";
+    const new_micros: []const u8 = "1785000000000000";
+    try seedMessage(alloc, &s.db, "h_old", "sess_1", "user", "old", 0, old_micros);
+    try seedMessage(alloc, &s.db, "h_new", "sess_1", "user", "new", 0, new_micros);
+
+    // Compute the ISO for `new_micros` using the SAME expression the
+    // migration uses — that's what `created_iso` will contain.
+    var iso_q = try s.db.queryRow(alloc,
+        "SELECT datetime(? / 1000000, 'unixepoch')",
+        &.{new_micros});
+    defer iso_q.deinit(alloc);
+    const new_iso = iso_q.values[0];
+
+    const results = try llm_history.getCompactedMessages(alloc, &s.db, "sess_1", .{
+        .since = new_iso,
+    });
+    defer {
+        for (results) |m| {
+            var copy = m;
+            copy.deinit(alloc);
+        }
+        alloc.free(results);
+    }
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqualStrings("h_new", results[0].id);
+    try testing.expectEqual(@as(u32, 1), results[0].total_count);
+}
+
+test "getCompactedMessages: filters by until using ISO date string (regression)" {
+    var s = try setupDb();
+    defer teardownDb(&s);
+    const alloc = testing.allocator;
+
+    const old_micros: []const u8 = "1780000000000000";
+    const new_micros: []const u8 = "1785000000000000";
+    try seedMessage(alloc, &s.db, "h_old", "sess_1", "user", "old", 0, old_micros);
+    try seedMessage(alloc, &s.db, "h_new", "sess_1", "user", "new", 0, new_micros);
+
+    var iso_q = try s.db.queryRow(alloc,
+        "SELECT datetime(? / 1000000, 'unixepoch')",
+        &.{old_micros});
+    defer iso_q.deinit(alloc);
+    const old_iso = iso_q.values[0];
+
+    const results = try llm_history.getCompactedMessages(alloc, &s.db, "sess_1", .{
+        .until = old_iso,
+    });
+    defer {
+        for (results) |m| {
+            var copy = m;
+            copy.deinit(alloc);
+        }
+        alloc.free(results);
+    }
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqualStrings("h_old", results[0].id);
+}
+
+test "getCompactedMessages: since AND until together produce a date range (regression)" {
+    var s = try setupDb();
+    defer teardownDb(&s);
+    const alloc = testing.allocator;
+
+    const old_micros: []const u8 = "1780000000000000";
+    const mid_micros: []const u8 = "1783000000000000";
+    const new_micros: []const u8 = "1785000000000000";
+    try seedMessage(alloc, &s.db, "h_old", "sess_1", "user", "old", 0, old_micros);
+    try seedMessage(alloc, &s.db, "h_mid", "sess_1", "user", "mid", 0, mid_micros);
+    try seedMessage(alloc, &s.db, "h_new", "sess_1", "user", "new", 0, new_micros);
+
+    var iso_q = try s.db.queryRow(alloc,
+        \\SELECT datetime(? / 1000000, 'unixepoch') AS since_iso,
+        \\       datetime(? / 1000000, 'unixepoch') AS until_iso
+    , &.{ mid_micros, new_micros });
+    defer iso_q.deinit(alloc);
+    const since_iso = iso_q.values[0];
+    const until_iso = iso_q.values[1];
+
+    const results = try llm_history.getCompactedMessages(alloc, &s.db, "sess_1", .{
+        .since = since_iso,
+        .until = until_iso,
+    });
+    defer {
+        for (results) |m| {
+            var copy = m;
+            copy.deinit(alloc);
+        }
+        alloc.free(results);
+    }
+    // Expect 2: h_mid + h_new (inclusive window). h_old should be excluded.
+    try testing.expectEqual(@as(usize, 2), results.len);
+    var found_old = false;
+    for (results) |m| {
+        if (std.mem.eql(u8, m.id, "h_old")) found_old = true;
+    }
+    try testing.expect(!found_old);
 }

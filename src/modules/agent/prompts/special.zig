@@ -114,12 +114,13 @@ pub const CompactionAgent =
     \\━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     \\HOW THE NEXT AGENT WILL USE THIS OUTPUT
     \\━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    \\The next agent has a `read_compacted_messages` tool that can fetch the
-    \\full content of any dropped message by id. The handoff you're writing
-    \\will live inside a <compact_messages> envelope that includes a
-    \\<message_index> listing every dropped message with its id, role, and a
-    \\short preview. The next agent can use that index to re-read the original
-    \\messages on demand.
+    \\The next agent has a `search_history` tool that can fetch the full
+    \\content of any dropped message by id (mode="session", message_ids="h_...")
+    \\or run an FTS5 search across all stored messages (mode="text", query="...").
+    \\The handoff you're writing will live inside a <compact_messages> envelope
+    \\that includes a <message_index> listing every dropped message with its id,
+    \\role, and a short preview. The next agent can use that index to re-read
+    \\the original messages on demand.
     \\
     \\Implications for your output:
     \\- You do NOT need to paste full tool outputs, file contents, or long

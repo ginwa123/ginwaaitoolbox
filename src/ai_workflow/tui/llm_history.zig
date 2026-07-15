@@ -1027,6 +1027,16 @@ pub fn saveMessage(
     const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(created_at);
 
+    // Compute `created_iso` (the localtime-formatted ISO string for
+    // the `since`/`until` filter columns) IN APPLICATION CODE rather than
+    // via SQLite triggers. See Migration 059 header for why.
+    //
+    // We parse the microsecond string (which we just allocated as
+    // `created_at`) and pass it through `microsecondsToIsoLocal`.
+    const created_at_us: u64 = std.fmt.parseInt(u64, created_at, 10) catch 0;
+    const created_iso = try helpers.microsecondsToIsoLocal(allocator, created_at_us);
+    defer allocator.free(created_iso);
+
     const contentStr = input.content orelse "";
     const finishReasonStr = input.finish_reason orelse "null";
     const roleStr = input.role orelse "assistant";
@@ -1062,6 +1072,7 @@ pub fn saveMessage(
         \\    temperature,
         \\    is_thinking,
         \\    created_at,
+        \\    created_iso,
         \\    parent_session_id,
         \\    parent_id,
         \\    prompt_tokens,
@@ -1076,7 +1087,7 @@ pub fn saveMessage(
         \\) VALUES (
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        \\    ?, ?, ?, ?, ?, ?
+        \\    ?, ?, ?, ?, ?, ?, ?
         \\)
     ;
 
@@ -1140,7 +1151,7 @@ pub fn saveMessage(
     }
     defer if (copy_image_urls) |c| allocator.free(c);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
 
     try db.exec(allocator, sql, sqlArgs);
 
@@ -1252,7 +1263,7 @@ pub fn getMessages(
 /// Options for filtering `getCompactedMessages`.
 pub const CompactedMessagesOptions = struct {
     /// When non-null, only return messages whose id is in this list.
-    /// Used by `read_compacted_messages(message_ids=[...])`.
+    /// Used by `search_history` (mode="session", message_ids=[...]).
     message_ids: ?[]const []const u8 = null,
     /// When non-null, only return messages with `role` matching this value
     /// (e.g. "user", "assistant", "tool").
@@ -1262,13 +1273,37 @@ pub const CompactedMessagesOptions = struct {
     /// When non-null, only return messages with `created_at <= until`.
     until: ?[]const u8 = null,
     /// Max number of rows to return. Defaults to 100 for safety — the
-    /// caller can request up to 1000 explicitly. The read_compacted_messages
+    /// caller can request up to 1000 explicitly. The `search_history`
     /// tool wraps this in its own user-facing limit parameter.
     limit: ?u32 = 100,
+    /// When `true`, include ALL messages for the session regardless of
+    /// `is_feed_to_llm` (live + compacted). When `false` (default),
+    /// restrict to `is_feed_to_llm = 0` (compacted only) — the original
+    /// semantic, preserved for compaction-test callers.
+    ///
+    /// Used by `search_history mode="session"` to return the full
+    /// conversation history. The LLM may want to re-read messages
+    /// still in its live context (e.g. "show me what I said earlier
+    /// today"), not just compacted ones.
+    include_all: bool = false,
+    /// Sort direction for `created_at`. Default `.asc` (chronological
+    /// forward). `.desc` returns most-recent-first — useful for
+    /// `search_history mode="session"` when the LLM wants to browse
+    /// the tail of a long session.
+    ///
+    /// Pagination with `.desc` works the same way as `.asc`: pass the
+    /// last-seen `created_at` as `since` (or `until` in the desc case)
+    /// and re-query.
+    order: Order = .asc,
+
+    /// Named enum so callers can reference it as
+    /// `llm_history.CompactedMessagesOptions.Order` and use
+    /// `@tagName(...)` to render it as a string for the wire format.
+    pub const Order = enum { asc, desc };
 };
 
 /// Lighter-weight return struct than `TUIHistory` — only the fields the
-/// `read_compacted_messages` tool actually surfaces. Avoids the
+/// `search_history` tool actually surfaces. Avoids the
 /// ~30-field TUIHistory struct, which has columns that don't exist
 /// in a minimal test schema (e.g. `diffview_before`) and would force
 /// every test to seed them.
@@ -1282,6 +1317,11 @@ pub const CompactedMessage = struct {
     model: []const u8,
     agent: []const u8,
     created_at: []const u8,
+    /// Total number of rows that matched the WHERE clause (before LIMIT).
+    /// Surfaced via `COUNT(*) OVER ()` so it's computed in the same query.
+    /// Every row in the result carries the same value — the LLM uses it
+    /// to know whether more pages exist without re-querying.
+    total_count: u32,
 
     pub fn deinit(self: *const CompactedMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -1296,18 +1336,83 @@ pub const CompactedMessage = struct {
     }
 };
 
-/// Return messages marked `is_feed_to_llm = 0` for the given session.
-/// This is the inverse of `getMessages` (line 1076): where `getMessages`
-/// returns the messages the LLM sees, `getCompactedMessages` returns
-/// the messages the LLM does NOT see (the ones dropped by compaction).
+/// Options for `searchMessagesFts`. Mirrors the shape of
+/// `CompactedMessagesOptions` so callers can build either kind of query
+/// with a consistent input.
+pub const SearchOptions = struct {
+    /// When non-null, only return hits whose `llm_history.session_id` equals this.
+    /// Useful for "search within this conversation only".
+    session_id: ?[]const u8 = null,
+    /// When non-null, exact-match filter on `llm_history.role` ("user", "assistant", "tool").
+    role: ?[]const u8 = null,
+    /// When non-null, lower bound on `created_at` (inclusive, lex-sort = chrono-sort).
+    since: ?[]const u8 = null,
+    /// When non-null, upper bound on `created_at` (inclusive).
+    until: ?[]const u8 = null,
+    /// Max rows to return. Defaults to 20 for safety; the caller can
+    /// request up to 200 (the tool layer caps there). The FTS ranking
+    /// does the rest of the filtering.
+    limit: ?u32 = 20,
+    /// Skip the first N results. Used by `search_history mode="text"`
+    /// to walk forward through FTS results that exceed `limit`. Combined
+    /// with `total_count` on the result, the LLM can paginate until
+    /// `offset + hits.len >= total_count`.
+    offset: ?u32 = null,
+};
+
+/// One FTS hit. Mirrors `CompactedMessage` but adds `snippet` (the
+/// FTS5-generated preview with `[match]` markers around matched tokens).
+pub const SearchHit = struct {
+    id: []const u8,
+    session_id: []const u8,
+    role: []const u8,
+    snippet: []const u8,
+    tool_call_id: ?[]const u8,
+    tool_name: ?[]const u8,
+    created_at: []const u8,
+    /// Total number of rows that matched the WHERE clause (before LIMIT
+    /// and OFFSET). Surfaced via `COUNT(*) OVER ()` so it's computed in
+    /// the same query. Every row in the result carries the same value.
+    /// Used by the LLM to decide whether to paginate further.
+    total_count: u32,
+
+    pub fn deinit(self: *const SearchHit, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.session_id);
+        allocator.free(self.role);
+        allocator.free(self.snippet);
+        allocator.free(self.created_at);
+        if (self.tool_call_id) |t| allocator.free(t);
+        if (self.tool_name) |t| allocator.free(t);
+    }
+};
+
+/// Return messages for the given session.
 ///
-/// Filter semantics:
+/// Default behavior (when `opts.include_all == false`): returns ONLY
+/// messages marked `is_feed_to_llm = 0` — the ones dropped from the
+/// live LLM context by compaction. This is the inverse of `getMessages`
+/// (line 1076).
+///
+/// With `opts.include_all == true`: returns ALL messages for the
+/// session regardless of `is_feed_to_llm`. Used by `search_history`
+/// `mode="session"` to browse the full conversation history.
+///
+/// Filter semantics (identical regardless of `include_all`):
 /// - `message_ids`: when non-null, IN-clause filter (skipped if empty).
 /// - `role`: exact match on `llm_history.role`.
 /// - `since` / `until`: lexicographic comparison on the
-///   `created_at` string (which is in `YYYY-MM-DD HH:MM:SS` format from
-///   `datetime('now')`, so lex-sort = chrono-sort). Matches the
-///   existing cursor convention in `getSessionListWithCursor`.
+///   `created_iso` string (which is a regular TEXT column populated by
+///   INSERT/UPDATE triggers installed by Migration 059 — they compute
+///   `datetime(CAST(created_at AS REAL) / 1000000, 'unixepoch',
+///   'localtime')` — in `YYYY-MM-DD HH:MM:SS` format, so
+///   lex-sort = chrono-sort). NOTE: we filter on `created_iso`, NOT
+///   `created_at`, because `created_at` stores Unix microseconds as a
+///   TEXT string (e.g. `"1784119389936251112"`) and lex-comparing that
+///   against a user-supplied date string like `"2026-07-15 00:00:00"`
+///   silently returns 0 rows (since `'1' < '2'`). The column is
+///   indexable so the filter is O(log n). See
+///   `docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md`.
 /// - `limit`: clamps the row count (defaults to 100).
 ///
 /// Returned slice's elements are heap-allocated via `allocator.dupe`;
@@ -1322,7 +1427,10 @@ pub fn getCompactedMessages(
     const effective_limit = opts.limit orelse 100;
 
     // Build the WHERE clause incrementally. Each filter appends
-    // AND <clause> to the base `h.session_id = ? AND h.is_feed_to_llm = 0`.
+    // AND <clause> to the base `h.session_id = ?`.
+    // `is_feed_to_llm = 0` is appended UNLESS `opts.include_all` is set;
+    // `search_history` mode="session" passes include_all=true to browse
+    // the full conversation history.
     var sql: std.ArrayList(u8) = .empty;
     defer sql.deinit(allocator);
     try sql.appendSlice(allocator,
@@ -1331,11 +1439,15 @@ pub fn getCompactedMessages(
         \\    COALESCE(h.response_content, ''),
         \\    h.tool_call_id, h.tool_name,
         \\    COALESCE(h.model, ''), COALESCE(h.agent, ''),
-        \\    COALESCE(h.created_at, '')
+        \\    COALESCE(h.created_at, ''),
+        \\    COUNT(*) OVER () AS total
         \\FROM llm_history h
         \\WHERE h.session_id = ?
-        \\  AND h.is_feed_to_llm = 0
     );
+
+    if (!opts.include_all) {
+        try sql.appendSlice(allocator, " AND h.is_feed_to_llm = 0");
+    }
 
     var bind_values: std.ArrayList([]const u8) = .empty;
     defer bind_values.deinit(allocator);
@@ -1359,16 +1471,16 @@ pub fn getCompactedMessages(
     }
 
     if (opts.since) |s| {
-        try sql.appendSlice(allocator, " AND h.created_at >= ?");
+        try sql.appendSlice(allocator, " AND h.created_iso >= ?");
         try bind_values.append(allocator, s);
     }
 
     if (opts.until) |u| {
-        try sql.appendSlice(allocator, " AND h.created_at <= ?");
+        try sql.appendSlice(allocator, " AND h.created_iso <= ?");
         try bind_values.append(allocator, u);
     }
 
-    try sql.appendSlice(allocator, " ORDER BY h.created_at ASC");
+    try sql.print(allocator, " ORDER BY h.created_at {s}", .{@tagName(opts.order)});
 
     // Bind the limit at the end. Format inline since we know it's u32.
     try sql.print(allocator, " LIMIT {d}", .{effective_limit});
@@ -1387,6 +1499,10 @@ pub fn getCompactedMessages(
 
     while (try rows.next()) |row| {
         defer row.deinit(allocator);
+        // `total` is column index 9 (COUNT(*) OVER ()) — computed before
+        // LIMIT/OFFSET so it represents the total count of rows that
+        // matched the WHERE clause, not the returned page size.
+        const total_count: u32 = std.fmt.parseInt(u32, row.values[9], 10) catch 0;
         const msg = CompactedMessage{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -1397,8 +1513,121 @@ pub fn getCompactedMessages(
             .model = try allocator.dupe(u8, row.values[6]),
             .agent = try allocator.dupe(u8, row.values[7]),
             .created_at = try allocator.dupe(u8, row.values[8]),
+            .total_count = total_count,
         };
         try results.append(allocator, msg);
+    }
+
+    return try results.toOwnedSlice(allocator);
+}
+
+/// Full-text search over `llm_history.response_content` using SQLite FTS5.
+///
+/// Joins the `messages_fts` virtual table to `llm_history` and returns
+/// ranked hits with a 10-token snippet around each match. Ranking is
+/// FTS5's default BM25.
+///
+/// Filter semantics mirror `getCompactedMessages`:
+/// - `session_id`: exact match on `llm_history.session_id`
+/// - `role`: exact match on `llm_history.role`
+/// - `since`/`until`: lex-sort = chrono-sort on `created_at`
+/// - `limit`: clamps the row count (defaults to 20)
+///
+/// Caller owns the returned slice. Free with `hit[i].deinit(allocator)`
+/// for each hit and `allocator.free(hits)` for the outer slice.
+pub fn searchMessagesFts(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    query: []const u8,
+    opts: SearchOptions,
+) ![]SearchHit {
+    const effective_limit = opts.limit orelse 20;
+
+    var sql: std.ArrayList(u8) = .empty;
+    defer sql.deinit(allocator);
+    // Wrap FTS5 access in a subquery so the COUNT(*) OVER () window
+    // function runs over the regular subquery result, not directly over
+    // the FTS5 virtual table. FTS5 virtual tables have restrictions on
+    // what SQL features they accept (notably window functions), but the
+    // outer query works fine.
+    try sql.appendSlice(allocator,
+        \\SELECT
+        \\    id, session_id, role, snippet, tool_call_id, tool_name, created_at,
+        \\    COUNT(*) OVER () AS total
+        \\FROM (
+        \\    SELECT
+        \\        h.id AS id, h.session_id AS session_id,
+        \\        COALESCE(h.role, 'assistant') AS role,
+        \\        snippet(messages_fts, 0, '[', ']', '...', 10) AS snippet,
+        \\        h.tool_call_id AS tool_call_id,
+        \\        h.tool_name AS tool_name,
+        \\        COALESCE(h.created_at, '') AS created_at,
+        \\        rank AS fts_rank
+        \\    FROM messages_fts
+        \\    JOIN llm_history h ON h.rowid = messages_fts.rowid
+        \\    WHERE messages_fts MATCH ?
+    );
+
+    var bind_values: std.ArrayList([]const u8) = .empty;
+    defer bind_values.deinit(allocator);
+    try bind_values.append(allocator, query);
+
+    if (opts.session_id) |sid| {
+        try sql.appendSlice(allocator, " AND h.session_id = ?");
+        try bind_values.append(allocator, sid);
+    }
+
+    if (opts.role) |r| {
+        try sql.appendSlice(allocator, " AND h.role = ?");
+        try bind_values.append(allocator, r);
+    }
+
+    if (opts.since) |s| {
+        try sql.appendSlice(allocator, " AND h.created_iso >= ?");
+        try bind_values.append(allocator, s);
+    }
+
+    if (opts.until) |u| {
+        try sql.appendSlice(allocator, " AND h.created_iso <= ?");
+        try bind_values.append(allocator, u);
+    }
+
+    // Close the subquery, then ORDER BY the aliased rank column from inside it.
+    try sql.appendSlice(allocator, ") AS hits ORDER BY fts_rank");
+    try sql.print(allocator, " LIMIT {d}", .{effective_limit});
+    if ((opts.offset orelse 0) > 0) {
+        try sql.print(allocator, " OFFSET {d}", .{opts.offset.?});
+    }
+
+    var rows = try db.query(allocator, sql.items, bind_values.items);
+    defer rows.deinit();
+
+    var results: std.ArrayList(SearchHit) = .empty;
+    errdefer {
+        for (results.items) |h| {
+            var copy = h;
+            copy.deinit(allocator);
+        }
+        results.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        defer row.deinit(allocator);
+        // `total` is column index 7 (COUNT(*) OVER ()) — computed
+        // before LIMIT/OFFSET so it represents the total count of rows
+        // that matched the WHERE clause, not the returned page size.
+        const total_count: u32 = std.fmt.parseInt(u32, row.values[7], 10) catch 0;
+        const hit = SearchHit{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .session_id = try allocator.dupe(u8, row.values[1]),
+            .role = try allocator.dupe(u8, row.values[2]),
+            .snippet = try allocator.dupe(u8, row.values[3]),
+            .tool_call_id = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .tool_name = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .created_at = try allocator.dupe(u8, row.values[6]),
+            .total_count = total_count,
+        };
+        try results.append(allocator, hit);
     }
 
     return try results.toOwnedSlice(allocator);

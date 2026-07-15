@@ -53,7 +53,11 @@ fn setupDb() !struct {
         \\  tool_name TEXT,
         \\  diffview_before TEXT,
         \\  diffview_after TEXT,
-        \\  image_url TEXT
+        \\  image_url TEXT,
+        \\  -- Mirrors Migration 059 in production: a regular TEXT column
+        \\  -- populated by application code (NOT triggers). Default
+        \\  -- to `datetime('now')` UTC for tests that don't pass it.
+        \\  created_iso TEXT DEFAULT (datetime('now'))
         \\)
     , &.{});
     try db.exec(alloc,
@@ -206,7 +210,7 @@ test "compactMessageInMemoryNew: message_index lists every dropped message with 
     // CURRENT IMPL: the envelope uses synthetic `adhoc_<i>` ids (where `i`
     // is the index into `dropped_messages`, i.e. messages.items[1..]).
     // Real DB primary keys are NOT embedded in the envelope — the full
-    // content is recovered from the DB via `read_compacted_messages` using
+    // content is recovered from the DB via `search_history` using
     // the session_id, not via the embedded id. (See workflow.zig:1144.)
     //
     // The 6-msg fixture drops 5 messages, so the tool-result is at
@@ -222,7 +226,7 @@ test "compactMessageInMemoryNew: tool-role index entries include tool_call_id" {
     // CURRENT IMPL: only `tool_call_id` is surfaced for tool-role entries.
     // `tool_name` is NOT emitted in the envelope (the in-memory AgentMessage
     // struct has no `tool_name` field — that lives on the DB row and can
-    // be recovered via `read_compacted_messages` with session_id). See
+    // be recovered via `search_history` with session_id). See
     // workflow.zig:1163-1172.
     var s = try setupDb();
     defer teardownDb(&s);
@@ -367,7 +371,7 @@ test "buildCompactionEnvelope: content=null yields empty preview (no content_par
     //
     // This is a known limitation: the agent has no signal in the envelope
     // that an image attachment existed. The full content is still
-    // recoverable via `read_compacted_messages` using session_id.
+    // recoverable via `search_history` using session_id.
     var s = try setupDb();
     defer teardownDb(&s);
     const alloc = testing.allocator;
@@ -448,7 +452,7 @@ test "buildCompactionEnvelope: content=null yields empty preview (no content_par
 test "end-to-end: compacted rows are findable via getCompactedMessages after compaction" {
     // CURRENT IMPL: the envelope uses synthetic `adhoc_<i>` ids, NOT the
     // real DB primary keys. So you cannot pull an id out of the envelope
-    // and feed it back — `read_compacted_messages` must be queried with
+    // and feed it back — `search_history` must be queried with
     // the session_id alone (no message_ids filter), and it returns all
     // rows for the session that have is_feed_to_llm=0.
     //

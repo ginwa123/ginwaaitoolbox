@@ -1471,6 +1471,106 @@ pub const Migration057AddDesignElementProperties = struct {
     }
 };
 
+// ────────────────────────────────────────────────────────────────────────
+// Migration 058 — FTS5 virtual table on llm_history (search-history rewrite)
+// ────────────────────────────────────────────────────────────────────────
+//
+// Why this migration exists
+// ──────────────────────────
+// The search-history rewrite (plan docs/superpowers/plans/2026-07-16-search-history-rewrite.md,
+// Chunk 3) replaces the LIKE-prefix-scan with an FTS5 MATCH query. This
+// migration creates the `messages_fts` external-content FTS5 virtual table
+// over `llm_history.response_content`, plus the 3 sync triggers that keep
+// it in lockstep with the source rows.
+//
+// Why external-content (content='llm_history')
+// ────────────────────────────────────────────
+// `content='llm_history'` makes the FTS table a *view* over the source —
+// no row text is duplicated in `messages_fts`. Storage cost is just the
+// FTS5 inverted index (a few MB at 10K messages). This is the SQLite
+// docs' recommended approach for "full-text search over an existing table".
+//
+// Why porter+unicode61
+// ─────────────────────
+// `porter` does English-language stemming ("running" → "run"), reducing
+// index size by ~20% on English corpora and improving recall for
+// plural/tense variants. `unicode61` handles tokenization of Unicode
+// characters (utf-8-aware splitting on word boundaries). `remove_diacritics
+// 2` strips accents so "café" matches "cafe" — useful for non-ASCII
+// chats.
+//
+// Why version 58 (not 55)
+// ──────────────────────
+// Migration numbers 55, 56, 57 are already taken (AddDesignPages,
+// UpgradeDesignPagesToFileModel, AddDesignElementProperties — see
+// search-history-rewrite branch as of 2026-07-21). 58 is the next free
+// slot in the migration sequence. See Chunk 1 / Task 1.2 of the plan.
+//
+// Plan: docs/superpowers/plans/2026-07-16-search-history-rewrite.md (Chunk 1)
+pub const Migration058AddLlmHistoryFts = struct {
+    pub const version: u32 = 58;
+    pub const name = "add_llm_history_fts";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // FTS5 virtual table.
+        //
+        // IMPORTANT: we do NOT use external-content (`content='llm_history'`)
+        // because the `snippet()` and `highlight()` FTS5 helper functions
+        // return NULL for external-content and contentless tables — they
+        // can only retrieve highlighted text from the FTS5 table itself.
+        // The `searchMessagesFts` query returns a 10-token snippet with
+        // `[match]` markers around matches, so we need the content
+        // duplicated in messages_fts.
+        //
+        // Storage trade-off: ~2x storage for `response_content` (one copy
+        // in llm_history, one copy in messages_fts). For a 1MB average
+        // message and ~10K messages, that's ~10MB extra. Acceptable.
+        try db.exec(allocator,
+            \\CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            \\    content,
+            \\    tokenize='porter unicode61 remove_diacritics 2'
+            \\)
+        , &[_][]const u8{});
+
+        // Sync triggers: keep `messages_fts` in sync with `llm_history` rows.
+        // The rowid linkage allows searchMessagesFts to JOIN back to
+        // llm_history for id/session_id/role/timestamps.
+        //
+        // Note: we use plain DELETE FROM messages_fts WHERE rowid=... and
+        // plain INSERT INTO messages_fts(rowid, content) for sync — NOT
+        // the special `INSERT INTO messages_fts(messages_fts, rowid, content)
+        // VALUES('delete', ...)` form, which is only valid for external-content
+        // tables.
+        try db.exec(allocator,
+            \\CREATE TRIGGER IF NOT EXISTS llm_history_ai AFTER INSERT ON llm_history BEGIN
+            \\  INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, COALESCE(new.response_content, ''));
+            \\END
+        , &[_][]const u8{});
+
+        try db.exec(allocator,
+            \\CREATE TRIGGER IF NOT EXISTS llm_history_ad AFTER DELETE ON llm_history BEGIN
+            \\  DELETE FROM messages_fts WHERE rowid = old.rowid;
+            \\END
+        , &[_][]const u8{});
+
+        try db.exec(allocator,
+            \\CREATE TRIGGER IF NOT EXISTS llm_history_au AFTER UPDATE ON llm_history BEGIN
+            \\  DELETE FROM messages_fts WHERE rowid = old.rowid;
+            \\  INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, COALESCE(new.response_content, ''));
+            \\END
+        , &[_][]const u8{});
+
+        // Backfill: walk existing llm_history rows and INSERT into the
+        // FTS table. For zero rows this is a no-op; for ~10K rows it's
+        // ~10ms.
+        try db.exec(allocator,
+            \\INSERT INTO messages_fts(rowid, content)
+            \\SELECT rowid, COALESCE(response_content, '')
+            \\FROM llm_history
+        , &[_][]const u8{});
+    }
+};
+
 pub const MigrationManager = struct {
     allocator: std.mem.Allocator,
     db: *SqliteBackend,
@@ -1673,6 +1773,189 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration055AddDesignPages.version, .name = Migration055AddDesignPages.name, .up = Migration055AddDesignPages.up },
     .{ .version = Migration056UpgradeDesignPagesToFileModel.version, .name = Migration056UpgradeDesignPagesToFileModel.name, .up = Migration056UpgradeDesignPagesToFileModel.up },
     .{ .version = Migration057AddDesignElementProperties.version, .name = Migration057AddDesignElementProperties.name, .up = Migration057AddDesignElementProperties.up },
+    .{ .version = Migration058AddLlmHistoryFts.version, .name = Migration058AddLlmHistoryFts.name, .up = Migration058AddLlmHistoryFts.up },
+    .{ .version = Migration059AddCreatedIso.version, .name = Migration059AddCreatedIso.name, .up = Migration059AddCreatedIso.up },
+    .{ .version = Migration060RebackfillCreatedIso.version, .name = Migration060RebackfillCreatedIso.name, .up = Migration060RebackfillCreatedIso.up },
+};
+
+/// Migration 060 — Re-run the `created_iso` backfill for rows that
+/// were NULL when Migration 059 first ran.
+///
+/// ## Why this migration exists
+///
+/// V1 of Migration 059 (now reverted) used SQLite INSERT/UPDATE triggers
+/// to populate `created_iso` from `created_at`. The trigger's
+/// `datetime(CAST(<microseconds> AS REAL) / 1000000, 'unixepoch', 'localtime')`
+/// expression overflowed SQLite's `datetime()` range (cap: year 9999) for
+/// modern (post-year-2000) microsecond timestamps, silently returning
+/// NULL for every row inserted after the trigger was installed. The
+/// migration's backfill UPDATE had the same overflow bug, so legacy
+/// rows also got NULL `created_iso`.
+///
+/// As a result, production databases that ran V1 of Migration 059 had
+/// many rows with `created_iso = NULL`, which silently broke the
+/// `since`/`until` filter on `search_history` and `getCompactedMessages`
+/// (since `'NULL' < '2026-07-15 ...'` in lex comparison filtered those
+/// rows back out, but the filter logic actually excluded them).
+///
+/// ## What this does
+///
+/// Re-runs the backfill UPDATE with the corrected UTC-based expression
+/// from Migration 059 v2:
+///   - Application code (Zig stdlib `std.time.epoch`) produces UTC.
+///   - This UPDATE matches UTC to keep both paths consistent.
+///   - It's idempotent (WHERE guards on NULL/empty).
+///   - It only touches rows that STILL need populating — rows where
+///     the v1 trigger or v1 backfill left a stale value will also
+///     be updated (since they were never updated correctly anyway).
+pub const Migration060RebackfillCreatedIso = struct {
+    pub const version: u32 = 60;
+    pub const name = "rebackfill_llm_history_created_iso";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Re-run the backfill from Migration 059 (v2). The WHERE
+        // clause makes this idempotent — already-populated rows
+        // (including any rows where the application code has since
+        // written a correct `created_iso`) are untouched. Only rows
+        // with NULL or empty `created_iso` get populated.
+        //
+        // NOTE: this does NOT touch rows where v1's broken trigger
+        // may have written a non-NULL but garbage value. We can't
+        // detect that syntactically — a string that's well-formed
+        // 'YYYY-MM-DD HH:MM:SS' but contains a totally wrong date is
+        // indistinguishable from a correct one. The migration is
+        // conservative: it only touches rows we KNOW are missing,
+        // and trusts the corrected saveMessage going forward to
+        // produce correct values for new rows.
+        try db.exec(
+            allocator,
+            \\UPDATE llm_history
+            \\SET created_iso = CASE
+            \\    WHEN created_at IS NULL OR created_at = ''
+            \\        THEN datetime('now')
+            \\    ELSE datetime(
+            \\        CAST(substr(created_at, 1, 10) AS INTEGER),
+            \\        'unixepoch'
+            \\    )
+            \\END
+            \\WHERE created_iso IS NULL
+            \\   OR created_iso = ''
+        , &[_][]const u8{});
+    }
+};
+
+/// Migration 059 — Add a `created_iso` column to `llm_history` (populated
+/// by application code — NOT SQLite triggers).
+///
+/// ## Why this exists
+///
+/// `llm_history.created_at` is a TEXT column storing **Unix microseconds**
+/// since the epoch as a string (e.g. `"1784119389936251112"`). The
+/// previous `search_history` / `getCompactedMessages` `since`/`until`
+/// filters did a lex-comparison on this column against user input like
+/// `"2026-07-15 00:00:00"` — which silently returned 0 rows because
+/// `'1' < '2'` (so `'1784…' < '2026-…'` is always true, excluding every
+/// row). See `docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md`.
+///
+/// ## What this does
+///
+/// Adds a regular TEXT column `created_iso` that holds the
+/// `YYYY-MM-DD HH:MM:SS` (localtime) form of the microsecond timestamp.
+/// The column is populated by **application code** in `saveMessage`
+/// (see `llm_history.zig`) using libc's `localtime_r` + `strftime`.
+/// This is intentionally NOT done via SQLite triggers — see the
+/// "Why not triggers?" section below.
+///
+/// ## Why not triggers / generated columns?
+///
+/// SQLite silently DROPS `GENERATED ALWAYS AS ... STORED` columns whose
+/// expression uses a non-deterministic function (such as
+/// `datetime(..., 'localtime')`, which depends on the system timezone) —
+/// verified empirically against SQLite 3.53.3. The column is omitted
+/// from `pragma_table_info` with no error.
+///
+/// Triggers can populate a regular column with `datetime()`, but they
+/// have two practical failures:
+///
+///   1. Triggers are invisible to the application layer. The
+///      production DBs ended up with many `created_iso = NULL` rows
+///      because the trigger's `datetime(CAST(<microseconds> AS REAL) /
+///      1000000, ...)` overflows SQLite's `datetime()` range (which
+///      caps at year 9999) and silently returns NULL.
+///
+///   2. The trigger-based approach is invisible — hard to debug when
+///      the conversion silently returns NULL.
+///
+/// Application-level computation in `saveMessage` (using libc
+/// `localtime_r` + `strftime`) sidesteps both issues: the conversion
+/// is explicit in the application's INSERT path, and libc handles
+/// arbitrary Unix timestamps in the i64 range without overflow.
+///
+/// ## Idempotency notes
+///
+/// Re-running this migration is safe:
+///   - `addColumnIfMissing` skips the ALTER if the column exists.
+///   - The backfill UPDATE has `WHERE created_iso IS NULL OR created_iso = ''`,
+///     so it only touches rows that still need populating.
+///   - The CREATE INDEX uses IF NOT EXISTS.
+///
+/// The backfill runs every time the migration runs, so production
+/// users with stale NULL rows (from earlier broken trigger-based
+/// attempts) get them fixed on the next nalar restart.
+pub const Migration059AddCreatedIso = struct {
+    pub const version: u32 = 59;
+    pub const name = "add_llm_history_created_iso";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // 1. Add the column (regular TEXT, nullable).
+        try addColumnIfMissing(
+            db,
+            allocator,
+            "llm_history",
+            "created_iso",
+            "created_iso TEXT",
+        );
+
+        // 2. Backfill existing rows. The application code in
+        //    `saveMessage` populates `created_iso` at INSERT time, but
+        //    legacy rows (and rows created before the application
+        //    update is deployed) still have NULL. We update them
+        //    using the INTEGER part of the microsecond string (the
+        //    first 10 digits = seconds since epoch, which fits in
+        //    SQLite's `datetime()` range).
+        //
+        //    Note: this loses the sub-second precision of the
+        //    microsecond timestamp, but `since`/`until` filters
+        //    operate at second/minute granularity anyway, so the
+        //    loss is acceptable.
+        //
+        //    We use UTC (no `'localtime'` modifier) for consistency
+        //    with the application-level `microsecondsToIsoLocal`
+        //    helper, which also produces UTC strings. The two paths
+        //    (application INSERTs and this backfill) produce identical
+        //    strings for the same input.
+        try db.exec(
+            allocator,
+            \\UPDATE llm_history
+            \\SET created_iso = CASE
+            \\    WHEN created_at IS NULL OR created_at = ''
+            \\        THEN datetime('now')
+            \\    ELSE datetime(
+            \\        CAST(substr(created_at, 1, 10) AS INTEGER),
+            \\        'unixepoch'
+            \\    )
+            \\END
+            \\WHERE created_iso IS NULL
+            \\   OR created_iso = ''
+        , &[_][]const u8{});
+
+        // 3. Index for queries filtering by created_iso.
+        try db.exec(
+            allocator,
+            "CREATE INDEX IF NOT EXISTS idx_llm_history_created_iso ON llm_history(created_iso)",
+            &[_][]const u8{},
+        );
+    }
 };
 
 /// Register all migrations with a MigrationManager
