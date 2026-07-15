@@ -4,6 +4,7 @@ const sqlite = mod.nalarcore.sqlite;
 const testing = std.testing;
 
 pub const QueuedMessage = struct {
+    id: []const u8,
     message: []const u8,
     image_url: []const u8,
 };
@@ -25,6 +26,7 @@ pub fn getQueueMessages(
 
     const select_sql =
         \\SELECT
+        \\    id,
         \\    message,
         \\    image_url
         \\FROM session_queue_messages
@@ -37,6 +39,7 @@ pub fn getQueueMessages(
     var messages = std.ArrayList(QueuedMessage).empty;
     errdefer {
         for (messages.items) |msg| {
+            allocator.free(msg.id);
             allocator.free(msg.message);
             allocator.free(msg.image_url);
         }
@@ -45,9 +48,10 @@ pub fn getQueueMessages(
 
     while (try rows.next()) |row| {
         defer row.deinit(allocator);
-        const msg = try allocator.dupe(u8, row.values[0]);
-        const image_url = try allocator.dupe(u8, row.values[1]);
-        try messages.append(allocator, .{ .message = msg, .image_url = image_url });
+        const id = try allocator.dupe(u8, row.values[0]);
+        const msg = try allocator.dupe(u8, row.values[1]);
+        const image_url = try allocator.dupe(u8, row.values[2]);
+        try messages.append(allocator, .{ .id = id, .message = msg, .image_url = image_url });
     }
 
     if (messages.items.len == 0) {
@@ -123,6 +127,7 @@ test "getQueueMessages returns a single message with both fields populated" {
     var msgs = maybe orelse return error.ExpectedMessages;
     defer {
         for (msgs.items) |m| {
+            testing.allocator.free(m.id);
             testing.allocator.free(m.message);
             testing.allocator.free(m.image_url);
         }
@@ -145,6 +150,7 @@ test "getQueueMessages returns multiple messages in created_at ASC order" {
     var msgs = maybe orelse return error.ExpectedMessages;
     defer {
         for (msgs.items) |m| {
+            testing.allocator.free(m.id);
             testing.allocator.free(m.message);
             testing.allocator.free(m.image_url);
         }
@@ -170,6 +176,7 @@ test "getQueueMessages returns heap-owned slices that survive after the Rows cur
     var msgs = maybe orelse return error.ExpectedMessages;
     defer {
         for (msgs.items) |m| {
+            testing.allocator.free(m.id);
             testing.allocator.free(m.message);
             testing.allocator.free(m.image_url);
         }
@@ -191,6 +198,7 @@ test "getQueueMessages handles empty image_url column" {
     var msgs = maybe orelse return error.ExpectedMessages;
     defer {
         for (msgs.items) |m| {
+            testing.allocator.free(m.id);
             testing.allocator.free(m.message);
             testing.allocator.free(m.image_url);
         }
@@ -210,6 +218,7 @@ test "getQueueMessages filters by session_id (does not leak rows across sessions
     var msgs = maybe orelse return error.ExpectedMessages;
     defer {
         for (msgs.items) |m| {
+            testing.allocator.free(m.id);
             testing.allocator.free(m.message);
             testing.allocator.free(m.image_url);
         }

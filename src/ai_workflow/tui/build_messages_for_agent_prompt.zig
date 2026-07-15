@@ -94,7 +94,7 @@ pub fn buildMessages(
     // and tasks in the same workspace as the current task. Returns `""`
     // when the session is not bound to any workspace_item_task (caller
     // omits the section silently — matches `appendSkillsListing` behavior).
-    const workspaceContext = try BuildWorkspaceContext(allocator, db, session_id);
+    const workspaceContext = try agentic_loop.prompts_mod.makeWorkspaceContext(allocator, db, session_id);
     defer allocator.free(workspaceContext);
 
     // Build the "Kanban Status Tracking" section. Only rendered when

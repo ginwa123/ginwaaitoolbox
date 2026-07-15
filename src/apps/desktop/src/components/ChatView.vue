@@ -1801,7 +1801,7 @@ const connectSse = () => {
         message: event.message,
       })
     } else if (event.action === 'deleted') {
-      queuedMessages.value = queuedMessages.value.filter((m) => m.message !== event.message)
+      queuedMessages.value = queuedMessages.value.filter((m) => m.id !== event.id)
     }
   })
   // Set isStreaming LAST so external observers (tests, UI) can poll

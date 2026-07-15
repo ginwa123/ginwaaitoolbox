@@ -1915,12 +1915,19 @@ export interface SessionEvent {
 }
 
 // Queue messages SSE event types
-export interface QueueMessageEvent {
-  action: 'queued' | 'deleted'
-  id?: string
-  message: string
-  session_id: string
-}
+export type QueueMessageEvent =
+  | {
+      action: 'queued'
+      id: string
+      message: string
+      image_url?: string
+      session_id: string
+    }
+  | {
+      action: 'deleted'
+      id: string
+      session_id: string
+    }
 
 // GET queued messages
 export interface QueuedMessage {

@@ -76,3 +76,6 @@ pub const parsing_mod = @import("parsing.zig");
 
 pub const tools = @import("tools.zig");
 
+
+pub const prompts_mod = @import("prompts.zig");
+
