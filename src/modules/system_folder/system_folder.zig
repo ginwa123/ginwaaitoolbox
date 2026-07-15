@@ -144,6 +144,8 @@ pub const SystemFolder = struct {
                 const git_result = std.process.run(allocator, io, .{
                     .argv = &.{ "git", "-C", dir_path, "check-ignore", name },
                 }) catch continue;
+                defer allocator.free(git_result.stdout);
+                defer allocator.free(git_result.stderr);
                 if (git_result.term.exited == 0) {
                     // Path is gitignored, skip it
                     allocator.free(entry_name);
