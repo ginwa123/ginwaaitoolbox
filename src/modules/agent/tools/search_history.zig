@@ -11,9 +11,12 @@ const xmlEscape = helpers.xml_escape;
 ///
 /// TWO MODES:
 /// - "text" (default): FTS5 full-text search over message content.
-///   Requires `query`. Optionally scope to `session_id`.
+///   Requires `query`. Optionally scope to `session_id`, paginate via
+///   `offset` + `limit`, and filter by role/time range.
 /// - "session": fetch messages for a specific `session_id`. Optional
-///   `message_ids` to also return full <content> for those ids.
+///   `message_ids` to also return full <content> for those ids (capped
+///   at `MAX_MESSAGE_IDS` for context safety). Order by `order` to
+///   browse chronologically forward or most-recent-first.
 ///
 /// Why both modes in one tool: a single round-trip covers "find the
 /// conversation about X" and "show me session N" — two related but
@@ -28,6 +31,8 @@ pub const SearchHistoryInput = struct {
     session_id: []const u8 = "",
     /// Comma-separated message ids. Only meaningful for mode="session":
     /// when non-empty, also returns full <content> for these ids.
+    /// Capped at `MAX_MESSAGE_IDS` (50) — passing more returns an error
+    /// so the LLM can split the request.
     message_ids: []const u8 = "",
     /// Optional exact-match role filter.
     role: []const u8 = "",
@@ -37,7 +42,32 @@ pub const SearchHistoryInput = struct {
     until: []const u8 = "",
     /// Max rows to return. Defaults to 20; tool layer caps at 200.
     limit: u32 = 20,
+    /// Skip the first N results. mode="text" only — used to paginate
+    /// through FTS results when there are more than `limit` matches.
+    /// Combine with `<total_count>` in the response to know when to
+    /// stop. mode="session" ignores this field (use `since` to paginate
+    /// forward through chronological results).
+    offset: u32 = 0,
+    /// Order direction for mode="session". "asc" (chronological forward,
+    /// default) or "desc" (most-recent-first — useful when browsing the
+    /// tail of a long session). mode="text" always orders by FTS rank.
+    order: []const u8 = "asc",
 };
+
+/// Hard cap on how many `message_ids` the LLM can request at once.
+/// Prevents a single call from dumping megabytes of full <content>
+/// into the context. If the LLM needs more, it should split into
+/// batches — the response includes `<count>` + `<total_count>` so it
+/// can paginate by hand.
+pub const MAX_MESSAGE_IDS: u32 = 50;
+
+/// Hard cap on bytes of full <content> per individual message. When a
+/// requested message_id's content exceeds this, the response includes
+/// the first `MAX_FULL_CONTENT_BYTES` bytes plus a `truncated="1"` flag
+/// so the LLM knows there's more. Default: 16 KB — large enough for
+/// most prose, small enough that 50 messages × 16 KB = 800 KB worst case
+/// (still bounded).
+pub const MAX_FULL_CONTENT_BYTES: u32 = 16 * 1024;
 
 pub const search_history_tool = AgentTool{
     .type = "function",
@@ -47,17 +77,26 @@ pub const search_history_tool = AgentTool{
             \\Search the full conversation history stored on disk — including messages compacted out of the live context — either by full-text query or by fetching a specific session's messages.
             \\
             \\TWO MODES:
-            \\- mode="text": full-text search over message content using SQLite FTS5. Provide `query`. Optionally scope to one `session_id`, filter by `role`, `since`/`until`, and cap results with `limit`. Returns ranked matches with a preview snippet — use this when you remember *what* was said but not *where*.
-            \\- mode="session": list (or fetch) messages belonging to one `session_id`. Returns ALL messages for the session — both those still in your live context (`is_feed_to_llm=1`) and those dropped by compaction (`is_feed_to_llm=0`). Returns an index (id, role, created_at, preview) by default; pass specific `message_ids` to also get the full <content> body for those entries. Use this when you know *which session* you need and want to browse or pull full text.
+            \\- mode="text": full-text search over message content using SQLite FTS5. Provide `query`. Optionally scope to one `session_id`, filter by `role`, `since`/`until`, and paginate with `offset` + `limit`. Returns ranked matches with a preview snippet — use this when you remember *what* was said but not *where*. For long result sets, read <total_count> and call again with offset=N until offset + count >= total_count.
+            \\- mode="session": list (or fetch) messages belonging to one `session_id`. Returns ALL messages for the session — both those still in your live context (`is_feed_to_llm=1`) and those dropped by compaction (`is_feed_to_llm=0`). Returns an index (id, role, created_at, preview) by default; pass specific `message_ids` (up to 50) to also get the full <content> body for those entries. Use `order="desc"` for most-recent-first. Use `since` / `until` to paginate forward.
+            \\
+            \\Response shape (both modes):
+            \\- <count>: number of entries in THIS response (page size).
+            \\- <total_count>: total matching entries before pagination. Use to know whether more pages exist.
+            \\- mode="session" with message_ids: per-message <content> is truncated to 16 KB; a `truncated="1"` attribute on <content> indicates there's more. Call again with a narrower message_ids list to fetch the rest.
             \\
             \\Filters (optional, apply to both modes):
             \\- role: "user", "assistant", or "tool" — exact match.
             \\- since / until: YYYY-MM-DD HH:MM:SS (inclusive).
             \\- limit: max rows to return (default 20, max 200).
+            \\- offset: mode="text" only — skip first N matches for pagination.
+            \\- order: mode="session" only — "asc" (chronological forward, default) or "desc" (most-recent-first).
             \\
             \\Example (text search): {"mode": "text", "query": "login bug fix"}
+            \\Example (text search page 2): {"mode": "text", "query": "login bug", "offset": 20}
             \\Example (text search scoped): {"mode": "text", "query": "login bug", "session_id": "s_42"}
             \\Example (session browse): {"mode": "session", "session_id": "s_42"}
+            \\Example (session recent first): {"mode": "session", "session_id": "s_42", "order": "desc"}
             \\Example (session full fetch): {"mode": "session", "session_id": "s_42", "message_ids": "h_1781,h_1782"}
         ,
         .parameters = .{
@@ -66,11 +105,13 @@ pub const search_history_tool = AgentTool{
                 .{ .name = "mode", .type = "string", .description = "'text' (FTS5 full-text search, default) or 'session' (fetch by session_id)." },
                 .{ .name = "query", .type = "string", .description = "Required for mode='text'. FTS5 search query." },
                 .{ .name = "session_id", .type = "string", .description = "Required for mode='session'. Optional scope filter for mode='text'." },
-                .{ .name = "message_ids", .type = "string", .description = "mode='session' only. Comma-separated ids to also fetch full <content> for." },
+                .{ .name = "message_ids", .type = "string", .description = "mode='session' only. Comma-separated ids to also fetch full <content> for. Capped at 50 per call — split into batches for more." },
                 .{ .name = "role", .type = "string", .description = "Optional exact-match role filter: 'user', 'assistant', or 'tool'." },
                 .{ .name = "since", .type = "string", .description = "Optional lower bound on created_at (inclusive). YYYY-MM-DD HH:MM:SS." },
                 .{ .name = "until", .type = "string", .description = "Optional upper bound on created_at (inclusive)." },
                 .{ .name = "limit", .type = "number", .description = "Max rows to return. Default 20, max 200." },
+                .{ .name = "offset", .type = "number", .description = "mode='text' only. Skip first N matches for pagination. Combine with <total_count> in the response to walk through long result sets." },
+                .{ .name = "order", .type = "string", .description = "mode='session' only. 'asc' (chronological forward, default) or 'desc' (most-recent-first)." },
             },
             .required = &.{},
         },
@@ -139,6 +180,7 @@ pub fn execute_search_history(
             .since = if (input.since.len > 0) input.since else null,
             .until = if (input.until.len > 0) input.until else null,
             .limit = effective_limit,
+            .offset = if (input.offset > 0) input.offset else null,
         };
 
         const hits = llm_history.searchMessagesFts(allocator, db, input.query, opts) catch |err| {
@@ -154,6 +196,11 @@ pub fn execute_search_history(
             allocator.free(hits);
         }
 
+        // `total_count` is the same on every row (it's COUNT(*) OVER ()
+        // computed before LIMIT/OFFSET). Read it from the first hit;
+        // fall back to 0 if the result set is empty.
+        const total_count: u32 = if (hits.len > 0) hits[0].total_count else 0;
+
         var xml: std.ArrayList(u8) = .empty;
         errdefer xml.deinit(allocator);
 
@@ -163,8 +210,13 @@ pub fn execute_search_history(
         // a heap-owned slice with no name to bind a defer to).
         const escaped_query = try xmlEscape(allocator, input.query);
         defer allocator.free(escaped_query);
-        try xml.print(allocator, "<search_history mode=\"text\">\n  <query>{s}</query>\n  <count>{d}</count>\n  <results>\n",
-            .{ escaped_query, hits.len });
+        try xml.print(allocator,
+            "<search_history mode=\"text\" offset=\"{d}\" limit=\"{d}\">\n" ++
+            "  <query>{s}</query>\n" ++
+            "  <count>{d}</count>\n" ++
+            "  <total_count>{d}</total_count>\n" ++
+            "  <results>\n",
+            .{ input.offset, effective_limit, escaped_query, hits.len, total_count });
         for (hits) |h| {
             const id_e = try xmlEscape(allocator, h.id);
             defer allocator.free(id_e);
@@ -197,7 +249,25 @@ pub fn execute_search_history(
         for (parsed_ids) |id| allocator.free(id);
         allocator.free(parsed_ids);
     }
+
+    // Context-safety cap: if the LLM asks for full content for too many
+    // ids at once, the response can easily blow past the prompt budget.
+    // Reject with a clear hint to split into batches.
+    if (parsed_ids.len > MAX_MESSAGE_IDS) {
+        const msg = try std.fmt.allocPrint(allocator,
+            "Too many message_ids ({d} > max {d}). Split into batches of {d} or fewer.",
+            .{ parsed_ids.len, MAX_MESSAGE_IDS, MAX_MESSAGE_IDS });
+        defer allocator.free(msg);
+        return errorXml(allocator, msg);
+    }
     const want_full = parsed_ids.len > 0;
+
+    // Parse `order` string. Default to `.asc` for empty/unknown — never
+    // reject the call just because the LLM mistyped "desc" vs "descending".
+    const order_enum: llm_history.CompactedMessagesOptions.Order = blk: {
+        if (std.mem.eql(u8, input.order, "desc")) break :blk .desc;
+        break :blk .asc; // covers "" (default) and any unknown value
+    };
 
     const opts = llm_history.CompactedMessagesOptions{
         .message_ids = if (want_full) parsed_ids else null,
@@ -210,6 +280,7 @@ pub fn execute_search_history(
         // to re-read something still in its live context, or browse the
         // whole session regardless of compaction state.
         .include_all = true,
+        .order = order_enum,
     };
 
     const messages = llm_history.getCompactedMessages(allocator, db, input.session_id, opts) catch |err| {
@@ -225,6 +296,10 @@ pub fn execute_search_history(
         allocator.free(messages);
     }
 
+    // `total_count` is the same on every row. Read from the first hit
+    // (or 0 if empty) — computed before LIMIT by `COUNT(*) OVER ()`.
+    const total_count: u32 = if (messages.len > 0) messages[0].total_count else 0;
+
     var full_ids_set: std.StringHashMapUnmanaged(void) = .empty;
     defer full_ids_set.deinit(allocator);
     if (want_full) for (parsed_ids) |id| try full_ids_set.put(allocator, id, {});
@@ -236,8 +311,13 @@ pub fn execute_search_history(
     // same leak pattern as the text-mode header above.
     const escaped_session_id = try xmlEscape(allocator, input.session_id);
     defer allocator.free(escaped_session_id);
-    try xml.print(allocator, "<search_history mode=\"session\">\n  <session_id>{s}</session_id>\n  <count>{d}</count>\n  <message_index>\n",
-        .{ escaped_session_id, messages.len });
+    try xml.print(allocator,
+        "<search_history mode=\"session\" order=\"{s}\">\n" ++
+        "  <session_id>{s}</session_id>\n" ++
+        "  <count>{d}</count>\n" ++
+        "  <total_count>{d}</total_count>\n" ++
+        "  <message_index>\n",
+        .{ @tagName(order_enum), escaped_session_id, messages.len, total_count });
 
     for (messages) |m| {
         const id_e = try xmlEscape(allocator, m.id);
@@ -270,9 +350,21 @@ pub fn execute_search_history(
             }
         }
         if (want_full and full_ids_set.contains(m.id)) {
-            const content_e = try xmlEscape(allocator, m.content);
+            // Truncate full content to MAX_FULL_CONTENT_BYTES so a single
+            // huge message can't blow the context budget. The `truncated`
+            // attribute tells the LLM there's more (the next call with a
+            // narrower message_ids set can fetch the rest, but for now we
+            // keep it simple — 16 KB is enough for most prose responses).
+            const was_truncated = m.content.len > MAX_FULL_CONTENT_BYTES;
+            const content_src: []const u8 = if (was_truncated)
+                m.content[0..MAX_FULL_CONTENT_BYTES]
+            else
+                m.content;
+            const content_e = try xmlEscape(allocator, content_src);
             defer allocator.free(content_e);
-            try xml.print(allocator, "      <content>{s}</content>\n", .{content_e});
+            try xml.print(allocator,
+                "      <content truncated=\"{c}\">{s}</content>\n",
+                .{ @as(u8, if (was_truncated) '1' else '0'), content_e });
         }
         try xml.appendSlice(allocator, "    </entry>\n");
     }

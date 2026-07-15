@@ -1275,6 +1275,20 @@ pub const CompactedMessagesOptions = struct {
     /// still in its live context (e.g. "show me what I said earlier
     /// today"), not just compacted ones.
     include_all: bool = false,
+    /// Sort direction for `created_at`. Default `.asc` (chronological
+    /// forward). `.desc` returns most-recent-first — useful for
+    /// `search_history mode="session"` when the LLM wants to browse
+    /// the tail of a long session.
+    ///
+    /// Pagination with `.desc` works the same way as `.asc`: pass the
+    /// last-seen `created_at` as `since` (or `until` in the desc case)
+    /// and re-query.
+    order: Order = .asc,
+
+    /// Named enum so callers can reference it as
+    /// `llm_history.CompactedMessagesOptions.Order` and use
+    /// `@tagName(...)` to render it as a string for the wire format.
+    pub const Order = enum { asc, desc };
 };
 
 /// Lighter-weight return struct than `TUIHistory` — only the fields the
@@ -1292,6 +1306,11 @@ pub const CompactedMessage = struct {
     model: []const u8,
     agent: []const u8,
     created_at: []const u8,
+    /// Total number of rows that matched the WHERE clause (before LIMIT).
+    /// Surfaced via `COUNT(*) OVER ()` so it's computed in the same query.
+    /// Every row in the result carries the same value — the LLM uses it
+    /// to know whether more pages exist without re-querying.
+    total_count: u32,
 
     pub fn deinit(self: *const CompactedMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -1323,6 +1342,11 @@ pub const SearchOptions = struct {
     /// request up to 200 (the tool layer caps there). The FTS ranking
     /// does the rest of the filtering.
     limit: ?u32 = 20,
+    /// Skip the first N results. Used by `search_history mode="text"`
+    /// to walk forward through FTS results that exceed `limit`. Combined
+    /// with `total_count` on the result, the LLM can paginate until
+    /// `offset + hits.len >= total_count`.
+    offset: ?u32 = null,
 };
 
 /// One FTS hit. Mirrors `CompactedMessage` but adds `snippet` (the
@@ -1335,6 +1359,11 @@ pub const SearchHit = struct {
     tool_call_id: ?[]const u8,
     tool_name: ?[]const u8,
     created_at: []const u8,
+    /// Total number of rows that matched the WHERE clause (before LIMIT
+    /// and OFFSET). Surfaced via `COUNT(*) OVER ()` so it's computed in
+    /// the same query. Every row in the result carries the same value.
+    /// Used by the LLM to decide whether to paginate further.
+    total_count: u32,
 
     pub fn deinit(self: *const SearchHit, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -1391,7 +1420,8 @@ pub fn getCompactedMessages(
         \\    COALESCE(h.response_content, ''),
         \\    h.tool_call_id, h.tool_name,
         \\    COALESCE(h.model, ''), COALESCE(h.agent, ''),
-        \\    COALESCE(h.created_at, '')
+        \\    COALESCE(h.created_at, ''),
+        \\    COUNT(*) OVER () AS total
         \\FROM llm_history h
         \\WHERE h.session_id = ?
     );
@@ -1431,7 +1461,7 @@ pub fn getCompactedMessages(
         try bind_values.append(allocator, u);
     }
 
-    try sql.appendSlice(allocator, " ORDER BY h.created_at ASC");
+    try sql.print(allocator, " ORDER BY h.created_at {s}", .{@tagName(opts.order)});
 
     // Bind the limit at the end. Format inline since we know it's u32.
     try sql.print(allocator, " LIMIT {d}", .{effective_limit});
@@ -1450,6 +1480,10 @@ pub fn getCompactedMessages(
 
     while (try rows.next()) |row| {
         defer row.deinit(allocator);
+        // `total` is column index 9 (COUNT(*) OVER ()) — computed before
+        // LIMIT/OFFSET so it represents the total count of rows that
+        // matched the WHERE clause, not the returned page size.
+        const total_count: u32 = std.fmt.parseInt(u32, row.values[9], 10) catch 0;
         const msg = CompactedMessage{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -1460,6 +1494,7 @@ pub fn getCompactedMessages(
             .model = try allocator.dupe(u8, row.values[6]),
             .agent = try allocator.dupe(u8, row.values[7]),
             .created_at = try allocator.dupe(u8, row.values[8]),
+            .total_count = total_count,
         };
         try results.append(allocator, msg);
     }
@@ -1491,15 +1526,27 @@ pub fn searchMessagesFts(
 
     var sql: std.ArrayList(u8) = .empty;
     defer sql.deinit(allocator);
+    // Wrap FTS5 access in a subquery so the COUNT(*) OVER () window
+    // function runs over the regular subquery result, not directly over
+    // the FTS5 virtual table. FTS5 virtual tables have restrictions on
+    // what SQL features they accept (notably window functions), but the
+    // outer query works fine.
     try sql.appendSlice(allocator,
         \\SELECT
-        \\    h.id, h.session_id, COALESCE(h.role, 'assistant'),
-        \\    snippet(messages_fts, 0, '[', ']', '...', 10),
-        \\    h.tool_call_id, h.tool_name,
-        \\    COALESCE(h.created_at, '')
-        \\FROM messages_fts
-        \\JOIN llm_history h ON h.rowid = messages_fts.rowid
-        \\WHERE messages_fts MATCH ?
+        \\    id, session_id, role, snippet, tool_call_id, tool_name, created_at,
+        \\    COUNT(*) OVER () AS total
+        \\FROM (
+        \\    SELECT
+        \\        h.id AS id, h.session_id AS session_id,
+        \\        COALESCE(h.role, 'assistant') AS role,
+        \\        snippet(messages_fts, 0, '[', ']', '...', 10) AS snippet,
+        \\        h.tool_call_id AS tool_call_id,
+        \\        h.tool_name AS tool_name,
+        \\        COALESCE(h.created_at, '') AS created_at,
+        \\        rank AS fts_rank
+        \\    FROM messages_fts
+        \\    JOIN llm_history h ON h.rowid = messages_fts.rowid
+        \\    WHERE messages_fts MATCH ?
     );
 
     var bind_values: std.ArrayList([]const u8) = .empty;
@@ -1526,8 +1573,12 @@ pub fn searchMessagesFts(
         try bind_values.append(allocator, u);
     }
 
-    try sql.appendSlice(allocator, " ORDER BY rank");
+    // Close the subquery, then ORDER BY the aliased rank column from inside it.
+    try sql.appendSlice(allocator, ") AS hits ORDER BY fts_rank");
     try sql.print(allocator, " LIMIT {d}", .{effective_limit});
+    if ((opts.offset orelse 0) > 0) {
+        try sql.print(allocator, " OFFSET {d}", .{opts.offset.?});
+    }
 
     var rows = try db.query(allocator, sql.items, bind_values.items);
     defer rows.deinit();
@@ -1543,6 +1594,10 @@ pub fn searchMessagesFts(
 
     while (try rows.next()) |row| {
         defer row.deinit(allocator);
+        // `total` is column index 7 (COUNT(*) OVER ()) — computed
+        // before LIMIT/OFFSET so it represents the total count of rows
+        // that matched the WHERE clause, not the returned page size.
+        const total_count: u32 = std.fmt.parseInt(u32, row.values[7], 10) catch 0;
         const hit = SearchHit{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -1551,6 +1606,7 @@ pub fn searchMessagesFts(
             .tool_call_id = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
             .tool_name = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
             .created_at = try allocator.dupe(u8, row.values[6]),
+            .total_count = total_count,
         };
         try results.append(allocator, hit);
     }
