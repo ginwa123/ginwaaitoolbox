@@ -44,6 +44,15 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
+  // v-model:show two-way binding — emits `false` when the dialog
+  // wants to close (X button, Cancel button, backdrop click, Escape
+  // key). Parent uses `v-model:show` so this is what makes the
+  // dialog actually close.
+  'update:show': [value: boolean]
+  // Explicit close event for parents that bind `:show` (one-way)
+  // and listen for `@close` to flip their own ref. Kept for
+  // backward compatibility with the existing test suite and for
+  // the KanbanSettingsDialog-style pattern.
   close: []
   save: [payload: { name: string; description: string }]
 }>()
@@ -95,6 +104,10 @@ const handleSave = () => {
 }
 
 const handleClose = () => {
+  // Emit BOTH events so both binding patterns work:
+  //   - v-model:show (KanbanView) listens for `update:show`
+  //   - :show + @close (KanbanSettingsDialog-style) listens for `close`
+  emit('update:show', false)
   emit('close')
 }
 

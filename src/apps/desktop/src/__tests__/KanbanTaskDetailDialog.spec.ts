@@ -174,6 +174,35 @@ describe('KanbanTaskDetailDialog — save / cancel', () => {
     expect(w!.emitted('save')).toBeFalsy()
   })
 
+  it('emits update:show=false on close (for v-model:show wiring)', async () => {
+    // Regression: KanbanView binds `v-model:show` which requires
+    // `update:show` events, not the legacy `close` event. Without
+    // this emit, the X / Cancel / backdrop / Escape handlers
+    // cannot close the dialog.
+    const w = mountDialog()
+    await flushPromises()
+    clickInDom('[data-testid="kanban-task-detail-close"]')
+    const updates = w!.emitted('update:show')
+    expect(updates).toBeTruthy()
+    expect(updates![updates!.length - 1]).toEqual([false])
+  })
+
+  it('emits update:show=false when the backdrop is clicked', async () => {
+    // The backdrop click handler closes the dialog via the same
+    // `handleClose` path as the X button — regression net for the
+    // @click.self="handleClose" binding on the outer wrapper.
+    const w = mountDialog()
+    await flushPromises()
+    const backdrop = findInDom<HTMLDivElement>(
+      '[data-testid="kanban-task-detail-dialog"] > .backdrop-blur-md',
+    )
+    expect(backdrop).not.toBeNull()
+    backdrop!.click()
+    const updates = w!.emitted('update:show')
+    expect(updates).toBeTruthy()
+    expect(updates![updates!.length - 1]).toEqual([false])
+  })
+
   it('disables save when name is empty (after trim)', async () => {
     mountDialog()
     await flushPromises()
