@@ -18,6 +18,34 @@ pub const StaticDirConfig = struct {
     /// Absolute, canonicalized path to the directory whose contents should be served.
     root_dir: []const u8,
     allocator: std.mem.Allocator,
+    /// Optional SPA fallback prefix (e.g. `"/app"`).
+    ///
+    /// When set (non-null), missing paths that start with this prefix
+    /// (the prefix itself, or `<prefix>/<anything>`) AND don't look
+    /// like asset requests (no file extension) are served as the
+    /// root directory's `index.html` — the SPA shell. This is the
+    /// standard HTML5-history SPA fallback (nginx `try_files $uri
+    /// /index.html`, Vite's history fallback). It's needed so
+    /// reloading the page at `<prefix>/chat/session_xyz` doesn't
+    /// 404, since the SPA build output has no such file on disk —
+    /// only `index.html` + `assets/`.
+    ///
+    /// When null (default), no SPA fallback occurs — missing paths
+    /// return 404 as before. This preserves backward compatibility
+    /// for callers that don't serve an SPA (e.g. serving plain docs)
+    /// or that want hard 404s on missing paths.
+    ///
+    /// Matching is prefix-anchored: `<prefix>` itself OR `<prefix>/<rest>`.
+    /// `prefix` MUST start with `/`. `<prefix>x` (no separator) does NOT
+    /// match — `/app` doesn't accidentally swallow `/apple`.
+    ///
+    /// Match examples (with prefix = "/app"):
+    ///   /app             → matches (exact)
+    ///   /app/settings    → matches (prefix + "/")
+    ///   /app/chat/xyz    → matches (prefix + "/")
+    ///   /apple           → does NOT match
+    ///   /api/app         → does NOT match
+    spa_fallback_prefix: ?[]const u8 = null,
 };
 
 /// Result of a static-file lookup. The handler converts this into an HTTP response.
@@ -102,6 +130,51 @@ fn isInsideRoot(root: []const u8, resolved: []const u8) bool {
     return next_char == '/' or next_char == '\\';
 }
 
+/// Returns true if the request path looks like a static ASSET (i.e. the
+/// final path component has a file extension). Used by the SPA fallback
+/// inside `resolve()` to decide whether a missing path is a 404 or a
+/// missing client-side route that should be served as `index.html`.
+///
+/// Examples:
+///   /app                  → false (route — fall back to index.html)
+///   /app/settings         → false (route)
+///   /app/chat/session_xyz → false (route — no `.` after the last `/`)
+///   /assets/index-Abc.js  → true  (asset — 404 if missing)
+///   /favicon.ico          → true  (asset)
+///
+/// The check is intentionally simple: look for the last `/`, then check
+/// whether the bytes after it contain a `.`. This matches the
+/// nginx `try_files $uri /index.html` convention (and Vite's SPA
+/// fallback in dev/prod). It is NOT a comprehensive mimetype sniff —
+/// `/foo.bar/baz` has a `.` before the last `/` but the final
+/// component is `baz`, which has no `.` and is correctly treated as a
+/// route. The "after the last `/`" framing catches that.
+fn looksLikeAssetPath(path: []const u8) bool {
+    const last_slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return false;
+    const after_last_slash = path[last_slash + 1 ..];
+    return std.mem.indexOfScalar(u8, after_last_slash, '.') != null;
+}
+
+/// Returns true if `clean_path` is `<prefix>` or `<prefix>/...`. The
+/// boundary check (prefix-anchored) prevents `/app` from matching
+/// `/apple`, `/api/foo`, etc. — only routes the SPA actually owns.
+///
+/// Examples (prefix = "/app"):
+///   /app            → true  (exact)
+///   /app/settings   → true  (prefix + "/")
+///   /app/chat/xyz   → true  (prefix + "/")
+///   /apple          → false (no separator after /app)
+///   /api/app        → false (no separator after /app)
+///   /               → false
+fn pathMatchesSpaPrefix(clean_path: []const u8, prefix: []const u8) bool {
+    if (std.mem.eql(u8, clean_path, prefix)) return true;
+    if (!std.mem.startsWith(u8, clean_path, prefix)) return false;
+    // After the prefix, the next char must be '/' — otherwise we'd
+    // match unrelated names like `/apple` against prefix `/app`.
+    const next = clean_path[prefix.len];
+    return next == '/';
+}
+
 // ---------------------------------------------------------------------------
 // resolve()
 // ---------------------------------------------------------------------------
@@ -164,7 +237,37 @@ pub fn resolve(
     //    forces a deterministic `error.IsDir` for directory paths so the
     //    fallback below is unambiguous.
     const file = root_dir.openFile(io, rel, .{ .allow_directory = false }) catch |err| switch (err) {
-        error.IsDir, error.FileNotFound => return resolveDirFallback(io, cfg, root_dir, rel),
+        // The path resolves to an actual directory — serve that dir's
+        // index.html (the canonical "directory request" path matching
+        // what nginx's `index` directive does).
+        error.IsDir => return resolveDirIndexHtml(io, cfg, root_dir, rel),
+        // The path doesn't exist as a file or directory. Decide:
+        //   - Asset-style path (has a file extension in the final
+        //     segment, e.g. /missing.js): return 404. A missing JS/CSS
+        //     bundle is genuinely an error and should not be silently
+        //     masked by index.html.
+        //   - Route-style path UNDER the configured SPA prefix
+        //     (e.g. /app/settings when `spa_fallback_prefix = "/app"`):
+        //     serve the root's index.html so the SPA's client-side
+        //     router can take over. This is the standard SPA fallback
+        //     (nginx `try_files $uri /index.html`, Vite's history
+        //     fallback, http-server `-P` proxy-fallback). Without it,
+        //     reloading the page at /app/settings 404s because there
+        //     is no `/app/settings` file on disk — only `index.html`
+        //     exists, and the JS app's router decides what to render.
+        //   - Anything else (e.g. /api/not-a-route, /test/foo): 404.
+        //     The API/operational routers handle their own paths; if
+        //     they didn't match, the path is genuinely unknown and a
+        //     404 is correct.
+        error.FileNotFound => {
+            if (looksLikeAssetPath(clean_path)) return .not_found;
+            if (cfg.spa_fallback_prefix) |prefix| {
+                if (pathMatchesSpaPrefix(clean_path, prefix)) {
+                    return resolveRootIndexHtml(io, cfg, root_dir);
+                }
+            }
+            return .not_found;
+        },
         else => return .not_found,
     };
     defer file.close(io);
@@ -202,7 +305,7 @@ pub fn resolve(
 /// `.not_a_file` if the directory has no index.html; `.forbidden` if the
 /// index.html would escape the root; `.file` with the index's metadata
 /// on success.
-fn resolveDirFallback(
+fn resolveDirIndexHtml(
     io: std.Io,
     cfg: *const StaticDirConfig,
     root_dir: std.Io.Dir,
@@ -221,6 +324,41 @@ fn resolveDirFallback(
     const idx_abs = try cfg.allocator.dupe(u8, path_buf[0..n]);
     errdefer cfg.allocator.free(idx_abs);
 
+    if (!isInsideRoot(cfg.root_dir, idx_abs)) return .forbidden;
+
+    return .{ .file = .{
+        .abs_path = idx_abs,
+        .mime = mimeForPath(idx_abs),
+        .size = idx_stat.size,
+        .mtime = idx_stat.mtime,
+    } };
+}
+
+/// SPA fallback: serve the ROOT directory's `index.html`. Invoked when a
+/// path doesn't resolve to a real file or directory AND doesn't look
+/// like an asset request (no extension). This is the standard SPA
+/// fallback pattern (nginx `try_files $uri /index.html`, Vite's
+/// history fallback). Returns `.not_found` if the root has no
+/// `index.html` — in that case, the SPA can't actually serve anything,
+/// and a 404 is correct.
+fn resolveRootIndexHtml(
+    io: std.Io,
+    cfg: *const StaticDirConfig,
+    root_dir: std.Io.Dir,
+) !LookupResult {
+    const idx = root_dir.openFile(io, "index.html", .{}) catch return .not_found;
+    defer idx.close(io);
+
+    const idx_stat = idx.stat(io) catch return .not_found;
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try root_dir.realPathFile(io, "index.html", &path_buf);
+    const idx_abs = try cfg.allocator.dupe(u8, path_buf[0..n]);
+    errdefer cfg.allocator.free(idx_abs);
+
+    // Defense in depth: even though "index.html" is a fixed name inside
+    // the root_dir handle, a symlink in the root pointing outside the
+    // configured root_dir would be served here. `isInsideRoot` rejects.
     if (!isInsideRoot(cfg.root_dir, idx_abs)) return .forbidden;
 
     return .{ .file = .{

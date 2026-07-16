@@ -132,6 +132,206 @@ test "resolve: returns file for a directory with index.html" {
 }
 
 // ---------------------------------------------------------------------------
+// SPA fallback — paths under `spa_fallback_prefix` that don't resolve to
+// a real file or directory AND don't have a file extension are served as
+// the root index.html so the SPA's router can take over. This is the
+// standard HTML5-history SPA fallback for SPAs (Vue/React/etc. using
+// `createWebHistory` or `BrowserRouter`).
+// ---------------------------------------------------------------------------
+
+test "resolve SPA: returns root index.html for a route-style path like /app" {
+    // Mirrors the bug: reloading the desktop app at `/app/settings` 404'd
+    // because the SPA build output has no `/app/settings` file, only
+    // `index.html` + `assets/`. After the fix, this returns the same
+    // index.html that `/` returns, so the Vue Router can take over.
+    const allocator = testing.allocator;
+    var env = try setupRoot(allocator);
+    defer env.deinit(allocator);
+
+    {
+        const f = try env.tmp_dir.dir.createFile(env.io, "index.html", .{});
+        defer f.close(env.io);
+        try f.writeStreamingAll(env.io, "<!doctype html><title>SPA</title>");
+    }
+
+    const cfg = static_files.StaticDirConfig{
+        .root_dir = env.root_abs,
+        .allocator = allocator,
+        .spa_fallback_prefix = "/app",
+    };
+    const result = try static_files.resolve(&cfg, env.io, "/app");
+    defer if (result == .file) allocator.free(result.file.abs_path);
+
+    try testing.expect(result == .file);
+    try testing.expectEqualStrings("text/html; charset=utf-8", result.file.mime);
+}
+
+test "resolve SPA: returns root index.html for nested route /app/chat/session_xyz" {
+    const allocator = testing.allocator;
+    var env = try setupRoot(allocator);
+    defer env.deinit(allocator);
+
+    {
+        const f = try env.tmp_dir.dir.createFile(env.io, "index.html", .{});
+        defer f.close(env.io);
+        try f.writeStreamingAll(env.io, "<!doctype html><title>SPA</title>");
+    }
+
+    const cfg = static_files.StaticDirConfig{
+        .root_dir = env.root_abs,
+        .allocator = allocator,
+        .spa_fallback_prefix = "/app",
+    };
+    const result = try static_files.resolve(&cfg, env.io, "/app/chat/session_xyz");
+    defer if (result == .file) allocator.free(result.file.abs_path);
+
+    try testing.expect(result == .file);
+    try testing.expectEqualStrings("text/html; charset=utf-8", result.file.mime);
+}
+
+test "resolve SPA: still returns 404 for missing assets that DO have an extension" {
+    // The SPA fallback must NOT silently mask missing JS/CSS/etc. as
+    // index.html — that would hide real build/deploy bugs.
+    const allocator = testing.allocator;
+    var env = try setupRoot(allocator);
+    defer env.deinit(allocator);
+
+    // index.html exists, but /missing.js does NOT.
+    {
+        const f = try env.tmp_dir.dir.createFile(env.io, "index.html", .{});
+        defer f.close(env.io);
+        try f.writeStreamingAll(env.io, "<!doctype html>");
+    }
+
+    const cfg = static_files.StaticDirConfig{
+        .root_dir = env.root_abs,
+        .allocator = allocator,
+        .spa_fallback_prefix = "/app",
+    };
+    const result = try static_files.resolve(&cfg, env.io, "/assets/missing.js");
+    try testing.expect(result == .not_found);
+}
+
+test "resolve SPA: returns not_found when root has no index.html" {
+    // If the SPA isn't even deployed, route-style paths under the prefix
+    // should 404 (not serve some garbage file). The fallback only kicks
+    // in when a real index.html exists.
+    const allocator = testing.allocator;
+    var env = try setupRoot(allocator);
+    defer env.deinit(allocator);
+
+    // No index.html created.
+
+    const cfg = static_files.StaticDirConfig{
+        .root_dir = env.root_abs,
+        .allocator = allocator,
+        .spa_fallback_prefix = "/app",
+    };
+    const result = try static_files.resolve(&cfg, env.io, "/app/settings");
+    try testing.expect(result == .not_found);
+}
+
+test "resolve SPA: real file with extension still wins over fallback" {
+    // Sanity: if a file with the requested name DOES exist (has an
+    // extension AND is present), serve it directly — don't fall back.
+    // This guards against the fallback accidentally swallowing real
+    // asset requests because of a future regression.
+    const allocator = testing.allocator;
+    var env = try setupRoot(allocator);
+    defer env.deinit(allocator);
+
+    {
+        const f = try env.tmp_dir.dir.createFile(env.io, "robots.txt", .{});
+        defer f.close(env.io);
+        try f.writeStreamingAll(env.io, "User-agent: *");
+    }
+    {
+        const f = try env.tmp_dir.dir.createFile(env.io, "index.html", .{});
+        defer f.close(env.io);
+        try f.writeStreamingAll(env.io, "<!doctype html>");
+    }
+
+    const cfg = static_files.StaticDirConfig{
+        .root_dir = env.root_abs,
+        .allocator = allocator,
+        .spa_fallback_prefix = "/app",
+    };
+    const result = try static_files.resolve(&cfg, env.io, "/robots.txt");
+    defer if (result == .file) allocator.free(result.file.abs_path);
+
+    try testing.expect(result == .file);
+    try testing.expectEqualStrings("text/plain; charset=utf-8", result.file.mime);
+}
+
+test "resolve SPA: paths OUTSIDE the prefix still 404 (no regression for /api, /test, etc.)" {
+    // Critical: the SPA fallback must NOT catch arbitrary unregistered
+    // paths. `/api/health` (not a registered API route) and similar
+    // should 404, not silently serve index.html — that would mask real
+    // API bugs as "the SPA shell is fine".
+    const allocator = testing.allocator;
+    var env = try setupRoot(allocator);
+    defer env.deinit(allocator);
+
+    {
+        const f = try env.tmp_dir.dir.createFile(env.io, "index.html", .{});
+        defer f.close(env.io);
+        try f.writeStreamingAll(env.io, "<!doctype html>");
+    }
+
+    const cfg = static_files.StaticDirConfig{
+        .root_dir = env.root_abs,
+        .allocator = allocator,
+        .spa_fallback_prefix = "/app",
+    };
+
+    // Each is a route-style path (no extension) but OUTSIDE the
+    // configured /app prefix — all should 404.
+    const cases = [_][]const u8{
+        "/api/health",          // API-style
+        "/api/not-a-real-path", // API-style, unregistered
+        "/health",              // operational
+        "/test/missing",        // test endpoints
+        "/something-else",      // unrelated path
+        "/apple",               // would-be /app if not boundary-anchored
+    };
+    for (cases) |path| {
+        const r = try static_files.resolve(&cfg, env.io, path);
+        try testing.expect(r == .not_found);
+    }
+}
+
+test "resolve SPA: opt-out via spa_fallback_prefix = null (default behavior)" {
+    // Backward compatibility: callers that don't set the prefix get the
+    // old "404 for any missing path" behavior — no silent index.html
+    // fallback. This guards the 3 non-SPA use cases (docs sites, etc.).
+    const allocator = testing.allocator;
+    var env = try setupRoot(allocator);
+    defer env.deinit(allocator);
+
+    {
+        const f = try env.tmp_dir.dir.createFile(env.io, "index.html", .{});
+        defer f.close(env.io);
+        try f.writeStreamingAll(env.io, "<!doctype html>");
+    }
+
+    // Default config: spa_fallback_prefix = null.
+    const cfg = static_files.StaticDirConfig{
+        .root_dir = env.root_abs,
+        .allocator = allocator,
+    };
+
+    // Without the prefix, "/app" and "/app/settings" both 404 even
+    // though index.html exists — the old behavior.
+    try testing.expect((try static_files.resolve(&cfg, env.io, "/app")) == .not_found);
+    try testing.expect((try static_files.resolve(&cfg, env.io, "/app/settings")) == .not_found);
+    // "/" still works (always serves index.html via the existing
+    // root-path branch).
+    const root = try static_files.resolve(&cfg, env.io, "/");
+    defer if (root == .file) allocator.free(root.file.abs_path);
+    try testing.expect(root == .file);
+}
+
+// ---------------------------------------------------------------------------
 // Mime detection
 // ---------------------------------------------------------------------------
 

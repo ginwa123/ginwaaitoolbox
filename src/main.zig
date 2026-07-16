@@ -237,6 +237,15 @@ pub fn main(init: std.process.Init) !void {
         cfg.* = .{
             .root_dir = abs_dir,
             .allocator = allocator,
+            // SPA fallback: reloads at Vue routes like /app/settings
+            // would otherwise 404 (the build only produces index.html
+            // + assets/, no /app/ directories). With this prefix, the
+            // server serves index.html for missing paths under /app
+            // (no extension) so Vue Router takes over client-side.
+            // Matches the desktop app's router:
+            // src/apps/desktop/src/router/index.ts — `path: '/app'`
+            // and descendants. Must stay in sync if the SPA moves.
+            .spa_fallback_prefix = "/app",
         };
         static_dir_cfg = cfg;
 
