@@ -1438,7 +1438,34 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // subsequent SSE session_created event (fired on every send) cannot
     // navigate back into the previous chat when the user is typing into
     // a task. Mirrors navigationStore.setActiveTask (navigation.ts:123).
-    useNavigationStore().clearActiveChat()
+    //
+    // IMPORTANT (fix for `view=chat&session=X` showing the welcome page
+    // instead of <ChatView>): only clear the chat when we're ACTIVATING
+    // a task (taskId !== null). When called with taskId === null as
+    // part of the "navigate to chat" / "navigate to workspace" /
+    // "navigate to design" cleanup sequences (Sidebar.vue:321, ChatsList.vue:212,
+    // ChatsList.vue:227, ChatsList.vue:251), clearing the chat
+    // UNDOES the navigationStore.setActiveChat that just ran a few lines
+    // above, leaving the v-else-if chain at AppLayout.vue:1611 unable to
+    // match `activeChatId.startsWith('chat-')` and falling through to
+    // <Chats/> (welcome page) instead of <ChatView/>. Symptom trace
+    // (verified in the live app via DevTools):
+    //   [Sidebar.vue:318 handleChatsNavigate]
+    //   → workspacesStore.setActiveTask(null)
+    //   → workspacesStore.setActiveTask calls useNavigationStore().clearActiveChat()
+    //   → activeChatId flips from 'chat-task_X' to ''
+    //   → v-else-if at AppLayout.vue:1611 fails → <Chats/> renders
+    // Originally cleared unconditionally in the 2026-07-14 fix that
+    // introduced `setActiveTask(null)` calls in the chat-list nav paths;
+    // the unconditional clear was a side-effect, not a deliberate
+    // contract. Gating on `taskId !== null` preserves the original
+    // intent (don't keep a stale chat active when entering a task) while
+    // letting the chat-clear happen in the right place (after the user
+    // truly leaves the chat for a task, not as part of a "reset all
+    // non-chat state before activating chat" sequence).
+    if (taskId !== null) {
+      useNavigationStore().clearActiveChat()
+    }
 
     activeTaskId.value = taskId
     if (taskId) {

@@ -526,7 +526,18 @@ const activeTaskWorkspaceItemId = computed(() => {
 // list's active row (a kanban task has its own session, not a
 // chat-row session). Clearing activeTask is sufficient.
 const handleCloseTaskView = () => {
+  // CHATVIEW-BUG (fix): setActiveTask(null) does NOT clear the
+  // navigation store's active chat anymore (the unconditional clear
+  // broke the chat-nav paths in Sidebar.vue:316-322 and
+  // ChatsList.vue:220-232). Since this is the ONLY path that needs
+  // both the task AND the chat cleared (the user is closing the
+  // chatview column of the 3-column kanban+chat layout and dropping
+  // back to the workspace view), we now clear the chat explicitly
+  // here. Without this explicit clear, the next page reload would
+  // restore activeChatId from localStorage and pop the user back
+  // into a chat they thought they had closed.
   workspacesStore.setActiveTask(null)
+  navigationStore.clearActiveChat()
   router.replace({ path: '/app', query: { view: 'workspace' } })
 }
 

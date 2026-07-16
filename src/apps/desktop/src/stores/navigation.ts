@@ -127,8 +127,16 @@ export const useNavigationStore = defineStore('navigation', () => {
     } else {
       localStorage.removeItem(STORAGE_KEY_ACTIVE_TASK_ID)
     }
-    // Clear chat when setting task
-    clearActiveChat()
+    // Clear chat when ACTIVATING a task. We do NOT clear the chat
+    // when passing null — that's the "exit task only, chat may still
+    // be active" case (Sidebar.vue:321, ChatsList.vue:212/227/251
+    // all call setActiveTask(null) as part of a "navigate to chat"
+    // cleanup sequence; the unconditional clear that used to live
+    // here was breaking the chat-nav paths and producing the
+    // `view=chat&session=X` welcome-page regression).
+    if (taskId !== null) {
+      clearActiveChat()
+    }
   }
 
   function clearActiveTask() {

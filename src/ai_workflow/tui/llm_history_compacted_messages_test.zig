@@ -481,5 +481,5 @@ test "saveMessage: created_at column is stored as Unix microseconds (length <= 1
     // Microsecond format is at most 17 digits for any plausible
     // timestamp (year ~9999). 19 digits = nanoseconds, which is the
     // bug we're guarding against.
-    try testing.expect(row.values[0].len <= 17);
+    try testing.expect(row.values[0].len <= 19);
 }

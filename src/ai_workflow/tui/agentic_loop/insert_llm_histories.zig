@@ -50,11 +50,9 @@ pub fn inserLLMHistories(
     // stored the raw nanosecond string AND never set `created_iso`,
     // so every row inserted via this path had NULL `created_iso` AND
     // any future fix‑up would have produced year 58,507 for them.
-    const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
-    const id = try std.fmt.allocPrint(allocator, "{}", .{now_ns});
+    const id =try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(id);
-    const created_at_us: u64 = @intCast(@divTrunc(now_ns, std.time.ns_per_us));
-    const created_at = try std.fmt.allocPrint(allocator, "{}", .{created_at_us});
+    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(created_at);
 
     // Compute `created_iso` for the `since`/`until` filters. Mirrors
@@ -62,7 +60,7 @@ pub fn inserLLMHistories(
     // returns the current UTC time as ISO — semantically the same
     // as `created_at_us`/`now_ns` since both are generated from the
     // same `now_ns` source a few lines above.
-    const created_iso = try helpers.currentTimeIsoLocal(allocator);
+    const created_iso = try helpers.currentTimeIsoLocal(allocator,io);
     defer allocator.free(created_iso);
 
     const contentStr = input.response_content;

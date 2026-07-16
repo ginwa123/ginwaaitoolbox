@@ -275,34 +275,18 @@ fn unixTimestampNanosWindows() i128 {
 /// Allocation: the returned slice is allocated from `allocator`. The
 /// caller owns the buffer (use `defer allocator.free(s)` or pass to
 /// another owning structure).
-pub fn currentTimeIsoLocal(allocator: std.mem.Allocator) ![]u8 {
-    // Get the current time as nanoseconds since epoch (via
-    // `unixTimestampNanos`, which is cross-platform and doesn't need
-    // an `io: std.Io` parameter). Then convert to seconds by
-    // dividing by `ns_per_s`. The sub-second precision is dropped —
-    // not needed for `since`/`until` at second granularity.
-    //
-    // We use u64 throughout because `std.time.epoch.EpochSeconds.secs`
-    // is `u64`. Years past the year ~584 billion would overflow u64,
-    // well beyond anything we'd encounter from a real Unix timestamp.
-    const now_ns_i128 = unixTimestampNanos();
-    if (now_ns_i128 < 0) return error.Overflow;
-    const sec_u64: u64 = @intCast(@divTrunc(now_ns_i128, std.time.ns_per_s));
+pub fn currentTimeIsoLocal(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
+    const ts = std.Io.Clock.real.now(io); // wall-clock timestamp
+    const ns_i128 = ts.nanoseconds; // guess — compiler will confirm/correct field name
+    if (ns_i128 < 0) return error.Overflow;
+    const sec_u64: u64 = @intCast(@divTrunc(ns_i128, std.time.ns_per_s));
 
-    // Use Zig stdlib's epoch decomposition. Reference:
-    // `std.time.epoch.EpochSeconds{ .secs = ... }.getEpochDay()`
-    // → `EpochDay` → `.calculateYearDay()` → `YearAndDay` →
-    // `.calculateMonthDay()` → `{year, month, day}`.
-    // Day seconds come from `.getDaySeconds()` → `DaySeconds` →
-    // `.getHoursIntoDay()` / `.getMinutesIntoHour()` /
-    // `.getSecondsIntoMinute()`.
     const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = sec_u64 };
     const epoch_day = epoch_seconds.getEpochDay();
     const year_day = epoch_day.calculateYearDay();
     const month_day = year_day.calculateMonthDay();
     const day_seconds = epoch_seconds.getDaySeconds();
 
-    // Format as "YYYY-MM-DD HH:MM:SS" (19 chars + NUL terminator).
     var buf: [20]u8 = undefined;
     const formatted = std.fmt.bufPrint(
         &buf,
@@ -310,12 +294,13 @@ pub fn currentTimeIsoLocal(allocator: std.mem.Allocator) ![]u8 {
         .{
             year_day.year,
             month_day.month.numeric(),
-            month_day.day_index + 1,        // day_index is 0-based
+            month_day.day_index + 1,
             day_seconds.getHoursIntoDay(),
             day_seconds.getMinutesIntoHour(),
             day_seconds.getSecondsIntoMinute(),
         },
     ) catch unreachable;
+
     return allocator.dupe(u8, formatted);
 }
 

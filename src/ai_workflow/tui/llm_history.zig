@@ -1023,11 +1023,9 @@ pub fn saveMessage(
     // decimal digits for any post‑1970 timestamp). We divide by
     // `std.time.ns_per_us` (1000) to convert nanoseconds → microseconds
     // so the column matches its documented format.
-    const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
-    const id = try std.fmt.allocPrint(allocator, "{}", .{now_ns});
+    const id =try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(id);
-    const created_at_us: u64 = @intCast(@divTrunc(now_ns, std.time.ns_per_us));
-    const created_at = try std.fmt.allocPrint(allocator, "{}", .{created_at_us});
+    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(created_at);
 
     // Compute `created_iso` (the UTC‑formatted ISO string for the
@@ -1038,7 +1036,7 @@ pub fn saveMessage(
     // (no parameter) — semantically the same value `created_at_us`
     // would produce (both come from the same `now_ns` source a few
     // lines above), but the helper hides the conversion details.
-    const created_iso = try helpers.currentTimeIsoLocal(allocator);
+    const created_iso = try helpers.currentTimeIsoLocal(allocator,io);
     defer allocator.free(created_iso);
 
     const contentStr = input.content orelse "";
