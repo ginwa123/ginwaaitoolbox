@@ -26,5 +26,6 @@ test {
     _ = @import("migration_059_test.zig");  // created_iso STORED generated column (since/until fix)
     _ = @import("migration_060_test.zig");  // re-backfill for production DBs with NULL created_iso
     _ = @import("migration_061_test.zig");  // re-backfill wrong-year (58507-...) created_iso rows
+    _ = @import("migration_062_test.zig");  // workspace_item_tasks.description (kanban task detail dialog, Chunk 1)
     _ = @import("../ai_workflow/tui/migration_057_test.zig");  // v6 design element properties — kept at old path on this branch
 }
