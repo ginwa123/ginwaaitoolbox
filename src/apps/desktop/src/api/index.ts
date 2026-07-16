@@ -780,12 +780,18 @@ export async function getChatHistory(
 }
 
 // Send a message to LLM
+//
+// Migration 063 — adds the optional `isAutoRetryUntilStop` flag.
+// "1" opts into unattended mode (the workflow re-reads this column
+// on entry and soft-bails past retry_count > 10). Default undefined
+// = today's behavior.
 export async function sendChatMessage(
   sessionId: string,
   message: string,
   cwdSession: string,
   imageUrls?: string[],
   selectedProfile?: string,
+  isAutoRetryUntilStop?: string,
 ): Promise<{ status: string }> {
   // Join image URLs with pipe separator (same format as other parts of the system)
   const imageUrlsStr = imageUrls?.join('|') || ''
@@ -805,6 +811,9 @@ export async function sendChatMessage(
           cwd_session: cwdSession,
           image_urls: imageUrlsStr,
           selected_profile_model: selectedProfile || '',
+          // Migration 063 — pass through to POST /api/session. Empty
+          // / undefined => the backend's default ("0" = off).
+          is_auto_retry_until_stop: isAutoRetryUntilStop ?? '',
         },
         silent: true,
       },
@@ -825,18 +834,34 @@ export async function sendChatMessage(
   }
 }
 
-// Update an existing session (selectedProfile, name, etc.)
+// Update an existing session (selectedProfile, name, isAutoRetryUntilStop).
+//
+// Migration 063 — extends the update shape to carry the unattended-
+// mode flag. Pass `isAutoRetryUntilStop: '0'` to disable, '1' to
+// enable, or omit to leave unchanged (matches the backend's
+// `len > 0` guard).
 export async function updateSession(
   sessionId: string,
-  updates: { selectedProfile?: string | null; name?: string },
-): Promise<{ id: string; name: string; status: string; selected_profile_model: string }> {
-  return await apiFetch<{ id: string; name: string; status: string; selected_profile_model: string }>(
+  updates: {
+    selectedProfile?: string | null
+    name?: string
+    isAutoRetryUntilStop?: string
+  },
+): Promise<{ id: string; name: string; status: string; selected_profile_model: string; is_auto_retry_until_stop: string }> {
+  return await apiFetch<{
+    id: string
+    name: string
+    status: string
+    selected_profile_model: string
+    is_auto_retry_until_stop: string
+  }>(
     `/llm/session/${sessionId}`,
     {
       method: 'PUT',
       body: {
         selected_profile_model: updates.selectedProfile ?? '',
         name: updates.name ?? '',
+        is_auto_retry_until_stop: updates.isAutoRetryUntilStop ?? '',
       },
     },
   )
