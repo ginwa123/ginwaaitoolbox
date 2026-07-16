@@ -1,9 +1,9 @@
-//! Static regression checks for Migration 061
+//! Static regression checks for Migration 062
 //! (workspace_item_tasks.description).
 //!
 //! Why this file exists
 //! ────────────────────
-//! Migration 061 introduces a free-form `description` column on
+//! Migration 062 introduces a free-form `description` column on
 //! `workspace_item_tasks` so each task (chat / routine / kanban) can
 //! carry a user-visible "notes" field alongside its display name.
 //! The detail dialog (frontend, Chunk 2) reads and writes it; the
@@ -21,7 +21,7 @@
 const std = @import("std");
 const testing = std.testing;
 const sqlite = @import("nalarcore").sqlite;
-const Migration061 = @import("migration.zig").Migration061AddTaskDescription;
+const Migration062 = @import("migration.zig").Migration062AddTaskDescription;
 const createWorkspaceItemTask = @import("nalarcore").ai_mod.llm_history.createWorkspaceItemTask;
 
 const TestCtx = struct {
@@ -48,9 +48,9 @@ fn setupDb() !TestCtx {
     // The behavioural tests below INSERT into `task_type` (via the
     // routine/memory branches of task_create.zig and via
     // createWorkspaceItemTask), so the column must exist before
-    // Migration 061 runs. The real migration (034) declares this and
+    // Migration 062 runs. The real migration (034) declares this and
     // 30+ others; we only need the minimum that the create helper
-    // references. Migration 061's `addColumnIfMissing` will then add
+    // references. Migration 062's `addColumnIfMissing` will then add
     // `description` to this minimal table.
     try db.exec(alloc,
         "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT, task_type TEXT NOT NULL DEFAULT 'standard')",
@@ -58,7 +58,7 @@ fn setupDb() !TestCtx {
     return .{ .db = db, .threaded = threaded };
 }
 
-test "Migration061 adds description column to workspace_item_tasks" {
+test "Migration062 adds description column to workspace_item_tasks" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.db.deinit();
@@ -75,7 +75,7 @@ test "Migration061 adds description column to workspace_item_tasks" {
     }
 
     // Apply migration 061.
-    try Migration061.up(&ctx.db, alloc);
+    try Migration062.up(&ctx.db, alloc);
 
     // Confirm the column exists with the expected name.
     var q = try ctx.db.query(alloc,
@@ -91,7 +91,7 @@ test "Migration061 adds description column to workspace_item_tasks" {
     try testing.expect((try q.next()) == null);
 }
 
-test "Migration061 is idempotent on a column that already exists" {
+test "Migration062 is idempotent on a column that already exists" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.db.deinit();
@@ -114,7 +114,7 @@ test "Migration061 is idempotent on a column that already exists" {
 
     // Should not error — `addColumnIfMissing` detects the column
     // already exists and short-circuits.
-    try Migration061.up(&ctx.db, alloc);
+    try Migration062.up(&ctx.db, alloc);
 
     // Re-check: still one `description` column (no duplicates).
     var q = try ctx.db.query(alloc,
@@ -127,7 +127,7 @@ test "Migration061 is idempotent on a column that already exists" {
     try testing.expectEqualStrings("1", row.values[0]);
 }
 
-test "Migration061 gives pre-existing rows an empty-string description" {
+test "Migration062 gives pre-existing rows an empty-string description" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.db.deinit();
@@ -145,7 +145,7 @@ test "Migration061 gives pre-existing rows an empty-string description" {
         &.{});
 
     // Apply migration 061 — the existing row should get description=''.
-    try Migration061.up(&ctx.db, alloc);
+    try Migration062.up(&ctx.db, alloc);
 
     var q = try ctx.db.query(alloc,
         "SELECT description FROM workspace_item_tasks WHERE id = 'task_pre_061'",
@@ -180,7 +180,7 @@ test "Migration061 gives pre-existing rows an empty-string description" {
 //
 // The static tests above check that the three-way branch EXISTS in
 // the source. These behavioural tests actually run the helper against
-// an in-memory sqlite with the real Migration 061 applied, and prove
+// an in-memory sqlite with the real Migration 062 applied, and prove
 // no `NOT NULL` violation fires for any of the three caller shapes.
 
 /// Seed a workspace_items row so `workspace_item_tasks.workspace_item_id`
@@ -231,7 +231,7 @@ test "createWorkspaceItemTask: description = null succeeds and stores ''" {
     var ctx = try setupDb();
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
-    try Migration061.up(&ctx.db, alloc);
+    try Migration062.up(&ctx.db, alloc);
     const parent_id = try seedParent(&ctx, alloc);
 
     // Caller passes null (omitted body field).
@@ -250,7 +250,7 @@ test "createWorkspaceItemTask: description = '' (empty string) succeeds and stor
     var ctx = try setupDb();
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
-    try Migration061.up(&ctx.db, alloc);
+    try Migration062.up(&ctx.db, alloc);
     const parent_id = try seedParent(&ctx, alloc);
 
     // This is the EXACT bug case. Pre-fix: `description orelse ""` made
@@ -270,7 +270,7 @@ test "createWorkspaceItemTask: description = 'hello world' succeeds and stores t
     var ctx = try setupDb();
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
-    try Migration061.up(&ctx.db, alloc);
+    try Migration062.up(&ctx.db, alloc);
     const parent_id = try seedParent(&ctx, alloc);
 
     const task = try createWorkspaceItemTask(alloc, &ctx.db,
@@ -303,7 +303,7 @@ test "task_create direct INSERT branches: null/empty/value all succeed for routi
     var ctx = try setupDb();
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
-    try Migration061.up(&ctx.db, alloc);
+    try Migration062.up(&ctx.db, alloc);
     const parent_id = try seedParent(&ctx, alloc);
 
     const cases = [_]RoutineCase{
@@ -344,7 +344,7 @@ test "task_create direct INSERT branches: null/empty/value all succeed for memor
     var ctx = try setupDb();
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
-    try Migration061.up(&ctx.db, alloc);
+    try Migration062.up(&ctx.db, alloc);
     const parent_id = try seedParent(&ctx, alloc);
 
     // Same three-way exercise, task_type='memory' branch.
