@@ -75,3 +75,46 @@ test "session_create.zig SSE broadcast includes is_auto_retry_until_stop" {
         return error.SessionCreateSseFieldMissing;
     }
 }
+
+// ─── Chunk 3 Task 3.3 — GET /api/sessions response shape ────────────────────
+//
+// Verifies that the SessionInfoJson response struct (used by
+// buildSessionListJson for GET /api/sessions) carries the new fields
+// through to the JSON payload. This is the consumer-facing proof that
+// ChatsList.vue can read `session.is_auto_retry_until_stop` from the
+// GET response.
+//
+// Plan: docs/superpowers/plans/2026-07-16-session-auto-retry-until-stop.md
+//   (Chunk 3, Task 3.3)
+
+test "llm_history.zig SessionInfoJson includes is_auto_retry_until_stop" {
+    const llm_history_source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "src/ai_workflow/tui/llm_history.zig",
+        std.testing.allocator,
+        // llm_history.zig is 3600+ lines; 1 MiB headroom is plenty.
+        .limited(1024 * 1024),
+    ) catch |err| return err;
+    defer std.testing.allocator.free(llm_history_source);
+
+    // The SessionInfoJson struct must declare the new field so JSON
+    // serialization includes it in the list response.
+    if (std.mem.indexOf(u8, llm_history_source, "pub const SessionInfoJson = struct {") == null) {
+        std.debug.print("!! llm_history.zig SessionInfoJson struct not found !!\n", .{});
+        return error.SessionInfoJsonStructMissing;
+    }
+    // Locate the struct body and verify the new field appears inside.
+    const struct_marker = std.mem.indexOf(u8, llm_history_source, "pub const SessionInfoJson = struct {") orelse
+        return error.SessionInfoJsonStructMissing;
+    // Look for the field within the next 800 chars (covers the full struct).
+    const look_end = @min(struct_marker + 800, llm_history_source.len);
+    const window = llm_history_source[struct_marker..look_end];
+    if (std.mem.indexOf(u8, window, "is_auto_retry_until_stop") == null) {
+        std.debug.print(
+            "!! SessionInfoJson struct does NOT include is_auto_retry_until_stop !!\n" ++
+                "   (GET /api/sessions will not expose the field to the frontend). !!\n",
+            .{},
+        );
+        return error.SessionInfoJsonFieldMissing;
+    }
+}
