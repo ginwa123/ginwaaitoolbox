@@ -2183,16 +2183,26 @@ pub const SessionTableInfo = struct {
 };
 
 /// Create a new session with status set to 'active'
+///
+/// `is_auto_retry_until_stop`: "1" enables unattended mode for this
+/// session (workflow keeps retrying past the 10-attempt TooManyRetries
+/// bail). Empty string OR anything other than "1" coerces to "0" via
+/// the SQL binding default (matches the NOT NULL DEFAULT 0 schema).
 pub fn create_session(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     id: []const u8,
     name: []const u8,
+    is_auto_retry_until_stop: []const u8,
 ) !SessionTableInfo {
-    const sql = "INSERT INTO sessions (id, name, status, created_at, updated_at) VALUES (?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
-    try db.exec(allocator, sql, &.{ id, name });
+    const flag = if (std.mem.eql(u8, is_auto_retry_until_stop, "1")) "1" else "0";
+    const sql =
+        "INSERT INTO sessions (id, name, status, created_at, updated_at, is_auto_retry_until_stop) " ++
+        "VALUES (?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)";
+    try db.exec(allocator, sql, &.{ id, name, flag });
 
-    // Broadcast session created event
+    // Broadcast session created event — carry the new columns in the
+    // SSE payload so ChatsList updates live without a refetch.
     ai_mod.on_event_sent.onEventSendSessions(allocator, .{
         .action = "created",
         .id = id,
@@ -2203,16 +2213,32 @@ pub fn create_session(
         .updated_at = "",
         .selected_profile_model = "",
         .git_worktree_cwd = "",
+        .is_auto_retry_until_stop = flag,
+        .last_finish_reason = "",
     }) catch {};
 
     return SessionTableInfo{
         .id = try allocator.dupe(u8, id),
         .name = try allocator.dupe(u8, name),
         .status = try allocator.dupe(u8, "active"),
+        // cwd is intentionally empty in create_session — the worker
+        // upserts the cwd on the first llm_history insert (see
+        // insert_llm_histories.zig:183). Pre-existing pattern; the
+        // previous version of this literal also initialized cwd = ""
+        // but the lazy-analysis of `zig build test` didn't catch the
+        // missing field. The install target (which compiled fine
+        // before) now flags it because the struct grew by 2 fields
+        // and the missing `.cwd` slipped past the original code path.
+        .cwd = try allocator.dupe(u8, ""),
         .created_at = try allocator.dupe(u8, ""),
         .updated_at = try allocator.dupe(u8, ""),
         .selected_profile_model = try allocator.dupe(u8, ""),
         .git_worktree_cwd = try allocator.dupe(u8, ""),
+        // Migration 063 — populated with the just-bound value for the
+        // flag; last_finish_reason is empty until the workflow writes
+        // the first value (Chunk 2 Task 2.1).
+        .is_auto_retry_until_stop = try allocator.dupe(u8, flag),
+        .last_finish_reason = try allocator.dupe(u8, ""),
     };
 }
 
@@ -2341,6 +2367,64 @@ pub fn updateTaskName(
     // A failure here is non-fatal — the task row is the source of
     // truth for the sidebar, and the next rename will reconcile.
     updateSessionName(allocator, db, session_id, new_name) catch {};
+}
+
+/// Update the unattended-mode flag for an existing session (Migration 063).
+///
+/// `value` must be "1" or "0" — handler layer validates the input shape.
+/// Empty string is rejected here (treated as no-op) so a malformed PUT
+/// doesn't accidentally flip the flag. The schema's NOT NULL DEFAULT 0
+/// keeps existing rows consistent.
+///
+/// Broadcasts an "updated" SSE event so the ChatsList `🔁 unattended`
+/// badge updates live without a refetch.
+pub fn updateSessionAutoRetryUntilStop(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    value: []const u8,
+) !void {
+    const normalized: []const u8 = if (std.mem.eql(u8, value, "1")) "1" else "0";
+    const sql =
+        "UPDATE sessions SET is_auto_retry_until_stop = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    try db.exec(allocator, sql, &.{ normalized, id });
+
+    const session = getSession(allocator, db, id) catch null;
+    if (session) |s| {
+        defer s.deinit(allocator);
+        ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+            .action = "updated",
+            .id = s.id,
+            .name = s.name,
+            .status = s.status,
+            .cwd = s.cwd,
+            .created_at = s.created_at,
+            .updated_at = s.updated_at,
+            .selected_profile_model = s.selected_profile_model,
+            .git_worktree_cwd = s.git_worktree_cwd,
+            .is_auto_retry_until_stop = s.is_auto_retry_until_stop,
+            .last_finish_reason = s.last_finish_reason,
+        }) catch {};
+    }
+}
+
+/// Update the most-recent `finish_reason` cache for an existing session
+/// (Migration 063). Called by `workflow.zig` after every LLM call so a
+/// future workflow invocation (e.g., after a server restart) starts
+/// from the right state without re-querying `llm_history.finish_reason`.
+///
+/// No SSE broadcast — `last_finish_reason` is an internal cache, not a
+/// UI surface (the ChatView shows the live SSE-streamed reason; this
+/// column only backs the unattended-soft-bail logic in workflow.zig).
+pub fn updateSessionLastFinishReason(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    finish_reason: []const u8,
+) !void {
+    const sql =
+        "UPDATE sessions SET last_finish_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    try db.exec(allocator, sql, &.{ finish_reason, id });
 }
 
 /// Update session selected_profile_model (the name of a profile in
