@@ -138,7 +138,9 @@ pub fn getSessionList(
         \\           ORDER BY h2.created_at DESC
         \\           LIMIT 1),
         \\         'Agent'
-        \\       ) AS agent
+        \\       ) AS agent,
+        \\       COALESCE(s.is_auto_retry_until_stop, '0') AS is_auto_retry_until_stop,
+        \\       COALESCE(s.last_finish_reason, '') AS last_finish_reason
         \\FROM (
         \\  SELECT h.session_id, MAX(h.created_at) AS created_at
         \\    FROM llm_history h
@@ -256,7 +258,9 @@ pub fn getSessionListWithCursor(
         \\SELECT s.id, s.name, s.status, s.cwd, COALESCE(s.created_at, ''),
         \\COALESCE(s.updated_at, ''),
         \\COALESCE(h.agent, 'Agent'),
-        \\COALESCE(s.selected_profile_model, '')
+        \\COALESCE(s.selected_profile_model, ''),
+        \\COALESCE(s.is_auto_retry_until_stop, '0'),
+        \\COALESCE(s.last_finish_reason, '')
         \\FROM sessions s
         \\LEFT JOIN llm_history h ON s.id = h.session_id
         \\WHERE {s}
@@ -283,12 +287,11 @@ pub fn getSessionListWithCursor(
             .updated_at = try allocator.dupe(u8, row.values[5]),
             .agent = try allocator.dupe(u8, row.values[6]),
             .selected_profile_model = try allocator.dupe(u8, row.values[7]),
-            // Migration 063 — Task 1.4 extends the SELECT to read these
-            // two new columns from row.values[8] / row.values[9].
-            // For now (Task 1.2) initialize to empty strings so the
-            // struct literal type-checks.
-            .is_auto_retry_until_stop = try allocator.dupe(u8, ""),
-            .last_finish_reason = try allocator.dupe(u8, ""),
+            // Migration 063 — the SELECT adds 2 trailing columns, so
+            // the index shifts by 2. row.values[8] = is_auto_retry_until_stop,
+            // row.values[9] = last_finish_reason.
+            .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[8]),
+            .last_finish_reason = try allocator.dupe(u8, row.values[9]),
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -360,6 +363,12 @@ pub fn buildSessionListJson(
             .agent = sess.agent,
             .session_name = sess.session_name,
             .selected_profile_model = sess.selected_profile_model,
+            // Migration 063 — pass through. `SessionInfo` already
+            // populates both fields from `row.values[8..10]`; the JSON
+            // layer just needs to forward them so the API response
+            // carries them to the frontend.
+            .is_auto_retry_until_stop = sess.is_auto_retry_until_stop,
+            .last_finish_reason = sess.last_finish_reason,
         });
     }
 
@@ -2248,7 +2257,13 @@ pub fn getSession(
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?SessionTableInfo {
-    const sql = "SELECT s.id, s.name, s.status, COALESCE(s.cwd, ''), COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(s.selected_profile_model, ''), COALESCE(s.git_worktree_cwd, '') FROM sessions s WHERE s.id = ?";
+    const sql =
+        \\SELECT s.id, s.name, s.status, COALESCE(s.cwd, ''),
+        \\       COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''),
+        \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.git_worktree_cwd, ''),
+        \\       COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, '')
+        \\FROM sessions s WHERE s.id = ?
+    ;
 
     var rows = try db.query(allocator, sql, &.{id});
     defer rows.deinit();
@@ -2263,12 +2278,11 @@ pub fn getSession(
             .updated_at = try allocator.dupe(u8, row.values[5]),
             .selected_profile_model = try allocator.dupe(u8, row.values[6]),
             .git_worktree_cwd = try allocator.dupe(u8, row.values[7]),
-            // Migration 063 — Task 1.3 / 1.4 extend the SELECT to read
-            // these two new columns from row.values[8] / row.values[9].
-            // For now (Task 1.2) initialize to empty strings so the
-            // struct literal type-checks.
-            .is_auto_retry_until_stop = try allocator.dupe(u8, ""),
-            .last_finish_reason = try allocator.dupe(u8, ""),
+            // Migration 063 — row.values[8] = is_auto_retry_until_stop
+            // (COALESCE'd to '0'); row.values[9] = last_finish_reason
+            // (COALESCE'd to '').
+            .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[8]),
+            .last_finish_reason = try allocator.dupe(u8, row.values[9]),
         };
         row.deinit(allocator);
         return session;

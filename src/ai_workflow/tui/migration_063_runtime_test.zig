@@ -99,12 +99,15 @@ test "create_session: is_auto_retry_until_stop = '1' is persisted to sessions ro
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
-    _ = try llm_history.create_session(alloc, &ctx.db, "s1", "test", "1");
+    {
+        const session = try llm_history.create_session(alloc, &ctx.db, "s1", "test", "1");
+        defer session.deinit(alloc);
 
-    const got = (try readColumn(&ctx, alloc, "is_auto_retry_until_stop", "s1")) orelse
-        return error.NoRow;
-    defer alloc.free(got);
-    try testing.expectEqualStrings("1", got);
+        const got = (try readColumn(&ctx, alloc, "is_auto_retry_until_stop", "s1")) orelse
+            return error.NoRow;
+        defer alloc.free(got);
+        try testing.expectEqualStrings("1", got);
+    }
 }
 
 test "create_session: empty is_auto_retry_until_stop defaults to '0'" {
@@ -114,12 +117,15 @@ test "create_session: empty is_auto_retry_until_stop defaults to '0'" {
     defer ctx.threaded.deinit();
 
     // Pass empty string — the helper coerces to "0" via SQL binding.
-    _ = try llm_history.create_session(alloc, &ctx.db, "s2", "test", "");
+    {
+        const session = try llm_history.create_session(alloc, &ctx.db, "s2", "test", "");
+        defer session.deinit(alloc);
 
-    const got = (try readColumn(&ctx, alloc, "is_auto_retry_until_stop", "s2")) orelse
-        return error.NoRow;
-    defer alloc.free(got);
-    try testing.expectEqualStrings("0", got);
+        const got = (try readColumn(&ctx, alloc, "is_auto_retry_until_stop", "s2")) orelse
+            return error.NoRow;
+        defer alloc.free(got);
+        try testing.expectEqualStrings("0", got);
+    }
 }
 
 test "getSession: reads back is_auto_retry_until_stop + last_finish_reason" {
@@ -130,10 +136,13 @@ test "getSession: reads back is_auto_retry_until_stop + last_finish_reason" {
 
     // Write the new columns directly so we can verify getSession
     // surfaces them — bypass create_session (which coerces the flag).
+    // db.exec takes argv as `[]const []const u8` (a slice of strings);
+    // an empty `&.{}` tuple binds every `?` as SQL NULL, so the
+    // 5 placeholders below need explicit strings.
     try ctx.db.exec(alloc,
         "INSERT INTO sessions (id, name, status, is_auto_retry_until_stop, last_finish_reason) " ++
-        "VALUES ('s3', 'test', 'active', '1', 'stop')",
-        &.{});
+        "VALUES (?, ?, 'active', ?, ?)",
+        &[_][]const u8{ "s3", "test", "1", "stop" });
 
     const got = (try llm_history.getSession(alloc, &ctx.db, "s3")) orelse
         return error.NoRow;
@@ -148,7 +157,10 @@ test "updateSessionAutoRetryUntilStop: toggles 0 -> 1" {
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
-    _ = try llm_history.create_session(alloc, &ctx.db, "s4", "test", "");
+    {
+        const session = try llm_history.create_session(alloc, &ctx.db, "s4", "test", "");
+        defer session.deinit(alloc);
+    }
 
     try llm_history.updateSessionAutoRetryUntilStop(alloc, &ctx.db, "s4", "1");
 
@@ -164,7 +176,10 @@ test "updateSessionLastFinishReason: persists the latest value" {
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
-    _ = try llm_history.create_session(alloc, &ctx.db, "s5", "test", "");
+    {
+        const session = try llm_history.create_session(alloc, &ctx.db, "s5", "test", "");
+        defer session.deinit(alloc);
+    }
 
     try llm_history.updateSessionLastFinishReason(alloc, &ctx.db, "s5", "tool_calls");
 
@@ -180,7 +195,10 @@ test "updateSessionLastFinishReason: overwrites on every call" {
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
-    _ = try llm_history.create_session(alloc, &ctx.db, "s6", "test", "");
+    {
+        const session = try llm_history.create_session(alloc, &ctx.db, "s6", "test", "");
+        defer session.deinit(alloc);
+    }
 
     try llm_history.updateSessionLastFinishReason(alloc, &ctx.db, "s6", "length");
     try llm_history.updateSessionLastFinishReason(alloc, &ctx.db, "s6", "stop");
