@@ -56,9 +56,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import KanbanColumn from './KanbanColumn.vue'
+import KanbanTaskDetailDialog from './KanbanTaskDetailDialog.vue'
 import InlineEditableText from './InlineEditableText.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
-import type { WorkspaceItem, Task } from '../stores/workspaces'
+import type { WorkspaceItem, Task, KanbanColumn as KanbanColumnType } from '../stores/workspaces'
 
 const props = withDefaults(
   defineProps<{
@@ -112,6 +113,12 @@ const emit = defineEmits<{
   editRoutine: [workspaceId: string, itemId: string, taskId: string]
   runRoutine: [workspaceId: string, itemId: string, taskId: string]
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
+  // Open the per-task detail dialog (kanban-task-detail-dialog
+  // feature). Consumed INTERNALLY here — the dialog is mounted in
+  // this file's template (we own the kanban's columns & tasks, so
+  // resolving the matching column is trivial). AppLayout doesn't
+  // need to know about this dialog.
+  viewTaskDetail: [taskId: string]
   // The column's "⋮" menu sends these; the host opens
   // KanbanColumnEditor in the right mode.
   requestRenameColumn: [columnId: string]
@@ -191,6 +198,62 @@ const handleProjectRootSelected = async (path: string) => {
     pathPickerError.value = err instanceof Error ? err.message : String(err)
   } finally {
     pathPickerBusy.value = false
+  }
+}
+
+// ─── Task-detail dialog (kanban-task-detail-dialog — Chunk 4) ───────────
+//
+// The dialog is mounted locally in this component (NOT in AppLayout)
+// because we already have the active kanban's columns + tasks in scope
+// and resolving the matching column from `task.kanban_column_id` is
+// trivial. Mounting it in AppLayout would force AppLayout to also know
+// about the kanban's column structure, which is more complex.
+//
+// State flow:
+//   - `activeTaskDetailId` — the id of the task whose details the user
+//     wants to edit. Set when KanbanColumn's @view-task-detail fires.
+//   - `activeTaskDetail` — the live Task object (resolved via `.find`).
+//     Reactively updates if the store modifies the task mid-edit.
+//   - `activeTaskDetailColumn` — the column hosting the task (nullable
+//     for tasks with no kanban_column_id yet).
+//   - `showTaskDetail` — drives the dialog's open/closed state.
+const activeTaskDetailId = ref<string | null>(null)
+const showTaskDetail = ref(false)
+
+const activeTaskDetail = computed<Task | null>(() => {
+  if (!activeTaskDetailId.value) return null
+  return (props.item.tasks ?? []).find((t) => t.id === activeTaskDetailId.value) ?? null
+})
+
+const activeTaskDetailColumn = computed<KanbanColumnType | null>(() => {
+  const t = activeTaskDetail.value
+  if (!t || !t.kanban_column_id) return null
+  return (props.item.kanban_columns ?? []).find((c) => c.id === t.kanban_column_id) ?? null
+})
+
+const handleViewTaskDetail = (taskId: string) => {
+  activeTaskDetailId.value = taskId
+  showTaskDetail.value = true
+}
+
+// Dialog save handler — delegates to the store action which runs the
+// optimistic update + API call + rollback-on-error. We close the
+// dialog only on success; on error we keep it open so the user can
+// retry without re-typing.
+const handleTaskDetailSave = async (payload: { name: string; description: string }) => {
+  if (!activeTaskDetailId.value) return
+  try {
+    await workspacesStore.updateTaskDetails(
+      props.workspaceId,
+      props.itemId || props.item.id,
+      activeTaskDetailId.value,
+      payload,
+    )
+    showTaskDetail.value = false
+    activeTaskDetailId.value = null
+  } catch (err) {
+    console.error('Failed to save task details:', err)
+    // Keep the dialog open so the user can retry / fix
   }
 }
 </script>
@@ -298,6 +361,7 @@ const handleProjectRootSelected = async (path: string) => {
           @edit-routine="(ws, item, id) => emit('editRoutine', ws, item, id)"
           @run-routine="(ws, item, id) => emit('runRoutine', ws, item, id)"
           @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
+          @view-task-detail="handleViewTaskDetail"
         />
       </div>
     </div>
@@ -320,6 +384,19 @@ const handleProjectRootSelected = async (path: string) => {
     :close-on-select="false"
     title="Select Project Root for this Kanban"
     @select="handleProjectRootSelected"
+  />
+  <!--
+    KanbanTaskDetailDialog (kanban-task-detail-dialog feature). Mounted
+    at the kanban level (not in AppLayout) because resolving the
+    matching column for the active task needs the kanban's column list
+    that's already in scope here. The dialog itself teleports its DOM
+    to <body> internally; this mount only controls its v-model:show.
+  -->
+  <KanbanTaskDetailDialog
+    v-model:show="showTaskDetail"
+    :task="activeTaskDetail"
+    :column="activeTaskDetailColumn"
+    @save="handleTaskDetailSave"
   />
 </template>
 
