@@ -85,6 +85,9 @@ pub const SessionUpdateResponse = struct {
     name: []const u8,
     status: []const u8,
     selected_profile_model: []const u8,
+    /// Migration 063 — echo the unattended-mode flag back so the
+    /// frontend's reactive Pinia store refreshes from the response.
+    is_auto_retry_until_stop: []const u8 = "",
 };
 
 pub const WorkerResponse = struct { id: []const u8, status: []const u8 };
