@@ -1776,6 +1776,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration058AddLlmHistoryFts.version, .name = Migration058AddLlmHistoryFts.name, .up = Migration058AddLlmHistoryFts.up },
     .{ .version = Migration059AddCreatedIso.version, .name = Migration059AddCreatedIso.name, .up = Migration059AddCreatedIso.up },
     .{ .version = Migration060RebackfillCreatedIso.version, .name = Migration060RebackfillCreatedIso.name, .up = Migration060RebackfillCreatedIso.up },
+    .{ .version = Migration061AddTaskDescription.version, .name = Migration061AddTaskDescription.name, .up = Migration061AddTaskDescription.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -1954,6 +1955,53 @@ pub const Migration059AddCreatedIso = struct {
             allocator,
             "CREATE INDEX IF NOT EXISTS idx_llm_history_created_iso ON llm_history(created_iso)",
             &[_][]const u8{},
+        );
+    }
+};
+
+/// Migration 061 — Add a `description` column to `workspace_item_tasks`.
+///
+/// ## Why this migration exists
+///
+/// Chunk 1 of the kanban-task-detail-dialog feature (plan:
+/// `docs/superpowers/plans/2026-07-16-kanban-task-detail-dialog.md`).
+/// Each task (chat / routine / kanban card / folder task) gets a
+/// free-form `description` field that the detail dialog edits. Mirrors
+/// the kanban_columns.description precedent (Migration 053): same
+/// `NOT NULL DEFAULT ''` shape so legacy rows (which have no description)
+/// survive the migration without a separate backfill, and the empty
+/// string is the canonical "no description" sentinel that the UI
+/// renders as a placeholder ("Add a description…").
+///
+/// ## What this does
+///
+/// Adds the column via `addColumnIfMissing` (NOT raw `ALTER TABLE`)
+/// so fresh-DB installs that already declare the column in their
+/// canonical CREATE TABLE don't crash on "duplicate column" — see
+/// memory `nalar-fresh-db-migration-cascade` for the rationale. The
+/// helper is a no-op on a DB that already has the column (returns
+/// silently after the `pragma_table_info` check).
+///
+/// ## Why NOT NULL (vs nullable)
+///
+/// 1. The application always reads description as `[]const u8`
+///    (never `?[]const u8`) — a nullable column would force every
+///    SELECT to COALESCE and every INSERT to handle NULL explicitly.
+/// 2. The DB-level NOT NULL is a defensive check; the application
+///    layer never writes NULL.
+/// 3. Mirrors Migration 053's convention for short text fields
+///    with a sentinel "absent" value.
+pub const Migration061AddTaskDescription = struct {
+    pub const version: u32 = 61;
+    pub const name = "add_task_description";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try addColumnIfMissing(
+            db,
+            allocator,
+            "workspace_item_tasks",
+            "description",
+            "description TEXT NOT NULL DEFAULT ''",
         );
     }
 };
