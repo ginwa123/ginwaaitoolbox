@@ -1776,7 +1776,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration058AddLlmHistoryFts.version, .name = Migration058AddLlmHistoryFts.name, .up = Migration058AddLlmHistoryFts.up },
     .{ .version = Migration059AddCreatedIso.version, .name = Migration059AddCreatedIso.name, .up = Migration059AddCreatedIso.up },
     .{ .version = Migration060RebackfillCreatedIso.version, .name = Migration060RebackfillCreatedIso.name, .up = Migration060RebackfillCreatedIso.up },
-    .{ .version = Migration062AddTaskDescription.version, .name = Migration062AddTaskDescription.name, .up = Migration062AddTaskDescription.up },
+    .{ .version = Migration061FixCreatedIsoYear.version, .name = Migration061FixCreatedIsoYear.name, .up = Migration061FixCreatedIsoYear.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -1959,50 +1959,95 @@ pub const Migration059AddCreatedIso = struct {
     }
 };
 
-/// Migration 062 — Add a `description` column to `workspace_item_tasks`.
+/// Migration 061 — Re-backfill `created_iso` for rows that are NULL,
+/// empty, OR have the wrong year (e.g. year 58,507 from the
+/// nanosecond/microsecond mismatch).
 ///
 /// ## Why this migration exists
 ///
-/// Chunk 1 of the kanban-task-detail-dialog feature (plan:
-/// `docs/superpowers/plans/2026-07-16-kanban-task-detail-dialog.md`).
-/// Each task (chat / routine / kanban card / folder task) gets a
-/// free-form `description` field that the detail dialog edits. Mirrors
-/// the kanban_columns.description precedent (Migration 053): same
-/// `NOT NULL DEFAULT ''` shape so legacy rows (which have no description)
-/// survive the migration without a separate backfill, and the empty
-/// string is the canonical "no description" sentinel that the UI
-/// renders as a placeholder ("Add a description…").
+/// Migration 060's backfill only handled rows where `created_iso` was
+/// NULL or empty. It did NOT detect the **wrong-year** rows (e.g.
+/// `58507-07-26 ...`) that were silently produced by `saveMessage`
+/// passing nanosecond values (length 19) to a helper expecting
+/// microseconds. The helper divided by `us_per_s` (1,000,000)
+/// instead of `ns_per_s` (1,000,000,000), producing sec ≈ 1.78e12
+/// instead of 1.78e9 — which decodes as year 58,507 in stdlib
+/// epoch math. The wrong value passed SQLite's `IS NULL OR = ''`
+/// guard and was never overwritten.
 ///
-/// ## What this does
+/// This migration fixes both shapes (NULL/empty AND wrong-year) with
+/// a single UPDATE that recomputes from `created_at` directly. We use
+/// `substr(created_at, 1, 10)` because the first 10 decimal digits of
+/// either a microsecond or a nanosecond Unix timestamp are the same
+/// seconds-since-epoch value (microseconds = "sNNNNNN…", nanoseconds
+/// = "sNNNNNNNNNN…", the `s` seconds prefix is identical). `CAST(...,
+/// INTEGER)` then gives SQLite a clean integer for `datetime(..., 'unixepoch')`.
 ///
-/// Adds the column via `addColumnIfMissing` (NOT raw `ALTER TABLE`)
-/// so fresh-DB installs that already declare the column in their
-/// canonical CREATE TABLE don't crash on "duplicate column" — see
-/// memory `nalar-fresh-db-migration-cascade` for the rationale. The
-/// helper is a no-op on a DB that already has the column (returns
-/// silently after the `pragma_table_info` check).
+/// ## Wrong-year detection
 ///
-/// ## Why NOT NULL (vs nullable)
+/// `created_iso LIKE '19__-%' OR LIKE '20__-%'` matches valid years
+/// from 1970–2099 (the plausible Unix‑epoch range for any
+/// production data). Rows starting with `5850[7-9]-`, `5860-`, or
+/// any other "year > 9999" are caught by the negation and
+/// overwritten with the recompute. Pre‑2000 rows (e.g. `1999-12-31
+/// ...`) are preserved because they're legitimate old data, not a
+/// bug. `IS NULL` and `= ''` are kept for safety (matches the same
+/// rows Migration 060 already fixed).
 ///
-/// 1. The application always reads description as `[]const u8`
-///    (never `?[]const u8`) — a nullable column would force every
-///    SELECT to COALESCE and every INSERT to handle NULL explicitly.
-/// 2. The DB-level NOT NULL is a defensive check; the application
-///    layer never writes NULL.
-/// 3. Mirrors Migration 053's convention for short text fields
-///    with a sentinel "absent" value.
-pub const Migration062AddTaskDescription = struct {
-    pub const version: u32 = 62;
-    pub const name = "add_task_description";
+/// We use LIKE (not GLOB) for consistency with the rest of the
+/// codebase. SQLite's LIKE treats `[0-9]` as literal chars (the
+/// bracket is not a wildcard), so we use the `_` wildcard to mean
+/// "any single character" — `'20__-%'` matches anything starting
+/// with `20`, any 2 chars, `-`.
+///
+/// ## Idempotency
+///
+/// Re-running is safe: rows with already-correct `created_iso` are
+/// untouched. Only rows that still need fixing get updated.
+pub const Migration061FixCreatedIsoYear = struct {
+    pub const version: u32 = 61;
+    pub const name = "fix_llm_history_created_iso_year";
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try addColumnIfMissing(
-            db,
+        // UPDATE WHERE clause matches three categories:
+        //   1. created_iso IS NULL
+        //   2. created_iso = ''
+        //   3. created_iso has a year that doesn't match any plausible
+        //      Unix‑timestamp year — i.e. NOT in 19xx and NOT in 20xx
+        //      (which catches '58507-07-26 ...' and other clearly
+        //      wrong‑year rows).
+        //
+        // We use LIKE (not GLOB) for portability with the rest of
+        // the codebase. LIKE wildcards are `%` (any sequence) and
+        // `_` (any single char). SQLite's LIKE does NOT support
+        // character classes like `[0-9]` — the bracket chars are
+        // treated as literals, so the pattern would never match.
+        // We accept 19xx AND 20xx to cover any plausible Unix‑epoch
+        // year (1970–2099). Verified:
+        //   '2026-07-15' LIKE '19__-%' OR LIKE '20__-%' → 1
+        //   '1999-12-31' LIKE '19__-%' OR LIKE '20__-%' → 1
+        //   '58507-07-26' LIKE '19__-%' OR LIKE '20__-%' → 0
+        //
+        // The recompute uses substr(created_at, 1, 10) to extract
+        // the seconds prefix of the timestamp, which works for both
+        // microsecond AND nanosecond stored values (the first 10
+        // digits are seconds-since-epoch in either case).
+        try db.exec(
             allocator,
-            "workspace_item_tasks",
-            "description",
-            "description TEXT NOT NULL DEFAULT ''",
-        );
+            \\UPDATE llm_history
+            \\SET created_iso = CASE
+            \\    WHEN created_at IS NULL OR created_at = ''
+            \\        THEN datetime('now')
+            \\    ELSE datetime(
+            \\        CAST(substr(created_at, 1, 10) AS INTEGER),
+            \\        'unixepoch'
+            \\    )
+            \\END
+            \\WHERE created_iso IS NULL
+            \\   OR created_iso = ''
+            \\   OR (created_iso NOT LIKE '19__-%'
+            \\       AND created_iso NOT LIKE '20__-%')
+        , &[_][]const u8{});
     }
 };
 
