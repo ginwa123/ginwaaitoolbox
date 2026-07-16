@@ -663,6 +663,10 @@ export interface Chat {
   session_name?: string
   status?: string
   selected_profile_model?: string
+  /// Migration 063 — "0" / "1" opt-in for unattended mode. Always
+  /// present in the GET /api/sessions response (ChatsList uses this
+  /// to render the `🔁 unattended` badge).
+  is_auto_retry_until_stop?: string
 }
 
 export interface Message {
@@ -930,6 +934,10 @@ export async function getChats(
           created_at: session.created_at || null,
           updated_at: session.updated_at || null,
           cwd: session.cwd || '',
+          // Migration 063 — default to "0" (off) when omitted so the
+          // ChatsList badge condition `=== '1'` is a defined check.
+          // Matches the SQL COALESCE default in llm_history.zig.
+          is_auto_retry_until_stop: session.is_auto_retry_until_stop || '0',
         }
       })
     }

@@ -30,7 +30,7 @@ const processingState = inject<Ref<Record<string, boolean>>>('processingState', 
 
 // State
 const chatsLoading = ref(false)
-const navItems = ref<{ id: string; name: string; active?: boolean; processing?: boolean; relativeTime?: string; selected_profile_model?: string; git_worktree_cwd?: string }[]>([])
+const navItems = ref<{ id: string; name: string; active?: boolean; processing?: boolean; relativeTime?: string; selected_profile_model?: string; git_worktree_cwd?: string; is_auto_retry_until_stop?: string }[]>([])
 const chatsHasMore = ref(false)
 const chatsNextCursor = ref<string | null>(null)
 const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
@@ -141,6 +141,9 @@ const loadChats = async () => {
       relativeTime: formatRelativeTime(session.updated_at),
       selected_profile_model: session.selected_profile_model || '',
       git_worktree_cwd: session.git_worktree_cwd || '',
+      // Migration 063 — defaulted to "0" in getChats mapping so the
+      // `=== '1'` badge check below is well-defined.
+      is_auto_retry_until_stop: session.is_auto_retry_until_stop || '0',
     }))
     console.log('[ChatsList] navItems set to:', navItems.value)
     chatsHasMore.value = data.has_more
@@ -450,6 +453,14 @@ defineExpose({
                 :title="item.git_worktree_cwd"
                 data-testid="worktree-badge"
                 >🌳 worktree</span
+              >
+              <span
+                v-if="item.is_auto_retry_until_stop === '1'"
+                class="ml-1 text-[10px] font-mono"
+                :style="{ color: '#f59e0b' }"
+                title="Keeps retrying on transient LLM errors without human intervention"
+                data-testid="auto-retry-badge"
+                >🔁 unattended</span
               >
             </span>
             <span class="text-xs opacity-60 shrink-0 ml-2">{{ item.relativeTime || 'now' }}</span>
