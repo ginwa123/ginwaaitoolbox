@@ -48,6 +48,10 @@ const emit = defineEmits<{
   editRoutine: [workspaceId: string, itemId: string, taskId: string]
   runRoutine: [workspaceId: string, itemId: string, taskId: string]
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
+  // Open the full task-detail dialog (kanban-task-detail-dialog
+  // feature). The host (KanbanView) opens the dialog locally with
+  // the matching task — we only emit the id.
+  viewTaskDetail: [taskId: string]
 }>()
 
 // Shared logic — event handlers, routine computeds, drop indicator.
@@ -64,6 +68,18 @@ const {
   handleRunRoutine,
   handlePinToggle,
 } = useTaskActions(props, emit)
+
+// Local-only handler — opens the per-task detail dialog. NOT in
+// useTaskActions because that composable is shared with the row
+// variant (sidebar list) which doesn't render the info button. CRITICAL:
+// we must stopPropagation so the click doesn't also bubble up to the
+// card-root <button>'s @click="handleSelectTask" — otherwise both the
+// dialog AND the chat would open on the same click.
+const handleViewTaskDetail = (event: MouseEvent) => {
+  event.stopPropagation()
+  event.preventDefault()
+  emit('viewTaskDetail', props.task.id)
+}
 
 // (card-ux-v3 — Jira-style priority-bar pattern). A thin 3px colored
 // stripe down the left edge of the card that reflects the task's
@@ -303,6 +319,19 @@ const typeBadge = computed<string | null>(() => {
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
           </svg>
         </button>
+        <!-- Info / view detail button (hover-revealed). Opens the
+             KanbanTaskDetailDialog via the host (KanbanView). -->
+        <button
+          @click="handleViewTaskDetail($event)"
+          class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-cyan-400"
+          style="color: var(--semantic-text-dim);"
+          title="View task details"
+          data-testid="view-task-detail-btn"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </button>
         <!-- Run Now play-icon button (between edit and delete) -->
         <button
           @click="handleRunRoutine($event)"
@@ -380,6 +409,19 @@ const typeBadge = computed<string | null>(() => {
         >
           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+        </button>
+        <!-- Info / view detail button (hover-revealed). Opens the
+             KanbanTaskDetailDialog via the host (KanbanView). -->
+        <button
+          @click="handleViewTaskDetail($event)"
+          class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-cyan-400"
+          style="color: var(--semantic-text-dim);"
+          title="View task details"
+          data-testid="view-task-detail-btn"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
         </button>
         <button

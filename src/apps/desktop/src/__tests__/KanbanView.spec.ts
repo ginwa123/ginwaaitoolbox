@@ -437,3 +437,121 @@ describe('KanbanView — inline rename pencil', () => {
     expect(emitted![0]).toEqual(['Sprint 13'])
   })
 })
+
+// ─── viewTaskDetail → KanbanTaskDetailDialog (kanban-task-detail-dialog — Chunk 4)
+//
+// The new info ("ⓘ") button on each task card emits viewTaskDetail
+// up the chain (Card → Column → View). KanbanView consumes the emit
+// internally — it owns the dialog state, the active task lookup, the
+// matching-column lookup, and calls workspacesStore.updateTaskDetails
+// on save. AppLayout never sees this emit.
+//
+// We verify two things:
+//   1. The emit is wired up between KanbanColumn and KanbanView's
+//      handler (so a Unit-style test of "KanbanColumn emitted
+//      viewTaskDetail → KanbanView's handler ran" passes).
+//   2. The handler resolves the active task + opens the dialog
+//      (visualized by the dialog's data-testid teleporting to body).
+
+describe('KanbanView — viewTaskDetail (task detail dialog)', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    vi.restoreAllMocks()
+  })
+
+  it('handles view-task-detail emitted from KanbanColumn by opening the dialog', async () => {
+    const item = makeItem({
+      kanban_columns: [makeColumn({ id: 'col_x', name: 'todo', position: 0 })],
+      tasks: [
+        {
+          id: 'task_42',
+          name: 'My task',
+          description: 'A description',
+          kanban_column_id: 'col_x',
+          kanban_position: 0,
+        },
+      ],
+    })
+    wrapper = mountView(item)
+    await flushPromises()
+
+    // Dialog not in the DOM yet.
+    expect(document.querySelector('[data-testid="kanban-task-detail-dialog"]')).toBeNull()
+
+    // Simulate the KanbanColumn emitting viewTaskDetail (this is
+    // what fires when the user clicks the "ⓘ" button on the card).
+    const column = wrapper.findComponent({ name: 'KanbanColumn' })
+    column.vm.$emit('viewTaskDetail', 'task_42')
+    await flushPromises()
+
+    // The dialog teleports to document.body, so query the document,
+    // not the wrapper (per the vue-teleport-vitest-document-queryselector
+    // skill convention).
+    const dialog = document.querySelector('[data-testid="kanban-task-detail-dialog"]')
+    expect(dialog).not.toBeNull()
+  })
+
+  it('passes the correct task to the dialog as a prop after view-task-detail fires', async () => {
+    const item = makeItem({
+      kanban_columns: [makeColumn({ id: 'col_x', name: 'todo', position: 0 })],
+      tasks: [
+        {
+          id: 'task_42',
+          name: 'My task',
+          description: 'A description',
+          kanban_column_id: 'col_x',
+          kanban_position: 0,
+        },
+      ],
+    })
+    wrapper = mountView(item)
+    await flushPromises()
+
+    const column = wrapper.findComponent({ name: 'KanbanColumn' })
+    column.vm.$emit('viewTaskDetail', 'task_42')
+    await flushPromises()
+
+    // The dialog is now mounted. Verify the pre-filled input has
+    // the task name (the dialog's watch effect resets state when
+    // the active task changes).
+    const input = document.querySelector<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-name"]',
+    )
+    expect(input).not.toBeNull()
+    expect(input!.value).toBe('My task')
+
+    const textarea = document.querySelector<HTMLTextAreaElement>(
+      '[data-testid="kanban-task-detail-description"]',
+    )
+    expect(textarea).not.toBeNull()
+    expect(textarea!.value).toBe('A description')
+  })
+
+  it('does not emit viewTaskDetail up to AppLayout (dialog is owned by KanbanView)', async () => {
+    // Plan rationale: the dialog only needs the kanban's column list
+    // (for the metadata strip). KanbanView already has that in scope,
+    // so mounting it here avoids coupling AppLayout to kanban internals.
+    // Verify viewTaskDetail does NOT bubble out of KanbanView.
+    const item = makeItem({
+      kanban_columns: [makeColumn({ id: 'col_x', name: 'todo', position: 0 })],
+      tasks: [
+        { id: 'task_42', name: 'X', kanban_column_id: 'col_x', kanban_position: 0 },
+      ],
+    })
+    wrapper = mountView(item)
+    await flushPromises()
+
+    const column = wrapper.findComponent({ name: 'KanbanColumn' })
+    column.vm.$emit('viewTaskDetail', 'task_42')
+    await flushPromises()
+
+    expect(wrapper.emitted('viewTaskDetail')).toBeFalsy()
+  })
+})

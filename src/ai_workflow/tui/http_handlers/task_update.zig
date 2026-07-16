@@ -83,7 +83,7 @@ fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Request body required" }) });
     }
 
-    const json_body = std.json.parseFromSliceLeaky(http_response.TaskUpdateRequest, allocator, body, .{}) catch {
+    const json_body = std.json.parseFromSliceLeaky(http_response.TaskUpdateRequest, allocator, body, .{ .ignore_unknown_fields = true }) catch {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON" }) });
     };
 
@@ -144,6 +144,41 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
     // a re-INSERT just replaces the existing row in place.
     if (input.body.schedule != null or input.body.initial_prompt != null or input.body.enabled != null) {
         try updateRoutineFields(allocator, input.db, input.io, task_id, input.body);
+    }
+
+    // Description branch. When `body.description` is present (non-null),
+    // overwrite the column with the new value. Empty string is the
+    // canonical "no description" sentinel and IS persisted (NOT
+    // skipped) — the user actively cleared the field, which the UI
+    // renders as the "Add a description…" placeholder. Null means
+    // "leave unchanged" (the caller didn't include the field in the
+    // PUT body). Migration 062 added the column.
+    //
+    // We use a dynamic SQL builder + parallel `bind_values` list
+    // (single `db.exec` call) per PR #101 review feedback. The
+    // empty-string case uses a SQL '' literal (NOT a `?` bind)
+    // because `SqliteBackend.exec` binds empty `[]const u8` slices
+    // as SQL NULL, which would fail the column's NOT NULL DEFAULT ''
+    // constraint — see memory `sqlite-backend-empty-slice-binds-as-null`.
+    if (input.body.description) |desc| {
+        var sql_buf: std.ArrayList(u8) = .empty;
+        defer sql_buf.deinit(allocator);
+        var bind_values: std.ArrayList([]const u8) = .empty;
+        defer bind_values.deinit(allocator);
+
+        try sql_buf.appendSlice(allocator,
+            "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
+        try sql_buf.appendSlice(allocator, ", description = ");
+        if (desc.len == 0) {
+            try sql_buf.appendSlice(allocator, "''");
+        } else {
+            try sql_buf.appendSlice(allocator, "?");
+            try bind_values.append(allocator, desc);
+        }
+        try sql_buf.appendSlice(allocator, " WHERE id = ?");
+        try bind_values.append(allocator, task_id);
+
+        input.db.exec(allocator, sql_buf.items, bind_values.items) catch return error.FailedToUpdateTask;
     }
 
     // Conditional split: route name updates through the cascade

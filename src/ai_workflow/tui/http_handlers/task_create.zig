@@ -197,10 +197,51 @@ fn createRoutineTask(
     // store a separate session_id column. The session_id field in
     // the request body is accepted for backward compatibility but
     // is intentionally ignored.
-    db.exec(allocator,
-        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES (?, ?, ?, 'routine')",
-        &[_][]const u8{ task_id, input.body.name, input.item_id },
-    ) catch return error.TaskInsertFailed;
+    //
+    // Migration 062: persist description via dynamic SQL builder.
+    // Three cases for description (null / "" / value) all funnel
+    // into a single `db.exec(sql.items, bind_values.items)` call.
+    // The empty-string case uses a SQL '' literal (not a `?` bind)
+    // because `SqliteBackend.exec` binds empty `[]const u8` as
+    // SQL NULL, which would fail the column's NOT NULL DEFAULT ''
+    // constraint — see memory `sqlite-backend-empty-slice-binds-as-null`.
+    {
+        var cols_buf: std.ArrayList(u8) = .empty;
+        defer cols_buf.deinit(allocator);
+        var vals_buf: std.ArrayList(u8) = .empty;
+        defer vals_buf.deinit(allocator);
+        var bind_values: std.ArrayList([]const u8) = .empty;
+        defer bind_values.deinit(allocator);
+
+        try cols_buf.appendSlice(allocator, "id, name, workspace_item_id, task_type");
+        try vals_buf.appendSlice(allocator, "?, ?, ?, 'routine'");
+        try bind_values.appendSlice(allocator, &[_][]const u8{
+            task_id, input.body.name, input.item_id,
+        });
+
+        if (input.body.description) |d| {
+            if (d.len == 0) {
+                // Empty-string: SQL literal '' (NOT bound via `?`).
+                try cols_buf.appendSlice(allocator, ", description");
+                try vals_buf.appendSlice(allocator, ", ''");
+            } else {
+                // Value: bind it.
+                try cols_buf.appendSlice(allocator, ", description");
+                try vals_buf.appendSlice(allocator, ", ?");
+                try bind_values.append(allocator, d);
+            }
+        }
+
+        var sql_buf: std.ArrayList(u8) = .empty;
+        defer sql_buf.deinit(allocator);
+        try sql_buf.print(
+            allocator,
+            "INSERT INTO workspace_item_tasks ({s}) VALUES ({s})",
+            .{ cols_buf.items, vals_buf.items },
+        );
+
+        db.exec(allocator, sql_buf.items, bind_values.items) catch return error.TaskInsertFailed;
+    }
 
     const routine_id = std.fmt.allocPrint(allocator, "routine_{s}", .{task_id}) catch return error.OutOfMemory;
     defer allocator.free(routine_id);
@@ -243,17 +284,49 @@ fn createMemoryTask(
         return error.FailedToWriteMemoryFile;
     }
 
-    db.exec(allocator,
-        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES (?, ?, ?, 'memory')",
-        &[_][]const u8{ task_id, input.body.name, input.item_id },
-    ) catch {
-        // Roll back the file on task-row failure so we don't leave
-        // an orphan .md with no task pointing at it. The helper is
-        // idempotent (returns true on already-missing), so this is
-        // safe even if the file disappeared in the meantime.
-        _ = memories_mod.deleteLocalMemoryFile(allocator, input.io, dir_path, memory_name);
-        return error.MemoryTaskInsertFailed;
-    };
+    // Migration 062: persist description. Same dynamic-SQL builder
+    // pattern as createRoutineTask above — null → omit column, "" →
+    // SQL '' literal (avoids the empty-slice-as-NULL bind footgun),
+    // "x…" → bind via `?`. On failure, roll back the .md file we
+    // just wrote.
+    {
+        var cols_buf: std.ArrayList(u8) = .empty;
+        defer cols_buf.deinit(allocator);
+        var vals_buf: std.ArrayList(u8) = .empty;
+        defer vals_buf.deinit(allocator);
+        var bind_values: std.ArrayList([]const u8) = .empty;
+        defer bind_values.deinit(allocator);
+
+        try cols_buf.appendSlice(allocator, "id, name, workspace_item_id, task_type");
+        try vals_buf.appendSlice(allocator, "?, ?, ?, 'memory'");
+        try bind_values.appendSlice(allocator, &[_][]const u8{
+            task_id, input.body.name, input.item_id,
+        });
+
+        if (input.body.description) |d| {
+            if (d.len == 0) {
+                try cols_buf.appendSlice(allocator, ", description");
+                try vals_buf.appendSlice(allocator, ", ''");
+            } else {
+                try cols_buf.appendSlice(allocator, ", description");
+                try vals_buf.appendSlice(allocator, ", ?");
+                try bind_values.append(allocator, d);
+            }
+        }
+
+        var sql_buf: std.ArrayList(u8) = .empty;
+        defer sql_buf.deinit(allocator);
+        try sql_buf.print(
+            allocator,
+            "INSERT INTO workspace_item_tasks ({s}) VALUES ({s})",
+            .{ cols_buf.items, vals_buf.items },
+        );
+
+        db.exec(allocator, sql_buf.items, bind_values.items) catch {
+            _ = memories_mod.deleteLocalMemoryFile(allocator, input.io, dir_path, memory_name);
+            return error.MemoryTaskInsertFailed;
+        };
+    }
 
     return .{ .task_id = task_id, .name = input.body.name, .workspace_item_id = input.item_id };
 }
@@ -274,6 +347,7 @@ fn createStandardTask(
         input.body.name,
         input.item_id,
         "standard",
+        input.body.description,
     ) catch return error.StandardTaskCreateFailed;
     // NOTE: do NOT `defer task.deinit(allocator)` here. The slices
     // task.id, task.name, task.workspace_item_id, and task.task_type
@@ -450,7 +524,7 @@ pub fn tasksCreateHandler(
         });
     }
 
-    const parsed = std.json.parseFromSliceLeaky(http_response.TaskCreateRequest, allocator, body, .{}) catch {
+    const parsed = std.json.parseFromSliceLeaky(http_response.TaskCreateRequest, allocator, body, .{ .ignore_unknown_fields = true }) catch {
         return res.jsonResponse(.{
             .status_code = 400,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON" }),
