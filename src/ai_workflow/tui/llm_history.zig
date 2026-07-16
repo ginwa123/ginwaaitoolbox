@@ -10,15 +10,6 @@ const ai_mod = @import("mod.zig");
 const on_event_sent = ai_mod.on_event_sent;
 const routines_model = @import("routines/model.zig");
 
-pub fn markMessageNotForLlmRun(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-) !void {
-    const sql = "UPDATE llm_history SET is_feed_to_llm = 0 WHERE session_id = ?";
-    try db.exec(allocator, sql, &.{session_id});
-}
-
 /// Session info for list view
 pub const SessionInfo = struct {
     session_id: []const u8,

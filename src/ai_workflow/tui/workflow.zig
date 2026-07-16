@@ -987,7 +987,7 @@ pub fn compactMessageInMemoryNew(
     if (total <= 4) return messages;
 
     // Mark all existing messages in this session as not for LLM (soft-delete)
-    try llm_history.markMessageNotForLlmRun(allocator, db, session_id);
+    try agentic_loop_mod.mark_history_not_for_llmrun(allocator, db, session_id);
 
     // Build the compacted summary content with XML wrapping
     const summary_content = try buildCompactionEnvelope(
