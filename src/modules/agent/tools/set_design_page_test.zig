@@ -20,6 +20,12 @@ const design_model = @import("../../../ai_workflow/tui/design_model.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/set_design_page.zig";
 const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/tool_registry.zig";
+/// The comptime tool list moved out of `tool_registry.zig` into
+/// `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` (which
+/// `agentic_loop.tools.all_agent_tools` re-exports as `equips`).
+/// Each entry in that comptime `tools_list` array uses the
+/// trailing-comma format (`.tool_name,`) that this test grep matches.
+const TOOLS_EQUIPPED_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig";
 const ROOT_PATH = "src/root.zig";
 
 /// Read a source file from disk, relative to the project root.
@@ -164,10 +170,10 @@ test "UNIFIED_TOOL_REGISTRY contains set_design_page entry" {
 
 test "allAgentTools comptime list contains set_design_page tool def" {
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
     if (!contains(source, "set_design_page_mod.set_design_page_tool,")) {
-        std.debug.print("!! allAgentTools comptime list is missing set_design_page_mod.set_design_page_tool !!\n", .{});
+        std.debug.print("!! tools_equipped.zig comptime list is missing set_design_page_mod.set_design_page_tool !!\n", .{});
         return error.AllAgentToolsEntryMissing;
     }
 }

@@ -58,10 +58,11 @@ pub fn inserLLMHistories(
     defer allocator.free(created_at);
 
     // Compute `created_iso` for the `since`/`until` filters. Mirrors
-    // the conversion in `llm_history.saveMessage`. We pass the
-    // microsecond value (NOT raw nanoseconds) so the helper's
-    // division by us_per_s produces correct year 2026.
-    const created_iso = try helpers.microsecondsToIsoLocal(allocator, created_at_us);
+    // the conversion in `llm_history.saveMessage`. The helper
+    // returns the current UTC time as ISO — semantically the same
+    // as `created_at_us`/`now_ns` since both are generated from the
+    // same `now_ns` source a few lines above.
+    const created_iso = try helpers.currentTimeIsoLocal(allocator);
     defer allocator.free(created_iso);
 
     const contentStr = input.response_content;

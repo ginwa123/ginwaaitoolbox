@@ -21,6 +21,9 @@ const edit_skill_mod = nalarcore.edit_skill;
 const set_git_worktree_mod = nalarcore.set_git_worktree;
 const kanban_list_mod = nalarcore.kanban_list;
 const kanban_move_task_mod = nalarcore.kanban_move_task;
+const set_design_page_mod = nalarcore.set_design_page;
+const add_design_element_mod = nalarcore.add_design_element;
+const update_design_element_mod = nalarcore.update_design_element;
 const show_preview_mod = nalarcore.ai_mod.show_preview;
 const remove_agent_mod = nalarcore.remove_agent;
 const remove_file_mod = nalarcore.remove_file;
@@ -64,6 +67,9 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         set_git_worktree_mod.set_git_worktree_tool,
         kanban_list_mod.kanban_list_tool,
         kanban_move_task_mod.kanban_move_task_tool,
+        set_design_page_mod.set_design_page_tool,
+        add_design_element_mod.add_design_element_tool,
+        update_design_element_mod.update_design_element_tool,
         show_preview_mod.show_preview_tool,
     };
     return allocator.dupe(AgentTool, tools_list) catch return &.{};

@@ -1022,12 +1022,7 @@ pub fn saveMessage(
     // stdlib exposes `Timestamp.now(...).nanoseconds` (an i96, 19
     // decimal digits for any post‑1970 timestamp). We divide by
     // `std.time.ns_per_us` (1000) to convert nanoseconds → microseconds
-    // so the column matches its documented format AND the helper
-    // `helpers.microsecondsToIsoLocal` produces a correct year (year
-    // 2026, not year 58,507). The pre‑fix code passed the raw
-    // nanoseconds string straight to the microseconds helper,
-    // producing year 58,507 for every row inserted since the v2
-    // migration landed.
+    // so the column matches its documented format.
     const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
     const id = try std.fmt.allocPrint(allocator, "{}", .{now_ns});
     defer allocator.free(id);
@@ -1039,10 +1034,11 @@ pub fn saveMessage(
     // `since`/`until` filter columns) IN APPLICATION CODE rather than
     // via SQLite triggers. See Migration 059 header for why.
     //
-    // We pass the microsecond value (NOT the raw nanosecond string)
-    // to `microsecondsToIsoLocal`, which divides by us_per_s to get
-    // seconds — passing nanoseconds directly produced year 58,507.
-    const created_iso = try helpers.microsecondsToIsoLocal(allocator, created_at_us);
+    // `helpers.currentTimeIsoLocal` gets the current UTC time itself
+    // (no parameter) — semantically the same value `created_at_us`
+    // would produce (both come from the same `now_ns` source a few
+    // lines above), but the helper hides the conversion details.
+    const created_iso = try helpers.currentTimeIsoLocal(allocator);
     defer allocator.free(created_iso);
 
     const contentStr = input.content orelse "";

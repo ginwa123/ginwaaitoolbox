@@ -30,8 +30,8 @@
 //!      overflows SQLite's `datetime()` range (cap: year 9999) and
 //!      silently returns NULL for modern timestamps.
 //!
-//! Application-level computation via libc `localtime_r` + `strftime`
-//! (in `helpers.microsecondsToIsoLocal`) sidesteps both issues.
+//! Application-level computation via Zig's `std.time.epoch` API
+//! (in `helpers.currentTimeIsoLocal`) sidesteps both issues.
 //!
 //! ## Why not a STORED GENERATED column?
 //!

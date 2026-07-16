@@ -8,6 +8,12 @@ const text_normalize = nalarcore.helpers.text_normalize;
 
 const TOOL_PATH = "src/modules/agent/tools/kanban_list.zig";
 const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/tool_registry.zig";
+/// The comptime tool list moved out of `tool_registry.zig` into
+/// `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` (which
+/// `agentic_loop.tools.all_agent_tools` re-exports as `equips`).
+/// Each entry in that comptime `tools_list` array uses the
+/// trailing-comma format (`.tool_name,`) that this test grep matches.
+const TOOLS_EQUIPPED_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig";
 
 /// Read a source file from disk, relative to the project root.
 /// Normalizes CRLF → LF so multi-line literal needles match even when
@@ -151,10 +157,10 @@ test "UNIFIED_TOOL_REGISTRY contains kanban_list entry" {
 
 test "allAgentTools comptime list contains kanban_list tool def" {
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
     if (!contains(source, "kanban_list_mod.kanban_list_tool,")) {
-        std.debug.print("!! allAgentTools comptime list is missing kanban_list_mod.kanban_list_tool !!\n", .{});
+        std.debug.print("!! tools_equipped.zig comptime list is missing kanban_list_mod.kanban_list_tool !!\n", .{});
         return error.AllAgentToolsEntryMissing;
     }
 }

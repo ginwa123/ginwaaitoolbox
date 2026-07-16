@@ -1931,7 +1931,7 @@ pub const Migration059AddCreatedIso = struct {
         //    loss is acceptable.
         //
         //    We use UTC (no `'localtime'` modifier) for consistency
-        //    with the application-level `microsecondsToIsoLocal`
+        //    with the application-level `currentTimeIsoLocal`
         //    helper, which also produces UTC strings. The two paths
         //    (application INSERTs and this backfill) produce identical
         //    strings for the same input.

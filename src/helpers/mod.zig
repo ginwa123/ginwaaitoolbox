@@ -241,8 +241,7 @@ fn unixTimestampNanosWindows() i128 {
     return ns_since_1601 - ns_1601_to_1970;
 }
 
-/// Convert a Unix microseconds timestamp (e.g. `"1784119389936251112"`)
-/// to an ISO-8601 **UTC** string (`"2026-07-15 19:43:09"`).
+/// Returns the current UTC time as an ISO-8601 string (`"2026-07-15 19:43:09"`).
 ///
 /// This is the canonical form used by `llm_history.created_iso` for
 /// `since`/`until` filtering. We compute it in application code rather
@@ -276,19 +275,19 @@ fn unixTimestampNanosWindows() i128 {
 /// Allocation: the returned slice is allocated from `allocator`. The
 /// caller owns the buffer (use `defer allocator.free(s)` or pass to
 /// another owning structure).
-///
-/// Returns `error.Overflow` if the timestamp is too large to fit in
-/// the supported u64 range (won't happen for any real microsecond Unix
-/// timestamp).
-pub fn microsecondsToIsoLocal(allocator: std.mem.Allocator, micros: u64) ![]u8 {
-    // Microsecond timestamp → seconds since epoch. Truncate the
-    // fractional microsecond precision (not needed for `since`/`until`
-    // at second granularity).
+pub fn currentTimeIsoLocal(allocator: std.mem.Allocator) ![]u8 {
+    // Get the current time as nanoseconds since epoch (via
+    // `unixTimestampNanos`, which is cross-platform and doesn't need
+    // an `io: std.Io` parameter). Then convert to seconds by
+    // dividing by `ns_per_s`. The sub-second precision is dropped —
+    // not needed for `since`/`until` at second granularity.
     //
     // We use u64 throughout because `std.time.epoch.EpochSeconds.secs`
     // is `u64`. Years past the year ~584 billion would overflow u64,
     // well beyond anything we'd encounter from a real Unix timestamp.
-    const sec_u64: u64 = micros / std.time.us_per_s;
+    const now_ns_i128 = unixTimestampNanos();
+    if (now_ns_i128 < 0) return error.Overflow;
+    const sec_u64: u64 = @intCast(@divTrunc(now_ns_i128, std.time.ns_per_s));
 
     // Use Zig stdlib's epoch decomposition. Reference:
     // `std.time.epoch.EpochSeconds{ .secs = ... }.getEpochDay()`

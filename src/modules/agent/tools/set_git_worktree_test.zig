@@ -194,6 +194,12 @@ test "deriveBranchFromPath returns worktree/<basename>" {
 // ─── Static wiring tests (Chunk 3) ───────────────────────────────────────
 
 const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/tool_registry.zig";
+/// The comptime tool list moved out of `tool_registry.zig` into
+/// `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` (which
+/// `agentic_loop.tools.all_agent_tools` re-exports as `equips`).
+/// Each entry in that comptime `tools_list` array uses the
+/// trailing-comma format (`.tool_name,`) that this test grep matches.
+const TOOLS_EQUIPPED_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig";
 
 test "tool_registry.zig imports set_git_worktree module" {
     const allocator = testing.allocator;
@@ -245,10 +251,10 @@ test "UNIFIED_TOOL_REGISTRY contains set_git_worktree entry" {
 
 test "allAgentTools comptime list contains set_git_worktree tool def" {
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
     if (std.mem.indexOf(u8, source, "set_git_worktree_mod.set_git_worktree_tool,") == null) {
-        std.debug.print("!! allAgentTools comptime list is missing set_git_worktree_mod.set_git_worktree_tool !!\n", .{});
+        std.debug.print("!! tools_equipped.zig comptime list is missing set_git_worktree_mod.set_git_worktree_tool !!\n", .{});
         return error.AllAgentToolsEntryMissing;
     }
 }

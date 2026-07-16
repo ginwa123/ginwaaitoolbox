@@ -66,17 +66,22 @@ fn seedMessage(
     //   - A microsecond timestamp string (e.g. "1785000000000000"), OR
     //   - A pre-formatted ISO localtime string (e.g. "2025-01-01 00:01:00").
     //
-    // Production code computes `created_iso` from the microsecond
-    // `created_at`. To match, we apply `helpers.microsecondsToIsoLocal`
-    // when the input is microseconds and reuse the same string when
-    // it's already ISO.
+    // For the microsecond case we compute the ISO via SQLite's
+    // `datetime(? / 1000000, 'unixepoch')` — the same expression
+    // Migration 059 used before moving the conversion to app code,
+    // and the same expression used by the since/until filter queries
+    // in this file (so the row's `created_iso` matches what the filter
+    // would generate from the same `created_at`). For the ISO case we
+    // reuse the string as-is.
     var created_iso_buf: [20]u8 = undefined;
     const created_iso_len: usize = blk: {
         if (created_at.len >= 10 and std.mem.indexOfScalar(u8, created_at, '-') == null) {
-            // Looks like a microsecond integer — convert via the helper.
-            const micros = std.fmt.parseInt(u64, created_at, 10) catch 0;
-            const iso = try helpers.microsecondsToIsoLocal(alloc, micros);
-            defer alloc.free(iso);
+            // Looks like a microsecond integer — convert via SQLite.
+            var q = try db.queryRow(alloc,
+                "SELECT datetime(? / 1000000, 'unixepoch')",
+                &.{created_at});
+            defer q.deinit(alloc);
+            const iso = q.values[0];
             const len = iso.len;
             if (len > created_iso_buf.len) return error.TimestampTooLong;
             @memcpy(created_iso_buf[0..len], iso);
@@ -306,9 +311,9 @@ test "getCompactedMessages: since AND until together produce a date range (regre
 
 test "saveMessage: writes a correct-year (2026-ish) created_iso from current time" {
     // Regression check for the year-58,507 bug. Pre-fix `saveMessage`
-    // passed raw nanoseconds to `microsecondsToIsoLocal`, producing
+    // passed raw nanoseconds to the ISO conversion helper, producing
     // year 58,507. Post-fix, saveMessage divides by `ns_per_us` (1000)
-    // before calling the helper, so the year is in the 2020s.
+    // before calling `currentTimeIsoLocal`, so the year is in the 2020s.
     //
     // We use the live `std.Io.Timestamp.now(...)` clock (same as
     // saveMessage) and verify the resulting `created_iso` starts with
