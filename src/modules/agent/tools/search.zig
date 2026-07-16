@@ -60,6 +60,25 @@ pub const SearchInput = struct {
     /// gitignored paths (build/, node_modules/, etc.). Mirrors rg's
     /// --no-ignore flag, which disables ALL ignore-file filtering.
     respect_ignore_files: bool = true,
+    /// When true, appends `-w` to rg's argv: matches must be at a word
+    /// boundary (start/end of file, or between word and non-word chars).
+    /// ripgrep's default Unicode word rule treats underscore as a word
+    /// char, so `foo` with -w does NOT match inside `foo_bar`. Hyphen,
+    /// plus, parens, brackets, etc. ARE boundaries.
+    word_boundary: bool = false,
+    /// When true, the pattern is treated as a literal string (no regex
+    /// metacharacters are interpreted). Maps to rg's `-F` / `--fixed-strings`.
+    /// Default false (regex mode). NOTE: Chunk 2 will wire the `-F`
+    /// argv branch; for Chunk 1 this field exists in the struct but
+    /// has no effect on rg's behavior.
+    literal: bool = false,
+    /// When true, only the matched substring is shown per line (instead
+    /// of the full line content). Maps to rg's `-o` / `--only-matching`.
+    /// Useful for fast extraction (e.g. all email addresses in a file)
+    /// without the surrounding context. NOTE: Chunk 3 will wire the `-o`
+    /// argv branch and the snippet-rendering logic; for Chunk 1 this
+    /// field exists in the struct but has no effect on rg's behavior.
+    only_matching: bool = false,
 };
 
 pub const SearchResult = struct {
@@ -154,31 +173,44 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     // which is an attacker-controlled flag surface on multi-user systems.
     // `--no-messages` suppresses ripgrep's stderr (we surface the errors
     // ourselves via the exit-code mapping below).
-    const argv: []const []const u8 = if (input.respect_ignore_files) &[_][]const u8{
-        "rg",
-        "--json",
-        "--line-number",
-        "--no-config",
-        "--no-messages",
-        "-e",
-        input.pattern,
-        "--",
-        input.path,
-    } else &[_][]const u8{
-        "rg",
-        "--json",
-        "--line-number",
-        "--no-config",
-        "--no-messages",
-        "--no-ignore",
-        "-e",
-        input.pattern,
-        "--",
-        input.path,
-    };
+    //
+    // The optional flags (`--no-ignore`, `-w`, `-F`, `-o`) are appended
+    // conditionally — the const-array shape can't scale to that, so we
+    // build a runtime ArrayList. Each entry is a `[]const u8` that
+    // already lives in static memory or is owned by `input`; we don't
+    // allocate per-flag, only the ArrayList's backing storage.
+    var args: std.ArrayList([]const u8) = .empty;
+    defer args.deinit(allocator);
+
+    try args.append(allocator, "rg");
+    try args.append(allocator, "--json");
+    try args.append(allocator, "--line-number");
+    try args.append(allocator, "--no-config");
+    try args.append(allocator, "--no-messages");
+    if (!input.respect_ignore_files) {
+        try args.append(allocator, "--no-ignore");
+    }
+    if (input.word_boundary) {
+        // -w: only match whole words (word-boundary semantics).
+        // rg's default Unicode word rule treats underscore as a word
+        // char, so this matches what `-w` says, not what an English
+        // speaker might expect for `foo_bar`.
+        try args.append(allocator, "-w");
+    }
+    // Chunk 2 placeholder — `_ = input.literal;` keeps the struct-init
+    // compiling without affecting rg's behavior. Chunk 2 will replace
+    // this with `try args.append(allocator, "-F");`.
+    _ = input.literal;
+    // Chunk 3 placeholder — same pattern. Chunk 3 will replace this
+    // with `try args.append(allocator, "-o");`.
+    _ = input.only_matching;
+    try args.append(allocator, "-e");
+    try args.append(allocator, input.pattern);
+    try args.append(allocator, "--");
+    try args.append(allocator, input.path);
 
     const result = std.process.run(allocator, io, .{
-        .argv = argv,
+        .argv = args.items,
         .stdout_limit = std.Io.Limit.limited(max_output),
         .cwd = .{ .path = input.cwd orelse cwd },
     }) catch |err| {

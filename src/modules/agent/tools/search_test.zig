@@ -109,6 +109,30 @@ test "search: respect_ignore_files = false does NOT return a validation error" {
     };
 }
 
+test "search: word_boundary = true does NOT return a validation error" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    // The word_boundary field is a flag, not a numeric limit — there's no
+    // value that could fail up-front validation. Just confirm the field
+    // is plumbed through correctly (no compile error on the struct init)
+    // and that the call attempts to spawn rg (rather than rejecting the
+    // input with a SearchError variant).
+    const result = search.executeSearch(allocator, io, "/tmp", .{
+        .pattern = "anything",
+        .path = ".",
+        .word_boundary = true,
+    });
+
+    // Either success (Ok with possibly 0 matches in /tmp) or a rg-spawn
+    // error is acceptable. What matters is NO SearchError domain variant
+    // fires (those would mean validation rejected the field).
+    _ = result catch |err| switch (err) {
+        error.FileNotFound, error.PathError, error.AccessDenied => {},
+        else => return err,
+    };
+}
+
 // =============================================================================
 // Behavioral tests (with ripgrep invocation)
 // =============================================================================
@@ -507,6 +531,276 @@ test "search: respect_ignore_files = false also un-respects .ignore / .rgignore"
     try testing.expect(saw_cached);
 }
 
+test "search: word_boundary = true matches whole words only" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "t.txt",
+        // "foo" appears as part of "foobar" — should NOT match with -w
+        // "foo" appears as a whole word — SHOULD match
+        // "foo" appears at end of line, preceded by space — SHOULD match
+        .data = "foobar whole foo\nline foo trailing\n",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "foo",
+        .path = ".",
+        .word_boundary = true,
+    });
+    defer result.deinit(allocator);
+
+    // 2 matches: line 1 (the "whole foo" segment) and line 2 (trailing foo).
+    // "foobar" on line 1 must NOT match because there's no boundary between
+    // "foo" and "bar".
+    try testing.expectEqual(@as(usize, 2), result.matches.items.len);
+    try testing.expectEqual(@as(usize, 1), result.matches.items[0].line_number);
+    try testing.expectEqual(@as(usize, 2), result.matches.items[1].line_number);
+}
+
+test "search: word_boundary = false (default) matches substrings" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    // rg returns ONE match event per matched line (not per occurrence).
+    // So even though "foobar" contains "foo" twice, that's still 1 match
+    // event. The 2nd match event comes from "whole foo" on a separate line.
+    // Compare with the word_boundary=true test which filters out "foobar"
+    // — the boundary version reports 2 events (line 1 "whole foo" + line
+    // 2 trailing foo), this default version reports 2 events too (line 1
+    // "foobar" + line 2 "whole foo"). The DIFFERENCE is line 1: substring
+    // matches "foobar" + "whole foo" on one line, while -w matches only
+    // "whole foo" on line 1.
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "t.txt",
+        // Line 1 has two substring occurrences of "foo" — rg reports 1 event.
+        // Line 2 has one occurrence — rg reports 1 event.
+        .data = "foobar whole foo\nline foo here\n",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "foo",
+        .path = ".",
+        // word_boundary explicitly false — same as omitting it
+    });
+    defer result.deinit(allocator);
+
+    // 2 match events (one per matched line). The line_number list
+    // proves both lines were hit — but with substring matching, line 1
+    // is matched even though only "whole foo" is a word occurrence;
+    // "foobar" also matches as a substring.
+    try testing.expectEqual(@as(usize, 2), result.matches.items.len);
+    try testing.expectEqual(@as(usize, 1), result.matches.items[0].line_number);
+    try testing.expectEqual(@as(usize, 2), result.matches.items[1].line_number);
+}
+
+test "search: word_boundary works at start of file (offset 0)" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    // The pattern is the very first thing in the file — there's no
+    // preceding character. With -w, rg must still identify the boundary
+    // (the implicit "start of file" is a word boundary in ripgrep's view).
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "t.txt",
+        .data = "foo bar",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "foo",
+        .path = ".",
+        .word_boundary = true,
+    });
+    defer result.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.matches.items.len);
+    try testing.expectEqual(@as(usize, 1), result.matches.items[0].line_number);
+}
+
+test "search: word_boundary works at end of file (no trailing newline)" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    // File ends mid-line — pattern is the last token with no trailing
+    // newline. rg must treat EOF as a word boundary for -w.
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "t.txt",
+        .data = "hello world",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "world",
+        .path = ".",
+        .word_boundary = true,
+    });
+    defer result.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.matches.items.len);
+    try testing.expectEqual(@as(usize, 1), result.matches.items[0].line_number);
+}
+
+test "search: word_boundary treats underscore as a WORD char (no match inside foo_bar)" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    // ripgrep's default Unicode word rule treats underscore as a word
+    // character. So "foo" with -w does NOT match inside "foo_bar",
+    // "baz_foo", or "qux_foo" — even though an English speaker might
+    // visually parse those as "foo" the word.
+    //
+    // This test documents that subtle behavior — the search tool's
+    // word_boundary is a literal pass-through to rg's -w, NOT a
+    // linguistically-aware "word" check.
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "t.txt",
+        .data = "foo_bar baz_foo qux_foo",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "foo",
+        .path = ".",
+        .word_boundary = true,
+    });
+    defer result.deinit(allocator);
+
+    // None of the three occurrences are bounded — _ is a word char.
+    try testing.expectEqual(@as(usize, 0), result.matches.items.len);
+}
+
+test "search: word_boundary treats hyphen as a boundary (matches foo-bar and foo+bar)" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    // Hyphen and plus are non-word chars — they DO create boundaries,
+    // so "foo" with -w matches both "foo-bar" and "foo+bar". Two lines
+    // so rg reports 2 match events (one per line).
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "t.txt",
+        .data = "foo-bar\nfoo+bar\n",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "foo",
+        .path = ".",
+        .word_boundary = true,
+    });
+    defer result.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 2), result.matches.items.len);
+    try testing.expectEqual(@as(usize, 1), result.matches.items[0].line_number);
+    try testing.expectEqual(@as(usize, 2), result.matches.items[1].line_number);
+}
+
+test "search: word_boundary with punctuation boundaries matches each occurrence" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    // ( ) [ ] { } , . — each of these is a non-word char and creates
+    // a word boundary. So "foo" with -w matches every occurrence here.
+    // Spread across 4 lines so rg reports 4 match events (one per line).
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "t.txt",
+        .data = "(foo)\n[foo]\n{foo}\nfoo.\n",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "foo",
+        .path = ".",
+        .word_boundary = true,
+    });
+    defer result.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 4), result.matches.items.len);
+}
+
+test "search: word_boundary with multi-line file matches only the line containing the word" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    // Three lines; only line 2 contains the pattern as a whole word.
+    // Lines 1 and 3 contain "target" only as part of "targeted" /
+    // "untargeted" — which -w rejects.
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "t.txt",
+        .data = "first line targeted here\nsecond line has target word\nthird line untargeted here\n",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "target",
+        .path = ".",
+        .word_boundary = true,
+    });
+    defer result.deinit(allocator);
+
+    // Only 1 match — line 2.
+    try testing.expectEqual(@as(usize, 1), result.matches.items.len);
+    try testing.expectEqual(@as(usize, 2), result.matches.items[0].line_number);
+}
+
 // =============================================================================
 // Output format tests (no ripgrep needed — pure formatting)
 // =============================================================================
@@ -683,15 +977,19 @@ test "search.zig uses -e <pattern> argv to prevent flag injection" {
     const source = try readSource(testing.allocator, SEARCH_SOURCE_PATH);
     defer testing.allocator.free(source);
 
-    // Look for the \"-e\" token in the argv sequence.
-    const argv_e = std.mem.indexOf(u8, source, "\"-e\",");
-    const argv_pattern = std.mem.indexOf(u8, source, "input.pattern,\n");
+    // Look for the "-e" token in the argv construction. The argv is now
+    // a runtime ArrayList, but the SAME pattern + ordering must hold:
+    // rg's argv is built as ["rg", "--json", ..., "-e", <pattern>, "--", <path>].
+    const argv_e = std.mem.indexOf(u8, source, "\"-e\"");
     try testing.expect(argv_e != null);
+
+    // After "-e", the pattern is appended. Check that "input.pattern"
+    // appears AFTER "-e" (so the order is right).
+    const argv_pattern = std.mem.indexOfPos(u8, source, argv_e.?, "input.pattern");
     try testing.expect(argv_pattern != null);
-    try testing.expect(argv_e.? < argv_pattern.?);
 
     // And the "--" token (path separator) appears after the pattern.
-    const argv_dashdash = std.mem.indexOfPos(u8, source, argv_pattern.?, "\"\x2d\x2d\",\n");
+    const argv_dashdash = std.mem.indexOfPos(u8, source, argv_pattern.?, "\"--\"");
     try testing.expect(argv_dashdash != null);
 }
 
