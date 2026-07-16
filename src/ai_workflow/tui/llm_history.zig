@@ -3097,6 +3097,7 @@ pub fn createWorkspaceItemTask(
     name: []const u8,
     workspace_item_id: []const u8,
     task_type: []const u8,
+    description: ?[]const u8,
 ) !WorkspaceItemTaskInfo {
     if (!std.mem.eql(u8, task_type, "standard") and !std.mem.eql(u8, task_type, "routine")) {
         return error.InvalidTaskType;
@@ -3106,8 +3107,14 @@ pub fn createWorkspaceItemTask(
     // `task.id == session_id` convention made the column redundant
     // (Migration 052 dropped it). Callers that need the session_id
     // should use the task's own `id`.
-    const sql = "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES (?, ?, ?, ?)";
-    try db.exec(allocator, sql, &.{ id, name, workspace_item_id, task_type });
+    //
+    // Migration 061 added `description TEXT NOT NULL DEFAULT ''` to
+    // `workspace_item_tasks`. When the caller passes a non-null
+    // description we persist it; a null description means "no
+    // description" and we let the column DEFAULT apply (empty string).
+    const desc_value = description orelse "";
+    const sql = "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) VALUES (?, ?, ?, ?, ?)";
+    try db.exec(allocator, sql, &.{ id, name, workspace_item_id, task_type, desc_value });
 
     return WorkspaceItemTaskInfo{
         .id = try allocator.dupe(u8, id),

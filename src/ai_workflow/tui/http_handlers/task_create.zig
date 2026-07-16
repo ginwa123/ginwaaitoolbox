@@ -197,9 +197,14 @@ fn createRoutineTask(
     // store a separate session_id column. The session_id field in
     // the request body is accepted for backward compatibility but
     // is intentionally ignored.
+    //
+    // Migration 061: also persist description (empty string is the
+    // canonical "no description" sentinel; the UI renders it as the
+    // "Add a description…" placeholder).
     db.exec(allocator,
-        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES (?, ?, ?, 'routine')",
-        &[_][]const u8{ task_id, input.body.name, input.item_id },
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) " ++
+        "VALUES (?, ?, ?, 'routine', ?)",
+        &[_][]const u8{ task_id, input.body.name, input.item_id, input.body.description orelse "" },
     ) catch return error.TaskInsertFailed;
 
     const routine_id = std.fmt.allocPrint(allocator, "routine_{s}", .{task_id}) catch return error.OutOfMemory;
@@ -243,9 +248,12 @@ fn createMemoryTask(
         return error.FailedToWriteMemoryFile;
     }
 
+    // Migration 061: also persist description (empty string is the
+    // canonical "no description" sentinel).
     db.exec(allocator,
-        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES (?, ?, ?, 'memory')",
-        &[_][]const u8{ task_id, input.body.name, input.item_id },
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) " ++
+        "VALUES (?, ?, ?, 'memory', ?)",
+        &[_][]const u8{ task_id, input.body.name, input.item_id, input.body.description orelse "" },
     ) catch {
         // Roll back the file on task-row failure so we don't leave
         // an orphan .md with no task pointing at it. The helper is
@@ -274,6 +282,7 @@ fn createStandardTask(
         input.body.name,
         input.item_id,
         "standard",
+        input.body.description,
     ) catch return error.StandardTaskCreateFailed;
     // NOTE: do NOT `defer task.deinit(allocator)` here. The slices
     // task.id, task.name, task.workspace_item_id, and task.task_type
