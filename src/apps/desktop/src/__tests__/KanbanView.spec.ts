@@ -84,18 +84,29 @@ describe('KanbanView — header rendering', () => {
     expect(title.text()).toBe('My Sprint')
   })
 
-  it('renders the "+ Column" button', () => {
+  // Note: as of feat(kanban): column description + per-board Kanban
+  // Settings dialog (#44), the "+ Column" button moved out of the
+  // KanbanView header into the new KanbanSettingsDialog. The header
+  // now only exposes a "Settings" button (⚙️) that emits
+  // `openSettings`; the host (AppLayout) mounts KanbanSettingsDialog
+  // and forwards its `addColumn`/`editColumn`/`deleteColumn` emits
+  // to the store. Tests for the actual "+ Column" form live in
+  // KanbanSettingsDialog.spec.ts.
+
+  it('renders the "Settings" button in the header', () => {
     wrapper = mountView(makeItem())
-    const btn = wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-add-column"]`)
+    const btn = wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-open-settings"]`)
     expect(btn.exists()).toBe(true)
-    expect(btn.text()).toContain('Column')
+    expect(btn.text()).toContain('Settings')
   })
 
-  it('"+ Column" emits add-column (no payload) on click', async () => {
+  it('"Settings" button emits open-settings (no payload) on click', async () => {
     wrapper = mountView(makeItem())
-    await wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-add-column"]`).trigger('click')
-    expect(wrapper.emitted('addColumn')).toBeTruthy()
-    expect(wrapper.emitted('addColumn')?.[0]).toEqual([])
+    await wrapper
+      .find(`[data-testid="kanban-view-${ITEM_ID}-open-settings"]`)
+      .trigger('click')
+    expect(wrapper.emitted('openSettings')).toBeTruthy()
+    expect(wrapper.emitted('openSettings')?.[0]).toEqual([])
   })
 })
 

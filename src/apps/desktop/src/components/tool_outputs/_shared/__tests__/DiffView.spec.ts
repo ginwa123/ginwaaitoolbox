@@ -218,13 +218,22 @@ describe('DiffView', () => {
 
   // ─────────────────────────────────────────────────────────────────────
   // Clean split-view rendering (chunks 5+6 redesign)
+  //
+  // Layout (top → bottom in DOM):
+  //   1. PANE — <div class="overflow-x-auto ..."> (the scroll container)
+  //   2. SHARED WRAPPER — <div style="width: max-content; min-width: 100%">
+  //        sized once per pane so every row inherits the same final width
+  //   3. ROW — <div class="block whitespace-pre" style="width: 100%;
+  //        background-color: rgba(...)"> for changed rows. NO [data-bg]
+  //        child — the bg is on the row itself. NO inline highlights
+  //        (no <span class="...line-through...">, no per-word bg).
   // ─────────────────────────────────────────────────────────────────────
 
-  it('split view: changed rows have a sticky bg layer, NO inline highlights', () => {
+  it('split view: changed row has bg color on itself, NO inline highlights', () => {
     // User feedback: the previous version mixed row bg + per-word
     // strikethrough + per-word highlights on the same line, which was
-    // unreadable. The new design is row bg (via sticky layer) + plain
-    // text.
+    // unreadable. The new design is row bg on the row element + plain
+    // text — no [data-bg] child, no inline highlights.
     const wrapper = mount(DiffView, {
       props: {
         before: 'hello world',
@@ -234,19 +243,20 @@ describe('DiffView', () => {
     const beforeRows = wrapper.findAll('[data-side="before"][data-row]')
     expect(beforeRows.length).toBeGreaterThan(0)
     const firstBeforeRow = beforeRows[0]!
-    // The bg is on a separate [data-bg] layer inside the row, with
-    // position:sticky so it always covers the visible pane.
-    const bgLayer = firstBeforeRow.find('[data-bg]')
-    expect(bgLayer.exists()).toBe(true)
-    expect(bgLayer.attributes('style') ?? '').toMatch(/background-color/)
-    // The row content should be PLAIN text — no <span class="...line-through...">.
+    // The bg is on the row's own inline style (not on a [data-bg] child).
+    // We assert the row has the bg-color and that NO [data-bg] child
+    // element exists — locks in the redesigned layout so a future
+    // revert to the old per-row [data-bg] layer is caught.
+    expect(firstBeforeRow.attributes('style') ?? '').toMatch(/background-color/)
+    expect(firstBeforeRow.find('[data-bg]').exists()).toBe(false)
+    // Plain text — no strikethrough anywhere in the row.
     expect(firstBeforeRow.html()).not.toContain('line-through')
-    // And no green "insert" highlight inside the before side (that was
-    // the original visual confusion — a strikethrough on green).
+    // No green "insert" highlight inside the before side (was the
+    // original visual confusion — strikethrough on green).
     expect(firstBeforeRow.html()).not.toMatch(/bg-green/)
   })
 
-  it('split view: after-side changed rows have sticky green bg layer', () => {
+  it('split view: after-side changed row has the green bg color', () => {
     const wrapper = mount(DiffView, {
       props: {
         before: 'hello world',
@@ -256,19 +266,23 @@ describe('DiffView', () => {
     const afterRows = wrapper.findAll('[data-side="after"][data-row]')
     expect(afterRows.length).toBeGreaterThan(0)
     const firstAfterRow = afterRows[0]!
-    const bgLayer = firstAfterRow.find('[data-bg]')
-    expect(bgLayer.exists()).toBe(true)
-    expect(bgLayer.attributes('style') ?? '').toMatch(
+    // After-side changed row has the green rgba on its inline style.
+    expect(firstAfterRow.attributes('style') ?? '').toMatch(
       /background-color:\s*rgba\(\s*46,\s*160,\s*67/,
     )
     // Plain text — no strikethrough on the inserted line.
     expect(firstAfterRow.html()).not.toContain('line-through')
   })
 
-  it('split view: row uses width:max-content + min-width:100% + sticky bg so bg fills pane + long lines scroll', () => {
-    // Critical UX combination: bg always covers the full pane (sticky
-    // layer + min-width: 100%) AND the user can horizontally scroll
-    // for long lines (row width = max-content + pane overflow-x-auto).
+  it('split view: shared sizing wrapper has width:max-content + min-width:100% (one wrapper per pane)', () => {
+    // Critical UX combination: ONE shared sizing wrapper per pane
+    // (width: max-content + min-width: 100%) so every row inherits the
+    // same final width — the bg always covers the full pane, AND long
+    // lines can scroll horizontally because the wrapper's max-content
+    // width is computed from the widest row's content (or the pane,
+    // whichever is larger). Per-row width:max-content does NOT work
+    // because each row would only size from its own content. See the
+    // long comment in DiffView.vue for the full rationale.
     const wrapper = mount(DiffView, {
       props: {
         before: 'x',
@@ -277,23 +291,25 @@ describe('DiffView', () => {
     })
     const row = wrapper.find('[data-row]')
     expect(row.exists()).toBe(true)
-    // Row's CSS is width: max-content + min-width: 100% (inline style).
+    // The row's direct parent is the SHARED WRAPPER (single per pane).
+    // It has width:max-content + min-width:100%.
+    const sharedWrapper = row.element.parentElement!
+    const wrapperStyle = sharedWrapper.getAttribute('style') ?? ''
+    expect(wrapperStyle).toMatch(/width:\s*max-content/)
+    expect(wrapperStyle).toMatch(/min-width:\s*100%/)
+    // The row itself is `width: 100%` of the shared wrapper — not
+    // `max-content` (which would per-row-size).
     const rowStyle = row.attributes('style') ?? ''
-    expect(rowStyle).toMatch(/width:\s*max-content/)
-    expect(rowStyle).toMatch(/min-width:\s*100%/)
-    // The bg layer is position:sticky with left:0 + right:0.
-    const bgLayer = row.find('[data-bg]')
-    expect(bgLayer.exists()).toBe(true)
-    const bgStyle = bgLayer.attributes('style') ?? ''
-    expect(bgStyle).toMatch(/position:\s*sticky/)
-    expect(bgStyle).toMatch(/left:\s*0/)
+    expect(rowStyle).toMatch(/width:\s*100%/)
+    expect(rowStyle).not.toMatch(/width:\s*max-content/)
   })
 
   it('split view: pane uses overflow-x-auto (long lines trigger horizontal scroll)', () => {
-    // The pane (parent of all rows) uses `overflow-x: auto` so long
-    // content triggers a horizontal scrollbar. Combined with the
-    // sticky bg layer, the bg stays anchored to the visible pane
-    // while the content scrolls under it.
+    // The PANE (grandparent of the row, parent of the shared wrapper)
+    // uses `overflow-x: auto` so long content triggers a horizontal
+    // scrollbar. Combined with the shared-wrapper sizing, the bg
+    // stays anchored to the visible pane while the content scrolls
+    // under it.
     const wrapper = mount(DiffView, {
       props: {
         before: 'a\nb',
@@ -302,7 +318,9 @@ describe('DiffView', () => {
     })
     const row = wrapper.find('[data-row]')
     expect(row.exists()).toBe(true)
-    const pane = row.element.parentElement!
+    // grand-parent of the row = the pane (overflow-x-auto).
+    const sharedWrapper = row.element.parentElement!
+    const pane = sharedWrapper.parentElement!
     expect(pane.classList.contains('overflow-x-auto')).toBe(true)
   })
 
