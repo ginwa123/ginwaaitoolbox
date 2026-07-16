@@ -1815,46 +1815,6 @@ pub const UNIFIED_TOOL_REGISTRY: []const ToolInfo = &.{
 /// Registry for main agent (all tools)
 pub const MAIN_AGENT_TOOL_REGISTRY: []const ToolInfo = UNIFIED_TOOL_REGISTRY;
 
-/// All tool definitions for the main agent.
-/// This is the canonical list of tool definitions for the main agent.
-/// Restored after the 2026-07-14 main-branch refactor (which removed the
-/// original allAgentTools() function) so the static-contract tests in
-/// `src/modules/agent/tools/*_test.zig` (which grep for the entries below)
-/// keep passing. The function delegates to `UNIFIED_TOOL_REGISTRY`; the
-/// per-tool static-contract tests still validate that each tool is wired
-/// in.
-pub fn allAgentTools() []const tool_models.AgentTool {
-    _ = tool_models; // (param kept for the legacy test surface; unused)
-    const tools_list = comptime &[_]tool_models.AgentTool{
-        spawn_sub_agent_tool.spawn_sub_agent_tool,
-        update_activity_mod.update_activity_tool,
-        list_skills_mod.list_skills_tool,
-        list_memory_mod.list_memory_tool,
-        search_history_mod.search_history_tool,
-        view_skill_mod.view_skill_tool,
-        get_skill_mod.get_skill_tool,
-        remove_skill_mod.remove_skill_tool,
-        add_skill_mod.add_skill_tool,
-        edit_skill_mod.edit_skill_tool,
-        bash_tool_mod.bash_tool,
-        read_file_mod.read_file_tool,
-        write_file_mod.write_file_tool,
-        text_replace_mod.text_replace_tool,
-        remove_file_mod.remove_file_tool,
-        glob_tool_mod.glob_tool,
-        search_tool_mod.search_tool,
-        nalar_browser_mod.nalar_browser_tool,
-        set_git_worktree_mod.set_git_worktree_tool,
-        kanban_list_mod.kanban_list_tool,
-        kanban_move_task_mod.kanban_move_task_tool,
-        set_design_page_mod.set_design_page_tool,
-        add_design_element_mod.add_design_element_tool,
-        update_design_element_mod.update_design_element_tool,
-        show_preview_mod.show_preview_tool,
-    };
-    return &tools_list;
-}
-
 /// Get tool metadata by name from registry
 pub fn getToolByName(name: []const u8) ?*const ToolInfo {
     for (UNIFIED_TOOL_REGISTRY) |*tool| {
