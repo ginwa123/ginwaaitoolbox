@@ -79,6 +79,9 @@ const emit = defineEmits<{
   editRoutine: [workspaceId: string, itemId: string, taskId: string]
   runRoutine: [workspaceId: string, itemId: string, taskId: string]
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
+  // Open the per-task detail dialog (kanban-task-detail-dialog
+  // feature). Re-emitted verbatim from <KanbanCard>.
+  viewTaskDetail: [taskId: string]
 }>()
 
 // ─── Derived data ──────────────────────────────────────────────────────────
@@ -465,6 +468,7 @@ const handleAddClick = () => {
         @edit-routine="(ws, item, id) => emit('editRoutine', ws, item, id)"
         @run-routine="(ws, item, id) => emit('runRoutine', ws, item, id)"
         @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
+        @view-task-detail="(id) => emit('viewTaskDetail', id)"
       />
       <!-- Empty placeholder — shown only when there are no cards. Gives
            the drop zone a clear "drop here" affordance. -->
