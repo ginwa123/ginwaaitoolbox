@@ -146,6 +146,21 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
         try updateRoutineFields(allocator, input.db, input.io, task_id, input.body);
     }
 
+    // Description branch. When `body.description` is present (non-null),
+    // overwrite the column with the new value. Empty string is the
+    // canonical "no description" sentinel and IS persisted (NOT
+    // skipped) — the user actively cleared the field, which the UI
+    // renders as the "Add a description…" placeholder. Null means
+    // "leave unchanged" (the caller didn't include the field in the
+    // PUT body). Migration 061 added the column.
+    if (input.body.description) |desc| {
+        input.db.exec(
+            allocator,
+            "UPDATE workspace_item_tasks SET description = ?, updated_at = datetime('now') WHERE id = ?",
+            &[_][]const u8{ desc, task_id },
+        ) catch return error.FailedToUpdateTask;
+    }
+
     // Conditional split: route name updates through the cascade
     // (updateTaskName → updateSessionName → SSE broadcast). The
     // legacy `session_id` body field is accepted for backward

@@ -156,3 +156,60 @@ test "task_update handler no longer references the dropped session_id rebind" {
         return error.RebindPathStillPresent;
     }
 }
+
+// ─── Contract 4: task_update persists description (Migration 061) ──────────
+//
+// When the request body carries a `description` field, the handler must
+// persist it to `workspace_item_tasks.description` via a guarded UPDATE
+// (only when the field is non-null — null means "leave unchanged").
+// Empty string is the canonical "no description" sentinel and IS
+// persisted (NOT skipped — it means the user actively cleared the field).
+//
+// Plan: docs/superpowers/plans/2026-07-16-kanban-task-detail-dialog.md
+//   (Chunk 1, Task 1.3).
+
+test "task_update persists description to workspace_item_tasks column" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The handler must contain an UPDATE that sets the description
+    // column. We check for the SQL fragment and the binding slot.
+    if (std.mem.indexOf(u8, source, "description = ?") == null) {
+        std.debug.print(
+            "\n!! {s} does not UPDATE workspace_item_tasks.description !!\n" ++
+                "   Migration 061 added the column; PUT /api/workspaces/tasks/:id\n" ++
+                "   with a body.description must persist it. Add:\n" ++
+                "     UPDATE workspace_item_tasks SET description = ? ...\n" ++
+                "   inside the useCase's description branch.\n" ++
+                "   See plan docs/superpowers/plans/2026-07-16-kanban-task-detail-dialog.md.\n",
+            .{HANDLER_PATH},
+        );
+        return error.DescriptionUpdateMissing;
+    }
+}
+
+test "task_update guards description branch on body.description != null" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The UPDATE must be wrapped in an `if (input.body.description) |...|`
+    // guard so a null body.description (the "leave unchanged" sentinel
+    // in TaskUpdateRequest) does NOT overwrite the column with NULL.
+    // We check for the pattern `if (input.body.description)` (or the
+    // equivalent `if (input.body.description) |`) anywhere in the file.
+    const has_branch = std.mem.indexOf(u8, source, "if (input.body.description)") != null or
+        std.mem.indexOf(u8, source, "if (json_body.description)") != null;
+    if (!has_branch) {
+        std.debug.print(
+            "\n!! {s} does not guard the description branch !!\n" ++
+                "   The UPDATE must only run when input.body.description is non-null\n" ++
+                "   (a null value is the 'leave unchanged' sentinel in the request).\n" ++
+                "   Add `if (input.body.description) |desc| {{ ... }}` around the\n" ++
+                "   UPDATE statement.\n",
+            .{HANDLER_PATH},
+        );
+        return error.DescriptionBranchUnguarded;
+    }
+}
