@@ -160,7 +160,7 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
             }
             try task_in_clause.appendSlice(alloc, ")");
 
-            // Migration 061: added `description` to the SELECT column list
+            // Migration 062: added `description` to the SELECT column list
             // (right after `workspace_item_id`). All subsequent indices shift
             // by one.
             const tasks_sql = try std.fmt.allocPrint(alloc, "SELECT id, name, workspace_item_id, description, created_at, updated_at, COALESCE(is_pinned, 0), COALESCE(pinned_position, 0) FROM workspace_item_tasks WHERE workspace_item_id IN {s} ORDER BY is_pinned DESC, pinned_position DESC, created_at DESC", .{task_in_clause.items});
@@ -176,7 +176,7 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
                     .id = try alloc.dupe(u8, row.values[0]),
                     .name = try alloc.dupe(u8, row.values[1]),
                     .workspace_item_id = item_id,
-                    // Migration 061: description at index 3.
+                    // Migration 062: description at index 3.
                     .description = try alloc.dupe(u8, row.values[3]),
                     .created_at = if (row.values[4].len > 0) try alloc.dupe(u8, row.values[4]) else null,
                     .updated_at = if (row.values[5].len > 0) try alloc.dupe(u8, row.values[5]) else null,

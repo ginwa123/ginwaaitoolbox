@@ -1,9 +1,9 @@
-//! Static regression checks for Migration 061's description
+//! Static regression checks for Migration 062's description
 //! propagation through `llm_history.zig`.
 //!
 //! Why this file exists
 //! ────────────────────
-//! Migration 061 added `description TEXT NOT NULL DEFAULT ''` to
+//! Migration 062 added `description TEXT NOT NULL DEFAULT ''` to
 //! `workspace_item_tasks`. The frontend's kanban-task-detail-dialog
 //! reads the description via `GET /api/workspaces/:wid/items/:iid/tasks`
 //! (the cursor-paginated lister) and `GET /api/workspaces/tasks/:tid`
@@ -42,13 +42,13 @@ fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 
 // ─── Contract 1: WorkspaceItemTaskInfo has a description field ────────────
 
-test "WorkspaceItemTaskInfo struct has description field (Migration 061)" {
+test "WorkspaceItemTaskInfo struct has description field (Migration 062)" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, LLM_HISTORY_PATH);
     defer allocator.free(source);
 
     // The struct body (between the signature and the first `};`) must
-    // contain `description:` to confirm Migration 061 added the field.
+    // contain `description:` to confirm Migration 062 added the field.
     const struct_sig = "pub const WorkspaceItemTaskInfo = struct";
     const sig_idx = std.mem.indexOf(u8, source, struct_sig) orelse {
         std.debug.print("\n!! Could not find WorkspaceItemTaskInfo in {s} !!\n", .{LLM_HISTORY_PATH});
@@ -65,7 +65,7 @@ test "WorkspaceItemTaskInfo struct has description field (Migration 061)" {
     if (std.mem.indexOf(u8, body, "description:") == null) {
         std.debug.print(
             "\n!! WorkspaceItemTaskInfo has no `description` field !!\n" ++
-                "   Migration 061 requires the lister to populate description from\n" ++
+                "   Migration 062 requires the lister to populate description from\n" ++
                 "   the new column. Add `description: []u8 = &.{{}}` to the struct.\n",
             .{},
         );
@@ -100,7 +100,7 @@ test "getWorkspaceItemTask SELECT lists the description column" {
     if (!has_description_col) {
         std.debug.print(
             "\n!! getWorkspaceItemTask SELECT does not list description !!\n" ++
-                "   The single-task SELECT must include `description` (Migration 061).\n" ++
+                "   The single-task SELECT must include `description` (Migration 062).\n" ++
                 "   Expected column order: id, name, workspace_item_id, description, ...\n" ++
                 "   A missing column here means the row parser will read created_at\n" ++
                 "   from row.values[3] (the wrong slot) and silently corrupt the\n" ++
@@ -129,7 +129,7 @@ test "listWorkspaceItemTasks SELECT lists t.description column" {
     if (std.mem.indexOf(u8, body, "t.description, t.created_at") == null) {
         std.debug.print(
             "\n!! listWorkspaceItemTasks SELECT does not list t.description !!\n" ++
-                "   The non-cursor lister must include `t.description` (Migration 061).\n",
+                "   The non-cursor lister must include `t.description` (Migration 062).\n",
             .{},
         );
         return error.ListDescriptionMissing;
@@ -153,7 +153,7 @@ test "listWorkspaceItemTasksWithCursor SELECT lists t.description column" {
     if (std.mem.indexOf(u8, body, "t.description, t.created_at") == null) {
         std.debug.print(
             "\n!! listWorkspaceItemTasksWithCursor SELECT does not list t.description !!\n" ++
-                "   The cursor lister must include `t.description` (Migration 061).\n" ++
+                "   The cursor lister must include `t.description` (Migration 062).\n" ++
                 "   This is the primary read path for the frontend's tasks-list\n" ++
                 "   endpoint; without description in the SELECT the response will\n" ++
                 "   silently shift created_at into the description slot.\n",

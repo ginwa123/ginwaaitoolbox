@@ -1,9 +1,9 @@
 //! Static regression checks for description persistence in
-//! `task_create.zig` (Migration 061).
+//! `task_create.zig` (Migration 062).
 //!
 //! Why this file exists
 //! ────────────────────
-//! Migration 061 added the `description` column to
+//! Migration 062 added the `description` column to
 //! `workspace_item_tasks`. The `task_create` HTTP handler has THREE
 //! branches (standard / routine / memory) and each must persist
 //! description to the new column. These checks verify the SQL
@@ -54,7 +54,7 @@ test "createWorkspaceItemTask signature accepts a description parameter" {
     if (std.mem.indexOf(u8, signature, "description") == null) {
         std.debug.print(
             "\n!! createWorkspaceItemTask signature does not include `description` !!\n" ++
-                "   Migration 061 requires the standard-task create path to persist\n" ++
+                "   Migration 062 requires the standard-task create path to persist\n" ++
                 "   description. Add a trailing `description: ?[]const u8` parameter.\n",
             .{},
         );
@@ -117,23 +117,27 @@ test "task_create routine + memory INSERTs cover the description column" {
     const routine_match = std.mem.indexOf(u8, source, "'routine'") != null;
     const memory_match = std.mem.indexOf(u8, source, "'memory'") != null;
 
-    // We test for the description column on the INSERT line (which
-    // is the column-list side of the `++` concatenation). The actual
-    // file structure (post-Migration 061 fix for the empty-slice-as-
-    // NULL bind bug) is a three-way branch per task type:
-    //   - non-empty description  → bind via `?` ("'routine', ?")
-    //   - empty description      → SQL `''` literal ("'routine', ''")
-    //   - null description       → omit the column entirely
+    // After PR #101 review feedback, the SQL is built dynamically
+    // via a `std.ArrayList` builder + parallel `bind_values` list.
+    // The literal substrings we can match against have changed:
+    //   - The column list fragment is appended as `, description`
+    //     in two places (one for the empty-string literal path,
+    //     one for the bound-value path).
+    //   - The VALUES tail fragment is appended as `, ''` (empty)
+    //     or `, ?` (value).
+    //   - The whole SQL is composed at the end via
+    //     `INSERT INTO workspace_item_tasks ({s}) VALUES ({s})`.
     //
-    // Both the `?` and the `''` shapes prove description is in the
-    // INSERT. We accept either so the check tolerates the three
-    // branches while still failing if a refactor removes description
-    // from one of them entirely.
-    const has_desc_col = std.mem.indexOf(u8, source, "task_type, description") != null;
-    const has_routine_bind = std.mem.indexOf(u8, source, "'routine', ?") != null or
-        std.mem.indexOf(u8, source, "'routine', ''") != null;
-    const has_memory_bind = std.mem.indexOf(u8, source, "'memory', ?") != null or
-        std.mem.indexOf(u8, source, "'memory', ''") != null;
+    // We accept any of these shapes to prove description is wired
+    // in. The check is robust to the three branches (null / "" /
+    // value) and to future minor reformatting.
+    const has_desc_col = std.mem.indexOf(u8, source, ", description") != null;
+    const has_routine_type = std.mem.indexOf(u8, source, "'routine'") != null;
+    const has_memory_type = std.mem.indexOf(u8, source, "'memory'") != null;
+    const has_empty_literal = std.mem.indexOf(u8, source, ", ''") != null;
+    const has_bind_placeholder = std.mem.indexOf(u8, source, ", ?") != null;
+    const has_insert_compose = std.mem.indexOf(u8, source,
+        "INSERT INTO workspace_item_tasks ({s}) VALUES ({s})") != null;
 
     if (!routine_match or !memory_match) {
         std.debug.print(
@@ -142,20 +146,21 @@ test "task_create routine + memory INSERTs cover the description column" {
         );
         return error.BranchMissing;
     }
-    if (!has_desc_col or !has_routine_bind or !has_memory_bind) {
+    if (!has_desc_col or !has_routine_type or !has_memory_type or
+        !has_empty_literal or !has_bind_placeholder or !has_insert_compose)
+    {
         std.debug.print(
             "\n!! task_create.zig routine or memory branch does not persist description !!\n" ++
-                "   Each branch's INSERT must list `description` in its column list\n" ++
-                "   and either bind it via `?` or use a SQL `''` literal for the\n" ++
-                "   empty-string path (see sqlite-backend-empty-slice-binds-as-null).\n" ++
-                "   Example column list:\n" ++
-                "     (id, name, workspace_item_id, task_type, description)\n" ++
-                "   Example VALUES tail (non-empty desc):\n" ++
-                "     (?, ?, ?, 'routine'/'memory', ?)\n" ++
-                "   Example VALUES tail (empty desc):\n" ++
-                "     (?, ?, ?, 'routine'/'memory', '')\n" ++
-                "   Missing: desc_col={}, routine_bind={}, memory_bind={}\n",
-            .{ has_desc_col, has_routine_bind, has_memory_bind },
+                "   After PR #101 refactor, each branch must build SQL dynamically:\n" ++
+                "   - cols_buf.appendSlice(allocator, \", description\")\n" ++
+                "   - vals_buf.appendSlice(allocator, \", ''\")  // empty-string case\n" ++
+                "   - vals_buf.appendSlice(allocator, \", ?\")   // value case\n" ++
+                "   - sql_buf.print(allocator,\n" ++
+                "         INSERT_INTO_LITERAL, ...);\n" ++
+                "     where INSERT_INTO_LITERAL is the standard INSERT\n" ++
+                "     INTO workspace_item_tasks SQL template.\n" ++
+                "   Missing: desc_col={any}, routine_type={any}, memory_type={any}, empty_literal={any}, bind_placeholder={any}, insert_compose={any}\n",
+            .{ has_desc_col, has_routine_type, has_memory_type, has_empty_literal, has_bind_placeholder, has_insert_compose },
         );
         return error.DescriptionBranchMissing;
     }

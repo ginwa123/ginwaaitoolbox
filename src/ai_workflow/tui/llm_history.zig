@@ -3050,7 +3050,7 @@ pub const WorkspaceItemTaskInfo = struct {
     task_type: []u8 = &.{},
     /// Inline routine metadata. Populated for routine tasks only.
     routine: ?RoutineMeta = null,
-    /// Free-form description (Migration 061). Empty string is the
+    /// Free-form description (Migration 062). Empty string is the
     /// canonical "no description" sentinel — the column is NOT NULL
     /// DEFAULT ''. Owned by the lister; freed by `deinit`.
     description: []u8 = &.{},
@@ -3113,44 +3113,61 @@ pub fn createWorkspaceItemTask(
     // (Migration 052 dropped it). Callers that need the session_id
     // should use the task's own `id`.
     //
-    // Migration 061 added `description TEXT NOT NULL DEFAULT ''` to
-    // `workspace_item_tasks`. Three branches to avoid the
-    // `SqliteBackend.exec` empty-slice-as-NULL footgun (see memory
-    // `sqlite-backend-empty-slice-binds-as-null`):
+    // Migration 062 added `description TEXT NOT NULL DEFAULT ''` to
+    // `workspace_item_tasks`. We use a dynamic SQL builder + parallel
+    // `bind_values` list (single `db.exec` call) instead of three
+    // hardcoded branches — see PR #101 review feedback. Three
+    // cases for description:
     //
     //   - description == null  → omit the column entirely; DEFAULT ''
     //     applies.
-    //   - description == ""   → bind the empty slice → SQL NULL →
-    //     NOT NULL violation. Use a SQL '' literal instead, which
-    //     SQLite treats as the empty string (NOT NULL).
+    //   - description == ""   → SQL '' literal (NOT bound via `?`).
+    //     `SqliteBackend.exec` binds empty `[]const u8` slices as
+    //     SQL NULL, which would fail the NOT NULL constraint. The
+    //     SQL literal binds as the empty string, NOT NULL. See
+    //     memory `sqlite-backend-empty-slice-binds-as-null`.
     //   - description == "x…"  → bind via `?` like normal.
     //
     // The choice between "omit column" and "SQL '' literal" doesn't
     // change the stored value — both produce '' in the row. The
-    // branch keeps the bind-safe path the only shape the call site
+    // builder keeps the bind-safe path the only shape the call site
     // can ever reach, regardless of how the caller expressed "no
     // description" (null vs empty string).
     const returned_desc: []const u8 = description orelse "";
-    if (description) |d| {
-        if (d.len > 0) {
-            try db.exec(
-                allocator,
-                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) VALUES (?, ?, ?, ?, ?)",
-                &.{ id, name, workspace_item_id, task_type, d },
-            );
-        } else {
-            try db.exec(
-                allocator,
-                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) VALUES (?, ?, ?, ?, '')",
-                &.{ id, name, workspace_item_id, task_type },
-            );
+    {
+        var cols_buf: std.ArrayList(u8) = .empty;
+        defer cols_buf.deinit(allocator);
+        var vals_buf: std.ArrayList(u8) = .empty;
+        defer vals_buf.deinit(allocator);
+        var bind_values: std.ArrayList([]const u8) = .empty;
+        defer bind_values.deinit(allocator);
+
+        try cols_buf.appendSlice(allocator, "id, name, workspace_item_id, task_type");
+        try vals_buf.appendSlice(allocator, "?, ?, ?, ?");
+        try bind_values.appendSlice(allocator, &[_][]const u8{
+            id, name, workspace_item_id, task_type,
+        });
+
+        if (description) |d| {
+            if (d.len == 0) {
+                try cols_buf.appendSlice(allocator, ", description");
+                try vals_buf.appendSlice(allocator, ", ''");
+            } else {
+                try cols_buf.appendSlice(allocator, ", description");
+                try vals_buf.appendSlice(allocator, ", ?");
+                try bind_values.append(allocator, d);
+            }
         }
-    } else {
-        try db.exec(
+
+        var sql_buf: std.ArrayList(u8) = .empty;
+        defer sql_buf.deinit(allocator);
+        try sql_buf.print(
             allocator,
-            "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES (?, ?, ?, ?)",
-            &.{ id, name, workspace_item_id, task_type },
+            "INSERT INTO workspace_item_tasks ({s}) VALUES ({s})",
+            .{ cols_buf.items, vals_buf.items },
         );
+
+        try db.exec(allocator, sql_buf.items, bind_values.items);
     }
 
     return WorkspaceItemTaskInfo{
@@ -3172,7 +3189,7 @@ pub fn getWorkspaceItemTask(
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?WorkspaceItemTaskInfo {
-    // Migration 061: added `description` to the SELECT column list,
+    // Migration 062: added `description` to the SELECT column list,
     // positioned right after `workspace_item_id`. All subsequent
     // column indices shift by one.
     const sql = "SELECT id, name, workspace_item_id, description, created_at, updated_at, task_type FROM workspace_item_tasks t WHERE t.id = ?";
@@ -3185,7 +3202,7 @@ pub fn getWorkspaceItemTask(
             .id = try allocator.dupe(u8, row.values[0]),
             .name = try allocator.dupe(u8, row.values[1]),
             .workspace_item_id = try allocator.dupe(u8, row.values[2]),
-            // description is NOT NULL DEFAULT '' (Migration 061) so
+            // description is NOT NULL DEFAULT '' (Migration 062) so
             // the row value is always present. dupe unconditionally
             // (an empty slice still gets a fresh allocation so deinit
             // can free it consistently with the other []u8 fields).
@@ -3341,7 +3358,7 @@ pub fn listWorkspaceItemTasks(
     db: *sqlite.SqliteBackend,
     workspace_item_id: []const u8,
 ) ![]WorkspaceItemTaskInfo {
-    // Migration 061: added `t.description` to the SELECT column list,
+    // Migration 062: added `t.description` to the SELECT column list,
     // positioned right after `t.workspace_item_id`. All subsequent
     // column indices shift by one.
     const sql =
@@ -3548,7 +3565,7 @@ pub fn listWorkspaceItemTasksWithCursor(
             .id = try allocator.dupe(u8, row.values[0]),
             .name = try allocator.dupe(u8, row.values[1]),
             .workspace_item_id = try allocator.dupe(u8, row.values[2]),
-            // Migration 061: description at index 3.
+            // Migration 062: description at index 3.
             .description = try allocator.dupe(u8, row.values[3]),
             .created_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
             .updated_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,

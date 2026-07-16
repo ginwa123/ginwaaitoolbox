@@ -157,7 +157,7 @@ test "task_update handler no longer references the dropped session_id rebind" {
     }
 }
 
-// ─── Contract 4: task_update persists description (Migration 061) ──────────
+// ─── Contract 4: task_update persists description (Migration 062) ──────────
 //
 // When the request body carries a `description` field, the handler must
 // persist it to `workspace_item_tasks.description` via a guarded UPDATE
@@ -174,16 +174,31 @@ test "task_update persists description to workspace_item_tasks column" {
     defer allocator.free(source);
 
     // The handler must contain an UPDATE that sets the description
-    // column. We check for the SQL fragment and the binding slot.
-    if (std.mem.indexOf(u8, source, "description = ?") == null) {
+    // column. After PR #101 refactor the SQL is built dynamically,
+    // so we match the composed fragments rather than a literal
+    // `description = ?` substring (which no longer appears in source).
+    // The dynamic builder appends:
+    //   - `, description = ` (between the fixed prefix and the RHS)
+    //   - either `''` (empty-string literal) or `?` (value bind)
+    // We require at least the `?` bind path so a regression that
+    // always uses the literal still has to wire the bind through.
+    const has_set_clause = std.mem.indexOf(u8, source, ", description = ") != null;
+    const has_bind = std.mem.indexOf(u8, source, ", description = \"?") != null or
+        std.mem.indexOf(u8, source, "appendSlice(allocator, \"?\")") != null;
+    const has_where = std.mem.indexOf(u8, source, "WHERE id = ?") != null or
+        std.mem.indexOf(u8, source, "\" WHERE id = ?\"") != null;
+    if (!has_set_clause or !has_bind or !has_where) {
         std.debug.print(
             "\n!! {s} does not UPDATE workspace_item_tasks.description !!\n" ++
-                "   Migration 061 added the column; PUT /api/workspaces/tasks/:id\n" ++
-                "   with a body.description must persist it. Add:\n" ++
-                "     UPDATE workspace_item_tasks SET description = ? ...\n" ++
-                "   inside the useCase's description branch.\n" ++
-                "   See plan docs/superpowers/plans/2026-07-16-kanban-task-detail-dialog.md.\n",
-            .{HANDLER_PATH},
+                "   Migration 062 added the column; PUT /api/workspaces/tasks/:id\n" ++
+                "   with a body.description must persist it via the dynamic SQL\n" ++
+                "   builder. The useCase's description branch must:\n" ++
+                "   - sql_buf.appendSlice(allocator, \", description = \")\n" ++
+                "   - sql_buf.appendSlice(allocator, \"?\")  // for non-empty desc\n" ++
+                "   - sql_buf.appendSlice(allocator, \" WHERE id = ?\")\n" ++
+                "   See plan docs/superpowers/plans/2026-07-16-kanban-task-detail-dialog.md.\n" ++
+                "   Missing: set_clause={any}, bind={any}, where={any}\n",
+            .{ HANDLER_PATH, has_set_clause, has_bind, has_where },
         );
         return error.DescriptionUpdateMissing;
     }

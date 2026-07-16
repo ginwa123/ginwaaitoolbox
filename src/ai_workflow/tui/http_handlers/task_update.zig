@@ -152,29 +152,33 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
     // skipped) — the user actively cleared the field, which the UI
     // renders as the "Add a description…" placeholder. Null means
     // "leave unchanged" (the caller didn't include the field in the
-    // PUT body). Migration 061 added the column.
+    // PUT body). Migration 062 added the column.
     //
-    // Workaround for `SqliteBackend.exec` binding empty `[]const u8`
-    // slices as SQL NULL (see project memory
-    // `sqlite-backend-empty-slice-binds-as-null`): the column is
-    // NOT NULL DEFAULT '' so binding NULL would fail with
-    // `NOT NULL constraint failed`. We special-case the empty
-    // string path to use the SQL `''` literal directly (a non-empty
-    // string literal — SQLite binds it as the empty string, not NULL).
+    // We use a dynamic SQL builder + parallel `bind_values` list
+    // (single `db.exec` call) per PR #101 review feedback. The
+    // empty-string case uses a SQL '' literal (NOT a `?` bind)
+    // because `SqliteBackend.exec` binds empty `[]const u8` slices
+    // as SQL NULL, which would fail the column's NOT NULL DEFAULT ''
+    // constraint — see memory `sqlite-backend-empty-slice-binds-as-null`.
     if (input.body.description) |desc| {
+        var sql_buf: std.ArrayList(u8) = .empty;
+        defer sql_buf.deinit(allocator);
+        var bind_values: std.ArrayList([]const u8) = .empty;
+        defer bind_values.deinit(allocator);
+
+        try sql_buf.appendSlice(allocator,
+            "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
+        try sql_buf.appendSlice(allocator, ", description = ");
         if (desc.len == 0) {
-            input.db.exec(
-                allocator,
-                "UPDATE workspace_item_tasks SET description = '', updated_at = datetime('now') WHERE id = ?",
-                &[_][]const u8{task_id},
-            ) catch return error.FailedToUpdateTask;
+            try sql_buf.appendSlice(allocator, "''");
         } else {
-            input.db.exec(
-                allocator,
-                "UPDATE workspace_item_tasks SET description = ?, updated_at = datetime('now') WHERE id = ?",
-                &[_][]const u8{ desc, task_id },
-            ) catch return error.FailedToUpdateTask;
+            try sql_buf.appendSlice(allocator, "?");
+            try bind_values.append(allocator, desc);
         }
+        try sql_buf.appendSlice(allocator, " WHERE id = ?");
+        try bind_values.append(allocator, task_id);
+
+        input.db.exec(allocator, sql_buf.items, bind_values.items) catch return error.FailedToUpdateTask;
     }
 
     // Conditional split: route name updates through the cascade

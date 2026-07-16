@@ -1776,7 +1776,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration058AddLlmHistoryFts.version, .name = Migration058AddLlmHistoryFts.name, .up = Migration058AddLlmHistoryFts.up },
     .{ .version = Migration059AddCreatedIso.version, .name = Migration059AddCreatedIso.name, .up = Migration059AddCreatedIso.up },
     .{ .version = Migration060RebackfillCreatedIso.version, .name = Migration060RebackfillCreatedIso.name, .up = Migration060RebackfillCreatedIso.up },
-    .{ .version = Migration061AddTaskDescription.version, .name = Migration061AddTaskDescription.name, .up = Migration061AddTaskDescription.up },
+    .{ .version = Migration062AddTaskDescription.version, .name = Migration062AddTaskDescription.name, .up = Migration062AddTaskDescription.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -1959,7 +1959,7 @@ pub const Migration059AddCreatedIso = struct {
     }
 };
 
-/// Migration 061 — Add a `description` column to `workspace_item_tasks`.
+/// Migration 062 — Add a `description` column to `workspace_item_tasks`.
 ///
 /// ## Why this migration exists
 ///
@@ -1991,8 +1991,8 @@ pub const Migration059AddCreatedIso = struct {
 ///    layer never writes NULL.
 /// 3. Mirrors Migration 053's convention for short text fields
 ///    with a sentinel "absent" value.
-pub const Migration061AddTaskDescription = struct {
-    pub const version: u32 = 61;
+pub const Migration062AddTaskDescription = struct {
+    pub const version: u32 = 62;
     pub const name = "add_task_description";
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {

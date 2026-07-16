@@ -198,37 +198,49 @@ fn createRoutineTask(
     // the request body is accepted for backward compatibility but
     // is intentionally ignored.
     //
-    // Migration 061: persist description. Three-way branch avoids
-    // the `SqliteBackend.exec` empty-slice-as-NULL footgun (see
-    // memory `sqlite-backend-empty-slice-binds-as-null`):
-    //
-    //   - null   → omit the column, DEFAULT '' applies.
-    //   - ""     → bind via ? → SQL NULL → NOT NULL violation.
-    //     Use a SQL '' literal instead.
-    //   - "x…"   → bind via ?.
-    //
-    // This mirrors the working task_update.zig pattern; see the
-    // comment there for the full rationale.
-    if (input.body.description) |d| {
-        if (d.len > 0) {
-            db.exec(allocator,
-                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) " ++
-                "VALUES (?, ?, ?, 'routine', ?)",
-                &[_][]const u8{ task_id, input.body.name, input.item_id, d },
-            ) catch return error.TaskInsertFailed;
-        } else {
-            db.exec(allocator,
-                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) " ++
-                "VALUES (?, ?, ?, 'routine', '')",
-                &[_][]const u8{ task_id, input.body.name, input.item_id },
-            ) catch return error.TaskInsertFailed;
+    // Migration 062: persist description via dynamic SQL builder.
+    // Three cases for description (null / "" / value) all funnel
+    // into a single `db.exec(sql.items, bind_values.items)` call.
+    // The empty-string case uses a SQL '' literal (not a `?` bind)
+    // because `SqliteBackend.exec` binds empty `[]const u8` as
+    // SQL NULL, which would fail the column's NOT NULL DEFAULT ''
+    // constraint — see memory `sqlite-backend-empty-slice-binds-as-null`.
+    {
+        var cols_buf: std.ArrayList(u8) = .empty;
+        defer cols_buf.deinit(allocator);
+        var vals_buf: std.ArrayList(u8) = .empty;
+        defer vals_buf.deinit(allocator);
+        var bind_values: std.ArrayList([]const u8) = .empty;
+        defer bind_values.deinit(allocator);
+
+        try cols_buf.appendSlice(allocator, "id, name, workspace_item_id, task_type");
+        try vals_buf.appendSlice(allocator, "?, ?, ?, 'routine'");
+        try bind_values.appendSlice(allocator, &[_][]const u8{
+            task_id, input.body.name, input.item_id,
+        });
+
+        if (input.body.description) |d| {
+            if (d.len == 0) {
+                // Empty-string: SQL literal '' (NOT bound via `?`).
+                try cols_buf.appendSlice(allocator, ", description");
+                try vals_buf.appendSlice(allocator, ", ''");
+            } else {
+                // Value: bind it.
+                try cols_buf.appendSlice(allocator, ", description");
+                try vals_buf.appendSlice(allocator, ", ?");
+                try bind_values.append(allocator, d);
+            }
         }
-    } else {
-        db.exec(allocator,
-            "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) " ++
-            "VALUES (?, ?, ?, 'routine')",
-            &[_][]const u8{ task_id, input.body.name, input.item_id },
-        ) catch return error.TaskInsertFailed;
+
+        var sql_buf: std.ArrayList(u8) = .empty;
+        defer sql_buf.deinit(allocator);
+        try sql_buf.print(
+            allocator,
+            "INSERT INTO workspace_item_tasks ({s}) VALUES ({s})",
+            .{ cols_buf.items, vals_buf.items },
+        );
+
+        db.exec(allocator, sql_buf.items, bind_values.items) catch return error.TaskInsertFailed;
     }
 
     const routine_id = std.fmt.allocPrint(allocator, "routine_{s}", .{task_id}) catch return error.OutOfMemory;
@@ -272,35 +284,45 @@ fn createMemoryTask(
         return error.FailedToWriteMemoryFile;
     }
 
-    // Migration 061: persist description. Same three-way branch as
-    // createRoutineTask above — null → omit column, "" → SQL '' literal
-    // (avoids the empty-slice-as-NULL bind footgun), "x…" → bind via ?.
-    if (input.body.description) |d| {
-        if (d.len > 0) {
-            db.exec(allocator,
-                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) " ++
-                "VALUES (?, ?, ?, 'memory', ?)",
-                &[_][]const u8{ task_id, input.body.name, input.item_id, d },
-            ) catch {
-                _ = memories_mod.deleteLocalMemoryFile(allocator, input.io, dir_path, memory_name);
-                return error.MemoryTaskInsertFailed;
-            };
-        } else {
-            db.exec(allocator,
-                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) " ++
-                "VALUES (?, ?, ?, 'memory', '')",
-                &[_][]const u8{ task_id, input.body.name, input.item_id },
-            ) catch {
-                _ = memories_mod.deleteLocalMemoryFile(allocator, input.io, dir_path, memory_name);
-                return error.MemoryTaskInsertFailed;
-            };
+    // Migration 062: persist description. Same dynamic-SQL builder
+    // pattern as createRoutineTask above — null → omit column, "" →
+    // SQL '' literal (avoids the empty-slice-as-NULL bind footgun),
+    // "x…" → bind via `?`. On failure, roll back the .md file we
+    // just wrote.
+    {
+        var cols_buf: std.ArrayList(u8) = .empty;
+        defer cols_buf.deinit(allocator);
+        var vals_buf: std.ArrayList(u8) = .empty;
+        defer vals_buf.deinit(allocator);
+        var bind_values: std.ArrayList([]const u8) = .empty;
+        defer bind_values.deinit(allocator);
+
+        try cols_buf.appendSlice(allocator, "id, name, workspace_item_id, task_type");
+        try vals_buf.appendSlice(allocator, "?, ?, ?, 'memory'");
+        try bind_values.appendSlice(allocator, &[_][]const u8{
+            task_id, input.body.name, input.item_id,
+        });
+
+        if (input.body.description) |d| {
+            if (d.len == 0) {
+                try cols_buf.appendSlice(allocator, ", description");
+                try vals_buf.appendSlice(allocator, ", ''");
+            } else {
+                try cols_buf.appendSlice(allocator, ", description");
+                try vals_buf.appendSlice(allocator, ", ?");
+                try bind_values.append(allocator, d);
+            }
         }
-    } else {
-        db.exec(allocator,
-            "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) " ++
-            "VALUES (?, ?, ?, 'memory')",
-            &[_][]const u8{ task_id, input.body.name, input.item_id },
-        ) catch {
+
+        var sql_buf: std.ArrayList(u8) = .empty;
+        defer sql_buf.deinit(allocator);
+        try sql_buf.print(
+            allocator,
+            "INSERT INTO workspace_item_tasks ({s}) VALUES ({s})",
+            .{ cols_buf.items, vals_buf.items },
+        );
+
+        db.exec(allocator, sql_buf.items, bind_values.items) catch {
             _ = memories_mod.deleteLocalMemoryFile(allocator, input.io, dir_path, memory_name);
             return error.MemoryTaskInsertFailed;
         };

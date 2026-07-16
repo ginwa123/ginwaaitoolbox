@@ -101,7 +101,7 @@ pub const TaskCreateRequest = struct {
     /// Free-form text the frontend attaches to every task (the
     /// `AddTaskDialog` and `AddRoutineDialog` both emit it).
     /// Persisted on the `workspace_item_tasks.description` column
-    /// (Migration 061). Optional; the DB default '' is the
+    /// (Migration 062). Optional; the DB default '' is the
     /// "no description" sentinel.
     description: ?[]const u8 = null,
     session_id: ?[]const u8 = null,
@@ -390,7 +390,7 @@ pub const WorkspaceItemTaskResponse = struct {
     id: []const u8,
     name: []const u8,
     workspace_item_id: []const u8,
-    /// Free-form description (Migration 061). Empty string is the
+    /// Free-form description (Migration 062). Empty string is the
     /// canonical "no description" sentinel; the column is NOT NULL
     /// DEFAULT '' so this is never null.
     description: []const u8 = "",

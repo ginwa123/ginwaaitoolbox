@@ -24,7 +24,7 @@ test {
     _ = @import("http_handlers/tasks_list_test.zig");
     _ = @import("http_handlers/task_create_routines_test.zig");
     _ = @import("http_handlers/task_create_memory_test.zig");
-    _ = @import("http_handlers/task_create_description_test.zig");  // Migration 061 description in create path
+    _ = @import("http_handlers/task_create_description_test.zig");  // Migration 062 description in create path
     _ = @import("http_handlers/task_update_routines_test.zig");
     _ = @import("http_handlers/routines_run_test.zig");
     _ = @import("http_handlers/routines_list_test.zig");
@@ -35,7 +35,7 @@ test {
     _ = @import("llm_history_compacted_messages_test.zig");
     _ = @import("llm_history_search_messages_fts_test.zig"); // search_history rewrite (Chunk 2)
     _ = @import("llm_history_worker_info_test.zig"); // NEW: sprint 2 "git worktree cwd, worker"
-    _ = @import("llm_history_description_test.zig"); // Migration 061 description propagation
+    _ = @import("llm_history_description_test.zig"); // Migration 062 description propagation
     _ = @import("compaction_long_context_test.zig");
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     _ = @import("http_handlers/workspace_items_reorder_test.zig");
