@@ -16,6 +16,8 @@ const tool_models = nalar.tool_models;
 const getLatestMessage = llm_history.getLatestMessage;
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
 const models = @import("models.zig");
+const agentic_loop_mod = @import("agentic_loop/mod.zig");
+const wrapToolOutput = agentic_loop_mod.tools.wrapToolOutput;
 
 // ============================================================================
 // TOOL REGISTRY - Uses unified tool_registry.zig
@@ -396,7 +398,6 @@ pub fn handle_tool(
     active_loops: *models.ActiveLoops,
     selected_profile_model: []const u8,
 ) !void {
-
     if (res_dynamic_agent.tool_calls) |tc| {
         // Check if any tools match registered tools or MCP tools
         var has_known_tools = false;
@@ -486,7 +487,7 @@ pub fn handle_tool(
                         tool_call.function.name,
                         @errorName(err),
                     });
-                    tool_result = try tool_registry.wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
+                    tool_result = try wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
                     errdefer allocator.free(tool_result);
                     try saveAndSendToolResult(allocator, io, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
                     allocator.free(tool_result);
@@ -503,7 +504,7 @@ pub fn handle_tool(
                     tool_call.function.name,
                     @errorName(err),
                 });
-                tool_result = try tool_registry.wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
+                tool_result = try wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
                 errdefer allocator.free(tool_result);
                 try saveAndSendToolResult(allocator, io, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
                 allocator.free(tool_result);
@@ -552,7 +553,6 @@ fn saveAndSendToolResult(
     is_thinking: bool,
     agent_name: []const u8,
 ) !void {
-
     var diffview_before: ?[]const u8 = null;
     var diffview_after: ?[]const u8 = null;
     var content_modified: []const u8 = result;
@@ -563,7 +563,7 @@ fn saveAndSendToolResult(
         if (parseDiffViewFromResult(allocator, result)) |parsed| {
             diffview_before = parsed.before;
             diffview_after = parsed.after;
-            content_modified_allocated = @constCast(@ptrCast(parsed.content_without_diffview));
+            content_modified_allocated = @ptrCast(@constCast(parsed.content_without_diffview));
             content_modified = parsed.content_without_diffview;
         } else |_| {
             // Keep original result on parse error
@@ -611,19 +611,7 @@ fn saveAndSendToolResult(
     try sendSSEForLatestMessage(allocator, db, session_id, cwd, agent_name, parent_session_id, temperature, is_thinking, false, true, null);
 }
 
-fn sendSSEForLatestMessage(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-    cwd: []const u8,
-    agent_name: []const u8,
-    parent_session_id: []const u8,
-    temperature: f32,
-    is_thinking: bool,
-    is_input: bool,
-    is_output: bool,
-    tool_calls_json: ?[]agent.ToolCall
-) !void {
+fn sendSSEForLatestMessage(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8, cwd: []const u8, agent_name: []const u8, parent_session_id: []const u8, temperature: f32, is_thinking: bool, is_input: bool, is_output: bool, tool_calls_json: ?[]agent.ToolCall) !void {
     const latestMessage = getLatestMessage(allocator, db, session_id) catch |err| {
         std.debug.print("SSE_DEBUG: getLatestMessage failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
         return;
@@ -661,7 +649,6 @@ fn sendSSEForLatestMessage(
             .total_tokens = msg.total_tokens,
             .image_url = null,
             .session_skills = session_skills_tool,
-
         }) catch |err| {
             std.debug.print("SSE_DEBUG: on_event_send_new failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
         };
