@@ -44,6 +44,10 @@ pub const RequestSession = struct {
     body_message: []const u8 = "",
     image_urls: []const u8 = "",
     selected_profile_model: []const u8 = "", // NEW: name of profile in LlmConfig.profiles_models
+    /// Migration 063 — "1" to opt into unattended mode (workflow keeps
+    /// retrying past the 10-attempt TooManyRetries bail). Empty string
+    /// OR anything other than "1" = off (matches the session's default).
+    is_auto_retry_until_stop: []const u8 = "",
 };
 
 pub const ResponseSession = struct {
@@ -136,6 +140,11 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
     var selected_profile_model: []const u8 = "";
     if (parsed.selected_profile_model.len > 0) selected_profile_model = parsed.selected_profile_model;
 
+    // Migration 063 — opt into unattended mode. Empty / anything other
+    // than "1" stays off (matches the production SQL default '0').
+    var is_auto_retry_until_stop: []const u8 = "";
+    if (parsed.is_auto_retry_until_stop.len > 0) is_auto_retry_until_stop = parsed.is_auto_retry_until_stop;
+
     try insertWorker(local, sqlite_db, parsed, image_urls);
 
     // --- Heap-allocate data for the async task (task owns these, frees them) ---
@@ -146,6 +155,7 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
     const thread_allowed_tools = try di.allocator.dupe(u8, allowed_tools);
     const thread_image_urls = try di.allocator.dupe(u8, image_urls);
     const thread_selected_profile_model = try di.allocator.dupe(u8, selected_profile_model);
+    const thread_is_auto_retry_until_stop = try di.allocator.dupe(u8, is_auto_retry_until_stop);
 
     // If concurrent() fails, we must free the heap data ourselves
     errdefer {
@@ -156,6 +166,7 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
         di.allocator.free(thread_allowed_tools);
         di.allocator.free(thread_image_urls);
         di.allocator.free(thread_selected_profile_model);
+        di.allocator.free(thread_is_auto_retry_until_stop);
     }
 
     try di.group_emit_session_create.concurrent(
@@ -170,6 +181,7 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
                 atools: []u8,
                 iurls: []u8,
                 spm: []u8, // NEW: selected_profile_model
+                iaur: []u8, // Migration 063 — is_auto_retry_until_stop
             ) void {
                 // Task owns these slices — free them when done
                 defer di_inner.allocator.free(sid);
@@ -179,6 +191,7 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
                 defer di_inner.allocator.free(atools);
                 defer di_inner.allocator.free(iurls);
                 defer di_inner.allocator.free(spm); // NEW
+                defer di_inner.allocator.free(iaur); // Migration 063
 
                 const event_bus = di_inner.event_bus;
                 event_bus.emit(ai_workflow.ai_workflow.RunParamsNew, "ai_worker_flow", .{
@@ -191,10 +204,15 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
                     .is_sub_agent = false,
                     .image_urls = iurls,
                     .selected_profile_model = spm, // NEW
+                    // Migration 063 — pass the flag through. The workflow
+                    // re-reads the column on entry (so emit lag is OK);
+                    // but we pass it here too for forward-compat with
+                    // runParamsNew consumers that read the field.
+                    .is_auto_retry_until_stop = iaur,
                 });
             }
         }.run,
-        .{ di, thread_session_id, thread_queue_message, thread_effective_cwd, thread_body_message, thread_allowed_tools, thread_image_urls, thread_selected_profile_model },
+        .{ di, thread_session_id, thread_queue_message, thread_effective_cwd, thread_body_message, thread_allowed_tools, thread_image_urls, thread_selected_profile_model, thread_is_auto_retry_until_stop },
     );
 
     // ResponseSession.id must also outlive this function (caller may hold it)
@@ -215,8 +233,17 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
     const session_name = parsed.session_name;
     const effective_cwd = parsed.cwd_session;
     const effective_profile = parsed.selected_profile_model;
+    // Migration 063 — propagate the unattended-mode flag to the DB row.
+    // Coerce any non-"1" value to "0" so the NOT NULL DEFAULT 0 schema
+    // constraint is always satisfied (see project memory
+    // `sqlite-backend-empty-slice-binds-as-null`).
+    const effective_auto_retry: []const u8 = blk: {
+        if (std.mem.eql(u8, parsed.is_auto_retry_until_stop, "1")) break :blk "1";
+        break :blk "0";
+    };
 
-    const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model) VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)";
+    const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop) " ++
+        "VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)";
     const copy_session_name = try allocator.dupe(u8, session_name);
     defer allocator.free(copy_session_name);
     const copy_cwd = try allocator.dupe(u8, effective_cwd);
@@ -225,7 +252,11 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
     defer allocator.free(copy_session_id);
     const copy_profile = if (effective_profile.len > 0) try allocator.dupe(u8, effective_profile) else "";
     defer if (copy_profile.len > 0) allocator.free(copy_profile);
-    try sqlite_db.exec(allocator, session_sql, &.{ session_id, copy_session_name, copy_cwd, copy_profile });
+    try sqlite_db.exec(
+        allocator,
+        session_sql,
+        &.{ session_id, copy_session_name, copy_cwd, copy_profile, effective_auto_retry },
+    );
 
     // Broadcast session created event
     try ai_workflow.on_event_sent.onEventSendSessions(allocator, .{
@@ -237,5 +268,11 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
         .created_at = "",
         .updated_at = "",
         .selected_profile_model = effective_profile,
+        // Migration 063 — carry the flag in the SSE payload so ChatsList's
+        // reactive badge updates without a refetch. Empty default
+        // matches the `create_session` helper's "" fallback for
+        // `last_finish_reason`.
+        .is_auto_retry_until_stop = effective_auto_retry,
+        .last_finish_reason = "",
     });
 }

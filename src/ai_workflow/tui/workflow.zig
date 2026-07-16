@@ -1450,4 +1450,10 @@ pub const RunParamsNew = struct {
     selected_profile_model: []const u8 = "",
     inherited_context: []const u8 = "",
     sub_agent_overrides: ?SubAgentOverrides = null,
+    /// Migration 063 — opt-in flag for unattended mode. "1" keeps the
+    /// workflow retrying past the 10-attempt TooManyRetries bail. The
+    /// workflow re-reads the column on entry (so emit lag is fine),
+    /// but it's threaded here so `event_bus` consumers see the value
+    /// immediately. "" = off (the SQL default is "0").
+    is_auto_retry_until_stop: []const u8 = "",
 };
