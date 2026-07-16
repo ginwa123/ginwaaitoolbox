@@ -390,6 +390,10 @@ pub const WorkspaceItemTaskResponse = struct {
     id: []const u8,
     name: []const u8,
     workspace_item_id: []const u8,
+    /// Free-form description (Migration 061). Empty string is the
+    /// canonical "no description" sentinel; the column is NOT NULL
+    /// DEFAULT '' so this is never null.
+    description: []const u8 = "",
     /// Task type. Always present; 'standard' for legacy rows.
     task_type: []const u8 = "standard",
     /// Inline routine metadata. Present iff task_type === 'routine'.

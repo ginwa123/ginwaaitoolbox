@@ -153,12 +153,28 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
     // renders as the "Add a description…" placeholder. Null means
     // "leave unchanged" (the caller didn't include the field in the
     // PUT body). Migration 061 added the column.
+    //
+    // Workaround for `SqliteBackend.exec` binding empty `[]const u8`
+    // slices as SQL NULL (see project memory
+    // `sqlite-backend-empty-slice-binds-as-null`): the column is
+    // NOT NULL DEFAULT '' so binding NULL would fail with
+    // `NOT NULL constraint failed`. We special-case the empty
+    // string path to use the SQL `''` literal directly (a non-empty
+    // string literal — SQLite binds it as the empty string, not NULL).
     if (input.body.description) |desc| {
-        input.db.exec(
-            allocator,
-            "UPDATE workspace_item_tasks SET description = ?, updated_at = datetime('now') WHERE id = ?",
-            &[_][]const u8{ desc, task_id },
-        ) catch return error.FailedToUpdateTask;
+        if (desc.len == 0) {
+            input.db.exec(
+                allocator,
+                "UPDATE workspace_item_tasks SET description = '', updated_at = datetime('now') WHERE id = ?",
+                &[_][]const u8{task_id},
+            ) catch return error.FailedToUpdateTask;
+        } else {
+            input.db.exec(
+                allocator,
+                "UPDATE workspace_item_tasks SET description = ?, updated_at = datetime('now') WHERE id = ?",
+                &[_][]const u8{ desc, task_id },
+            ) catch return error.FailedToUpdateTask;
+        }
     }
 
     // Conditional split: route name updates through the cascade

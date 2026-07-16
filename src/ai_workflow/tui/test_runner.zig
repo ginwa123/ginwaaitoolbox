@@ -35,6 +35,7 @@ test {
     _ = @import("llm_history_compacted_messages_test.zig");
     _ = @import("llm_history_search_messages_fts_test.zig"); // search_history rewrite (Chunk 2)
     _ = @import("llm_history_worker_info_test.zig"); // NEW: sprint 2 "git worktree cwd, worker"
+    _ = @import("llm_history_description_test.zig"); // Migration 061 description propagation
     _ = @import("compaction_long_context_test.zig");
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     _ = @import("http_handlers/workspace_items_reorder_test.zig");

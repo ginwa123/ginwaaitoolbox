@@ -140,6 +140,7 @@ fn useCase(
             .id = task.id,
             .name = task.name,
             .workspace_item_id = task.workspace_item_id,
+            .description = task.description,
             .task_type = task.task_type,
             .routine = routine_meta,
             .created_at = task.created_at,
