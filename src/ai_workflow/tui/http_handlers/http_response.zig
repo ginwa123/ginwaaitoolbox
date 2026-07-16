@@ -100,9 +100,9 @@ pub const TaskCreateRequest = struct {
     name: []const u8,
     /// Free-form text the frontend attaches to every task (the
     /// `AddTaskDialog` and `AddRoutineDialog` both emit it).
-    /// `workspace_item_tasks` has no `description` column, so the
-    /// value is parsed and accepted but not persisted — the
-    /// frontend holds the authoritative copy.
+    /// Persisted on the `workspace_item_tasks.description` column
+    /// (Migration 061). Optional; the DB default '' is the
+    /// "no description" sentinel.
     description: ?[]const u8 = null,
     session_id: ?[]const u8 = null,
     /// Task type. Defaults to 'standard' (preserves the existing flow).
@@ -132,6 +132,13 @@ pub const TaskCreateRequest = struct {
 pub const TaskUpdateRequest = struct {
     name: ?[]const u8 = null,
     session_id: ?[]const u8 = null,
+    /// Free-form description. Mirrors `TaskCreateRequest.description`.
+    /// When present (non-null), overwrites the existing value; the
+    /// empty string is the canonical "no description" sentinel and is
+    /// stored verbatim. UI uses an "Add a description…" placeholder for
+    /// empty values; the DB column has DEFAULT '' so legacy rows
+    /// without a description look identical.
+    description: ?[]const u8 = null,
     /// Routine-only. New cron expression. Validated by the handler.
     /// When changed, next_run_at is recomputed.
     schedule: ?[]const u8 = null,
