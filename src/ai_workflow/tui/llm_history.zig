@@ -3114,12 +3114,44 @@ pub fn createWorkspaceItemTask(
     // should use the task's own `id`.
     //
     // Migration 061 added `description TEXT NOT NULL DEFAULT ''` to
-    // `workspace_item_tasks`. When the caller passes a non-null
-    // description we persist it; a null description means "no
-    // description" and we let the column DEFAULT apply (empty string).
-    const desc_value = description orelse "";
-    const sql = "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) VALUES (?, ?, ?, ?, ?)";
-    try db.exec(allocator, sql, &.{ id, name, workspace_item_id, task_type, desc_value });
+    // `workspace_item_tasks`. Three branches to avoid the
+    // `SqliteBackend.exec` empty-slice-as-NULL footgun (see memory
+    // `sqlite-backend-empty-slice-binds-as-null`):
+    //
+    //   - description == null  → omit the column entirely; DEFAULT ''
+    //     applies.
+    //   - description == ""   → bind the empty slice → SQL NULL →
+    //     NOT NULL violation. Use a SQL '' literal instead, which
+    //     SQLite treats as the empty string (NOT NULL).
+    //   - description == "x…"  → bind via `?` like normal.
+    //
+    // The choice between "omit column" and "SQL '' literal" doesn't
+    // change the stored value — both produce '' in the row. The
+    // branch keeps the bind-safe path the only shape the call site
+    // can ever reach, regardless of how the caller expressed "no
+    // description" (null vs empty string).
+    const returned_desc: []const u8 = description orelse "";
+    if (description) |d| {
+        if (d.len > 0) {
+            try db.exec(
+                allocator,
+                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) VALUES (?, ?, ?, ?, ?)",
+                &.{ id, name, workspace_item_id, task_type, d },
+            );
+        } else {
+            try db.exec(
+                allocator,
+                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) VALUES (?, ?, ?, ?, '')",
+                &.{ id, name, workspace_item_id, task_type },
+            );
+        }
+    } else {
+        try db.exec(
+            allocator,
+            "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES (?, ?, ?, ?)",
+            &.{ id, name, workspace_item_id, task_type },
+        );
+    }
 
     return WorkspaceItemTaskInfo{
         .id = try allocator.dupe(u8, id),
@@ -3130,7 +3162,7 @@ pub fn createWorkspaceItemTask(
         // Persist the description we just INSERTed (so the caller's
         // view of the new task matches what's in the DB without a
         // round-trip SELECT).
-        .description = try allocator.dupe(u8, desc_value),
+        .description = try allocator.dupe(u8, returned_desc),
     };
 }
 

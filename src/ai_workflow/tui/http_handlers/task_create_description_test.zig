@@ -119,18 +119,21 @@ test "task_create routine + memory INSERTs cover the description column" {
 
     // We test for the description column on the INSERT line (which
     // is the column-list side of the `++` concatenation). The actual
-    // file structure is:
-    //   "INSERT INTO workspace_item_tasks (..., description) " ++
-    //   "VALUES (..., 'routine'/'memory', ?)"
-    // so the description column shows up in the SAME line as the
-    // column list, but the `task_type` literal lives on the
-    // concatenation line. We assert the description column appears
-    // IMMEDIATELY after the task_type column, with the task_type
-    // literal AND a `?` placeholder both present in the file
-    // (anywhere). That proves all three are in the same INSERT.
+    // file structure (post-Migration 061 fix for the empty-slice-as-
+    // NULL bind bug) is a three-way branch per task type:
+    //   - non-empty description  → bind via `?` ("'routine', ?")
+    //   - empty description      → SQL `''` literal ("'routine', ''")
+    //   - null description       → omit the column entirely
+    //
+    // Both the `?` and the `''` shapes prove description is in the
+    // INSERT. We accept either so the check tolerates the three
+    // branches while still failing if a refactor removes description
+    // from one of them entirely.
     const has_desc_col = std.mem.indexOf(u8, source, "task_type, description") != null;
-    const has_routine_values = std.mem.indexOf(u8, source, "'routine', ?") != null;
-    const has_memory_values = std.mem.indexOf(u8, source, "'memory', ?") != null;
+    const has_routine_bind = std.mem.indexOf(u8, source, "'routine', ?") != null or
+        std.mem.indexOf(u8, source, "'routine', ''") != null;
+    const has_memory_bind = std.mem.indexOf(u8, source, "'memory', ?") != null or
+        std.mem.indexOf(u8, source, "'memory', ''") != null;
 
     if (!routine_match or !memory_match) {
         std.debug.print(
@@ -139,16 +142,20 @@ test "task_create routine + memory INSERTs cover the description column" {
         );
         return error.BranchMissing;
     }
-    if (!has_desc_col or !has_routine_values or !has_memory_values) {
+    if (!has_desc_col or !has_routine_bind or !has_memory_bind) {
         std.debug.print(
             "\n!! task_create.zig routine or memory branch does not persist description !!\n" ++
                 "   Each branch's INSERT must list `description` in its column list\n" ++
-                "   and bind it as a `?` placeholder. Example column list:\n" ++
+                "   and either bind it via `?` or use a SQL `''` literal for the\n" ++
+                "   empty-string path (see sqlite-backend-empty-slice-binds-as-null).\n" ++
+                "   Example column list:\n" ++
                 "     (id, name, workspace_item_id, task_type, description)\n" ++
-                "   Example VALUES tail:\n" ++
+                "   Example VALUES tail (non-empty desc):\n" ++
                 "     (?, ?, ?, 'routine'/'memory', ?)\n" ++
-                "   Missing: desc_col={}, routine_values={}, memory_values={}\n",
-            .{ has_desc_col, has_routine_values, has_memory_values },
+                "   Example VALUES tail (empty desc):\n" ++
+                "     (?, ?, ?, 'routine'/'memory', '')\n" ++
+                "   Missing: desc_col={}, routine_bind={}, memory_bind={}\n",
+            .{ has_desc_col, has_routine_bind, has_memory_bind },
         );
         return error.DescriptionBranchMissing;
     }
