@@ -20,6 +20,14 @@ pub const SessionInfo = struct {
     updated_at: []const u8,
     agent: []const u8,
     selected_profile_model: []const u8,
+    /// Migration 063 — "0" / "1" opt-in flag for unattended mode. Matches
+    /// the SQL `is_auto_retry_until_stop` column convention. COALESCE'd to
+    /// "0" at the SELECT boundary so callers always see a defined value.
+    is_auto_retry_until_stop: []const u8,
+    /// Migration 063 — denormalized cache of the most recent finish_reason
+    /// the workflow observed for this session. Empty string until the
+    /// first successful turn; never NULL at the API edge.
+    last_finish_reason: []const u8,
 
     pub fn deinit(self: *const SessionInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -30,6 +38,8 @@ pub const SessionInfo = struct {
         allocator.free(self.updated_at);
         allocator.free(self.agent);
         allocator.free(self.selected_profile_model);
+        allocator.free(self.is_auto_retry_until_stop);
+        allocator.free(self.last_finish_reason);
     }
 };
 
@@ -90,6 +100,10 @@ pub const SessionBroadcastInfo = struct {
     agent: []const u8,
     selected_profile_model: []const u8,
     git_worktree_cwd: []const u8,
+    /// Migration 063 — opt-in flag for unattended mode.
+    is_auto_retry_until_stop: []const u8,
+    /// Migration 063 — most recent finish_reason the workflow observed.
+    last_finish_reason: []const u8,
 };
 
 /// Get a list of sessions from the database
@@ -269,6 +283,12 @@ pub fn getSessionListWithCursor(
             .updated_at = try allocator.dupe(u8, row.values[5]),
             .agent = try allocator.dupe(u8, row.values[6]),
             .selected_profile_model = try allocator.dupe(u8, row.values[7]),
+            // Migration 063 — Task 1.4 extends the SELECT to read these
+            // two new columns from row.values[8] / row.values[9].
+            // For now (Task 1.2) initialize to empty strings so the
+            // struct literal type-checks.
+            .is_auto_retry_until_stop = try allocator.dupe(u8, ""),
+            .last_finish_reason = try allocator.dupe(u8, ""),
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -313,6 +333,10 @@ pub const SessionInfoJson = struct {
     agent: []const u8,
     session_name: []const u8,
     selected_profile_model: []const u8,
+    /// Migration 063 — opt-in flag for unattended mode (Migration 063).
+    is_auto_retry_until_stop: []const u8 = "",
+    /// Migration 063 — most recent finish_reason (Migration 063).
+    last_finish_reason: []const u8 = "",
 };
 
 /// Build JSON response for a list of sessions with cursor pagination
@@ -2136,6 +2160,13 @@ pub const SessionTableInfo = struct {
     updated_at: []u8,
     selected_profile_model: []u8,
     git_worktree_cwd: []u8,
+    /// Migration 063 — opt-in flag for unattended mode. Stored as text
+    /// ("0" / "1") to match `is_auto_retry_until_stop`'s INTEGER column
+    /// convention used by the rest of the codebase.
+    is_auto_retry_until_stop: []u8,
+    /// Migration 063 — most recent `finish_reason` the workflow observed
+    /// for this session. Empty string before the first successful turn.
+    last_finish_reason: []u8,
 
     pub fn deinit(self: SessionTableInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -2146,6 +2177,8 @@ pub const SessionTableInfo = struct {
         allocator.free(self.updated_at);
         allocator.free(self.selected_profile_model);
         allocator.free(self.git_worktree_cwd);
+        allocator.free(self.is_auto_retry_until_stop);
+        allocator.free(self.last_finish_reason);
     }
 };
 
@@ -2204,6 +2237,12 @@ pub fn getSession(
             .updated_at = try allocator.dupe(u8, row.values[5]),
             .selected_profile_model = try allocator.dupe(u8, row.values[6]),
             .git_worktree_cwd = try allocator.dupe(u8, row.values[7]),
+            // Migration 063 — Task 1.3 / 1.4 extend the SELECT to read
+            // these two new columns from row.values[8] / row.values[9].
+            // For now (Task 1.2) initialize to empty strings so the
+            // struct literal type-checks.
+            .is_auto_retry_until_stop = try allocator.dupe(u8, ""),
+            .last_finish_reason = try allocator.dupe(u8, ""),
         };
         row.deinit(allocator);
         return session;
