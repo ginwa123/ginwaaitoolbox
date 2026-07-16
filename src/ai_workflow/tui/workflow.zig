@@ -178,6 +178,32 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const copy_inherited_context = try parent_allocator.dupe(u8, params.inherited_context);
     const copy_selected_profile_model = try parent_allocator.dupe(u8, params.selected_profile_model);
 
+    // Migration 063 — read the unattended-mode flag ONCE per workflow
+    // invocation. When the flag is "1", the retry_count > 10 bail below
+    // does NOT return error.TooManyRetries; instead it logs, sleeps for
+    // config.retry_delay_ms, and continues. When "0", behavior is
+    // identical to pre-Migration-063.
+    //
+    // The SELECT is wrapped in `blk: { ... break :blk ... }` per the
+    // project's type-unification preference (memory
+    // `zig-orelse-type-unification-mismatch`): keeps the read bounded
+    // inside the entry block while letting the flag escape as a plain
+    // `bool` that's visible to the retry while-loop below.
+    // Uses di.allocator (NOT parent_allocator) because parent_allocator
+    // is per-block — the flag survives the entire function.
+    const is_auto_retry_until_stop: bool = blk: {
+        var flag_rows = db.query(di.allocator,
+            "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?",
+            &.{copy_session_id}) catch break :blk false;
+        defer flag_rows.deinit();
+        const flag_row = flag_rows.next() catch break :blk false;
+        if (flag_row) |row| {
+            defer row.deinit(di.allocator);
+            break :blk std.mem.eql(u8, row.values[0], "1");
+        }
+        break :blk false;
+    };
+
     var is_have_queue_message = false;
 
     // Ensure cleanup happens even on error - remove from worker table
@@ -425,6 +451,61 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         if (retry_count > 10) {
             const reason_error = @errorName(last_retry_error);
             const reason_source = last_retry_source;
+
+            // Migration 063 — unattended-mode soft-bail.
+            // When the session opts into `is_auto_retry_until_stop=1`, the
+            // workflow keeps running past retry_count > 10 instead of
+            // returning `error.TooManyRetries`. It logs a chat-history
+            // snapshot, sleeps for the configured retry delay, and
+            // `continue`s the while-loop. Hard bail behavior is
+            // preserved EXACTLY when the flag is off — same diagnostic,
+            // same llm_history entry, same `return error.TooManyRetries`
+            // — so existing users see no change.
+            if (is_auto_retry_until_stop) {
+                logger.warnFmt(
+                    "UNATTENDED SOFT-BAIL: retry_count={} exceeded 10 (last error={s} source={s}) — continuing per is_auto_retry_until_stop=1",
+                    .{ retry_count, reason_error, reason_source },
+                );
+                const soft_diagnostic = std.fmt.allocPrint(parent_allocator,
+                    \\[Agent Nalar System info] unattended-mode soft-bail after {} consecutive retries.
+                    \\Reason for last retry: {s} (source: {s}). The session keeps running.
+                , .{ retry_count, reason_error, reason_source }) catch "unattended soft-bail snapshot";
+                try agentic_loop_mod.insertLLMHistories(.{
+                    .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd,
+                    .entity = .{
+                        .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+                        .session_id = copy_session_id,
+                        .model = effective_model,
+                        .response_content = soft_diagnostic,
+                        .reasoning_content = null,
+                        .role = agent.Role.user.to_str(),
+                        .finish_reason = "null",
+                        .tool_calls_json = "",
+                        .tool_call_id = null,
+                        .agent = effective_agent_name,
+                        .loop_index = loop_counter,
+                        .temperature = agent_temperature,
+                        .is_thinking = isThinking,
+                        .prompt_tokens = 0,
+                        .completion_tokens = 0,
+                        .total_tokens = 0,
+                        .parent_id = copy_parent_session_id,
+                        .parent_session_id = copy_parent_session_id,
+                        .is_input = true,
+                        .is_output = false,
+                        .image_urls = null,
+                        .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+                    },
+                });
+                if (!retryDelayMs(allocator, config.retry_delay_ms, db, copy_session_id, io, logger)) {
+                    logger.infoFmt("WORKFLOW CANCELLED during unattended soft-bail: session_id={s}", .{copy_session_id});
+                    break;
+                }
+                retry_count = 0;
+                continue;
+            }
+
+            // Existing hard-bail (preserved verbatim).
             const diagnostic = std.fmt.allocPrint(parent_allocator,
                 \\[Agent Nalar System error] workflow halted after {} consecutive retries.
                 \\Reason for last retry: {s} (source: {s}).
@@ -475,6 +556,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             for (db_messages) |*msg| msg.deinit(allocator);
             allocator.free(db_messages);
         }
+
         const total_tokens = blk: {
             var max_token: u32 = 0;
             for (db_messages) |msg| {
@@ -538,6 +620,19 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         };
 
         retry_count = 0;
+        // Migration 063 — persist the most recent `finish_reason` so the
+        // next workflow invocation (e.g., after a server restart) can
+        // start from the right state without re-querying llm_history.
+        // Fire-and-log: a DB error here doesn't abort the loop — the
+        // cache is best-effort, not source-of-truth.
+        if (res_dynamic_agent.finish_reason) |fr| {
+            llm_history.updateSessionLastFinishReason(allocator, db, copy_session_id, fr.to_str()) catch |err| {
+                logger.warnFmt(
+                    "[workflow] failed to persist last_finish_reason: {s}",
+                    .{@errorName(err)},
+                );
+            };
+        }
         if (res_dynamic_agent.finish_reason) |finish_reason| {
             if (finish_reason == .stop) {
                 try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{

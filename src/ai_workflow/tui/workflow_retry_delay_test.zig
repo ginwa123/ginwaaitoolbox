@@ -327,3 +327,105 @@ test "workflow.zig calls saveRetryAttemptMessage in finish_reason else branch" {
         return error.RetryDiagnosticNotSavedInElse;
     }
 }
+// =====================================================================
+// Migration 063 — sessions.is_auto_retry_until_stop feature (Chunk 2
+// Task 2.1). Static-contract tests verifying that workflow.zig:
+//   1. Reads the flag at runAgenticMultiStepnew entry.
+//   2. Replaces the hard TooManyRetries bail with a soft bail +
+//      `continue` when the flag is on (preserving existing behavior
+//      when the flag is off).
+//   3. Writes last_finish_reason via updateSessionLastFinishReason
+//      after each successful LLM call.
+// All three are critical invariants that the lazy-analysis test target
+// doesn't reach; behavioral coverage is via install-target compile +
+// manual overnight test (per the plan's Task 2.2 decision).
+// =====================================================================
+
+/// Helper: locate the body of `runAgenticMultiStepnew` in workflow.zig
+/// (which spans from the function declaration to the next top-level
+/// `fn ` or `pub const ` at column 0). Returns the source slice.
+fn runAgenticMultiStepnewBody(source: []const u8) []const u8 {
+    const fn_start = std.mem.indexOf(u8, source, "pub fn runAgenticMultiStepnew(") orelse
+        return source[0..0];
+    const fn_end_pos = std.mem.indexOfPos(u8, source, fn_start + 1, "\nfn ") orelse
+        std.mem.indexOfPos(u8, source, fn_start + 1, "\npub const ") orelse
+        source.len;
+    return source[fn_start..fn_end_pos];
+}
+
+test "workflow.zig reads is_auto_retry_until_stop at runAgenticMultiStepnew entry" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        WORKFLOW_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| return err;
+    defer std.testing.allocator.free(source);
+
+    const body = runAgenticMultiStepnewBody(source);
+    if (body.len == 0) {
+        std.debug.print("!! runAgenticMultiStepnew not found in workflow.zig !!\n", .{});
+        return error.RunAgenticMultiStepnewMissing;
+    }
+    if (std.mem.indexOf(u8, body, "is_auto_retry_until_stop") == null) {
+        std.debug.print(
+            "!! workflow.zig runAgenticMultiStepnew does NOT read is_auto_retry_until_stop !!\n" ++
+                "   (the unattended-mode flag must be read at entry via SELECT, " ++
+                "before the retry while-loop). !!\n",
+            .{},
+        );
+        return error.AutoRetryFlagReadMissing;
+    }
+}
+
+test "workflow.zig soft-bails past retry_count > 10 when is_auto_retry_until_stop = 1" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        WORKFLOW_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| return err;
+    defer std.testing.allocator.free(source);
+
+    const retry_marker = std.mem.indexOf(u8, source, "if (retry_count > 10)") orelse {
+        std.debug.print("!! retry_count > 10 threshold (as `if`) removed from workflow.zig !!\n", .{});
+        return error.RetryCountThresholdMissing;
+    };
+
+    // Walk forward 1500 chars (covers the soft-bail branch + the continue).
+    const look_end = @min(retry_marker + 1500, source.len);
+    const window = source[retry_marker..look_end];
+
+    if (std.mem.indexOf(u8, window, "if (is_auto_retry_until_stop)") == null) {
+        std.debug.print(
+            "!! workflow.zig retry_count > 10 block does NOT branch on is_auto_retry_until_stop !!\n" ++
+                "   (attended mode off -> existing hard bail preserved; " ++
+                "attended mode on -> soft bail with continue). !!\n",
+            .{},
+        );
+        return error.AutoRetrySoftBailMissing;
+    }
+}
+
+test "workflow.zig writes last_finish_reason via updateSessionLastFinishReason" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        WORKFLOW_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| return err;
+    defer std.testing.allocator.free(source);
+
+    const body = runAgenticMultiStepnewBody(source);
+    if (body.len == 0) return error.RunAgenticMultiStepnewMissing;
+
+    if (std.mem.indexOf(u8, body, "updateSessionLastFinishReason") == null) {
+        std.debug.print(
+            "!! workflow.zig runAgenticMultiStepnew does NOT call updateSessionLastFinishReason !!\n" ++
+                "   (the workflow must persist finish_reason after each LLM call " ++
+                "so a server restart picks up where the last turn left off). !!\n",
+            .{},
+        );
+        return error.LastFinishReasonWriteMissing;
+    }
+}
