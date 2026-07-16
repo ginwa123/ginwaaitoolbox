@@ -1568,6 +1568,71 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Update a task's name AND/OR description in a single round-trip
+  // (kanban-task-detail-dialog plan, Chunk 2). Mirrors the
+  // optimistic-update + rollback pattern from `renameTask`. The
+  // patch object only includes fields the caller actually sent —
+  // missing fields are left unchanged server-side. Empty string
+  // for `description` IS sent (user explicitly cleared it);
+  // empty/whitespace `name` is rejected (matches the
+  // renameTask guard).
+  async function updateTaskDetails(
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+    fields: { name?: string; description?: string },
+  ) {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return
+    const item = workspace.items.find((i) => i.id === itemId)
+    if (!item || !item.tasks) return
+    const task = item.tasks.find((t) => t.id === taskId)
+    if (!task) return
+
+    // Build the patch — only include fields the caller actually sent.
+    // A no-op patch (both undefined) is rejected early so we don't
+    // burn an API call.
+    const patch: { name?: string; description?: string } = {}
+    if (fields.name !== undefined) {
+      const trimmed = fields.name.trim()
+      if (!trimmed) return // empty name is never a valid update
+      patch.name = trimmed
+    }
+    if (fields.description !== undefined) {
+      patch.description = fields.description
+    }
+    if (Object.keys(patch).length === 0) return
+
+    // Optimistic update — capture previous values for rollback.
+    const previousName = task.name
+    const previousDescription = task.description
+    if (patch.name !== undefined) task.name = patch.name
+    if (patch.description !== undefined) task.description = patch.description
+
+    // Keep the chat-view / chat-list header in sync if this is the
+    // active task and a name change is part of the patch.
+    const wasActive = activeTaskId.value === taskId
+    if (wasActive && patch.name !== undefined) {
+      useNavigationStore().setActiveChatName(patch.name)
+    }
+
+    try {
+      await api.updateTaskSimple(taskId, patch)
+    } catch (err) {
+      console.error('Failed to update task details:', err)
+      // Rollback on error
+      task.name = previousName
+      task.description = previousDescription
+      if (wasActive) {
+        useNavigationStore().setActiveChatName(previousName)
+      }
+      // Rethrow so the dialog can show a retry option. Mirrors the
+      // renameTask contract — the dialog (Chunk 3) catches this in
+      // its own Save handler.
+      throw err
+    }
+  }
+
   async function removeWorkspace(workspaceId: string) {
     const workspaceIndex = workspaces.value.findIndex((ws) => ws.id === workspaceId)
     if (workspaceIndex === -1) return
@@ -1923,6 +1988,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     deleteTask,
     loadMoreTasks,
     renameTask,
+    // NEW (kanban-task-detail-dialog plan, Chunk 2). Edit a task's
+    // name and/or description in one API call from the detail
+    // dialog. Uses the same PUT /api/workspaces/tasks/:task_id
+    // endpoint as renameTask — only the body shape is wider.
+    updateTaskDetails,
     runRoutine,
     updateRoutine,
     pinTask,
