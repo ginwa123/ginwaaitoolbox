@@ -24,7 +24,6 @@
                               host can override if needed)
     emits:
       add-column    []
-      add-task      [{ columnId: string }]
       move-task     [{ taskId, columnId, position }]
       rename-column [{ columnId, name }]
       delete-column [columnId]
@@ -34,6 +33,8 @@
       run-routine, pin-task
       request-rename-column, request-delete-column (host opens
       KanbanColumnEditor on these)
+      view-task-detail (consumed internally — see comment below)
+      rename-item (kanban header pencil; forwarded to AppLayout)
 
   Live updates:
     The component reacts to backend SSE events on `/api/kanban/events`
@@ -95,7 +96,6 @@ watch(() => [props.workspaceId, effectiveItemId.value], loadColumns)
 
 const emit = defineEmits<{
   addColumn: []
-  addTask: [{ columnId: string }]
   moveTask: [{ taskId: string; columnId: string; position: number }]
   renameColumn: [{ columnId: string; name: string }]
   deleteColumn: [columnId: string]
@@ -256,6 +256,91 @@ const handleTaskDetailSave = async (payload: { name: string; description: string
     // Keep the dialog open so the user can retry / fix
   }
 }
+
+// ─── Create-task dialog (kanban-add-task-via-detail-dialog — Chunk 1) ────
+//
+// When the user clicks "+ Add" on a kanban column, we open the SAME
+// KanbanTaskDetailDialog in `mode="create"` (rather than the small
+// AddTaskDialog the picker used to open). This unifies the create
+// and edit flows — same form, same column metadata strip, same
+// validation — and routes the new task to the column the user
+// actually clicked (which the old flow silently dropped).
+//
+// Backend note: createTask doesn't accept a kanban_column_id yet
+// (the backend auto-assigns to the first column at MAX+1). After
+// the create returns, we call moveTaskToColumn to put the task in
+// the user's chosen column at position 0 (top). The extra round
+// trip is acceptable; the move is cheap.
+//
+// State:
+//   - `activeCreateColumnId` — column the user clicked "+ Add" on.
+//   - `showCreateDialog` — drives the dialog's open/closed state.
+//   - `createBusy` — disables the Save button while the create +
+//     move are in flight (the dialog itself doesn't have a busy
+//     state; we surface in-flight via the Save button text).
+//   - `createError` — bound to the dialog's `errorMessage` prop;
+//     non-null on save failure so the dialog shows the red banner.
+const activeCreateColumnId = ref<string | null>(null)
+const showCreateDialog = ref(false)
+const createBusy = ref(false)
+const createError = ref<string | null>(null)
+
+// Resolve the column object for the dialog's `column` prop. Returns
+// null until/unless `activeCreateColumnId` is set; the column is
+// looked up in the kanban's columns list which is already in scope.
+const activeCreateColumn = computed<KanbanColumnType | null>(() => {
+  if (!activeCreateColumnId.value) return null
+  return (props.item.kanban_columns ?? []).find(
+    (c) => c.id === activeCreateColumnId.value,
+  ) ?? null
+})
+
+// Bound to <KanbanColumn>'s `@add-task`. Sets the target column +
+// opens the create dialog. Resets any previous error so a fresh
+// open doesn't carry over a stale banner.
+const handleViewCreateTask = (columnId: string) => {
+  activeCreateColumnId.value = columnId
+  createError.value = null
+  showCreateDialog.value = true
+}
+
+// Create-task submit handler. Called by the dialog's `@create` emit.
+// On success: close the dialog + clear the target column. On error:
+// keep the dialog open and surface the error message via the dialog's
+// `errorMessage` prop (the user can retry without re-typing).
+const handleCreateTaskSave = async (payload: {
+  mode: 'create'
+  name: string
+  description: string
+}) => {
+  if (!activeCreateColumnId.value) return
+  createBusy.value = true
+  createError.value = null
+  const wsId = props.workspaceId
+  const itId = props.itemId || props.item.id
+  const desiredColumnId = activeCreateColumnId.value
+  try {
+    const taskId = await workspacesStore.addTask(wsId, itId, {
+      name: payload.name,
+      description: payload.description,
+    })
+    if (!taskId) {
+      createError.value = 'Failed to create task — please retry.'
+      return
+    }
+    // Move the new task to the column the user clicked. The
+    // backend's auto-assign put it in the first column; moveTaskToColumn
+    // overwrites that. Position 0 = top of the column.
+    await workspacesStore.moveTaskToColumn(wsId, itId, taskId, desiredColumnId, 0)
+    showCreateDialog.value = false
+    activeCreateColumnId.value = null
+  } catch (err) {
+    console.error('Failed to create kanban task:', err)
+    createError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    createBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -348,7 +433,7 @@ const handleTaskDetailSave = async (payload: { name: string; description: string
           :tasks="tasks"
           :workspace-id="workspaceId"
           :item-id="itemId || item.id"
-          @add-task="(columnId) => emit('addTask', { columnId })"
+          @add-task="handleViewCreateTask"
           @move-task="(payload) => emit('moveTask', payload)"
           @rename-column="(payload) => emit('renameColumn', payload)"
           @delete-column="(columnId) => emit('deleteColumn', columnId)"
@@ -397,6 +482,22 @@ const handleTaskDetailSave = async (payload: { name: string; description: string
     :task="activeTaskDetail"
     :column="activeTaskDetailColumn"
     @save="handleTaskDetailSave"
+  />
+  <!--
+    Second KanbanTaskDetailDialog mount for the "+ Add" → create flow.
+    Same component, mode="create" + task=null makes it render the
+    blank form with a "New task" header and "Create task" button.
+    errorMessage is bound to `createError` so a failed create shows
+    a red banner inside the dialog (the dialog stays open so the user
+    can retry without re-typing the name + description).
+  -->
+  <KanbanTaskDetailDialog
+    v-model:show="showCreateDialog"
+    mode="create"
+    :task="null"
+    :column="activeCreateColumn"
+    :error-message="createError"
+    @create="handleCreateTaskSave"
   />
 </template>
 

@@ -16,18 +16,31 @@
 
   Public API:
     props:
-      show       boolean
-      task       Task | null  (the task to edit; null hides the form)
+      show          boolean
+      mode          'edit' | 'create'  (default: 'edit')
+      task          Task | null
+                              edit mode: required (the task to edit)
+                              create mode: ignored — form starts empty
+      column        KanbanColumn | null  (optional — shown in metadata strip;
+                              required in create mode so the parent knows
+                              where to place the new task)
+      errorMessage  string | null  (optional — shows a red banner in the
+                              body when set; typically bound to a save
+                              handler's catch-block error)
     emits:
       close      []
-      save       [{ name: string, description: string }]
-                Emitted when the user clicks Save. The host calls
-                workspacesStore.updateTaskDetails(...) and closes
+      save       [{ mode: 'edit', name, description }]
+                Emitted when the user clicks Save in edit mode. The host
+                calls workspacesStore.updateTaskDetails(...) and closes
                 the dialog on success.
+      create     [{ mode: 'create', name, description }]
+                Emitted when the user clicks Create task in create mode.
+                The host calls workspacesStore.addTask(...) +
+                moveTaskToColumn(...) to persist the new task.
 
   This dialog is purely presentational — no API calls, no store
-  reads. The host (AppLayout) owns the "open + for which task"
-  state and wires the `save` emit to a store action.
+  reads. The host (AppLayout / KanbanView) owns the "open + for which
+  task / in which column" state and wires the emits to store actions.
 
   Pattern source: KanbanSettingsDialog.vue — Teleport to body,
   max-height 70vh, transition + backdrop, semantic CSS variables
@@ -37,11 +50,20 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import type { Task, KanbanColumn } from '../stores/workspaces'
 
-const props = defineProps<{
-  show: boolean
-  task: Task | null
-  column?: KanbanColumn | null  // optional — shown in metadata strip
-}>()
+const props = withDefaults(
+  defineProps<{
+    show: boolean
+    mode?: 'edit' | 'create'
+    task: Task | null
+    column?: KanbanColumn | null  // optional — shown in metadata strip
+    errorMessage?: string | null  // optional — red banner in body
+  }>(),
+  {
+    mode: 'edit',
+    column: null,
+    errorMessage: null,
+  },
+)
 
 const emit = defineEmits<{
   // v-model:show two-way binding — emits `false` when the dialog
@@ -54,7 +76,11 @@ const emit = defineEmits<{
   // backward compatibility with the existing test suite and for
   // the KanbanSettingsDialog-style pattern.
   close: []
-  save: [payload: { name: string; description: string }]
+  save: [payload: { mode: 'edit'; name: string; description: string }]
+  // Create-mode counterpart. Host wires this to workspacesStore.addTask
+  // + moveTaskToColumn. Same payload shape as `save` but with
+  // mode='create' so the parent handler can switch on it.
+  create: [payload: { mode: 'create'; name: string; description: string }]
 }>()
 
 // ─── Form state ──────────────────────────────────────────────────────────
@@ -64,26 +90,43 @@ const description = ref('')
 const nameInput = ref<HTMLInputElement | null>(null)
 const DESCRIPTION_MAX = 5000
 
+// True when the dialog is rendering the create flow (rather than
+// edit-in-place). Drives header copy / icon, save-button text, the
+// form-state reset rule, and which emit fires on submit.
+const isCreateMode = computed<boolean>(() => props.mode === 'create')
+
 // Reset form whenever the dialog opens OR the target task changes.
+// In create mode we always start blank (regardless of `task`). In
+// edit mode we prefill from `task` (today's behavior).
 watch(
-  () => [props.show, props.task?.id] as const,
-  async ([show]) => {
-    if (show && props.task) {
+  () => [props.show, props.task?.id, props.mode] as const,
+  async ([show, _taskId, _mode]) => {
+    if (!show) return
+    if (isCreateMode.value) {
+      name.value = ''
+      description.value = ''
+    } else if (props.task) {
       name.value = props.task.name
       description.value = props.task.description ?? ''
-      await nextTick()
-      // Focus + select the name input so the user can rename in
-      // place with a single keystroke.
-      nameInput.value?.focus()
-      nameInput.value?.select()
     }
+    await nextTick()
+    nameInput.value?.focus()
+    // Selecting the text is only useful in edit mode (so a rename
+    // is a single keystroke). In create mode the input is empty —
+    // `select()` is a no-op but skipping it removes a code-smell.
+    if (!isCreateMode.value) nameInput.value?.select()
   },
   { immediate: true },
 )
 
-// Dirty tracking — the Save button enables only when something
-// actually changed (compared to the props.task baseline).
+// Dirty tracking — the Save button enables only when the form is
+// ready to submit. Two semantics:
+//   - edit mode: the form must differ from the props.task baseline
+//     (saves a wasted API call on a no-op Save click).
+//   - create mode: any non-empty name is "dirty enough to submit"
+//     (the task doesn't exist yet so there's nothing to compare to).
 const isDirty = computed<boolean>(() => {
+  if (isCreateMode.value) return isValid.value
   if (!props.task) return false
   const nameChanged = name.value.trim() !== props.task.name
   const descChanged = (description.value) !== (props.task.description ?? '')
@@ -97,10 +140,19 @@ const canSave = computed<boolean>(() => isDirty.value && isValid.value)
 
 const handleSave = () => {
   if (!canSave.value) return
-  emit('save', {
-    name: name.value.trim(),
-    description: description.value,
-  })
+  if (isCreateMode.value) {
+    emit('create', {
+      mode: 'create',
+      name: name.value.trim(),
+      description: description.value,
+    })
+  } else {
+    emit('save', {
+      mode: 'edit',
+      name: name.value.trim(),
+      description: description.value,
+    })
+  }
 }
 
 const handleClose = () => {
@@ -132,14 +184,22 @@ const columnLabel = computed<string | null>(() => {
 <template>
   <Teleport to="body">
     <Transition name="kanban-task-detail-modal">
+      <!--
+        The dialog renders whenever `show` is true AND either:
+          - a task is provided (edit mode), OR
+          - the dialog is in create mode (task is intentionally null;
+            the form starts blank).
+        The original `v-if="show && task"` would have hidden the
+        create-mode dialog because `task` is null.
+      -->
       <div
-        v-if="show && task"
+        v-if="show && (task || isCreateMode)"
         class="fixed inset-0 z-50 flex items-center justify-center p-4"
         @click.self="handleClose"
         @keydown="handleKeydown"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="kanban-task-detail-title"
+        :aria-labelledby="isCreateMode ? 'kanban-task-detail-create-title' : 'kanban-task-detail-title'"
         data-testid="kanban-task-detail-dialog"
       >
         <!-- Backdrop -->
@@ -169,12 +229,12 @@ const columnLabel = computed<string | null>(() => {
             style="border-bottom: 1px solid var(--color-border);"
           >
             <h3
-              id="kanban-task-detail-title"
+              :id="isCreateMode ? 'kanban-task-detail-create-title' : 'kanban-task-detail-title'"
               class="text-base font-semibold flex items-center gap-2"
               style="color: var(--semantic-text);"
             >
-              <span aria-hidden="true">📝</span>
-              Task details
+              <span aria-hidden="true">{{ isCreateMode ? '➕' : '📝' }}</span>
+              {{ isCreateMode ? 'New task' : 'Task details' }}
             </h3>
             <button
               type="button"
@@ -192,6 +252,28 @@ const columnLabel = computed<string | null>(() => {
 
           <!-- Body (scrollable) -->
           <div class="flex-1 overflow-y-auto min-h-0 px-5 py-4">
+            <!-- Error banner. Sits at the top of the body so the
+                 user sees it immediately. Hidden when errorMessage is
+                 null/empty. The host sets errorMessage on a save/
+                 create handler failure so the user can retry without
+                 losing their typed content (the form is NOT reset on
+                 error — only on a successful submit, via watch's
+                 `show` change). -->
+            <div
+              v-if="errorMessage"
+              class="mb-4 px-3 py-2 rounded-lg text-sm"
+              style="
+                background-color: rgba(239, 68, 68, 0.12);
+                border: 1px solid rgba(239, 68, 68, 0.4);
+                color: rgb(220, 38, 38);
+              "
+              role="alert"
+              data-testid="kanban-task-detail-error"
+            >
+              <span aria-hidden="true" class="mr-1">⚠️</span>
+              {{ errorMessage }}
+            </div>
+
             <!-- Task name input — big, prominent, full-width -->
             <div class="mb-4">
               <label
@@ -207,7 +289,7 @@ const columnLabel = computed<string | null>(() => {
                 v-model="name"
                 type="text"
                 placeholder="Enter task name…"
-                data-testid="kanban-task-detail-name"
+                :data-testid="isCreateMode ? 'kanban-task-detail-create-name' : 'kanban-task-detail-name'"
                 class="w-full px-3 py-2.5 rounded-lg text-base font-medium outline-none transition-all duration-200"
                 style="
                   background-color: var(--semantic-sidebar-bg);
@@ -221,9 +303,11 @@ const columnLabel = computed<string | null>(() => {
             <!-- Metadata strip (read-only). Hidden when no metadata
                  is available, which keeps the layout tight for the
                  common case (standard task with no pin / column
-                 yet to load). -->
+                 yet to load). In create mode the strip renders ONLY
+                 when a column is provided — pin/type don't apply to
+                 a brand-new task. -->
             <div
-              v-if="columnLabel || taskTypeLabel || task?.is_pinned"
+              v-if="columnLabel || (!isCreateMode && (taskTypeLabel || task?.is_pinned))"
               class="mb-4 flex items-center gap-2 flex-wrap text-xs"
               style="color: var(--semantic-text-dim);"
               data-testid="kanban-task-detail-metadata"
@@ -232,11 +316,11 @@ const columnLabel = computed<string | null>(() => {
                 <span aria-hidden="true">📋</span>
                 <span class="ml-1">{{ columnLabel }}</span>
               </span>
-              <span v-if="taskTypeLabel" data-testid="kanban-task-detail-type">
+              <span v-if="!isCreateMode && taskTypeLabel" data-testid="kanban-task-detail-type">
                 <span aria-hidden="true">·</span>
                 <span class="ml-1">{{ taskTypeLabel }}</span>
               </span>
-              <span v-if="task?.is_pinned" data-testid="kanban-task-detail-pinned">
+              <span v-if="!isCreateMode && task?.is_pinned" data-testid="kanban-task-detail-pinned">
                 <span aria-hidden="true">📌</span>
                 <span class="ml-1">Pinned</span>
               </span>
@@ -262,7 +346,7 @@ const columnLabel = computed<string | null>(() => {
                 :maxlength="DESCRIPTION_MAX"
                 rows="10"
                 placeholder="Add a description…"
-                data-testid="kanban-task-detail-description"
+                :data-testid="isCreateMode ? 'kanban-task-detail-create-description' : 'kanban-task-detail-description'"
                 class="w-full px-3 py-2.5 rounded-lg text-sm outline-none transition-all duration-200 resize-y"
                 style="
                   background-color: var(--semantic-sidebar-bg);
@@ -304,7 +388,7 @@ const columnLabel = computed<string | null>(() => {
                 color: var(--color-bg);
               "
             >
-              Save
+              {{ isCreateMode ? 'Create task' : 'Save' }}
             </button>
           </div>
         </div>

@@ -151,7 +151,9 @@ describe('KanbanTaskDetailDialog — save / cancel', () => {
 
     const emitted = w!.emitted('save')
     expect(emitted).toBeTruthy()
-    expect(emitted![0]).toEqual([{ name: 'New name', description: 'New description' }])
+    expect(emitted![0]).toEqual([
+      { mode: 'edit', name: 'New name', description: 'New description' },
+    ])
   })
 
   it('emits save with description = "" when the textarea is cleared', async () => {
@@ -163,7 +165,9 @@ describe('KanbanTaskDetailDialog — save / cancel', () => {
 
     const emitted = w!.emitted('save')
     expect(emitted).toBeTruthy()
-    expect(emitted![0]).toEqual([{ name: 'Original name', description: '' }])
+    expect(emitted![0]).toEqual([
+      { mode: 'edit', name: 'Original name', description: '' },
+    ])
   })
 
   it('emits close (not save) when the cancel button is clicked', async () => {
@@ -304,5 +308,166 @@ describe('KanbanTaskDetailDialog — metadata strip', () => {
     mountDialog({ ...TASK, is_pinned: false })
     await flushPromises()
     expect(findInDom('[data-testid="kanban-task-detail-metadata"]')).toBeNull()
+  })
+})
+
+// ─── Create-mode tests (kanban-add-task-via-detail-dialog) ───────────────
+//
+// The same KanbanTaskDetailDialog renders the "+ Add" flow in
+// kanban mode. The host passes `mode="create"` and `task={null}`;
+// the form starts empty and submit emits `create` (not `save`).
+// These tests verify both the rendering differences and the
+// emit shape so the contract is locked in.
+describe('KanbanTaskDetailDialog — create mode', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    findAllInDom('[data-testid="kanban-task-detail-dialog"]').forEach((el) =>
+      el.remove(),
+    )
+  })
+
+  function mountCreateDialog(
+    column: KanbanColumn | null = null,
+    errorMessage: string | null = null,
+  ): VueWrapper {
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: { show: true, mode: 'create', task: null, column, errorMessage },
+    })
+    return wrapper
+  }
+
+  it('renders the dialog with task=null (would be hidden in edit mode)', async () => {
+    // The whole point of the create-mode change: the dialog must
+    // render even when task is null, because in edit mode the
+    // v-if="show && task" guard hides it. The new guard is
+    // `show && (task || isCreateMode)`.
+    mountCreateDialog()
+    await flushPromises()
+    expect(findInDom('[data-testid="kanban-task-detail-dialog"]')).not.toBeNull()
+  })
+
+  it('starts the form empty even if a task is passed (caller contract: pass null)', async () => {
+    // Defensive: in create mode the form MUST start blank regardless
+    // of the task prop. The host's contract is `task=null`, but if
+    // a future refactor accidentally passes a stale task, the
+    // dialog should still present a blank form.
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: { show: true, mode: 'create', task: TASK },
+    })
+    await flushPromises()
+    const input = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-create-name"]',
+    )
+    expect(input?.value).toBe('')
+    const textarea = findInDom<HTMLTextAreaElement>(
+      '[data-testid="kanban-task-detail-create-description"]',
+    )
+    expect(textarea?.value).toBe('')
+  })
+
+  it('renders the column name in the metadata strip when column is provided', async () => {
+    mountCreateDialog({
+      id: 'col_1',
+      workspace_item_id: 'item_1',
+      name: 'todo',
+      position: 0,
+      created_at: '2026-07-16T10:00:00Z',
+    })
+    await flushPromises()
+    const colEl = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-column"]',
+    )
+    expect(colEl?.textContent).toContain('todo')
+  })
+
+  it('hides the type + pinned badges in create mode (they only apply to existing tasks)', async () => {
+    mountCreateDialog()
+    await flushPromises()
+    // Even if column is null, the metadata strip is hidden in
+    // create mode when no column is provided. The type/pinned
+    // badges are explicitly gated off for create mode in the
+    // template (`v-if="!isCreateMode && ..."`).
+    const strip = findInDom('[data-testid="kanban-task-detail-metadata"]')
+    expect(strip).toBeNull()
+  })
+
+  it('Save button reads "Create task" and is disabled when name is empty', async () => {
+    mountCreateDialog()
+    await flushPromises()
+    const saveBtn = findInDom<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-save"]',
+    )
+    expect(saveBtn?.textContent?.trim()).toBe('Create task')
+    expect(saveBtn?.hasAttribute('disabled')).toBe(true)
+  })
+
+  it('Save button enables when name is non-empty (no "dirty" gate in create mode)', async () => {
+    // isDirty returns isValid in create mode (any non-empty name
+    // is ready to submit). Without this, the Save button would
+    // stay disabled and the user couldn't submit a fresh create.
+    mountCreateDialog()
+    await flushPromises()
+    setInputValue('[data-testid="kanban-task-detail-create-name"]', 'My task')
+    await flushPromises()
+    const saveBtn = findInDom<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-save"]',
+    )
+    expect(saveBtn?.hasAttribute('disabled')).toBe(false)
+  })
+
+  it('emits create (not save) with { mode: "create", name, description }', async () => {
+    const w = mountCreateDialog()
+    await flushPromises()
+    setInputValue('[data-testid="kanban-task-detail-create-name"]', '  New task  ')
+    setInputValue(
+      '[data-testid="kanban-task-detail-create-description"]',
+      'Some description',
+    )
+    await flushPromises()
+    clickInDom('[data-testid="kanban-task-detail-save"]')
+
+    expect(w!.emitted('save')).toBeFalsy()
+    const emitted = w!.emitted('create')
+    expect(emitted).toBeTruthy()
+    expect(emitted![0]).toEqual([
+      { mode: 'create', name: 'New task', description: 'Some description' },
+    ])
+  })
+
+  it('header title reads "New task" in create mode (vs "Task details" in edit)', async () => {
+    mountCreateDialog()
+    await flushPromises()
+    const title = findInDom<HTMLElement>(
+      '#kanban-task-detail-create-title',
+    )
+    expect(title?.textContent).toContain('New task')
+    expect(title?.textContent).not.toContain('Task details')
+  })
+
+  it('renders the error banner when errorMessage is set', async () => {
+    mountCreateDialog(null, 'Failed to create task — please retry.')
+    await flushPromises()
+    const banner = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-error"]',
+    )
+    expect(banner).not.toBeNull()
+    expect(banner?.textContent).toContain('Failed to create task')
+  })
+
+  it('does not render the error banner when errorMessage is null', async () => {
+    mountCreateDialog()
+    await flushPromises()
+    expect(findInDom('[data-testid="kanban-task-detail-error"]')).toBeNull()
   })
 })
