@@ -224,16 +224,44 @@ describe('KanbanView — event pass-through', () => {
     vi.restoreAllMocks()
   })
 
-  it('passes through add-task with {columnId}', async () => {
+  it('clicking "+ Add" opens the create dialog locally (no addTask emit)', async () => {
+    // After the kanban-add-task-via-detail-dialog feature, the
+    // "+ Add" click no longer bubbles up to AppLayout. KanbanView
+    // consumes it locally and opens the KanbanTaskDetailDialog
+    // in create mode (which mounts at the bottom of the template
+    // and teleports to document.body).
     wrapper = mountView(
       makeItem({
         kanban_columns: [makeColumn({ id: 'col_x', name: 'todo', position: 0 })],
       }),
     )
+    await flushPromises()
+
+    // Dialog not in the DOM yet.
+    expect(document.querySelector('[data-testid="kanban-task-detail-dialog"]')).toBeNull()
+    // No addTask emit (the event is consumed locally).
+    expect(wrapper.emitted('addTask')).toBeFalsy()
+
+    // Click "+ Add" on the column.
     await wrapper
       .find('[data-testid="kanban-column-col_x-add-task"]')
       .trigger('click')
-    expect(wrapper.emitted('addTask')?.[0]).toEqual([{ columnId: 'col_x' }])
+    await flushPromises()
+
+    // Dialog is now in the DOM (teleported to body).
+    const dialog = document.querySelector('[data-testid="kanban-task-detail-dialog"]')
+    expect(dialog).not.toBeNull()
+    // The create-mode inputs use the `-create-` testids. The
+    // name input exists and is empty.
+    const nameInput = document.querySelector<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-create-name"]',
+    )
+    expect(nameInput?.value).toBe('')
+    // The column name is visible in the metadata strip.
+    const colEl = document.querySelector('[data-testid="kanban-task-detail-column"]')
+    expect(colEl?.textContent).toContain('todo')
+    // No addTask emit ever fired.
+    expect(wrapper.emitted('addTask')).toBeFalsy()
   })
 
   it('passes through move-task with {taskId, columnId, position}', async () => {
@@ -553,5 +581,198 @@ describe('KanbanView — viewTaskDetail (task detail dialog)', () => {
     await flushPromises()
 
     expect(wrapper.emitted('viewTaskDetail')).toBeFalsy()
+  })
+})
+
+// ─── + Add → create-dialog flow (kanban-add-task-via-detail-dialog) ────
+//
+// The "+ Add" button on a kanban column no longer bubbles up to
+// AppLayout — KanbanView consumes it locally and opens the
+// KanbanTaskDetailDialog in create mode. On submit, KanbanView
+// calls workspacesStore.addTask (returns a taskId) +
+// moveTaskToColumn (puts the new task in the user's chosen column).
+// We mock both store actions to verify the wiring.
+//
+// These tests replace the pre-existing "passes through add-task"
+// event-pass-through test with the actual local-dialog behavior.
+describe('KanbanView — create-task flow', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    // Defensive: clear any teleported dialog DOM left over.
+    document
+      .querySelectorAll('[data-testid="kanban-task-detail-dialog"]')
+      .forEach((el) => el.remove())
+    vi.restoreAllMocks()
+  })
+
+  // We can't directly mock the workspaces store import from here
+  // (Pinia store mocking is project-conventional via spy + setup).
+  // Instead we spy on the store's methods via the existing
+  // useWorkspacesStore() call inside KanbanView.
+  async function mountAndOpenDialog() {
+    const item = makeItem({
+      kanban_columns: [
+        makeColumn({ id: 'col_x', name: 'todo', position: 0 }),
+        makeColumn({ id: 'col_y', name: 'in progress', position: 1 }),
+      ],
+    })
+    wrapper = mountView(item)
+    await flushPromises()
+    await wrapper
+      .find('[data-testid="kanban-column-col_x-add-task"]')
+      .trigger('click')
+    await flushPromises()
+    return wrapper!
+  }
+
+  it('saves the new task via addTask and moves it to the chosen column at position 0', async () => {
+    const w = await mountAndOpenDialog()
+
+    // Capture the store instance via the global Pinia accessor used
+    // inside KanbanView (useWorkspacesStore). The store lives on the
+    // active Pinia, which beforeEach set up.
+    const { useWorkspacesStore } = await import('../stores/workspaces')
+    const store = useWorkspacesStore()
+    const addTaskSpy = vi
+      .spyOn(store, 'addTask')
+      .mockResolvedValue('task_new_1')
+    const moveTaskSpy = vi
+      .spyOn(store, 'moveTaskToColumn')
+      .mockResolvedValue(undefined)
+
+    // Type a name and submit.
+    const nameInput = document.querySelector<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-create-name"]',
+    )
+    nameInput!.value = 'My new task'
+    nameInput!.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="kanban-task-detail-save"]',
+      )!
+      .click()
+    await flushPromises()
+    // Wait one more microtask flush for the await chain inside
+    // handleCreateTaskSave (addTask → moveTaskToColumn).
+    await flushPromises()
+
+    expect(addTaskSpy).toHaveBeenCalledTimes(1)
+    expect(addTaskSpy).toHaveBeenCalledWith(
+      WS_ID,
+      ITEM_ID,
+      expect.objectContaining({ name: 'My new task' }),
+    )
+    // Move to the user's chosen column at position 0.
+    expect(moveTaskSpy).toHaveBeenCalledWith(
+      WS_ID,
+      ITEM_ID,
+      'task_new_1',
+      'col_x',
+      0,
+    )
+
+    // Dialog closes on success.
+    expect(
+      document.querySelector('[data-testid="kanban-task-detail-dialog"]'),
+    ).toBeNull()
+    void w
+  })
+
+  it('keeps the dialog open + shows error banner when addTask fails', async () => {
+    await mountAndOpenDialog()
+
+    const { useWorkspacesStore } = await import('../stores/workspaces')
+    const store = useWorkspacesStore()
+    vi.spyOn(store, 'addTask').mockRejectedValue(new Error('network down'))
+
+    // Submit with a name.
+    const nameInput = document.querySelector<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-create-name"]',
+    )
+    nameInput!.value = 'My task'
+    nameInput!.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="kanban-task-detail-save"]',
+      )!
+      .click()
+    await flushPromises()
+    await flushPromises()
+
+    // Dialog still in the DOM (user can retry).
+    const dialog = document.querySelector(
+      '[data-testid="kanban-task-detail-dialog"]',
+    )
+    expect(dialog).not.toBeNull()
+    // Error banner visible with the error message.
+    const banner = document.querySelector(
+      '[data-testid="kanban-task-detail-error"]',
+    )
+    expect(banner).not.toBeNull()
+    expect(banner?.textContent).toContain('network down')
+  })
+
+  it('does not call moveTaskToColumn when addTask returns undefined', async () => {
+    // Defensive: if the store returns undefined (offline fallback
+    // shape), we should set the error message and NOT call the
+    // move — there's no taskId to move.
+    await mountAndOpenDialog()
+
+    const { useWorkspacesStore } = await import('../stores/workspaces')
+    const store = useWorkspacesStore()
+    const addTaskSpy = vi.spyOn(store, 'addTask').mockResolvedValue(undefined)
+    const moveTaskSpy = vi.spyOn(store, 'moveTaskToColumn')
+
+    const nameInput = document.querySelector<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-create-name"]',
+    )
+    nameInput!.value = 'My task'
+    nameInput!.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="kanban-task-detail-save"]',
+      )!
+      .click()
+    await flushPromises()
+    await flushPromises()
+
+    expect(addTaskSpy).toHaveBeenCalledTimes(1)
+    expect(moveTaskSpy).not.toHaveBeenCalled()
+    expect(
+      document.querySelector('[data-testid="kanban-task-detail-error"]'),
+    ).not.toBeNull()
+  })
+
+  it('Cancel button closes the dialog without creating a task', async () => {
+    await mountAndOpenDialog()
+
+    const { useWorkspacesStore } = await import('../stores/workspaces')
+    const store = useWorkspacesStore()
+    const addTaskSpy = vi.spyOn(store, 'addTask')
+
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="kanban-task-detail-cancel"]',
+      )!
+      .click()
+    await flushPromises()
+
+    expect(addTaskSpy).not.toHaveBeenCalled()
+    expect(
+      document.querySelector('[data-testid="kanban-task-detail-dialog"]'),
+    ).toBeNull()
   })
 })

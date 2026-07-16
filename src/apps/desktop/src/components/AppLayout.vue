@@ -658,11 +658,14 @@ const kanbanColumnStyle = computed(() => {
 
 // ─── Kanban main-content view (was inline in WorkspaceItem.vue;
 // now mounted here so the board lives in the main content area, not
-// in the sidebar). The KanbanView emits its own CRUD events; we
-// forward them to the workspaces store directly. The one event
-// that can't be handled by the store alone is `addTask` (it opens
-// the AddTaskPickerDialog, which is owned by Sidebar) — that one
-// delegates to `sidebarRef.value?.openTaskPicker(...)`. ──────────────
+// in the sidebar). KanbanView consumes every event locally — the
+// "+ Add" flow opens the KanbanTaskDetailDialog in create mode
+// inside KanbanView (it owns the columns list, so resolving the
+// target column is trivial), and the other events (move-task,
+// add-column, etc.) are forwarded to the workspaces store here
+// or to Sidebar for modal-opening handlers. AppLayout never wires
+// any kanban events through sidebarRef — that path was removed in
+// the kanban-add-task-via-detail-dialog feature. ──────────────
 
 // KanbanColumnEditor modal state. Three modes (add / rename / delete)
 // share the same component; we track the mode + the target column
@@ -847,26 +850,11 @@ const handleCopyKanbanSpec = (sourceItemId: string, mode: 'replace' | 'append') 
     })
 }
 
-// + Add on a column: open the standard chat dialog directly
-// (skipping the AddTaskPickerDialog). Kanban cards are always
-// standard chats — the column is a workflow stage, not a task-type
-// discriminator — so the Routine / Memory options would be noise.
-// Calls Sidebar's exposed `openStandardTaskDialog` (the picker →
-// standard dialog transition that `handleAddTaskPick('standard')`
-// performs internally). The new task is auto-assigned to the
-// first kanban column by the backend's tasks_create.zig (the
-// `columnId` payload is logged for future routing once the
-// create-task API accepts a column param).
-const handleKanbanAddTask = (payload: { columnId: string }) => {
-  if (!activeWorkspaceItem.value) return
-  const ws = activeWorkspace.value
-  if (!ws) return
-  sidebarRef.value?.openStandardTaskDialog(ws.id, activeWorkspaceItem.value.id)
-  // TODO (v2): route payload.columnId through to the create-task
-  // API so the task lands in the user's chosen column on creation,
-  // not the default first column.
-  void payload.columnId
-}
+// + Add on a column: handled LOCALLY by KanbanView (no longer
+// bubbles up here). KanbanView opens the KanbanTaskDetailDialog
+// in create mode, then calls workspacesStore.addTask +
+// moveTaskToColumn on submit. AppLayout doesn't wire this event
+// anymore — see the comment at the top of the kanban section.
 
 // Drag-and-drop task move between columns. Direct store call.
 const handleKanbanMoveTask = (payload: { taskId: string; columnId: string; position: number }) => {
@@ -1398,7 +1386,6 @@ watch(chatSessionCwd, (newCwd) => {
             :item="activeWorkspaceItem"
             :workspace-id="activeWorkspace?.id ?? ''"
             :item-id="activeWorkspaceItem.id"
-            @add-task="handleKanbanAddTask"
             @move-task="handleKanbanMoveTask"
             @add-column="handleKanbanAddColumn"
             @rename-column="handleKanbanRenameColumn"
@@ -1493,7 +1480,6 @@ watch(chatSessionCwd, (newCwd) => {
         :item="activeWorkspaceItem"
         :workspace-id="activeWorkspace?.id ?? ''"
         :item-id="activeWorkspaceItem.id"
-        @add-task="handleKanbanAddTask"
         @move-task="handleKanbanMoveTask"
         @add-column="handleKanbanAddColumn"
         @rename-column="handleKanbanRenameColumn"

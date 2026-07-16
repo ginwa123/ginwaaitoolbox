@@ -106,11 +106,11 @@ const openTaskPicker = (workspaceId: string, itemId: string) => {
 // task-type discriminator), so the Routine / Memory options would
 // be noise. Mirrors the picker → standard dialog transition that
 // `handleAddTaskPick('standard')` performs internally.
-const openStandardTaskDialog = (workspaceId: string, itemId: string) => {
-  addTaskDialogWorkspaceId.value = workspaceId
-  addTaskDialogItemId.value = itemId
-  showAddTaskDialog.value = true
-}
+//
+// (Removed in the kanban-add-task-via-detail-dialog feature: the
+// kanban now handles its own "+ Add" flow locally via
+// KanbanTaskDetailDialog in create mode. Sidebar no longer needs
+// to expose this.)
 
 // Handle session events from SSE
 const handleSessionEvent = (event: api.SessionEvent) => {
@@ -594,9 +594,13 @@ const handleCloseTaskRenameModal = () => {
 }
 
 // Open the picker when the user clicks the green `+` on a
-// workspace item. Chunk 6: previously this directly created a
-// `Task <time>` row and auto-navigated. Now we route through
-// AddTaskPickerDialog → AddTaskDialog or AddRoutineDialog.
+// non-kanban workspace item. Chunk 6: previously this directly
+// created a `Task <time>` row and auto-navigated. Now we route
+// through AddTaskPickerDialog → AddTaskDialog / AddRoutineDialog /
+// AddMemoryDialog. Kanban items handle "+ Add" locally inside
+// KanbanView.vue (no picker — kanban cards are always standard
+// chats; the picker is for non-kanban parents where the user might
+// want a routine / memory / chat task).
 const handleAddTask = (workspaceId: string, item: WorkspaceItem) => {
   pickerWorkspaceId.value = workspaceId
   pickerItemId.value = item.id
@@ -992,10 +996,6 @@ const editRoutineTaskName = computed<string>(() => {
 defineExpose({
   updateChatId,
   openTaskPicker,
-  // Skip the picker → open the standard chat dialog directly. Used
-  // by the kanban's "+ Add" button (kanban cards are always standard
-  // chats — column is a workflow stage, not a task-type discriminator).
-  openStandardTaskDialog,
   // Pass-throughs for the kanban's task events. The signature
   // matches the existing handlers exactly; AppLayout's KanbanView
   // forwards its emitted events to these.

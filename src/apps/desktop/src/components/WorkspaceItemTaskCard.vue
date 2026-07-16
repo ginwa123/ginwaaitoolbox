@@ -438,10 +438,17 @@ const typeBadge = computed<string | null>(() => {
     <!-- Description preview. line-clamp-2 for a more minimalist
          feel, text-xs, leading-relaxed for better breathing room.
          Color uses --semantic-text-muted for a softer, less
-         attention-grabbing tone. -->
+         attention-grabbing tone.
+
+         The `w-full text-left` pair counteracts a quirk of `line-clamp-2`:
+         the `-webkit-box` display it sets makes the <p> shrink-to-fit its
+         content width; inside the `flex flex-col` parent the resulting
+         auto-width element appears center-aligned. Forcing
+         `width: 100%` + `text-align: left` keeps the description on the
+         card's left edge, matching the title row's alignment. -->
     <p
       v-if="task.description"
-      class="text-[11px] leading-relaxed pr-1 line-clamp-2"
+      class="text-[11px] leading-relaxed pr-1 line-clamp-2 w-full text-left"
       style="color: var(--semantic-text-muted);"
       data-testid="task-description"
     >
@@ -449,10 +456,12 @@ const typeBadge = computed<string | null>(() => {
     </p>
     <!-- Meta row. Just the last-updated time + a single subtle type
          label when relevant. The row gets a hairline top border with
-         extra top padding for clear visual separation. -->
+         extra top padding for clear visual separation. `self-start`
+         keeps the row pinned to the left edge if a future flex parent
+         defaults to centered alignment. -->
     <div
       v-if="lastUpdatedLabel || typeBadge"
-      class="flex items-center gap-1.5 pt-1 text-[10px] flex-wrap"
+      class="flex items-center gap-1.5 pt-1 text-[10px] flex-wrap self-start w-full"
       style="color: var(--semantic-text-dim);"
       data-testid="task-meta"
     >
