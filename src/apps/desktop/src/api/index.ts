@@ -558,6 +558,10 @@ export async function updateTaskSimple(
   data: {
     name?: string
     session_id?: string
+    // NEW (kanban-task-detail-dialog plan): the per-task description
+    // shown in the detail dialog. Empty string = clear (the
+    // dialog's "Clear description" path sends `''`).
+    description?: string
     // NEW (Chunk 5 of task-routines plan): routine-edit fields,
     // forwarded verbatim to the backend's PUT handler. The server
     // applies them to the routines row in the same transaction.
