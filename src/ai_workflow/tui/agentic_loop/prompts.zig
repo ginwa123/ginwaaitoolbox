@@ -1,3 +1,6 @@
 
 
 pub const makeWorkspaceContext = @import("prompts_make_workspace_context.zig").makeWorkspaceContext;
+pub const makeWorkingDirectoryContext = @import("prompts_make_working_directory_context.zig").makeWorkingDirectoryContext;
+pub const makeSkillsEquippedContext = @import("prompts_make_skills_equiped_context.zig").makeSkillsEquippedContext;
+pub const makeKanbanContext = @import("prompts_make_kanban_context.zig").makeKanbanContext;
