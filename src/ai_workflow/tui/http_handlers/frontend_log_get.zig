@@ -324,7 +324,15 @@ fn useCase(
     defer logs_list.deinit(allocator);
 
     while (true) {
-        const row_opt = try rows.next();
+        // `rows.next()` returns the raw SqliteBackend.Error set;
+        // map any failure to our domain `QueryFailed` so the function
+        // can return FrontendLogGetError instead of leaking sqlite
+        // errors. Pattern per project memory
+        // `zig-catch-narrows-error-set-before-switch`.
+        const row_opt = rows.next() catch |e| {
+            std.log.warn("frontend_log_get useCase: rows.next failed: {s}", .{@errorName(e)});
+            return error.QueryFailed;
+        };
         const row = row_opt orelse break;
         // Empty slice from `row.values[i]` corresponds to NULL on
         // a nullable column (project memory
@@ -383,11 +391,18 @@ pub fn frontendLogGetHandler(
             error.InvalidLevel => 400,
             error.InvalidKind => 400,
             error.InvalidLimit => 400,
+            // parseInput's body only emits the 3 validation variants
+            // above; the wider FrontendLogGetError variants (singleton,
+            // query, OOM) are type-system residue from the shared
+            // enum. Treat any unexpected variant as 500 (per project
+            // memory `zig-catch-narrows-error-set-before-switch`).
+            else => 500,
         };
         const message: []const u8 = switch (err) {
             error.InvalidLevel => "level must be one of error, warn, info, debug",
             error.InvalidKind => "kind must be one of window_error, unhandled_rejection, console_error, console_warn",
             error.InvalidLimit => "limit must be between 1 and 1000",
+            else => "Internal error parsing request",
         };
         // Use `std.log.warn` (NOT `std.log.err`) so this handler's
         // error path doesn't trigger `log_err_count > 0` in
@@ -410,11 +425,18 @@ pub fn frontendLogGetHandler(
             error.ServerNotInitialized => 500,
             error.QueryFailed => 500,
             error.OutOfMemory => 500,
+            // The 3 validation variants are type-system residue
+            // from the shared FrontendLogGetError; useCase cannot
+            // actually emit them. Treat any unexpected variant as
+            // 500 (per project memory
+            // `zig-catch-narrows-error-set-before-switch`).
+            else => 500,
         };
         const message: []const u8 = switch (err) {
             error.ServerNotInitialized => "Server not initialized",
             error.QueryFailed => "Failed to query logs",
             error.OutOfMemory => "Out of memory",
+            else => "Internal error querying logs",
         };
         std.log.warn("frontend_log_get: {s}", .{message});
         return res.jsonResponse(.{

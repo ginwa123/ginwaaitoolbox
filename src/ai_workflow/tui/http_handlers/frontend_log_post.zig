@@ -174,7 +174,10 @@ fn useCase(
     ) catch return error.DedupQueryFailed;
     defer dedup_rows.deinit();
 
-    if (try dedup_rows.next()) |dedup_row| {
+    if (dedup_rows.next() catch |e| {
+        std.log.warn("frontend_log_post useCase: dedup_rows.next failed: {s}", .{@errorName(e)});
+        return error.DedupQueryFailed;
+    }) |dedup_row| {
         defer dedup_row.deinit(allocator);
         // Existing row matches the dedup key. Increment its count
         // and return — no second row is created.
@@ -297,14 +300,17 @@ pub fn frontendLogPostHandler(
         });
     };
 
-    // 204 No Content — empty body. Use rawResponse (not jsonResponse)
-    // because there's no JSON body to serialize. Same shape as
-    // `corsPreflightHandler` (`cors.zig:8`).
-    return res.rawResponse(.{
-        .status_code = 204,
-        .headers = &.{},
-        .body = "",
-    });
+    // 204 No Content — empty body. Build via
+    // `gserverz.HttpResponse.init(...)` + `.withBody("")` because the
+    // helper `rawResponse` doesn't exist on `HttpResponse` (only
+    // `jsonResponse` does). Note: `init` is a static method on
+    // `HttpResponse` (no self param) so it's called via the type,
+    // not via `res.init(...)`. The `withBody("")` path adds
+    // Content-Length: 0 — what an empty 204 needs. (Note:
+    // `cors.zig:8` has the same phantom-method bug but is currently
+    // dead code; the CORS OPTIONS route is commented out in
+    // `main.zig:279`.)
+    return gserverz.HttpResponse.init(204, "No Content", allocator).withBody("");
 }
 
 // =====================================================================
