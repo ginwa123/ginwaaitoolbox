@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import SkillList from './tool_outputs/SkillList.vue'
-import SkillDetail from './shell/SkillDetail.vue'
+import SkillList from '../tool_outputs/SkillList.vue'
+import SkillDetail from '../shell/SkillDetail.vue'
 
 const emit = defineEmits<{
   notification: [message: string, type: 'success' | 'error']

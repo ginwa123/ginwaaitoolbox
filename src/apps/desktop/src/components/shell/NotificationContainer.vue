@@ -23,7 +23,7 @@
 -->
 <script setup lang="ts">
 import { useNotificationStore } from '../../stores/notifications'
-import ErrorNotification from '../ErrorNotification.vue'
+import ErrorNotification from '../preview/ErrorNotification.vue'
 
 const store = useNotificationStore()
 </script>

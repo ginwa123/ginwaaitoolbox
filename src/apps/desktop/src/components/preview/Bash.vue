@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { parseBash } from './tool_outputs/_shared/toolOutputParser'
+import { parseBash } from '../tool_outputs/_shared/toolOutputParser'
 
 const props = defineProps<{
   content: string

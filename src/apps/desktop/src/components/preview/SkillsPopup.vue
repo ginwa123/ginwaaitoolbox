@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { SkillInfo } from '../api'
+import type { SkillInfo } from '../../api'
 
 const props = defineProps<{
   show: boolean

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useInjectOpenInCodeEditor } from '../composables/useCodeEditor'
+import { useInjectOpenInCodeEditor } from '../../composables/useCodeEditor'
 
 const props = defineProps<{
   content: string

@@ -29,7 +29,7 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
 import KanbanColumnEditor from './KanbanColumnEditor.vue'
-import InlineEditableText from '../InlineEditableText.vue'
+import InlineEditableText from '../preview/InlineEditableText.vue'
 import WorkspaceItemMemoriesView from '../views/WorkspaceItemMemoriesView.vue'
 import type { WorkspaceItem } from '../../stores/workspaces'
 

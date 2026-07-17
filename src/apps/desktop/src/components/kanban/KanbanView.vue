@@ -58,7 +58,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import KanbanColumn from './KanbanColumn.vue'
 import KanbanTaskDetailDialog from './KanbanTaskDetailDialog.vue'
-import InlineEditableText from '../InlineEditableText.vue'
+import InlineEditableText from '../preview/InlineEditableText.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import type { WorkspaceItem, Task, KanbanColumn as KanbanColumnType } from '../../stores/workspaces'
 
