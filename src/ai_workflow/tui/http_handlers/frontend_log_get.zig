@@ -142,42 +142,49 @@ pub const FrontendLogGetOutput = struct {
 /// "no filter" — matches the project's `parseInt catch default`
 /// convention; see `tasks_list.zig:67`).
 fn parseInput(query: std.StringHashMap([]const u8)) FrontendLogGetError!FrontendLogGetInput {
-    // level: present+non-empty → validate whitelist; absent/empty → null.
-    if (query.get("level")) |lv| {
-        if (lv.len > 0) {
-            if (!isValidLevel(lv)) return error.InvalidLevel;
-        }
-    }
+    // level: validate whitelist iff present+non-empty. Empty/absent
+    // is normalized to `null` here (not "level=''") so the use case's
+    // `if (input.level) |lv| { if (lv.len > 0) ... }` guard doesn't
+    // become a latent footgun if it's ever refactored out.
+    const level_str = query.get("level");
+    const level_opt: ?[]const u8 = blk: {
+        const lv = level_str orelse break :blk null;
+        if (lv.len == 0) break :blk null;
+        if (!isValidLevel(lv)) return error.InvalidLevel;
+        break :blk lv;
+    };
 
     // kind: same shape as level.
-    if (query.get("kind")) |k| {
-        if (k.len > 0) {
-            if (!isValidKind(k)) return error.InvalidKind;
-        }
-    }
+    const kind_str = query.get("kind");
+    const kind_opt: ?[]const u8 = blk: {
+        const k = kind_str orelse break :blk null;
+        if (k.len == 0) break :blk null;
+        if (!isValidKind(k)) return error.InvalidKind;
+        break :blk k;
+    };
 
-    // session_id: no validation, just pass through.
-    const session_id = query.get("session_id");
-    const session_id_opt: ?[]const u8 = if (session_id) |s| (if (s.len == 0) null else s) else null;
+    // session_id: no validation, just pass through. Empty string is
+    // normalized to null for the same reason as level/kind above.
+    const session_id_opt: ?[]const u8 = blk: {
+        const s = query.get("session_id") orelse break :blk null;
+        if (s.len == 0) break :blk null;
+        break :blk s;
+    };
 
     // since: parse as i64, defensive fallback to null on any failure.
     // Project convention (see `tasks_list.zig:67`) treats parse
     // failures as the default value rather than a hard error.
-    const since_str = query.get("since");
     const since_opt: ?i64 = blk: {
-        const s = since_str orelse break :blk null;
+        const s = query.get("since") orelse break :blk null;
         if (s.len == 0) break :blk null;
         break :blk std.fmt.parseInt(i64, s, 10) catch null;
     };
 
-    // limit: default 100, clamp to [1, 1000]. Note we deliberately
-    // distinguish "absent" (use default) from "invalid" (return
-    // InvalidLimit so the LLM sees a hint) — the design doc says
-    // 400 for invalid limits, and our static test asserts the
-    // literal "1000" cap is in the source.
-    const limit_str = query.get("limit");
+    // limit: default 100, clamp to [1, 1000]. Absent or empty → use
+    // default. Unparseable, zero, or out-of-range → return InvalidLimit
+    // (the LLM gets a 400 hint instead of a silent clamp).
     const limit: u32 = blk: {
-        const s = limit_str orelse break :blk DEFAULT_LIMIT;
+        const s = query.get("limit") orelse break :blk DEFAULT_LIMIT;
         if (s.len == 0) break :blk DEFAULT_LIMIT;
         const parsed = std.fmt.parseInt(u32, s, 10) catch return error.InvalidLimit;
         if (parsed == 0) return error.InvalidLimit;
@@ -186,8 +193,8 @@ fn parseInput(query: std.StringHashMap([]const u8)) FrontendLogGetError!Frontend
     };
 
     return FrontendLogGetInput{
-        .level = query.get("level"),
-        .kind = query.get("kind"),
+        .level = level_opt,
+        .kind = kind_opt,
         .session_id = session_id_opt,
         .since_us = since_opt,
         .limit = limit,
