@@ -38,8 +38,8 @@ import { createApp, nextTick, type App as VueApp } from 'vue'
 import { mount, type VueWrapper } from '@vue/test-utils'
 
 import * as api from '../api'
-import ChatView from '../components/ChatView.vue'
-import PreviewSidePanel from '../components/PreviewSidePanel.vue'
+import ChatView from '../components/views/ChatView.vue'
+import PreviewSidePanel from '../components/preview/PreviewSidePanel.vue'
 import {
   installSseBus,
   __resetSseBus,

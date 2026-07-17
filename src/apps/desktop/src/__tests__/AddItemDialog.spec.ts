@@ -16,7 +16,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
-import AddItemDialog from '../components/AddItemDialog.vue'
+import AddItemDialog from '../components/dialogs/AddItemDialog.vue'
 
 // ─── Mocks ─────────────────────────────────────────────────────────────────
 

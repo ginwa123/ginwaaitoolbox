@@ -33,7 +33,7 @@ import { ref, type Ref } from 'vue'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import WorkspaceItemTaskCard from '../components/WorkspaceItemTaskCard.vue'
+import WorkspaceItemTaskCard from '../components/workspace/WorkspaceItemTaskCard.vue'
 import type { Task } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
@@ -439,6 +439,7 @@ describe('WorkspaceItem.vue — task component invariant', () => {
     __dirname,
     '..',
     'components',
+    'workspace',
     'WorkspaceItem.vue',
   )
 

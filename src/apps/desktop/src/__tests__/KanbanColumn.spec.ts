@@ -16,7 +16,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick, ref, type Ref } from 'vue'
 
-import KanbanColumn from '../components/KanbanColumn.vue'
+import KanbanColumn from '../components/kanban/KanbanColumn.vue'
 import type { KanbanColumn as KanbanColumnType, Task } from '../stores/workspaces'
 
 const COL_TODO = 'col_todo'

@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { describe, it, expect } from 'vitest'
-import InlineEditableText from '@/components/InlineEditableText.vue'
+import InlineEditableText from '@/components/preview/InlineEditableText.vue'
 
 describe('InlineEditableText', () => {
   it('renders the value in display mode by default', () => {

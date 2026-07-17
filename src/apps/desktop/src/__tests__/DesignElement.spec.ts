@@ -13,7 +13,7 @@ import { describe, it, expect } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-const SOURCE_PATH = path.resolve(__dirname, '../components/DesignElement.vue')
+const SOURCE_PATH = path.resolve(__dirname, '../components/design/DesignElement.vue')
 const source = fs.readFileSync(SOURCE_PATH, 'utf-8')
 
 describe('DesignElement.vue static contract', () => {

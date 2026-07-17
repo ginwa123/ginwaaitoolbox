@@ -25,7 +25,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { nextTick, ref, type Ref } from 'vue'
 import { mount } from '@vue/test-utils'
 
-import WorkspaceItemTaskRow from '../components/WorkspaceItemTaskRow.vue'
+import WorkspaceItemTaskRow from '../components/workspace/WorkspaceItemTaskRow.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 

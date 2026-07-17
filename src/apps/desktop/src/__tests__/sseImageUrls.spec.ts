@@ -14,7 +14,7 @@ import { describe, it, expect } from 'vitest'
 //   3. The split logic in the `full` handler regressing
 //
 // See `src/apps/desktop/src/api/index.ts` SseEvent and
-// `src/apps/desktop/src/components/ChatView.vue` (full event handler).
+// `src/apps/desktop/src/components/views/ChatView.vue` (full event handler).
 
 import type { SseEvent } from '../api'
 

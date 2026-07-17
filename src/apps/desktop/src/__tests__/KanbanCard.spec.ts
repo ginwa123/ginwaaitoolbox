@@ -18,7 +18,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { ref, type Ref } from 'vue'
 
-import KanbanCard from '../components/KanbanCard.vue'
+import KanbanCard from '../components/kanban/KanbanCard.vue'
 import type { Task } from '../stores/workspaces'
 
 function mountCard(task: Task) {

@@ -78,7 +78,7 @@ vi.mock('../components/FilePickerDialog.vue', () => ({
 
 // ─── Imports ───────────────────────────────────────────────────────────────
 
-import CreateWorktreeDialog from '../components/CreateWorktreeDialog.vue'
+import CreateWorktreeDialog from '../components/dialogs/CreateWorktreeDialog.vue'
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 
-import ChatView from '../components/ChatView.vue'
+import ChatView from '../components/views/ChatView.vue'
 
 describe('renderResponse — nalar_browser inline preview', () => {
   beforeEach(() => {

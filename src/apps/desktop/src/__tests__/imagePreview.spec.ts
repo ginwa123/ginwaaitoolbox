@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
-import ImagePreview from '../components/ImagePreview.vue'
+import ImagePreview from '../components/preview/ImagePreview.vue'
 
 const OVERLAY_CLASS = 'image-preview-overlay'
 const CONTENT_CLASS = 'image-preview-content'

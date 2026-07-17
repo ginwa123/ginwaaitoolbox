@@ -18,7 +18,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
-import FileInput from '@/components/FileInput.vue'
+import FileInput from '@/components/file/FileInput.vue'
 
 interface FakeResponse extends Partial<Response> {
   ok: boolean

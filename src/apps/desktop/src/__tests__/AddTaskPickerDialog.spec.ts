@@ -20,7 +20,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 
-import AddTaskPickerDialog from '../components/AddTaskPickerDialog.vue'
+import AddTaskPickerDialog from '../components/dialogs/AddTaskPickerDialog.vue'
 
 describe('AddTaskPickerDialog', () => {
   let wrapper: VueWrapper | null = null

@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
-import AddRoutineDialog from '../components/AddRoutineDialog.vue'
+import AddRoutineDialog from '../components/dialogs/AddRoutineDialog.vue'
 
 function mountDialog(props: { show: boolean; projectName?: string; apiError?: string | null }) {
   return mount(AddRoutineDialog, { props, attachTo: document.body })

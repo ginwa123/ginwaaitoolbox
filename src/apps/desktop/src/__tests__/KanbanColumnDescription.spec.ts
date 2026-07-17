@@ -19,7 +19,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
-import KanbanColumn from '@/components/KanbanColumn.vue'
+import KanbanColumn from '@/components/kanban/KanbanColumn.vue'
 import type { KanbanColumn as KanbanColumnT, Task } from '@/api'
 
 const baseColumn: KanbanColumnT = {

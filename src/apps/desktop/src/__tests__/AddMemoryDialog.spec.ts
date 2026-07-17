@@ -12,7 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
-import AddMemoryDialog from '../components/AddMemoryDialog.vue'
+import AddMemoryDialog from '../components/dialogs/AddMemoryDialog.vue'
 
 // Stub the FilePickerDialog — we only care that the parent wires
 // up the picker's events. Real picker behavior is tested in

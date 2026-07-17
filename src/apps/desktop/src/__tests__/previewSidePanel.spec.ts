@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
-import PreviewSidePanel from '../components/PreviewSidePanel.vue'
+import PreviewSidePanel from '../components/preview/PreviewSidePanel.vue'
 
 interface PreviewOverrides {
   id?: string

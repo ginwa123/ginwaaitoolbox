@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
-import ErrorNotification from '../components/ErrorNotification.vue'
+import ErrorNotification from '../components/preview/ErrorNotification.vue'
 
 describe('ErrorNotification', () => {
   it('renders the message', () => {
