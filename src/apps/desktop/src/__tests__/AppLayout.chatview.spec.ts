@@ -127,6 +127,20 @@ describe('AppLayout — ?view=chat&session=X renders <ChatView>, not <Chats/> (r
       absolute: '/',
       home: '/',
     })
+    // fetchChatSessionCwd (AppLayout.vue:454) fires from onMounted
+    // when the URL has a `session` query param. Stub both code
+    // paths it tries: getSession (first try) and getChatHistory
+    // (fallback). Without these, jsdom's fetch throws an
+    // ERR_INVALID_URL on every test (no test server) — the error
+    // is caught by AppLayout's own try/catch so the test still
+    // passes, but it floods the output.
+    vi.spyOn(api, 'getSession').mockResolvedValue({ cwd: '' } as any)
+    vi.spyOn(api, 'getChatHistory').mockResolvedValue({
+      messages: [],
+      has_more: false,
+      next_cursor: null,
+      total: 0,
+    } as any)
     // Default the route mock to the failing URL.
     useRouteMock.mockReturnValue({
       query: { view: 'chat', session: SESSION_ID } as Record<string, string>,
