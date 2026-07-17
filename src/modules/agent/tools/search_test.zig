@@ -1847,3 +1847,24 @@ test "tool_registry.zig honors group_by_file flag (no longer dead code)" {
     try testing.expect(std.mem.indexOf(u8, source, "parsed.value.group_by_file") != null);
     try testing.expect(std.mem.indexOf(u8, source, "search_result_to_string_flat") != null);
 }
+
+test "search.zig tool schema documents word_boundary, literal, only_matching" {
+    const source = try readSource(testing.allocator, SEARCH_SOURCE_PATH);
+    defer testing.allocator.free(source);
+
+    // Each new field must appear as a JSON schema property entry
+    // (mirrors the group_by_file precedent at the previous test).
+    try testing.expect(std.mem.indexOf(u8, source, ".name = \"word_boundary\"") != null);
+    try testing.expect(std.mem.indexOf(u8, source, ".name = \"literal\"") != null);
+    try testing.expect(std.mem.indexOf(u8, source, ".name = \"only_matching\"") != null);
+
+    // Description must mention all 3 flags by name (in prose so LLMs
+    // learn when to set them).
+    try testing.expect(std.mem.indexOf(u8, source, "word_boundary") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "literal") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "only_matching") != null);
+
+    // The 'required' array must stay minimal — only pattern + path are
+    // required. The 3 new flags are optional with defaults.
+    try testing.expect(std.mem.indexOf(u8, source, ".required = &.{ \"pattern\", \"path\" }") != null);
+}

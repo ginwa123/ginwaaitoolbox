@@ -668,6 +668,19 @@ pub const search_tool = AgentTool{
         \\  <m><f>path/to/file.zig</f><l>10</l><s>snippet</s></m>
         \\</search>
         \\
+        \\Matching modes (optional flags, all default to false):
+        \\- word_boundary (-w): match whole words only. Pattern 'foo' matches
+        \\  'foo bar' but NOT 'foobar'. Useful for identifier-style searches
+        \\  where partial matches would be noise.
+        \\- literal (-F): treat pattern as a literal string — regex
+        \\  metacharacters like '.', '*', '[', '(', '\\' are matched verbatim.
+        \\  Safer than escaping when searching for code with regex-looking
+        \\  tokens (e.g. "fn(", "*.zig").
+        \\- only_matching (-o): return only the matched substring per line
+        \\  instead of the full surrounding line. Useful for short tokens
+        \\  in noisy lines (e.g. extracting IDs, version strings, dates).
+        \\All three flags are mutually compatible — can be combined freely.
+        \\
         \\Edge cases:
         \\- pattern starting with `-` is treated as a literal (rg's `-e`
         \\  flag is used internally) — searching for the literal text
@@ -728,6 +741,21 @@ pub const search_tool = AgentTool{
                     .name = "respect_ignore_files",
                     .type = "boolean",
                     .description = "Respect .gitignore/.ignore/.rgignore. Default: true. Set false to search gitignored paths (build/, node_modules/, .git/, etc.).",
+                },
+                .{
+                    .name = "word_boundary",
+                    .type = "boolean",
+                    .description = "Match whole words only (-w flag). Pattern 'foo' matches 'foo bar' but NOT 'foobar'. Default: false.",
+                },
+                .{
+                    .name = "literal",
+                    .type = "boolean",
+                    .description = "Treat pattern as a literal string (-F flag). Regex metacharacters like '.', '*', '[' are matched verbatim. Default: false.",
+                },
+                .{
+                    .name = "only_matching",
+                    .type = "boolean",
+                    .description = "Return only the matched substring (-o flag), not the full surrounding line. Useful for short tokens in noisy lines. Default: false.",
                 },
             },
             .required = &.{ "pattern", "path" },
