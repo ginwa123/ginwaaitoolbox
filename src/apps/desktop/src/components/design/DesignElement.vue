@@ -42,7 +42,7 @@
 -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { DesignElement } from '../api'
+import type { DesignElement } from '../../api'
 import DesignElementPreview from './DesignElementPreview.vue'
 
 const props = withDefaults(

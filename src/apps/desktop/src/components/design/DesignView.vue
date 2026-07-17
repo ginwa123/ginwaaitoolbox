@@ -51,8 +51,8 @@ import DesignElement from './DesignElement.vue'
 import LayersPanel from './LayersPanel.vue'
 import PropertiesPanel from './PropertiesPanel.vue'
 import AddDesignElementDialog from './AddDesignElementDialog.vue'
-import { useWorkspacesStore, type WorkspaceItem } from '../stores/workspaces'
-import { listDesignPages, type DesignElement as DesignElementApi } from '../api'
+import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
+import { listDesignPages, type DesignElement as DesignElementApi } from '../../api'
 
 const props = withDefaults(
   defineProps<{
@@ -93,7 +93,7 @@ const effectiveItemId = computed(() => props.itemId || props.item.id)
 
 // ─── Pages state ───────────────────────────────────────────────────────
 
-const pages = ref<import('../api').DesignPage[]>([])
+const pages = ref<import('../../api').DesignPage[]>([])
 const activePageId = ref('')
 const pagesLoading = ref(false)
 const pagesError = ref<string | null>(null)

@@ -15,7 +15,7 @@ import AddKanbanDialog from '../AddKanbanDialog.vue'
 // workspace item (DesignView's container). Opened via the
 // "+ Add Item → Add Design" dropdown option in WorkspaceList.
 // Plan: docs/superpowers/plans/2026-06-13-design-mode.md.
-import AddDesignDialog from '../AddDesignDialog.vue'
+import AddDesignDialog from '../design/AddDesignDialog.vue'
 import AddMemoryDialog from '../AddMemoryDialog.vue'
 import ConfirmDialog from '../ConfirmDialog.vue'
 import AddTaskDialog from '../AddTaskDialog.vue'

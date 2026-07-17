@@ -26,7 +26,7 @@
 -->
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
-import type { DesignElementType } from '../api'
+import type { DesignElementType } from '../../api'
 
 const props = withDefaults(
   defineProps<{

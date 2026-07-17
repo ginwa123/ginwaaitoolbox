@@ -45,7 +45,7 @@
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import type { DesignElement } from '../api'
+import type { DesignElement } from '../../api'
 
 const props = withDefaults(
   defineProps<{

@@ -23,7 +23,7 @@
   has data-testid="design-add-page".
 -->
 <script setup lang="ts">
-import type { DesignPage } from '../api'
+import type { DesignPage } from '../../api'
 
 const props = defineProps<{
   pages: DesignPage[]
