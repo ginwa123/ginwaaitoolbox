@@ -197,10 +197,14 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
         // speaker might expect for `foo_bar`.
         try args.append(allocator, "-w");
     }
-    // Chunk 2 placeholder — `_ = input.literal;` keeps the struct-init
-    // compiling without affecting rg's behavior. Chunk 2 will replace
-    // this with `try args.append(allocator, "-F");`.
-    _ = input.literal;
+    // Chunk 2: literal / -F flag. Treat the pattern as opaque bytes
+    // instead of a regex. With -F, rg cannot fail to parse the pattern
+    // (it's just a literal byte sequence), so the stderr-based
+    // RegexParseError mapping at search.zig:245-250 should never fire
+    // for `literal = true` calls.
+    if (input.literal) {
+        try args.append(allocator, "-F");
+    }
     // Chunk 3 placeholder — same pattern. Chunk 3 will replace this
     // with `try args.append(allocator, "-o");`.
     _ = input.only_matching;
