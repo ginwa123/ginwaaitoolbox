@@ -167,6 +167,14 @@ pub fn loadGlobalKnowledge(
         try result.appendSlice(allocator, " (`");
         try result.appendSlice(allocator, mem.name);
         try result.appendSlice(allocator, "`)\n\n");
+        // Emit the absolute path as a separate code-span line right below
+        // the heading so the agent can copy it verbatim into `read_file`,
+        // `write_file`, `text_replace`, or `remove_file` without
+        // reconstructing it from the basename. Mirrors how
+        // `appendSkillsListing` emits `s.path` for each skill.
+        try result.appendSlice(allocator, "`");
+        try result.appendSlice(allocator, mem.path);
+        try result.appendSlice(allocator, "`\n\n");
         try result.appendSlice(allocator, content);
         try result.appendSlice(allocator, "\n\n");
     }
@@ -223,6 +231,15 @@ pub fn loadLocalKnowledge(
         try result.appendSlice(allocator, " (`");
         try result.appendSlice(allocator, mem.name);
         try result.appendSlice(allocator, "`)\n\n");
+        // Emit the absolute path as a separate code-span line right below
+        // the heading so the agent can copy it verbatim into `read_file`,
+        // `write_file`, `text_replace`, or `remove_file` without
+        // reconstructing it from the basename. Mirrors how
+        // `appendSkillsListing` emits `s.path` for each skill and how
+        // `loadGlobalKnowledge` does it above.
+        try result.appendSlice(allocator, "`");
+        try result.appendSlice(allocator, mem.path);
+        try result.appendSlice(allocator, "`\n\n");
         try result.appendSlice(allocator, content);
         try result.appendSlice(allocator, "\n\n");
     }

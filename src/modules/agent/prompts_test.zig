@@ -485,6 +485,106 @@ test "build_agent_prompt injects Local Knowledge section from <cwd>/.nalar/memor
     try std.testing.expect(contains(prompt, "auto-loaded from `<cwd>/.nalar/memories/`"));
 }
 
+// build_agent_prompt — Memory paths are rendered alongside filenames
+// -------------------------------------------------------------------------
+//
+// Every memory entry rendered in the `## Local Knowledge` /
+// `## Global Knowledge` sections must include its full absolute path as a
+// separate code-span line below the `### <title> (`<filename>`)` heading.
+// The agent uses this path verbatim when calling `read_file` /
+// `write_file` / `text_replace` / `remove_file` — reconstructing the path
+// from the basename alone is brittle (would require the agent to know
+// `~/.config/nalar/memories` / `<cwd>/.nalar/memories` exists).
+
+test "build_agent_prompt Global Knowledge section emits each memory's absolute path" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_home = "/tmp/nalar-prompt-test-global-knowledge-path";
+    const memories_dir = "/tmp/nalar-prompt-test-global-knowledge-path/.config/nalar/memories";
+    const file_path = "/tmp/nalar-prompt-test-global-knowledge-path/.config/nalar/memories/path-test-rule.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, memories_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Path Emission Test
+            \\
+            \\Body content for the path-emission regression test.
+            \\
+        );
+    }
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("HOME", tmp_home);
+
+    const tools = [_]AgentTool{
+        makeTool("list_memory", "List memory files"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "", "", "", "", &tools, "", &env, "", "", "", "");
+    defer alloc.free(prompt);
+
+    // The full absolute path appears in the prompt — copy-pasteable
+    // straight into read_file / write_file / text_replace / remove_file.
+    try std.testing.expect(contains(prompt, file_path));
+    // The path appears inside backticks (Markdown code span), not as a
+    // bare string — that's the convention for paths in this prompt.
+    try std.testing.expect(contains(prompt, "`" ++ file_path ++ "`"));
+    // The heading format is unchanged — the path is a separate line below
+    // the `### <title> (`<filename>`)` heading, not part of it.
+    try std.testing.expect(contains(prompt, "### Path Emission Test (`path-test-rule.md`)"));
+}
+
+test "build_agent_prompt Local Knowledge section emits each memory's absolute path" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tmp_cwd = "/tmp/nalar-prompt-test-local-knowledge-path";
+    const local_dir = "/tmp/nalar-prompt-test-local-knowledge-path/.nalar/memories";
+    const file_path = "/tmp/nalar-prompt-test-local-knowledge-path/.nalar/memories/local-path-rule.md";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, local_dir);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
+        defer std.Io.File.close(f, io);
+        try std.Io.File.writeStreamingAll(f, io,
+            \\# Local Path Emission Test
+            \\
+            \\Body content for the local-memory path-emission regression test.
+            \\
+        );
+    }
+
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        tmp_cwd,
+        "", "", "", "", &tools, "", null, "", "", "", "");
+    defer alloc.free(prompt);
+
+    // Full absolute path of the local memory, copy-pasteable.
+    try std.testing.expect(contains(prompt, file_path));
+    // Wrapped in a Markdown code span.
+    try std.testing.expect(contains(prompt, "`" ++ file_path ++ "`"));
+    // Heading format is unchanged.
+    try std.testing.expect(contains(prompt, "### Local Path Emission Test (`local-path-rule.md`)"));
+}
+
 test "build_agent_prompt renders Local and Global Knowledge together when both exist" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
