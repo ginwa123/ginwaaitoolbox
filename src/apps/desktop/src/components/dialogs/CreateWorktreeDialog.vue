@@ -26,8 +26,8 @@
  * pass it.
  */
 import { ref, computed, onMounted, nextTick, onBeforeUnmount } from 'vue'
-import { getSystemFolder, listFolder, type FolderEntry } from '../api'
-import FilePickerDialog from './FilePickerDialog.vue'
+import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
+import FilePickerDialog from '../FilePickerDialog.vue'
 
 const props = defineProps<{
   /** Absolute path used as the initial parent directory (typically the session cwd). */

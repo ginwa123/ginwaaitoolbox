@@ -25,7 +25,7 @@ import ProfileModal from './nalar/ProfileModal.vue'
 import { type LlmConfigModalValue } from './nalar/LlmConfigModal.vue'
 import SubAgentModal, { type SubAgentModalValue } from './nalar/SubAgentModal.vue'
 import McpServerModal, { type McpServerModalValue } from './nalar/McpServerModal.vue'
-import ConfirmDialog from './ConfirmDialog.vue'
+import ConfirmDialog from './dialogs/ConfirmDialog.vue'
 
 const emit = defineEmits<{
   notification: [message: string, type: 'success' | 'error']

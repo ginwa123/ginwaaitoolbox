@@ -36,8 +36,8 @@
 -->
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { useWorkspacesStore, type WorkspaceItem } from '../stores/workspaces'
-import * as api from '../api'
+import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
+import * as api from '../../api'
 
 const props = defineProps<{
   show: boolean

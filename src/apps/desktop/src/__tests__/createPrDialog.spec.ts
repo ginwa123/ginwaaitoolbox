@@ -32,7 +32,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
 import * as api from '../api'
-import CreatePrDialog from '../components/CreatePrDialog.vue'
+import CreatePrDialog from '../components/dialogs/CreatePrDialog.vue'
 
 // Realistic payload the backend returns. Field names match
 // `GitWorktreeInfo` in api/index.ts.

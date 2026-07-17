@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 
-import CopyKanbanSpecDialog from '@/components/CopyKanbanSpecDialog.vue'
+import CopyKanbanSpecDialog from '@/components/dialogs/CopyKanbanSpecDialog.vue'
 import { useWorkspacesStore, type Workspace, type WorkspaceItem } from '@/stores/workspaces'
 import * as api from '@/api'
 

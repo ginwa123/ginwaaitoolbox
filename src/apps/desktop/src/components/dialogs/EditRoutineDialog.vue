@@ -13,7 +13,7 @@
 // differ enough that abstracting would obscure the intent).
 
 import { ref, watch, nextTick } from 'vue'
-import type { RoutineMeta } from '../stores/workspaces'
+import type { RoutineMeta } from '../../stores/workspaces'
 
 export interface EditRoutineParams {
   name: string

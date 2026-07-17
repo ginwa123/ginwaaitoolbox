@@ -9,7 +9,7 @@
  * success or 'error' with the message on failure.
  */
 import { ref, onMounted } from 'vue'
-import * as api from '../api'
+import * as api from '../../api'
 
 const props = defineProps<{
   worktreePath: string

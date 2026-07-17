@@ -39,9 +39,9 @@
 -->
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
-import { createLocalMemory, getSystemFolder, listFolder, type FolderEntry } from '../api'
-import { useNotificationStore } from '../stores/notifications'
-import FilePickerDialog from './FilePickerDialog.vue'
+import { createLocalMemory, getSystemFolder, listFolder, type FolderEntry } from '../../api'
+import { useNotificationStore } from '../../stores/notifications'
+import FilePickerDialog from '../FilePickerDialog.vue'
 
 const props = withDefaults(defineProps<{
   show: boolean

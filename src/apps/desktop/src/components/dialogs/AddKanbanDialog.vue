@@ -25,8 +25,8 @@
 -->
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
-import { getSystemFolder, listFolder, type FolderEntry } from '../api'
-import FilePickerDialog from './FilePickerDialog.vue'
+import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
+import FilePickerDialog from '../FilePickerDialog.vue'
 
 const props = defineProps<{
   show: boolean
