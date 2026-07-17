@@ -2116,9 +2116,11 @@ pub const Migration062AddTaskDescription = struct {
 ///   - `created_at` is Unix **microseconds** (matches `llm_history` etc.) —
 ///     Ch3's "since/until" filtering is a microsecond-bound comparison
 ///     against the column directly. No ISO conversion at read time.
-///   - `kind` discriminator: 'window_error' | 'unhandled_rejection' |
-///     'console_error' | 'console_warn'. `level` mirrors the same set
-///     for indexed filtering (e.g. `WHERE level = 'console_error'`).
+///   - `kind` discriminator (source of the event): 'window_error' |
+///     'unhandled_rejection' | 'console_error' | 'console_warn'.
+///   - `level` is severity (orthogonal to kind): 'error' | 'warn' |
+///     'info' | 'debug'. Indexed for `WHERE level = ?` filtering
+///     (e.g. `WHERE level = 'error' ORDER BY created_at DESC`).
 ///   - `count` lets a tight loop of identical console.error frames
 ///     collapse to a single row with `count=N` instead of N rows.
 ///     The dedup key in the POST handler is `(kind, message, stack)`
