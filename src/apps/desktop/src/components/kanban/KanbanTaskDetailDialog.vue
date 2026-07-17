@@ -48,7 +48,7 @@
 -->
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
-import type { Task, KanbanColumn } from '../stores/workspaces'
+import type { Task, KanbanColumn } from '../../stores/workspaces'
 
 const props = withDefaults(
   defineProps<{

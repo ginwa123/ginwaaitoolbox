@@ -45,7 +45,7 @@
 <script setup lang="ts">
 import { computed, ref, nextTick, onMounted, onUnmounted } from 'vue'
 import KanbanCard from './KanbanCard.vue'
-import type { KanbanColumn, Task } from '../stores/workspaces'
+import type { KanbanColumn, Task } from '../../stores/workspaces'
 
 const props = defineProps<{
   column: KanbanColumn

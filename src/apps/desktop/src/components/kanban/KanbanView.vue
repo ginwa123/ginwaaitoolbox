@@ -58,9 +58,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import KanbanColumn from './KanbanColumn.vue'
 import KanbanTaskDetailDialog from './KanbanTaskDetailDialog.vue'
-import InlineEditableText from './InlineEditableText.vue'
-import { useWorkspacesStore } from '../stores/workspaces'
-import type { WorkspaceItem, Task, KanbanColumn as KanbanColumnType } from '../stores/workspaces'
+import InlineEditableText from '../InlineEditableText.vue'
+import { useWorkspacesStore } from '../../stores/workspaces'
+import type { WorkspaceItem, Task, KanbanColumn as KanbanColumnType } from '../../stores/workspaces'
 
 const props = withDefaults(
   defineProps<{
@@ -171,8 +171,8 @@ const handleOpenSettings = () => {
 // action). It hides once a path is set. The picker reuses the
 // AddKanbanDialog's picker to keep the UX consistent — same data
 // source, same select-pick-cancel flow.
-import { getSystemFolder, listFolder, type FolderEntry } from '../api'
-import FilePickerDialog from './FilePickerDialog.vue'
+import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
+import FilePickerDialog from '../FilePickerDialog.vue'
 
 const showPathPicker = ref(false)
 const pathPickerBusy = ref(false)
