@@ -840,3 +840,36 @@ pub fn makeDesignPageWithElementsResponse(
         .{},
     );
 }
+
+// ─── Frontend error log response types ────────────────────────────────────
+// Wire shapes for `POST /api/logs` (no response body, 204 No Content)
+// and `GET /api/logs` (returns `{ logs: [...], count: N }`). Mirrors
+// the `logs` table column-for-column. `stack`/`source`/`line`/
+// `route_path`/`session_id` are nullable per the table schema.
+// Plan: docs/plans/2026-07-17-frontend-error-logs-design.md.
+pub const FrontendLogRow = struct {
+    id: []const u8,
+    created_at: i64,
+    level: []const u8,
+    kind: []const u8,
+    message: []const u8,
+    stack: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+    line: ?i64 = null,
+    route_path: ?[]const u8 = null,
+    session_id: ?[]const u8 = null,
+    count: i64,
+};
+
+pub const FrontendLogListResponse = struct {
+    logs: []const FrontendLogRow,
+    count: u32,
+};
+
+pub fn makeFrontendLogListResponse(allocator: std.mem.Allocator, logs: []const FrontendLogRow) ![]u8 {
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        FrontendLogListResponse{ .logs = logs, .count = @intCast(logs.len) },
+        .{},
+    );
+}

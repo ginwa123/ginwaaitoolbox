@@ -28,5 +28,6 @@ test {
     _ = @import("migration_061_test.zig");  // re-backfill wrong-year (58507-...) created_iso rows
     _ = @import("migration_062_test.zig");  // workspace_item_tasks.description (kanban task detail dialog, Chunk 1)
     _ = @import("migration_063_test.zig");  // sessions.is_auto_retry_until_stop + last_finish_reason (unattended long-running sessions)
+    _ = @import("migration_064_test.zig");  // logs table for frontend error capture (frontend-error-logs, Chunk 1)
     _ = @import("../ai_workflow/tui/migration_057_test.zig");  // v6 design element properties — kept at old path on this branch
 }

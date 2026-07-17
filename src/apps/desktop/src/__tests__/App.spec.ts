@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 import { mount } from '@vue/test-utils'
 import { createApp, type App as VueApp, nextTick } from 'vue'
+import { setActivePinia, createPinia } from 'pinia'
 
 import App from '../App.vue'
 import * as api from '../api'
@@ -14,6 +15,7 @@ import {
   __getSseBusGlobalClient,
 } from '../helpers/sseBus'
 import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
+import { makeLocalStorageStub } from './helpers'
 
 /**
  * Test-only stub SseClient. Mirrors the helper in `sseBus.spec.ts`
@@ -56,6 +58,23 @@ describe('App', () => {
 
   beforeEach(() => {
     __resetSseBus()
+    // App.vue's onMounted calls `useNavigationStore()` (to wire the
+    // frontend-log-client context). Without an active Pinia the call
+    // throws (`getActivePinia()` was called but there was no active
+    // Pinia). The existing AppLayout.* tests already use this
+    // `setActivePinia(createPinia())` pattern (see AppLayout.chatview
+    // .spec.ts:112). One fresh Pinia per test keeps stores isolated.
+    setActivePinia(createPinia())
+    // jsdom 29 dropped localStorage from its default globals; the
+    // navigation store reads from localStorage during setup
+    // (`loadSidebarCollapsed()`). Install a Map-backed stub for the
+    // duration of each test. Same pattern as AppLayout.chatview.spec
+    // .ts:114.
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: makeLocalStorageStub(),
+      writable: true,
+      configurable: true,
+    })
     app = createApp({})
     // Install the bus BEFORE mounting App.vue so the singleton exists
     // when App.vue's `useSseBus().close()` runs in onUnmounted. Plan's

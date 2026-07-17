@@ -60,6 +60,25 @@ pub const SearchInput = struct {
     /// gitignored paths (build/, node_modules/, etc.). Mirrors rg's
     /// --no-ignore flag, which disables ALL ignore-file filtering.
     respect_ignore_files: bool = true,
+    /// When true, appends `-w` to rg's argv: matches must be at a word
+    /// boundary (start/end of file, or between word and non-word chars).
+    /// ripgrep's default Unicode word rule treats underscore as a word
+    /// char, so `foo` with -w does NOT match inside `foo_bar`. Hyphen,
+    /// plus, parens, brackets, etc. ARE boundaries.
+    word_boundary: bool = false,
+    /// When true, the pattern is treated as a literal string (no regex
+    /// metacharacters are interpreted). Maps to rg's `-F` / `--fixed-strings`.
+    /// Default false (regex mode). NOTE: Chunk 2 will wire the `-F`
+    /// argv branch; for Chunk 1 this field exists in the struct but
+    /// has no effect on rg's behavior.
+    literal: bool = false,
+    /// When true, only the matched substring is shown per line (instead
+    /// of the full line content). Maps to rg's `-o` / `--only-matching`.
+    /// Useful for fast extraction (e.g. all email addresses in a file)
+    /// without the surrounding context. NOTE: Chunk 3 will wire the `-o`
+    /// argv branch and the snippet-rendering logic; for Chunk 1 this
+    /// field exists in the struct but has no effect on rg's behavior.
+    only_matching: bool = false,
 };
 
 pub const SearchResult = struct {
@@ -154,31 +173,52 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     // which is an attacker-controlled flag surface on multi-user systems.
     // `--no-messages` suppresses ripgrep's stderr (we surface the errors
     // ourselves via the exit-code mapping below).
-    const argv: []const []const u8 = if (input.respect_ignore_files) &[_][]const u8{
-        "rg",
-        "--json",
-        "--line-number",
-        "--no-config",
-        "--no-messages",
-        "-e",
-        input.pattern,
-        "--",
-        input.path,
-    } else &[_][]const u8{
-        "rg",
-        "--json",
-        "--line-number",
-        "--no-config",
-        "--no-messages",
-        "--no-ignore",
-        "-e",
-        input.pattern,
-        "--",
-        input.path,
-    };
+    //
+    // The optional flags (`--no-ignore`, `-w`, `-F`, `-o`) are appended
+    // conditionally — the const-array shape can't scale to that, so we
+    // build a runtime ArrayList. Each entry is a `[]const u8` that
+    // already lives in static memory or is owned by `input`; we don't
+    // allocate per-flag, only the ArrayList's backing storage.
+    var args: std.ArrayList([]const u8) = .empty;
+    defer args.deinit(allocator);
+
+    try args.append(allocator, "rg");
+    try args.append(allocator, "--json");
+    try args.append(allocator, "--line-number");
+    try args.append(allocator, "--no-config");
+    try args.append(allocator, "--no-messages");
+    if (!input.respect_ignore_files) {
+        try args.append(allocator, "--no-ignore");
+    }
+    if (input.word_boundary) {
+        // -w: only match whole words (word-boundary semantics).
+        // rg's default Unicode word rule treats underscore as a word
+        // char, so this matches what `-w` says, not what an English
+        // speaker might expect for `foo_bar`.
+        try args.append(allocator, "-w");
+    }
+    // Chunk 2: literal / -F flag. Treat the pattern as opaque bytes
+    // instead of a regex. With -F, rg cannot fail to parse the pattern
+    // (it's just a literal byte sequence), so the stderr-based
+    // RegexParseError mapping at search.zig:245-250 should never fire
+    // for `literal = true` calls.
+    if (input.literal) {
+        try args.append(allocator, "-F");
+    }
+    if (input.only_matching) {
+        // -o / --only-matching: rg emits ONLY the matched substring
+        // per line (via data.submatches[]), NOT the full surrounding
+        // line. Used for fast extraction (e.g. all email addresses
+        // in a file) without surrounding context.
+        try args.append(allocator, "-o");
+    }
+    try args.append(allocator, "-e");
+    try args.append(allocator, input.pattern);
+    try args.append(allocator, "--");
+    try args.append(allocator, input.path);
 
     const result = std.process.run(allocator, io, .{
-        .argv = argv,
+        .argv = args.items,
         .stdout_limit = std.Io.Limit.limited(max_output),
         .cwd = .{ .path = input.cwd orelse cwd },
     }) catch |err| {
@@ -268,6 +308,13 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
                         if (data == .object) {
                             var match_file: []const u8 = "";
                             var match_snippet: []const u8 = "";
+                            // Tracks whether match_snippet is a heap-owned
+                            // allocation we must free (true only when built
+                            // from the comma-joined multi-submatch path).
+                            // The single-submatch and default-line paths
+                            // borrow slices from the JSON arena, which
+                            // lives until this function returns.
+                            var match_snippet_owned = false;
                             var line_num: usize = 0;
                             var line_num_valid = false;
                             var file_ok = false;
@@ -279,8 +326,68 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
                                 }
                             }
 
-                            if (getTextFromJson(&data.object, "lines")) |lines_text| {
-                                match_snippet = lines_text;
+                            if (input.only_matching) {
+                                // --only-matching: snippet = matched
+                                // substring(s) from submatches[]. With -o,
+                                // rg emits a single match event per line
+                                // even when the regex matches multiple
+                                // times on that line; ALL submatches live
+                                // in one match event's submatches[] array.
+                                // We flatten into one SearchMatch with a
+                                // comma-joined snippet (single-string shape
+                                // is preserved for downstream callers).
+                                if (data.object.get("submatches")) |submatches_val| {
+                                    if (submatches_val == .array) {
+                                        const submatch_list = submatches_val.array;
+                                        if (submatch_list.items.len == 1) {
+                                            // Single submatch: use its match.text directly.
+                                            if (getTextFromJson(&submatch_list.items[0].object, "match")) |match_text| {
+                                                match_snippet = match_text;
+                                            }
+                                        } else if (submatch_list.items.len > 1) {
+                                            // Multiple submatches on same line:
+                                            // comma-join into one snippet string.
+                                            // We need a fresh heap allocation here
+                                            // (not a slice of a local ArrayList),
+                                            // because `match_snippet` must outlive
+                                            // this block — it's read later by
+                                            // sanitizeUtf8 at line 393. A slice
+                                            // into a local ArrayList would be
+                                            // freed when the ArrayList goes out
+                                            // of scope, causing a use-after-free
+                                            // (see project memory
+                                            // zig-slice-headers-across-defer-lifetimes).
+                                            var combined: std.ArrayList(u8) = .empty;
+                                            defer combined.deinit(allocator);
+                                            for (submatch_list.items, 0..) |sub, i| {
+                                                if (i > 0) try combined.append(allocator, ',');
+                                                if (getTextFromJson(&sub.object, "match")) |m| {
+                                                    try combined.appendSlice(allocator, m);
+                                                }
+                                            }
+                                            // Heap-owned dupe (allocator.dupe)
+                                            // so the slice outlives the
+                                            // ArrayList's defer. We track this
+                                            // allocation via match_snippet_owned
+                                            // (see below) so we can free it after
+                                            // sanitizeUtf8 reads it.
+                                            const owned = allocator.dupe(u8, combined.items) catch {
+                                                // OOM: skip this match
+                                                continue;
+                                            };
+                                            match_snippet = owned;
+                                            match_snippet_owned = true;
+                                        }
+                                        // If submatch_list.items.len == 0
+                                        // (shouldn't happen for a real match
+                                        // event), match_snippet stays "".
+                                    }
+                                }
+                            } else {
+                                // Default: snippet = full surrounding line.
+                                if (getTextFromJson(&data.object, "lines")) |lines_text| {
+                                    match_snippet = lines_text;
+                                }
                             }
 
                             if (data.object.get("line_number")) |ln| {
@@ -300,6 +407,14 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
                             }
 
                             if (line_num_valid and file_ok) {
+                                // The multi-submatch path heap-allocates
+                                // match_snippet via allocator.dupe; the
+                                // default-line and single-submatch paths
+                                // borrow slices from the JSON arena. Track
+                                // ownership with a local that we free on
+                                // EVERY exit (success, error, continue).
+                                defer if (match_snippet_owned) allocator.free(match_snippet);
+
                                 // Sanitize the snippet to ensure valid
                                 // UTF-8. rg emits snippets in the file's
                                 // encoding; binary files can contain
@@ -553,6 +668,19 @@ pub const search_tool = AgentTool{
         \\  <m><f>path/to/file.zig</f><l>10</l><s>snippet</s></m>
         \\</search>
         \\
+        \\Matching modes (optional flags, all default to false):
+        \\- word_boundary (-w): match whole words only. Pattern 'foo' matches
+        \\  'foo bar' but NOT 'foobar'. Useful for identifier-style searches
+        \\  where partial matches would be noise.
+        \\- literal (-F): treat pattern as a literal string — regex
+        \\  metacharacters like '.', '*', '[', '(', '\\' are matched verbatim.
+        \\  Safer than escaping when searching for code with regex-looking
+        \\  tokens (e.g. "fn(", "*.zig").
+        \\- only_matching (-o): return only the matched substring per line
+        \\  instead of the full surrounding line. Useful for short tokens
+        \\  in noisy lines (e.g. extracting IDs, version strings, dates).
+        \\All three flags are mutually compatible — can be combined freely.
+        \\
         \\Edge cases:
         \\- pattern starting with `-` is treated as a literal (rg's `-e`
         \\  flag is used internally) — searching for the literal text
@@ -613,6 +741,21 @@ pub const search_tool = AgentTool{
                     .name = "respect_ignore_files",
                     .type = "boolean",
                     .description = "Respect .gitignore/.ignore/.rgignore. Default: true. Set false to search gitignored paths (build/, node_modules/, .git/, etc.).",
+                },
+                .{
+                    .name = "word_boundary",
+                    .type = "boolean",
+                    .description = "Match whole words only (-w flag). Pattern 'foo' matches 'foo bar' but NOT 'foobar'. Default: false.",
+                },
+                .{
+                    .name = "literal",
+                    .type = "boolean",
+                    .description = "Treat pattern as a literal string (-F flag). Regex metacharacters like '.', '*', '[' are matched verbatim. Default: false.",
+                },
+                .{
+                    .name = "only_matching",
+                    .type = "boolean",
+                    .description = "Return only the matched substring (-o flag), not the full surrounding line. Useful for short tokens in noisy lines. Default: false.",
                 },
             },
             .required = &.{ "pattern", "path" },

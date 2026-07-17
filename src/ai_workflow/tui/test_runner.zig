@@ -30,6 +30,8 @@ test {
     _ = @import("http_handlers/routines_list_test.zig");
     _ = @import("http_handlers/memories_crud_test.zig");
     _ = @import("http_handlers/local_memories_crud_test.zig");
+    _ = @import("http_handlers/frontend_log_post_test.zig"); // Chunk 2 of frontend-error-logs
+    _ = @import("http_handlers/frontend_log_get_test.zig");  // Chunk 3 of frontend-error-logs
     _ = @import("llm_history_is_input_output_test.zig");
     _ = @import("llm_history_routines_test.zig");
     _ = @import("llm_history_compacted_messages_test.zig");

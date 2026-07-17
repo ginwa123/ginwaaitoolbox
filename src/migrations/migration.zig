@@ -1779,6 +1779,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration061FixCreatedIsoYear.version, .name = Migration061FixCreatedIsoYear.name, .up = Migration061FixCreatedIsoYear.up },
     .{ .version = Migration062AddTaskDescription.version, .name = Migration062AddTaskDescription.name, .up = Migration062AddTaskDescription.up },
     .{ .version = Migration063AddSessionAutoRetry.version, .name = Migration063AddSessionAutoRetry.name, .up = Migration063AddSessionAutoRetry.up },
+    .{ .version = Migration064AddFrontendLogs.version, .name = Migration064AddFrontendLogs.name, .up = Migration064AddFrontendLogs.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -2158,6 +2159,56 @@ pub const Migration063AddSessionAutoRetry = struct {
             "sessions",
             "last_finish_reason",
             "last_finish_reason TEXT",
+        );
+    }
+};
+
+/// Migration 064 — Add the `logs` table for the frontend_log_post
+/// endpoint (POST /api/log). The frontend batches browser-side
+/// `console.error` / unhandled rejections / Vue runtime warnings and
+/// ships them to the backend over a single POST; the backend dedups
+/// by (kind, message, source, line, route_path) within a 1s window
+/// and increments `count` instead of inserting a new row.
+///
+/// The schema mirrors the dedup key (kind, message, source, line,
+/// route_path) plus a per-row `count` that the dedup UPDATE bumps.
+/// Indexes on `created_at DESC` (latest-first reads) and `level`
+/// (filter for warnings/errors in /api/log GET) support the
+/// /api/log GET endpoint that lists recent logs.
+///
+/// Note: this migration was originally numbered 063 on this branch,
+/// but main had already taken `063` for `add_session_auto_retry_until_stop`.
+/// Renamed to 064 to avoid the collision.
+pub const Migration064AddFrontendLogs = struct {
+    pub const version: u32 = 64;
+    pub const name = "add_frontend_logs";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(
+            allocator,
+            \\CREATE TABLE IF NOT EXISTS logs (
+            \\  id TEXT PRIMARY KEY,
+            \\  created_at INTEGER NOT NULL,
+            \\  level TEXT NOT NULL,
+            \\  kind TEXT NOT NULL,
+            \\  message TEXT NOT NULL,
+            \\  stack TEXT,
+            \\  source TEXT,
+            \\  line INTEGER,
+            \\  route_path TEXT,
+            \\  session_id TEXT,
+            \\  count INTEGER NOT NULL DEFAULT 1
+            \\)
+        , &[_][]const u8{});
+        try db.exec(
+            allocator,
+            "CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at DESC)",
+            &[_][]const u8{},
+        );
+        try db.exec(
+            allocator,
+            "CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level)",
+            &[_][]const u8{},
         );
     }
 };
