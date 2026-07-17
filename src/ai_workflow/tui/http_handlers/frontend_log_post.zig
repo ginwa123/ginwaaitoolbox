@@ -61,17 +61,25 @@ const FrontendLogBody = struct {
 };
 
 /// Domain-level error set for `useCase`. Each variant maps to a
-/// distinct HTTP status code.
+/// distinct HTTP status code. The 5 validation variants
+/// (`MissingLevel`/`InvalidLevel`, `MissingKind`/`InvalidKind`,
+/// `MissingMessage`) split "field is absent" from "field value
+/// is wrong" so the error messages — and the static-contract test
+/// grep substrings — can be precise. The "missing required
+/// field: <name>" message form matches what an LLM needs to know
+/// about which field was absent (vs. just plain "invalid").
 pub const FrontendLogPostError = error{
     /// `getSingleton()` failed — server not initialised. Maps to 500.
     ServerNotInitialized,
     /// Generated log id couldn't be allocated (OOM). Maps to 500.
     IdAllocationFailed,
-    /// `level` field missing OR its value is not in the whitelist.
-    /// Maps to 400.
+    /// `level` field missing. Maps to 400.
+    MissingLevel,
+    /// `level` value is not in the whitelist. Maps to 400.
     InvalidLevel,
-    /// `kind` field missing OR its value is not in the whitelist.
-    /// Maps to 400.
+    /// `kind` field missing. Maps to 400.
+    MissingKind,
+    /// `kind` value is not in the whitelist. Maps to 400.
     InvalidKind,
     /// `message` field missing or empty. Maps to 400.
     MissingMessage,
@@ -117,9 +125,9 @@ fn useCase(
     db: *sqlite.SqliteBackend,
     body: FrontendLogBody,
 ) FrontendLogPostError!void {
-    if (body.level.len == 0) return error.InvalidLevel;
+    if (body.level.len == 0) return error.MissingLevel;
     if (!isValidLevel(body.level)) return error.InvalidLevel;
-    if (body.kind.len == 0) return error.InvalidKind;
+    if (body.kind.len == 0) return error.MissingKind;
     if (!isValidKind(body.kind)) return error.InvalidKind;
     if (body.message.len == 0) return error.MissingMessage;
 
@@ -254,7 +262,9 @@ pub fn frontendLogPostHandler(
         const status: u16 = switch (err) {
             error.ServerNotInitialized => 500,
             error.IdAllocationFailed => 500,
+            error.MissingLevel => 400,
             error.InvalidLevel => 400,
+            error.MissingKind => 400,
             error.InvalidKind => 400,
             error.MissingMessage => 400,
             error.DedupQueryFailed => 500,
@@ -264,8 +274,13 @@ pub fn frontendLogPostHandler(
             error.ServerNotInitialized => "Server not initialized",
             error.IdAllocationFailed => "Failed to generate log id",
             // Validation messages intentionally use the substrings that
-            // the static-contract tests grep for.
+            // the static-contract tests grep for. "missing required
+            // field: X" is the canonical shape for an absent field,
+            // distinguishing it from "X must be one of ..." which
+            // means present-but-wrong.
+            error.MissingLevel => "missing required field: level",
             error.InvalidLevel => "level must be one of error, warn, info, debug",
+            error.MissingKind => "missing required field: kind",
             error.InvalidKind => "kind must be one of window_error, unhandled_rejection, console_error, console_warn",
             error.MissingMessage => "missing required field: message",
             error.DedupQueryFailed => "Failed to dedup log",
