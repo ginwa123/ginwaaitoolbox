@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { inject, onMounted, onUnmounted, ref, type Ref } from 'vue'
-import { useWorkspacesStore } from '../stores/workspaces'
-import { useSidebarStore } from '../stores/sidebar'
-import type { Workspace, WorkspaceItem } from '../stores/workspaces'
+import { useWorkspacesStore } from '../../stores/workspaces'
+import { useSidebarStore } from '../../stores/sidebar'
+import type { Workspace, WorkspaceItem } from '../../stores/workspaces'
 import WorkspaceItemComponent from './WorkspaceItem.vue'
-import * as api from '../api'
+import * as api from '../../api'
 
 // Bind the workspaces prop so the drag-and-drop handler can read it.
 // In <script setup>, defineProps returns a `props` object that you

@@ -22,8 +22,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 const CHATSLIST_PATH = path.resolve(__dirname, '../components/views/ChatsList.vue')
-const WORKSPACELIST_PATH = path.resolve(__dirname, '../components/WorkspaceList.vue')
-const WORKSPACEITEM_PATH = path.resolve(__dirname, '../components/WorkspaceItem.vue')
+const WORKSPACELIST_PATH = path.resolve(__dirname, '../components/workspace/WorkspaceList.vue')
+const WORKSPACEITEM_PATH = path.resolve(__dirname, '../components/workspace/WorkspaceItem.vue')
 const VIRTUALSCROLLER_PATH = path.resolve(__dirname, '../helpers/VirtualScroller.vue')
 
 const readSource = (filePath: string): string =>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, ref, type Ref } from 'vue'
-import { useWorkspacesStore } from '../stores/workspaces'
-import type { WorkspaceItem } from '../stores/workspaces'
+import { useWorkspacesStore } from '../../stores/workspaces'
+import type { WorkspaceItem } from '../../stores/workspaces'
 import WorkspaceItemTaskRow from './WorkspaceItemTaskRow.vue'
 
 const workspacesStore = useWorkspacesStore()

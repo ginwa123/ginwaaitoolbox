@@ -11,7 +11,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { nextTick, ref, type Ref } from 'vue'
 import { mount } from '@vue/test-utils'
 
-import WorkspaceItem from '../components/WorkspaceItem.vue'
+import WorkspaceItem from '../components/workspace/WorkspaceItem.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 

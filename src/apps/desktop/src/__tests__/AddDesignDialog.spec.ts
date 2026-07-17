@@ -29,7 +29,7 @@ import { describe, test, expect } from 'vitest'
 import * as fs from 'node:fs'
 
 const SIDEBAR = 'src/components/shell/Sidebar.vue'
-const WORKSPACE_LIST = 'src/components/WorkspaceList.vue'
+const WORKSPACE_LIST = 'src/components/workspace/WorkspaceList.vue'
 const DIALOG = 'src/components/design/AddDesignDialog.vue'
 const STORE = 'src/stores/workspaces.ts'
 

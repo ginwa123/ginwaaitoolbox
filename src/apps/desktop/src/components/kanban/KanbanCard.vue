@@ -31,7 +31,7 @@
   own dim state if we choose to add that in the future).
 -->
 <script setup lang="ts">
-import WorkspaceItemTaskCard from '../WorkspaceItemTaskCard.vue'
+import WorkspaceItemTaskCard from '../workspace/WorkspaceItemTaskCard.vue'
 import type { Task, WorkspaceItem } from '../../stores/workspaces'
 
 const props = defineProps<{

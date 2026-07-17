@@ -27,8 +27,8 @@
 // layout and the card-specific computeds (description preview, meta
 // row, Jira-style type accent).
 import { inject, ref, computed, type Ref } from 'vue'
-import { useWorkspacesStore } from '../stores/workspaces'
-import { useTaskActions, type TaskComponentProps } from '../composables/useTaskActions'
+import { useWorkspacesStore } from '../../stores/workspaces'
+import { useTaskActions, type TaskComponentProps } from '../../composables/useTaskActions'
 
 // Re-inject processingState from App.vue (same key WorkspaceItem and
 // ChatsList consume). Keyed by task.id == session_id.

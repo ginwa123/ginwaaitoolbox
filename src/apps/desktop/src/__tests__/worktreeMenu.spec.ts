@@ -26,7 +26,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 
-import WorktreeMenu from '../components/WorktreeMenu.vue'
+import WorktreeMenu from '../components/workspace/WorktreeMenu.vue'
 
 // Helper: mount the menu with the right props for each test. Centralizing
 // the prop shape keeps the tests focused on the behavior under test, not
