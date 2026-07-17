@@ -205,9 +205,13 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     if (input.literal) {
         try args.append(allocator, "-F");
     }
-    // Chunk 3 placeholder — same pattern. Chunk 3 will replace this
-    // with `try args.append(allocator, "-o");`.
-    _ = input.only_matching;
+    if (input.only_matching) {
+        // -o / --only-matching: rg emits ONLY the matched substring
+        // per line (via data.submatches[]), NOT the full surrounding
+        // line. Used for fast extraction (e.g. all email addresses
+        // in a file) without surrounding context.
+        try args.append(allocator, "-o");
+    }
     try args.append(allocator, "-e");
     try args.append(allocator, input.pattern);
     try args.append(allocator, "--");
@@ -304,6 +308,13 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
                         if (data == .object) {
                             var match_file: []const u8 = "";
                             var match_snippet: []const u8 = "";
+                            // Tracks whether match_snippet is a heap-owned
+                            // allocation we must free (true only when built
+                            // from the comma-joined multi-submatch path).
+                            // The single-submatch and default-line paths
+                            // borrow slices from the JSON arena, which
+                            // lives until this function returns.
+                            var match_snippet_owned = false;
                             var line_num: usize = 0;
                             var line_num_valid = false;
                             var file_ok = false;
@@ -315,8 +326,68 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
                                 }
                             }
 
-                            if (getTextFromJson(&data.object, "lines")) |lines_text| {
-                                match_snippet = lines_text;
+                            if (input.only_matching) {
+                                // --only-matching: snippet = matched
+                                // substring(s) from submatches[]. With -o,
+                                // rg emits a single match event per line
+                                // even when the regex matches multiple
+                                // times on that line; ALL submatches live
+                                // in one match event's submatches[] array.
+                                // We flatten into one SearchMatch with a
+                                // comma-joined snippet (single-string shape
+                                // is preserved for downstream callers).
+                                if (data.object.get("submatches")) |submatches_val| {
+                                    if (submatches_val == .array) {
+                                        const submatch_list = submatches_val.array;
+                                        if (submatch_list.items.len == 1) {
+                                            // Single submatch: use its match.text directly.
+                                            if (getTextFromJson(&submatch_list.items[0].object, "match")) |match_text| {
+                                                match_snippet = match_text;
+                                            }
+                                        } else if (submatch_list.items.len > 1) {
+                                            // Multiple submatches on same line:
+                                            // comma-join into one snippet string.
+                                            // We need a fresh heap allocation here
+                                            // (not a slice of a local ArrayList),
+                                            // because `match_snippet` must outlive
+                                            // this block — it's read later by
+                                            // sanitizeUtf8 at line 393. A slice
+                                            // into a local ArrayList would be
+                                            // freed when the ArrayList goes out
+                                            // of scope, causing a use-after-free
+                                            // (see project memory
+                                            // zig-slice-headers-across-defer-lifetimes).
+                                            var combined: std.ArrayList(u8) = .empty;
+                                            defer combined.deinit(allocator);
+                                            for (submatch_list.items, 0..) |sub, i| {
+                                                if (i > 0) try combined.append(allocator, ',');
+                                                if (getTextFromJson(&sub.object, "match")) |m| {
+                                                    try combined.appendSlice(allocator, m);
+                                                }
+                                            }
+                                            // Heap-owned dupe (allocator.dupe)
+                                            // so the slice outlives the
+                                            // ArrayList's defer. We track this
+                                            // allocation via match_snippet_owned
+                                            // (see below) so we can free it after
+                                            // sanitizeUtf8 reads it.
+                                            const owned = allocator.dupe(u8, combined.items) catch {
+                                                // OOM: skip this match
+                                                continue;
+                                            };
+                                            match_snippet = owned;
+                                            match_snippet_owned = true;
+                                        }
+                                        // If submatch_list.items.len == 0
+                                        // (shouldn't happen for a real match
+                                        // event), match_snippet stays "".
+                                    }
+                                }
+                            } else {
+                                // Default: snippet = full surrounding line.
+                                if (getTextFromJson(&data.object, "lines")) |lines_text| {
+                                    match_snippet = lines_text;
+                                }
                             }
 
                             if (data.object.get("line_number")) |ln| {
@@ -336,6 +407,14 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
                             }
 
                             if (line_num_valid and file_ok) {
+                                // The multi-submatch path heap-allocates
+                                // match_snippet via allocator.dupe; the
+                                // default-line and single-submatch paths
+                                // borrow slices from the JSON arena. Track
+                                // ownership with a local that we free on
+                                // EVERY exit (success, error, continue).
+                                defer if (match_snippet_owned) allocator.free(match_snippet);
+
                                 // Sanitize the snippet to ensure valid
                                 // UTF-8. rg emits snippets in the file's
                                 // encoding; binary files can contain
