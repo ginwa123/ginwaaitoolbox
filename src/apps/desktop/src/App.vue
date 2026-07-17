@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, provide, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import * as api from './api'
 import { installSseBus, useSseBus } from './helpers/sseBus'
+import { useNavigationStore } from './stores/navigation'
 
 // LLM processing state - provided to child components
 // Object mapping sessionId to processing status (using object instead of Set for better reactivity)
@@ -70,6 +72,32 @@ onMounted(() => {
   // mounting first) returns the same singleton.
   const bus = installSseBus()
   offWorker = bus.on('worker', handleWorkerEvent)
+
+  // Wire the frontendLogClient's route/session context callbacks
+  // AFTER Vue router is alive and the navigation store is ready.
+  // `main.ts` installed the client with no-op stubs
+  // (getRoutePath/getSessionId both return null); we replace them
+  // here with live getters. The logCtx object lives on
+  // `window.__nalarLogCtx` (set by main.ts) so it survives the
+  // remount — only the callback functions need to point at the
+  // current component scope's reactive refs.
+  const route = useRoute()
+  const navigationStore = useNavigationStore()
+  const logCtx = (
+    window as unknown as {
+      __nalarLogCtx:
+        | {
+            getRoutePath: () => string | null
+            getSessionId: () => string | null
+          }
+        | null
+        | undefined
+    }
+  ).__nalarLogCtx
+  if (logCtx) {
+    logCtx.getRoutePath = () => `${route.path}${route.fullPath}`
+    logCtx.getSessionId = () => navigationStore.sessionId || null
+  }
 
   // Re-sync `processingState` from the DB on every (re)connect. The
   // bus's underlying SseClient may have been `connecting` for a while
