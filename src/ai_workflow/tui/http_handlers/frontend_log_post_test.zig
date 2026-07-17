@@ -332,7 +332,8 @@ test "dedup SQL: different stack within 1s does NOT match (insert second row)" {
 
     const row_opt = try rows.next();
     if (row_opt) |r| {
-        _ = r; // dedup should NOT match — bug!
+        defer r.deinit(alloc);
+        // dedup should NOT match — bug!
         return error.UnexpectedDedupMatch;
     }
     // Verify the row count is still 1 (would become 2 if a new INSERT
@@ -380,7 +381,7 @@ test "dedup SQL: same key but >1s apart does NOT match (no dedup across window)"
 
     const row_opt = try rows.next();
     if (row_opt) |r| {
-        _ = r;
+        defer r.deinit(alloc);
         return error.UnexpectedDedupMatchAcrossWindow;
     }
     // Original row stays untouched.

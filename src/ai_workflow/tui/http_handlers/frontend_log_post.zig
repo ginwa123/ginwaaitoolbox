@@ -329,13 +329,11 @@ fn isValidKind(kind: []const u8) bool {
 
 /// Generate the canonical `log_<microseconds>` id for a new row.
 ///
-/// Falls back to `"log_unknown"` on OOM so the caller can still
-/// surface a 500 with a descriptive message instead of a generic one.
-/// The fallback id is NOT unique across rapid-fire errors, but the
-/// PRIMARY KEY collision in that case will surface as a `PersistFailed`
-/// error from the INSERT and the handler will return 500 — which is
-/// the right behavior (we couldn't generate a usable id, so the row
-/// can't be persisted reliably).
+/// On OOM, propagates the alloc error to the caller (the useCase
+/// catches it as `error.IdAllocationFailed` and the handler returns
+/// 500). There is no silent fallback to a non-unique id — a malformed
+/// id would risk a PRIMARY KEY collision, which is worse than a 500
+/// (the client can retry the POST after the OOM clears).
 fn idForRow(allocator: std.mem.Allocator) ![]u8 {
     const us = microsecondsNow();
     return std.fmt.allocPrint(allocator, "log_{d}", .{us});
