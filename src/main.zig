@@ -344,6 +344,13 @@ pub fn main(init: std.process.Init) !void {
     // the user can verify their system can display them.
     try gs.router.post("/api/notify/test", ai_mod.http_handlers.notifyTestHandler);
 
+    // Frontend error log endpoints — capture unhandled JS exceptions,
+    // unhandled promise rejections, and existing console.error / console.warn
+    // calls from the nalar-desktop webapp. See
+    // docs/plans/2026-07-17-frontend-error-logs-design.md.
+    try gs.router.post("/api/logs", ai_mod.http_handlers.frontendLogPostHandler);
+    try gs.router.get("/api/logs", ai_mod.http_handlers.frontendLogGetHandler);
+
     try gs.router.get("/api/git/status", ai_mod.http_handlers.gitStatusHandler);
     try gs.router.get("/api/git/changes", ai_mod.http_handlers.gitChangesHandler);
     try gs.router.get("/api/git/file/diff", ai_mod.http_handlers.gitFileDiffHandler);

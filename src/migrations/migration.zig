@@ -1778,6 +1778,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration060RebackfillCreatedIso.version, .name = Migration060RebackfillCreatedIso.name, .up = Migration060RebackfillCreatedIso.up },
     .{ .version = Migration061FixCreatedIsoYear.version, .name = Migration061FixCreatedIsoYear.name, .up = Migration061FixCreatedIsoYear.up },
     .{ .version = Migration062AddTaskDescription.version, .name = Migration062AddTaskDescription.name, .up = Migration062AddTaskDescription.up },
+    .{ .version = Migration063AddFrontendLogs.version, .name = Migration063AddFrontendLogs.name, .up = Migration063AddFrontendLogs.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -2097,6 +2098,77 @@ pub const Migration062AddTaskDescription = struct {
             "workspace_item_tasks",
             "description",
             "description TEXT NOT NULL DEFAULT ''",
+        );
+    }
+};
+
+/// Migration 063 — Add the `logs` table for frontend error capture.
+///
+/// What this captures
+/// ──────────────────
+/// Each row is a single frontend-side error/warn event captured by the
+/// `window.addEventListener('error' | 'unhandledrejection' | 'console.error'
+/// | 'console.warn')` listener and POSTed to `/api/logs`. The Ch2 handler
+/// is the writer; Ch3 is the reader.
+///
+/// Schema notes
+/// ────────────
+///   - `created_at` is Unix **microseconds** (matches `llm_history` etc.) —
+///     Ch3's "since/until" filtering is a microsecond-bound comparison
+///     against the column directly. No ISO conversion at read time.
+///   - `kind` discriminator (source of the event): 'window_error' |
+///     'unhandled_rejection' | 'console_error' | 'console_warn'.
+///   - `level` is severity (orthogonal to kind): 'error' | 'warn' |
+///     'info' | 'debug'. Indexed for `WHERE level = ?` filtering
+///     (e.g. `WHERE level = 'error' ORDER BY created_at DESC`).
+///   - `count` lets a tight loop of identical console.error frames
+///     collapse to a single row with `count=N` instead of N rows.
+///     The dedup key in the POST handler is `(kind, message, stack)`
+///     within a 1-second window.
+///   - Nullable text columns (`stack`, `source`, `line`, `route_path`,
+///     `session_id`) tolerate payloads from the 4 listener types —
+///     only `console_error`/`window_error` produce a stack.
+///   - `idx_logs_created_at DESC` is the primary read path (recent first).
+///   - `idx_logs_level` supports the `WHERE level = ?` filter.
+///
+/// Idempotency
+/// ───────────
+/// Uses `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`, so
+/// a second `up()` call is a safe no-op (verified by the test file).
+/// `CREATE TABLE` is appropriate here (vs. `addColumnIfMissing`) because
+/// this is a brand-new table — no pre-existing rows to alter.
+///
+/// Plan: docs/plans/2026-07-17-frontend-error-logs-design.md
+pub const Migration063AddFrontendLogs = struct {
+    pub const version: u32 = 63;
+    pub const name = "add_frontend_logs";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(
+            allocator,
+            \\CREATE TABLE IF NOT EXISTS logs (
+            \\  id TEXT PRIMARY KEY,
+            \\  created_at INTEGER NOT NULL,
+            \\  level TEXT NOT NULL,
+            \\  kind TEXT NOT NULL,
+            \\  message TEXT NOT NULL,
+            \\  stack TEXT,
+            \\  source TEXT,
+            \\  line INTEGER,
+            \\  route_path TEXT,
+            \\  session_id TEXT,
+            \\  count INTEGER NOT NULL DEFAULT 1
+            \\)
+        , &[_][]const u8{});
+        try db.exec(
+            allocator,
+            "CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at DESC)",
+            &[_][]const u8{},
+        );
+        try db.exec(
+            allocator,
+            "CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level)",
+            &[_][]const u8{},
         );
     }
 };
