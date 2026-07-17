@@ -4,7 +4,7 @@ import LocalMemoryDetailView from './LocalMemoryDetailView.vue'
 import {
   listLocalMemories,
   type Memory,
-} from '../api'
+} from '../../api'
 
 const props = defineProps<{
   cwd: string

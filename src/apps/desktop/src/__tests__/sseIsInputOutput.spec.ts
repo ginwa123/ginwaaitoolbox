@@ -105,6 +105,7 @@ describe('SseEvent.is_input / is_output wire format', () => {
       __dirname,
       '..',
       'components',
+      'views',
       'ChatView.vue'
     )
     const source = await fs.readFile(chatviewPath, 'utf8')

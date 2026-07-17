@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref, watch, inject, onMounted, onUnmounted, nextTick, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useNavigationStore } from '../stores/navigation'
-import { useWorkspacesStore } from '../stores/workspaces'
-import { useSidebarStore } from '../stores/sidebar'
-import { VirtualScroller, formatRelativeTime } from '../helpers'
-import * as api from '../api'
+import { useNavigationStore } from '../../stores/navigation'
+import { useWorkspacesStore } from '../../stores/workspaces'
+import { useSidebarStore } from '../../stores/sidebar'
+import { VirtualScroller, formatRelativeTime } from '../../helpers'
+import * as api from '../../api'
 
 const router = useRouter()
 

@@ -30,7 +30,7 @@
 import { ref, watch, nextTick } from 'vue'
 import KanbanColumnEditor from './KanbanColumnEditor.vue'
 import InlineEditableText from './InlineEditableText.vue'
-import WorkspaceItemMemoriesView from './WorkspaceItemMemoriesView.vue'
+import WorkspaceItemMemoriesView from './views/WorkspaceItemMemoriesView.vue'
 import type { WorkspaceItem } from '../stores/workspaces'
 
 type SettingsMode = 'columns' | 'memories'

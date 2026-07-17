@@ -6,7 +6,7 @@ import {
   updateLocalMemory,
   deleteLocalMemory,
   type MemoryDetail as MemoryDetailData,
-} from '../api'
+} from '../../api'
 
 const props = defineProps<{
   memoryName: string | null
