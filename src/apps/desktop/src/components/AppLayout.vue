@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick, provide } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import Sidebar from './Sidebar.vue'
-// DISABLED: import RightSidebar from './RightSidebar.vue'   // 2026-06-29 — task disable-rightsidebar-vue
+import Sidebar from './shell/Sidebar.vue'
+// DISABLED: import RightSidebar from './shell/RightSidebar.vue'   // 2026-06-29 — task disable-rightsidebar-vue
 import GitFileViewer from './GitFileViewer.vue'
-import SkillDetail from './SkillDetail.vue'
+import SkillDetail from './shell/SkillDetail.vue'
 import ChatView from './ChatView.vue'
 import Chats from './Chats.vue'
 import SettingsView from './SettingsView.vue'
 import CodeEditor from './CodeEditor.vue'
-import NotificationContainer from './NotificationContainer.vue'
-import SseStatusBadge from './SseStatusBadge.vue'
+import NotificationContainer from './shell/NotificationContainer.vue'
+import SseStatusBadge from './shell/SseStatusBadge.vue'
 import KanbanView from './KanbanView.vue'
 import KanbanColumnEditor from './KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './KanbanSettingsDialog.vue'

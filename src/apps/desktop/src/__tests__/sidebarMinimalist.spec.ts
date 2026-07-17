@@ -32,7 +32,7 @@ import { describe, it, expect } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-const SIDEBAR_PATH = path.resolve(__dirname, '../components/Sidebar.vue')
+const SIDEBAR_PATH = path.resolve(__dirname, '../components/shell/Sidebar.vue')
 const CHATSLIST_PATH = path.resolve(__dirname, '../components/ChatsList.vue')
 const WORKSPACELIST_PATH = path.resolve(__dirname, '../components/WorkspaceList.vue')
 const WORKSPACEITEM_PATH = path.resolve(__dirname, '../components/WorkspaceItem.vue')

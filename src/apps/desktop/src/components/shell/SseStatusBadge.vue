@@ -38,8 +38,8 @@
 <script setup lang="ts">
 import { onUnmounted, ref, watch } from 'vue'
 
-import { useSseBus } from '../helpers/sseBus'
-import type { SseState } from '../helpers/sseClient'
+import { useSseBus } from '../../helpers/sseBus'
+import type { SseState } from '../../helpers/sseClient'
 
 const bus = useSseBus()
 const state = ref<SseState>(bus.state.value)

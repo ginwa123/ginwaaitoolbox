@@ -22,8 +22,8 @@
   reflects the store. The store handles auto-dismiss timers.
 -->
 <script setup lang="ts">
-import { useNotificationStore } from '../stores/notifications'
-import ErrorNotification from './ErrorNotification.vue'
+import { useNotificationStore } from '../../stores/notifications'
+import ErrorNotification from '../ErrorNotification.vue'
 
 const store = useNotificationStore()
 </script>

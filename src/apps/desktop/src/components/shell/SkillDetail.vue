@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
-import { getSkillDetail, deleteSkill, type SkillDetail } from '../api'
+import { getSkillDetail, deleteSkill, type SkillDetail } from '../../api'
 
 const props = defineProps<{
   skillName: string | null

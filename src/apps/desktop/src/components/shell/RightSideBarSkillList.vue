@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
-import { getSkills, type Skill } from '../api'
-import { useSidebarStore } from '../stores/sidebar'
+import { getSkills, type Skill } from '../../api'
+import { useSidebarStore } from '../../stores/sidebar'
 
 const props = defineProps<{
   cwd?: string

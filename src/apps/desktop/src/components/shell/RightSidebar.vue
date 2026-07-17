@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import FolderExplorer from './FolderExplorer.vue'
+import FolderExplorer from '../FolderExplorer.vue'
 import RightSideBarSkillList from './RightSideBarSkillList.vue'
-import type { FolderEntry } from '../api'
-import * as api from '../api'
+import type { FolderEntry } from '../../api'
+import * as api from '../../api'
 
 const props = defineProps<{
   cwd?: string
