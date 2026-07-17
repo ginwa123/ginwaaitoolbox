@@ -46,18 +46,30 @@ const http_response = @import("http_response.zig");
 
 /// JSON request body for `POST /api/logs`.
 ///
-/// Required: `level`, `kind`, `message`. Everything else is optional and
-/// maps 1:1 to the `logs` table column (nullable columns are nullable
-/// in the struct too).
+/// The wire format is a BATCH (`{"events": [event, event, ...]}`) — this
+/// matches the front-end `helpers/frontendLogClient.ts` which debounces
+/// multiple console.error / window.error / unhandledrejection events into
+/// one POST every 250ms. The handler loops `useCase` over each event and
+/// returns the SAME status code (204 on full success, 400 on the first
+/// validation failure, 500 on the first DB failure) — the frontend treats
+/// any 4xx/5xx as "drop the batch", so partial-success isn't useful.
+///
+/// Required per event: `level`, `kind`, `message`. Everything else is
+/// optional and maps 1:1 to the `logs` table column (nullable columns
+/// are nullable in the struct too).
 const FrontendLogBody = struct {
-    level: []const u8,
-    kind: []const u8,
-    message: []const u8,
-    stack: ?[]const u8 = null,
-    source: ?[]const u8 = null,
-    line: ?i64 = null,
-    route_path: ?[]const u8 = null,
-    session_id: ?[]const u8 = null,
+    events: []const FrontendLogEvent = &.{},
+
+    pub const FrontendLogEvent = struct {
+        level: []const u8,
+        kind: []const u8,
+        message: []const u8,
+        stack: ?[]const u8 = null,
+        source: ?[]const u8 = null,
+        line: ?i64 = null,
+        route_path: ?[]const u8 = null,
+        session_id: ?[]const u8 = null,
+    };
 };
 
 /// Domain-level error set for `useCase`. Each variant maps to a
@@ -123,7 +135,7 @@ const VALID_KINDS = [_][]const u8{
 fn useCase(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    body: FrontendLogBody,
+    body: FrontendLogBody.FrontendLogEvent,
 ) FrontendLogPostError!void {
     if (body.level.len == 0) return error.MissingLevel;
     if (!isValidLevel(body.level)) return error.InvalidLevel;
@@ -245,7 +257,7 @@ pub fn frontendLogPostHandler(
     if (req.body.len == 0) {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "missing required field: level" }),
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "missing required field: events" }),
         });
     }
 
@@ -261,7 +273,24 @@ pub fn frontendLogPostHandler(
         });
     };
 
-    useCase(allocator, di.db, parsed) catch |err| {
+    if (parsed.events.len == 0) {
+        // Frontend client always sends a non-empty batch (it's
+        // wrapping its in-memory queue), so an empty `events` array
+        // is user-error or caller misconfiguration — surface as 400
+        // with a clear message.
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "missing required field: events" }),
+        });
+    }
+
+    // Run the use case once per event. The first failure aborts the
+    // batch (the frontend treats any 4xx/5xx as "drop the batch", so
+    // partial-success isn't useful — the client either retries the
+    // whole batch or moves on). This matches the dedup-checks-one-
+    // at-a-time model from Chunk 2.
+    for (parsed.events) |event| {
+        useCase(allocator, di.db, event) catch |err| {
         const status: u16 = switch (err) {
             error.ServerNotInitialized => 500,
             error.IdAllocationFailed => 500,
@@ -299,6 +328,7 @@ pub fn frontendLogPostHandler(
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
         });
     };
+    }
 
     // 204 No Content — empty body. Build via
     // `gserverz.HttpResponse.init(...)` + `.withBody("")` because the
