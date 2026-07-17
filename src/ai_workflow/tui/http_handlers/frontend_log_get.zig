@@ -246,7 +246,7 @@ fn useCase(
             present_kind = true;
         }
     }
-    if (input.session_id) |sid| {
+    if (input.session_id) |_| {
         try sql_buf.appendSlice(allocator, "\n  AND session_id = ?");
         present_session = true;
     }
