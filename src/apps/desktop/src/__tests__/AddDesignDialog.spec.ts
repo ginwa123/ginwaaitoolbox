@@ -30,7 +30,7 @@ import * as fs from 'node:fs'
 
 const SIDEBAR = 'src/components/shell/Sidebar.vue'
 const WORKSPACE_LIST = 'src/components/WorkspaceList.vue'
-const DIALOG = 'src/components/AddDesignDialog.vue'
+const DIALOG = 'src/components/design/AddDesignDialog.vue'
 const STORE = 'src/stores/workspaces.ts'
 
 function readSource(relPath: string): string {
@@ -98,7 +98,7 @@ describe('Sidebar routes design itemType to AddDesignDialog', () => {
 
   test('imports AddDesignDialog', () => {
     const src = readSource(SIDEBAR)
-    expect(src).toMatch(/import AddDesignDialog from '\.\.\/AddDesignDialog\.vue'/)
+    expect(src).toMatch(/import AddDesignDialog from '\.\.\/design\/AddDesignDialog\.vue'/)
   })
 
   test('mounts <AddDesignDialog> with show + close + create handlers', () => {
