@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import NalarSettings from '../NalarSettings.vue'
 import SkillsSettings from '../SkillsSettings.vue'
-import MemoriesSettings from '../MemoriesSettings.vue'
+import MemoriesSettings from '../memory/MemoriesSettings.vue'
 
 const router = useRouter()
 

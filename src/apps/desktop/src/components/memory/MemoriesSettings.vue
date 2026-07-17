@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import MemoryList from './tool_outputs/MemoryList.vue'
+import MemoryList from '../tool_outputs/MemoryList.vue'
 import MemoryDetail from './MemoryDetail.vue'
 
 const emit = defineEmits<{
