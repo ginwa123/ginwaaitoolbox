@@ -168,6 +168,11 @@ pub const parseConfigInput = @import("nalar_config_put.zig").parseConfigInput;
 // full LLM stream. See /docs/superpowers/plans/2026-01-15-llm-completion-notification.md
 pub const notifyTestHandler = @import("notify_test.zig").notifyTestHandler;
 
+// Frontend error log handler — persists window.error /
+// unhandledrejection / console.error / console.warn events to the
+// `logs` table. See docs/plans/2026-07-17-frontend-error-logs-design.md.
+pub const frontendLogPostHandler = @import("frontend_log_post.zig").frontendLogPostHandler;
+
 // =============================================================================
 // Shared Types & Helpers
 // =============================================================================
