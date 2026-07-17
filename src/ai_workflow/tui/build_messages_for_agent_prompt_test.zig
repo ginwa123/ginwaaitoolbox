@@ -27,7 +27,11 @@ const sqlite = nalarcore.sqlite;
 
 const llm_history = @import("llm_history.zig");
 const WorkspaceContext = llm_history.WorkspaceContext;
-const build_messages = @import("build_messages_for_agent_prompt.zig");
+const agentic_loop = @import("agentic_loop/mod.zig");
+// After the refactor that split prompt builders into agentic_loop/*,
+// `makeWorkspaceContext` and `makeKanbanContext` live in
+// `agentic_loop.prompts_mod`. The old `build_messages.BuildWorkspaceContext`
+// and `build_messages.BuildKanbanStatusPrompt` paths no longer exist.
 
 // ─── Test helpers ─────────────────────────────────────────────────────────
 
@@ -398,7 +402,7 @@ test "BuildWorkspaceContext renders markdown with self marker and tasks" {
         },
     });
 
-    const md = try build_messages.BuildWorkspaceContext(alloc, &ctx.db, "task_a1");
+    const md = try agentic_loop.prompts_mod.makeWorkspaceContext(alloc, &ctx.db, "task_a1");
     defer alloc.free(md);
 
     // Section header is required.
@@ -472,7 +476,7 @@ test "BuildWorkspaceContext renders truncation footer when over 20 items" {
 
     // Per the `task.id == session_id` convention, look up by
     // the task's own id.
-    const md = try build_messages.BuildWorkspaceContext(alloc, &ctx.db, "task_a1");
+    const md = try agentic_loop.prompts_mod.makeWorkspaceContext(alloc, &ctx.db, "task_a1");
     defer alloc.free(md);
 
     // Section header is still present.
@@ -514,7 +518,7 @@ test "BuildWorkspaceContext returns empty string for empty workspace" {
         &.{ "ws_empty", "empty" },
     );
 
-    const md = try build_messages.BuildWorkspaceContext(alloc, &ctx.db, "sess_any");
+    const md = try agentic_loop.prompts_mod.makeWorkspaceContext(alloc, &ctx.db, "sess_any");
     defer alloc.free(md);
 
     try testing.expectEqualStrings("", md);
@@ -545,7 +549,7 @@ test "BuildWorkspaceContext uses item_id: and task_id: labels (visually distinct
         },
     });
 
-    const md = try build_messages.BuildWorkspaceContext(alloc, &ctx.db, "task_a1");
+    const md = try agentic_loop.prompts_mod.makeWorkspaceContext(alloc, &ctx.db, "task_a1");
     defer alloc.free(md);
 
     // The two labels must be visually distinct so the LLM doesn't
@@ -596,7 +600,7 @@ test "BuildKanbanStatusPrompt returns empty string for non-kanban parent" {
         "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES ('sess_chat', 'chat task', 'wi_chat', 'standard')",
         &.{});
 
-    const result = try build_messages.BuildKanbanStatusPrompt(alloc, &ctx.db, "sess_chat");
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_chat");
     defer alloc.free(result);
 
     try testing.expectEqualStrings("", result);
@@ -613,7 +617,7 @@ test "BuildKanbanStatusPrompt returns empty string for unbound session" {
         "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_kanban', 'ws_x', 'kanban')",
         &.{});
 
-    const result = try build_messages.BuildKanbanStatusPrompt(alloc, &ctx.db, "sess_unbound");
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_unbound");
     defer alloc.free(result);
 
     try testing.expectEqualStrings("", result);
@@ -640,7 +644,7 @@ test "BuildKanbanStatusPrompt renders mandatory rule + columns for kanban parent
             "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'col_a', 'standard')",
         &.{});
 
-    const result = try build_messages.BuildKanbanStatusPrompt(alloc, &ctx.db, "sess_kanban");
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_kanban");
     defer alloc.free(result);
 
     // Mandatory rule is present (imperative wording — matches the
@@ -698,7 +702,7 @@ test "BuildKanbanStatusPrompt renders unassigned note when task has no column" {
             "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'standard')",
         &.{});
 
-    const result = try build_messages.BuildKanbanStatusPrompt(alloc, &ctx.db, "sess_kanban");
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_kanban");
     defer alloc.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "Current column:** _unassigned_") != null);
@@ -720,7 +724,7 @@ test "BuildKanbanStatusPrompt renders empty-board hint when kanban has no column
             "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'standard')",
         &.{});
 
-    const result = try build_messages.BuildKanbanStatusPrompt(alloc, &ctx.db, "sess_kanban");
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_kanban");
     defer alloc.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "_No columns configured yet._") != null);
@@ -733,7 +737,7 @@ test "BuildKanbanStatusPrompt returns empty string for empty session_id" {
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
-    const result = try build_messages.BuildKanbanStatusPrompt(alloc, &ctx.db, "");
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "");
     defer alloc.free(result);
 
     try testing.expectEqualStrings("", result);
