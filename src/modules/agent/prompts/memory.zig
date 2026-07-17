@@ -84,76 +84,192 @@ pub const NalarMdAutoUpdate =
 pub const GlobalMemorySystem =
     \\## Global Memory System
     \\
-    \\Persistent memory lives in the platform-specific user configuration
-    \\directory under `nalar/memories/`.
+    \\Persistent cross-project memory lives in `~/.config/nalar/memories/`
+    \\as standalone markdown files, shared across every session and project.
     \\
-    \\Each memory is a standalone markdown file shared across all sessions
-    \\and projects.
+    \\Each file is **one insight**. Title comes from the `# H1` heading;
+    \\filename uses `kebab-case` and names the **root cause**, not the
+    \\symptom (e.g. `zig-0.16-strip-prefix.md`, not `compile-error-2.md`).
     \\
-    \\### Reading memories
+    \\### How memories are loaded
     \\
-    \\All memory files are automatically injected into context. You do not
-    \\need to read them manually during normal work.
+    \\All memory files are auto-injected into your context as the global
+    \\knowledge block. You do NOT need to read them manually during normal
+    \\work. Use `list_memory` to refresh the listing mid-session or to see
+    \\the full index (and any files that were truncated).
     \\
-    \\### Writing memories
+    \\### When to write a memory
     \\
-    \\After every completed task, ask:
+    \\Write a memory when **future-you (on a different project) would
+    \\otherwise re-discover the same thing**. Triggers that always qualify:
     \\
-    \\> Would this knowledge help a future agent solve a similar problem?
+    \\- **Non-obvious error → root cause → fix.** If you spent more than two
+    \\  steps debugging a crash, compile error, or wrong-output bug whose
+    \\  cause wasn't obvious from the source — the fix is memory-worthy.
+    \\- **API / stdlib gotcha.** Zig 0.16 removals, OS-specific syscall
+    \\  differences, build-system quirks, framework version skew — anything
+    \\  where reading the docs again from scratch would be slow.
+    \\- **Reusable agent pattern.** A successful delegation shape, a
+    \\  sub-agent system prompt that produced better output than a
+    \\  monolithic prompt, a tool combination that worked well.
+    \\- **Environment quirk.** Docker/CI/dev-shell oddity, file-system
+    \\  permission trap, env-var caching behaviour, port-already-in-use
+    \\  patterns that recur.
+    \\- **Common failure mode → known cause.** "If you see X in the logs,
+    \\  the cause is Y" — paired with the verification step that confirms
+    \\  the diagnosis.
     \\
-    \\If yes, update memory.
+    \\After every task, ask: **"Would a competent agent on a *different*
+    \\project hit the same wall?"** If yes → memory. The bar is *cross-
+    \\project reusability*, not "was this hard for me right now".
     \\
-    \\Creating or updating memory is mandatory when:
+    \\### When NOT to write a memory
     \\
-    \\- You encountered a non-obvious error and found the fix
-    \\- You spent meaningful time debugging before discovering the root cause
-    \\- You solved a difficult problem through investigation, experimentation,
-    \\  research, or trial and error
-    \\- You learned a project convention, build quirk, or environment gotcha
-    \\- You discovered a reusable pattern or best practice
-    \\- The user corrected your approach
-    \\- You found platform-specific behavior or compatibility issues
-    \\- You identified a common failure mode and its resolution
+    \\- **Project-specific build commands** → those go in `NALAR.md` or
+    \\  `AGENTS.md`, not global memory.
+    \\- **Single-conversation outcomes** ("we chose option B"). If the
+    \\  next session can't act on it, skip it.
+    \\- **Trivial one-liner fixes** ("missing semicolon"). Save memory
+    \\  space for the 10% of fixes that are genuinely surprising.
+    \\- **Duplicates of existing memories** — `read_file` the
+    \\  `~/.config/nalar/memories/` directory first; update the existing
+    \\  file in place rather than creating a near-duplicate.
     \\
-    \\IMPORTANT:
-    \\If another competent agent could reasonably get stuck on the same
-    \\problem in the future, you MUST create or update a memory describing:
+    \\### Memory vs NALAR.md vs Local memory vs Skills
     \\
-    \\- The symptoms
-    \\- The root cause
-    \\- The successful solution
-    \\- Any failed approaches worth avoiding
+    \\| Surface | Scope | Lifetime | Example |
+    \\|---|---|---|---|
+    \\| `~/.config/nalar/memories/*.md` (global) | Cross-project insight | Forever (until you delete it) | "Zig 0.16 removed `std.posix.getcwd`" |
+    \\| `<cwd>/.nalar/memories/*.md` (local) | Project-specific insight | Lives with the project repo | "This repo's zig build hangs on the desktop step" |
+    \\| `NALAR.md` / `AGENTS.md` (project) | Build commands + conventions | Tracked in git with the repo | "`zig build test --summary all` before declaring done" |
+    \\| `.nalar/skills/<name>/SKILL.MD` | Reusable multi-step procedure | Stays until obsolete | "how to ship a Zig cross-platform PR" |
     \\
-    \\Do not skip memory creation simply because the task is complete.
+    \\**Rule of thumb:** a *fact* the agent needs to know → memory.
+    \\A *workflow* the agent must execute → skill. A *project policy*
+    \\(build commands, file layout) → NALAR.md.
     \\
-    \\### File conventions
+    \\### How to write a memory (concrete)
     \\
-    \\- Start with a `# H1` title
-    \\- Use kebab-case filenames
-    \\- One insight per file
-    \\- Keep memories concise and reusable
-    \\- Prefer root causes over symptoms
+    \\1. Pick a `kebab-case` filename that names the **root cause** (see
+    \\   examples in `~/.config/nalar/memories/` for tone).
+    \\2. Start with `# <Title>` — the H1 becomes the rendered heading.
+    \\3. Sections to include when applicable:
+    \\   - **Symptom** — exact error string, log line, or observable
+    \\     behaviour (helps future agents recognise they hit the same thing).
+    \\   - **Root cause** — one paragraph, no fluff.
+    \\   - **Fix** — concrete code snippet or command, copy-pasteable.
+    \\   - **Pitfalls** — adjacent mistakes to avoid.
+    \\   - **Verification** — how to confirm the fix actually worked.
+    \\   - **Failed approaches** — what you tried that DIDN'T work, so
+    \\     future-you skips the dead end.
+    \\4. Keep it concise (target < 100 lines; > 300 lines is a smell —
+    \\   split it into multiple memories).
     \\
     \\### Maintaining memories
     \\
     \\Memories can become stale. When encountering an existing memory:
     \\
-    \\- Outdated → update it
-    \\- Wrong or misleading → fix it immediately
-    \\- No longer relevant → delete it
+    \\- Outdated → update it (use `text_replace` for surgical edits).
+    \\- Wrong or misleading → fix it immediately. Do NOT leave a stale
+    \\  memory in place — the next agent will trust it.
+    \\- No longer relevant → delete it (`remove_file`). Stale memories are
+    \\  worse than no memory.
     \\
-    \\Do not let incorrect memories persist.
+    \\### Anti-patterns
     \\
-    \\### Write for reuse, not for today
+    \\- ❌ **Logging trivial fixes** ("added a defer"). These just inflate
+    \\   context and crowd out real insights.
+    \\- ❌ **Copy-pasting a giant code block with no analysis.** The agent
+    \\   needs the *why*, not the *what*.
+    \\- ❌ **Writing a memory that's actually a tutorial.** Tutorials go in
+    \\   skills.
+    \\- ❌ **Title that doesn't match content.** "How to do X" is usually
+    \\   wrong — describe the *problem*, not the action.
+    \\- ❌ **Symptom-only filenames** (`build-failed.md`). Always name the
+    \\   cause, not the observation.
+;
+
+pub const LocalMemorySystem =
+    \\## Local Memory System (Project-Specific)
     \\
-    \\Memories are global. Write insights that generalize beyond the current
-    \\task.
+    \\Each session also has access to **local memories** in
+    \\`<cwd>/.nalar/memories/*.md` — project-scoped insights that ship
+    \\with the codebase and are auto-loaded into your context alongside
+    \\global memory.
     \\
-    \\| ❌ Too specific | ✅ Generalized |
+    \\### Local vs Global — when to use which
+    \\
+    \\| Use LOCAL when... | Use GLOBAL when... |
     \\|---|---|
-    \\| "Use std.ArrayList in Zig 0.15" | "Prefer dynamic arrays when length is unknown at compile time" |
-    \\| "compile_commands.json is at /build" | "Regenerate generated artifacts after build-system changes" |
-    \\| "Changed line 52 in foo.zig" | "After fixing a tricky bug, add a regression test immediately" |
+    \\| The insight is meaningless outside this repo (build commands, internal file layout, this repo's CI quirks) | The insight generalises across every project you might work on (language gotchas, OS quirks, general patterns) |
+    \\| The repo's contributors should see it (lives next to the code) | Only you (the agent) need it |
+    \\| The fact changes as the repo evolves (API renames, dep upgrades) | The fact is stable (Zig stdlib behaviour, well-known patterns) |
+    \\
+    \\**Rule of thumb:** if you'd write a `// TODO` in the source code
+    \\for it, it's local memory. If you'd write a Stack Overflow answer
+    \\for it, it's global memory.
+    \\
+    \\### How local memories are loaded
+    \\
+    \\Just like global memories: auto-injected into your context as the
+    \\local knowledge block (rendered **before** the global knowledge
+    \\block, so project context precedes cross-project context). You do
+    \\NOT need to read them manually.
+    \\
+    \\The local directory path appears in the `<title> (\`<name>\`)`
+    \\headings of the local knowledge block — copy it verbatim when
+    \\calling tools.
+    \\
+    \\### Reading and writing local memories
+    \\
+    \\Use the same tools you'd use for any other file in the repo:
+    \\
+    \\- **Read** — `read_file` with the full path from the listing.
+    \\- **Write** — `write_file` with the full file content.
+    \\- **Edit** — `text_replace` for surgical patches.
+    \\- **Delete** — `remove_file`.
+    \\
+    \\No dedicated `list_local_memory` / `read_local_memory` tool exists
+    \\(or is needed) — the standard filesystem tools cover all cases.
+    \\
+    \\### When to write a local memory
+    \\
+    \\Add a local memory when:
+    \\
+    \\- You learned a non-obvious fact about **this** codebase (a hidden
+    \\   build dependency, a test that hangs in CI, a script that must run
+    \\   before commit, a quirk of this repo's `build.zig`).
+    \\- The fact is too specific for global memory but a future agent on
+    \\   this same repo will hit it.
+    \\- The fact changes as the repo evolves (and you'd want to update it
+    \\   in lockstep with the code).
+    \\
+    \\### Anti-patterns
+    \\
+    \\- ❌ **Duplicating a global memory locally.** If a Zig 0.16 quirk
+    \\   applies everywhere, put it in `~/.config/nalar/memories/`, not
+    \\   `<cwd>/.nalar/memories/`.
+    \\- ❌ **Secrets or machine-specific paths.** Local memory lives next
+    \\   to the code — it should be safe for any contributor to read.
+    \\- ❌ **Build commands and run instructions** — those go in
+    \\   `NALAR.md` / `AGENTS.md`, surfaced in a dedicated prompt section.
+    \\- ❌ **Single-task notes that won't apply next session.** Memory is
+    \\   for *patterns*, not session logs.
+    \\
+    \\### When NOT to use local memory at all
+    \\
+    \\- For **build / run / test instructions**, use `NALAR.md` or
+    \\  `AGENTS.md` — those are surfaced every session.
+    \\- For **multi-step workflows**, create a
+    \\  `.nalar/skills/<name>/SKILL.MD` — skills appear in the
+    \\  Available Skills listing with full instructions.
+    \\- For **session-scoped context** (the conversation we're having right
+    \\  now), use the chat directly — no file.
+    \\
+    \\### File conventions
+    \\
+    \\Same as global memory: `# H1` title (becomes the rendered heading),
+    \\`kebab-case` filename, one insight per file, target < 100 lines.
 ;
 
 pub const skills_system_prompt =

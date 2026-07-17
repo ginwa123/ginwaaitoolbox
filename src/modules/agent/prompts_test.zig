@@ -631,6 +631,143 @@ test "build_agent_prompt omits Local Knowledge when cwd is empty" {
     try std.testing.expect(!contains(prompt, "## Local Knowledge"));
 }
 
+// build_agent_prompt — LocalMemorySystem static section (no gating)
+// -------------------------------------------------------------------------
+//
+// The LocalMemorySystem section is static — it appears in every prompt
+// regardless of tool list, because the local memory content is auto-injected
+// (no `list_memory` invocation needed). Same invariant as GlobalMemorySystem.
+
+test "build_agent_prompt includes LocalMemorySystem static section unconditionally" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Even with a minimal tool list (no list_memory, no read_file), the
+    // LocalMemorySystem static section is rendered — memories are
+    // auto-injected, no tool call required.
+    const tools = [_]AgentTool{};
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "",
+        "",
+        "", "");
+    defer alloc.free(prompt);
+
+    // Static section header is present
+    try std.testing.expect(contains(prompt, "## Local Memory System"));
+    // GlobalMemorySystem sibling is also present (both static, both unconditional)
+    try std.testing.expect(contains(prompt, "## Global Memory System"));
+}
+
+test "build_agent_prompt LocalMemorySystem mentions the local memories path" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "",
+        "",
+        "", "");
+    defer alloc.free(prompt);
+
+    // The agent needs to know WHERE local memories live so it can write
+    // to / read from the right path.
+    try std.testing.expect(contains(prompt, "<cwd>/.nalar/memories"));
+    // And the file-creation tool it should use
+    try std.testing.expect(contains(prompt, "write_file"));
+    try std.testing.expect(contains(prompt, "text_replace"));
+    try std.testing.expect(contains(prompt, "remove_file"));
+}
+
+test "build_agent_prompt LocalMemorySystem distinguishes local vs global" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "",
+        "",
+        "", "");
+    defer alloc.free(prompt);
+
+    // The local-vs-global decision table is the most actionable guidance.
+    // If the agent can't grep for "Use LOCAL when", it'll waste memory space.
+    try std.testing.expect(contains(prompt, "Use LOCAL when"));
+    try std.testing.expect(contains(prompt, "Use GLOBAL when"));
+    // Anti-patterns: don't duplicate global locally, no secrets in local memory.
+    try std.testing.expect(contains(prompt, "Duplicating a global memory locally"));
+    // Boundaries: when NOT to use local memory (NALAR.md / skills / chat).
+    try std.testing.expect(contains(prompt, "NALAR.md"));
+    try std.testing.expect(contains(prompt, ".nalar/skills"));
+}
+
+test "build_agent_prompt LocalMemorySystem has no requires_tool gate" {
+    // Regression test: the section must render even when no `list_memory`
+    // tool is present, because memories are auto-injected. Earlier draft
+    // added `requires_tool = "list_memory"` (mirroring GlobalMemorySystem),
+    // which was wrong — the user explicitly rejected that gate.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+        // No list_memory, no spawn_sub_agent, nothing memory-related.
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "",
+        "",
+        "", "");
+    defer alloc.free(prompt);
+
+    // Static LocalMemorySystem section still rendered (no gating).
+    try std.testing.expect(contains(prompt, "## Local Memory System"));
+    // Static GlobalMemorySystem section also still rendered.
+    try std.testing.expect(contains(prompt, "## Global Memory System"));
+}
+
 test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories has no .md files" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;

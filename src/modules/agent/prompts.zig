@@ -33,6 +33,7 @@ pub const MemoryPrompt = prompts.MemoryPrompt;
 pub const NalarMdAutoUpdate = prompts.NalarMdAutoUpdate;
 pub const GitPrompt = prompts.GitPrompt;
 pub const GlobalMemorySystem = prompts.GlobalMemorySystem;
+pub const LocalMemorySystem = prompts.LocalMemorySystem;
 pub const CompactionAgent = prompts.CompactionAgent;
 pub const GenerateSessionNameAgent = prompts.GenerateSessionNameAgent;
 pub const ResponseFormatting = prompts.ResponseFormatting;
@@ -99,10 +100,8 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
     // === Memory & docs ===
     .{ .name = "memory_prompt", .content = MemoryPrompt },
     .{ .name = "nalar_md", .content = NalarMdAutoUpdate },
-    .{
-        .name = "global_memory_system",
-        .content = GlobalMemorySystem,
-    },
+    .{ .name = "global_memory_system", .content = GlobalMemorySystem },
+    .{ .name = "local_memory_system", .content = LocalMemorySystem },
     .{ .name = "git_prompt", .content = GitPrompt },
 
     // === Response formatting (last — applies to everything above) ===
