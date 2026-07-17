@@ -132,6 +132,15 @@ export interface Task {
   // optional so legacy task literals keep type-checking.
   kanban_column_id?: string | null
   kanban_position?: number
+  // NEW (Chunk 5 of auto-retry-until-stop plan). Mirrors the
+  // sessions.is_auto_retry_until_stop column (Migration 063). For
+  // routine tasks, task.id == session.id (project convention) so
+  // the flag can be persisted via PUT /api/llm/session/<id>.
+  // For non-routine tasks the field is shown as a UI affordance
+  // but won't affect runtime behavior. Optional + string ('0'/'1')
+  // to match the session API shape and to keep legacy task
+  // literals type-checking (see nalar-frontend-task-literal-typing-rule).
+  is_auto_retry_until_stop?: string
 }
 
 // localStorage keys for state persistence

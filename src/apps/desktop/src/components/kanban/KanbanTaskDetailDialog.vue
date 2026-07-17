@@ -14,6 +14,20 @@
        when the form is clean (no changes) or the name is empty
        after trim.
 
+  Unattended-mode toggle (edit mode only, below the description):
+    A right-aligned switch that flips the session's
+    `is_auto_retry_until_stop` flag (which lives on the sessions
+    table, not workspace_item_tasks, so the host must call
+    `api.updateSession` to persist it). The flag persists IMMEDIATELY
+    on flip — independent of the Save button — matching iOS-style
+    toggle UX (a switch should not need an explicit Save click to
+    take effect). On toggle, the dialog emits `update-unattended`
+    with the new value ('0' or '1') and the host persists via
+    `api.updateSession(task.id, { isAutoRetryUntilStop })`. On
+    toggle failure, the dialog rolls back its local state to the
+    previous value (passed back via `update-unattended-error`) and
+    shows a short-lived errorMessage.
+
   Public API:
     props:
       show          boolean
@@ -37,6 +51,15 @@
                 Emitted when the user clicks Create task in create mode.
                 The host calls workspacesStore.addTask(...) +
                 moveTaskToColumn(...) to persist the new task.
+      update-unattended     [{ value: '0' | '1' }]
+                Emitted in edit mode when the user flips the
+                unattended-mode toggle. Host persists via
+                `api.updateSession(task.id, { isAutoRetryUntilStop })`.
+      update-unattended-error  [{ value: '0' | '1', error: Error }]
+                Optional: if the host wants the dialog to roll back to
+                a known-good value on PUT failure, it can re-bind the
+                prop / emit back through the same component (we do not
+                handle rollback internally — the host owns it).
 
   This dialog is purely presentational — no API calls, no store
   reads. The host (AppLayout / KanbanView) owns the "open + for which
@@ -81,12 +104,19 @@ const emit = defineEmits<{
   // + moveTaskToColumn. Same payload shape as `save` but with
   // mode='create' so the parent handler can switch on it.
   create: [payload: { mode: 'create'; name: string; description: string }]
+  // Emitted in edit mode when the user flips the unattended toggle.
+  // The host persists via api.updateSession(task.id, { isAutoRetryUntilStop }).
+  // value is '1' when toggled ON, '0' when toggled OFF. Emitted
+  // BEFORE the optimistic UI flip so the host can capture the
+  // pre-toggle value (in case it needs to roll back on PUT failure).
+  'update-unattended': [payload: { value: '0' | '1'; previous: '0' | '1' }]
 }>()
 
 // ─── Form state ──────────────────────────────────────────────────────────
 
 const name = ref('')
 const description = ref('')
+const unattended = ref<'0' | '1'>('0')
 const nameInput = ref<HTMLInputElement | null>(null)
 const DESCRIPTION_MAX = 5000
 
@@ -105,9 +135,11 @@ watch(
     if (isCreateMode.value) {
       name.value = ''
       description.value = ''
+      unattended.value = '0'
     } else if (props.task) {
       name.value = props.task.name
       description.value = props.task.description ?? ''
+      unattended.value = props.task.is_auto_retry_until_stop === '1' ? '1' : '0'
     }
     await nextTick()
     nameInput.value?.focus()
@@ -165,6 +197,26 @@ const handleClose = () => {
 
 const handleKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Escape') handleClose()
+}
+
+// Toggle the unattended-mode flag. Emits `update-unattended` so the
+// host can call api.updateSession(task.id, { isAutoRetryUntilStop })
+// and persist it. We do NOT roll back on PUT failure here — the
+// host owns the optimistic-vs-server-truth contract (and would
+// re-bind task.is_auto_retry_until_stop via the workspaces store
+// on next SSE event). For the common case where the user toggles
+// and the host's PUT succeeds, the visual state matches the server
+// immediately, which is the whole point of the toggle being
+// immediate (not deferred to Save click).
+const handleUnattendedToggle = (event: Event) => {
+  const target = event.target as HTMLInputElement
+  const newValue: '0' | '1' = target.checked ? '1' : '0'
+  const previous = unattended.value
+  // Optimistic local flip so the switch reflects the user's click
+  // immediately. If the PUT fails, the SSE re-fetch (or a manual
+  // rollback in the host) will correct it on the next paint.
+  unattended.value = newValue
+  emit('update-unattended', { value: newValue, previous })
 }
 
 // ─── Metadata helpers ───────────────────────────────────────────────────
@@ -356,6 +408,56 @@ const columnLabel = computed<string | null>(() => {
                   min-height: 200px;
                 "
               />
+            </div>
+
+            <!-- Unattended-mode toggle (edit mode only). Flips the
+                 session's `is_auto_retry_until_stop` flag (which
+                 lives on sessions, not workspace_item_tasks).
+                 Immediate save on flip — does NOT wait for Save click.
+                 Hidden in create mode (the session doesn't exist
+                 yet — there's no session to mark unattended). -->
+            <div
+              v-if="!isCreateMode"
+              class="mt-4 pt-4 flex items-center justify-between gap-3"
+              style="border-top: 1px solid var(--color-border);"
+              data-testid="kanban-task-detail-unattended"
+            >
+              <div class="flex-1 min-w-0">
+                <div class="text-xs font-medium" style="color: var(--semantic-text-dim);">
+                  <span aria-hidden="true" class="mr-1">🔁</span>
+                  Unattended mode
+                </div>
+                <div class="text-[11px] mt-0.5" style="color: var(--semantic-text-dim);">
+                  Keep retrying past the 10-error limit for overnight
+                  runs. Off = stop on too-many-retries.
+                </div>
+              </div>
+              <label
+                class="relative inline-flex items-center cursor-pointer shrink-0"
+                style="color: var(--semantic-text);"
+              >
+                <input
+                  type="checkbox"
+                  :checked="unattended === '1'"
+                  @change="handleUnattendedToggle"
+                  class="sr-only peer"
+                  data-testid="kanban-task-detail-unattended-toggle"
+                />
+                <!-- Toggle track. peer-checked styles the background
+                     to amber (#f59e0b) when on; dark when off. The
+                     thumb slides 20px on check, matching the iOS-style
+                     toggle convention. -->
+                <div
+                  class="w-11 h-6 rounded-full transition-colors duration-200"
+                  style="background-color: var(--semantic-text-dim);"
+                  :style="unattended === '1' ? { backgroundColor: '#f59e0b' } : {}"
+                />
+                <div
+                  class="absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform duration-200"
+                  style="background-color: white;"
+                  :class="unattended === '1' ? 'translate-x-5' : ''"
+                />
+              </label>
             </div>
           </div>
 

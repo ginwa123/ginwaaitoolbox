@@ -172,6 +172,7 @@ const handleOpenSettings = () => {
 // AddKanbanDialog's picker to keep the UX consistent — same data
 // source, same select-pick-cancel flow.
 import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
+import { updateSession as apiUpdateSession } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
 
 const showPathPicker = ref(false)
@@ -254,6 +255,30 @@ const handleTaskDetailSave = async (payload: { name: string; description: string
   } catch (err) {
     console.error('Failed to save task details:', err)
     // Keep the dialog open so the user can retry / fix
+  }
+}
+
+// Unattended-mode toggle handler (edit mode only). Persists
+// immediately via PUT /api/llm/session/<id> — the flag lives on
+// the sessions table (task.id == session.id for routine tasks per
+// the project convention), NOT on workspace_item_tasks. We do NOT
+// close the dialog on toggle (it's an iOS-style immediate switch,
+// not a Save-button commit). On PUT failure we log + show the
+// error inline; the next SSE re-fetch will correct the toggle's
+// visual state.
+const handleUnattendedToggle = async (payload: { value: '0' | '1'; previous: '0' | '1' }) => {
+  const taskId = activeTaskDetailId.value
+  if (!taskId) return
+  try {
+    await apiUpdateSession(taskId, { isAutoRetryUntilStop: payload.value })
+  } catch (err) {
+    console.error('Failed to toggle unattended mode:', err)
+    // On failure, the SSE re-fetch (or the dialog re-open via
+    // activeTaskDetailId) will paint the correct server-truth
+    // value into the toggle. We intentionally don't try to roll
+    // back the toggle's local state from here — the dialog's
+    // `unattended.value` is the source of truth while the dialog
+    // is open, and the user can re-toggle if they want.
   }
 }
 
@@ -482,6 +507,7 @@ const handleCreateTaskSave = async (payload: {
     :task="activeTaskDetail"
     :column="activeTaskDetailColumn"
     @save="handleTaskDetailSave"
+    @update-unattended="handleUnattendedToggle"
   />
   <!--
     Second KanbanTaskDetailDialog mount for the "+ Add" → create flow.

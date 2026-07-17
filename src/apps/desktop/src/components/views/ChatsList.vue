@@ -267,24 +267,16 @@ const removeChat = async (chatId: string) => {
   }
 }
 
-// Migration 063 — toggle the unattended-mode flag via PUT /api/session/:id.
-// Optimistically updates navItems so the badge changes color immediately;
-// reverts on PUT failure so the user sees the error in the badge state.
-const toggleAutoRetry = async (chatId: string, enable: boolean) => {
-  const item = navItems.value.find((i) => i.id === chatId)
-  const previous = item?.is_auto_retry_until_stop
-  if (item) {
-    item.is_auto_retry_until_stop = enable ? '1' : '0'
-  }
-  try {
-    await api.updateSession(chatId, { isAutoRetryUntilStop: enable ? '1' : '0' })
-  } catch (err) {
-    console.error('Failed to toggle unattended mode:', err)
-    if (item && previous !== undefined) {
-      item.is_auto_retry_until_stop = previous
-    }
-  }
-}
+// Migration 063 — the unattended-mode toggle USED to live as a
+// clickable badge in this list. After moving it into the Task
+// details dialog (KanbanTaskDetailDialog.vue), the toggle handler
+// (`toggleAutoRetry`) was deleted and the badge spans were removed
+// from the template — the toggle is now flipped via the dialog's
+// `@update-unattended` emit, which the host wires to
+// `api.updateSession`. The `is_auto_retry_until_stop` field on
+// each navItem is still rendered server-truth via SSE re-fetch, so
+// any other UI that wants to show unattended state (e.g. a status
+// icon) can read it from `item.is_auto_retry_until_stop === '1'`.
 
 // ─── Session Events via sseBus ─────────────────────────────────────────────────
 //
@@ -472,24 +464,6 @@ defineExpose({
                 :title="item.git_worktree_cwd"
                 data-testid="worktree-badge"
                 >🌳 worktree</span
-              >
-              <span
-                v-if="item.is_auto_retry_until_stop === '1'"
-                @click.stop="toggleAutoRetry(item.id, false)"
-                class="ml-1 text-[10px] font-mono cursor-pointer hover:underline"
-                :style="{ color: '#f59e0b' }"
-                title="Unattended mode ON — click to disable"
-                data-testid="auto-retry-badge"
-                >🔁 unattended</span
-              >
-              <span
-                v-else
-                @click.stop="toggleAutoRetry(item.id, true)"
-                class="ml-1 text-[10px] font-mono cursor-pointer hover:underline"
-                :style="{ color: '#9ca3af' }"
-                title="Click to enable unattended mode (overnight runs)"
-                data-testid="auto-retry-off-badge"
-                >🔁 unattended (off)</span
               >
             </span>
             <span class="text-xs opacity-60 shrink-0 ml-2">{{ item.relativeTime || 'now' }}</span>
