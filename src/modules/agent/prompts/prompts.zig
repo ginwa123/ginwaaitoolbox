@@ -35,6 +35,7 @@ pub const MemoryPrompt = memory.MemoryPrompt;
 pub const GitPrompt = memory.GitPrompt;
 pub const NalarMdAutoUpdate = memory.NalarMdAutoUpdate;
 pub const GlobalMemorySystem = memory.GlobalMemorySystem;
+pub const LocalMemorySystem = memory.LocalMemorySystem;
 
 pub const CompactionAgent = special.CompactionAgent;
 pub const GenerateSessionNameAgent = special.GenerateSessionNameAgent;
