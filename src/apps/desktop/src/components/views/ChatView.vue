@@ -12,8 +12,8 @@ import {
   TOP_THRESHOLD,
   type ScrollLogger,
 } from '@/helpers'
-import FileInput from '../FileInput.vue'
-import FolderExplorer from '../FolderExplorer.vue'
+import FileInput from '../file/FileInput.vue'
+import FolderExplorer from '../file/FolderExplorer.vue'
 import { useSseBus } from '../../helpers/sseBus'
 import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
 import DiffView from '../tool_outputs/_shared/DiffView.vue'

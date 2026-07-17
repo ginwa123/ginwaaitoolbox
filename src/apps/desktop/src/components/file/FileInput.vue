@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue'
-import * as api from '../api'
+import * as api from '../../api'
 import FilePreview from './FilePreview.vue'
 
 export interface QueuedMessage {

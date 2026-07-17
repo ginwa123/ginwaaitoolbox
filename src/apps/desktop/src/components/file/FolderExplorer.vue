@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { listFolder, type FolderEntry } from '../api'
+import { listFolder, type FolderEntry } from '../../api'
 
 const props = defineProps<{
   cwd?: string

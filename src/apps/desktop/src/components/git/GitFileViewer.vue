@@ -2,7 +2,7 @@
 import { ref, onMounted, watch, nextTick } from 'vue'
 import * as api from '../../api'
 import type { GitFileDiff } from '../../api'
-import FileInput from '../FileInput.vue'
+import FileInput from '../file/FileInput.vue'
 
 interface Props {
   cwd: string
