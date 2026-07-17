@@ -39,6 +39,113 @@ pub const CommandForbidden = error{
 /// forgetting to set a timeout lets runaway commands hang the agent.
 pub const MandatoryTimeoutMissing = error{MandatoryTimeoutMissing};
 
+/// Result of the bounded `waitpid` polling helper.
+const WaitResult = struct {
+    /// Outcome category.
+    outcome: enum {
+        /// Process was reaped within the grace period. The `status` field
+        /// contains the raw waitpid status word.
+        reaped,
+        /// The grace period expired before the process became a zombie.
+        /// The kernel could not reap the process — most commonly because
+        /// a descendant is stuck in D state (uninterruptible sleep on
+        /// Linux, e.g. broken NFS, hung FUSE, stuck disk I/O) and SIGKILL
+        /// cannot interrupt it. The parent-side pipe FDs MUST be closed
+        /// manually before returning so the reader threads can exit.
+        grace_period_expired,
+        /// `waitpid` returned ECHILD — no such process. Either the PID
+        /// never existed or was already reaped by a different waiter
+        /// (e.g. SIGCHLD handler). Treat as "successfully reaped".
+        no_child,
+        /// `waitpid` returned an unexpected error. Caller should log and
+        /// proceed as if the grace period expired.
+        unexpected_error,
+    },
+    /// Raw waitpid status word (only valid when `outcome == .reaped`).
+    status: c_int = 0,
+};
+
+/// Wall-clock grace period after SIGKILL during which we wait for the
+/// kernel to reap the bash process group. 2 seconds is enough for
+/// normal process groups to die and be reaped; D-state descendants
+/// (uninterruptible sleep) cannot be killed by SIGKILL and will block
+/// forever — the grace period caps the wait so we can return anyway.
+///
+/// Tuning notes (2026-07-15):
+/// - 1 s is too short for slow CI machines where the kernel scheduler
+///   may take 500–800 ms to deliver SIGKILL to a busy descendant.
+/// - 5 s starts to feel slow to a user-facing agent on a stuck command.
+/// - 2 s is the sweet spot.
+const KILL_GRACE_PERIOD_NS: u64 = 2 * std.time.ns_per_s;
+
+/// Poll `waitpid(pid, &status, WNOHANG)` until the process is reaped OR
+/// the grace period expires. Uses raw libc (`waitpid` + `nanosleep`)
+/// instead of the Io runtime to avoid the deadlock that
+/// `std.Io.Threaded.childWait` causes when this function is called from
+/// an `Io.Group` worker context (the workflow task blocks the group).
+///
+/// Does NOT close pipe FDs — the caller is responsible for that AFTER
+/// this function returns, so the reader threads can exit cleanly.
+///
+/// Cross-platform: works on Linux and macOS. Both expose `std.c.W.NOHANG`
+/// (verified at `std/c.zig:3714` for macOS and `std/os/linux.zig:3873`
+/// for Linux). On Windows this path is unreachable because the existing
+/// code uses `std.posix.kill` which doesn't exist on Windows.
+///
+/// The `io: std.Io` parameter is used ONLY for `Timestamp.now` (a
+/// non-blocking vtable call that reads a kernel clock). The actual
+/// waiting is done by `waitpid` + `nanosleep` (raw libc) so this
+/// function never blocks on the Io runtime's thread pool.
+fn waitPidBounded(io: std.Io, pid: std.posix.pid_t, grace_period_ns: u64) WaitResult {
+    const start_ns: u64 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
+    const deadline_ns: u64 = start_ns + grace_period_ns;
+    while (true) {
+        var status: c_int = 0;
+        // WNOHANG = 1: don't block; return 0 if not exited yet.
+        const rc = std.c.waitpid(pid, &status, std.c.W.NOHANG);
+        if (rc == pid) {
+            // Reaped successfully — process became a zombie and we
+            // collected its status. Return both the outcome and the
+            // status word so the caller can build a Term struct.
+            return .{ .outcome = .reaped, .status = status };
+        }
+        if (rc < 0) {
+            // ECHILD = no such process (already reaped by another waiter
+            // or never existed). Other errors we treat as "give up" —
+            // log + close pipes manually.
+            const err = std.c.errno(rc);
+            if (err == .CHILD) return .{ .outcome = .no_child, .status = 0 };
+            std.log.warn(
+                "bash.zig: waitpid(pid={d}) returned unexpected errno {t}; abandoning wait",
+                .{ pid, err },
+            );
+            return .{ .outcome = .unexpected_error, .status = 0 };
+        }
+        // rc == 0 → child not yet exited. Check the deadline.
+        const now_ns: u64 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
+        if (now_ns >= deadline_ns) {
+            return .{ .outcome = .grace_period_expired, .status = 0 };
+        }
+        // Sleep 10 ms via raw libc nanosleep (NOT std.Io.sleep — would
+        // deadlock if called from an Io.Group worker context).
+        const ts = NanoSleepTimespec{
+            .sec = 0,
+            .nsec = 10 * std.time.ns_per_ms,
+        };
+        _ = nanosleep(&ts, null);
+    }
+}
+
+/// Convert a raw `waitpid` status word to a Zig `std.process.Child.Term`.
+/// Mirrors `childWaitPosix` in `std/Io/Threaded.zig:15309`.
+fn statusToTerm(status: c_int) std.process.Child.Term {
+    const u: u32 = @bitCast(@as(u32, @intCast(status)));
+    if (std.c.W.IFEXITED(u)) return .{ .exited = std.c.W.EXITSTATUS(u) };
+    if (std.c.W.IFSIGNALED(u)) return .{ .signal = @enumFromInt(@intFromEnum(std.c.W.TERMSIG(u))) };
+    if (std.c.W.IFSTOPPED(u)) return .{ .stopped = std.c.W.STOPSIG(u) };
+    return .{ .unknown = u };
+}
+
 /// Detects forbidden command patterns that produce unbounded output
 fn isForbiddenCommand(command: []const u8) bool {
     const trimmed = std.mem.trim(u8, command, " \t\n\r");
@@ -290,9 +397,20 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     // reaped the PID, it just `closeFd()`s whatever handles are set.
     errdefer {
         _ = std.posix.kill(-child_pgid, .KILL) catch {};
-        // child.wait returns !Term; discard the result. We only care
-        // about the side effect (childCleanupPosix closing pipes).
-        _ = child.wait(io) catch {};
+        // Bounded wait — don't block forever if a descendant is in D-state.
+        // We don't have reader threads here (they haven't been spawned
+        // yet), so we don't need to close pipes — they were never opened
+        // for reading by us. The kill above will close the kernel-side
+        // ends of the pipes once bash exits.
+        _ = waitPidBounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+        // If the grace period expired, manually close our end of the
+        // pipes so the OS can reap the process when its reference count
+        // drops to zero. We use the std.Io.File.close directly because
+        // child.wait() may be hung (D-state) and we want to guarantee
+        // the FDs are released.
+        if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
+        if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
+        if (child.stdin) |stdin_pipe| stdin_pipe.close(io);
     }
 
     if (input.stdin_data) |data| {
@@ -424,11 +542,29 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     // the threads, or the joins block indefinitely on the still-open
     // pipes and the kill never runs. The errdefer at line 220 handles
     // the pre-spawn case where these threads don't exist yet.
+    //
+    // The errdefer also manually closes the pipe FDs after the bounded
+    // kill + waitPidBounded cycle. If a descendant is in D-state,
+    // SIGKILL doesn't reach it, the kernel won't reap, and waitpid will
+    // return WNOHANG (rc=0) until our grace period expires. After the
+    // grace period we close the FDs anyway; the reader threads see EOF
+    // (closed pipe = read returns 0) and exit cleanly.
     errdefer {
         // Kill the entire process group so descendants close their pipe
         // FDs; without this the joins below hang on EOF that's never
         // delivered. See the long comment at the spawn site.
         _ = std.posix.kill(-child_pgid, .KILL) catch {};
+        // Bounded wait — don't block forever if a descendant is in D-state.
+        _ = waitPidBounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+        // Manually close the parent-side pipe FDs. `child.wait(io)` is
+        // unavailable here because the child struct was never given a
+        // chance to clean up via `childCleanupPosix` (that requires
+        // `waitpid` to return success, which won't happen for D-state
+        // descendants). std.Io.File has no destructor, so we MUST close
+        // the FDs explicitly or they leak until process exit.
+        if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
+        if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
+        // Now join the reader threads (they see EOF and exit).
         stdout_thread.join();
         stderr_thread.join();
     }
@@ -463,7 +599,24 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
             // has either exited or is about to be reaped; either way
             // child.wait() will return quickly.
             if (stdout_eof.load(.acquire) and stderr_eof.load(.acquire)) {
-                break :blk child.wait(io) catch .{ .unknown = 1 };
+                // Use the bounded wait so D-state descendants don't
+                // hang us forever. After the grace period expires we
+                // close the pipes manually and synthesize a Term.
+                const wait_result = waitPidBounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+                switch (wait_result.outcome) {
+                    .reaped => break :blk statusToTerm(wait_result.status),
+                    .no_child => break :blk .{ .exited = 0 },
+                    .grace_period_expired, .unexpected_error => {
+                        // D-state descendant — give up gracefully.
+                        // Manually close pipes so reader threads exit.
+                        if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
+                        if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
+                        break :blk if (builtin.os.tag == .windows)
+                            .{ .unknown = 1 }
+                        else
+                            .{ .signal = .KILL };
+                    },
+                }
             }
             // Deadline reached?
             if (std.Io.Timestamp.now(io, .real).nanoseconds >= deadline_ns) {
@@ -473,24 +626,22 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
                 // subshell bash spawned keeps the pipe FDs open and
                 // the reader thread join below hangs forever.
                 _ = std.posix.kill(-child_pgid, .KILL) catch {};
-                // Reap the zombie and close pipe FDs. `std.posix.kill`
-                // is a libc call that doesn't touch the Zig `Child`
-                // struct — `child.id` is still the bash PID. Calling
-                // `child.wait(io)` here runs `childWaitPosix`, which
-                // returns immediately (the child is already a zombie)
-                // with status `.signal = .KILL` and — critically —
-                // triggers `childCleanupPosix` via defer, closing the
-                // parent-side stdin/stdout/stderr pipe FDs.
-                //
-                // Without this call, the pipe FDs leak until process
-                // exit: `File` has no destructor, so dropping the
-                // `child` local at scope exit doesn't close the
-                // handles. This is the same fix applied to the
-                // errdefer paths above.
-                break :blk child.wait(io) catch if (builtin.os.tag == .windows)
-                    .{ .unknown = 1 }
-                else
-                    .{ .signal = .KILL };
+                // Bounded wait — don't block forever on a D-state
+                // descendant that SIGKILL can't interrupt.
+                const wait_result = waitPidBounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+                switch (wait_result.outcome) {
+                    .reaped => break :blk statusToTerm(wait_result.status),
+                    .no_child => break :blk .{ .exited = 0 },
+                    .grace_period_expired, .unexpected_error => {
+                        // Force-close pipes and synthesize a signal-killed term.
+                        if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
+                        if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
+                        break :blk if (builtin.os.tag == .windows)
+                            .{ .unknown = 1 }
+                        else
+                            .{ .signal = .KILL };
+                    },
+                }
             }
             // Sleep 10 ms — blocking the OS thread via raw libc
             // `nanosleep`, NOT through the Io runtime. This is exactly
@@ -505,10 +656,26 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         }
     };
 
+    // Join the reader threads. If the kill + bounded-wait closed the
+    // pipes (grace period expired), the reader threads saw EOF and
+    // exited. If the child exited cleanly, the reader threads already
+    // saw EOF and exited. Either way, join returns quickly.
     stdout_thread.join();
     stderr_thread.join();
     if (child_term == null) {
-        child_term = child.wait(io) catch .{ .unknown = 1 };
+        // Defensive: child_term should never be null after the loop above,
+        // but if it is (e.g. a future refactor changed the loop logic),
+        // try one more bounded wait. This prevents an unbounded
+        // `child.wait(io)` from hanging the agent.
+        const wait_result = waitPidBounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+        child_term = switch (wait_result.outcome) {
+            .reaped => statusToTerm(wait_result.status),
+            .no_child => .{ .exited = 0 },
+            .grace_period_expired, .unexpected_error => if (builtin.os.tag == .windows)
+                .{ .unknown = 1 }
+            else
+                .{ .signal = .KILL },
+        };
     }
 
     const exit_code: i32 = switch (child_term.?) {
