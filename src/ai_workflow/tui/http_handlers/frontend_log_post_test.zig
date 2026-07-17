@@ -177,8 +177,9 @@ test "frontend_log_post handler returns 204 on success" {
         std.debug.print(
             "\n!! {s} does not return 204 on success !!\n" ++
                 "   The design doc says POST /api/logs returns 204 No Content\n" ++
-                "   with an empty body. Use `res.rawResponse` for that — see\n" ++
-                "   `cors.zig:8` for the precedent.\n",
+                "   with an empty body. Use `gserverz.HttpResponse.init(204, \"No Content\", allocator).withBody(\"\")`\n" ++
+                "   — `res.rawResponse` does NOT exist on HttpResponse (only\n" ++
+                "   `jsonResponse`, `withBody`, `withJson`, `deinit`, `toBytes`).\n",
             .{HANDLER_PATH},
         );
         return error.NoContentStatusMissing;
