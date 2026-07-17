@@ -21,7 +21,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { createApp, type App as VueApp, nextTick, ref } from 'vue'
 
 import * as api from '../api'
-import ChatsList from '../components/ChatsList.vue'
+import ChatsList from '../components/views/ChatsList.vue'
 import { mount } from '@vue/test-utils'
 import { makeLocalStorageStub } from './helpers'
 import {

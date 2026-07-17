@@ -9,7 +9,7 @@
 import { mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import CompactionCard from '../components/CompactionCard.vue'
+import CompactionCard from '../components/preview/CompactionCard.vue'
 
 const FULL_ENVELOPE = `<compact_messages>
   <metadata>

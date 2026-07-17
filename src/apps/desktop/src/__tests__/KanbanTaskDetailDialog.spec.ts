@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 
-import KanbanTaskDetailDialog from '@/components/KanbanTaskDetailDialog.vue'
+import KanbanTaskDetailDialog from '@/components/kanban/KanbanTaskDetailDialog.vue'
 import type { Task, KanbanColumn } from '@/stores/workspaces'
 
 const TASK: Task = {

@@ -27,7 +27,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { ref, type Ref } from 'vue'
 
-import KanbanView from '../components/KanbanView.vue'
+import KanbanView from '../components/kanban/KanbanView.vue'
 import type { WorkspaceItem, KanbanColumn } from '../stores/workspaces'
 
 const ITEM_ID = 'item_1'

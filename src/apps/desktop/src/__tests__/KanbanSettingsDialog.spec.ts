@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 
-import KanbanSettingsDialog from '@/components/KanbanSettingsDialog.vue'
+import KanbanSettingsDialog from '@/components/kanban/KanbanSettingsDialog.vue'
 import type { WorkspaceItem } from '@/stores/workspaces'
 
 const baseItem: WorkspaceItem = {

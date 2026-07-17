@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 
-import WorkspaceItemMemoriesView from '../components/WorkspaceItemMemoriesView.vue'
+import WorkspaceItemMemoriesView from '../components/views/WorkspaceItemMemoriesView.vue'
 
 // Mock the api module so no network calls happen.
 // Spread `...actual` so non-mocked functions (e.g. types) remain real.

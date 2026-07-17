@@ -11,7 +11,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
-import KanbanColumnEditor from '../components/KanbanColumnEditor.vue'
+import KanbanColumnEditor from '../components/kanban/KanbanColumnEditor.vue'
 
 type Mode = 'add' | 'rename' | 'delete'
 

@@ -22,7 +22,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick, ref, type Ref } from 'vue'
 
-import WorkspaceItem from '../components/WorkspaceItem.vue'
+import WorkspaceItem from '../components/workspace/WorkspaceItem.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import type { WorkspaceItem as WorkspaceItemType, KanbanColumn, Task } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'

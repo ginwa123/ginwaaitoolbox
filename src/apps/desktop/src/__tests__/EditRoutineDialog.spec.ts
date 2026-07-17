@@ -19,7 +19,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
-import EditRoutineDialog from '../components/EditRoutineDialog.vue'
+import EditRoutineDialog from '../components/dialogs/EditRoutineDialog.vue'
 import type { RoutineMeta } from '../stores/workspaces'
 
 const baseRoutine: RoutineMeta = {

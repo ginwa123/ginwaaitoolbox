@@ -15,7 +15,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
-import AddKanbanDialog from '../components/AddKanbanDialog.vue'
+import AddKanbanDialog from '../components/dialogs/AddKanbanDialog.vue'
 
 // Stub the FilePickerDialog — we only care that the parent wires up the
 // picker's events. Real picker behavior is tested in FilePickerDialog.spec.ts.
