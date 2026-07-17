@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, nextTick } from 'vue'
-import * as api from '../api'
-import type { GitFileDiff } from '../api'
-import FileInput from './FileInput.vue'
+import * as api from '../../api'
+import type { GitFileDiff } from '../../api'
+import FileInput from '../FileInput.vue'
 
 interface Props {
   cwd: string

@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick, provide } from 
 import { useRouter, useRoute } from 'vue-router'
 import Sidebar from './shell/Sidebar.vue'
 // DISABLED: import RightSidebar from './shell/RightSidebar.vue'   // 2026-06-29 — task disable-rightsidebar-vue
-import GitFileViewer from './GitFileViewer.vue'
+import GitFileViewer from './git/GitFileViewer.vue'
 import SkillDetail from './shell/SkillDetail.vue'
 import ChatView from './views/ChatView.vue'
 import Chats from './views/Chats.vue'
