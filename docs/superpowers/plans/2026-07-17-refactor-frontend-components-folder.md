@@ -925,17 +925,28 @@ If Steps 1-3 surfaced anything, fix it and commit. If everything is green, this 
 - ❌ Reorganizing `__tests__/`, `composables/__tests__/`, `helpers/__tests__/`, `components/tool_outputs/__tests__/`
 - ❌ Editing any non-import line of any `.vue` file
 
-## Pitfalls
+## Pitfalls (lessons from Chunk 1, `3efe641c`)
 
-- **`git mv` is required, not `mv`** — preserves rename detection in `git log --follow` and gives a cleaner diff.
-- **Quote styles in imports** — the sed patterns assume single quotes (the codebase convention). If `rg` shows mixed quote styles, expand the sed to handle both: `s|from ['\"]\\./X\\.vue['\"]|from 'NEW_PATH'|g` with a second pass for the double-quote variant.
-- **`disable-rightsidebar-vue` commented imports** — `AppLayout.vue` has commented-out lines that reference `RightSidebar.vue`. They live inside `// DISABLED: import RightSidebar from './RightSidebar.vue'` lines. The sed rewrite WILL touch these (and correctly update them to `'./shell/RightSidebar.vue'`) — that's the intended behavior.
-- **`__tests__/` files reference components via** `'../../components/X.vue'` paths. After the move they become `'../../components/<bucket>/X.vue'`. The bucket-specific sed commands only target `src/apps/desktop/src/components/` — you may need to manually rewrite `__tests__/` paths. Add to each bucket's Step 3 if `rg` finds any:
-  ```bash
-  rg -l "from ['\"]\\.\\./\\.\\./components/X\\.vue['\"]" src/apps/desktop/src/__tests__/
-  ```
-  Rewrite these to `'../../components/<bucket>/X.vue'`.
-- **TypeScript files (`composables/*.ts`, `stores/*.ts`)** may also import `.vue` files (e.g. `defineComponent` returns). These are reachable via `rg "from ['\"]\\./X\\.vue['\"]"` in those dirs; rewrite to `'../components/<bucket>/X.vue'`.
+These pitfalls are confirmed by the Chunk 1 implementer. Every chunk will hit at least #1 and #3.
+
+1. **`git mv` is required, not `mv`** — preserves rename detection in `git log --follow` and gives a cleaner diff.
+2. **Each bucket's importers are NOT just `AppLayout.vue`** — Chunk 1 found 5 importers (one extra in `components/SkillsSettings.vue`, the commented-out `RightSidebar` in AppLayout, the sibling in `shell/RightSidebar.vue`, plus 3 test files). **Always run the discovery step broadly** — every chunk will have more importers than the plan anticipated. The implementer for Chunk 1 also rewrote the `// DISABLED: import RightSidebar` commented-out line in AppLayout.vue (per the plan's instruction); preserve any DISABLED/commented imports and update them.
+3. **Internal relative paths inside the moved files break** — Chunk 1 found 5 distinct broken paths. `'../api'`, `'../stores/*'`, `'../helpers/*'`, `'./<SiblingAtComponentsRoot>.vue'` all need updating because the moved file is now 1 level deeper. The fix:
+   - `'../api'` → `'../../api'`
+   - `'../stores/X'` → `'../../stores/X'`
+   - `'../helpers/X'` → `'../../helpers/X'`
+   - `'./X.vue'` (where X is still at `components/` root) → `'../X.vue'`
+   - `'./X.vue'` (where X is in the SAME new subdir) → unchanged
+   - `'./X.vue'` (where X is in a DIFFERENT new subdir) → `'../<other-bucket>/X.vue'`
+   The `bun run build` step is the safety net — it will fail with `[UNRESOLVED_IMPORT]` for any missed path. Iterate sed → build until clean.
+4. **Test files have non-`import` path strings too** — Chunk 1 found 3 test files with stale paths: a regex literal (`./AddDesignDialog.vue` in a `toMatch` regex), a `fs.readFileSync` arg, and a `path.resolve` arg. After the move these all need rewriting. Search broadly:
+   ```bash
+   rg -l "${MOVED_BASENAME}" src/apps/desktop/src/__tests__/ src/apps/desktop/src/composables/ src/apps/desktop/src/stores/ src/apps/desktop/src/helpers/
+   ```
+   Any match is a candidate — examine and rewrite. These are NOT test-logic changes, just path-string updates.
+5. **Quote styles in imports** — the sed patterns assume single quotes (the codebase convention). If `rg` shows mixed quote styles, expand the sed to handle both.
+6. **TypeScript files (`composables/*.ts`, `stores/*.ts`)** may also import `.vue` files (e.g. `defineComponent` returns). Search `rg "from ['\"]\\./X\\.vue['\"]"` in those dirs; rewrite to `'../components/<bucket>/X.vue'`.
+7. **Stale comments referencing old paths** — Chunk 1 caught one in `PreviewSidePanel.vue:11` (a `// (src/apps/desktop/src/components/RightSidebar.vue:20-64)` reference). Optional cleanup: search for the old path string anywhere in the source and decide case-by-case.
 
 ---
 
