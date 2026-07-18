@@ -390,6 +390,11 @@ onUnmounted(() => {
 // ─── Handlers ──────────────────────────────────────────────────────────
 
 const handleCanvasClick = (event: MouseEvent): void => {
+  // If we just finished a pan-drag (Space + drag), swallow the
+  // click so it doesn't deselect the active element. The browser
+  // dispatches a synthetic click after pointerup; without this
+  // guard, every pan ends with selection-clear.
+  if (isPanning.value) return
   // Only clear selection when clicking the canvas itself (not an
   // element child). The DesignElement child events fire before this
   // and they stopPropagation on their pointerdown — so this handler
@@ -398,6 +403,61 @@ const handleCanvasClick = (event: MouseEvent): void => {
     return
   }
   selectedElementId.value = null
+}
+
+// True while the user is mid-drag with Space held. Gates the
+// canvas-click deselection guard above.
+const isPanning = ref(false)
+
+// Pointer-drag pan. Fires on the canvas scroll container; only
+// does anything when Space is held. Mutates scrollLeft / scrollTop
+// directly (NOT a CSS transform — the inner div already has
+// `transform: scale()` and combining the two would compound).
+// setPointerCapture ensures move events keep firing even if the
+// pointer leaves the container mid-drag.
+const startCanvasPan = (event: PointerEvent): void => {
+  if (!isSpacePressed.value) return
+  // Primary button only — middle / right clicks do different things
+  // (autoscroll, context menu) on some browsers.
+  if (event.button !== 0) return
+  const target = event.currentTarget as HTMLElement | null
+  if (!target) return
+  target.setPointerCapture(event.pointerId)
+  isPanning.value = true
+  document.body.style.cursor = 'grabbing'
+
+  // Snapshot the scroll position + pointer position at drag start.
+  // The move handler subtracts the cursor delta from the original
+  // scroll position so the canvas appears to follow the cursor.
+  const startScrollLeft = target.scrollLeft
+  const startScrollTop = target.scrollTop
+  const startClientX = event.clientX
+  const startClientY = event.clientY
+
+  const onMove = (e: PointerEvent): void => {
+    // cursor delta in screen-px = scroll delta in scroll-px
+    // (no zoom division needed — scrollLeft / scrollTop are in
+    // unscaled coords; the inner div's scale() does not affect them).
+    const dx = e.clientX - startClientX
+    const dy = e.clientY - startClientY
+    target.scrollLeft = startScrollLeft - dx
+    target.scrollTop = startScrollTop - dy
+  }
+  const onUp = (e: PointerEvent): void => {
+    if (target.hasPointerCapture(e.pointerId)) {
+      target.releasePointerCapture(e.pointerId)
+    }
+    isPanning.value = false
+    // Restore grab cursor only if Space is still held; otherwise
+    // clear back to the default cursor.
+    document.body.style.cursor = isSpacePressed.value ? 'grab' : ''
+    target.removeEventListener('pointermove', onMove)
+    target.removeEventListener('pointerup', onUp)
+    target.removeEventListener('pointercancel', onUp)
+  }
+  target.addEventListener('pointermove', onMove)
+  target.addEventListener('pointerup', onUp)
+  target.addEventListener('pointercancel', onUp)
 }
 
 // NEW: chat-toggle click handler (top-right 💬 button in the
@@ -896,6 +956,7 @@ onUnmounted(() => {
           data-testid="design-canvas-scroll-container"
           @click="handleCanvasClick"
           @wheel="handleCanvasWheel"
+          @pointerdown="startCanvasPan"
         >
           <div
             class="relative mx-auto my-6 origin-top-left"
