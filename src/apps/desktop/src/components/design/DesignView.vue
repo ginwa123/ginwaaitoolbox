@@ -397,6 +397,93 @@ const handlePropertiesHtmlChanged = (html: string): void => {
 const canvasWidth = computed(() => activePage.value?.width ?? 1440)
 const canvasHeight = computed(() => activePage.value?.height ?? 1024)
 
+// ─── Zoom (transform: scale on the canvas wrapper) ────────────────────
+//
+// Pure-view state; doesn't change page dimensions or element
+// positions. Persists per design item in localStorage so a user
+// who zooms to 75% on one design item doesn't affect another item.
+// Range 0.1× to 4.0× covers everything from "see the whole page when
+// it overflows" to "pixel-peep the navbar".
+const ZOOM_KEY_PREFIX = 'design-view-zoom-'
+const ZOOM_DEFAULT = 1.0
+const ZOOM_MIN = 0.1
+const ZOOM_MAX = 4.0
+const ZOOM_STEP = 0.1        // each toolbar button click
+const ZOOM_WHEEL_STEP = 0.05 // each Ctrl+wheel notch (Shift = ×4)
+
+const loadZoom = (itemId: string): number => {
+  try {
+    const raw = localStorage.getItem(ZOOM_KEY_PREFIX + itemId)
+    if (!raw) return ZOOM_DEFAULT
+    const n = Number(raw)
+    if (!Number.isFinite(n)) return ZOOM_DEFAULT
+    return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, n))
+  } catch {
+    return ZOOM_DEFAULT
+  }
+}
+const saveZoom = (itemId: string, n: number): void => {
+  try {
+    localStorage.setItem(ZOOM_KEY_PREFIX + itemId, String(n))
+  } catch {
+    /* no-op — localStorage may be disabled */
+  }
+}
+
+const zoom = ref<number>(ZOOM_DEFAULT)
+const setZoom = (next: number): void => {
+  const clamped = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, next))
+  // Snap to nearest 1% so the displayed percentage is clean.
+  const snapped = Math.round(clamped * 100) / 100
+  zoom.value = snapped
+  if (effectiveItemId.value) saveZoom(effectiveItemId.value, snapped)
+}
+const zoomIn = (): void => setZoom(zoom.value + ZOOM_STEP)
+const zoomOut = (): void => setZoom(zoom.value - ZOOM_STEP)
+const zoomReset = (): void => setZoom(1.0)
+
+// Ctrl+wheel zooms in/out at the cursor position. The plain wheel
+// is left alone (it scrolls the canvas container as usual — matches
+// Figma / Miro / VS Code). Shift wheel zooms ×4 faster.
+const handleCanvasWheel = (event: WheelEvent): void => {
+  if (!event.ctrlKey && !event.metaKey) return
+  event.preventDefault()
+  const direction = event.deltaY < 0 ? 1 : -1
+  const speed = event.shiftKey ? 4 : 1
+  const next = zoom.value + direction * ZOOM_WHEEL_STEP * speed
+
+  // Anchor the zoom at the cursor position so zoom-in feels natural
+  // (the point under the cursor stays under the cursor after the
+  // scale). Compute the cursor's offset from the canvas origin in
+  // CONTENT coordinates (accounting for current scroll), then adjust
+  // scrollTop / scrollLeft so the same content point is under the
+  // cursor after the new scale is applied.
+  const container = event.currentTarget as HTMLElement | null
+  if (!container) {
+    setZoom(next)
+    return
+  }
+  const rect = container.getBoundingClientRect()
+  const cursorX = event.clientX - rect.left + container.scrollLeft
+  const cursorY = event.clientY - rect.top + container.scrollTop
+  const before = zoom.value
+  setZoom(next)
+  const after = zoom.value
+  if (before === after) return
+  const ratio = after / before
+  container.scrollLeft = cursorX * ratio - (event.clientX - rect.left)
+  container.scrollTop = cursorY * ratio - (event.clientY - rect.top)
+}
+
+// Restore zoom on design-item change (different localStorage key).
+watch(
+  () => effectiveItemId.value,
+  (newId) => {
+    zoom.value = newId ? loadZoom(newId) : ZOOM_DEFAULT
+  },
+  { immediate: true },
+)
+
 // ─── Page-size inputs (debounced 600ms) ─────────────────────────────────
 //
 // Two `<input type="number">` fields in the canvas header let the
@@ -654,6 +741,36 @@ onUnmounted(() => {
           <div class="text-xs" style="color: var(--semantic-text-dim);">
             {{ elements.length }} element{{ elements.length === 1 ? '' : 's' }}
           </div>
+          <div
+            class="flex items-center gap-1 shrink-0"
+            data-testid="design-zoom-toolbar"
+          >
+            <button
+              type="button"
+              class="px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80"
+              style="color: var(--semantic-text); border: 1px solid var(--color-border);"
+              aria-label="Zoom out"
+              data-testid="design-zoom-out"
+              @click="zoomOut"
+            >−</button>
+            <button
+              type="button"
+              class="px-2 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80 min-w-[3.5rem] text-center"
+              style="color: var(--semantic-text); border: 1px solid var(--color-border);"
+              :title="`Reset zoom (currently ${Math.round(zoom * 100)}%)`"
+              aria-label="Reset zoom"
+              data-testid="design-zoom-reset"
+              @click="zoomReset"
+            >{{ Math.round(zoom * 100) }}%</button>
+            <button
+              type="button"
+              class="px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80"
+              style="color: var(--semantic-text); border: 1px solid var(--color-border);"
+              aria-label="Zoom in"
+              data-testid="design-zoom-in"
+              @click="zoomIn"
+            >+</button>
+          </div>
         </div>
 
         <!-- Canvas viewport -->
@@ -662,12 +779,14 @@ onUnmounted(() => {
           style="background-color: var(--color-bg-m2);"
           data-testid="design-canvas-scroll-container"
           @click="handleCanvasClick"
+          @wheel="handleCanvasWheel"
         >
           <div
-            class="relative mx-auto my-6"
+            class="relative mx-auto my-6 origin-top-left"
             :style="{
               width: `${canvasWidth}px`,
               height: `${canvasHeight}px`,
+              transform: `scale(${zoom})`,
               backgroundColor: 'var(--semantic-card-bg)',
               boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)',
               backgroundImage:
@@ -684,6 +803,7 @@ onUnmounted(() => {
               :element="element"
               :selected="selectedElementId === element.id"
               :readonly="false"
+              :zoom="zoom"
               :workspace-id="workspaceId"
               :item-id="itemId || item.id"
               :page-id="activePageId"
