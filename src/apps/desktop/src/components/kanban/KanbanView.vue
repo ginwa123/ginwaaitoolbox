@@ -60,6 +60,7 @@ import KanbanColumn from './KanbanColumn.vue'
 import KanbanTaskDetailDialog from './KanbanTaskDetailDialog.vue'
 import InlineEditableText from '../preview/InlineEditableText.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
+import { useKanbanScrollRestore } from '../../composables/useKanbanScrollRestore'
 import type { WorkspaceItem, Task, KanbanColumn as KanbanColumnType } from '../../stores/workspaces'
 
 const props = withDefaults(
@@ -93,6 +94,33 @@ const loadColumns = () => {
 
 onMounted(loadColumns)
 watch(() => [props.workspaceId, effectiveItemId.value], loadColumns)
+
+// ─── Horizontal scroll position preservation ──────────────────────────
+//
+// KanbanView is mounted in TWO separate v-else-if branches in
+// AppLayout.vue: standalone (line ~1551) and 3-column
+// (line ~1458 inside `data-kanban-three-column`). When the user
+// clicks a task, the standalone mount is destroyed and a fresh
+// KanbanView mounts inside the 3-column branch — Vue 3 does not
+// reuse the component instance across v-else-if branches at
+// different parents, so the new instance's `overflow-x-auto`
+// columns row starts at scrollLeft = 0. That made the board jump
+// back to the leftmost column every time a task was opened or
+// closed, forcing the user to re-scroll to their column of
+// interest (e.g. "merged" at the far right).
+//
+// The composable persists scrollLeft to localStorage on
+// `scrollend` (fast path) + a 250 ms debounced `scroll` (fallback)
+// and restores it on `onMounted` after two `requestAnimationFrame`
+// ticks (so the columns have widths). Survives the standalone
+// <-> 3-column transition in both directions.
+//
+// Plan: docs/superpowers/plans/2026-07-23-preserve-kanban-horizontal-scroll.md
+const kanbanColumnsContainer = ref<HTMLElement | null>(null)
+const kanbanScrollStorageKey = computed(
+  () => `kanban-scroll-${effectiveItemId.value}`,
+)
+useKanbanScrollRestore(kanbanColumnsContainer, kanbanScrollStorageKey)
 
 const emit = defineEmits<{
   addColumn: []
@@ -462,7 +490,16 @@ const handleCreateTaskSave = async (payload: {
     </header>
 
     <!-- ─── Columns row (horizontal scroll) ──────────────────────────── -->
+    <!--
+      Horizontal scroll position is persisted to localStorage so the
+      kanban stays where the user scrolled it across the standalone
+      <-> 3-column layout transition in AppLayout. See
+      useKanbanScrollRestore composable + the comment block in the
+      <script setup>. Do NOT remove `ref="kanbanColumnsContainer"`
+      without also removing the composable call — the two are paired.
+    -->
     <div
+      ref="kanbanColumnsContainer"
       class="flex-1 min-h-0 overflow-x-auto overflow-y-hidden"
       style="
         scrollbar-width: thin;
