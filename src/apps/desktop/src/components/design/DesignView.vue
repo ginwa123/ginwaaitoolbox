@@ -52,6 +52,7 @@ import LayersPanel from './LayersPanel.vue'
 import PropertiesPanel from './PropertiesPanel.vue'
 import AddDesignElementDialog from './AddDesignElementDialog.vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
+import { useNotificationStore } from '../../stores/notifications'
 import { listDesignPages, type DesignElement as DesignElementApi } from '../../api'
 
 const props = withDefaults(
@@ -293,26 +294,107 @@ watch(activePageId, (pageId) => {
 
 // ─── Keyboard shortcuts ────────────────────────────────────────────────
 
+// True while the user is holding the Space bar. Drives the body's
+// cursor (grab / grabbing) and gates the pointer-drag pan handler
+// on the canvas container.
+const isSpacePressed = ref(false)
+
 const handleKeydown = (event: KeyboardEvent): void => {
+  // Skip when the user is typing in an input/textarea/contenteditable
+  // — don't steal keys from the W×H inputs, the PropertiesPanel
+  // form fields, etc.
+  const target = event.target as HTMLElement | null
+  if (
+    target &&
+    (target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.isContentEditable)
+  ) {
+    return
+  }
+
+  // Space held (no Ctrl/Cmd/Alt/Shift — those are bound to other shortcuts,
+  // and Alt+Space is the window-menu shortcut on Linux/macOS). Plain Space
+  // should NOT scroll the page when the design view is mounted — that's
+  // the browser default we override here.
+  if (
+    event.key === ' ' &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    !event.shiftKey
+  ) {
+    if (!isSpacePressed.value) {
+      isSpacePressed.value = true
+      document.body.style.cursor = 'grab'
+    }
+    event.preventDefault()
+    return
+  }
+
   if (event.key === 'Escape') {
     selectedElementId.value = null
     // Also close the add-element dialog if it's open.
     if (showAddElementDialog.value) {
       showAddElementDialog.value = false
     }
+    return
+  }
+
+  // Fit-to-viewport shortcuts — F (Figma convention) or Shift+1.
+  // Both ignored when modifier keys (Ctrl/Cmd/Alt) are held to avoid
+  // colliding with browser / OS shortcuts.
+  if (
+    (event.key === 'f' || event.key === 'F' || (event.key === '1' && event.shiftKey)) &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey
+  ) {
+    event.preventDefault()
+    zoomFit()
+  }
+}
+
+const handleKeyup = (event: KeyboardEvent): void => {
+  // Release Space. Don't gate on target — if focus moved to an input
+  // mid-press, we still want to clear the body cursor on Space-up.
+  if (event.key === ' ' && isSpacePressed.value) {
+    isSpacePressed.value = false
+    document.body.style.cursor = ''
+  }
+}
+
+const handleWindowBlur = (): void => {
+  // Defensive: if focus is lost (window blur / tab switch) while
+  // Space is held, the keyup event may never fire. Reset so we
+  // don't leave the cursor stuck on "grab".
+  if (isSpacePressed.value) {
+    isSpacePressed.value = false
+    document.body.style.cursor = ''
   }
 }
 
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)
+  document.addEventListener('keyup', handleKeyup)
+  window.addEventListener('blur', handleWindowBlur)
 })
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown)
+  document.removeEventListener('keyup', handleKeyup)
+  window.removeEventListener('blur', handleWindowBlur)
+  // Defensive: clear body cursor if we unmount mid-press.
+  document.body.style.cursor = ''
 })
 
 // ─── Handlers ──────────────────────────────────────────────────────────
 
 const handleCanvasClick = (event: MouseEvent): void => {
+  // If we just finished a pan-drag (Space + drag), swallow the
+  // click so it doesn't deselect the active element. The browser
+  // dispatches a synthetic click after pointerup; without this
+  // guard, every pan ends with selection-clear.
+  if (isPanning.value) return
   // Only clear selection when clicking the canvas itself (not an
   // element child). The DesignElement child events fire before this
   // and they stopPropagation on their pointerdown — so this handler
@@ -321,6 +403,61 @@ const handleCanvasClick = (event: MouseEvent): void => {
     return
   }
   selectedElementId.value = null
+}
+
+// True while the user is mid-drag with Space held. Gates the
+// canvas-click deselection guard above.
+const isPanning = ref(false)
+
+// Pointer-drag pan. Fires on the canvas scroll container; only
+// does anything when Space is held. Mutates scrollLeft / scrollTop
+// directly (NOT a CSS transform — the inner div already has
+// `transform: scale()` and combining the two would compound).
+// setPointerCapture ensures move events keep firing even if the
+// pointer leaves the container mid-drag.
+const startCanvasPan = (event: PointerEvent): void => {
+  if (!isSpacePressed.value) return
+  // Primary button only — middle / right clicks do different things
+  // (autoscroll, context menu) on some browsers.
+  if (event.button !== 0) return
+  const target = event.currentTarget as HTMLElement | null
+  if (!target) return
+  target.setPointerCapture(event.pointerId)
+  isPanning.value = true
+  document.body.style.cursor = 'grabbing'
+
+  // Snapshot the scroll position + pointer position at drag start.
+  // The move handler subtracts the cursor delta from the original
+  // scroll position so the canvas appears to follow the cursor.
+  const startScrollLeft = target.scrollLeft
+  const startScrollTop = target.scrollTop
+  const startClientX = event.clientX
+  const startClientY = event.clientY
+
+  const onMove = (e: PointerEvent): void => {
+    // cursor delta in screen-px = scroll delta in scroll-px
+    // (no zoom division needed — scrollLeft / scrollTop are in
+    // unscaled coords; the inner div's scale() does not affect them).
+    const dx = e.clientX - startClientX
+    const dy = e.clientY - startClientY
+    target.scrollLeft = startScrollLeft - dx
+    target.scrollTop = startScrollTop - dy
+  }
+  const onUp = (e: PointerEvent): void => {
+    if (target.hasPointerCapture(e.pointerId)) {
+      target.releasePointerCapture(e.pointerId)
+    }
+    isPanning.value = false
+    // Restore grab cursor only if Space is still held; otherwise
+    // clear back to the default cursor.
+    document.body.style.cursor = isSpacePressed.value ? 'grab' : ''
+    target.removeEventListener('pointermove', onMove)
+    target.removeEventListener('pointerup', onUp)
+    target.removeEventListener('pointercancel', onUp)
+  }
+  target.addEventListener('pointermove', onMove)
+  target.addEventListener('pointerup', onUp)
+  target.addEventListener('pointercancel', onUp)
 }
 
 // NEW: chat-toggle click handler (top-right 💬 button in the
@@ -395,6 +532,203 @@ const handlePropertiesHtmlChanged = (html: string): void => {
 
 const canvasWidth = computed(() => activePage.value?.width ?? 1440)
 const canvasHeight = computed(() => activePage.value?.height ?? 1024)
+
+// ─── Zoom (transform: scale on the canvas wrapper) ────────────────────
+//
+// Pure-view state; doesn't change page dimensions or element
+// positions. Persists per design item in localStorage so a user
+// who zooms to 75% on one design item doesn't affect another item.
+// Range 0.1× to 4.0× covers everything from "see the whole page when
+// it overflows" to "pixel-peep the navbar".
+const ZOOM_KEY_PREFIX = 'design-view-zoom-'
+const ZOOM_DEFAULT = 1.0
+const ZOOM_MIN = 0.1
+const ZOOM_MAX = 4.0
+const ZOOM_STEP = 0.1        // each toolbar button click
+const ZOOM_WHEEL_STEP = 0.05 // each Ctrl+wheel notch (Shift = ×4)
+
+const loadZoom = (itemId: string): number => {
+  try {
+    const raw = localStorage.getItem(ZOOM_KEY_PREFIX + itemId)
+    if (!raw) return ZOOM_DEFAULT
+    const n = Number(raw)
+    if (!Number.isFinite(n)) return ZOOM_DEFAULT
+    return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, n))
+  } catch {
+    return ZOOM_DEFAULT
+  }
+}
+const saveZoom = (itemId: string, n: number): void => {
+  try {
+    localStorage.setItem(ZOOM_KEY_PREFIX + itemId, String(n))
+  } catch {
+    /* no-op — localStorage may be disabled */
+  }
+}
+
+const zoom = ref<number>(ZOOM_DEFAULT)
+const setZoom = (next: number): void => {
+  const clamped = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, next))
+  // Snap to nearest 1% so the displayed percentage is clean.
+  const snapped = Math.round(clamped * 100) / 100
+  zoom.value = snapped
+  if (effectiveItemId.value) saveZoom(effectiveItemId.value, snapped)
+}
+const zoomIn = (): void => setZoom(zoom.value + ZOOM_STEP)
+const zoomOut = (): void => setZoom(zoom.value - ZOOM_STEP)
+const zoomReset = (): void => setZoom(1.0)
+
+// Fit-to-viewport: compute the zoom level that makes the entire page
+// fit inside the scroll container with a small margin, then scroll
+// the container so the page is centered. Mirrors Figma's Shift+1
+// ("Zoom to fit"). Picked up by the keyboard shortcut (F / Shift+1)
+// and the toolbar button. Reads the live DOM dimensions so resizing
+// the window refits.
+const ZOOM_FIT_MARGIN = 48 // px of padding around the fitted canvas
+
+const zoomFit = (): void => {
+  if (!activePage.value) return
+  const container = document.querySelector<HTMLElement>(
+    '[data-testid="design-canvas-scroll-container"]',
+  )
+  if (!container) return
+  const cw = container.clientWidth - ZOOM_FIT_MARGIN
+  const ch = container.clientHeight - ZOOM_FIT_MARGIN
+  if (cw <= 0 || ch <= 0) return
+  const zoomX = cw / canvasWidth.value
+  const zoomY = ch / canvasHeight.value
+  const fit = Math.min(zoomX, zoomY)
+  setZoom(fit)
+  // Center after the scale change so the page appears centered.
+  // The scroll math mirrors the Ctrl+wheel handler.
+  requestAnimationFrame(() => {
+    const scaledW = canvasWidth.value * zoom.value
+    const scaledH = canvasHeight.value * zoom.value
+    container.scrollLeft = (scaledW - container.clientWidth) / 2
+    container.scrollTop = (scaledH - container.clientHeight) / 2
+  })
+}
+
+// Ctrl+wheel zooms in/out at the cursor position. The plain wheel
+// is left alone (it scrolls the canvas container as usual — matches
+// Figma / Miro / VS Code). Shift wheel zooms ×4 faster.
+const handleCanvasWheel = (event: WheelEvent): void => {
+  if (!event.ctrlKey && !event.metaKey) return
+  event.preventDefault()
+  const direction = event.deltaY < 0 ? 1 : -1
+  const speed = event.shiftKey ? 4 : 1
+  const next = zoom.value + direction * ZOOM_WHEEL_STEP * speed
+
+  // Anchor the zoom at the cursor position so zoom-in feels natural
+  // (the point under the cursor stays under the cursor after the
+  // scale). Compute the cursor's offset from the canvas origin in
+  // CONTENT coordinates (accounting for current scroll), then adjust
+  // scrollTop / scrollLeft so the same content point is under the
+  // cursor after the new scale is applied.
+  const container = event.currentTarget as HTMLElement | null
+  if (!container) {
+    setZoom(next)
+    return
+  }
+  const rect = container.getBoundingClientRect()
+  const cursorX = event.clientX - rect.left + container.scrollLeft
+  const cursorY = event.clientY - rect.top + container.scrollTop
+  const before = zoom.value
+  setZoom(next)
+  const after = zoom.value
+  if (before === after) return
+  const ratio = after / before
+  container.scrollLeft = cursorX * ratio - (event.clientX - rect.left)
+  container.scrollTop = cursorY * ratio - (event.clientY - rect.top)
+}
+
+// Restore zoom on design-item change (different localStorage key).
+watch(
+  () => effectiveItemId.value,
+  (newId) => {
+    zoom.value = newId ? loadZoom(newId) : ZOOM_DEFAULT
+  },
+  { immediate: true },
+)
+
+// ─── Page-size inputs (debounced 600ms) ─────────────────────────────────
+//
+// Two `<input type="number">` fields in the canvas header let the
+// user resize the active page. The backend validates the ranges
+// (width 320-4096, height 240-4096); out-of-range is rejected
+// with 400. Inputs share a single 600ms debounce so changing both
+// then pausing issues exactly one PATCH request.
+
+// String forms for the `<input type="number">`. Use empty string
+// when no page is active so the input is blank (not "0").
+const pageWidthInput = computed(() =>
+  activePage.value ? String(activePage.value.width) : '',
+)
+const pageHeightInput = computed(() =>
+  activePage.value ? String(activePage.value.height) : '',
+)
+
+let pageSizeDebounceTimer: number | null = null
+
+const handlePageSizeChange = (): void => {
+  if (!activePage.value) return
+  if (!props.workspaceId || !effectiveItemId.value) return
+  if (pageSizeDebounceTimer !== null) {
+    clearTimeout(pageSizeDebounceTimer)
+  }
+  pageSizeDebounceTimer = window.setTimeout(() => {
+    pageSizeDebounceTimer = null
+    void commitPageSize()
+  }, 600)
+}
+
+const commitPageSize = async (): Promise<void> => {
+  if (!activePage.value) return
+  const widthInput = document.querySelector<HTMLInputElement>(
+    '[data-testid="design-page-width-input"]',
+  )
+  const heightInput = document.querySelector<HTMLInputElement>(
+    '[data-testid="design-page-height-input"]',
+  )
+  if (!widthInput || !heightInput) return
+  const width = Number(widthInput.value)
+  const height = Number(heightInput.value)
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return
+  if (width < 320 || width > 4096 || height < 240 || height > 4096) {
+    useNotificationStore().notifyError(
+      'Invalid page size',
+      `Width must be 320-4096, height 240-4096 (got ${width}×${height})`,
+    )
+    // Reset the inputs to the current valid page size.
+    widthInput.value = String(activePage.value.width)
+    heightInput.value = String(activePage.value.height)
+    return
+  }
+  try {
+    const updated = await workspacesStore.updateDesignPage(
+      props.workspaceId,
+      effectiveItemId.value,
+      activePage.value.id,
+      { width, height },
+    )
+    // Mutate the pages array in-place so the canvasWidth/Height
+    // computeds re-derive and the canvas div re-renders.
+    const idx = pages.value.findIndex((p) => p.id === updated.id)
+    if (idx !== -1) pages.value[idx] = updated
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    useNotificationStore().notifyError('Failed to resize page', message)
+    // Reset the inputs to the current (unchanged) page size.
+    widthInput.value = String(activePage.value.width)
+    heightInput.value = String(activePage.value.height)
+  }
+}
+
+onUnmounted(() => {
+  if (pageSizeDebounceTimer !== null) {
+    clearTimeout(pageSizeDebounceTimer)
+  }
+})
 </script>
 
 <template>
@@ -539,8 +873,79 @@ const canvasHeight = computed(() => activePage.value?.height ?? 1024)
           >
             (no page selected)
           </div>
+          <div
+            v-if="activePage"
+            class="flex items-center gap-1 text-xs shrink-0"
+            style="color: var(--semantic-text-dim);"
+            data-testid="design-page-size"
+          >
+            <input
+              type="number"
+              min="320"
+              max="4096"
+              step="10"
+              class="w-16 px-1.5 py-0.5 rounded text-xs"
+              style="background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border);"
+              :value="pageWidthInput"
+              aria-label="Page width"
+              data-testid="design-page-width-input"
+              @change="handlePageSizeChange"
+            />
+            <span aria-hidden="true">×</span>
+            <input
+              type="number"
+              min="240"
+              max="4096"
+              step="10"
+              class="w-16 px-1.5 py-0.5 rounded text-xs"
+              style="background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border);"
+              :value="pageHeightInput"
+              aria-label="Page height"
+              data-testid="design-page-height-input"
+              @change="handlePageSizeChange"
+            />
+          </div>
           <div class="text-xs" style="color: var(--semantic-text-dim);">
             {{ elements.length }} element{{ elements.length === 1 ? '' : 's' }}
+          </div>
+          <div
+            class="flex items-center gap-1 shrink-0"
+            data-testid="design-zoom-toolbar"
+          >
+            <button
+              type="button"
+              class="px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80"
+              style="color: var(--semantic-text); border: 1px solid var(--color-border);"
+              aria-label="Zoom out"
+              data-testid="design-zoom-out"
+              @click="zoomOut"
+            >−</button>
+            <button
+              type="button"
+              class="px-2 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80 min-w-[3.5rem] text-center"
+              style="color: var(--semantic-text); border: 1px solid var(--color-border);"
+              :title="`Reset zoom (currently ${Math.round(zoom * 100)}%)`"
+              aria-label="Reset zoom"
+              data-testid="design-zoom-reset"
+              @click="zoomReset"
+            >{{ Math.round(zoom * 100) }}%</button>
+            <button
+              type="button"
+              class="px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80"
+              style="color: var(--semantic-text); border: 1px solid var(--color-border);"
+              aria-label="Fit page to viewport (shortcut: F or Shift+1)"
+              title="Fit page to viewport (F or Shift+1)"
+              data-testid="design-zoom-fit"
+              @click="zoomFit"
+            >⛶</button>
+            <button
+              type="button"
+              class="px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80"
+              style="color: var(--semantic-text); border: 1px solid var(--color-border);"
+              aria-label="Zoom in"
+              data-testid="design-zoom-in"
+              @click="zoomIn"
+            >+</button>
           </div>
         </div>
 
@@ -550,12 +955,15 @@ const canvasHeight = computed(() => activePage.value?.height ?? 1024)
           style="background-color: var(--color-bg-m2);"
           data-testid="design-canvas-scroll-container"
           @click="handleCanvasClick"
+          @wheel="handleCanvasWheel"
+          @pointerdown="startCanvasPan"
         >
           <div
-            class="relative mx-auto my-6"
+            class="relative mx-auto my-6 origin-top-left"
             :style="{
               width: `${canvasWidth}px`,
               height: `${canvasHeight}px`,
+              transform: `scale(${zoom})`,
               backgroundColor: 'var(--semantic-card-bg)',
               boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)',
               backgroundImage:
@@ -572,6 +980,7 @@ const canvasHeight = computed(() => activePage.value?.height ?? 1024)
               :element="element"
               :selected="selectedElementId === element.id"
               :readonly="false"
+              :zoom="zoom"
               :workspace-id="workspaceId"
               :item-id="itemId || item.id"
               :page-id="activePageId"

@@ -211,6 +211,108 @@ fn findPageIdByName(
     return null;
 }
 
+// ─── updateDesignPage ─────────────────────────────────────────────────────
+
+pub const UpdateDesignPageInput = struct {
+    page_id: []const u8,
+    width: i64,
+    height: i64,
+};
+
+/// Update an existing design page's width/height by id. UPDATE-only;
+/// does NOT insert — see `setDesignPage` for the upsert path used
+/// by the agent's `set_design_page` tool. Returns the post-update
+/// `DesignPage` with heap-owned string fields; caller MUST release
+/// with `freePages(allocator, &[_]DesignPage{result})` or pass the
+/// whole struct to `freePages` wrapped in a single-element array.
+///
+/// Width must be in [320, 4096], height in [240, 4096]. These ranges
+/// match typical viewport sizes (320 = iPhone SE width, 4096 = common
+/// 4K width; 240 = iPhone SE height, 4096 = tall scrollable hero).
+pub fn updateDesignPage(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: UpdateDesignPageInput,
+) anyerror!DesignPage {
+    if (input.page_id.len == 0) return error.PageIdRequired;
+    if (input.width < 320 or input.width > 4096) return error.WidthOutOfRange;
+    if (input.height < 240 or input.height > 4096) return error.HeightOutOfRange;
+
+    // Existence check first — distinguishes PageNotFound from a silent
+    // no-op UPDATE on a non-existent row. Also gives us the
+    // workspace_item_id we need to call listPages for the re-fetch.
+    const item_id_owned: []u8 = blk: {
+        var q = try db.query(allocator,
+            "SELECT dp.workspace_item_id FROM design_pages dp WHERE dp.id = ?",
+            &.{input.page_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.PageNotFound;
+        defer row.deinit(allocator);
+        break :blk try allocator.dupe(u8, row.values[0]);
+    };
+    defer allocator.free(item_id_owned);
+
+    // Stringify integer cols (db.exec binds only TEXT — see project
+    // memory `sqlite-backend-empty-slice-binds-as-null`). The strings
+    // must be non-empty even for the "zero" case.
+    const width_str = try std.fmt.allocPrint(allocator, "{d}", .{input.width});
+    defer allocator.free(width_str);
+    const height_str = try std.fmt.allocPrint(allocator, "{d}", .{input.height});
+    defer allocator.free(height_str);
+
+    db.exec(allocator,
+        "UPDATE design_pages SET width = ?, height = ?, " ++
+        "updated_at = datetime('now') WHERE id = ?",
+        &.{ width_str, height_str, input.page_id }) catch return error.DbError;
+
+    // Re-fetch the updated row to return the full DesignPage. Same
+    // ownership pattern as `design_pages_create.zig` useCase:
+    // listPages returns a fresh slice whose strings are heap-owned;
+    // we duplicate into a single struct so the caller can `freePages`
+    // it without affecting the listPages slice.
+    const pages = listPages(allocator, db, item_id_owned) catch return error.DbError;
+    defer freePages(allocator, pages);
+
+    for (pages) |p| {
+        if (!std.mem.eql(u8, p.id, input.page_id)) continue;
+
+        var duped_id: ?[]u8 = null;
+        var duped_workspace_item_id: ?[]u8 = null;
+        var duped_name: ?[]u8 = null;
+        var duped_created_at: ?[]u8 = null;
+        var duped_updated_at: ?[]u8 = null;
+        errdefer {
+            if (duped_id) |v| allocator.free(v);
+            if (duped_workspace_item_id) |v| allocator.free(v);
+            if (duped_name) |v| allocator.free(v);
+            if (duped_created_at) |v| allocator.free(v);
+            if (duped_updated_at) |v| allocator.free(v);
+        }
+        duped_id = try allocator.dupe(u8, p.id);
+        duped_workspace_item_id = try allocator.dupe(u8, p.workspace_item_id);
+        duped_name = try allocator.dupe(u8, p.name);
+        duped_created_at = try allocator.dupe(u8, p.created_at);
+        duped_updated_at = try allocator.dupe(u8, p.updated_at);
+
+        return .{
+            .id = duped_id.?,
+            .workspace_item_id = duped_workspace_item_id.?,
+            .name = duped_name.?,
+            .width = p.width,
+            .height = p.height,
+            .position = p.position,
+            .created_at = duped_created_at.?,
+            .updated_at = duped_updated_at.?,
+        };
+    }
+
+    // Row existed at SELECT but vanished by the time listPages ran —
+    // race condition (someone deleted between our UPDATE and our
+    // re-fetch). Surface as DbError so the caller knows something
+    // weird happened.
+    return error.DbError;
+}
+
 // ─── listPages ────────────────────────────────────────────────────────────
 
 /// List the pages of a design workspace item in `position` order.

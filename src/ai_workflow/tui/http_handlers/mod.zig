@@ -131,6 +131,7 @@ pub const queueMessagesGetHandler = @import("queue_messages_get.zig").queueMessa
 pub const designPagesListHandler = @import("design_pages_list.zig").designPagesListHandler;
 pub const designPagesCreateHandler = @import("design_pages_create.zig").designPagesCreateHandler;
 pub const designPagesGetHandler = @import("design_pages_get.zig").designPagesGetHandler;
+pub const designPagesUpdateHandler = @import("design_pages_update.zig").designPagesUpdateHandler;
 pub const designElementsCreateHandler = @import("design_elements_create.zig").designElementsCreateHandler;
 pub const designElementsUpdateHandler = @import("design_elements_update.zig").designElementsUpdateHandler;
 pub const designElementsDeleteHandler = @import("design_elements_delete.zig").designElementsDeleteHandler;

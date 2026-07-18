@@ -1423,6 +1423,27 @@ export async function createDesignPage(
 }
 
 /**
+ * PATCH /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId
+ *
+ * Update an existing design page's width/height. Backend validates
+ * the ranges (width 320-4096, height 240-4096); out-of-range returns
+ * 400 with an explicit error message so the UI can surface it.
+ *
+ * Returns 200 OK with the full DesignPage record.
+ */
+export async function updateDesignPage(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  patch: { width: number; height: number },
+): Promise<DesignPage> {
+  return await apiFetch<DesignPage>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}`,
+    { method: 'PATCH', body: patch },
+  )
+}
+
+/**
  * GET /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId
  *
  * Fetch a single page plus its full element list (HTML bodies

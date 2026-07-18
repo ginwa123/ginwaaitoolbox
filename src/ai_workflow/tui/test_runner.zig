@@ -66,6 +66,7 @@ test {
     _ = @import("http_handlers/design_pages_create_test.zig");
     _ = @import("http_handlers/design_items_create_test.zig");
     _ = @import("http_handlers/design_pages_get_test.zig");
+_ = @import("http_handlers/design_pages_update_test.zig");
     _ = @import("http_handlers/design_elements_create_test.zig");
     _ = @import("http_handlers/design_elements_update_test.zig");
     _ = @import("http_handlers/design_elements_delete_test.zig");
