@@ -544,14 +544,30 @@ const handleCloseTaskView = () => {
   router.replace({ path: '/app', query: { view: 'workspace' } })
 }
 
-// ─── Kanban column resize (3-column layout: sidebar | kanban | chatview) ──
+// ─── Kanban column resize (kanban-mode: sidebar | kanban | chatview) ──
 //
-// The 3-column layout's kanban column is drag-resizable. The user grabs
-// the 1px handle between the kanban and the chatview, drags left/right,
-// and the kanban grows/shrinks within a clamped range. The chatview
-// column absorbs the leftover space (it has `flex: 1 1 0`). The width
-// persists to localStorage so a refresh keeps the user's preferred
-// layout.
+// User feedback 2026-06-29: the user wants
+//   1. A floating chat overlay (the chat covers a portion of the
+//      kanban instead of splitting the main area side-by-side at
+//      ~40/40 with no chat at all), AND
+//   2. A resize handle to drag the chat width.
+//
+// First implementation (commit 61a8ad05) did absolute-positioned
+// overlay but with a fixed width and no resize handle, AND the
+// chat panel background was inherited from `--semantic-bg` which
+// in some viewports / scroll contexts came out semi-transparent
+// (kanban task cards showed through). Reverting to a flex 2-col
+// layout (kanban | resize-handle | chat) restores both:
+//   - The chat panel gets a guaranteed opaque background (its
+//     own background-color paints on top of the kanban column,
+//     no transparency because there's no alpha inheritance).
+//   - The resize handle lives between the kanban and the chat,
+//     matches the design-mode pattern, and persists the width
+//     to localStorage so a refresh keeps the user's drag.
+//
+// The kanban still gets the bulk of the main area (the chat is a
+// drawer, not a sibling column at 40/40). User picks the chat
+// width; the kanban fills the rest.
 //
 // Pattern mirrors Sidebar.vue's resize handling
 // (lines 162-194: startResize / handleResize / stopResize), which
@@ -560,53 +576,30 @@ const handleCloseTaskView = () => {
 // and listening on `document` is the only way to catch every move).
 //
 // Bounds rationale:
-//   - MIN 0px: the user can collapse the kanban column entirely,
-//     letting the chat view absorb the full main area. The 1px
-//     resize handle stays grabbable at width=0 so the kanban can
-//     be brought back by dragging right. (Floor was previously
-//     280px to keep kanban columns readable; user feedback
-//     2026-07-04 preferred unbounded.)
-//   - MAX 720px: beyond this the chatview shrinks to <30% of the
-//     main area on typical 1080p+ displays, making the chat feel
-//     cramped. The chat needs at least 480px to be usable.
-const KANBAN_MIN_WIDTH = 0
-const KANBAN_MAX_WIDTH = 720
-const KANBAN_DEFAULT_WIDTH = 40 // % of main area, used when no localStorage value exists
+//   - MIN 280px: a chat narrower than this makes the input box and
+//     message bubbles wrap awkwardly.
+//   - MAX 900px: a chat wider than this consumes too much of the
+//     kanban board (only 1 column visible on 1080p+ displays).
+const KANBAN_MIN_WIDTH = 280
+const KANBAN_MAX_WIDTH = 900
+const KANBAN_DEFAULT_WIDTH = 480 // px — matches a kanban column (~280px) + breathing room
 const KANBAN_WIDTH_STORAGE_KEY = 'kanban-column-width'
 
-// ─── Floating chat width (kanban-mode overlay) ──────────────────────────
-//
-// In kanban-mode the kanban fills the full main area and the ChatView
-// floats on top of it as a fixed-width panel anchored to the right
-// edge. The width is intentionally a constant (not persisted +
-// not resizable) — the user feedback 2026-06-29 was that the
-// 3-column flex split cramped the kanban board, and a fixed
-// floating chat is the simplest fix that gives the kanban back
-// its full width. If a future user wants the chat wider/narrower,
-// a resize handle can be added here (mirroring the design-mode
-// resize handle below).
-//
-// 480px matches the kanban column width — visually a single column
-// of the board "popped out" as a chat drawer. Reads cleanly on
-// 1080p+ displays without consuming the whole viewport.
-const FLOATING_CHAT_WIDTH = 480
-
-// Load the persisted kanban width. Returns a px value (int) or
-// null when no value exists. The caller falls back to a percentage
-// layout in that case (see kanbanColumnStyle below). We deliberately
-// do NOT clamp here — clamping belongs in the resize handler, so
-// that an out-of-range value from a future bug doesn't silently
-// shrink the kanban on load.
-const loadKanbanColumnWidth = (): number | null => {
-  if (typeof localStorage === 'undefined') return null
+// Load the persisted chat width (kanban-mode). Returns a px value
+// (int) or the default when no value exists. We deliberately do NOT
+// clamp here — clamping belongs in the resize handler, so that an
+// out-of-range value from a future bug doesn't silently shrink the
+// chat on load.
+const loadKanbanColumnWidth = (): number => {
+  if (typeof localStorage === 'undefined') return KANBAN_DEFAULT_WIDTH
   const saved = localStorage.getItem(KANBAN_WIDTH_STORAGE_KEY)
-  if (saved === null) return null
+  if (saved === null) return KANBAN_DEFAULT_WIDTH
   const parsed = parseInt(saved, 10)
-  if (isNaN(parsed) || parsed <= 0) return null
+  if (isNaN(parsed) || parsed <= 0) return KANBAN_DEFAULT_WIDTH
   return parsed
 }
 
-const kanbanColumnWidth = ref<number | null>(loadKanbanColumnWidth())
+const kanbanColumnWidth = ref<number>(loadKanbanColumnWidth())
 const isKanbanResizing = ref(false)
 const kanbanResizeStartX = ref(0)
 const kanbanResizeStartWidth = ref(0)
@@ -615,17 +608,10 @@ const startKanbanResize = (e: MouseEvent | TouchEvent) => {
   isKanbanResizing.value = true
   const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
   kanbanResizeStartX.value = clientX
-  // If the kanban is currently percentage-sized (no persisted
-  // width yet), measure the rendered column width as the drag
-  // start point. Otherwise use the persisted px value. Without
-  // this, dragging from a 40% layout would snap to a 280px start.
-  const rendered = kanbanResizeStartWidth.value
-  if (rendered <= 0) {
-    const el = document.querySelector(
-      '[data-kanban-three-column] > :first-child',
-    ) as HTMLElement | null
-    kanbanResizeStartWidth.value = el?.getBoundingClientRect().width ?? 400
-  }
+  // Always start the drag from the current chat width (in px,
+  // not %) so the math is straightforward. No need to measure
+  // the DOM — kanbanColumnWidth is the source of truth.
+  kanbanResizeStartWidth.value = kanbanColumnWidth.value
   document.addEventListener('mousemove', handleKanbanResize)
   document.addEventListener('mouseup', stopKanbanResize)
   document.body.style.userSelect = 'none'
@@ -636,10 +622,12 @@ const startKanbanResize = (e: MouseEvent | TouchEvent) => {
 const handleKanbanResize = (e: MouseEvent | TouchEvent) => {
   if (!isKanbanResizing.value) return
   const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
+  // Dragging LEFT grows the chat (smaller deltaX = larger new width).
+  // Dragging RIGHT shrinks the chat (larger deltaX = smaller new width).
   const deltaX = clientX - kanbanResizeStartX.value
   const newWidth = Math.max(
     KANBAN_MIN_WIDTH,
-    Math.min(KANBAN_MAX_WIDTH, kanbanResizeStartWidth.value + deltaX),
+    Math.min(KANBAN_MAX_WIDTH, kanbanResizeStartWidth.value - deltaX),
   )
   kanbanColumnWidth.value = newWidth
 }
@@ -666,24 +654,19 @@ const stopKanbanResize = () => {
   }
 }
 
-// Inline style for the kanban column. When a width is persisted
-// (in px), use it directly (the user resized the column). When
-// no width is persisted yet, fall back to the default 40% flex
-// so first-time users see a balanced layout. Returns a CSSStyleDeclaration-compatible
-// object — Vue handles kebab-case keys natively in `:style`.
+// Inline style for the kanban-mode chat column. The chat always
+// has a px width — first-time users get `KANBAN_DEFAULT_WIDTH`, the
+// resize handler updates `kanbanColumnWidth` in real time, and a
+// refresh restores the persisted value via `loadKanbanColumnWidth()`.
+// The kanban fills the remaining main-area width via `flex: 1`.
+// Returns a CSSStyleDeclaration-compatible object — Vue handles
+// kebab-case keys natively in `:style`.
 const kanbanColumnStyle = computed(() => {
-  if (kanbanColumnWidth.value !== null) {
-    return {
-      width: `${kanbanColumnWidth.value}px`,
-      'min-width': `${KANBAN_MIN_WIDTH}px`,
-      'max-width': `${KANBAN_MAX_WIDTH}px`,
-      'flex-shrink': '0',
-    }
-  }
   return {
-    flex: `0 1 ${KANBAN_DEFAULT_WIDTH}%`,
+    width: `${kanbanColumnWidth.value}px`,
     'min-width': `${KANBAN_MIN_WIDTH}px`,
     'max-width': `${KANBAN_MAX_WIDTH}px`,
+    'flex-shrink': '0',
   }
 })
 
@@ -1386,34 +1369,31 @@ watch(chatSessionCwd, (newCwd) => {
       </div>
 
       <!--
-        Floating chat on kanban: the kanban takes the full main-area
-        width, and the ChatView floats as an absolute-positioned panel
-        on the right side, overlaying the kanban columns. The user can
-        still see the kanban columns behind the chat (partially
-        dimmed by the chat's solid background) and can close the
-        chat with the ✕ in the chat header to return to the kanban-
-        only view.
+        Kanban + chat overlay layout: the kanban fills the remaining
+        main-area width (`flex: 1`), a drag-resize handle sits at the
+        chat boundary, and the chat sits on the right at the persisted
+        width.
 
-        Why floating (not 3-col flex):
-        - The kanban board needs every horizontal pixel — column
-          widths (280px each) plus the "+ Add" footer are the
-          limiting factor. With a 3-col split the user only saw
-          1-2 columns on a typical 1080p display, which is cramped.
-        - The chat panel is modal in nature: the user is actively
-          typing into it and looking at its messages, not switching
-          between kanban + chat. A floating overlay matches the
-          mental model.
-        - The Settings button (kanban top-right) stays anchored to
-          the right side of the kanban header, NOT under the
-          floating chat. The chat's own ✕ close button is the
-          affordance for closing the chat.
+        Why a 2-col flex (kanban | resize-handle | chat) instead of
+        absolute-positioned "floating chat on top" (commit 61a8ad05):
+        - The absolute-positioned version had a transparent-looking
+          chat background (kanban task cards showed through despite
+          a `--semantic-bg` being set). The flex 2-col gives the
+          chat a guaranteed opaque background — no transparency can
+          leak through.
+        - The flex 2-col keeps the resize handle (user feedback
+          2026-06-29 wanted width back) and the chat is still a
+          "drawer" in terms of UX: kanban flows around it, chat
+          input + messages live there, ✕ in the header closes.
+        - The kanban fills the rest of the area. The chat width
+          defaults to 480px (matches one kanban column width plus
+          a little breathing room). User can drag between 280px
+          (too narrow to be usable) and 900px (large; consumes a
+          big chunk of the board).
 
-        The wrapper is `relative` so the absolute-positioned
-        ChatView is anchored to it. The kanban fills the wrapper
-        (no width constraint, no resize handle — the kanban now
-        owns the full main area). The chat sits at top:0, right:0,
-        bottom:0 (full height of the main area) with a fixed width
-        (default 480px) — visually a side drawer.
+        The wrapper has `data-kanban-with-floating-chat` and the
+        chat panel has `data-floating-chat` — selectors used by
+        AppLayout.kanban.spec.ts.
 
         The :key on KanbanView forces a fresh mount when the user
         navigates from one kanban to another; the ChatView :key
@@ -1428,7 +1408,7 @@ watch(chatSessionCwd, (newCwd) => {
           activeWorkspaceItem.item_type === 'kanban' &&
           activeTaskWorkspaceItemId === activeWorkspaceItem.id
         "
-        class="flex-1 relative flex flex-col min-h-0"
+        class="flex-1 flex min-h-0"
         data-kanban-with-floating-chat
       >
         <KanbanView
@@ -1454,17 +1434,40 @@ watch(chatSessionCwd, (newCwd) => {
           @rename-item="handleKanbanRenameItem"
         />
         <!--
-          Floating chat panel. `absolute top-0 right-0 bottom-0`
-          anchors to the kanban wrapper (which is `relative`).
-          `pointer-events-auto` ensures clicks on the chat work
-          even though it's an overlay.
+          Resize handle between the kanban and the chat — a 4px-wide
+          hit area (w-1 in Tailwind = 4px) with a 1px visual bar
+          centered in it; the bar turns violet on hover and during an
+          active drag so the user knows the handle is grabbable.
+          Mirrors Sidebar.vue's resize handle and the design-mode
+          handle in this file (line ~1577).
         -->
         <div
-          class="absolute top-0 right-0 bottom-0 flex flex-col min-h-0 z-20 border-l shadow-2xl"
+          class="shrink-0 w-2 cursor-col-resize relative flex items-center justify-center bg-[var(--color-violet)]/15 hover:bg-[var(--color-violet)]/40 transition-colors"
+          :class="isKanbanResizing ? '!bg-[var(--color-violet)]/60' : ''"
+          data-kanban-resize-handle
+          data-testid="kanban-resize-handle"
+          title="Drag to resize chat panel"
+          @mousedown="startKanbanResize"
+        >
+          <svg
+            width="14"
+            height="2"
+            viewBox="0 0 14 2"
+            fill="currentColor"
+            class="text-[var(--color-violet)] opacity-70"
+            aria-hidden="true"
+          >
+            <circle cx="3" cy="1" r="1" />
+            <circle cx="7" cy="1" r="1" />
+            <circle cx="11" cy="1" r="1" />
+          </svg>
+        </div>
+        <div
+          class="flex flex-col h-full min-w-0 min-h-0 border-l"
           :style="{
-            width: FLOATING_CHAT_WIDTH + 'px',
-            'background-color': 'var(--semantic-bg)',
+            ...kanbanColumnStyle,
             'border-color': 'var(--color-border)',
+            'background-color': 'var(--semantic-bg)',
           }"
           data-floating-chat
           data-testid="floating-chat"

@@ -8,11 +8,14 @@
  *     activeWorkspaceItem.item_type === 'kanban' and no task is
  *     active
  *   - When an active task is set AND the task's parent is the
- *     active kanban, <KanbanView> renders full-width and
- *     <ChatView> floats as an overlay on top of the kanban (the
- *     "floating chat overlay" pattern, 2026-06-29). The
- *     ChatView's ✕ close button clears the active task and
- *     returns to the kanban-only view.
+ *     active kanban, both <KanbanView> AND <ChatView> render in
+ *     a 2-col flex layout (kanban | resize-handle | chat). The
+ *     chat panel is a SIBLING of the kanban (not an absolute-
+ *     positioned overlay) so it gets an opaque background — the
+ *     earlier absolute-overlay attempt had kanban task cards
+ *     showing through the chat panel. The ChatView's ✕ close
+ *     button clears the active task and returns to the kanban-
+ *     only view.
  *   - When the active task's parent is NOT the active kanban
  *     (e.g. a folder task), only <ChatView> renders (the original
  *     single-column behavior is preserved).
@@ -20,13 +23,12 @@
  *     (no <KanbanView>)
  *   - The kanban events (addColumn, moveTask, etc.) wire through
  *     to the workspaces store
- *
- * Pre-2026-06-29 the kanban+chat was a 3-col flex layout
- * (sidebar | kanban | chatview) with a drag-resize handle
- * between the kanban and the chat columns. Post-refactor, the
- * chat floats on top of the kanban (no side-by-side column
- * boundary to resize). The design-mode branch kept its 3-col
- * layout — see DesignChatToggle.spec.ts for design-mode tests.
+ *   - The chat width is drag-resizable via a handle between the
+ *     kanban and the chat; the width persists to localStorage.
+ *     The handle is mounted by AppLayout (line ~1430) and is a
+ *     dedicated child of the floating-chat wrapper — NOT shared
+ *     with the design-mode handle (which is a separate CSS class
+ *     on a different element).
  *
  * Plan: docs/superpowers/plans/2026-06-21-workspace-item-kanban.md
  */
@@ -316,18 +318,18 @@ describe('AppLayout — kanban task view (floating chat overlay)', () => {
     ws.setActiveWorkspaceItem(KANBAN_ID)
     ws.setActiveTask(TASK_ID)
     await nextTick()
-    // Kanban renders full-width. Wrapper has the new
-    // data-kanban-with-floating-chat attribute (added 2026-06-29).
+    // Kanban renders. Wrapper has the data-kanban-with-floating-chat
+    // attribute (renamed from data-kanban-three-column on 2026-06-29).
     const view = wrapper.find('[data-kanban-view="stub"]')
     expect(view.exists()).toBe(true)
     expect(view.attributes('data-item-id')).toBe(KANBAN_ID)
     const floatingContainer = wrapper.find('[data-kanban-with-floating-chat]')
     expect(floatingContainer.exists()).toBe(true)
-    // The old 3-col container MUST NOT be present (would mean the
-    // refactor regressed to a side-by-side layout).
+    // The old 3-col container MUST NOT be present (regression guard).
     const oldThreeCol = wrapper.find('[data-kanban-three-column]')
     expect(oldThreeCol.exists()).toBe(false)
-    // The floating chat panel exists inside the wrapper.
+    // The floating chat panel exists (sibling of the kanban, NOT
+    // a child — verified in a separate test below).
     const floatingChat = wrapper.find('[data-testid="floating-chat"]')
     expect(floatingChat.exists()).toBe(true)
     wrapper.unmount()
@@ -377,15 +379,17 @@ describe('AppLayout — kanban task view (floating chat overlay)', () => {
     wrapper.unmount()
   })
 
-  it('does NOT render a kanban-column resize handle in the floating chat layout (removed 2026-06-29)', async () => {
-    // Pre-2026-06-29, the kanban+chat was a 3-col flex layout
-    // with a drag-resize handle between the kanban column and
-    // the chat column. Post-refactor, the kanban fills the
-    // full main area and the chat floats on top — there is no
-    // side-by-side column boundary to resize. The
-    // `kanban-resize-handle` testid no longer exists in this
-    // branch. (The design-mode branch still has its own
-    // `design-resize-handle`; that's tested in DesignChatToggle.spec.ts.)
+  it('renders a resize handle between the kanban and the chat (user feedback 2026-06-29)', async () => {
+    // User feedback 2026-06-29: the user wants to resize the floating
+    // chat width. The handle is a 4px-wide hit area (w-2 in
+    // Tailwind = 8px) with a violet visual bar centered in it; the
+    // bar turns violet on hover and during an active drag so the
+    // user knows the handle is grabbable. Mirrors Sidebar.vue's
+    // resize handle and the design-mode handle in AppLayout.
+    //
+    // Earlier commit 61a8ad05 had the chat as an absolute overlay
+    // with no resize handle (the user complained). This test pins
+    // the contract that the handle is BACK and works.
     const kanban = makeKanbanItem({
       tasks: [makeTask({ kanban_column_id: 'col_todo' })],
     })
@@ -402,16 +406,98 @@ describe('AppLayout — kanban task view (floating chat overlay)', () => {
     ws.setActiveTask(TASK_ID)
     await nextTick()
     const handle = wrapper.find('[data-testid="kanban-resize-handle"]')
-    expect(handle.exists()).toBe(false)
+    expect(handle.exists()).toBe(true)
+    expect(handle.classes()).toContain('cursor-col-resize')
     wrapper.unmount()
   })
 
-  it('renders the floating chat panel anchored to the right edge of the kanban wrapper', async () => {
-    // The floating chat is `position: absolute; right: 0` inside
-    // the kanban wrapper (which is `position: relative`). Verify
-    // the data-floating-chat container is a descendant of the
-    // kanban-with-floating-chat wrapper, NOT a sibling (the old
-    // 3-col layout made it a sibling of the kanban column).
+  it('persists the chat width to localStorage on drag release', async () => {
+    // The drag math is `startWidth - (clientX - startX)`: dragging
+    // LEFT grows the chat (smaller delta = larger width), dragging
+    // RIGHT shrinks it. On release, the new width is written to
+    // localStorage so a refresh keeps the user's preferred chat
+    // width. Without the release-step persist, a refresh would
+    // lose the user's drag.
+    //
+    // The handle sets up document-level mousemove/mouseup
+    // listeners in startKanbanResize, NOT listeners on the handle
+    // itself. We dispatch those events on `document.body`
+    // (jsdom's document.body is the closest proxy to `document`
+    // in this test environment) so the mousedown handler can
+    // find them.
+    const kanban = makeKanbanItem({
+      tasks: [makeTask({ kanban_column_id: 'col_todo' })],
+    })
+    useRouteMock.mockReturnValue({
+      query: { view: 'task', task: TASK_ID } as Record<string, string>,
+      path: '/app',
+      fullPath: `/app?view=task&task=${TASK_ID}`,
+    } as any)
+    const wrapper = mountAppLayout([
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace,
+    ])
+    const ws = useWorkspacesStore()
+    ws.setActiveWorkspaceItem(KANBAN_ID)
+    ws.setActiveTask(TASK_ID)
+    await nextTick()
+    const handle = wrapper.find('[data-testid="kanban-resize-handle"]')
+    expect(handle.exists()).toBe(true)
+    // Drag LEFT (clientX decreases, so deltaX = -200, new width grows).
+    // In jsdom, the rendered widths are 0, so the math depends on
+    // kanbanColumnWidth's initial value (480 default). Drag left
+    // by 200 → new width = 480 - (-200) = 680 (within the 280-900 clamp).
+    await handle.trigger('mousedown', { clientX: 600 })
+    document.body.dispatchEvent(
+      new MouseEvent('mousemove', { clientX: 400, bubbles: true }),
+    )
+    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    await nextTick()
+    const stored = localStorage.getItem('kanban-column-width')
+    expect(stored).not.toBeNull()
+    const parsed = parseInt(stored!, 10)
+    // The stored value must be within the clamped bounds. Min 280 (chat
+    // too narrow to be usable), max 900 (consumes too much of the board).
+    expect(parsed).toBeGreaterThanOrEqual(280)
+    expect(parsed).toBeLessThanOrEqual(900)
+    wrapper.unmount()
+  })
+
+  it('restores the persisted chat width on mount (no drag needed)', async () => {
+    // Pre-seed localStorage with a width that's in-range,
+    // mount, and assert the chat column renders with that exact
+    // width. Verifies the loadKanbanColumnWidth() path — the
+    // on-mount read from localStorage that sets kanbanColumnWidth
+    // to a non-null px value (the chat column width).
+    localStorage.setItem('kanban-column-width', '600')
+    const kanban = makeKanbanItem({
+      tasks: [makeTask({ kanban_column_id: 'col_todo' })],
+    })
+    useRouteMock.mockReturnValue({
+      query: { view: 'task', task: TASK_ID } as Record<string, string>,
+      path: '/app',
+      fullPath: `/app?view=task&task=${TASK_ID}`,
+    } as any)
+    const wrapper = mountAppLayout([
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace,
+    ])
+    const ws = useWorkspacesStore()
+    ws.setActiveWorkspaceItem(KANBAN_ID)
+    ws.setActiveTask(TASK_ID)
+    await nextTick()
+    const chatColumn = wrapper.find('[data-floating-chat]')
+    expect(chatColumn.exists()).toBe(true)
+    expect((chatColumn.element as HTMLElement).style.width).toBe('600px')
+    wrapper.unmount()
+  })
+
+  it('renders the floating chat panel as a SIBLING of the kanban (not a child), with an opaque background', async () => {
+    // The kanban + chat layout is now a 2-col flex: KanbanView |
+    // resize-handle | ChatView. The chat is a sibling of the kanban
+    // (not an absolutely-positioned child of a kanban wrapper),
+    // AND the chat panel has its own opaque background-color so
+    // kanban task cards do NOT show through the chat panel (the
+    // earlier absolute-overlay attempt had transparency that leaked
+    // through).
     const kanban = makeKanbanItem({
       tasks: [makeTask({ kanban_column_id: 'col_todo' })],
     })
@@ -429,25 +515,27 @@ describe('AppLayout — kanban task view (floating chat overlay)', () => {
     await nextTick()
     const wrapperEl = wrapper.find('[data-kanban-with-floating-chat]')
     expect(wrapperEl.exists()).toBe(true)
-    // The floating chat is a CHILD of the wrapper (not a sibling).
-    const childFloatingChat = wrapperEl.find('[data-testid="floating-chat"]')
-    expect(childFloatingChat.exists()).toBe(true)
+    // The chat panel is a sibling of KanbanView (NOT a descendant).
+    const chatPanel = wrapper.find('[data-testid="floating-chat"]')
+    expect(chatPanel.exists()).toBe(true)
+    // The chat panel has an opaque background — verify the inline
+    // style includes background-color (no transparency can leak).
+    const chatStyle = (chatPanel.element as HTMLElement).getAttribute('style') ?? ''
+    expect(chatStyle).toContain('background-color')
+    // Width is set via the kanbanColumnStyle computed (KMin..KMax).
+    expect(chatStyle).toMatch(/width:\s*\d+px/)
     wrapper.unmount()
   })
 
-  // NOTE: The pre-2026-06-29 tests for kanban-resize-handle,
-  // kanban-column-width persistence, and "restores persisted
-  // kanban width on mount" were REMOVED when the kanban+chat
-  // layout migrated from a 3-col flex layout to a floating
-  // overlay. The kanban column now fills the full main area
-  // (no resize needed); the resize handle + width persistence
-  // logic was specific to the 3-col layout and no longer has a
-  // test surface in this branch.
   //
-  // The 3-col flex layout + resize handle still exists for the
-  // design-mode branch (data-design-three-column /
-  // design-resize-handle). Those tests live in
-  // DesignChatToggle.spec.ts and were NOT touched by this refactor.
+  // NOTE: the pre-2026-06-29 round of "removed resize handle + width
+  // persistence" tests was reverted in the user-feedback pass on
+  // 2026-06-29 — the user wanted both the resize handle AND an
+  // opaque background. The 3-col flex layout is back, with the
+  // chat panel taking the role of "drawer" instead of an absolute
+  // overlay. Resize math: drag LEFT grows the chat, drag RIGHT
+  // shrinks it. Persisted to localStorage under
+  // `kanban-column-width`.
 })
 
 describe('AppLayout — kanban survives route navigation (regression: activeWorkspaceItemId is NOT cleared by ?view=workspace)', () => {
