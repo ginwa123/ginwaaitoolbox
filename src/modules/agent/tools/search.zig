@@ -650,49 +650,87 @@ pub const search_tool = AgentTool{
     .function = .{
         .name = "search",
         .description =
-        \\Search for a pattern in files using ripgrep.
-        \\Results wrapped in <search> tag with pattern/path attributes.
-        \\No matches returns: <search pattern="..." path="..."></search>
-        \\Response format:
+        \\PRIMARY search tool for code navigation. Use THIS tool — not `bash rg`,
+        \\`bash grep`, `bash grep -r`, or `bash find` — to search the codebase.
+        \\
+        \\WHY THIS TOOL OVER `bash rg ...`
+        \\- Structured XML output with line numbers and file paths — no shell
+        \\  parsing or `rg --line-number --no-heading` flag-juggling required.
+        \\- Automatically respects .gitignore / .ignore / .rgignore (skips
+        \\  build/, node_modules/, .git/, target/, vendor/).
+        \\- Pattern is passed via argv, not a shell — no injection risk from
+        \\  regex-looking patterns, no need to escape quotes or backticks.
+        \\- Capped output (max_results + max_output) prevents runaway results
+        \\  from filling the context window.
+        \\- Identical behavior across platforms — no per-OS rg-flag differences.
+        \\
+        \\Fall back to `bash rg` ONLY when you need an rg flag this tool does
+        \\not expose (rare — word_boundary / literal / only_matching cover the
+        \\common cases below).
+        \\
+        \\WHEN TO USE
+        \\- "Where is X defined?" — symbol, function, type, constant lookup.
+        \\- "Which files use / call Y?" — finding references across the project.
+        \\- "Does this pattern or feature already exist in the codebase?" before
+        \\  writing new code (check first to avoid duplication).
+        \\- "Which file produced this error / log line?"
+        \\- Understanding any non-trivial code path or control flow.
+        \\
+        \\WHEN NOT TO USE
+        \\- You already know the exact file path → use read_file.
+        \\- You want to find files BY NAME (not by content) → use glob.
+        \\- You need a real ripgrep flag this tool does not expose → `bash rg`
+        \\  fallback, but first check whether the flag has a parameter here.
+        \\
+        \\RESPONSE FORMAT
+        \\Results are wrapped in a <search> tag with pattern/path attributes.
+        \\By default matches are grouped per file (<file> wrapper):
+        \\
         \\<search pattern="regex" path="path">
         \\  <file path="path/to/file.zig" total="100" count="3">
         \\    <m><l>10</l><s>snippet at line 10</s></m>
         \\    <m><l>25</l><s>snippet at line 25</s></m>
         \\  </file>
         \\</search>
-        \\Where: total=file total lines, count=number of matches in this file.
         \\
-        \\When group_by_file=false the response is flat (one <m> per match,
-        \\no <file> wrapper):
+        \\Field meanings: `total` = the file's total line count. `count` =
+        \\number of matches in this file. `l` = match line number (1-indexed).
+        \\`s` = snippet (~100 chars of context around the match).
+        \\
+        \\No matches returns: <search pattern="..." path="..."></search>
+        \\(empty body).
+        \\
+        \\Set `group_by_file: false` for a flat list (one <m> per match, no
+        \\<file> wrapper):
         \\<search pattern="..." path="..." group_by_file="false">
         \\  <m><f>path/to/file.zig</f><l>10</l><s>snippet</s></m>
         \\</search>
         \\
-        \\Matching modes (optional flags, all default to false):
-        \\- word_boundary (-w): match whole words only. Pattern 'foo' matches
-        \\  'foo bar' but NOT 'foobar'. Useful for identifier-style searches
-        \\  where partial matches would be noise.
-        \\- literal (-F): treat pattern as a literal string — regex
-        \\  metacharacters like '.', '*', '[', '(', '\\' are matched verbatim.
-        \\  Safer than escaping when searching for code with regex-looking
-        \\  tokens (e.g. "fn(", "*.zig").
-        \\- only_matching (-o): return only the matched substring per line
-        \\  instead of the full surrounding line. Useful for short tokens
-        \\  in noisy lines (e.g. extracting IDs, version strings, dates).
-        \\All three flags are mutually compatible — can be combined freely.
+        \\MATCHING MODES (all default false; can be combined freely)
+        \\- word_boundary: whole-word match. "foo" matches "foo bar" but NOT
+        \\  "foobar". Use for identifier lookups where partial matches would
+        \\  be noise.
+        \\- literal: treat pattern as a literal string — regex metacharacters
+        \\  like '.', '*', '[', '(', '\\' are matched verbatim. Safer for
+        \\  code-shaped patterns like "fn(", "*.zig", ".{".
+        \\- only_matching: return just the matched substring, not the
+        \\  surrounding line. Useful for short tokens in noisy lines
+        \\  (extracting IDs, version strings, dates).
         \\
-        \\Edge cases:
-        \\- pattern starting with `-` is treated as a literal (rg's `-e`
-        \\  flag is used internally) — searching for the literal text
-        \\  "--help" works.
-        \\- pattern must be non-empty and contain no NUL bytes.
-        \\- max_output is hard-capped at 100MB.
+        \\PIPELINE HINT (important for agentic loops)
+        \\Run search to identify candidate file:line, then call read_file with
+        \\offset/limit to view the surrounding context. Two focused calls are
+        \\faster and more accurate than reading whole files blind.
+        \\
+        \\EDGE CASES
+        \\- Pattern starting with `-` is treated as a literal (rg's `-e` flag
+        \\  is used internally) — searching for the literal text "--help"
+        \\  works without escaping.
+        \\- Pattern must be non-empty and contain no NUL bytes.
         \\- max_results and max_output must be > 0.
-        \\- respect_ignore_files: default true (respects .gitignore/.ignore/.rgignore).
-        \\  Set false to search gitignored paths (build/, node_modules/, .git/).
-        \\
-        \\- Use this to locate symbols, functions, or types before reading.
-        \\- Prefer this over bash+rg for code navigation.
+        \\- max_output is hard-capped at 100MB.
+        \\- respect_ignore_files (default true): set false to search
+        \\  gitignored paths (build/, node_modules/, .git/, target/, vendor/).
         ,
         .parameters = .{
             .type = "object",
