@@ -294,6 +294,11 @@ watch(activePageId, (pageId) => {
 
 // ─── Keyboard shortcuts ────────────────────────────────────────────────
 
+// True while the user is holding the Space bar. Drives the body's
+// cursor (grab / grabbing) and gates the pointer-drag pan handler
+// on the canvas container.
+const isSpacePressed = ref(false)
+
 const handleKeydown = (event: KeyboardEvent): void => {
   // Skip when the user is typing in an input/textarea/contenteditable
   // — don't steal keys from the W×H inputs, the PropertiesPanel
@@ -305,6 +310,25 @@ const handleKeydown = (event: KeyboardEvent): void => {
       target.tagName === 'TEXTAREA' ||
       target.isContentEditable)
   ) {
+    return
+  }
+
+  // Space held (no Ctrl/Cmd/Alt/Shift — those are bound to other shortcuts,
+  // and Alt+Space is the window-menu shortcut on Linux/macOS). Plain Space
+  // should NOT scroll the page when the design view is mounted — that's
+  // the browser default we override here.
+  if (
+    event.key === ' ' &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    !event.shiftKey
+  ) {
+    if (!isSpacePressed.value) {
+      isSpacePressed.value = true
+      document.body.style.cursor = 'grab'
+    }
+    event.preventDefault()
     return
   }
 
@@ -331,11 +355,36 @@ const handleKeydown = (event: KeyboardEvent): void => {
   }
 }
 
+const handleKeyup = (event: KeyboardEvent): void => {
+  // Release Space. Don't gate on target — if focus moved to an input
+  // mid-press, we still want to clear the body cursor on Space-up.
+  if (event.key === ' ' && isSpacePressed.value) {
+    isSpacePressed.value = false
+    document.body.style.cursor = ''
+  }
+}
+
+const handleWindowBlur = (): void => {
+  // Defensive: if focus is lost (window blur / tab switch) while
+  // Space is held, the keyup event may never fire. Reset so we
+  // don't leave the cursor stuck on "grab".
+  if (isSpacePressed.value) {
+    isSpacePressed.value = false
+    document.body.style.cursor = ''
+  }
+}
+
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)
+  document.addEventListener('keyup', handleKeyup)
+  window.addEventListener('blur', handleWindowBlur)
 })
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown)
+  document.removeEventListener('keyup', handleKeyup)
+  window.removeEventListener('blur', handleWindowBlur)
+  // Defensive: clear body cursor if we unmount mid-press.
+  document.body.style.cursor = ''
 })
 
 // ─── Handlers ──────────────────────────────────────────────────────────
