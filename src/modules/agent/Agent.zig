@@ -227,6 +227,11 @@ const JsonRequest = struct {
     tools: ?[]const JsonTool = null,
     tool_choice: ?[]const u8 = null,
 
+    /// Optional end-user identifier. Omitted from the JSON body when null
+    /// or empty. Maps to OpenAI's `user` request-body parameter. See
+    /// https://platform.openai.com/docs/api-reference/chat/create.
+    user: ?[]const u8 = null,
+
     pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
         try stringify.beginObject();
         try stringify.objectField("model");
@@ -254,6 +259,12 @@ const JsonRequest = struct {
             try stringify.write(t);
             try stringify.objectField("tool_choice");
             try stringify.write(self.tool_choice.?);
+        }
+        if (self.user) |u| {
+            if (u.len > 0) {
+                try stringify.objectField("user");
+                try stringify.write(u);
+            }
         }
         try stringify.endObject();
     }
@@ -385,6 +396,20 @@ const AnthropicTool = struct {
     }
 };
 
+/// Anthropic `metadata` block. Currently only `user_id` is supported —
+/// Anthropic's Messages API accepts arbitrary key/value metadata but
+/// nalar only uses `user_id` for the LLM-API end-user identifier.
+const AnthropicMetadata = struct {
+    user_id: []const u8,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("user_id");
+        try stringify.write(self.user_id);
+        try stringify.endObject();
+    }
+};
+
 const AnthropicRequest = struct {
     model: []const u8,
     messages: []const AnthropicMessage,
@@ -393,6 +418,11 @@ const AnthropicRequest = struct {
     tools: ?[]const AnthropicTool = null,
     thinking: ?AnthropicThinking = null,
     temperature: ?f32 = null,
+
+    /// Optional metadata block. Currently emits `{"user_id": "..."}`
+    /// from `Agent.userIdentifier`. See
+    /// https://docs.claude.com/en/api/messages.
+    metadata: ?AnthropicMetadata = null,
 
     pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
         try stringify.beginObject();
@@ -419,6 +449,10 @@ const AnthropicRequest = struct {
             try stringify.write(true);
             try stringify.objectField("stream_options");
             try stringify.write(.{ .include_usage = true });
+        }
+        if (self.metadata) |m| {
+            try stringify.objectField("metadata");
+            try stringify.write(m);
         }
         try stringify.endObject();
     }
@@ -743,6 +777,12 @@ pub const Agent = struct {
     allocator: std.mem.Allocator,
     httpOptions: HttpOptions = .{},
     UrlStyle: []const u8 = "openai",
+
+    /// Per-install LLM-API end-user identifier. Empty = don't include the
+    /// identifier in the request body. Set from `LlmConfig.user_identifier`
+    /// at Agent.init() call sites. Anthropic: emitted as
+    /// `metadata.user_id`. OpenAI: emitted as top-level `user`.
+    userIdentifier: []const u8 = "",
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) !Agent {
         return Agent{
@@ -1097,6 +1137,10 @@ pub const Agent = struct {
             .tools = json_tools,
             .thinking = if (self.thinkingEnabled) .{ .type = "enabled" } else null,
             .temperature = params.temperature,
+            .metadata = if (self.userIdentifier.len > 0)
+                .{ .user_id = self.userIdentifier }
+            else
+                null,
         };
 
         var aw: std.Io.Writer.Allocating = .init(allocator);
@@ -1208,6 +1252,7 @@ pub const Agent = struct {
             .stream = stream,
             .tools = json_tools,
             .tool_choice = if (json_tools != null) "auto" else null,
+            .user = if (self.userIdentifier.len > 0) self.userIdentifier else null,
         };
 
         var aw: std.Io.Writer.Allocating = .init(allocator);
