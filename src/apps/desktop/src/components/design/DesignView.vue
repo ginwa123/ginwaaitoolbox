@@ -295,12 +295,39 @@ watch(activePageId, (pageId) => {
 // ─── Keyboard shortcuts ────────────────────────────────────────────────
 
 const handleKeydown = (event: KeyboardEvent): void => {
+  // Skip when the user is typing in an input/textarea/contenteditable
+  // — don't steal keys from the W×H inputs, the PropertiesPanel
+  // form fields, etc.
+  const target = event.target as HTMLElement | null
+  if (
+    target &&
+    (target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.isContentEditable)
+  ) {
+    return
+  }
+
   if (event.key === 'Escape') {
     selectedElementId.value = null
     // Also close the add-element dialog if it's open.
     if (showAddElementDialog.value) {
       showAddElementDialog.value = false
     }
+    return
+  }
+
+  // Fit-to-viewport shortcuts — F (Figma convention) or Shift+1.
+  // Both ignored when modifier keys (Ctrl/Cmd/Alt) are held to avoid
+  // colliding with browser / OS shortcuts.
+  if (
+    (event.key === 'f' || event.key === 'F' || (event.key === '1' && event.shiftKey)) &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey
+  ) {
+    event.preventDefault()
+    zoomFit()
   }
 }
 
@@ -441,6 +468,37 @@ const setZoom = (next: number): void => {
 const zoomIn = (): void => setZoom(zoom.value + ZOOM_STEP)
 const zoomOut = (): void => setZoom(zoom.value - ZOOM_STEP)
 const zoomReset = (): void => setZoom(1.0)
+
+// Fit-to-viewport: compute the zoom level that makes the entire page
+// fit inside the scroll container with a small margin, then scroll
+// the container so the page is centered. Mirrors Figma's Shift+1
+// ("Zoom to fit"). Picked up by the keyboard shortcut (F / Shift+1)
+// and the toolbar button. Reads the live DOM dimensions so resizing
+// the window refits.
+const ZOOM_FIT_MARGIN = 48 // px of padding around the fitted canvas
+
+const zoomFit = (): void => {
+  if (!activePage.value) return
+  const container = document.querySelector<HTMLElement>(
+    '[data-testid="design-canvas-scroll-container"]',
+  )
+  if (!container) return
+  const cw = container.clientWidth - ZOOM_FIT_MARGIN
+  const ch = container.clientHeight - ZOOM_FIT_MARGIN
+  if (cw <= 0 || ch <= 0) return
+  const zoomX = cw / canvasWidth.value
+  const zoomY = ch / canvasHeight.value
+  const fit = Math.min(zoomX, zoomY)
+  setZoom(fit)
+  // Center after the scale change so the page appears centered.
+  // The scroll math mirrors the Ctrl+wheel handler.
+  requestAnimationFrame(() => {
+    const scaledW = canvasWidth.value * zoom.value
+    const scaledH = canvasHeight.value * zoom.value
+    container.scrollLeft = (scaledW - container.clientWidth) / 2
+    container.scrollTop = (scaledH - container.clientHeight) / 2
+  })
+}
 
 // Ctrl+wheel zooms in/out at the cursor position. The plain wheel
 // is left alone (it scrolls the canvas container as usual — matches
@@ -762,6 +820,15 @@ onUnmounted(() => {
               data-testid="design-zoom-reset"
               @click="zoomReset"
             >{{ Math.round(zoom * 100) }}%</button>
+            <button
+              type="button"
+              class="px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80"
+              style="color: var(--semantic-text); border: 1px solid var(--color-border);"
+              aria-label="Fit page to viewport (shortcut: F or Shift+1)"
+              title="Fit page to viewport (F or Shift+1)"
+              data-testid="design-zoom-fit"
+              @click="zoomFit"
+            >⛶</button>
             <button
               type="button"
               class="px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80"
