@@ -149,6 +149,12 @@ fn useCase(
             .pinned_position = task.pinned_position,
             .kanban_column_id = task.kanban_column_id,
             .kanban_position = task.kanban_position,
+            // Auto-retry-until-stop: slice borrow from `task` (owned
+            // by WorkspaceItemTaskInfo.deinit, stays valid until the
+            // outer defer at the top of useCase runs). The response
+            // carries this to the frontend's KanbanTaskDetailDialog
+            // toggle so it shows the live state on dialog open.
+            .is_auto_retry_until_stop = task.is_auto_retry_until_stop,
         });
     }
 

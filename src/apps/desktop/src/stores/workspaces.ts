@@ -1915,15 +1915,23 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     bus.on('session', (event) => {
       if (event.action === 'updated') {
         // Find the task (task.id == session_id) and update its
-        // name. We also keep navigationStore.activeChatName in
-        // sync if the renamed task is active — this is the same
-        // pattern as renameTask (workspaces.ts:renameTask).
+        // name + unattended flag. We also keep
+        // navigationStore.activeChatName in sync if the renamed
+        // task is active — this is the same pattern as
+        // renameTask (workspaces.ts:renameTask). The unattended
+        // flag update keeps the KanbanTaskDetailDialog toggle
+        // in sync if the dialog is open (without it, the toggle
+        // would show the value from when the dialog was opened,
+        // which becomes stale on PUT /api/llm/session/:id).
         for (const ws of workspaces.value) {
           for (const item of ws.items) {
             if (!item.tasks) continue
             const task = item.tasks.find((t) => t.id === event.id)
             if (task) {
               task.name = event.name || task.name
+              if (event.is_auto_retry_until_stop !== undefined) {
+                task.is_auto_retry_until_stop = event.is_auto_retry_until_stop
+              }
               if (activeTaskId.value === task.id) {
                 useNavigationStore().setActiveChatName(task.name)
               }

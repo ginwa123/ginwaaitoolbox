@@ -1949,6 +1949,12 @@ export interface SessionEvent {
   // string when no worktree is bound, omitted for events that don't
   // carry session fields (e.g. delete).
   git_worktree_cwd?: string
+  // Mirrors sessions.is_auto_retry_until_stop (Migration 063). Only
+  // present on 'updated' events where the session row carries the
+  // flag. Used by the workspaces store's SSE handler to keep
+  // task.is_auto_retry_until_stop in sync so the
+  // KanbanTaskDetailDialog toggle shows the live value.
+  is_auto_retry_until_stop?: string
 }
 
 // Queue messages SSE event types

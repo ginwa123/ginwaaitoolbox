@@ -3213,6 +3213,12 @@ pub const WorkspaceItemTaskInfo = struct {
     /// `0` for non-kanban tasks. Mirrors `workspace_item_tasks.kanban_position`
     /// (Migration 048).
     kanban_position: i64 = 0,
+    /// Unattended-mode flag, joined from `sessions` for routine tasks
+    /// (where `task.id == session.id` per the project convention).
+    /// `'0'` for standard tasks that have no session row. The frontend's
+    /// KanbanTaskDetailDialog toggle reads this on dialog open to show
+    /// the current state. Owned by the lister; freed by `deinit`.
+    is_auto_retry_until_stop: []u8 = &.{},
 
     pub fn deinit(self: WorkspaceItemTaskInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -3230,6 +3236,7 @@ pub const WorkspaceItemTaskInfo = struct {
         if (self.created_at) |ca| allocator.free(ca);
         if (self.updated_at) |ua| allocator.free(ua);
         if (self.kanban_column_id) |kc| allocator.free(kc);
+        if (self.is_auto_retry_until_stop.len > 0) allocator.free(self.is_auto_retry_until_stop);
     }
 };
 
@@ -3658,7 +3665,16 @@ pub fn listWorkspaceItemTasksWithCursor(
 
     const sql = try std.fmt.allocPrint(
         allocator,
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id WHERE t.workspace_item_id = ?{s} {s} LIMIT {s}",
+        // Auto-retry-until-stop: LEFT JOIN sessions on t.id =
+        // sessions.id (per the project convention task.id ==
+        // session.id for routine tasks; standard tasks that have
+        // no matching session row get NULL → COALESCE to '0').
+        // COALESCE(t.kanban_position, 0) ensures standard tasks
+        // without a kanban_position still get '0' (the column is
+        // nullable per Migration 048). s.is_auto_retry_until_stop
+        // appends as column 18, shifting nothing because routines
+        // fields are already past it (still 11-17).
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0') FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s} {s} LIMIT {s}",
         .{ cursor_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -3673,11 +3689,12 @@ pub fn listWorkspaceItemTasksWithCursor(
     }
 
     while (try rows.next()) |row| {
-        // Row indices (post-Migration-061, same as listWorkspaceItemTasks):
+        // Row indices (post-Migration-063-attended-toggle JOIN):
         //   0: id, 1: name, 2: workspace_item_id, 3: description,
         //   4: created_at, 5: updated_at, 6: task_type,
         //   7: is_pinned, 8: pinned_position, 9: kanban_column_id,
-        //   10: kanban_position, 11-17: routine fields.
+        //   10: kanban_position, 11-17: routine fields,
+        //   18: is_auto_retry_until_stop (joined from sessions).
         const task_type = if (row.values[6].len > 0)
             try allocator.dupe(u8, row.values[6])
         else
@@ -3714,6 +3731,9 @@ pub fn listWorkspaceItemTasksWithCursor(
             .kanban_column_id = if (row.values[9].len > 0) try allocator.dupe(u8, row.values[9]) else null,
             .kanban_position = std.fmt.parseInt(i64, row.values[10], 10) catch 0,
             .routine = routine_meta,
+            // Auto-retry-until-stop: index 18 (joined from sessions).
+            // COALESCE'd to '0' in the SQL so this is always non-empty.
+            .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[18]),
         };
         try tasks.append(allocator, task);
         row.deinit(allocator);

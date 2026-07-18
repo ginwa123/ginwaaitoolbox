@@ -418,6 +418,14 @@ pub const WorkspaceItemTaskResponse = struct {
     /// Position within the kanban column. `0` for non-kanban tasks.
     /// Mirrors `WorkspaceItemTaskInfo.kanban_position` (Migration 048).
     kanban_position: i64 = 0,
+    /// Unattended-mode flag, joined from `sessions` for routine
+    /// tasks (where `task.id == session.id` per the project
+    /// convention). `'0'` for standard tasks that have no
+    /// session row, and the literal session value otherwise.
+    /// Empty string when the join didn't find a row — the
+    /// frontend's KanbanTaskDetailDialog defaults to off in that
+    /// case.
+    is_auto_retry_until_stop: []const u8 = "",
 };
 
 pub const WorkspaceItemTaskListResponse = struct {
