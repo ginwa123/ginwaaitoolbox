@@ -219,15 +219,6 @@ pub const UpdateDesignPageInput = struct {
     height: i64,
 };
 
-pub const UpdateDesignPageError = error{
-    PageIdRequired,
-    WidthOutOfRange,    // < 320 or > 4096
-    HeightOutOfRange,   // < 240 or > 4096
-    PageNotFound,
-    DbError,
-    OutOfMemory,
-};
-
 /// Update an existing design page's width/height by id. UPDATE-only;
 /// does NOT insert — see `setDesignPage` for the upsert path used
 /// by the agent's `set_design_page` tool. Returns the post-update
@@ -242,7 +233,7 @@ pub fn updateDesignPage(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     input: UpdateDesignPageInput,
-) UpdateDesignPageError!DesignPage {
+) anyerror!DesignPage {
     if (input.page_id.len == 0) return error.PageIdRequired;
     if (input.width < 320 or input.width > 4096) return error.WidthOutOfRange;
     if (input.height < 240 or input.height > 4096) return error.HeightOutOfRange;
