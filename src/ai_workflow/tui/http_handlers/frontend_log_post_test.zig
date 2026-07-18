@@ -248,7 +248,7 @@ fn setupDbWithLogs() !struct {
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
-    try nalarcore.migrations_mod.migration.Migration063AddFrontendLogs.up(&db, alloc);
+    try nalarcore.migrations_mod.migration.Migration064AddFrontendLogs.up(&db, alloc);
     return .{ .db = db, .threaded = threaded };
 }
 
