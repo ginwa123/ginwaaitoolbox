@@ -103,7 +103,19 @@ const emit = defineEmits<{
   // Create-mode counterpart. Host wires this to workspacesStore.addTask
   // + moveTaskToColumn. Same payload shape as `save` but with
   // mode='create' so the parent handler can switch on it.
-  create: [payload: { mode: 'create'; name: string; description: string }]
+  create: [
+    payload: {
+      mode: 'create'
+      name: string
+      description: string
+      // Auto-retry-until-stop (Option A): the toggle's live value
+      // at the moment of Create. `'0'` (default — feature off)
+      // is forwarded too so the host can pass it through to
+      // api.createTask; the helper filters out `'0'` so the backend
+      // only inserts a sessions row when the user actually opted in.
+      is_auto_retry_until_stop: '0' | '1'
+    },
+  ]
   // Emitted in edit mode when the user flips the unattended toggle.
   // The host persists via api.updateSession(task.id, { isAutoRetryUntilStop }).
   // value is '1' when toggled ON, '0' when toggled OFF. Emitted
@@ -177,6 +189,14 @@ const handleSave = () => {
       mode: 'create',
       name: name.value.trim(),
       description: description.value,
+      // Forward the unattended toggle's current value. The
+      // immediate-flip handler (handleUnattendedToggle) already
+      // updated `unattended` via PUT in edit mode; in create
+      // mode there's no session row yet, so this is the FIRST
+      // (and only) time the value gets sent. Host threads it
+      // through to api.createTask -> backend POST /tasks which
+      // inserts a sessions row when the value is '1'.
+      is_auto_retry_until_stop: unattended.value,
     })
   } else {
     emit('save', {
@@ -410,14 +430,18 @@ const columnLabel = computed<string | null>(() => {
               />
             </div>
 
-            <!-- Unattended-mode toggle (edit mode only). Flips the
+            <!-- Unattended-mode toggle (always shown). Flips the
                  session's `is_auto_retry_until_stop` flag (which
                  lives on sessions, not workspace_item_tasks).
                  Immediate save on flip — does NOT wait for Save click.
-                 Hidden in create mode (the session doesn't exist
-                 yet — there's no session to mark unattended). -->
+                 In edit mode, the immediate save hits
+                 PUT /api/llm/session/<id>. In create mode, the
+                 flip is captured in local state and forwarded with
+                 the create payload (the backend then atomically
+                 inserts a `sessions` row + sets the flag in one
+                 transaction). Either way, the flag persists from
+                 the moment the task is created. -->
             <div
-              v-if="!isCreateMode"
               class="mt-4 pt-4 flex items-center justify-between gap-3"
               style="border-top: 1px solid var(--color-border);"
               data-testid="kanban-task-detail-unattended"

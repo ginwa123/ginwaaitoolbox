@@ -453,6 +453,35 @@ fn createStandardTask(
     // task.id == session.id convention), so input.body.session_id is
     // typically null. Pass it through as-is — valueAlloc handles the
     // optional → "session_id":<id-or-null> serialization.
+
+    // Auto-retry-until-stop (Option A of the unattended-mode dialog
+    // fix): if the request body carries `is_auto_retry_until_stop`,
+    // insert a `sessions` row keyed by the new task.id so the flag
+    // has somewhere to land. The standard-task create path is the
+    // primary consumer (frontend's KanbanTaskDetailDialog toggle
+    // sends this when the user opts in at create time). Routine and
+    // memory tasks handle their own session lifecycle separately
+    // and don't take this field.
+    if (input.body.is_auto_retry_until_stop) |flag| {
+        const normalized: []const u8 = if (std.mem.eql(u8, flag, "1")) "1" else "0";
+        // INSERT OR IGNORE so a concurrent PUT /api/llm/session/:id
+        // that landed first (e.g. the user typed a message in the new
+        // task's chat before this row was written) doesn't trip a
+        // UNIQUE constraint failure. The `name` column is NOT NULL
+        // (canonical "id == name" pattern when the session row is
+        // created bare, e.g. by worker_spawn.zig). We use the same
+        // value the routine branch uses (task.id == session.id
+        // convention) so downstream SELECTs that join sessions see a
+        // consistent id/name pair.
+        db.exec(
+            allocator,
+            "INSERT OR IGNORE INTO sessions (id, name, status, is_auto_retry_until_stop) VALUES (?, ?, 'active', ?)",
+            &[_][]const u8{ task.id, task.id, normalized },
+        ) catch |err| {
+            std.log.warn("task_create: session INSERT for unattended flag failed (non-fatal): {s}", .{@errorName(err)});
+        };
+    }
+
     return .{
         .task_id = task.id,
         .name = task.name,

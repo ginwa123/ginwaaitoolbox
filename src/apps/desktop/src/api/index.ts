@@ -506,6 +506,15 @@ export async function createTask(
       name: string
       content: string
     }
+    // Auto-retry-until-stop (Migration 063, Option A fix): when the
+    // caller passes `'1'`, the backend ALSO inserts a `sessions`
+    // row (task.id == session.id per the project convention) so the
+    // unattended-mode flag has somewhere to land at create time.
+    // Only meaningful for `taskType: 'standard'` — routine and
+    // memory tasks manage their own session lifecycle elsewhere.
+    // `'0'` and undefined/empty are treated equivalently (no
+    // session INSERT).
+    isAutoRetryUntilStop?: string
   },
 ): Promise<Task> {
   const taskType = params.taskType ?? 'standard'
@@ -524,6 +533,12 @@ export async function createTask(
   if (taskType === 'memory' && params.memory) {
     body.memory_name = params.memory.name
     body.memory_content = params.memory.content
+  }
+  // Only forward the unattended flag when the user actually flipped
+  // it ON. Default '0' is the no-op default — sending it would
+  // trigger an unnecessary session INSERT (a new row per task).
+  if (params.isAutoRetryUntilStop === '1' && taskType === 'standard') {
+    body.is_auto_retry_until_stop = '1'
   }
   return await apiFetch<Task>(`/workspaces/${workspaceId}/items/${itemId}/tasks`, {
     method: 'POST',

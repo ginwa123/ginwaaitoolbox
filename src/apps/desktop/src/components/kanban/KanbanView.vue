@@ -351,6 +351,7 @@ const handleCreateTaskSave = async (payload: {
   mode: 'create'
   name: string
   description: string
+  is_auto_retry_until_stop?: '0' | '1'
 }) => {
   if (!activeCreateColumnId.value) return
   createBusy.value = true
@@ -362,6 +363,10 @@ const handleCreateTaskSave = async (payload: {
     const taskId = await workspacesStore.addTask(wsId, itId, {
       name: payload.name,
       description: payload.description,
+      // Forward the unattended toggle's value from the create
+      // dialog (Option A: backend atomically inserts a sessions
+      // row + sets the flag when this is '1').
+      isAutoRetryUntilStop: payload.is_auto_retry_until_stop,
     })
     if (!taskId) {
       createError.value = 'Failed to create task — please retry.'

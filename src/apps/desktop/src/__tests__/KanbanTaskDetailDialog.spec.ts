@@ -372,7 +372,14 @@ describe('KanbanTaskDetailDialog — unattended mode toggle', () => {
     expect(toggle?.checked).toBe(true)
   })
 
-  it('does NOT render the toggle in create mode (no session exists yet)', async () => {
+  it('renders the toggle in create mode (Option A: atomic create-with-session)', async () => {
+    // The toggle used to be hidden in create mode because no
+    // session row existed yet. As of the unattended-mode Option A
+    // fix, the create payload carries is_auto_retry_until_stop
+    // and the backend atomically inserts a sessions row + sets
+    // the flag in one transaction. So the toggle is now visible
+    // from the create flow — flipping it persists at task
+    // creation time.
     document.body.innerHTML = ''
     wrapper = mount(KanbanTaskDetailDialog, {
       attachTo: document.body,
@@ -382,7 +389,9 @@ describe('KanbanTaskDetailDialog — unattended mode toggle', () => {
     const toggle = findInDom<HTMLInputElement>(
       '[data-testid="kanban-task-detail-unattended-toggle"]',
     )
-    expect(toggle).toBeNull()
+    expect(toggle).not.toBeNull()
+    // Default value is '0' (off) — user can opt in by flipping.
+    expect(toggle?.checked).toBe(false)
   })
 
   it('flipping the toggle emits update-unattended with new value and previous', async () => {
@@ -530,7 +539,11 @@ describe('KanbanTaskDetailDialog — create mode', () => {
     expect(saveBtn?.hasAttribute('disabled')).toBe(false)
   })
 
-  it('emits create (not save) with { mode: "create", name, description }', async () => {
+  it('emits create (not save) with { mode: "create", name, description, is_auto_retry_until_stop }', async () => {
+    // The create payload now carries is_auto_retry_until_stop
+    // (Option A: backend atomically inserts a sessions row when
+    // this is '1'). Default value at dialog open is '0' — the
+    // toggle hasn't been flipped yet.
     const w = mountCreateDialog()
     await flushPromises()
     setInputValue('[data-testid="kanban-task-detail-create-name"]', '  New task  ')
@@ -545,7 +558,29 @@ describe('KanbanTaskDetailDialog — create mode', () => {
     const emitted = w!.emitted('create')
     expect(emitted).toBeTruthy()
     expect(emitted![0]).toEqual([
-      { mode: 'create', name: 'New task', description: 'Some description' },
+      { mode: 'create', name: 'New task', description: 'Some description', is_auto_retry_until_stop: '0' },
+    ])
+  })
+
+  it('emits create with is_auto_retry_until_stop: "1" when the toggle is flipped on', async () => {
+    // Flips the unattended toggle BEFORE clicking Create. The
+    // emitted payload should carry the flipped value.
+    const w = mountCreateDialog()
+    await flushPromises()
+    setInputValue('[data-testid="kanban-task-detail-create-name"]', 'Overnight run')
+    await flushPromises()
+    const toggle = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-unattended-toggle"]',
+    )
+    toggle!.checked = true
+    toggle!.dispatchEvent(new Event('change', { bubbles: true }))
+    await flushPromises()
+    clickInDom('[data-testid="kanban-task-detail-save"]')
+
+    const emitted = w!.emitted('create')
+    expect(emitted).toBeTruthy()
+    expect(emitted![0]).toEqual([
+      { mode: 'create', name: 'Overnight run', description: '', is_auto_retry_until_stop: '1' },
     ])
   })
 

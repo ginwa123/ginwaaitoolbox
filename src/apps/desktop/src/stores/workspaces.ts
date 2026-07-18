@@ -553,6 +553,14 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         name: string
         content: string
       }
+      // Auto-retry-until-stop (Migration 063, Option A fix): when
+      // `'1'`, the backend ALSO inserts a `sessions` row keyed by
+      // the new task.id so the unattended-mode flag persists from
+      // creation. Forwarded only for standard tasks (routine and
+      // memory have their own session lifecycle). The api.createTask
+      // helper filters out `'0'`/undefined so we don't trigger an
+      // unnecessary session INSERT for the common case.
+      isAutoRetryUntilStop?: string
     },
   ): Promise<string | undefined> {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
@@ -574,6 +582,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         taskType,
         routine: params.routine,
         memory: params.memory,
+        isAutoRetryUntilStop: params.isAutoRetryUntilStop,
       })
       item.tasks.unshift(newTask)
       return newTask.id
@@ -601,6 +610,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
             }
           : undefined,
         memory_name: params.memory?.name,
+        is_auto_retry_until_stop: params.isAutoRetryUntilStop,
         completed: false,
         createdAt: new Date(),
         updatedAt: new Date(),
