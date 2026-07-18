@@ -51,6 +51,11 @@ const props = withDefaults(
     element: DesignElement
     selected?: boolean
     readonly?: boolean
+    // Current canvas zoom level (1.0 = 100%). When the canvas is
+    // CSS-scaled via `transform: scale(zoom)`, the cursor delta
+    // (screen-px) and the model's element coordinates (design-px)
+    // differ — drag/resize math divides by zoom to keep them aligned.
+    zoom?: number
     // IDs needed to lazy-load the element's HTML body from the
     // backend (the page+elements GET response excludes the body to
     // keep payloads small). Defaults are empty so the component
@@ -62,6 +67,7 @@ const props = withDefaults(
   {
     selected: false,
     readonly: false,
+    zoom: 1.0,
     workspaceId: '',
     itemId: '',
     pageId: '',
@@ -130,8 +136,13 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   }
 
   const onMove = (e: PointerEvent): void => {
-    const dx = e.clientX - startX
-    const dy = e.clientY - startY
+    // Under zoom != 1.0 the canvas is CSS-scaled — cursor delta is
+    // in screen-px, but the model stores design-px. Divide by zoom
+    // so a 10-screen-px move at 50% zoom produces a 5-design-px
+    // move (the visible element glides 1:1 with the cursor).
+    const inv = 1 / Math.max(0.01, props.zoom)
+    const dx = (e.clientX - startX) * inv
+    const dy = (e.clientY - startY) * inv
     if (mode === 'move') {
       // Move: apply delta to x/y.
       emit('update', {

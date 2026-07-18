@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useNavigationStore } from './navigation'
 import { useSseBus } from '../helpers/sseBus'
-import type { DesignElement } from '../api'
+import type { DesignElement, DesignPage } from '../api'
 
 export interface KanbanColumn {
   id: string
@@ -158,6 +158,7 @@ import {
   updateDesignElement as updateDesignElementApi,
   deleteDesignElement as deleteDesignElementApi,
   updateDesignElementGeometry as updateDesignElementGeometryApi,
+  updateDesignPage as updateDesignPageApi,
 } from '../api'
 
 export const useWorkspacesStore = defineStore('workspaces', () => {
@@ -1155,6 +1156,23 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     )
   }
 
+  // Update a design page's width/height (UI resize from the canvas
+  // header W × H inputs). Backend's PATCH /pages/:page_id validates
+  // the ranges (width 320-4096, height 240-4096) and returns 400
+  // with an explicit error message otherwise. The DesignPage list
+  // lives in DesignView's local state (not Pinia), so this action
+  // only needs to return the updated page — the caller mutates its
+  // local array. Errors propagate via the apiFetch wrapper's thrown
+  // ApiError, surfaced as a toast by DesignView's catch block.
+  async function updateDesignPage(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    patch: { width: number; height: number },
+  ): Promise<DesignPage> {
+    return await updateDesignPageApi(workspaceId, itemId, pageId, patch)
+  }
+
   // Delete an element. Idempotent on the backend (returns
   // `{success: true}` whether the row existed or not). Filters
   // the local `design_elements` array to remove the row.
@@ -2140,6 +2158,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     updateDesignElement,
     updateDesignElementGeometry,
     deleteDesignElement,
+    updateDesignPage,
     initializeFromSystemFolder,
     onSessionEvent,
     fetchSystemFolder,
