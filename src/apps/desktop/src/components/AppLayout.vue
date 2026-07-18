@@ -132,6 +132,54 @@ watch(activeWorkspaceId, async (newId) => {
   }
 }, { immediate: true })
 
+// ─── URL → activeWorkspaceItemId restoration (page reload) ──────────────
+//
+// When the user reloads `/app?view=workspace&workspaceId=X&itemId=Y`,
+// the in-memory `activeWorkspaceItemId` is null. We need to set it
+// from the URL params, but only AFTER the workspaces array has loaded
+// (so we can validate the (workspaceId, itemId) pair actually exists).
+//
+// Setup reads the URL synchronously (it runs before any async API
+// calls) and stashes the params into `pendingUrlRestore`. The
+// `workspaces` watcher fires the moment initializeFromSystemFolder
+// populates the array (or in tests, the moment the test sets
+// ws.workspaces = [...] before mount), validates the pair, calls
+// setActiveWorkspaceItem, and clears the pending slot. If the pair
+// no longer exists (deleted), we just leave the kanban blank.
+const pendingUrlRestore = ref<{ workspaceId: string; itemId: string } | null>(
+  (() => {
+    const view = route.query.view as string | undefined
+    const wsId = route.query.workspaceId as string | undefined
+    const itemId = route.query.itemId as string | undefined
+    if (view === 'workspace' && wsId && itemId) {
+      return { workspaceId: wsId, itemId }
+    }
+    return null
+  })(),
+)
+watch(
+  () => workspacesStore.workspaces,
+  (wsList) => {
+    const pending = pendingUrlRestore.value
+    if (!pending) return
+    if (!wsList || wsList.length === 0) return
+    const wsExists = wsList.some((ws) => ws.id === pending.workspaceId)
+    const itemExists = wsList.some((ws) =>
+      ws.items.some((item) => item.id === pending.itemId),
+    )
+    if (wsExists && itemExists) {
+      workspacesStore.setActiveWorkspaceItem(pending.itemId)
+      pendingUrlRestore.value = null
+    } else {
+      // Stale URL — clear it so we don't try again on every workspace
+      // update. User will see the empty kanban-state placeholder and
+      // can pick a workspace item manually.
+      pendingUrlRestore.value = null
+    }
+  },
+  { immediate: true },
+)
+
 // ─── Design SSE — mirror the kanban pattern ─────────────────────────────
 //
 // Bus-backed design-event subscription (Chunk 6 of
@@ -174,7 +222,13 @@ const handleUpdateChatId = (oldId: string, newId: string) => {
   sidebarRef.value?.updateChatId(oldId, newId)
 }
 
-const handleNavigate = (view: string, chatName?: string, taskId?: string) => {
+const handleNavigate = (
+  view: string,
+  chatName?: string,
+  taskId?: string,
+  workspaceId?: string,
+  itemId?: string,
+) => {
   if (view.startsWith('chat-')) {
     const chatSessionId = view.replace(/^chat-/, '')
     // Clear any workspace-item active state — navigating to a chat wins.
@@ -193,7 +247,16 @@ const handleNavigate = (view: string, chatName?: string, taskId?: string) => {
   } else if (view === 'workspace') {
     navigationStore.clearAll()
     chatSessionCwd.value = ''
-    router.replace({ path: '/app', query: { view: 'workspace' } })
+    // When the caller passes (workspaceId, itemId), mirror them into the
+    // URL so the kanban/folder/design item survives a page reload.
+    // Without this, `?view=workspace` alone loses the active item on
+    // refresh because `activeWorkspaceItemId` is in-memory only.
+    const query: Record<string, string> = { view: 'workspace' }
+    if (workspaceId && itemId) {
+      query.workspaceId = workspaceId
+      query.itemId = itemId
+    }
+    router.replace({ path: '/app', query })
   } else if (view === 'task') {
     navigationStore.setActiveTask(taskId || null)
     chatSessionCwd.value = ''

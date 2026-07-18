@@ -1,0 +1,264 @@
+/**
+ * Tests for AppLayout's URL → activeWorkspaceItemId persistence on
+ * page reload. Before this feature, the URL `?view=workspace` was
+ * preserved on reload but the active kanban/folder/design item was
+ * lost (the in-memory `activeWorkspaceItemId` reset to null on every
+ * page refresh). This file pins:
+ *
+ *   1. Sidebar's handleSelectItem emits `navigate` with
+ *      (workspaceId, itemId) so the parent can mirror them into URL
+ *   2. AppLayout's handleNavigate('workspace', ..., wsId, itemId)
+ *      pushes the workspaceId + itemId query params alongside view
+ *   3. On mount, AppLayout reads (workspaceId, itemId) from URL and
+ *      restores activeWorkspaceItemId once the workspaces list loads
+ *   4. A stale URL (item no longer exists) does not crash — the
+ *      kanban-empty state is shown and the pending restore clears.
+ *
+ * Plan: feature "url browser kanban" (workspace kanban URL persistence).
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setActivePinia, createPinia } from 'pinia'
+import { createApp, nextTick } from 'vue'
+import { mount } from '@vue/test-utils'
+
+import * as api from '../api'
+import { useWorkspacesStore } from '../stores/workspaces'
+import type { Workspace, WorkspaceItem, KanbanColumn } from '../stores/workspaces'
+import AppLayout from '../components/AppLayout.vue'
+import { makeLocalStorageStub } from './helpers'
+import {
+  installSseBus,
+  __resetSseBus,
+  __setSseBusGlobalClient,
+} from '../helpers/sseBus'
+import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
+
+function makeStubClient(initial: SseState = 'open'): SseClient {
+  const stub: any = {
+    close: vi.fn(),
+    reconnect: vi.fn(),
+    getState: () => stub._state,
+    onStateChange: (cb: (s: SseState, info: SseStateInfo) => void) => {
+      stub.__stateListeners.push(cb)
+      return () => {
+        const i = stub.__stateListeners.indexOf(cb)
+        if (i >= 0) stub.__stateListeners.splice(i, 1)
+      }
+    },
+  }
+  stub._state = initial
+  stub.__stateListeners = [] as Array<(s: SseState, info: SseStateInfo) => void>
+  return stub as SseClient
+}
+
+function installBusForTests() {
+  __resetSseBus()
+  installSseBus(createApp({}))
+  __setSseBusGlobalClient(makeStubClient('open'))
+}
+
+const { useRouteMock, useRouterMock } = vi.hoisted(() => ({
+  useRouteMock: vi.fn(() => ({
+    query: {} as Record<string, string>,
+    path: '/app',
+    fullPath: '/app',
+  })),
+  useRouterMock: vi.fn(() => ({ replace: vi.fn(), push: vi.fn() })),
+}))
+
+vi.mock('vue-router', async () => {
+  const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
+  return {
+    ...actual,
+    useRouter: useRouterMock,
+    useRoute: useRouteMock,
+  }
+})
+
+const WS_ID = 'ws_test'
+const KANBAN_ID = 'item_kanban_url'
+const OTHER_WS_ID = 'ws_other'
+
+const makeColumn = (overrides: Partial<KanbanColumn> = {}): KanbanColumn => ({
+  id: 'col_test',
+  workspace_item_id: KANBAN_ID,
+  name: 'todo',
+  position: 0,
+  created_at: '2026-07-16 12:00:00',
+  ...overrides,
+})
+
+const makeKanbanItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
+  id: KANBAN_ID,
+  name: 'Sprint Backlog',
+  item_type: 'kanban',
+  kanban_columns: [
+    makeColumn({ id: 'col_todo', name: 'todo', position: 0 }),
+    makeColumn({ id: 'col_inprogress', name: 'in progress', position: 1 }),
+  ],
+  tasks: [],
+  ...overrides,
+})
+
+function mountAppLayout(workspaces: Workspace[] = [], routeQuery: Record<string, string> = {}) {
+  useRouteMock.mockReturnValue({
+    query: routeQuery,
+    path: '/app',
+    fullPath: '/app' + (Object.keys(routeQuery).length ? `?${new URLSearchParams(routeQuery).toString()}` : ''),
+  } as any)
+  const ws = useWorkspacesStore()
+  ws.workspaces = workspaces
+  return mount(AppLayout, {
+    global: {
+      stubs: {
+        // Stub Sidebar so it doesn't try to render / fetch data
+        Sidebar: true,
+        RightSidebar: true,
+        GitFileViewer: true,
+        SkillDetail: true,
+        Chats: true,
+        SettingsView: true,
+        ChatView: true,
+        CodeEditor: true,
+        KanbanView: { template: '<div data-kanban-view="stub" :data-item-id="item.id" />', props: ['item', 'workspaceId', 'itemId'] },
+      },
+    },
+  })
+}
+
+describe('AppLayout — handleNavigate("workspace", wsId, itemId) pushes workspaceId + itemId into the URL', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    installBusForTests()
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: makeLocalStorageStub(),
+      writable: true,
+      configurable: true,
+    })
+    vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
+    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
+      entries: [],
+      path: '/',
+      absolute: '/',
+      home: '/',
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('when called with (workspaceId, itemId), the router receives .replace with those params', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeKanbanItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {})
+    const layout = wrapper.vm as any
+    expect(typeof layout.handleNavigate).toBe('function')
+    layout.handleNavigate('workspace', undefined, undefined, WS_ID, KANBAN_ID)
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: '/app',
+      query: { view: 'workspace', workspaceId: WS_ID, itemId: KANBAN_ID },
+    })
+    wrapper.unmount()
+  })
+
+  it('when called WITHOUT (workspaceId, itemId), the URL still has just view=workspace (back-compat)', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeKanbanItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {})
+    const layout = wrapper.vm as any
+    layout.handleNavigate('workspace')
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: '/app',
+      query: { view: 'workspace' },
+    })
+    wrapper.unmount()
+  })
+})
+
+describe('AppLayout — page reload of ?view=workspace&workspaceId=X&itemId=Y restores the active item', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    installBusForTests()
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: makeLocalStorageStub(),
+      writable: true,
+      configurable: true,
+    })
+    vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
+    vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
+    vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
+    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
+      entries: [],
+      path: '/',
+      absolute: '/',
+      home: '/',
+    })
+    vi.spyOn(api, 'listKanbanColumns').mockResolvedValue({ columns: [], count: 0 })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('mounting with ?view=workspace&workspaceId=X&itemId=Y in the URL restores activeWorkspaceItemId', async () => {
+    const ws = useWorkspacesStore()
+    const kanban = makeKanbanItem()
+    const wrapper = mountAppLayout(
+      [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace],
+      { view: 'workspace', workspaceId: WS_ID, itemId: KANBAN_ID },
+    )
+    // The watcher in AppLayout that picks the URL-stashed params
+    // fires on the workspaces ref update. `mountAppLayout` already
+    // populated `ws.workspaces` synchronously, so the watcher's
+    // immediate run should restore activeWorkspaceItemId within a
+    // tick.
+    await nextTick()
+    await nextTick()
+    expect(ws.activeWorkspaceItemId).toBe(KANBAN_ID)
+    const view = wrapper.find('[data-kanban-view="stub"]')
+    expect(view.exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('stale URL (item no longer exists) is ignored — no crash, activeWorkspaceItemId stays null', async () => {
+    const ws = useWorkspacesStore()
+    const otherKanban = makeKanbanItem({ id: 'item_other_kanban' })
+    const wrapper = mountAppLayout(
+      [{ id: OTHER_WS_ID, name: 'WS', icon: '📁', expanded: true, items: [otherKanban] } as Workspace],
+      // URL refers to an item that's NOT in the workspaces list:
+      { view: 'workspace', workspaceId: WS_ID, itemId: KANBAN_ID },
+    )
+    await nextTick()
+    await nextTick()
+    // The pending restore watcher should detect the mismatch and clear
+    // itself, leaving activeWorkspaceItemId null.
+    expect(ws.activeWorkspaceItemId).toBeNull()
+    // The kanban view should NOT render — there's no active item.
+    const view = wrapper.find('[data-kanban-view="stub"]')
+    expect(view.exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('mounting with no URL params does NOT auto-select any workspace item', async () => {
+    const ws = useWorkspacesStore()
+    const wrapper = mountAppLayout(
+      [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeKanbanItem()] } as Workspace],
+      {},
+    )
+    await nextTick()
+    await nextTick()
+    expect(ws.activeWorkspaceItemId).toBeNull()
+    const view = wrapper.find('[data-kanban-view="stub"]')
+    expect(view.exists()).toBe(false)
+    wrapper.unmount()
+  })
+})

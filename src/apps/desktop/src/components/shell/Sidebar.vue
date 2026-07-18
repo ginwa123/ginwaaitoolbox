@@ -38,7 +38,13 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  navigate: [id: string, chatName?: string, taskId?: string]
+  navigate: [
+    id: string,
+    chatName?: string,
+    taskId?: string,
+    workspaceId?: string,
+    itemId?: string,
+  ]
   'toggle-collapse': []
   resize: [width: number]
 }>()
@@ -363,7 +369,11 @@ const handleSelectItem = async (workspaceId: string, itemId: string) => {
     chatsListRef.value.resetActiveChat()
   }
   workspacesStore.setActiveWorkspaceItem(itemId)
-  emit('navigate', 'workspace')
+  // Carry (workspaceId, itemId) into the URL so the kanban / folder /
+  // design view survives a page reload. The URL is the source of
+  // truth on reload; the in-memory `activeWorkspaceItemId` would
+  // otherwise reset to null on a refresh.
+  emit('navigate', 'workspace', undefined, undefined, workspaceId, itemId)
 }
 
 const handleDeleteWorkspace = (workspaceId: string) => {
