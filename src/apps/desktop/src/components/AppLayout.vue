@@ -1766,9 +1766,16 @@ watch(chatSessionCwd, (newCwd) => {
          "Connecting…" / "Reconnecting…" / "Connection lost" pill in
          the top-right corner when the bus is in a degraded state.
          Fixed-positioned so it stays visible regardless of which
-         view (chat / kanban / settings / workspace) is active. -->
+         view (chat / kanban / settings / workspace) is active.
+         `pointer-events-none` keeps the pill visible WITHOUT
+         capturing clicks — the pill overlaps the top-right of every
+         view's chrome (in the kanban 3-column layout it sits on top
+         of ChatView's ✕ close button; in design mode it sits on top
+         of any future top-right toolbar). The pill is purely
+         informational (no controls inside), so passing the click
+         through is the right behavior. -->
     <div
-      class="fixed top-3 right-3 z-50"
+      class="fixed top-3 right-3 z-50 pointer-events-none"
       data-testid="sse-status-badge-container"
     >
       <SseStatusBadge />
