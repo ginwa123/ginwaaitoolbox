@@ -1669,6 +1669,56 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Refetch a single task from the server and patch the in-store copy
+  // in place. Used by KanbanView.handleViewTaskDetail so the
+  // Task details dialog opens with the live `is_auto_retry_until_stop`
+  // value (which lives on sessions, joined at read time) rather than
+  // the value the workspaces store last saw at init() time. This
+  // prevents the "toggle shows OFF but the DB is ON" race when a
+  // different client toggled the flag since this client last loaded.
+  //
+  // Implementation note: we re-fetch the WHOLE task list for the
+  // item (via the existing GET /api/workspaces/:ws/items/:item/tasks
+  // endpoint) and pluck the one we care about. This avoids adding
+  // a new GET /tasks/:id endpoint just for this case — the backend
+  // already returns is_auto_retry_until_stop via the JOIN we just
+  // added (commit 2e2373ed). A list refresh is heavier than a
+  // single-row fetch but the workspace_item_tasks table is small
+  // (typically <20 rows per item) so the cost is negligible.
+  //
+  // Best-effort: a failure is logged but does NOT block the dialog
+  // from opening. The dialog will fall back to the cached value
+  // (which is still better than blocking the user with a network
+  // error on every dialog open).
+  async function refreshTask(
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+  ): Promise<void> {
+    try {
+      const { tasks: fresh } = await api.getTasks(workspaceId, itemId, 100)
+      const freshTask = fresh.find((t) => t.id === taskId)
+      if (!freshTask) return
+      for (const ws of workspaces.value) {
+        if (ws.id !== workspaceId) continue
+        for (const item of ws.items) {
+          if (item.id !== itemId) continue
+          if (!item.tasks) continue
+          const idx = item.tasks.findIndex((t) => t.id === taskId)
+          if (idx === -1) continue
+          // Replace the cached task object entirely. The Task
+          // interface is loose enough (mostly optional fields) that
+          // this preserves all caller state. The dialog re-derives
+          // its local form state from the new task via its watcher.
+          item.tasks.splice(idx, 1, freshTask)
+          return
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to refresh task before dialog open:', err)
+    }
+  }
+
   async function removeWorkspace(workspaceId: string) {
     const workspaceIndex = workspaces.value.findIndex((ws) => ws.id === workspaceId)
     if (workspaceIndex === -1) return
@@ -2037,6 +2087,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // dialog. Uses the same PUT /api/workspaces/tasks/:task_id
     // endpoint as renameTask — only the body shape is wider.
     updateTaskDetails,
+    // NEW (auto-retry-until-stop fix): re-fetch a single task from
+    // the server (with the JOINed is_auto_retry_until_stop column)
+    // and patch the in-store copy. Used by the Task details dialog
+    // on open so the unattended-mode toggle shows server truth
+    // instead of the value cached at workspaces store init().
+    refreshTask,
     runRoutine,
     updateRoutine,
     pinTask,

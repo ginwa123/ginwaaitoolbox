@@ -235,6 +235,20 @@ const activeTaskDetailColumn = computed<KanbanColumnType | null>(() => {
 const handleViewTaskDetail = (taskId: string) => {
   activeTaskDetailId.value = taskId
   showTaskDetail.value = true
+  // Refetch the task list so the dialog shows server-truth on open.
+  // The KanbanTaskDetailDialog reads props.task.is_auto_retry_until_stop
+  // to render the unattended-mode toggle, and that field can drift
+  // out of sync across clients (e.g. another nalar instance
+  // toggled the flag, or a sub-agent PUT ran unattended on a
+  // shared session). The workspaces store re-fetches the whole
+  // task list for the parent item, plucks this task, and patches
+  // the cached copy in place. Best-effort — a failure is logged
+  // and the dialog still opens with the cached value.
+  void workspacesStore.refreshTask(
+    props.workspaceId,
+    props.itemId || props.item.id,
+    taskId,
+  )
 }
 
 // Dialog save handler — delegates to the store action which runs the
