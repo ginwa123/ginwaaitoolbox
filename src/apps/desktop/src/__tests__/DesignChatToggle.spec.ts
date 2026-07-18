@@ -131,20 +131,19 @@ describe('AppLayout design+chat 3-column layout branch', () => {
   })
 
   it('renders the design-mode 3-column branch with its own resize handle (kanban uses a floating chat overlay, not 3-col)', () => {
-    // Pre-2026-06-29 the kanban+chat layout was ALSO a 3-col flex
-    // layout with a `kanban-resize-handle`. Post-refactor, the
-    // kanban uses a floating chat overlay (no side-by-side
-    // column boundary to resize). The design-mode branch kept
-    // its 3-col layout because designs are wider and the chat
-    // view needs more room there. This test pins that:
-    //   - The design branch has its own resize handle.
-    //   - The kanban branch DOES NOT (it now uses a floating
-    //     overlay, tested in AppLayout.kanban.spec.ts).
+    // Both the kanban+chat layout AND the design+chat layout
+    // are 2-col/3-col flex layouts with their own resize handles.
+    // Originally (2026-06-29, commit 61a8ad05) the kanban had an
+    // absolute-overlay chat with NO resize handle. That regression
+    // was reverted (1dc2315c): the kanban is now also a flex
+    // layout with its own `data-kanban-resize-handle`.
+    //
+    // Both handles call `startKanbanResize` (single state, two
+    // distinct DOM elements with different `data-*` attributes).
+    // The regression-guard assertion is that the design handle
+    // exists at all (no regression to "no handle").
     const designHandleRegex =
       /data-design-resize-handle[^>]*@mousedown="startKanbanResize"/
     expect(source.match(designHandleRegex)).not.toBeNull()
-    const kanbanHandleRegex =
-      /data-kanban-resize-handle[^>]*@mousedown="startKanbanResize"/
-    expect(source.match(kanbanHandleRegex)).toBeNull()
   })
 })
