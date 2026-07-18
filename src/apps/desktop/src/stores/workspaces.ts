@@ -132,6 +132,15 @@ export interface Task {
   // optional so legacy task literals keep type-checking.
   kanban_column_id?: string | null
   kanban_position?: number
+  // NEW (Chunk 5 of auto-retry-until-stop plan). Mirrors the
+  // sessions.is_auto_retry_until_stop column (Migration 063). For
+  // routine tasks, task.id == session.id (project convention) so
+  // the flag can be persisted via PUT /api/llm/session/<id>.
+  // For non-routine tasks the field is shown as a UI affordance
+  // but won't affect runtime behavior. Optional + string ('0'/'1')
+  // to match the session API shape and to keep legacy task
+  // literals type-checking (see nalar-frontend-task-literal-typing-rule).
+  is_auto_retry_until_stop?: string
 }
 
 // localStorage keys for state persistence
@@ -544,6 +553,14 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         name: string
         content: string
       }
+      // Auto-retry-until-stop (Migration 063, Option A fix): when
+      // `'1'`, the backend ALSO inserts a `sessions` row keyed by
+      // the new task.id so the unattended-mode flag persists from
+      // creation. Forwarded only for standard tasks (routine and
+      // memory have their own session lifecycle). The api.createTask
+      // helper filters out `'0'`/undefined so we don't trigger an
+      // unnecessary session INSERT for the common case.
+      isAutoRetryUntilStop?: string
     },
   ): Promise<string | undefined> {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
@@ -565,6 +582,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         taskType,
         routine: params.routine,
         memory: params.memory,
+        isAutoRetryUntilStop: params.isAutoRetryUntilStop,
       })
       item.tasks.unshift(newTask)
       return newTask.id
@@ -592,6 +610,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
             }
           : undefined,
         memory_name: params.memory?.name,
+        is_auto_retry_until_stop: params.isAutoRetryUntilStop,
         completed: false,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -1660,6 +1679,56 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Refetch a single task from the server and patch the in-store copy
+  // in place. Used by KanbanView.handleViewTaskDetail so the
+  // Task details dialog opens with the live `is_auto_retry_until_stop`
+  // value (which lives on sessions, joined at read time) rather than
+  // the value the workspaces store last saw at init() time. This
+  // prevents the "toggle shows OFF but the DB is ON" race when a
+  // different client toggled the flag since this client last loaded.
+  //
+  // Implementation note: we re-fetch the WHOLE task list for the
+  // item (via the existing GET /api/workspaces/:ws/items/:item/tasks
+  // endpoint) and pluck the one we care about. This avoids adding
+  // a new GET /tasks/:id endpoint just for this case — the backend
+  // already returns is_auto_retry_until_stop via the JOIN we just
+  // added (commit 2e2373ed). A list refresh is heavier than a
+  // single-row fetch but the workspace_item_tasks table is small
+  // (typically <20 rows per item) so the cost is negligible.
+  //
+  // Best-effort: a failure is logged but does NOT block the dialog
+  // from opening. The dialog will fall back to the cached value
+  // (which is still better than blocking the user with a network
+  // error on every dialog open).
+  async function refreshTask(
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+  ): Promise<void> {
+    try {
+      const { tasks: fresh } = await api.getTasks(workspaceId, itemId, 100)
+      const freshTask = fresh.find((t) => t.id === taskId)
+      if (!freshTask) return
+      for (const ws of workspaces.value) {
+        if (ws.id !== workspaceId) continue
+        for (const item of ws.items) {
+          if (item.id !== itemId) continue
+          if (!item.tasks) continue
+          const idx = item.tasks.findIndex((t) => t.id === taskId)
+          if (idx === -1) continue
+          // Replace the cached task object entirely. The Task
+          // interface is loose enough (mostly optional fields) that
+          // this preserves all caller state. The dialog re-derives
+          // its local form state from the new task via its watcher.
+          item.tasks.splice(idx, 1, freshTask)
+          return
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to refresh task before dialog open:', err)
+    }
+  }
+
   async function removeWorkspace(workspaceId: string) {
     const workspaceIndex = workspaces.value.findIndex((ws) => ws.id === workspaceId)
     if (workspaceIndex === -1) return
@@ -1906,15 +1975,23 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     bus.on('session', (event) => {
       if (event.action === 'updated') {
         // Find the task (task.id == session_id) and update its
-        // name. We also keep navigationStore.activeChatName in
-        // sync if the renamed task is active — this is the same
-        // pattern as renameTask (workspaces.ts:renameTask).
+        // name + unattended flag. We also keep
+        // navigationStore.activeChatName in sync if the renamed
+        // task is active — this is the same pattern as
+        // renameTask (workspaces.ts:renameTask). The unattended
+        // flag update keeps the KanbanTaskDetailDialog toggle
+        // in sync if the dialog is open (without it, the toggle
+        // would show the value from when the dialog was opened,
+        // which becomes stale on PUT /api/llm/session/:id).
         for (const ws of workspaces.value) {
           for (const item of ws.items) {
             if (!item.tasks) continue
             const task = item.tasks.find((t) => t.id === event.id)
             if (task) {
               task.name = event.name || task.name
+              if (event.is_auto_retry_until_stop !== undefined) {
+                task.is_auto_retry_until_stop = event.is_auto_retry_until_stop
+              }
               if (activeTaskId.value === task.id) {
                 useNavigationStore().setActiveChatName(task.name)
               }
@@ -2020,6 +2097,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // dialog. Uses the same PUT /api/workspaces/tasks/:task_id
     // endpoint as renameTask — only the body shape is wider.
     updateTaskDetails,
+    // NEW (auto-retry-until-stop fix): re-fetch a single task from
+    // the server (with the JOINed is_auto_retry_until_stop column)
+    // and patch the in-store copy. Used by the Task details dialog
+    // on open so the unattended-mode toggle shows server truth
+    // instead of the value cached at workspaces store init().
+    refreshTask,
     runRoutine,
     updateRoutine,
     pinTask,

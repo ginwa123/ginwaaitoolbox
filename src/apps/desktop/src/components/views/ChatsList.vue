@@ -30,7 +30,7 @@ const processingState = inject<Ref<Record<string, boolean>>>('processingState', 
 
 // State
 const chatsLoading = ref(false)
-const navItems = ref<{ id: string; name: string; active?: boolean; processing?: boolean; relativeTime?: string; selected_profile_model?: string; git_worktree_cwd?: string }[]>([])
+const navItems = ref<{ id: string; name: string; active?: boolean; processing?: boolean; relativeTime?: string; selected_profile_model?: string; git_worktree_cwd?: string; is_auto_retry_until_stop?: string }[]>([])
 const chatsHasMore = ref(false)
 const chatsNextCursor = ref<string | null>(null)
 const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
@@ -141,6 +141,9 @@ const loadChats = async () => {
       relativeTime: formatRelativeTime(session.updated_at),
       selected_profile_model: session.selected_profile_model || '',
       git_worktree_cwd: session.git_worktree_cwd || '',
+      // Migration 063 — defaulted to "0" in getChats mapping so the
+      // `=== '1'` badge check below is well-defined.
+      is_auto_retry_until_stop: session.is_auto_retry_until_stop || '0',
     }))
     console.log('[ChatsList] navItems set to:', navItems.value)
     chatsHasMore.value = data.has_more
@@ -263,6 +266,17 @@ const removeChat = async (chatId: string) => {
     }
   }
 }
+
+// Migration 063 — the unattended-mode toggle USED to live as a
+// clickable badge in this list. After moving it into the Task
+// details dialog (KanbanTaskDetailDialog.vue), the toggle handler
+// (`toggleAutoRetry`) was deleted and the badge spans were removed
+// from the template — the toggle is now flipped via the dialog's
+// `@update-unattended` emit, which the host wires to
+// `api.updateSession`. The `is_auto_retry_until_stop` field on
+// each navItem is still rendered server-truth via SSE re-fetch, so
+// any other UI that wants to show unattended state (e.g. a status
+// icon) can read it from `item.is_auto_retry_until_stop === '1'`.
 
 // ─── Session Events via sseBus ─────────────────────────────────────────────────
 //

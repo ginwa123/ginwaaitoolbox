@@ -506,6 +506,15 @@ export async function createTask(
       name: string
       content: string
     }
+    // Auto-retry-until-stop (Migration 063, Option A fix): when the
+    // caller passes `'1'`, the backend ALSO inserts a `sessions`
+    // row (task.id == session.id per the project convention) so the
+    // unattended-mode flag has somewhere to land at create time.
+    // Only meaningful for `taskType: 'standard'` — routine and
+    // memory tasks manage their own session lifecycle elsewhere.
+    // `'0'` and undefined/empty are treated equivalently (no
+    // session INSERT).
+    isAutoRetryUntilStop?: string
   },
 ): Promise<Task> {
   const taskType = params.taskType ?? 'standard'
@@ -524,6 +533,12 @@ export async function createTask(
   if (taskType === 'memory' && params.memory) {
     body.memory_name = params.memory.name
     body.memory_content = params.memory.content
+  }
+  // Only forward the unattended flag when the user actually flipped
+  // it ON. Default '0' is the no-op default — sending it would
+  // trigger an unnecessary session INSERT (a new row per task).
+  if (params.isAutoRetryUntilStop === '1' && taskType === 'standard') {
+    body.is_auto_retry_until_stop = '1'
   }
   return await apiFetch<Task>(`/workspaces/${workspaceId}/items/${itemId}/tasks`, {
     method: 'POST',
@@ -663,6 +678,10 @@ export interface Chat {
   session_name?: string
   status?: string
   selected_profile_model?: string
+  /// Migration 063 — "0" / "1" opt-in for unattended mode. Always
+  /// present in the GET /api/sessions response (ChatsList uses this
+  /// to render the `🔁 unattended` badge).
+  is_auto_retry_until_stop?: string
 }
 
 export interface Message {
@@ -776,12 +795,18 @@ export async function getChatHistory(
 }
 
 // Send a message to LLM
+//
+// Migration 063 — adds the optional `isAutoRetryUntilStop` flag.
+// "1" opts into unattended mode (the workflow re-reads this column
+// on entry and soft-bails past retry_count > 10). Default undefined
+// = today's behavior.
 export async function sendChatMessage(
   sessionId: string,
   message: string,
   cwdSession: string,
   imageUrls?: string[],
   selectedProfile?: string,
+  isAutoRetryUntilStop?: string,
 ): Promise<{ status: string }> {
   // Join image URLs with pipe separator (same format as other parts of the system)
   const imageUrlsStr = imageUrls?.join('|') || ''
@@ -801,6 +826,9 @@ export async function sendChatMessage(
           cwd_session: cwdSession,
           image_urls: imageUrlsStr,
           selected_profile_model: selectedProfile || '',
+          // Migration 063 — pass through to POST /api/session. Empty
+          // / undefined => the backend's default ("0" = off).
+          is_auto_retry_until_stop: isAutoRetryUntilStop ?? '',
         },
         silent: true,
       },
@@ -821,18 +849,34 @@ export async function sendChatMessage(
   }
 }
 
-// Update an existing session (selectedProfile, name, etc.)
+// Update an existing session (selectedProfile, name, isAutoRetryUntilStop).
+//
+// Migration 063 — extends the update shape to carry the unattended-
+// mode flag. Pass `isAutoRetryUntilStop: '0'` to disable, '1' to
+// enable, or omit to leave unchanged (matches the backend's
+// `len > 0` guard).
 export async function updateSession(
   sessionId: string,
-  updates: { selectedProfile?: string | null; name?: string },
-): Promise<{ id: string; name: string; status: string; selected_profile_model: string }> {
-  return await apiFetch<{ id: string; name: string; status: string; selected_profile_model: string }>(
+  updates: {
+    selectedProfile?: string | null
+    name?: string
+    isAutoRetryUntilStop?: string
+  },
+): Promise<{ id: string; name: string; status: string; selected_profile_model: string; is_auto_retry_until_stop: string }> {
+  return await apiFetch<{
+    id: string
+    name: string
+    status: string
+    selected_profile_model: string
+    is_auto_retry_until_stop: string
+  }>(
     `/llm/session/${sessionId}`,
     {
       method: 'PUT',
       body: {
         selected_profile_model: updates.selectedProfile ?? '',
         name: updates.name ?? '',
+        is_auto_retry_until_stop: updates.isAutoRetryUntilStop ?? '',
       },
     },
   )
@@ -930,6 +974,10 @@ export async function getChats(
           created_at: session.created_at || null,
           updated_at: session.updated_at || null,
           cwd: session.cwd || '',
+          // Migration 063 — default to "0" (off) when omitted so the
+          // ChatsList badge condition `=== '1'` is a defined check.
+          // Matches the SQL COALESCE default in llm_history.zig.
+          is_auto_retry_until_stop: session.is_auto_retry_until_stop || '0',
         }
       })
     }
@@ -1916,6 +1964,12 @@ export interface SessionEvent {
   // string when no worktree is bound, omitted for events that don't
   // carry session fields (e.g. delete).
   git_worktree_cwd?: string
+  // Mirrors sessions.is_auto_retry_until_stop (Migration 063). Only
+  // present on 'updated' events where the session row carries the
+  // flag. Used by the workspaces store's SSE handler to keep
+  // task.is_auto_retry_until_stop in sync so the
+  // KanbanTaskDetailDialog toggle shows the live value.
+  is_auto_retry_until_stop?: string
 }
 
 // Queue messages SSE event types

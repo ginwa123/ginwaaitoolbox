@@ -20,6 +20,14 @@ pub const SessionInfo = struct {
     updated_at: []const u8,
     agent: []const u8,
     selected_profile_model: []const u8,
+    /// Migration 063 — "0" / "1" opt-in flag for unattended mode. Matches
+    /// the SQL `is_auto_retry_until_stop` column convention. COALESCE'd to
+    /// "0" at the SELECT boundary so callers always see a defined value.
+    is_auto_retry_until_stop: []const u8,
+    /// Migration 063 — denormalized cache of the most recent finish_reason
+    /// the workflow observed for this session. Empty string until the
+    /// first successful turn; never NULL at the API edge.
+    last_finish_reason: []const u8,
 
     pub fn deinit(self: *const SessionInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -30,6 +38,8 @@ pub const SessionInfo = struct {
         allocator.free(self.updated_at);
         allocator.free(self.agent);
         allocator.free(self.selected_profile_model);
+        allocator.free(self.is_auto_retry_until_stop);
+        allocator.free(self.last_finish_reason);
     }
 };
 
@@ -90,6 +100,10 @@ pub const SessionBroadcastInfo = struct {
     agent: []const u8,
     selected_profile_model: []const u8,
     git_worktree_cwd: []const u8,
+    /// Migration 063 — opt-in flag for unattended mode.
+    is_auto_retry_until_stop: []const u8,
+    /// Migration 063 — most recent finish_reason the workflow observed.
+    last_finish_reason: []const u8,
 };
 
 /// Get a list of sessions from the database
@@ -124,7 +138,9 @@ pub fn getSessionList(
         \\           ORDER BY h2.created_at DESC
         \\           LIMIT 1),
         \\         'Agent'
-        \\       ) AS agent
+        \\       ) AS agent,
+        \\       COALESCE(s.is_auto_retry_until_stop, '0') AS is_auto_retry_until_stop,
+        \\       COALESCE(s.last_finish_reason, '') AS last_finish_reason
         \\FROM (
         \\  SELECT h.session_id, MAX(h.created_at) AS created_at
         \\    FROM llm_history h
@@ -242,7 +258,9 @@ pub fn getSessionListWithCursor(
         \\SELECT s.id, s.name, s.status, s.cwd, COALESCE(s.created_at, ''),
         \\COALESCE(s.updated_at, ''),
         \\COALESCE(h.agent, 'Agent'),
-        \\COALESCE(s.selected_profile_model, '')
+        \\COALESCE(s.selected_profile_model, ''),
+        \\COALESCE(s.is_auto_retry_until_stop, '0'),
+        \\COALESCE(s.last_finish_reason, '')
         \\FROM sessions s
         \\LEFT JOIN llm_history h ON s.id = h.session_id
         \\WHERE {s}
@@ -269,6 +287,11 @@ pub fn getSessionListWithCursor(
             .updated_at = try allocator.dupe(u8, row.values[5]),
             .agent = try allocator.dupe(u8, row.values[6]),
             .selected_profile_model = try allocator.dupe(u8, row.values[7]),
+            // Migration 063 — the SELECT adds 2 trailing columns, so
+            // the index shifts by 2. row.values[8] = is_auto_retry_until_stop,
+            // row.values[9] = last_finish_reason.
+            .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[8]),
+            .last_finish_reason = try allocator.dupe(u8, row.values[9]),
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -313,6 +336,10 @@ pub const SessionInfoJson = struct {
     agent: []const u8,
     session_name: []const u8,
     selected_profile_model: []const u8,
+    /// Migration 063 — opt-in flag for unattended mode (Migration 063).
+    is_auto_retry_until_stop: []const u8 = "",
+    /// Migration 063 — most recent finish_reason (Migration 063).
+    last_finish_reason: []const u8 = "",
 };
 
 /// Build JSON response for a list of sessions with cursor pagination
@@ -336,6 +363,12 @@ pub fn buildSessionListJson(
             .agent = sess.agent,
             .session_name = sess.session_name,
             .selected_profile_model = sess.selected_profile_model,
+            // Migration 063 — pass through. `SessionInfo` already
+            // populates both fields from `row.values[8..10]`; the JSON
+            // layer just needs to forward them so the API response
+            // carries them to the frontend.
+            .is_auto_retry_until_stop = sess.is_auto_retry_until_stop,
+            .last_finish_reason = sess.last_finish_reason,
         });
     }
 
@@ -2136,6 +2169,13 @@ pub const SessionTableInfo = struct {
     updated_at: []u8,
     selected_profile_model: []u8,
     git_worktree_cwd: []u8,
+    /// Migration 063 — opt-in flag for unattended mode. Stored as text
+    /// ("0" / "1") to match `is_auto_retry_until_stop`'s INTEGER column
+    /// convention used by the rest of the codebase.
+    is_auto_retry_until_stop: []u8,
+    /// Migration 063 — most recent `finish_reason` the workflow observed
+    /// for this session. Empty string before the first successful turn.
+    last_finish_reason: []u8,
 
     pub fn deinit(self: SessionTableInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -2146,20 +2186,32 @@ pub const SessionTableInfo = struct {
         allocator.free(self.updated_at);
         allocator.free(self.selected_profile_model);
         allocator.free(self.git_worktree_cwd);
+        allocator.free(self.is_auto_retry_until_stop);
+        allocator.free(self.last_finish_reason);
     }
 };
 
 /// Create a new session with status set to 'active'
+///
+/// `is_auto_retry_until_stop`: "1" enables unattended mode for this
+/// session (workflow keeps retrying past the 10-attempt TooManyRetries
+/// bail). Empty string OR anything other than "1" coerces to "0" via
+/// the SQL binding default (matches the NOT NULL DEFAULT 0 schema).
 pub fn create_session(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     id: []const u8,
     name: []const u8,
+    is_auto_retry_until_stop: []const u8,
 ) !SessionTableInfo {
-    const sql = "INSERT INTO sessions (id, name, status, created_at, updated_at) VALUES (?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
-    try db.exec(allocator, sql, &.{ id, name });
+    const flag = if (std.mem.eql(u8, is_auto_retry_until_stop, "1")) "1" else "0";
+    const sql =
+        "INSERT INTO sessions (id, name, status, created_at, updated_at, is_auto_retry_until_stop) " ++
+        "VALUES (?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)";
+    try db.exec(allocator, sql, &.{ id, name, flag });
 
-    // Broadcast session created event
+    // Broadcast session created event — carry the new columns in the
+    // SSE payload so ChatsList updates live without a refetch.
     ai_mod.on_event_sent.onEventSendSessions(allocator, .{
         .action = "created",
         .id = id,
@@ -2170,16 +2222,32 @@ pub fn create_session(
         .updated_at = "",
         .selected_profile_model = "",
         .git_worktree_cwd = "",
+        .is_auto_retry_until_stop = flag,
+        .last_finish_reason = "",
     }) catch {};
 
     return SessionTableInfo{
         .id = try allocator.dupe(u8, id),
         .name = try allocator.dupe(u8, name),
         .status = try allocator.dupe(u8, "active"),
+        // cwd is intentionally empty in create_session — the worker
+        // upserts the cwd on the first llm_history insert (see
+        // insert_llm_histories.zig:183). Pre-existing pattern; the
+        // previous version of this literal also initialized cwd = ""
+        // but the lazy-analysis of `zig build test` didn't catch the
+        // missing field. The install target (which compiled fine
+        // before) now flags it because the struct grew by 2 fields
+        // and the missing `.cwd` slipped past the original code path.
+        .cwd = try allocator.dupe(u8, ""),
         .created_at = try allocator.dupe(u8, ""),
         .updated_at = try allocator.dupe(u8, ""),
         .selected_profile_model = try allocator.dupe(u8, ""),
         .git_worktree_cwd = try allocator.dupe(u8, ""),
+        // Migration 063 — populated with the just-bound value for the
+        // flag; last_finish_reason is empty until the workflow writes
+        // the first value (Chunk 2 Task 2.1).
+        .is_auto_retry_until_stop = try allocator.dupe(u8, flag),
+        .last_finish_reason = try allocator.dupe(u8, ""),
     };
 }
 
@@ -2189,7 +2257,13 @@ pub fn getSession(
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?SessionTableInfo {
-    const sql = "SELECT s.id, s.name, s.status, COALESCE(s.cwd, ''), COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(s.selected_profile_model, ''), COALESCE(s.git_worktree_cwd, '') FROM sessions s WHERE s.id = ?";
+    const sql =
+        \\SELECT s.id, s.name, s.status, COALESCE(s.cwd, ''),
+        \\       COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''),
+        \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.git_worktree_cwd, ''),
+        \\       COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, '')
+        \\FROM sessions s WHERE s.id = ?
+    ;
 
     var rows = try db.query(allocator, sql, &.{id});
     defer rows.deinit();
@@ -2204,6 +2278,11 @@ pub fn getSession(
             .updated_at = try allocator.dupe(u8, row.values[5]),
             .selected_profile_model = try allocator.dupe(u8, row.values[6]),
             .git_worktree_cwd = try allocator.dupe(u8, row.values[7]),
+            // Migration 063 — row.values[8] = is_auto_retry_until_stop
+            // (COALESCE'd to '0'); row.values[9] = last_finish_reason
+            // (COALESCE'd to '').
+            .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[8]),
+            .last_finish_reason = try allocator.dupe(u8, row.values[9]),
         };
         row.deinit(allocator);
         return session;
@@ -2302,6 +2381,64 @@ pub fn updateTaskName(
     // A failure here is non-fatal — the task row is the source of
     // truth for the sidebar, and the next rename will reconcile.
     updateSessionName(allocator, db, session_id, new_name) catch {};
+}
+
+/// Update the unattended-mode flag for an existing session (Migration 063).
+///
+/// `value` must be "1" or "0" — handler layer validates the input shape.
+/// Empty string is rejected here (treated as no-op) so a malformed PUT
+/// doesn't accidentally flip the flag. The schema's NOT NULL DEFAULT 0
+/// keeps existing rows consistent.
+///
+/// Broadcasts an "updated" SSE event so the ChatsList `🔁 unattended`
+/// badge updates live without a refetch.
+pub fn updateSessionAutoRetryUntilStop(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    value: []const u8,
+) !void {
+    const normalized: []const u8 = if (std.mem.eql(u8, value, "1")) "1" else "0";
+    const sql =
+        "UPDATE sessions SET is_auto_retry_until_stop = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    try db.exec(allocator, sql, &.{ normalized, id });
+
+    const session = getSession(allocator, db, id) catch null;
+    if (session) |s| {
+        defer s.deinit(allocator);
+        ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+            .action = "updated",
+            .id = s.id,
+            .name = s.name,
+            .status = s.status,
+            .cwd = s.cwd,
+            .created_at = s.created_at,
+            .updated_at = s.updated_at,
+            .selected_profile_model = s.selected_profile_model,
+            .git_worktree_cwd = s.git_worktree_cwd,
+            .is_auto_retry_until_stop = s.is_auto_retry_until_stop,
+            .last_finish_reason = s.last_finish_reason,
+        }) catch {};
+    }
+}
+
+/// Update the most-recent `finish_reason` cache for an existing session
+/// (Migration 063). Called by `workflow.zig` after every LLM call so a
+/// future workflow invocation (e.g., after a server restart) starts
+/// from the right state without re-querying `llm_history.finish_reason`.
+///
+/// No SSE broadcast — `last_finish_reason` is an internal cache, not a
+/// UI surface (the ChatView shows the live SSE-streamed reason; this
+/// column only backs the unattended-soft-bail logic in workflow.zig).
+pub fn updateSessionLastFinishReason(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    finish_reason: []const u8,
+) !void {
+    const sql =
+        "UPDATE sessions SET last_finish_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    try db.exec(allocator, sql, &.{ finish_reason, id });
 }
 
 /// Update session selected_profile_model (the name of a profile in
@@ -3076,6 +3213,12 @@ pub const WorkspaceItemTaskInfo = struct {
     /// `0` for non-kanban tasks. Mirrors `workspace_item_tasks.kanban_position`
     /// (Migration 048).
     kanban_position: i64 = 0,
+    /// Unattended-mode flag, joined from `sessions` for routine tasks
+    /// (where `task.id == session.id` per the project convention).
+    /// `'0'` for standard tasks that have no session row. The frontend's
+    /// KanbanTaskDetailDialog toggle reads this on dialog open to show
+    /// the current state. Owned by the lister; freed by `deinit`.
+    is_auto_retry_until_stop: []u8 = &.{},
 
     pub fn deinit(self: WorkspaceItemTaskInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -3093,6 +3236,7 @@ pub const WorkspaceItemTaskInfo = struct {
         if (self.created_at) |ca| allocator.free(ca);
         if (self.updated_at) |ua| allocator.free(ua);
         if (self.kanban_column_id) |kc| allocator.free(kc);
+        if (self.is_auto_retry_until_stop.len > 0) allocator.free(self.is_auto_retry_until_stop);
     }
 };
 
@@ -3521,7 +3665,16 @@ pub fn listWorkspaceItemTasksWithCursor(
 
     const sql = try std.fmt.allocPrint(
         allocator,
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id WHERE t.workspace_item_id = ?{s} {s} LIMIT {s}",
+        // Auto-retry-until-stop: LEFT JOIN sessions on t.id =
+        // sessions.id (per the project convention task.id ==
+        // session.id for routine tasks; standard tasks that have
+        // no matching session row get NULL → COALESCE to '0').
+        // COALESCE(t.kanban_position, 0) ensures standard tasks
+        // without a kanban_position still get '0' (the column is
+        // nullable per Migration 048). s.is_auto_retry_until_stop
+        // appends as column 18, shifting nothing because routines
+        // fields are already past it (still 11-17).
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0') FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s} {s} LIMIT {s}",
         .{ cursor_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -3536,11 +3689,12 @@ pub fn listWorkspaceItemTasksWithCursor(
     }
 
     while (try rows.next()) |row| {
-        // Row indices (post-Migration-061, same as listWorkspaceItemTasks):
+        // Row indices (post-Migration-063-attended-toggle JOIN):
         //   0: id, 1: name, 2: workspace_item_id, 3: description,
         //   4: created_at, 5: updated_at, 6: task_type,
         //   7: is_pinned, 8: pinned_position, 9: kanban_column_id,
-        //   10: kanban_position, 11-17: routine fields.
+        //   10: kanban_position, 11-17: routine fields,
+        //   18: is_auto_retry_until_stop (joined from sessions).
         const task_type = if (row.values[6].len > 0)
             try allocator.dupe(u8, row.values[6])
         else
@@ -3577,6 +3731,9 @@ pub fn listWorkspaceItemTasksWithCursor(
             .kanban_column_id = if (row.values[9].len > 0) try allocator.dupe(u8, row.values[9]) else null,
             .kanban_position = std.fmt.parseInt(i64, row.values[10], 10) catch 0,
             .routine = routine_meta,
+            // Auto-retry-until-stop: index 18 (joined from sessions).
+            // COALESCE'd to '0' in the SQL so this is always non-empty.
+            .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[18]),
         };
         try tasks.append(allocator, task);
         row.deinit(allocator);

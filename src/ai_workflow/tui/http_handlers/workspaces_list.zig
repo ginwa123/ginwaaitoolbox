@@ -163,7 +163,12 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
             // Migration 062: added `description` to the SELECT column list
             // (right after `workspace_item_id`). All subsequent indices shift
             // by one.
-            const tasks_sql = try std.fmt.allocPrint(alloc, "SELECT id, name, workspace_item_id, description, created_at, updated_at, COALESCE(is_pinned, 0), COALESCE(pinned_position, 0) FROM workspace_item_tasks WHERE workspace_item_id IN {s} ORDER BY is_pinned DESC, pinned_position DESC, created_at DESC", .{task_in_clause.items});
+            // Auto-retry-until-stop: LEFT JOIN sessions on id (task.id
+            // == session.id for routine tasks per the project
+            // convention; standard tasks get NULL → COALESCE to '0').
+            // Adds 1 column to the SELECT list and shifts pinned_position
+            // to index 8 (previously 7).
+            const tasks_sql = try std.fmt.allocPrint(alloc, "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), COALESCE(s.is_auto_retry_until_stop, '0') FROM workspace_item_tasks t LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id IN {s} ORDER BY t.is_pinned DESC, t.pinned_position DESC, t.created_at DESC", .{task_in_clause.items});
             var tasks_rows = try db.query(alloc, tasks_sql, item_ids.items);
 
             while (true) {
@@ -182,6 +187,8 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
                     .updated_at = if (row.values[5].len > 0) try alloc.dupe(u8, row.values[5]) else null,
                     .is_pinned = std.mem.eql(u8, row.values[6], "1"),
                     .pinned_position = std.fmt.parseInt(i64, row.values[7], 10) catch 0,
+                    // Auto-retry-until-stop: index 8 (joined from sessions).
+                    .is_auto_retry_until_stop = try alloc.dupe(u8, row.values[8]),
                 });
             }
         }

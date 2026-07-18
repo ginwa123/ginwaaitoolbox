@@ -1,127 +1,177 @@
-//! Behavioural tests for Migration 063 (add the `logs` table for
-//! frontend error capture).
+//! Static regression checks for Migration 063
+//! (sessions.is_auto_retry_until_stop + sessions.last_finish_reason).
 //!
 //! Why this file exists
 //! ────────────────────
-//! Migration 063 introduces the `logs` table that the frontend's
-//! `window.error` / `unhandledrejection` / `console.error` /
-//! `console.warn` listeners POST into (Chunk 2 handler). The schema
-//! must be exactly:
-//!   - 11 columns in the right order (the Ch3 SELECT * ORDER BY
-//!     created_at DESC relies on the cid ordering to be deterministic).
-//!   - 2 indexes (`idx_logs_created_at DESC` for the primary read path,
-//!     `idx_logs_level` for `WHERE level = ?` filtering).
-//!   - Idempotent on a re-run (`CREATE TABLE IF NOT EXISTS` +
-//!     `CREATE INDEX IF NOT EXISTS`) so a fresh-DB install and an
-//!     upgrade-from-v62 install both succeed.
+//! Migration 063 introduces two new columns on `sessions`:
+//!   - `is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0` — opt-in flag
+//!     that lets a session keep retrying past the 10-attempt TooManyRetries
+//!     bail (unattended mode for overnight runs).
+//!   - `last_finish_reason TEXT` — denormalized cache of the most recent
+//!     `finish_reason` the workflow observed, so a server restart mid-
+//!     conversation picks up where the last turn left off.
 //!
-//! A static source check would not catch a typo'd column name, a
-//! missing index, a missing `IF NOT EXISTS` (which would crash on a
-//! re-run), or a wrong column type. Asserting the actual schema after
-//! `up()` runs mirrors the pattern in `migration_062_test.zig`.
+//! The migration must:
+//!   1. Add both columns to a fresh DB that only has the canonical
+//!      `sessions(id, name, status)` columns (upgrade-from-v1 path).
+//!   2. Be idempotent (re-runs don't crash with "duplicate column name").
+//!   3. Give existing rows a `0` default for the flag and NULL for
+//!      `last_finish_reason`.
 //!
-//! Plan: docs/plans/2026-07-17-frontend-error-logs-design.md
+//! Plan: docs/superpowers/plans/2026-07-16-session-auto-retry-until-stop.md
+//!   (Chunk 1, Task 1.1)
 
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
+const sqlite = @import("nalarcore").sqlite;
 
-const migration = nalarcore.migrations_mod.migration;
-const Migration063AddFrontendLogs = migration.Migration063AddFrontendLogs;
+const Migration063AddSessionAutoRetry = @import("migration.zig").Migration063AddSessionAutoRetry;
 
-// ─── Test helpers ─────────────────────────────────────────────────────────
-
-/// Open a fresh in-memory sqlite DB. Mirrors `routines/scheduler_test.zig`
-/// `setupDb` (the project's canonical Io.Threaded + :memory: pattern).
-fn setupDb() !struct {
+const TestCtx = struct {
     db: sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
-} {
+};
+
+fn setupDb() !TestCtx {
     const alloc = testing.allocator;
     var threaded = std.Io.Threaded.init(alloc, .{});
     errdefer threaded.deinit();
     const io = threaded.io();
-
     var db: sqlite.SqliteBackend = .{};
     errdefer db.deinit();
     try db.init(io, ":memory:");
-
+    // Minimal v1 sessions table — the canonical pre-Migration-063 schema
+    // only declares id/name/status (Migration 017 line 263-269). The
+    // migration must add the new columns on top of this.
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active'
+        \\)
+    , &.{});
     return .{ .db = db, .threaded = threaded };
 }
 
-// ─── Test 1: Migration 063 creates all 11 columns in the right order ──────
-
-test "Migration063 creates logs table with all 11 columns in the right order" {
+test "Migration063 adds is_auto_retry_until_stop column to sessions" {
     const alloc = testing.allocator;
-    var s = try setupDb();
-    defer s.threaded.deinit();
-    defer s.db.deinit();
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
 
-    try Migration063AddFrontendLogs.up(&s.db, alloc);
-
-    var rows = try s.db.query(
-        alloc,
-        "SELECT name FROM pragma_table_info('logs') ORDER BY cid",
-        &[_][]const u8{},
-    );
-    defer rows.deinit();
-
-    const expected = [_][]const u8{
-        "id", "created_at", "level", "kind", "message",
-        "stack", "source", "line", "route_path", "session_id", "count",
-    };
-
-    var idx: usize = 0;
-    while (try rows.next()) |row| {
-        defer row.deinit(alloc);
-        try testing.expect(idx < expected.len);
-        try testing.expectEqualStrings(expected[idx], row.values[0]);
-        idx += 1;
+    // Sanity: column does NOT exist before the migration.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT 1 FROM pragma_table_info('sessions')
+            \\WHERE name = 'is_auto_retry_until_stop'
+        , &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
     }
-    try testing.expectEqual(@as(usize, expected.len), idx);
+
+    try Migration063AddSessionAutoRetry.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('sessions')
+        \\WHERE name = 'is_auto_retry_until_stop'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ColumnMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("is_auto_retry_until_stop", row.values[0]);
+
+    // No duplicate row.
+    try testing.expect((try q.next()) == null);
 }
 
-// ─── Test 2: Migration 063 creates the 2 indexes ──────────────────────────
-
-test "Migration063 creates the idx_logs_created_at and idx_logs_level indexes" {
+test "Migration063 adds last_finish_reason column to sessions" {
     const alloc = testing.allocator;
-    var s = try setupDb();
-    defer s.threaded.deinit();
-    defer s.db.deinit();
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
 
-    try Migration063AddFrontendLogs.up(&s.db, alloc);
+    try Migration063AddSessionAutoRetry.up(&ctx.db, alloc);
 
-    var rows = try s.db.query(
-        alloc,
-        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='logs' ORDER BY name",
-        &[_][]const u8{},
-    );
-    defer rows.deinit();
-
-    var found_created_at = false;
-    var found_level = false;
-    while (try rows.next()) |row| {
-        defer row.deinit(alloc);
-        if (std.mem.eql(u8, row.values[0], "idx_logs_created_at")) found_created_at = true;
-        if (std.mem.eql(u8, row.values[0], "idx_logs_level")) found_level = true;
-    }
-    try testing.expect(found_created_at);
-    try testing.expect(found_level);
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('sessions')
+        \\WHERE name = 'last_finish_reason'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ColumnMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("last_finish_reason", row.values[0]);
+    try testing.expect((try q.next()) == null);
 }
 
-// ─── Test 3: Migration 063 is idempotent on a re-run ──────────────────────
-
-test "Migration063 is idempotent (re-running up() does not error)" {
+test "Migration063 is idempotent on a re-run" {
     const alloc = testing.allocator;
-    var s = try setupDb();
-    defer s.threaded.deinit();
-    defer s.db.deinit();
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
 
-    try Migration063AddFrontendLogs.up(&s.db, alloc);
-    // Second run must not error — `CREATE TABLE IF NOT EXISTS` +
-    // `CREATE INDEX IF NOT EXISTS` make this a safe no-op. If they
-    // were bare CREATE / CREATE INDEX, the second run would crash
-    // with "table logs already exists" / "index already exists".
-    try Migration063AddFrontendLogs.up(&s.db, alloc);
+    try Migration063AddSessionAutoRetry.up(&ctx.db, alloc);
+    // Re-run — must not crash with "duplicate column name".
+    try Migration063AddSessionAutoRetry.up(&ctx.db, alloc);
+
+    // Still exactly one column of each name.
+    for ([_][]const u8{ "is_auto_retry_until_stop", "last_finish_reason" }) |col| {
+        var q = try ctx.db.query(alloc,
+            \\SELECT COUNT(*) FROM pragma_table_info('sessions')
+            \\WHERE name = ?
+        , &[_][]const u8{col});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("1", row.values[0]);
+    }
+}
+
+test "Migration063 default for is_auto_retry_until_stop is 0 on existing rows" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Insert one v1-shape session row (only id/name, no new columns yet).
+    try ctx.db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('s_pre_063', 'Pre')",
+        &.{});
+
+    try Migration063AddSessionAutoRetry.up(&ctx.db, alloc);
+
+    // The existing row should now have is_auto_retry_until_stop = '0'
+    // (the NOT NULL DEFAULT 0 fires). SQLite stores INTEGER columns
+    // as INTEGER affinity, but SqliteBackend.query reads values as
+    // text — verify the string form '0'.
+    var q = try ctx.db.query(alloc,
+        "SELECT is_auto_retry_until_stop FROM sessions WHERE id = 's_pre_063'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+}
+
+test "Migration063 last_finish_reason is NULL on existing rows" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('s_pre_063b', 'Pre')",
+        &.{});
+
+    try Migration063AddSessionAutoRetry.up(&ctx.db, alloc);
+
+    // SELECT last_finish_reason — expect empty string (SQL NULL is
+    // surfaced as "" by SqliteBackend per the project's convention;
+    // see project memory `sqlite-backend-empty-slice-binds-as-null`).
+    var q = try ctx.db.query(alloc,
+        "SELECT last_finish_reason FROM sessions WHERE id = 's_pre_063b'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
 }

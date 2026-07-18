@@ -85,6 +85,9 @@ pub const SessionUpdateResponse = struct {
     name: []const u8,
     status: []const u8,
     selected_profile_model: []const u8,
+    /// Migration 063 — echo the unattended-mode flag back so the
+    /// frontend's reactive Pinia store refreshes from the response.
+    is_auto_retry_until_stop: []const u8 = "",
 };
 
 pub const WorkerResponse = struct { id: []const u8, status: []const u8 };
@@ -127,6 +130,15 @@ pub const TaskCreateRequest = struct {
     memory_name: ?[]const u8 = null,
     /// Initial content of the memory file. Required iff task_type='memory'.
     memory_content: ?[]const u8 = null,
+    /// Auto-retry-until-stop flag (Migration 063). Mirrors the
+    /// `sessions.is_auto_retry_until_stop` column for routine tasks
+    /// where task.id == session.id (project convention). When set
+    /// during standard-task creation, the handler ALSO inserts a
+    /// `sessions` row (task.id becomes session.id) so the flag has
+    /// somewhere to land. Accepts `"1"`, `"0"`, or null/absent.
+    /// Frontend's KanbanTaskDetailDialog toggle sends this on
+    /// create when the user flipped unattended-mode ON.
+    is_auto_retry_until_stop: ?[]const u8 = null,
 };
 
 pub const TaskUpdateRequest = struct {
@@ -415,6 +427,14 @@ pub const WorkspaceItemTaskResponse = struct {
     /// Position within the kanban column. `0` for non-kanban tasks.
     /// Mirrors `WorkspaceItemTaskInfo.kanban_position` (Migration 048).
     kanban_position: i64 = 0,
+    /// Unattended-mode flag, joined from `sessions` for routine
+    /// tasks (where `task.id == session.id` per the project
+    /// convention). `'0'` for standard tasks that have no
+    /// session row, and the literal session value otherwise.
+    /// Empty string when the join didn't find a row — the
+    /// frontend's KanbanTaskDetailDialog defaults to off in that
+    /// case.
+    is_auto_retry_until_stop: []const u8 = "",
 };
 
 pub const WorkspaceItemTaskListResponse = struct {

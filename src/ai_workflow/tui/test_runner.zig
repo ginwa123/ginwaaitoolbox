@@ -45,6 +45,9 @@ test {
     _ = @import("design_io_test.zig");
     _ = @import("design_model_test.zig");
     _ = @import("migration_057_test.zig");  // stays at this path; imported by src/migrations/test_runner.zig via relative path
+    _ = @import("migration_063_runtime_test.zig");  // Chunk 1 — sessions auto_retry + finish_reason runtime CRUD
+    _ = @import("http_handlers/session_create_migration_063_test.zig");  // Chunk 3 Task 3.1 — POST /api/session static-contract
+    _ = @import("http_handlers/session_update_migration_063_test.zig");  // Chunk 3 Task 3.2 — PUT /api/session/:id static-contract
     _ = @import("kanban_model_test.zig");
     _ = @import("kanban_model_test_description.zig");
     _ = @import("kanban_copy_spec_test.zig");

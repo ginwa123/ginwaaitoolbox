@@ -110,7 +110,12 @@ pub const ToolCallJson = struct {
 };
 
 /// Input parameters for sending SSE session events
-/// Reflects the sessions table columns: id, name, status, cwd, created_at, updated_at, selected_profile_model, git_worktree_cwd
+/// Reflects the sessions table columns: id, name, status, cwd, created_at, updated_at, selected_profile_model, git_worktree_cwd, is_auto_retry_until_stop, last_finish_reason
+///
+/// Migration 063 added the last two fields. Default values are `""` so
+/// existing callers that omit them continue to compile (the SSE payload
+/// still has the field present, just empty — predictable JSON shape for
+/// the frontend parser).
 pub const OnEventInputSessions = struct {
     action: []const u8, // "created", "updated", "deleted"
     id: []const u8,
@@ -121,6 +126,11 @@ pub const OnEventInputSessions = struct {
     updated_at: []const u8,
     selected_profile_model: []const u8 = "",
     git_worktree_cwd: []const u8 = "",
+    /// Migration 063 — opt-in flag for unattended mode. Empty default =
+    /// "off" (matches the production SQL default of `'0'` via COALESCE).
+    is_auto_retry_until_stop: []const u8 = "",
+    /// Migration 063 — most recent finish_reason observed by the workflow.
+    last_finish_reason: []const u8 = "",
 };
 
 /// JSON event payload for SSE session events
@@ -370,6 +380,11 @@ pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSess
         .created_at = input.created_at,
         .updated_at = input.updated_at,
         .selected_profile_model = input.selected_profile_model,
+        // Migration 063 — propagate the new columns via SSE so the
+        // ChatsList badge updates without a refetch.
+        .git_worktree_cwd = input.git_worktree_cwd,
+        .is_auto_retry_until_stop = input.is_auto_retry_until_stop,
+        .last_finish_reason = input.last_finish_reason,
     };
     try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
         .whitespace = .indent_4,

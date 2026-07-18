@@ -313,6 +313,119 @@ describe('KanbanTaskDetailDialog — metadata strip', () => {
 
 // ─── Create-mode tests (kanban-add-task-via-detail-dialog) ───────────────
 //
+// The unattended-mode toggle lives inside the edit-mode dialog
+// (rendered only when `mode !== 'create'`). It's an iOS-style
+// immediate-flip switch — NOT gated on the Save button click —
+// because unattended is a runtime behavior setting, not a
+// save-button-commit. The dialog emits `update-unattended` with
+// `{ value, previous }` so the host can call
+// `api.updateSession(task.id, { isAutoRetryUntilStop: value })`
+// and roll back on PUT failure if needed.
+describe('KanbanTaskDetailDialog — unattended mode toggle', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    findAllInDom('[data-testid="kanban-task-detail-dialog"]').forEach((el) =>
+      el.remove(),
+    )
+  })
+
+  function mountEditDialogWithTask(task: Task) {
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: { show: true, task },
+    })
+    return wrapper
+  }
+
+  it('renders the unattended toggle in edit mode', async () => {
+    mountEditDialogWithTask(TASK)
+    await flushPromises()
+    const toggle = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-unattended-toggle"]',
+    )
+    expect(toggle).not.toBeNull()
+  })
+
+  it('renders the toggle unchecked when task.is_auto_retry_until_stop is missing or "0"', async () => {
+    mountEditDialogWithTask({ ...TASK }) // no is_auto_retry_until_stop field
+    await flushPromises()
+    const toggle = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-unattended-toggle"]',
+    )
+    expect(toggle?.checked).toBe(false)
+  })
+
+  it('renders the toggle checked when task.is_auto_retry_until_stop === "1"', async () => {
+    mountEditDialogWithTask({ ...TASK, is_auto_retry_until_stop: '1' })
+    await flushPromises()
+    const toggle = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-unattended-toggle"]',
+    )
+    expect(toggle?.checked).toBe(true)
+  })
+
+  it('renders the toggle in create mode (Option A: atomic create-with-session)', async () => {
+    // The toggle used to be hidden in create mode because no
+    // session row existed yet. As of the unattended-mode Option A
+    // fix, the create payload carries is_auto_retry_until_stop
+    // and the backend atomically inserts a sessions row + sets
+    // the flag in one transaction. So the toggle is now visible
+    // from the create flow — flipping it persists at task
+    // creation time.
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: { show: true, mode: 'create', task: null, column: null },
+    })
+    await flushPromises()
+    const toggle = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-unattended-toggle"]',
+    )
+    expect(toggle).not.toBeNull()
+    // Default value is '0' (off) — user can opt in by flipping.
+    expect(toggle?.checked).toBe(false)
+  })
+
+  it('flipping the toggle emits update-unattended with new value and previous', async () => {
+    mountEditDialogWithTask({ ...TASK, is_auto_retry_until_stop: '0' })
+    await flushPromises()
+    const toggle = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-unattended-toggle"]',
+    )
+    toggle!.checked = true
+    toggle!.dispatchEvent(new Event('change', { bubbles: true }))
+    await flushPromises()
+    const emitted = wrapper!.emitted('update-unattended')
+    expect(emitted).toBeTruthy()
+    expect(emitted![0]).toEqual([{ value: '1', previous: '0' }])
+  })
+
+  it('flipping the toggle does NOT mark the form dirty (Save stays disabled)', async () => {
+    mountEditDialogWithTask({ ...TASK, is_auto_retry_until_stop: '0' })
+    await flushPromises()
+    const toggle = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-unattended-toggle"]',
+    )
+    toggle!.checked = true
+    toggle!.dispatchEvent(new Event('change', { bubbles: true }))
+    await flushPromises()
+    const saveBtn = findInDom<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-save"]',
+    )
+    // The toggle is its own immediate-save action; Save stays
+    // disabled until name/description actually change.
+    expect(saveBtn?.hasAttribute('disabled')).toBe(true)
+  })
+})
+
 // The same KanbanTaskDetailDialog renders the "+ Add" flow in
 // kanban mode. The host passes `mode="create"` and `task={null}`;
 // the form starts empty and submit emits `create` (not `save`).
@@ -426,7 +539,11 @@ describe('KanbanTaskDetailDialog — create mode', () => {
     expect(saveBtn?.hasAttribute('disabled')).toBe(false)
   })
 
-  it('emits create (not save) with { mode: "create", name, description }', async () => {
+  it('emits create (not save) with { mode: "create", name, description, is_auto_retry_until_stop }', async () => {
+    // The create payload now carries is_auto_retry_until_stop
+    // (Option A: backend atomically inserts a sessions row when
+    // this is '1'). Default value at dialog open is '0' — the
+    // toggle hasn't been flipped yet.
     const w = mountCreateDialog()
     await flushPromises()
     setInputValue('[data-testid="kanban-task-detail-create-name"]', '  New task  ')
@@ -441,7 +558,29 @@ describe('KanbanTaskDetailDialog — create mode', () => {
     const emitted = w!.emitted('create')
     expect(emitted).toBeTruthy()
     expect(emitted![0]).toEqual([
-      { mode: 'create', name: 'New task', description: 'Some description' },
+      { mode: 'create', name: 'New task', description: 'Some description', is_auto_retry_until_stop: '0' },
+    ])
+  })
+
+  it('emits create with is_auto_retry_until_stop: "1" when the toggle is flipped on', async () => {
+    // Flips the unattended toggle BEFORE clicking Create. The
+    // emitted payload should carry the flipped value.
+    const w = mountCreateDialog()
+    await flushPromises()
+    setInputValue('[data-testid="kanban-task-detail-create-name"]', 'Overnight run')
+    await flushPromises()
+    const toggle = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-unattended-toggle"]',
+    )
+    toggle!.checked = true
+    toggle!.dispatchEvent(new Event('change', { bubbles: true }))
+    await flushPromises()
+    clickInDom('[data-testid="kanban-task-detail-save"]')
+
+    const emitted = w!.emitted('create')
+    expect(emitted).toBeTruthy()
+    expect(emitted![0]).toEqual([
+      { mode: 'create', name: 'Overnight run', description: '', is_auto_retry_until_stop: '1' },
     ])
   })
 

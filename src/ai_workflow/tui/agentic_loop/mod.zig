@@ -81,3 +81,5 @@ pub const prompts_mod = @import("prompts.zig");
 
 const mark_history_not_for_llmrun_mod = @import("markHistoryNotForLLMRun.zig");
 pub const mark_history_not_for_llmrun = mark_history_not_for_llmrun_mod.markHistoryNotForLLMRun;
+
+pub const makeWorkingDirectoryContext = prompts_mod.makeWorkingDirectoryContext;

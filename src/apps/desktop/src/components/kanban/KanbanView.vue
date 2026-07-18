@@ -172,6 +172,7 @@ const handleOpenSettings = () => {
 // AddKanbanDialog's picker to keep the UX consistent — same data
 // source, same select-pick-cancel flow.
 import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
+import { updateSession as apiUpdateSession } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
 
 const showPathPicker = ref(false)
@@ -234,6 +235,20 @@ const activeTaskDetailColumn = computed<KanbanColumnType | null>(() => {
 const handleViewTaskDetail = (taskId: string) => {
   activeTaskDetailId.value = taskId
   showTaskDetail.value = true
+  // Refetch the task list so the dialog shows server-truth on open.
+  // The KanbanTaskDetailDialog reads props.task.is_auto_retry_until_stop
+  // to render the unattended-mode toggle, and that field can drift
+  // out of sync across clients (e.g. another nalar instance
+  // toggled the flag, or a sub-agent PUT ran unattended on a
+  // shared session). The workspaces store re-fetches the whole
+  // task list for the parent item, plucks this task, and patches
+  // the cached copy in place. Best-effort — a failure is logged
+  // and the dialog still opens with the cached value.
+  void workspacesStore.refreshTask(
+    props.workspaceId,
+    props.itemId || props.item.id,
+    taskId,
+  )
 }
 
 // Dialog save handler — delegates to the store action which runs the
@@ -254,6 +269,30 @@ const handleTaskDetailSave = async (payload: { name: string; description: string
   } catch (err) {
     console.error('Failed to save task details:', err)
     // Keep the dialog open so the user can retry / fix
+  }
+}
+
+// Unattended-mode toggle handler (edit mode only). Persists
+// immediately via PUT /api/llm/session/<id> — the flag lives on
+// the sessions table (task.id == session.id for routine tasks per
+// the project convention), NOT on workspace_item_tasks. We do NOT
+// close the dialog on toggle (it's an iOS-style immediate switch,
+// not a Save-button commit). On PUT failure we log + show the
+// error inline; the next SSE re-fetch will correct the toggle's
+// visual state.
+const handleUnattendedToggle = async (payload: { value: '0' | '1'; previous: '0' | '1' }) => {
+  const taskId = activeTaskDetailId.value
+  if (!taskId) return
+  try {
+    await apiUpdateSession(taskId, { isAutoRetryUntilStop: payload.value })
+  } catch (err) {
+    console.error('Failed to toggle unattended mode:', err)
+    // On failure, the SSE re-fetch (or the dialog re-open via
+    // activeTaskDetailId) will paint the correct server-truth
+    // value into the toggle. We intentionally don't try to roll
+    // back the toggle's local state from here — the dialog's
+    // `unattended.value` is the source of truth while the dialog
+    // is open, and the user can re-toggle if they want.
   }
 }
 
@@ -312,6 +351,7 @@ const handleCreateTaskSave = async (payload: {
   mode: 'create'
   name: string
   description: string
+  is_auto_retry_until_stop?: '0' | '1'
 }) => {
   if (!activeCreateColumnId.value) return
   createBusy.value = true
@@ -323,6 +363,10 @@ const handleCreateTaskSave = async (payload: {
     const taskId = await workspacesStore.addTask(wsId, itId, {
       name: payload.name,
       description: payload.description,
+      // Forward the unattended toggle's value from the create
+      // dialog (Option A: backend atomically inserts a sessions
+      // row + sets the flag when this is '1').
+      isAutoRetryUntilStop: payload.is_auto_retry_until_stop,
     })
     if (!taskId) {
       createError.value = 'Failed to create task — please retry.'
@@ -482,6 +526,7 @@ const handleCreateTaskSave = async (payload: {
     :task="activeTaskDetail"
     :column="activeTaskDetailColumn"
     @save="handleTaskDetailSave"
+    @update-unattended="handleUnattendedToggle"
   />
   <!--
     Second KanbanTaskDetailDialog mount for the "+ Add" → create flow.
