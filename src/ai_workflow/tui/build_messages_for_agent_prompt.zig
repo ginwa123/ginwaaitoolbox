@@ -74,7 +74,7 @@ pub fn buildMessages(
     defer allocator.free(agentUsed);
 
     // buildAgentPrompt now handles processMessages internally
-    const activity_info = try buildActivityInfo(allocator, io, db, session_id);
+    const activity_info = try agentic_loop.prompts_mod.makeActivityInfo(allocator, io, db, session_id);
     defer allocator.free(activity_info);
 
     // Resolve environment for the Global Knowledge loader. The singleton

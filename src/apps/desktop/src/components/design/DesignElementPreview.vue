@@ -39,9 +39,15 @@ const props = withDefaults(
   defineProps<{
     html: string
     editable?: boolean
+    // Pointer-events mode for the iframe. The canvas passes
+    // 'none' so clicks fall through to the parent element (drag /
+    // resize / select); the editable Monaco preview would pass
+    // 'auto' so the user can interact with the iframe content.
+    pointerEvents?: 'auto' | 'none'
   }>(),
   {
     editable: false,
+    pointerEvents: 'auto',
   },
 )
 
@@ -91,7 +97,7 @@ watch(
     ref="iframeRef"
     sandbox="allow-scripts"
     class="w-full h-full"
-    style="border: none; background: white;"
+    :style="{ border: 'none', background: 'white', pointerEvents: props.pointerEvents }"
     :srcdoc="html"
     data-testid="design-element-preview"
     @load="onIframeLoad"

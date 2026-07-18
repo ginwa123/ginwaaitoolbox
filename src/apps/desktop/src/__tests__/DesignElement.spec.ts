@@ -67,4 +67,42 @@ describe('DesignElement.vue static contract', () => {
     expect(source).toContain("Backspace")
     expect(source).toContain("keydown")
   })
+
+  // Regression test for the 2026-07-18 "design mode elements don't
+  // show" bug: DesignElementPreview was imported but never rendered
+  // in the template, so the canvas only showed faint placeholder
+  // rectangles. The fix: render DesignElementPreview inside the
+  // file_path placeholder div so the canvas shows the actual HTML
+  // body (landing-bg, landing-nav, hero-left, etc.). Without this
+  // contract, a future refactor could silently drop the iframe
+  // rendering and the user would see only placeholders again.
+  it('renders the DesignElementPreview iframe for elements with file_path', () => {
+    expect(source).toContain('<DesignElementPreview')
+    expect(source).toContain('v-if="element.file_path"')
+    expect(source).toContain(':html="htmlBody"')
+    expect(source).toContain('pointer-events="none"')
+  })
+
+  // Regression test for the 2026-07-18 bug: the element must fetch
+  // its HTML body so the iframe has content to render. The fetch is
+  // wired to onMounted + a watch on (id, file_path, updated_at) so
+  // Monaco edits in the PropertiesPanel trigger a re-render.
+  it('lazy-loads the element HTML body via getDesignElementHtml', () => {
+    expect(source).toContain('getDesignElementHtml')
+    expect(source).toContain('htmlBody')
+    expect(source).toContain('onMounted')
+    // The watch covers id (switching elements/pages), file_path (HTML
+    // path changed) and updated_at (Monaco re-save without path change).
+    expect(source).toContain('updated_at')
+  })
+
+  // The canvas-mode iframe must NOT capture pointer events — clicks
+  // must fall through to the parent DesignElement so drag/resize/
+  // select still work when the user clicks on top of the rendered
+  // HTML content (e.g. the "Install →" button).
+  it('declares workspaceId, itemId, pageId props for the HTML fetch', () => {
+    expect(source).toContain('workspaceId:')
+    expect(source).toContain('itemId:')
+    expect(source).toContain('pageId:')
+  })
 })
