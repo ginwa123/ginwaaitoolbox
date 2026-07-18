@@ -52,6 +52,7 @@ import LayersPanel from './LayersPanel.vue'
 import PropertiesPanel from './PropertiesPanel.vue'
 import AddDesignElementDialog from './AddDesignElementDialog.vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
+import { useNotificationStore } from '../../stores/notifications'
 import { listDesignPages, type DesignElement as DesignElementApi } from '../../api'
 
 const props = withDefaults(
@@ -395,6 +396,85 @@ const handlePropertiesHtmlChanged = (html: string): void => {
 
 const canvasWidth = computed(() => activePage.value?.width ?? 1440)
 const canvasHeight = computed(() => activePage.value?.height ?? 1024)
+
+// ─── Page-size inputs (debounced 600ms) ─────────────────────────────────
+//
+// Two `<input type="number">` fields in the canvas header let the
+// user resize the active page. The backend validates the ranges
+// (width 320-4096, height 240-4096); out-of-range is rejected
+// with 400. Inputs share a single 600ms debounce so changing both
+// then pausing issues exactly one PATCH request.
+
+// String forms for the `<input type="number">`. Use empty string
+// when no page is active so the input is blank (not "0").
+const pageWidthInput = computed(() =>
+  activePage.value ? String(activePage.value.width) : '',
+)
+const pageHeightInput = computed(() =>
+  activePage.value ? String(activePage.value.height) : '',
+)
+
+let pageSizeDebounceTimer: number | null = null
+
+const handlePageSizeChange = (): void => {
+  if (!activePage.value) return
+  if (!props.workspaceId || !effectiveItemId.value) return
+  if (pageSizeDebounceTimer !== null) {
+    clearTimeout(pageSizeDebounceTimer)
+  }
+  pageSizeDebounceTimer = window.setTimeout(() => {
+    pageSizeDebounceTimer = null
+    void commitPageSize()
+  }, 600)
+}
+
+const commitPageSize = async (): Promise<void> => {
+  if (!activePage.value) return
+  const widthInput = document.querySelector<HTMLInputElement>(
+    '[data-testid="design-page-width-input"]',
+  )
+  const heightInput = document.querySelector<HTMLInputElement>(
+    '[data-testid="design-page-height-input"]',
+  )
+  if (!widthInput || !heightInput) return
+  const width = Number(widthInput.value)
+  const height = Number(heightInput.value)
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return
+  if (width < 320 || width > 4096 || height < 240 || height > 4096) {
+    useNotificationStore().notifyError(
+      'Invalid page size',
+      `Width must be 320-4096, height 240-4096 (got ${width}×${height})`,
+    )
+    // Reset the inputs to the current valid page size.
+    widthInput.value = String(activePage.value.width)
+    heightInput.value = String(activePage.value.height)
+    return
+  }
+  try {
+    const updated = await workspacesStore.updateDesignPage(
+      props.workspaceId,
+      effectiveItemId.value,
+      activePage.value.id,
+      { width, height },
+    )
+    // Mutate the pages array in-place so the canvasWidth/Height
+    // computeds re-derive and the canvas div re-renders.
+    const idx = pages.value.findIndex((p) => p.id === updated.id)
+    if (idx !== -1) pages.value[idx] = updated
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    useNotificationStore().notifyError('Failed to resize page', message)
+    // Reset the inputs to the current (unchanged) page size.
+    widthInput.value = String(activePage.value.width)
+    heightInput.value = String(activePage.value.height)
+  }
+}
+
+onUnmounted(() => {
+  if (pageSizeDebounceTimer !== null) {
+    clearTimeout(pageSizeDebounceTimer)
+  }
+})
 </script>
 
 <template>
@@ -538,6 +618,38 @@ const canvasHeight = computed(() => activePage.value?.height ?? 1024)
             style="color: var(--semantic-text-dim);"
           >
             (no page selected)
+          </div>
+          <div
+            v-if="activePage"
+            class="flex items-center gap-1 text-xs shrink-0"
+            style="color: var(--semantic-text-dim);"
+            data-testid="design-page-size"
+          >
+            <input
+              type="number"
+              min="320"
+              max="4096"
+              step="10"
+              class="w-16 px-1.5 py-0.5 rounded text-xs"
+              style="background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border);"
+              :value="pageWidthInput"
+              aria-label="Page width"
+              data-testid="design-page-width-input"
+              @change="handlePageSizeChange"
+            />
+            <span aria-hidden="true">×</span>
+            <input
+              type="number"
+              min="240"
+              max="4096"
+              step="10"
+              class="w-16 px-1.5 py-0.5 rounded text-xs"
+              style="background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border);"
+              :value="pageHeightInput"
+              aria-label="Page height"
+              data-testid="design-page-height-input"
+              @change="handlePageSizeChange"
+            />
           </div>
           <div class="text-xs" style="color: var(--semantic-text-dim);">
             {{ elements.length }} element{{ elements.length === 1 ? '' : 's' }}
