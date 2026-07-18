@@ -41,8 +41,9 @@
     - data-testid="design-element-handle-{corner}" on each resize handle
 -->
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import type { DesignElement } from '../../api'
+import { getDesignElementHtml } from '../../api'
 import DesignElementPreview from './DesignElementPreview.vue'
 
 const props = withDefaults(
@@ -50,10 +51,20 @@ const props = withDefaults(
     element: DesignElement
     selected?: boolean
     readonly?: boolean
+    // IDs needed to lazy-load the element's HTML body from the
+    // backend (the page+elements GET response excludes the body to
+    // keep payloads small). Defaults are empty so the component
+    // can mount without them; fetchHtml is a no-op when any is missing.
+    workspaceId?: string
+    itemId?: string
+    pageId?: string
   }>(),
   {
     selected: false,
     readonly: false,
+    workspaceId: '',
+    itemId: '',
+    pageId: '',
   },
 )
 
@@ -165,6 +176,77 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
 
 // ─── HTML preview wrapper ───────────────────────────────────────────────
 
+// Lazy-load the element's stored HTML body so the canvas can render
+// the actual design (not just a placeholder rectangle). The body is
+// excluded from the page+elements GET response to keep payloads small
+// for designs with many elements, so we fetch per-element here.
+//
+// Re-fetch when the element changes (different id), the file_path
+// changes (the user updated the HTML via Monaco), or the file's
+// updated_at changes (the user re-saved via Monaco without changing
+// the path).
+const htmlBody = ref<string>('')
+const htmlLoadError = ref<string | null>(null)
+const isLoadingHtml = ref(false)
+let htmlFetchSeq = 0
+
+const fetchHtml = async (): Promise<void> => {
+  // No file_path = no HTML body to render. This is the common case
+  // for legacy / empty elements created before the body feature.
+  if (!props.element.file_path) {
+    htmlBody.value = ''
+    htmlLoadError.value = null
+    isLoadingHtml.value = false
+    return
+  }
+  // Need the full id tuple to call the API; the parent's `fetchDesignElements`
+  // call doesn't carry them through to here yet, so guard gracefully.
+  if (!props.workspaceId || !props.itemId || !props.pageId) {
+    htmlBody.value = ''
+    return
+  }
+  const seq = ++htmlFetchSeq
+  isLoadingHtml.value = true
+  htmlLoadError.value = null
+  try {
+    const { html } = await getDesignElementHtml(
+      props.workspaceId,
+      props.itemId,
+      props.pageId,
+      props.element.id,
+    )
+    // Only commit the result if this is still the latest in-flight
+    // request; otherwise a stale fetch could clobber newer content.
+    if (seq === htmlFetchSeq) {
+      htmlBody.value = html
+    }
+  } catch (err) {
+    if (seq === htmlFetchSeq) {
+      htmlLoadError.value = err instanceof Error ? err.message : String(err)
+      htmlBody.value = ''
+    }
+  } finally {
+    if (seq === htmlFetchSeq) {
+      isLoadingHtml.value = false
+    }
+  }
+}
+
+onMounted(() => {
+  void fetchHtml()
+})
+
+// Re-fetch when the element identity, file path, or updated_at
+// changes. `updated_at` is the proxy for "the user re-saved the
+// HTML via Monaco in the PropertiesPanel" — the path stays the same
+// but the file content changed.
+watch(
+  () => [props.element.id, props.element.file_path, props.element.updated_at],
+  () => {
+    void fetchHtml()
+  },
+)
+
 const handleHtmlChanged = (html: string): void => {
   emit('htmlChanged', html)
 }
@@ -179,7 +261,7 @@ const handleHtmlChanged = (html: string): void => {
 // Actually — we DO bind a window listener when selected so the user
 // can hit Delete without the canvas having to know. Cleaner UX than
 // routing it through DesignView.
-import { onMounted, onUnmounted } from 'vue'
+import { onUnmounted } from 'vue'
 
 const handleKeydown = (e: KeyboardEvent): void => {
   if (!props.selected) return
@@ -231,14 +313,36 @@ onUnmounted(() => {
           : 'none',
       }"
     >
-      <!-- We don't render the iframe for every element to avoid the
-           overhead of N iframes on the canvas. The preview is shown
-           only when the user selects the element and the PropertiesPanel
-           renders a separate, large iframe. The canvas itself shows a
-           placeholder rectangle instead. -->
+      <!-- The HTML body is fetched on mount (and re-fetched when
+           element.id / file_path / updated_at changes). The
+           v-if="htmlBody" guard renders the placeholder rectangle
+           underneath while the fetch is in flight, so the user sees
+           a graceful loading state instead of a flash of empty. -->
+      <DesignElementPreview
+        v-if="htmlBody"
+        :html="htmlBody"
+        :editable="false"
+        pointer-events="none"
+      />
+      <!-- Loading state — empty until the iframe loads. Visible only
+           briefly; the iframe replaces it within one render cycle of
+           the fetch returning. -->
+      <div
+        v-else-if="isLoadingHtml"
+        class="absolute inset-0 flex items-center justify-center text-[10px]"
+        style="color: var(--semantic-text-dim);"
+        data-testid="design-element-loading"
+      >
+        loading…
+      </div>
     </div>
 
-    <!-- Plain rectangle / shape fill (always shown) -->
+    <!-- Plain rectangle / shape fill (always shown). Rendered behind
+         the iframe so it acts as a graceful fallback when (a) the
+         element has no file_path, (b) the HTML fetch is still in
+         flight, or (c) the HTML fetch failed. Provides the dashed
+         outline the user needs to see where the element is before
+         the iframe content arrives. -->
     <div
       class="absolute inset-0"
       :style="{

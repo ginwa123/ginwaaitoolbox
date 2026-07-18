@@ -44,4 +44,12 @@ describe('DesignElementPreview.vue static contract', () => {
   it('has the design-element-preview data-testid', () => {
     expect(source).toContain("design-element-preview")
   })
+
+  // 2026-07-18: added `pointerEvents` prop so the canvas can render
+  // iframes with pointer-events:none (clicks fall through to the
+  // parent DesignElement for drag/resize/select). The default stays
+  // 'auto' so the editable flow still works.
+  it('declares the pointerEvents prop (canvas uses pointer-events: none)', () => {
+    expect(source).toContain("pointerEvents:")
+  })
 })
