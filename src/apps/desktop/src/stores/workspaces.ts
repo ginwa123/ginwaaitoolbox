@@ -850,7 +850,16 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     const item = findItem(workspaceId, itemId)
     if (!item) return
     try {
-      const { tasks, has_more, next_cursor } = await api.getTasks(workspaceId, itemId)
+      // Chunk 1 of kanban-lazy-load-tasks plan: bump initial fetch to
+      // the backend's MAX_PAGE_SIZE (100). The previous default (no
+      // limit → backend default 20) silently truncated kanbans with >
+      // 20 tasks so columns showed partial data with no "Load more"
+      // affordance. Keep this in sync with tasks_list.zig::MAX_PAGE_SIZE.
+      const { tasks, has_more, next_cursor } = await api.getTasks(
+        workspaceId,
+        itemId,
+        100, // MAX_PAGE_SIZE — single round-trip for typical kanbans
+      )
       item.tasks = tasks ?? []
       item.hasMoreTasks = has_more
       item.tasksNextCursor = next_cursor

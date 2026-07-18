@@ -43,8 +43,9 @@
       pin-task           [workspaceId, itemId, taskId, isPinned]
 -->
 <script setup lang="ts">
-import { computed, ref, nextTick, onMounted, onUnmounted } from 'vue'
+import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import KanbanCard from './KanbanCard.vue'
+import { useWorkspacesStore } from '../../stores/workspaces'
 import type { KanbanColumn, Task } from '../../stores/workspaces'
 
 const props = defineProps<{
@@ -101,6 +102,126 @@ const cardsInColumn = computed<Task[]>(() => {
       const bp = b.kanban_position ?? Number.MAX_SAFE_INTEGER
       return ap - bp
     })
+})
+
+// ─── Auto-load (lazy) for the per-item task list ─────────────────────────
+//
+// When the kanban has > 100 tasks (the backend's MAX_PAGE_SIZE), the
+// initial fetch in `fetchKanbanTasks` only loads the first page. We
+// expose two escape hatches for fetching more:
+//
+//   1. **Scroll-triggered auto-load** (the common case): an
+//      IntersectionObserver watches a 1px-tall sentinel div placed at
+//      the bottom of the cards list. When the sentinel becomes visible
+//      AND `item.hasMoreTasks`, fire `loadMoreTasks` ONCE (debounced via
+//      `hasTriggeredAutoLoad`).
+//
+//   2. **Click-to-load fallback**: a "Load more" button at the bottom
+//      of the column when `hasMoreTasks` is true. Catches keyboard-only
+//      users and short columns where the sentinel never enters the
+//      viewport on its own.
+//
+// Both routes call `workspacesStore.loadMoreTasks` (the existing store
+// action) — no new store changes. The action's `isLoadingMoreTasks`
+// guard (workspaces.ts:1425) makes concurrent calls no-ops.
+//
+// Plan: docs/superpowers/plans/2026-07-24-kanban-lazy-load-tasks.md
+//      Chunk 2 (Task 2.1)
+const workspacesStore = useWorkspacesStore()
+const autoLoadSentinel = ref<HTMLElement | null>(null)
+const hasTriggeredAutoLoad = ref(false)
+let autoLoadObserver: IntersectionObserver | null = null
+
+// Resolve the parent WorkspaceItem once. Used to read `hasMoreTasks` /
+// `isLoadingMoreTasks` for both the auto-trigger and the manual button.
+// Returns null when the store doesn't have this item yet (defensive
+// during SSE races / item navigation).
+const parentItem = computed(() => {
+  if (!props.workspaceId || !props.itemId) return null
+  return (
+    workspacesStore.workspaces
+      .find((ws) => ws.id === props.workspaceId)
+      ?.items.find((i) => i.id === props.itemId) ?? null
+  )
+})
+
+const moreTasksAvailable = computed(() => parentItem.value?.hasMoreTasks ?? false)
+const loadingMoreTasks = computed(() => parentItem.value?.isLoadingMoreTasks ?? false)
+
+const handleAutoLoad = () => {
+  // Debounce: only fire once per page. Reset via the `cardsInColumn`
+  // watcher below when the card count changes (a new page arrived)
+  // OR when hasMoreTasks flips false.
+  if (hasTriggeredAutoLoad.value) return
+  if (!moreTasksAvailable.value) return
+  if (loadingMoreTasks.value) return
+  if (cardsInColumn.value.length === 0) return // empty column: nothing to scroll past, skip auto
+  hasTriggeredAutoLoad.value = true
+  void workspacesStore.loadMoreTasks(props.workspaceId, props.itemId)
+}
+
+const handleManualLoadMore = () => {
+  // Manual fallback — same code path as auto-trigger. Catches
+  // keyboard-only users and short columns where the sentinel never
+  // enters view. No debounce: the user explicitly asked for more.
+  void workspacesStore.loadMoreTasks(props.workspaceId, props.itemId)
+}
+
+// Reset the debounce when a new page lands (cardsInColumn grew).
+// Re-enables the observer so the next scroll-to-bottom fires another
+// loadMore. When hasMoreTasks flips false, the sentinel + button hide
+// (v-if) and the observer is disconnected (see the sentinel watcher).
+watch(
+  () => cardsInColumn.value.length,
+  () => {
+    hasTriggeredAutoLoad.value = false
+  },
+)
+
+// Wire the IntersectionObserver when the sentinel mounts (and re-wire
+// when the ref is recreated on re-render). Use `watch` + `immediate`
+// rather than onMounted alone so the observer picks up the sentinel
+// ref on every reactive update that creates a new DOM node for it.
+watch(
+  autoLoadSentinel,
+  (el) => {
+    // Always tear down the previous observer before wiring a new one.
+    if (autoLoadObserver) {
+      autoLoadObserver.disconnect()
+      autoLoadObserver = null
+    }
+    if (!el) return
+    // Skip wiring if there's nothing to load — saves a useless observer
+    // + the sentinel rendering overhead on every column on every render.
+    if (!moreTasksAvailable.value) return
+    autoLoadObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            handleAutoLoad()
+            break
+          }
+        }
+      },
+      // rootMargin '200px' = fire when sentinel is within 200px of the
+      // viewport bottom, matching the VirtualScroller's
+      // loadMoreThreshold (ChatView.vue:2199). root: null = viewport
+      // (the column container's own scrollTop can grow, but the
+      // sentinel still enters the document viewport as the user scrolls
+      // — works for any scrollable column without per-column root
+      // wiring).
+      { root: null, rootMargin: '0px 0px 200px 0px', threshold: 0 },
+    )
+    autoLoadObserver.observe(el)
+  },
+  { immediate: true },
+)
+
+onUnmounted(() => {
+  if (autoLoadObserver) {
+    autoLoadObserver.disconnect()
+    autoLoadObserver = null
+  }
 })
 
 // ─── Inline rename state ───────────────────────────────────────────────────
@@ -480,6 +601,39 @@ const handleAddClick = () => {
       >
         No tasks yet
       </div>
+      <!-- Auto-load sentinel — a 1px-tall element at the bottom of the
+           scrollable cards list. The IntersectionObserver in <script setup>
+           watches this and fires workspacesStore.loadMoreTasks when it
+           enters the viewport (with a 200px rootMargin for early trigger).
+           Hidden when the column has no more tasks to fetch. -->
+      <div
+        v-if="moreTasksAvailable"
+        ref="autoLoadSentinel"
+        class="h-px w-full shrink-0"
+        aria-hidden="true"
+        :data-testid="`kanban-column-${column.id}-auto-load-sentinel`"
+      ></div>
+      <!-- Manual "Load more" fallback — visible when the backend says
+           more tasks exist. Hides during the in-flight load. Catches
+           keyboard-only / short-column cases where the sentinel never
+           enters the viewport. -->
+      <button
+        v-if="moreTasksAvailable"
+        type="button"
+        :disabled="loadingMoreTasks"
+        @click="handleManualLoadMore"
+        class="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-xs transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80"
+        style="color: var(--semantic-text-dim);"
+        :data-testid="`kanban-column-${column.id}-load-more`"
+      >
+        <span v-if="loadingMoreTasks" class="w-3 h-3">
+          <div
+            class="w-3 h-3 border-2 rounded-full animate-spin"
+            style="border-color: var(--color-aqua); border-top-color: transparent"
+          ></div>
+        </span>
+        <span>{{ loadingMoreTasks ? 'Loading…' : 'Load more' }}</span>
+      </button>
     </div>
 
     <!-- ─── Footer "+ Add" button ────────────────────────────────────── -->
