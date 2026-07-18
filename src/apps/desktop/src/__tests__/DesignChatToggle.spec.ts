@@ -130,15 +130,21 @@ describe('AppLayout design+chat 3-column layout branch', () => {
     expect(slice).toMatch(/:chat-id="activeTask\.id"/)
   })
 
-  it('shares the resize handle component pattern with the kanban branch', () => {
-    // Same data-testid prefix? Actually the kanban one is
-    // 'kanban-resize-handle' and the design one is
-    // 'design-resize-handle' (different ids to avoid selector
-    // collisions in E2E tests). What we DO want: both branches
-    // use the same SVG dot pattern + the same @mousedown handler.
-    const handleRegex = /data-(?:kanban|design)-resize-handle[^>]*@mousedown="startKanbanResize"/g
-    const matches = source.match(handleRegex) ?? []
-    // At least 2 hits (one for kanban, one for design).
-    expect(matches.length).toBeGreaterThanOrEqual(2)
+  it('renders the design-mode 3-column branch with its own resize handle (kanban uses a floating chat overlay, not 3-col)', () => {
+    // Pre-2026-06-29 the kanban+chat layout was ALSO a 3-col flex
+    // layout with a `kanban-resize-handle`. Post-refactor, the
+    // kanban uses a floating chat overlay (no side-by-side
+    // column boundary to resize). The design-mode branch kept
+    // its 3-col layout because designs are wider and the chat
+    // view needs more room there. This test pins that:
+    //   - The design branch has its own resize handle.
+    //   - The kanban branch DOES NOT (it now uses a floating
+    //     overlay, tested in AppLayout.kanban.spec.ts).
+    const designHandleRegex =
+      /data-design-resize-handle[^>]*@mousedown="startKanbanResize"/
+    expect(source.match(designHandleRegex)).not.toBeNull()
+    const kanbanHandleRegex =
+      /data-kanban-resize-handle[^>]*@mousedown="startKanbanResize"/
+    expect(source.match(kanbanHandleRegex)).toBeNull()
   })
 })

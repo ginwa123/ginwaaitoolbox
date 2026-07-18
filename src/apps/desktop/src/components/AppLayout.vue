@@ -492,13 +492,13 @@ const currentView = computed(() => {
 const activeTask = computed(() => workspacesStore.activeTask)
 
 // Workspace-item id of the currently-active task. Used by the
-// 3-column kanban|chatview template branch to make sure the
-// chatview and the kanban belong to the same parent — otherwise
-// we'd render a chatview of a non-kanban task alongside an
-// unrelated kanban (visual mess). The lookup walks every
-// workspace's tasks looking for `activeTaskId`; returns the
-// containing item's id or null. Cheap O(W) where W = number of
-// tasks across all workspaces.
+// floating-chat-on-kanban template branch (and the design-mode
+// 3-col branch) to make sure the chatview and the kanban/design
+// belong to the same parent — otherwise we'd render a chatview
+// of a non-kanban task alongside an unrelated kanban (visual
+// mess). The lookup walks every workspace's tasks looking for
+// `activeTaskId`; returns the containing item's id or null.
+// Cheap O(W) where W = number of tasks across all workspaces.
 const activeTaskWorkspaceItemId = computed(() => {
   const taskId = workspacesStore.activeTaskId
   if (!taskId) return null
@@ -512,11 +512,13 @@ const activeTaskWorkspaceItemId = computed(() => {
   return null
 })
 
-// Close the chatview column (the 3-column layout's right pane).
-// Triggered by the ChatView's ✕ header button. Clears the active
-// task and navigates to `view=workspace` so the URL remains the
-// source of truth — a refresh of `/app?view=workspace` re-renders
-// the kanban alone, with no leftover activeTask. Without the
+// Close the floating chat overlay (the kanban-mode chat panel) OR
+// the chatview column (the design-mode 3-col right pane). Both
+// branches emit the same `close` event from ChatView, so this
+// handler covers both. It clears the active task and navigates
+// to `view=workspace` so the URL remains the source of truth —
+// a refresh of `/app?view=workspace` re-renders the kanban
+// alone, with no leftover activeTask. Without the
 // `router.replace`, the URL would still say `view=task&task=…`
 // after the close, which would force a re-mount of the standalone
 // task branch and the kanban would vanish.
@@ -531,11 +533,12 @@ const handleCloseTaskView = () => {
   // broke the chat-nav paths in Sidebar.vue:316-322 and
   // ChatsList.vue:220-232). Since this is the ONLY path that needs
   // both the task AND the chat cleared (the user is closing the
-  // chatview column of the 3-column kanban+chat layout and dropping
-  // back to the workspace view), we now clear the chat explicitly
-  // here. Without this explicit clear, the next page reload would
-  // restore activeChatId from localStorage and pop the user back
-  // into a chat they thought they had closed.
+  // floating chat on the kanban OR the 3-col chat pane on the
+  // design view, and dropping back to the workspace view), we
+  // now clear the chat explicitly here. Without this explicit
+  // clear, the next page reload would restore activeChatId from
+  // localStorage and pop the user back into a chat they thought
+  // they had closed.
   workspacesStore.setActiveTask(null)
   navigationStore.clearActiveChat()
   router.replace({ path: '/app', query: { view: 'workspace' } })
@@ -570,6 +573,23 @@ const KANBAN_MIN_WIDTH = 0
 const KANBAN_MAX_WIDTH = 720
 const KANBAN_DEFAULT_WIDTH = 40 // % of main area, used when no localStorage value exists
 const KANBAN_WIDTH_STORAGE_KEY = 'kanban-column-width'
+
+// ─── Floating chat width (kanban-mode overlay) ──────────────────────────
+//
+// In kanban-mode the kanban fills the full main area and the ChatView
+// floats on top of it as a fixed-width panel anchored to the right
+// edge. The width is intentionally a constant (not persisted +
+// not resizable) — the user feedback 2026-06-29 was that the
+// 3-column flex split cramped the kanban board, and a fixed
+// floating chat is the simplest fix that gives the kanban back
+// its full width. If a future user wants the chat wider/narrower,
+// a resize handle can be added here (mirroring the design-mode
+// resize handle below).
+//
+// 480px matches the kanban column width — visually a single column
+// of the board "popped out" as a chat drawer. Reads cleanly on
+// 1080p+ displays without consuming the whole viewport.
+const FLOATING_CHAT_WIDTH = 480
 
 // Load the persisted kanban width. Returns a px value (int) or
 // null when no value exists. The caller falls back to a percentage
@@ -1365,18 +1385,42 @@ watch(chatSessionCwd, (newCwd) => {
         />
       </div>
 
-      <!-- 3-column kanban layout: sidebar | kanban | chatview.
-           Rendered when (a) the active workspace item is a kanban
-           AND (b) a task is currently selected under that kanban.
-           Both columns are mounted simultaneously so the user
-           can see the kanban context while chatting. The kanban
-           column is flexed to ~40% of the remaining width (after
-           the sidebar) and the chat takes the rest. The :key on
-           KanbanView forces a fresh mount when the user navigates
-           from one kanban to another; the ChatView :key uses
-           'task-<id>' so switching to a different task in the
-           SAME kanban remounts the chat (clean state, no stale
-           scroll position from the previous task). -->
+      <!--
+        Floating chat on kanban: the kanban takes the full main-area
+        width, and the ChatView floats as an absolute-positioned panel
+        on the right side, overlaying the kanban columns. The user can
+        still see the kanban columns behind the chat (partially
+        dimmed by the chat's solid background) and can close the
+        chat with the ✕ in the chat header to return to the kanban-
+        only view.
+
+        Why floating (not 3-col flex):
+        - The kanban board needs every horizontal pixel — column
+          widths (280px each) plus the "+ Add" footer are the
+          limiting factor. With a 3-col split the user only saw
+          1-2 columns on a typical 1080p display, which is cramped.
+        - The chat panel is modal in nature: the user is actively
+          typing into it and looking at its messages, not switching
+          between kanban + chat. A floating overlay matches the
+          mental model.
+        - The Settings button (kanban top-right) stays anchored to
+          the right side of the kanban header, NOT under the
+          floating chat. The chat's own ✕ close button is the
+          affordance for closing the chat.
+
+        The wrapper is `relative` so the absolute-positioned
+        ChatView is anchored to it. The kanban fills the wrapper
+        (no width constraint, no resize handle — the kanban now
+        owns the full main area). The chat sits at top:0, right:0,
+        bottom:0 (full height of the main area) with a fixed width
+        (default 480px) — visually a side drawer.
+
+        The :key on KanbanView forces a fresh mount when the user
+        navigates from one kanban to another; the ChatView :key
+        uses 'task-<id>' so switching to a different task in the
+        SAME kanban remounts the chat (clean state, no stale
+        scroll position from the previous task).
+      -->
       <div
         v-else-if="
           activeTask &&
@@ -1384,72 +1428,47 @@ watch(chatSessionCwd, (newCwd) => {
           activeWorkspaceItem.item_type === 'kanban' &&
           activeTaskWorkspaceItemId === activeWorkspaceItem.id
         "
-        class="flex-1 flex min-h-0"
-        data-kanban-three-column
+        class="flex-1 relative flex flex-col min-h-0"
+        data-kanban-with-floating-chat
       >
-        <div
-          class="flex flex-col h-full min-h-0"
-          :style="kanbanColumnStyle"
-          style="border-right: 1px solid var(--color-border)"
-        >
-          <KanbanView
-            :key="'kanban-' + activeWorkspaceItem.id"
-            :item="activeWorkspaceItem"
-            :workspace-id="activeWorkspace?.id ?? ''"
-            :item-id="activeWorkspaceItem.id"
-            @move-task="handleKanbanMoveTask"
-            @add-column="handleKanbanAddColumn"
-            @rename-column="handleKanbanRenameColumn"
-            @delete-column="handleKanbanDeleteColumn"
-            @reorder-column="handleKanbanReorderColumn"
-            @request-rename-column="handleKanbanRequestRenameColumn"
-            @request-delete-column="handleKanbanRequestDeleteColumn"
-            @select-task="handleKanbanSelectTask"
-            @delete-task="handleKanbanDeleteTask"
-            @rename-task="handleKanbanRenameTask"
-            @edit-routine="handleKanbanEditRoutine"
-            @run-routine="handleKanbanRunRoutine"
-            @pin-task="handleKanbanPinTask"
-            @open-settings="handleOpenKanbanSettings"
-            @rename-item="handleKanbanRenameItem"
-          />
-        </div>
+        <KanbanView
+          :key="'kanban-' + activeWorkspaceItem.id"
+          class="flex-1 min-w-0 min-h-0"
+          :item="activeWorkspaceItem"
+          :workspace-id="activeWorkspace?.id ?? ''"
+          :item-id="activeWorkspaceItem.id"
+          @move-task="handleKanbanMoveTask"
+          @add-column="handleKanbanAddColumn"
+          @rename-column="handleKanbanRenameColumn"
+          @delete-column="handleKanbanDeleteColumn"
+          @reorder-column="handleKanbanReorderColumn"
+          @request-rename-column="handleKanbanRequestRenameColumn"
+          @request-delete-column="handleKanbanRequestDeleteColumn"
+          @select-task="handleKanbanSelectTask"
+          @delete-task="handleKanbanDeleteTask"
+          @rename-task="handleKanbanRenameTask"
+          @edit-routine="handleKanbanEditRoutine"
+          @run-routine="handleKanbanRunRoutine"
+          @pin-task="handleKanbanPinTask"
+          @open-settings="handleOpenKanbanSettings"
+          @rename-item="handleKanbanRenameItem"
+        />
         <!--
-          Resize handle between the kanban column and the chatview
-          column. A 4px-wide hit area (w-1 in Tailwind = 4px) with
-          a 1px visual bar centered in it; the bar turns violet on
-          hover and during an active drag so the user knows the
-          handle is grabbable. Mirrors Sidebar.vue's resize handle
-          (line 949): same cursor, same opacity-on-hover pattern,
-          same data-kanban-resize-handle test selector.
-
-          The drag is owned by startKanbanResize (mousedown handler
-          below) which adds document-level mousemove/mouseup
-          listeners so a fast drag that outruns the handle still
-          tracks correctly.
+          Floating chat panel. `absolute top-0 right-0 bottom-0`
+          anchors to the kanban wrapper (which is `relative`).
+          `pointer-events-auto` ensures clicks on the chat work
+          even though it's an overlay.
         -->
         <div
-          class="shrink-0 w-2 cursor-col-resize relative flex items-center justify-center bg-[var(--color-violet)]/15 hover:bg-[var(--color-violet)]/40 transition-colors"
-          :class="isKanbanResizing ? '!bg-[var(--color-violet)]/60' : ''"
-          data-kanban-resize-handle
-          data-testid="kanban-resize-handle"
-          title="Drag to resize"
-          @mousedown="startKanbanResize"
+          class="absolute top-0 right-0 bottom-0 flex flex-col min-h-0 z-20 border-l shadow-2xl"
+          :style="{
+            width: FLOATING_CHAT_WIDTH + 'px',
+            'background-color': 'var(--semantic-bg)',
+            'border-color': 'var(--color-border)',
+          }"
+          data-floating-chat
+          data-testid="floating-chat"
         >
-          <svg
-            width="14"
-            height="2"
-            viewBox="0 0 14 2"
-            fill="currentColor"
-            class="text-[var(--color-violet)] opacity-70"
-            aria-hidden="true"
-          >
-            <circle cx="3" cy="1" r="1" />
-            <circle cx="7" cy="1" r="1" />
-            <circle cx="11" cy="1" r="1" />
-          </svg>
-        </div>
-        <div class="flex-1 flex flex-col h-full min-w-0 min-h-0">
           <ChatView
             :key="'task-' + activeTask.id"
             :chat-id="activeTask.id"

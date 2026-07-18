@@ -62,12 +62,12 @@ const props = defineProps<{
   /**
    * When true, render the compact header bar (chat name + ✕ close
    * button) above the messages. The host (AppLayout) sets this to
-   * true in the 3-column layout (sidebar | kanban | chatview) so
-   * the user can identify + close the chat without leaving the
-   * kanban. In the full-width standalone chat layout (the
-   * `/app?view=chat` route) the prop is left false, preserving the
-   * original "no header" experience where the chat fills the
-   * viewport edge-to-edge.
+   * true in the floating-chat overlay (kanban-mode) and in the
+   * 3-column design layout so the user can identify + close the
+   * chat without leaving the kanban / design. In the full-width
+   * standalone chat layout (the `/app?view=chat` route) the prop
+   * is left false, preserving the original "no header" experience
+   * where the chat fills the viewport edge-to-edge.
    *
    * Defaults to `false` so older call sites that don't supply it
    * still compile — see the nalar-frontend-task-literal-typing-rule
@@ -2052,13 +2052,14 @@ const compactSession = async () => {
     <div class="flex flex-col h-full flex-1 min-w-0">
       <!--
         Chat header. Rendered only when the parent passed the
-        `showHeader` prop (the kanban 3-column layout sets it; the
+        `showHeader` prop (the kanban floating-chat overlay
+        sets it; the design-mode 3-col layout also sets it; the
         full-width standalone chat layout leaves it false so the
         existing "no header" experience is preserved). When shown,
         it includes the chat name (so the user can see which task
-        they're chatting with when the kanban + chat are side by
-        side) and a ✕ button that emits `close` to the host. The
-        host (AppLayout) handles the actual navigation / state
+        they're chatting with when the kanban + chat are
+        overlaid) and a ✕ button that emits `close` to the host.
+        The host (AppLayout) handles the actual navigation / state
         cleanup so the ChatView stays decoupled from router + store
         concerns.
       -->
