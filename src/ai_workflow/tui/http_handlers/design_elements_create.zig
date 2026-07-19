@@ -65,6 +65,13 @@ const CreateElementBody = struct {
     text_content: ?[]const u8 = null,
     text_style: ?[]const u8 = null,
     image_url: ?[]const u8 = null,
+    /// Optional parent element id. When set, the referenced element
+    /// must exist on the same page and have `type` of `frame` or
+    /// `group`. Omit (or pass null) for top-level elements.
+    /// Validation happens before INSERT and returns 400
+    /// `{"error":"parent_id must reference a frame or group on the
+    /// same page"}` on mismatch.
+    parent_id: ?[]const u8 = null,
 };
 
 /// Domain-level error set for `useCase`. The handler maps each
@@ -90,6 +97,10 @@ pub const DesignElementCreateError = error{
     /// `design_model.addElement` returned `FileWriteFailed` (mkdir
     /// or atomic-rename failed).
     FileWriteFailed,
+    /// `parent_id` was set but the referenced element doesn't
+    /// exist, is on a different page, or has a non-container type
+    /// (not `frame` / `group`).
+    InvalidParent,
     /// `addElement` failed for some other DB reason.
     DbError,
     /// Insert succeeded but the new element wasn't visible in the
@@ -120,6 +131,10 @@ pub const CreateElementInput = struct {
     text_content: []const u8,
     text_style: []const u8,
     image_url: []const u8,
+    /// Optional parent element id; see `CreateElementBody.parent_id`
+    /// for the wire semantics. Passed to `design_model.addElement`
+    /// which validates it against the DB.
+    parent_id: ?[]const u8 = null,
 };
 
 /// Output of the create-element use-case.
@@ -175,11 +190,13 @@ fn useCase(
         .text_content = input.text_content,
         .text_style = input.text_style,
         .image_url = input.image_url,
+        .parent_id = input.parent_id,
     }) catch |err| switch (err) {
         error.BadName => return error.BadName,
         error.PageNotFound => return error.PageNotFound,
         error.ItemPathMissing => return error.ItemPathMissing,
         error.FileWriteFailed => return error.FileWriteFailed,
+        error.InvalidParent => return error.InvalidParent,
         else => return error.DbError,
     };
     defer allocator.free(new_id);
@@ -301,12 +318,14 @@ pub fn designElementsCreateHandler(
         .text_content = text_content,
         .text_style = text_style,
         .image_url = image_url,
+        .parent_id = parsed.parent_id,
     }) catch |err| {
         const status: u16 = switch (err) {
             error.PageIdRequired => 400,
             error.BadName => 400,
             error.InvalidType => 400,
             error.ItemPathMissing => 400,
+            error.InvalidParent => 400,
             error.PageNotFound => 404,
             error.FileWriteFailed => 500,
             error.DbError => 500,
@@ -318,6 +337,7 @@ pub fn designElementsCreateHandler(
             error.BadName => "name is required",
             error.InvalidType => "type must be one of: rectangle, ellipse, text, image, frame, group",
             error.ItemPathMissing => "design item must have a path",
+            error.InvalidParent => "parent_id must reference a frame or group on the same page",
             error.PageNotFound => "Page not found",
             error.FileWriteFailed => "Failed to write element HTML file",
             error.DbError => "Failed to create element",
