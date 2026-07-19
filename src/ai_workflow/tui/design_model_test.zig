@@ -627,3 +627,308 @@ test "listPagesWithElements on item where one page has zero elements" {
     try testing.expectEqualStrings("B", results[1].page.name);
     try testing.expectEqual(@as(usize, 0), results[1].elements.len);
 }
+
+// ─── Tests: parent_id flows (frame/group nesting) ─────────────────────────
+//
+// Mirrors the design `DesignElement.parent_id` plumbing:
+//   - AddElementInput.parent_id is round-tripped through the DB column.
+//   - Validate rejects non-container parents + cross-page parents.
+//   - UpdateElementInput.parent_id = "" detaches; non-empty must satisfy
+//     cycle detection + container-type checks.
+//   - deleteElement re-parents children to NULL.
+
+test "addElement accepts parent_id pointing at a frame on the same page" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const frame_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id, .name = "app-window", .elem_type = .frame,
+        .html = "<div>frame</div>",
+        .x = 0, .y = 0, .width = 800, .height = 600,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(frame_id);
+
+    const child_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id, .name = "callout", .elem_type = .rectangle,
+        .html = "<div>callout</div>",
+        .x = 10, .y = 10, .width = 100, .height = 100,
+        .fill = "#22c55e", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = frame_id,
+    });
+    defer alloc.free(child_id);
+
+    // Round-trip: getElement returns the parent_id we set.
+    const fetched = try design_model.getElement(alloc, &ctx.db, child_id);
+    defer design_model.freeElement(alloc, fetched);
+    try testing.expect(fetched.parent_id != null);
+    try testing.expectEqualStrings(frame_id, fetched.parent_id.?);
+}
+
+test "addElement rejects parent_id pointing at a rectangle (not a container)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // A plain rectangle — not a container; cannot have children.
+    const rect_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id, .name = "rect", .elem_type = .rectangle,
+        .html = "<div>r</div>",
+        .x = 0, .y = 0, .width = 100, .height = 100,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(rect_id);
+
+    // Attempt to nest a child under the rectangle.
+    const result = design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id, .name = "child", .elem_type = .rectangle,
+        .html = "<div>c</div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "#22c55e", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = rect_id,
+    });
+    try testing.expectError(error.InvalidParent, result);
+}
+
+test "addElement rejects parent_id pointing at a frame on a different page" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const pageA = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "A",
+        .width = 100, .height = 100,
+    });
+    defer alloc.free(pageA);
+
+    const pageB = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "B",
+        .width = 200, .height = 200,
+    });
+    defer alloc.free(pageB);
+
+    // Frame lives on page A.
+    const frame_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = pageA, .name = "frame-on-a", .elem_type = .frame,
+        .html = "<div>f</div>",
+        .x = 0, .y = 0, .width = 800, .height = 600,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(frame_id);
+
+    // Try to add a child on page B referencing page A's frame.
+    const result = design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = pageB, .name = "child-on-b", .elem_type = .rectangle,
+        .html = "<div>c</div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "#22c55e", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = frame_id,
+    });
+    try testing.expectError(error.InvalidParent, result);
+}
+
+test "updateElement rejects self-parent (element_id == parent_id)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const e_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id, .name = "self", .elem_type = .rectangle,
+        .html = "<div>s</div>",
+        .x = 0, .y = 0, .width = 100, .height = 100,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(e_id);
+
+    // Attempt to re-parent self to self — 1-cycle.
+    const result = design_model.updateElement(alloc, &ctx.db, .{
+        .element_id = e_id,
+        .parent_id = e_id,
+    });
+    try testing.expectError(error.InvalidParent, result);
+}
+
+test "updateElement rejects cycle via grandchild (B → C where C is descendant of B)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Hierarchy: A (frame) ← B (frame) ← C (rect)
+    const a_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id, .name = "outer", .elem_type = .frame,
+        .html = "<div>o</div>",
+        .x = 0, .y = 0, .width = 1000, .height = 800,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(a_id);
+
+    const b_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id, .name = "inner", .elem_type = .frame,
+        .html = "<div>i</div>",
+        .x = 0, .y = 0, .width = 500, .height = 400,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = a_id,
+    });
+    defer alloc.free(b_id);
+
+    const c_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id, .name = "leaf", .elem_type = .rectangle,
+        .html = "<div>l</div>",
+        .x = 0, .y = 0, .width = 100, .height = 100,
+        .fill = "#22c55e", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = b_id,
+    });
+    defer alloc.free(c_id);
+
+    // Try to re-parent B under C — would close the loop B → C → B.
+    // ancestorReaches(start=C, target=B) returns true (B is reachable
+    // by walking from C up via parent_id), so updateElement bails
+    // with InvalidParent before writing.
+    const result = design_model.updateElement(alloc, &ctx.db, .{
+        .element_id = b_id,
+        .parent_id = c_id,
+    });
+    try testing.expectError(error.InvalidParent, result);
+}
+
+test "deleteElement re-parents children to top-level" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const f_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id, .name = "frame", .elem_type = .frame,
+        .html = "<div>f</div>",
+        .x = 0, .y = 0, .width = 800, .height = 600,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(f_id);
+
+    const c_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id, .name = "child", .elem_type = .rectangle,
+        .html = "<div>c</div>",
+        .x = 0, .y = 0, .width = 100, .height = 100,
+        .fill = "#22c55e", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = f_id,
+    });
+    defer alloc.free(c_id);
+
+    // Sanity: child is currently nested under f_id.
+    {
+        const pre = try design_model.getElement(alloc, &ctx.db, c_id);
+        defer design_model.freeElement(alloc, pre);
+        try testing.expect(pre.parent_id != null);
+        try testing.expectEqualStrings(f_id, pre.parent_id.?);
+    }
+
+    // Delete the parent.
+    const was_deleted = try design_model.deleteElement(alloc, &ctx.db, f_id);
+    try testing.expect(was_deleted);
+
+    // The child should still exist, but parent_id should be NULL
+    // (cascade: deleted-parent → children re-parented to top-level).
+    const post = try design_model.getElement(alloc, &ctx.db, c_id);
+    defer design_model.freeElement(alloc, post);
+    try testing.expect(post.parent_id == null);
+}
+
+test "updateElement with parent_id='' detaches the element" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const f_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id, .name = "frame", .elem_type = .frame,
+        .html = "<div>f</div>",
+        .x = 0, .y = 0, .width = 800, .height = 600,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(f_id);
+
+    const c_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id, .name = "child", .elem_type = .rectangle,
+        .html = "<div>c</div>",
+        .x = 0, .y = 0, .width = 100, .height = 100,
+        .fill = "#22c55e", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = f_id,
+    });
+    defer alloc.free(c_id);
+
+    // Empty string → detach (the wire-level "make this top-level" sentinel).
+    const updated_id = try design_model.updateElement(alloc, &ctx.db, .{
+        .element_id = c_id,
+        .parent_id = "",
+    });
+    defer alloc.free(updated_id);
+    try testing.expectEqualStrings(c_id, updated_id);
+
+    const fetched = try design_model.getElement(alloc, &ctx.db, c_id);
+    defer design_model.freeElement(alloc, fetched);
+    try testing.expect(fetched.parent_id == null);
+}
