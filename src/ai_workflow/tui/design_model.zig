@@ -387,6 +387,13 @@ pub const DesignElement = struct {
     text_content: []u8,
     text_style: []u8,
     image_url: []u8,
+    /// Optional parent element id (FK to `design_page_elements.id`).
+    /// `null` = top-level element; otherwise refers to a sibling
+    /// element with `type IN ('frame', 'group')` on the same page.
+    /// Column added by Migration 062 (`addColumnIfMissing`); was
+    /// unused until this PR made it live. Read in `getElement` /
+    /// `listElements`; written by `addElement` / `updateElement`.
+    parent_id: ?[]u8 = null,
     created_at: []u8,
     updated_at: []u8,
 };
@@ -404,6 +411,7 @@ pub fn freeElements(allocator: std.mem.Allocator, elements: []DesignElement) voi
         allocator.free(e.text_content);
         allocator.free(e.text_style);
         allocator.free(e.image_url);
+        if (e.parent_id) |p| allocator.free(p);
         allocator.free(e.created_at);
         allocator.free(e.updated_at);
     }
@@ -869,6 +877,7 @@ pub fn listElements(
             allocator.free(e.text_content);
             allocator.free(e.text_style);
             allocator.free(e.image_url);
+            if (e.parent_id) |p| allocator.free(p);
             allocator.free(e.created_at);
             allocator.free(e.updated_at);
         }
@@ -962,6 +971,7 @@ pub fn freeElement(allocator: std.mem.Allocator, e: DesignElement) void {
     allocator.free(e.text_content);
     allocator.free(e.text_style);
     allocator.free(e.image_url);
+    if (e.parent_id) |p| allocator.free(p);
     allocator.free(e.created_at);
     allocator.free(e.updated_at);
 }
