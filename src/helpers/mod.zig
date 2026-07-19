@@ -387,3 +387,5 @@ test "unixTimestamp: returns positive value within sane range" {
     // Sanity upper bound: 2100-01-01 ≈ 4_102_444_800.
     try std.testing.expect(ts < 4_102_444_800);
 }
+
+test {}

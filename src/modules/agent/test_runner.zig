@@ -8,6 +8,9 @@ test {
     // callStreaming deadline / network-disconnect regression tests
     _ = @import("call_streaming_test.zig");
 
+    // Agent request-body userIdentifier tests
+    _ = @import("agent_request_user_id_test.zig");
+
     // Prompt builder tests
     _ = @import("prompts_test.zig");
 

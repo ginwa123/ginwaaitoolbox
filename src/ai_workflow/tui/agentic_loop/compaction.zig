@@ -31,7 +31,6 @@ pub fn callCompactAgent(
     const base_url = obj.base_url;
     const io = obj.io;
 
-
     if (messages.items.len < 2) {
         logger.?.warnFmt("[COMPACTION] Not enough messages to compact", .{});
         return null;
