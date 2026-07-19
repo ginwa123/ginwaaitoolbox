@@ -121,6 +121,31 @@ test "add_element input supports optional geometry defaults" {
     }
 }
 
+test "add_element tool has parent_id parameter" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    // Source-grep: the JSON schema has a parent_id property AND the
+    // input struct has a parent_id field. Both must be present.
+    if (!contains(source, ".name = \"parent_id\"")) {
+        std.debug.print("!! add_element JSON schema is missing the parent_id property !!\n", .{});
+        return error.ParentIdSchemaPropMissing;
+    }
+    if (!contains(source, "parent_id: []const u8 = \"\"")) {
+        std.debug.print("!! AddElementInput is missing the parent_id field (with empty-string default) !!\n", .{});
+        return error.ParentIdFieldMissing;
+    }
+    // Description must mention the two valid parent types (frame/group).
+    if (!contains(source, "frame")) {
+        std.debug.print("!! add_element parent_id description does not reference 'frame' !!\n", .{});
+        return error.ParentIdDescMissingFrame;
+    }
+    if (!contains(source, "group")) {
+        std.debug.print("!! add_element parent_id description does not reference 'group' !!\n", .{});
+        return error.ParentIdDescMissingGroup;
+    }
+}
+
 // ─── Static wiring tests ─────────────────────────────────────────────────
 
 test "tool_registry.zig imports add_design_element module" {
@@ -625,4 +650,93 @@ test "executeAddElementToString returns PageNotFound error when page_id doesn't 
     defer alloc.free(xml);
     try testing.expect(contains(xml, "<error>"));
     try testing.expect(contains(xml, "page_id"));
+}
+
+// ─── parent_id (frame/group nesting) ─────────────────────────────────────
+
+test "executeAddElementToString with parent_id nests the new element under a frame" {
+    const alloc = testing.allocator;
+    var s = try setupDbWithPage();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    defer alloc.free(s.item_id);
+    defer alloc.free(s.page_id);
+
+    // Step 1: create the parent (a frame).
+    const frame_input = add_element.AddElementInput{
+        .page_id = s.page_id,
+        .name = "app-window",
+        .type = "frame",
+        .html = "<div>window</div>",
+        .fill = "#ffffff",
+        .width = 800,
+        .height = 600,
+    };
+    const frame_xml = try add_element.executeAddElementToString(alloc, &s.db, s.threaded.io(), frame_input);
+    defer alloc.free(frame_xml);
+    try testing.expect(!contains(frame_xml, "<error>"));
+    // Pull the frame id out of `id="..."` for use as parent_id below.
+    const id_marker = "id=\"";
+    const id_start = std.mem.indexOf(u8, frame_xml, id_marker).? + id_marker.len;
+    const id_end = std.mem.indexOfPos(u8, frame_xml, id_start, "\"").?;
+    const frame_id = try alloc.dupe(u8, frame_xml[id_start..id_end]);
+    defer alloc.free(frame_id);
+
+    // Step 2: create a child element with parent_id pointing at the frame.
+    const child_input = add_element.AddElementInput{
+        .page_id = s.page_id,
+        .name = "callout",
+        .type = "rectangle",
+        .html = "<div>hi</div>",
+        .fill = "#22c55e",
+        .width = 100,
+        .height = 100,
+        .parent_id = frame_id,
+    };
+    const child_xml = try add_element.executeAddElementToString(alloc, &s.db, s.threaded.io(), child_input);
+    defer alloc.free(child_xml);
+    try testing.expect(!contains(child_xml, "<error>"));
+    // The child XML response surfaces the round-tripped parent_id attr.
+    try testing.expect(contains(child_xml, "parent_id="));
+}
+
+test "executeAddElementToString rejects parent_id pointing at a rectangle (not a container)" {
+    const alloc = testing.allocator;
+    var s = try setupDbWithPage();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    defer alloc.free(s.item_id);
+    defer alloc.free(s.page_id);
+
+    // Create a non-container (rectangle) to misuse as a parent.
+    const rect_input = add_element.AddElementInput{
+        .page_id = s.page_id,
+        .name = "rect",
+        .type = "rectangle",
+        .html = "<div>r</div>",
+        .fill = "#ffffff",
+    };
+    const rect_xml = try add_element.executeAddElementToString(alloc, &s.db, s.threaded.io(), rect_input);
+    defer alloc.free(rect_xml);
+    const id_marker = "id=\"";
+    const id_start = std.mem.indexOf(u8, rect_xml, id_marker).? + id_marker.len;
+    const id_end = std.mem.indexOfPos(u8, rect_xml, id_start, "\"").?;
+    const rect_id = try alloc.dupe(u8, rect_xml[id_start..id_end]);
+    defer alloc.free(rect_id);
+
+    // Try to nest a child under the rectangle.
+    const input = add_element.AddElementInput{
+        .page_id = s.page_id,
+        .name = "child",
+        .type = "rectangle",
+        .html = "<div>c</div>",
+        .fill = "#22c55e",
+        .parent_id = rect_id,
+    };
+    const xml = try add_element.executeAddElementToString(alloc, &s.db, s.threaded.io(), input);
+    defer alloc.free(xml);
+    try testing.expect(contains(xml, "<error>"));
+    try testing.expect(contains(xml, "frame"));
+    try testing.expect(contains(xml, "group"));
+    try testing.expect(contains(xml, "parent_id"));
 }

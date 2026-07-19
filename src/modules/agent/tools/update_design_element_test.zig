@@ -99,12 +99,30 @@ test "update_element input struct has all fields" {
         "text_content: ?[]const u8",
         "text_style: ?[]const u8",
         "image_url: ?[]const u8",
+        "parent_id: ?[]const u8",
     };
     for (fields) |f| {
         if (!contains(source, f)) {
             std.debug.print("!! UpdateElementInput is missing field '{s}' !!\n", .{f});
             return error.FieldMissing;
         }
+    }
+}
+
+test "update_element tool has parent_id parameter" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    // The JSON schema property must exist + the description must
+    // document the empty-string "DETACH" convention so the LLM
+    // knows the wire semantics.
+    if (!contains(source, ".name = \"parent_id\"")) {
+        std.debug.print("!! update_element JSON schema is missing the parent_id property !!\n", .{});
+        return error.ParentIdSchemaPropMissing;
+    }
+    if (!contains(source, "DETACH") and !contains(source, "detach")) {
+        std.debug.print("!! update_element parent_id description does not document the DETACH (empty string) convention !!\n", .{});
+        return error.ParentIdDescMissingDetach;
     }
 }
 
@@ -483,4 +501,31 @@ test "executeUpdateElementToString updates rotation and opacity" {
     defer alloc.free(xml);
     try testing.expect(contains(xml, "rotation=\"45"));
     try testing.expect(contains(xml, "opacity=\"0.700000\""));
+}
+
+// ─── parent_id (frame/group re-parenting) ───────────────────────────────
+
+test "executeUpdateElementToString with parent_id='' detaches the element" {
+    // Smoke test for the empty-string = DETACH convention.
+    // Verify: the returned XML no longer surfaces a parent_id attr
+    // because the model stored NULL in the column → the field is
+    // null in the fetched element → elementToXml skips the attr.
+    const alloc = testing.allocator;
+    var s = try setupDbWithElement();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    defer alloc.free(s.item_id);
+    defer alloc.free(s.page_id);
+    defer alloc.free(s.element_id);
+
+    const input = update_element.UpdateElementInput{
+        .element_id = s.element_id,
+        .parent_id = "",
+    };
+    const xml = try update_element.executeUpdateElementToString(alloc, &s.db, input);
+    defer alloc.free(xml);
+    try testing.expect(!contains(xml, "<error>"));
+    // After detach, parent_id="..." attribute is absent (model layer
+    // stores NULL → elementToXml skips the attr).
+    try testing.expect(!contains(xml, "parent_id="));
 }
