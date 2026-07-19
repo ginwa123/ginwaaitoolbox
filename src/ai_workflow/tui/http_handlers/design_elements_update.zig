@@ -51,6 +51,17 @@ const UpdateElementBody = struct {
     text_content: ?[]const u8 = null,
     text_style: ?[]const u8 = null,
     image_url: ?[]const u8 = null,
+    /// Re-parent the element. Semantics:
+    ///   - `null` (omitted) — leave parent unchanged.
+    ///   - empty string `""` — DETACH (set DB column NULL). The
+    ///     element becomes top-level; useful for "ungroup".
+    ///   - non-empty string — set parent_id to that value. The
+    ///     target must exist on the same page, have type `frame`
+    ///     or `group`, and not be a descendant of this element
+    ///     (otherwise the model returns `InvalidParent`).
+    /// Self-parent (`parent_id == element_id`) is also rejected
+    /// with `InvalidParent`.
+    parent_id: ?[]const u8 = null,
 };
 
 /// Domain-level error set for `useCase`. The handler maps each
@@ -75,6 +86,10 @@ pub const DesignElementUpdateError = error{
     /// `design_model.updateElement` returned `FileWriteFailed`
     /// (atomic-rename failed for the new `html` content).
     FileWriteFailed,
+    /// `parent_id` was set but failed validation: missing target,
+    /// cross-page, target is not a container (`frame`/`group`),
+    /// or re-parenting would create a cycle.
+    InvalidParent,
     /// `updateElement` failed for some other DB reason.
     DbError,
     /// Update succeeded but the element wasn't visible in the
@@ -103,6 +118,7 @@ pub const UpdateElementInput = struct {
     text_content: ?[]const u8,
     text_style: ?[]const u8,
     image_url: ?[]const u8,
+    parent_id: ?[]const u8,
 };
 
 /// Output of the update-element use-case.
@@ -152,7 +168,8 @@ fn useCase(
         input.opacity != null or
         input.text_content != null or
         input.text_style != null or
-        input.image_url != null;
+        input.image_url != null or
+        input.parent_id != null;
     if (!any_change) return error.NoChanges;
 
     // 3. Apply the UPDATE.
@@ -174,9 +191,11 @@ fn useCase(
         .text_content = input.text_content,
         .text_style = input.text_style,
         .image_url = input.image_url,
+        .parent_id = input.parent_id,
     }) catch |err| switch (err) {
         error.ElementNotFound => return error.ElementNotFound,
         error.FileWriteFailed => return error.FileWriteFailed,
+        error.InvalidParent => return error.InvalidParent,
         else => return error.DbError,
     };
     defer allocator.free(updated_id);
@@ -260,11 +279,13 @@ pub fn designElementsUpdateHandler(
         .text_content = parsed.text_content,
         .text_style = parsed.text_style,
         .image_url = parsed.image_url,
+        .parent_id = parsed.parent_id,
     }) catch |err| {
         const status: u16 = switch (err) {
             error.ElementIdRequired => 400,
             error.InvalidType => 400,
             error.NoChanges => 400,
+            error.InvalidParent => 400,
             error.ElementNotFound => 404,
             error.FileWriteFailed => 500,
             error.DbError => 500,
@@ -275,6 +296,7 @@ pub fn designElementsUpdateHandler(
             error.ElementIdRequired => "element_id required",
             error.InvalidType => "type must be one of: rectangle, ellipse, text, image, frame, group",
             error.NoChanges => "No fields to update",
+            error.InvalidParent => "parent_id must reference a frame or group on the same page (or be empty string to detach)",
             error.ElementNotFound => "Element not found",
             error.FileWriteFailed => "Failed to write element HTML file",
             error.DbError => "Failed to update element",

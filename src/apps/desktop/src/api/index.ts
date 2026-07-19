@@ -208,6 +208,17 @@ export interface DesignElement {
   file_path: string
   z_index: number
   position: number
+  // Optional parent element id (FK to another element on the same
+  // page). `null`/`undefined` = top-level element. The parent must
+  // have `type='frame'` or `type='group'`. Set via `add_element` /
+  // `update_element`'s `parent_id` field; populated by the backend's
+  // `parent_id` column (Migration 062). Mirrors the wire format:
+  // legacy designs pre-dating the field return `undefined`;
+  // top-level elements return `null`; nested children return the
+  // parent's `id`. Distinguishing `null` from `undefined` lets the
+  // Layers panel show a stable "no parent" state across data
+  // refreshes.
+  parent_id?: string | null
   created_at: string
   updated_at: string
 }
