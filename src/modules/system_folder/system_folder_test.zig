@@ -5,6 +5,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const testing = std.testing;
+const helpers = @import("../../helpers/mod.zig");
 const system_folder = @import("system_folder.zig");
 const SystemFolder = system_folder.SystemFolder;
 const SystemFolderError = system_folder.SystemFolderError;
@@ -52,7 +53,9 @@ fn setupRootInTmp(allocator: std.mem.Allocator) !ExternalTestEnv {
     // Uses libc getpid() + a per-call atomic counter (no Zig 0.16
     // std.crypto.random.bytes equivalent — see global memory
     // `zig-0.16-crypto-time-stdlib-removals`).
-    const pid: u64 = @intCast(std.c.getpid());
+    // Use helpers.process.getCurrentProcessId() (cross-platform i32)
+    // rather than std.c.getpid() (which is *anyopaque on Windows).
+    const pid: u64 = @intCast(helpers.process.getCurrentProcessId());
     const counter: u64 = @atomicRmw(u64, &_root_counter, .Add, 1, .seq_cst);
     const stack_addr: u64 = @intCast(@intFromPtr(&counter));
     const seed: u64 = pid ^ (counter *% 0x9E3779B97F4A7C15) ^ (stack_addr << 7);
