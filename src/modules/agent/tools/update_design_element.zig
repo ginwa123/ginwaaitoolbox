@@ -66,6 +66,15 @@ pub const UpdateElementInput = struct {
     text_style: ?[]const u8 = null,
     /// New image URL (optional, for type='image').
     image_url: ?[]const u8 = null,
+    /// Re-parent the element. Semantics:
+    ///   - `null` (omitted) — leave parent unchanged.
+    ///   - empty string `""` — DETACH (set DB column NULL). The
+    ///     element becomes top-level.
+    ///   - non-empty string — set parent_id to that value. The
+    ///     target must exist on the same page, be of type `frame` or
+    ///     `group`, and not be a descendant of this element. Set
+    ///     `parent_id = element_id` (self) is rejected.
+    parent_id: ?[]const u8 = null,
 };
 
 /// Top-level tool definition for the LLM.
@@ -179,6 +188,11 @@ pub const update_design_element_tool = AgentTool{
                     .name = "image_url",
                     .type = "string",
                     .description = "New image URL (optional, for type='image').",
+                },
+                .{
+                    .name = "parent_id",
+                    .type = "string",
+                    .description = "Re-parent the element. Empty string '' DETACHES the element (clears its parent_id). Omit (or pass null) to leave parent unchanged. To re-parent, pass the new parent's element id (must be of type 'frame' or 'group' and on the same page).",
                 },
             },
             .required = &.{"element_id"},
@@ -315,6 +329,15 @@ pub fn elementToXml(
         try xml.appendSlice(allocator, " image_url=\"");
         try xml.appendSlice(allocator, v);
         try xml.appendSlice(allocator, "\"");
+    }
+    if (elem.parent_id) |pid| {
+        if (pid.len > 0) {
+            const v = try xmlEscape(allocator, pid);
+            defer allocator.free(v);
+            try xml.appendSlice(allocator, " parent_id=\"");
+            try xml.appendSlice(allocator, v);
+            try xml.appendSlice(allocator, "\"");
+        }
     }
     if (elem.file_path.len > 0) {
         const v = try xmlEscape(allocator, elem.file_path);
@@ -458,9 +481,11 @@ pub fn executeUpdateElementToString(
         .text_content = input.text_content,
         .text_style = input.text_style,
         .image_url = input.image_url,
+        .parent_id = input.parent_id,
     }) catch |err| switch (err) {
         error.ElementNotFound => return try errorXml(allocator, "element_id does not match any design element — call set_design_page first"),
         error.FileWriteFailed => return try errorXml(allocator, "could not write the HTML file to disk (permission denied or out of space)"),
+        error.InvalidParent => return try errorXml(allocator, "parent_id must reference an existing 'frame' or 'group' on the same page (or be empty string to detach). Self-parenting or creating a cycle is rejected."),
         else => return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: updateElement failed: {s}", .{@errorName(err)})),
     };
     defer allocator.free(element_id);
