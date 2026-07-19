@@ -656,6 +656,51 @@ fn nextElementIdCounter() u64 {
     return element_id_counter.fetchAdd(1, .seq_cst);
 }
 
+/// Walk the `parent_id` chain starting from `start` looking for
+/// `target` (inclusive). Returns `true` if `target` is reachable
+/// from `start` via parent links — i.e., `start` is `target` itself
+/// OR `target` is an ancestor / self of `start`.
+///
+/// Used by `updateElement` to reject re-parenting that would form
+/// a cycle: passing `target = element_id` and `start = new_parent_id`,
+/// a `true` result means "the new parent is the element or one of
+/// its descendants", which would create a loop in the parent_id
+/// chain.
+///
+/// Iterative walk with a 4096-iteration safety cap. The DB should
+/// not have cycles (every `addElement` / `updateElement` enforces
+/// the invariant), but the cap prevents an accidental loop from
+/// hanging the server.
+fn ancestorReaches(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    start: []const u8,
+    target: []const u8,
+) anyerror!bool {
+    var current: ?[]u8 = try allocator.dupe(u8, start);
+    defer if (current) |c| allocator.free(c);
+    var iter: usize = 0;
+    while (current) |cur| : (iter += 1) {
+        if (iter > 4096) return error.TooManyAncestors;
+        if (std.mem.eql(u8, cur, target)) return true;
+        var q = try db.query(allocator,
+            \\SELECT COALESCE(parent_id, '') FROM design_page_elements WHERE id = ?
+        , &.{cur});
+        defer q.deinit();
+        const row = try q.next();
+        if (row) |r| {
+            defer r.deinit(allocator);
+            const next = r.values[0];
+            if (next.len == 0) return false;
+            if (current) |c| allocator.free(c);
+            current = try allocator.dupe(u8, next);
+        } else {
+            return false;
+        }
+    }
+    return false;
+}
+
 // ─── updateElement ────────────────────────────────────────────────────────
 
 pub const UpdateElementInput = struct {
@@ -676,6 +721,17 @@ pub const UpdateElementInput = struct {
     text_content: ?[]const u8 = null,
     text_style: ?[]const u8 = null,
     image_url: ?[]const u8 = null,
+    /// Re-parent this element. Behavior:
+    ///   - `null` (omitted) — leave parent unchanged (default).
+    ///   - empty string `""` — DETACH: clear `parent_id` (set DB
+    ///     column NULL). The element becomes top-level.
+    ///   - non-empty string — set `parent_id` to that value. The
+    ///     target must exist on the same page, have type `frame` or
+    ///     `group`, and NOT be a descendant of this element
+    ///     (otherwise we'd form a cycle — returns
+    ///     `InvalidParent`). Setting `parent_id = element_id` (self)
+    ///     also returns `InvalidParent`.
+    parent_id: ?[]const u8 = null,
 };
 
 /// Update an element. Each non-null field is SET in the SQL UPDATE;
@@ -782,6 +838,41 @@ pub fn updateElement(
     if (input.text_content) |v| { try sets.append(allocator, "text_content = ?"); try args.append(allocator, v); }
     if (input.text_style) |v| { try sets.append(allocator, "text_style = ?"); try args.append(allocator, v); }
     if (input.image_url) |v| { try sets.append(allocator, "image_url = ?"); try args.append(allocator, v); }
+
+    // parent_id branch: see `UpdateElementInput.parent_id` doc for
+    // the three states (null = leave alone, "" = detach, "id" =
+    // re-parent with cycle + container validation).
+    if (input.parent_id) |new_pid| {
+        if (new_pid.len == 0) {
+            // Detach: SET parent_id = NULL. No argv entry needed —
+            // the SQL literal handles the binding.
+            try sets.append(allocator, "parent_id = NULL");
+        } else {
+            // Reject self-parent: element_id == parent_id is a 1-cycle.
+            if (std.mem.eql(u8, new_pid, input.element_id)) return error.InvalidParent;
+            // Reject creating a cycle: the new parent must not be the
+            // element itself nor any of its descendants.
+            const would_cycle = try ancestorReaches(allocator, db, new_pid, input.element_id);
+            if (would_cycle) return error.InvalidParent;
+            // Validate: target element exists, is on the same page,
+            // and is a container (frame / group).
+            var q = try db.query(allocator,
+                \\SELECT de.page_id, de.type
+                \\FROM design_page_elements de
+                \\WHERE de.id = ?
+            , &.{new_pid});
+            defer q.deinit();
+            const row = (try q.next()) orelse return error.InvalidParent;
+            defer row.deinit(allocator);
+            if (!std.mem.eql(u8, row.values[0], ctx.page_id)) return error.InvalidParent;
+            const etype = row.values[1];
+            if (!std.mem.eql(u8, etype, "frame") and
+                !std.mem.eql(u8, etype, "group")) return error.InvalidParent;
+            // All clear — bind the new parent_id.
+            try sets.append(allocator, "parent_id = ?");
+            try args.append(allocator, new_pid);
+        }
+    }
 
     // If html changed, look up file_path, atomic-rewrite the file,
     // and record that we need to UPDATE file_path too if the file
