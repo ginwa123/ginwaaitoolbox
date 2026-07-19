@@ -302,10 +302,9 @@ const columnLabel = computed<string | null>(() => {
           >
             <h3
               :id="isCreateMode ? 'kanban-task-detail-create-title' : 'kanban-task-detail-title'"
-              class="text-base font-semibold flex items-center gap-2"
+              class="text-base font-semibold"
               style="color: var(--semantic-text);"
             >
-              <span aria-hidden="true">{{ isCreateMode ? '➕' : '📝' }}</span>
               {{ isCreateMode ? 'New task' : 'Task details' }}
             </h3>
             <button
@@ -342,7 +341,6 @@ const columnLabel = computed<string | null>(() => {
               role="alert"
               data-testid="kanban-task-detail-error"
             >
-              <span aria-hidden="true" class="mr-1">⚠️</span>
               {{ errorMessage }}
             </div>
 
@@ -385,16 +383,14 @@ const columnLabel = computed<string | null>(() => {
               data-testid="kanban-task-detail-metadata"
             >
               <span v-if="columnLabel" data-testid="kanban-task-detail-column">
-                <span aria-hidden="true">📋</span>
-                <span class="ml-1">{{ columnLabel }}</span>
+                {{ columnLabel }}
               </span>
               <span v-if="!isCreateMode && taskTypeLabel" data-testid="kanban-task-detail-type">
                 <span aria-hidden="true">·</span>
                 <span class="ml-1">{{ taskTypeLabel }}</span>
               </span>
               <span v-if="!isCreateMode && task?.is_pinned" data-testid="kanban-task-detail-pinned">
-                <span aria-hidden="true">📌</span>
-                <span class="ml-1">Pinned</span>
+                Pinned
               </span>
             </div>
 
@@ -448,7 +444,6 @@ const columnLabel = computed<string | null>(() => {
             >
               <div class="flex-1 min-w-0">
                 <div class="text-xs font-medium" style="color: var(--semantic-text-dim);">
-                  <span aria-hidden="true" class="mr-1">🔁</span>
                   Unattended mode
                 </div>
                 <div class="text-[11px] mt-0.5" style="color: var(--semantic-text-dim);">
