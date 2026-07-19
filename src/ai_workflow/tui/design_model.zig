@@ -857,6 +857,7 @@ pub fn listElements(
         \\       de.type, de.rotation, de.fill, de.stroke, de.stroke_width,
         \\       de.corner_radius, de.opacity,
         \\       de.text_content, de.text_style, de.image_url,
+        \\       de.parent_id,
         \\       COALESCE(de.created_at, ''), COALESCE(de.updated_at, '')
         \\FROM design_page_elements de
         \\WHERE de.page_id = ?
@@ -906,8 +907,9 @@ pub fn listElements(
             .text_content = try allocator.dupe(u8, row.values[17]),
             .text_style = try allocator.dupe(u8, row.values[18]),
             .image_url = try allocator.dupe(u8, row.values[19]),
-            .created_at = try allocator.dupe(u8, row.values[20]),
-            .updated_at = try allocator.dupe(u8, row.values[21]),
+            .parent_id = if (row.values[20].len == 0) null else try allocator.dupe(u8, row.values[20]),
+            .created_at = try allocator.dupe(u8, row.values[21]),
+            .updated_at = try allocator.dupe(u8, row.values[22]),
         });
     }
     return rows.toOwnedSlice(allocator);
@@ -926,6 +928,7 @@ pub fn getElement(
         \\       de.type, de.rotation, de.fill, de.stroke, de.stroke_width,
         \\       de.corner_radius, de.opacity,
         \\       de.text_content, de.text_style, de.image_url,
+        \\       de.parent_id,
         \\       COALESCE(de.created_at, ''), COALESCE(de.updated_at, '')
         \\FROM design_page_elements de
         \\WHERE de.id = ?
@@ -954,8 +957,9 @@ pub fn getElement(
         .text_content = try allocator.dupe(u8, row.values[17]),
         .text_style = try allocator.dupe(u8, row.values[18]),
         .image_url = try allocator.dupe(u8, row.values[19]),
-        .created_at = try allocator.dupe(u8, row.values[20]),
-        .updated_at = try allocator.dupe(u8, row.values[21]),
+        .parent_id = if (row.values[20].len == 0) null else try allocator.dupe(u8, row.values[20]),
+        .created_at = try allocator.dupe(u8, row.values[21]),
+        .updated_at = try allocator.dupe(u8, row.values[22]),
     };
 }
 
