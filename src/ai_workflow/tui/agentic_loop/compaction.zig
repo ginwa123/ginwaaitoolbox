@@ -16,7 +16,6 @@ pub const CallCompactAgentInput = struct {
     api_key: []const u8,
     model: []const u8,
     base_url: []const u8,
-    user_identifier: []const u8,
 };
 
 /// Call CompactionAgent to compress conversation history.
@@ -30,9 +29,7 @@ pub fn callCompactAgent(
     const api_key = obj.api_key;
     const model = obj.model;
     const base_url = obj.base_url;
-    const user_identifier = obj.user_identifier;
     const io = obj.io;
-
 
     if (messages.items.len < 2) {
         logger.?.warnFmt("[COMPACTION] Not enough messages to compact", .{});
@@ -172,7 +169,6 @@ pub fn callCompactAgent(
     compaction_agent.apiKey = api_key;
     compaction_agent.model = model;
     compaction_agent.baseUrl = base_url;
-    compaction_agent.userIdentifier = user_identifier;
 
     const response = compaction_agent.callStreaming(.{
         .tools = &.{},

@@ -2,7 +2,9 @@ const std = @import("std");
 const testing = std.testing;
 const agent = @import("Agent.zig");
 
-const TEST_USER_ID = "550e8400-e29b-41d4-a716-446655440000";
+/// Hardcoded identifier — the value that every Anthropic + OpenAI call
+/// from this fork of nalar sends. See `Agent.userIdentifier` default.
+const HARDCODED_USER_ID = "AnakMagang";
 
 fn makeAgent(user_id: []const u8) agent.Agent {
     var a = agent.Agent.init(testing.allocator, testing.io) catch unreachable;
@@ -11,15 +13,21 @@ fn makeAgent(user_id: []const u8) agent.Agent {
     return a;
 }
 
+test "Agent default userIdentifier is hardcoded to 'AnakMagang'" {
+    var a = agent.Agent.init(testing.allocator, testing.io) catch unreachable;
+    defer a.deinit();
+    try testing.expectEqualStrings("AnakMagang", a.userIdentifier);
+}
+
 test "buildJsonOpenAIRequest includes 'user' field when userIdentifier is set" {
-    var a = makeAgent(TEST_USER_ID);
+    var a = makeAgent(HARDCODED_USER_ID);
     defer a.deinit();
 
     const params = agent.AgentCall{ .tools = &.{}, .messages = &.{} };
     const body = try a.buildJsonOpenAIRequest(params, true);
     defer testing.allocator.free(body);
 
-    try testing.expect(std.mem.indexOf(u8, body, "\"user\":\"" ++ TEST_USER_ID ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"user\":\"" ++ HARDCODED_USER_ID ++ "\"") != null);
 }
 
 test "buildJsonOpenAIRequest omits 'user' field when userIdentifier is empty" {
@@ -34,7 +42,7 @@ test "buildJsonOpenAIRequest omits 'user' field when userIdentifier is empty" {
 }
 
 test "buildJsonAnthropicRequest includes metadata.user_id when userIdentifier is set" {
-    var a = makeAgent(TEST_USER_ID);
+    var a = makeAgent(HARDCODED_USER_ID);
     a.UrlStyle = "anthropic";
     defer a.deinit();
 
@@ -42,7 +50,7 @@ test "buildJsonAnthropicRequest includes metadata.user_id when userIdentifier is
     const body = try a.buildJsonAnthropicRequest(params, true);
     defer testing.allocator.free(body);
 
-    try testing.expect(std.mem.indexOf(u8, body, "\"metadata\":{\"user_id\":\"" ++ TEST_USER_ID ++ "\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"metadata\":{\"user_id\":\"" ++ HARDCODED_USER_ID ++ "\"}") != null);
 }
 
 test "buildJsonAnthropicRequest omits metadata entirely when userIdentifier is empty" {

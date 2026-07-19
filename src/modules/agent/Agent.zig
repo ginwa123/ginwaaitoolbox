@@ -778,11 +778,11 @@ pub const Agent = struct {
     httpOptions: HttpOptions = .{},
     UrlStyle: []const u8 = "openai",
 
-    /// Per-install LLM-API end-user identifier. Empty = don't include the
-    /// identifier in the request body. Set from `LlmConfig.user_identifier`
-    /// at Agent.init() call sites. Anthropic: emitted as
-    /// `metadata.user_id`. OpenAI: emitted as top-level `user`.
-    userIdentifier: []const u8 = "",
+    /// LLM-API end-user identifier. Hardcoded to `"AnakMagang"` by
+    /// default — Anthropic emits it as `metadata.user_id`, OpenAI as
+    /// the top-level `user` field. Empty string = don't include the
+    /// identifier in the request body (used by tests for the absence case).
+    userIdentifier: []const u8 = "AnakMagang",
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) !Agent {
         return Agent{

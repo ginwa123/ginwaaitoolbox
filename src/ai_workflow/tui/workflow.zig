@@ -578,7 +578,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         };
         loop_counter += 1;
         if (loop_counter == 1 and is_task_kanban == false) {
-            generateSessionNameNew(db_messages, allocator, effective_api_key, effective_model, effective_base_url, copy_session_id, logger, io, db, event_bus, config.user_identifier);
+            generateSessionNameNew(db_messages, allocator, effective_api_key, effective_model, effective_base_url, copy_session_id, logger, io, db, event_bus);
         }
 
         const initialMessages = try build_msg_prompt.buildMessages(allocator, io, db, copy_cwd, copy_session_id, copy_parent_session_id, db_messages, merged_tools, copy_inherited_context, sub_agent_system_prompt);
@@ -592,7 +592,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
         logger.debugFmt("[WORKFLOW-debug-system-prompt] system_prompt={s}", .{messagesLists.items[0].content.?});
 
-        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, effective_api_key, effective_model, effective_base_url, effective_url_style, copy_session_id, merged_tools, config.user_identifier) catch |err| {
+        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, effective_api_key, effective_model, effective_base_url, effective_url_style, copy_session_id, merged_tools) catch |err| {
             if (err == error.Cancelled) {
                 logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{copy_session_id});
                 break;
@@ -732,7 +732,6 @@ fn generateSessionNameNew(
     io: std.Io,
     db: *sqlite.SqliteBackend,
     event_bus: *event_bus_mod.EventBus,
-    user_identifier: []const u8,
 ) void {
     // Find the first user message from db_messages (TUIHistory)
     var first_user_message: ?[]const u8 = null;
@@ -759,7 +758,6 @@ fn generateSessionNameNew(
     name_agent.apiKey = api_key;
     name_agent.model = model;
     name_agent.baseUrl = base_url;
-    name_agent.userIdentifier = user_identifier;
 
     const params = agent.AgentCall{
         .tools = &.{},
@@ -980,7 +978,6 @@ fn callDynamicAgentNew(
     url_style: []const u8,
     session_id: []const u8,
     tools: []const agent.AgentTool,
-    user_identifier: []const u8,
 ) !agent.CallResponse {
     var dynamic_agent = try agent.Agent.init(allocator, io);
     // BUG FIX 2026-07-14: missing `defer dynamic_agent.deinit()` was leaking
@@ -996,7 +993,6 @@ fn callDynamicAgentNew(
     dynamic_agent.model = model;
     dynamic_agent.baseUrl = base_url;
     dynamic_agent.UrlStyle = url_style;
-    dynamic_agent.userIdentifier = user_identifier;
     const dynamic_agent_call_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
     dynamic_agent.thinkingEnabled = isThinking;
     dynamic_agent.httpOptions.read_timeout_ms = 300_000; // 10 minutes
@@ -1055,7 +1051,6 @@ pub fn maybeCompactMessagesNew(
             .api_key = api_key,
             .model = model,
             .base_url = base_url,
-            .user_identifier = llm_config.user_identifier,
             .logger = logger,
         },
     ) orelse {

@@ -9,7 +9,6 @@ pub const image = @import("image.zig");
 pub const json_value_to_xml = @import("json_value_to_xml.zig").jsonValueToXml;
 pub const xml_escape = @import("xml_escape.zig").xmlEscape;
 pub const text_normalize = @import("text_normalize.zig");
-pub const install_id = @import("install_id.zig");
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -389,6 +388,4 @@ test "unixTimestamp: returns positive value within sane range" {
     try std.testing.expect(ts < 4_102_444_800);
 }
 
-test {
-    _ = @import("install_id_test.zig");
-}
+test {}
