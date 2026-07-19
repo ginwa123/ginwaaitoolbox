@@ -827,12 +827,30 @@ pub fn BuildDesignCanvasPrompt(
         \\- `image` — raster image element. The `image_url` field is the
         \\  URL (https:// or data: or relative); `html` is the `<img>`
         \\  fragment the canvas mounts.
-        \\- `frame` — a reusable frame (template) — same properties as
-        \\  rectangle, but flagged as a frame for the layers panel.
-        \\- `group` — a logical group of child elements. The element's
-        \\  own `html` is the container; children are added by calling
-        \\  `add_element` with subsequent `position` numbers in the
-        \\  same group.
+        \\- `frame` — a CONTAINER that holds children. Create the
+        \\  frame FIRST (via `add_element` with `type='frame'`), then
+        \\  nest children inside it with a SECOND `add_element` call
+        \\  passing `parent_id=<frame.id>`. Children appear indented
+        \\  under the frame in the Layers panel.
+        \\- `group` — same as `frame` for nesting (`parent_id` works
+        \\  identically), but groups do not visually clip their
+        \\  children. Use `frame` for spatial containment (e.g. an app
+        \\  window containing panels); use `group` for logical grouping
+        \\  (e.g. an icon-button set you want to operate as one unit).
+        \\
+        \\**Nesting rules:**
+        \\  1. The parent must exist BEFORE the child. Two
+        \\     `add_element` calls: first the parent (frame/group),
+        \\     THEN the child with `parent_id=<parent.id>`.
+        \\  2. Re-parent with
+        \\     `update_element(child_id, parent_id='<new>')`. Pass
+        \\     `parent_id=''` to detach (make top-level). Omit
+        \\     `parent_id` to leave parent unchanged.
+        \\  3. The target parent must have `type='frame'` or
+        \\     `type='group'` and be on the SAME page.
+        \\  4. Self-parenting and creating a cycle (target is the
+        \\     element itself or any descendant) are rejected with
+        \\     `<error>parent_id must reference a frame or group...</error>`.
         \\
     );
 
