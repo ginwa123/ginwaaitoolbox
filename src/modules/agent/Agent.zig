@@ -1402,7 +1402,37 @@ pub const Agent = struct {
             self.log_fmt(.err, "HTTP streaming request failed to '{s}': {s}", .{ uri_str, @errorName(err) });
             return error.HttpRequestFailed;
         };
-        defer req.deinit();
+        // FD-leak workaround (2026-07-15): in Zig 0.16 std.http, when the
+        // HTTP request errors out before the response body is fully drained
+        // (e.g. server closes the TCP connection immediately, or the LLM
+        // upstream returns HTTP error before any body data), `req.deinit()`
+        // returns the connection to the httpClient pool with `closing=true`,
+        // but `Connection.destroy()` does not fully release every internal
+        // stdlib FD — empirically ~100 anonymous pipes leak per failed
+        // callStreaming, exhausting the 1024 FD soft limit after ~10 retries
+        // (production observation: nalar hits `ProcessFdQuotaExceeded` after
+        // ~1h of LLM retries). The same dup2-to-/dev/null trick the watchdog
+        // uses to safely replace the socket FD is applied here so the Io
+        // runtime's later close() in `req.deinit()` finds /dev/null (which
+        // is harmless) instead of an already-closed socket (which would
+        // panic). `call_streaming_test.zig` pins this behavior — see
+        // "callStreaming does not leak pipe FDs".
+        defer {
+            if (builtin.os.tag == .linux) {
+                if (req.connection) |conn| {
+                    const sock_fd = conn.stream_reader.stream.socket.handle;
+                    if (sock_fd >= 0) {
+                        const devnull_rc = std.os.linux.open("/dev/null", .{}, 0);
+                        if (devnull_rc <= std.math.maxInt(i32)) {
+                            const devnull_fd: i32 = @intCast(devnull_rc);
+                            _ = std.os.linux.dup2(devnull_fd, sock_fd);
+                            _ = std.os.linux.close(devnull_fd);
+                        }
+                    }
+                }
+            }
+            req.deinit();
+        }
 
         req.sendBodyComplete(json_body) catch |err| {
             self.log_error("sendBodyComplete", err, null);
