@@ -1322,6 +1322,15 @@ pub fn deleteElement(
     defer allocator.free(lookup.workspace_id);
     defer allocator.free(lookup.item_id);
 
+    // Re-parent any children to top-level BEFORE the DELETE. Children
+    // of a deleted parent should not be left with a dangling
+    // parent_id pointing at a now-missing row — detach them so they
+    // appear at the page root in the Layers panel and don't fail
+    // any FK-like checks the caller might run.
+    try db.exec(allocator,
+        \\UPDATE design_page_elements SET parent_id = NULL WHERE parent_id = ?
+    , &.{element_id});
+
     // Delete the row first.
     try db.exec(allocator,
         "DELETE FROM design_page_elements WHERE id = ?",
