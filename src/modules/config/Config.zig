@@ -1343,11 +1343,25 @@ pub const LlmConfig = struct {
             return writeDefaultConfig(allocator, io, path);
         };
 
+        // Trim trailing whitespace from the body before the closing brace so
+        // the comma doesn't end up on its own line (valid JSON but ugly).
+        // Find the last non-whitespace char of `current[0..close_brace_idx]`.
+        var insert_pos: usize = close_brace_idx;
+        while (insert_pos > 0 and (current[insert_pos - 1] == ' ' or current[insert_pos - 1] == '\n' or current[insert_pos - 1] == '\t' or current[insert_pos - 1] == '\r')) {
+            insert_pos -= 1;
+        }
+        // If the trimmed body's last char is already `,`, don't inject another.
+        const already_has_comma = insert_pos > 0 and current[insert_pos - 1] == ',';
+
         var new_content: std.ArrayList(u8) = .empty;
         defer new_content.deinit(allocator);
-        try new_content.appendSlice(allocator, current[0..close_brace_idx]);
-        try new_content.print(allocator, ",\n  \"user_identifier\": \"{s}\"", .{user_identifier});
-        try new_content.appendSlice(allocator, current[close_brace_idx..]);
+        try new_content.appendSlice(allocator, current[0..insert_pos]);
+        if (!already_has_comma) {
+            try new_content.append(allocator, ',');
+        }
+        try new_content.append(allocator, '\n');
+        try new_content.print(allocator, "  \"user_identifier\": \"{s}\"", .{user_identifier});
+        try new_content.appendSlice(allocator, current[insert_pos..]);
 
         // Atomic write: write to <path>.tmp, then rename.
         var tmp_path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
