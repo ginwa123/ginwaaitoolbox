@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const json = std.json;
 const Io = std.Io;
 const LLMModels = @import("../agent/LLMModels.zig");
+const helpers = @import("../../helpers/mod.zig");
 
 pub const LlmConfig = struct {
     allocator: std.mem.Allocator,
@@ -57,6 +58,18 @@ pub const LlmConfig = struct {
     /// (which is always the case in production because `LlmConfig`
     /// lives in the singleton).
     random_names: [][]u8 = &.{},
+
+    /// Stable per-install UUID used as the LLM-API end-user identifier
+    /// (`user` for OpenAI, `metadata.user_id` for Anthropic).
+    ///
+    /// Auto-generated on first run via `helpers.install_id.generateInstallId`
+    /// and persisted in `~/.config/nalar/config.json` as `user_identifier`.
+    /// On upgrade (existing config missing this field), a fresh UUID is
+    /// generated and the config file is rewritten atomically to include it.
+    /// Empty only if generation failed (logged warning); in that case
+    /// `Agent.userIdentifier` is empty and the identifier is omitted from
+    /// the request body.
+    user_identifier: []const u8 = "",
 
     pub const LoadError = error{
         ConfigFileNotFound,
@@ -236,6 +249,11 @@ pub const LlmConfig = struct {
         /// Top-level sub-agents array. Raw JSON value parsed via
         /// `parseSubAgentsList` into an owned `[]SubAgentConfig`.
         sub_agents: ?std.json.Value = null,
+        /// Stable per-install UUID used as the LLM-API end-user identifier.
+        /// Empty string when missing from the parsed JSON (legacy configs).
+        /// `LlmConfig.init` auto-migrates empty values by generating a fresh
+        /// UUID and rewriting the config file atomically.
+        user_identifier: []const u8 = "",
     };
 
     /// JSON-side parse struct for a single sub-agent entry. Mirrors
@@ -380,6 +398,7 @@ pub const LlmConfig = struct {
             .model = try allocator.dupe(u8, config_json.model),
             .base_url = try allocator.dupe(u8, config_json.base_url),
             .url_style = try allocator.dupe(u8, config_json.url_style),
+            .user_identifier = try allocator.dupe(u8, config_json.user_identifier),
             .model_compaction_size_kb = config_json.model_compaction_size_kb,
             .notify_on_complete = config_json.notify_on_complete,
             .retry_delay_ms = config_json.retry_delay_ms,
@@ -399,6 +418,7 @@ pub const LlmConfig = struct {
             allocator.free(config.model);
             allocator.free(config.base_url);
             allocator.free(config.url_style);
+            allocator.free(config.user_identifier);
             freeMcpServersMap(&config.mcp_servers, allocator);
             freeProfilesMap(&config.profiles_models, allocator);
             freeSubAgentsList(config.sub_agents, allocator);
@@ -459,6 +479,27 @@ pub const LlmConfig = struct {
 
         // Parse top-level sub_agents (skip-with-warning on bad entries).
         config.sub_agents = try parseSubAgentsList(allocator, config_json.sub_agents);
+
+        // Auto-migrate: if the parsed JSON has no `user_identifier`, generate
+        // one and persist it to disk. This handles users who upgrade from a
+        // version of nalar that didn't ship this field.
+        // (We do this BEFORE the return so the in-memory `config.user_identifier`
+        // is the freshly-generated value when the field was missing.)
+        if (config_json.user_identifier.len == 0) {
+            var uuid_buf: [36]u8 = undefined;
+            helpers.install_id.generateInstallId(&uuid_buf);
+            const new_uuid_str = allocator.dupe(u8, &uuid_buf) catch |err| {
+                std.log.warn("Failed to allocate generated user_identifier: {s}", .{@errorName(err)});
+                // Keep the empty string; the Agent will skip emitting the identifier.
+                return config;
+            };
+            allocator.free(config.user_identifier); // free the empty-string allocation
+            config.user_identifier = new_uuid_str;
+            writeBackUserIdentifier(allocator, io, config_path, new_uuid_str) catch |err| {
+                std.log.warn("Failed to persist user_identifier to {s}: {s}", .{ config_path, @errorName(err) });
+                // Continue with the in-memory UUID even if the persist failed.
+            };
+        }
 
         return config;
     }
@@ -806,6 +847,7 @@ pub const LlmConfig = struct {
         self.allocator.free(self.model);
         self.allocator.free(self.base_url);
         self.allocator.free(self.url_style);
+        self.allocator.free(self.user_identifier);
 
         freeMcpServersMap(&self.mcp_servers, self.allocator);
         freeProfilesMap(&self.profiles_models, self.allocator);
@@ -1273,6 +1315,52 @@ pub const LlmConfig = struct {
         \\}
     ;
 
+    /// Atomically rewrite the config file at `path` to inject the
+    /// `user_identifier` field. Preserves all other fields verbatim.
+    /// Uses the same `<path>.tmp` + rename(2) pattern as
+    /// `state_file.zig::writeStateFile` to ensure readers never see a
+    /// half-written file.
+    ///
+    /// `user_identifier` is assumed to be a 36-char UUID v4 string.
+    /// If the file's content has no closing `}`, falls back to
+    /// `writeDefaultConfig` (which writes a fresh default with a fresh UUID).
+    fn writeBackUserIdentifier(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        path: []const u8,
+        user_identifier: []const u8,
+    ) !void {
+        // Read the current file content.
+        const current = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(64 * 1024));
+        defer allocator.free(current);
+
+        // Naively inject `,"user_identifier": "<uuid>"` before the closing `}`.
+        // For nalar's default config (small JSON object written by us), this is
+        // safe. If the JSON is malformed or doesn't end with `}`, fall back to
+        // `writeDefaultConfig`.
+        const close_brace_idx = std.mem.lastIndexOfScalar(u8, current, '}') orelse {
+            std.log.warn("user_identifier auto-migration: no closing brace in {s}, falling back to default config", .{path});
+            return writeDefaultConfig(allocator, io, path);
+        };
+
+        var new_content: std.ArrayList(u8) = .empty;
+        defer new_content.deinit(allocator);
+        try new_content.appendSlice(allocator, current[0..close_brace_idx]);
+        try new_content.print(allocator, ",\n  \"user_identifier\": \"{s}\"", .{user_identifier});
+        try new_content.appendSlice(allocator, current[close_brace_idx..]);
+
+        // Atomic write: write to <path>.tmp, then rename.
+        var tmp_path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+        if (path.len + 4 >= tmp_path_buf.len) return error.PathTooLong;
+        @memcpy(tmp_path_buf[0..path.len], path);
+        @memcpy(tmp_path_buf[path.len..][0..4], ".tmp");
+        tmp_path_buf[path.len + 4] = 0;
+        const tmp_path: []const u8 = tmp_path_buf[0..path.len + 4];
+
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp_path, .data = new_content.items });
+        try std.Io.Dir.renameAbsolute(tmp_path, path, io);
+    }
+
     /// Write `defaultConfigJson` to `path`, creating any missing parent
     /// directories (mkdir -p semantics). Overwrites any existing file at
     /// the path (the caller is expected to NOT call this on an
@@ -1410,4 +1498,5 @@ pub fn loadDefault(allocator: std.mem.Allocator, environment: *std.process.Envir
 
 test {
     _ = @import("config_test.zig");
+    _ = @import("config_user_identifier_test.zig");
 }

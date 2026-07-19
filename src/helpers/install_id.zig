@@ -60,9 +60,15 @@ fn fillRandom(bytes: *[16]u8) void {
     }
     // Fallback for Windows + getrandom/getentropy failures:
     // timestamp + output-buffer-address seed.
-    const ts = std.Io.Timestamp.now(std.testing.io, .real);
-    const seed: u64 = @as(u64, @intCast(ts.nanoseconds)) ^
-        @as(u64, @intFromPtr(bytes));
+    // Uses libc `gettimeofday` (POSIX + Windows UCRT) instead of
+    // `std.Io.Timestamp.now(std.testing.io, .real)` — the latter only
+    // works in tests, and this fallback must compile for the
+    // `install:linux:system` target as well.
+    var tv: std.c.timeval = undefined;
+    _ = std.c.gettimeofday(&tv, null);
+    const sec_u64: u64 = @bitCast(@as(std.meta.Int(.signed, @bitSizeOf(@TypeOf(tv.sec))), tv.sec));
+    const usec_u64: u64 = @bitCast(@as(std.meta.Int(.signed, @bitSizeOf(@TypeOf(tv.usec))), tv.usec));
+    const seed: u64 = sec_u64 ^ usec_u64 ^ @as(u64, @intFromPtr(bytes));
     const truncated: u64 = @truncate(seed);
     @as(*u64, @ptrCast(@alignCast(bytes[0..8]))).* = truncated;
     @as(*u64, @ptrCast(@alignCast(bytes[8..16]))).* = @truncate(seed >> 1);

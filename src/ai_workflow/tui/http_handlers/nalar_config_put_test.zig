@@ -235,7 +235,7 @@ fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     defer file.close(std.testing.io);
     var buf: [4096]u8 = undefined;
     var reader = file.reader(std.testing.io, &buf);
-    return reader.interface.allocRemaining(allocator, .limited(64 * 1024));
+    return reader.interface.allocRemaining(allocator, .limited(128 * 1024));
 }
 
 test "PUT handler writes max_capacity_tokens to per-profile JSON" {
