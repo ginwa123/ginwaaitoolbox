@@ -18,7 +18,6 @@ import AddKanbanDialog from '../dialogs/AddKanbanDialog.vue'
 import AddDesignDialog from '../design/AddDesignDialog.vue'
 import AddMemoryDialog from '../dialogs/AddMemoryDialog.vue'
 import ConfirmDialog from '../dialogs/ConfirmDialog.vue'
-import AddTaskDialog from '../dialogs/AddTaskDialog.vue'
 import AddTaskPickerDialog from '../dialogs/AddTaskPickerDialog.vue'
 import AddRoutineDialog from '../dialogs/AddRoutineDialog.vue'
 import EditRoutineDialog from '../dialogs/EditRoutineDialog.vue'
@@ -48,6 +47,14 @@ const emit = defineEmits<{
   'toggle-collapse': []
   resize: [width: number]
 }>()
+
+// Default task name for the auto-created standard chat. The user
+// clicks "Standard Chat" on the picker → we create the task with
+// this name and navigate straight to the chatview. Renaming is
+// available via the task row's rename modal, and ChatView's
+// existing first-message convention auto-renames the chat once
+// the user sends a message.
+const DEFAULT_NEW_CHAT_NAME = 'New Chat'
 
 // ─── Chats State (moved from ChatsList) ──────────────────────────────────────
 const navItems = ref<Array<{ id: string; name: string; icon: string; active?: boolean; processing?: boolean }>>([])
@@ -162,27 +169,28 @@ const renameTargetTaskItemId = ref<string | null>(null)
 const renameTargetTaskId = ref<string | null>(null)
 const renameTargetTaskName = ref('')
 
-// ─── Add Task picker + dialog state (Chunk 6) ──────────────────────────────
+// ─── Add Task picker + per-type dialog state (Chunk 6) ──────────────────────
 //
 // When the user clicks the green `+` on a workspace item:
-//   1. AddTaskPickerDialog opens with two cards (Standard / Routine).
-//   2. On pick, the picker closes and either AddTaskDialog (standard)
-//      or AddRoutineDialog (routine) opens.
-//   3. The create callback calls `workspacesStore.addTask(...)` with
-//      the appropriate params and closes the dialog.
+//   1. AddTaskPickerDialog opens with three cards (Standard / Routine / Memory).
+//   2. On pick, the picker closes and the per-type flow runs:
+//      - Standard: auto-create a task named "New Chat" and navigate
+//        straight to its ChatView. No dialog (the "name + description"
+//        prompt was noise — chat name is editable later via the rename
+//        modal on the task row, and an empty description is fine).
+//      - Routine: open AddRoutineDialog (needs schedule + initial prompt).
+//      - Memory:  open AddMemoryDialog in `mode='task'` (needs content
+//        and the .md filename).
 //
 // We track workspaceId + itemId on each dialog's `Open` ref so the
-// create callback knows where to create the task. We don't auto-
-// navigate to the new task (the original behavior did) — creating
-// a routine doesn't make sense to "open" the same way (the routine
-// fires on a schedule, not on user input), and a standard task
-// can be opened from the sidebar by the user.
+// create callback knows where to create the task. Routine and Memory
+// tasks do NOT auto-navigate — routines fire on a schedule (not user
+// input) and memories have no chat session to open. Standard tasks
+// always auto-navigate to their new ChatView (the user just clicked
+// "Standard Chat", they want to be IN the chat).
 const showAddTaskPicker = ref(false)
 const pickerWorkspaceId = ref<string | null>(null)
 const pickerItemId = ref<string | null>(null)
-const showAddTaskDialog = ref(false)
-const addTaskDialogWorkspaceId = ref<string | null>(null)
-const addTaskDialogItemId = ref<string | null>(null)
 const showAddRoutineDialog = ref(false)
 const addRoutineDialogWorkspaceId = ref<string | null>(null)
 const addRoutineDialogItemId = ref<string | null>(null)
@@ -617,72 +625,65 @@ const handleAddTask = (workspaceId: string, item: WorkspaceItem) => {
   showAddTaskPicker.value = true
 }
 
-// Route the pick to the right create dialog. The picker dialog
+// Route the pick to the right create flow. The picker dialog
 // self-closes on pick (see AddTaskPickerDialog.vue: handleStandard,
 // handleRoutine, and handleMemory emit both 'pick' and 'close'),
 // so the @close handler (handleCloseAddTaskPicker) runs as a side
 // effect of the pick — no explicit close call needed here.
-const handleAddTaskPick = (taskType: 'standard' | 'routine' | 'memory') => {
-  if (taskType === 'standard') {
-    addTaskDialogWorkspaceId.value = pickerWorkspaceId.value
-    addTaskDialogItemId.value = pickerItemId.value
-    showAddTaskDialog.value = true
-  } else if (taskType === 'routine') {
-    addRoutineDialogWorkspaceId.value = pickerWorkspaceId.value
-    addRoutineDialogItemId.value = pickerItemId.value
-    showAddRoutineDialog.value = true
-  } else {
-    // 'memory' (2026-06-20): open AddMemoryDialog in `mode='task'`
-    // (it won't call the API itself; the create callback here
-    // calls addTask with taskType='memory' which triggers the
-    // backend's file-write + task-insert in one POST).
-    addMemoryTaskWorkspaceId.value = pickerWorkspaceId.value
-    addMemoryTaskItemId.value = pickerItemId.value
-    showAddMemoryTaskDialog.value = true
-  }
-  // Clear the picker targets so a stale workspaceId/itemId
-  // doesn't leak into a future accidental re-open.
+//
+// For 'standard' we DON'T show a dialog. The previous flow opened
+// AddTaskDialog asking for a name + description, but that was pure
+// friction: the user just clicked "Standard Chat", they want to
+// start chatting, not write a name. Auto-create a task named
+// "New Chat" and navigate straight to its ChatView. The chat name
+// is editable later via the rename modal on the task row (and via
+// the auto-rename-on-first-message convention that already runs
+// in ChatView's stream lifecycle).
+const handleAddTaskPick = async (taskType: 'standard' | 'routine' | 'memory') => {
+  const workspaceId = pickerWorkspaceId.value
+  const itemId = pickerItemId.value
+  // Clear the picker targets FIRST so a re-entry from the auto-create
+  // path (which itself triggers router.replace) doesn't leak the
+  // workspaceId/itemId into a future accidental re-open.
   pickerWorkspaceId.value = null
   pickerItemId.value = null
+
+  if (taskType === 'standard') {
+    // No dialog — auto-create + navigate. The task row appears in
+    // the sidebar's task list under the parent item, the chat name
+    // is "New Chat" until the user renames it or the first user
+    // message auto-renames it (ChatView's existing convention).
+    if (!workspaceId || !itemId) return
+    const taskId = await workspacesStore.addTask(workspaceId, itemId, {
+      name: DEFAULT_NEW_CHAT_NAME,
+    })
+    if (taskId) {
+      workspacesStore.setActiveTask(taskId)
+      router.replace({ path: '/app', query: { view: 'task', task: taskId } })
+    }
+    return
+  }
+
+  if (taskType === 'routine') {
+    addRoutineDialogWorkspaceId.value = workspaceId
+    addRoutineDialogItemId.value = itemId
+    showAddRoutineDialog.value = true
+    return
+  }
+
+  // 'memory' (2026-06-20): open AddMemoryDialog in `mode='task'`
+  // (it won't call the API itself; the create callback here
+  // calls addTask with taskType='memory' which triggers the
+  // backend's file-write + task-insert in one POST).
+  addMemoryTaskWorkspaceId.value = workspaceId
+  addMemoryTaskItemId.value = itemId
+  showAddMemoryTaskDialog.value = true
 }
 
 const handleCloseAddTaskPicker = () => {
   showAddTaskPicker.value = false
   pickerWorkspaceId.value = null
   pickerItemId.value = null
-}
-
-// Standard path: user filled in the name + description in
-// AddTaskDialog, hit Create Task. Persist via the store and
-// navigate to the new task.
-const handleAddTaskCreated = async (name: string, description?: string) => {
-  const workspaceId = addTaskDialogWorkspaceId.value
-  const itemId = addTaskDialogItemId.value
-  if (!workspaceId || !itemId) return
-  const taskId = await workspacesStore.addTask(workspaceId, itemId, {
-    name,
-    description,
-  })
-  showAddTaskDialog.value = false
-  addTaskDialogWorkspaceId.value = null
-  addTaskDialogItemId.value = null
-  // Defensive: close the picker too. AddTaskPickerDialog already
-  // self-closes on pick (see AddTaskPickerDialog.vue handleStandard
-  // / handleRoutine), but the create callback is the last word on
-  // dialog state — if a future refactor breaks the picker's
-  // self-close, this ensures the picker is still gone and no
-  // leftover dialog covers the new chat view.
-  handleCloseAddTaskPicker()
-  if (taskId) {
-    workspacesStore.setActiveTask(taskId)
-    router.replace({ path: '/app', query: { view: 'task', task: taskId } })
-  }
-}
-
-const handleCloseAddTaskDialog = () => {
-  showAddTaskDialog.value = false
-  addTaskDialogWorkspaceId.value = null
-  addTaskDialogItemId.value = null
 }
 
 // Routine path: user filled in name, description (optional),
@@ -1202,7 +1203,9 @@ defineExpose({
       @create="handleCreateMemory"
     />
     <AddTaskPickerDialog :show="showAddTaskPicker" @close="handleCloseAddTaskPicker" @pick="handleAddTaskPick" />
-    <AddTaskDialog :show="showAddTaskDialog" @close="handleCloseAddTaskDialog" @create="handleAddTaskCreated" />
+    <!-- AddTaskDialog was removed in 2026-07-26 — the "Standard Chat"
+         path now auto-creates the task + navigates straight to its
+         ChatView, no name/description prompt. See handleAddTaskPick. -->
     <AddRoutineDialog :show="showAddRoutineDialog" @close="handleCloseAddRoutineDialog" @create="handleAddRoutineCreated" />
     <AddMemoryDialog
       v-if="addMemoryTaskItemId"

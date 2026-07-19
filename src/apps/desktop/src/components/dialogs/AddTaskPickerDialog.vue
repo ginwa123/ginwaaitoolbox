@@ -22,9 +22,11 @@ const handleClose = () => emit('close')
 
 // The picker is a chooser, not a holder: once the user has picked
 // a path, the picker has done its job and must close so the picked
-// dialog isn't stacked on top of it. Emit `pick` first (parent
-// decides which create dialog to open) and then `close` (parent
-// hides the picker). Mirrors the `emit('create', ...); handleClose()`
+// dialog isn't stacked on top of it (only routine + memory open a
+// follow-up dialog — the standard-chat flow auto-creates the task
+// and navigates straight to ChatView, so there's nothing to stack).
+// Emit `pick` first (parent decides which create flow to run) and
+// then `close` (parent hides the picker). Mirrors the `emit('create', ...); handleClose()`
 // pattern in AddTaskDialog.vue:26-31.
 const handleStandard = () => {
   emit('pick', 'standard')
