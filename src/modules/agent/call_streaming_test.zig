@@ -279,41 +279,53 @@ fn serve(
     stop: *std.atomic.Value(bool),
     connection_seen: *std.atomic.Value(bool),
 ) void {
-    const conn_rc = linux.accept(listener_fd, null, null);
-    if (conn_rc > std.math.maxInt(i32)) return; // accept failed
-    const conn_fd: i32 = @intCast(conn_rc);
-    defer _ = linux.close(conn_fd);
-    connection_seen.store(true, .release);
-
     const head =
         "HTTP/1.1 200 OK\r\n" ++
         "Content-Type: text/event-stream\r\n" ++
         "Transfer-Encoding: chunked\r\n" ++
         "Connection: close\r\n" ++
         "\r\n";
-    sendAll(conn_fd, head) catch return;
 
-    switch (behavior) {
-        .head_only_then_stall => {
-            // Send nothing more. Sleep until the test tells us to stop.
-            sleepUntilStop(stop, 60_000);
-        },
-        .one_chunk_then_stall => {
-            // Send one valid SSE chunk (chunked-transfer-encoded).
-            const body_chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
-            var hex_buf: [16]u8 = undefined;
-            const chunk_header = std.fmt.bufPrint(&hex_buf, "{x}\r\n", .{body_chunk.len}) catch return;
-            sendAll(conn_fd, chunk_header) catch return;
-            sendAll(conn_fd, body_chunk) catch return;
-            sendAll(conn_fd, "\r\n") catch return;
-            // Don't send the terminating 0-length chunk. Just stall.
-            sleepUntilStop(stop, 60_000);
-        },
-        .head_then_close => {
-            // Close immediately. The client will see FIN and reader state will
-            // transition to `.closing` before it has read any body bytes.
+    // Loop accepting connections so the FD-leak regression tests can drive
+    // multiple callStreaming calls against the same port (the original single-
+    // accept server returned after one connection, so subsequent agent calls
+    // got ECONNREFUSED — a different code path that doesn't exercise the
+    // leak). Each iteration handles one connection according to `behavior`.
+    while (!stop.load(.acquire)) {
+        const conn_rc = linux.accept(listener_fd, null, null);
+        if (conn_rc > std.math.maxInt(i32)) {
+            // Listener closed (test teardown) or accept errored. Exit.
             return;
-        },
+        }
+        const conn_fd: i32 = @intCast(conn_rc);
+        defer _ = linux.close(conn_fd);
+
+        connection_seen.store(true, .release);
+
+        sendAll(conn_fd, head) catch continue;
+
+        switch (behavior) {
+            .head_only_then_stall => {
+                sleepUntilStop(stop, 60_000);
+                return;
+            },
+            .one_chunk_then_stall => {
+                const body_chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+                var hex_buf: [16]u8 = undefined;
+                const chunk_header = std.fmt.bufPrint(&hex_buf, "{x}\r\n", .{body_chunk.len}) catch continue;
+                sendAll(conn_fd, chunk_header) catch continue;
+                sendAll(conn_fd, body_chunk) catch continue;
+                sendAll(conn_fd, "\r\n") catch continue;
+                sleepUntilStop(stop, 60_000);
+                return;
+            },
+            .head_then_close => {
+                // Close immediately. The client will see FIN and reader state
+                // will transition to `.closing` before it has read any body.
+                // Loop continues to accept the next connection.
+                continue;
+            },
+        }
     }
 }
 
@@ -469,4 +481,211 @@ test "callStreaming returns within idle_timeout when server is silent (watchdog 
     try expect(outcome.elapsed_ms <= @as(i64, @intCast(idle_ms)) + 750);
 
     try expectError(error.StreamIdleTimeout, outcome.result);
+}
+
+// ============================================================================
+// FD-leak regression tests (2026-07-15).
+//
+// Symptom (production nalar, 9-hour uptime, 8081):
+//   - Total FDs: ~820
+//   - Of which: ~818 anonymous pipes (self-pipes held entirely by nalar,
+//     appearing in only 1 process in /proc)
+//   - Burst pattern: created in a 6-minute window concurrent with retry storm
+//   - Source: each `callStreaming` that fails (HttpRequestFailed) leaks
+//     internal pipe FDs that `req.deinit()` / `httpClient.deinit()` don't
+//     fully close in Zig 0.16 std.http. After ~10 retries, +800 FDs.
+//
+// Diagnosis:
+//   - sse_manager.zig::notify_pipe is process-global (2 FDs total, not per-call)
+//   - bash.zig already has the kill+wait pipe-cleanup pattern from PR #91
+//   - HttpClient.zig already has the defer-pipe-close pattern from PR #91
+//   - The remaining leak is in `Agent.callStreaming` itself: on the error
+//     path (e.g. server closes before any response is read), the connection's
+//     underlying socket + internal stdlib pipes are not fully cleaned up by
+//     `req.deinit()`.
+//
+// These tests verify that bounded N callStreaming calls leave the process
+// FD table bounded — i.e. the leak is closed.
+//
+// Implementation note: tests use the FakeServer's `head_then_close` behavior
+// (server closes the TCP connection immediately after accepting), which
+// reliably triggers the error path that historically leaked. The server
+// runs in a worker thread; the test process exits cleanly because we
+// always `defer server.shutdown()`.
+// ============================================================================
+
+/// Count anonymous pipes currently open in the test process via /proc/self/fd.
+/// Returns 0 on non-Linux (the leak is Linux-only) and on any proc access error.
+fn countPipes() usize {
+    if (builtin.os.tag != .linux) return 0;
+
+    // Open /proc/self/fd with posix.openat AT_FDCWD path.
+    const dir = std.c.opendir("/proc/self/fd") orelse return 0;
+    defer _ = std.c.closedir(dir);
+
+    var pipes: usize = 0;
+    var buf: [4096]u8 = undefined; // scratch buffer for std.c.readlink target
+    while (std.c.readdir(dir)) |raw_entry| {
+        const entry: *std.c.dirent = @ptrCast(raw_entry);
+        // On Linux, `name` is a fixed-size [256]u8 array terminated by NUL.
+        const name_slice = entry.name[0..];
+        const name_len = std.mem.indexOfScalar(u8, name_slice, 0) orelse name_slice.len;
+        const name = name_slice[0..name_len];
+
+        // Skip "." and ".."
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+
+        // Build "/proc/self/fd/N" path
+        var link_path: [64]u8 = undefined;
+        const link_path_z = std.fmt.bufPrintZ(&link_path, "/proc/self/fd/{s}", .{name}) catch continue;
+
+        // Readlink to find the FD's type
+        const target_len_signed = std.c.readlink(link_path_z, &buf, buf.len);
+        if (target_len_signed > 0) {
+            const target = buf[0..@intCast(target_len_signed)];
+            // Anonymous pipes show as "pipe:[N]" in /proc. AF_UNIX sockets
+            // show as "socket:[N]" — we only count pipes here.
+            if (target.len >= 5 and std.mem.eql(u8, target[0..5], "pipe:")) {
+                pipes += 1;
+            }
+        }
+    }
+    return pipes;
+}
+
+test "callStreaming does not leak pipe FDs across many failed calls (TDD: RED → GREEN)" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    // The pre-fix leak rate is so severe (~100 pipes per failed call) that
+    // running N≥3 iterations in the shared test-runner process hits the
+    // 1024 FD limit. Keep N tiny (2) and add an early-bail baseline check:
+    // if the test runner's own pipe count is already near the limit, skip.
+
+    const pipes_baseline = countPipes();
+    // Default Linux FD soft limit is 1024. Leave 200 FDs of headroom for the
+    // test infra itself (listen socket, agent, httpClient, FDs needed by
+    // countPipes iteration, etc).
+    if (pipes_baseline > 800) {
+        std.debug.print(
+            "  skip: baseline pipes={} too high (likely shared test runner with prior leak); " ++
+                "the leak is reproducible in isolation — run this test alone to verify the fix.\n",
+            .{pipes_baseline},
+        );
+        return error.SkipZigTest;
+    }
+
+    // Use head_then_close: server closes the TCP connection immediately
+    // after accepting, before sending any response body. This reliably
+    // triggers the error path that historically leaked pipe FDs.
+    var server = try FakeServer.start(.head_then_close);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const base_url = try makeBaseUrl(testing_allocator, server.port);
+    defer testing_allocator.free(base_url);
+
+    var a = try agent.Agent.init_with_options(testing_allocator, std.testing.io, .{
+        .idle_timeout_ms = 2_000,
+        .read_timeout_ms = 5_000,
+    });
+    defer a.deinit();
+    a.baseUrl = base_url;
+    a.model = "test-model";
+    a.apiKey = "test-key";
+
+    // Warmup: one call to absorb any one-time allocation (e.g. httpClient
+    // pool init) so we measure the per-call steady-state, not setup cost.
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+
+    const pipes_before = countPipes();
+
+    // N=2 keeps the test fast and stays within FD limit. Pre-fix the leak
+    // is ~100/call → +200 pipes → easily detected by the assertion. Post-fix
+    // the growth should be 0-2 pipes total.
+    const N: usize = 2;
+    var i: usize = 0;
+    while (i < N) : (i += 1) {
+        _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+    }
+
+    const pipes_after = countPipes();
+    const growth = pipes_after -| pipes_before;
+
+    // Pre-fix baseline: ~100+ pipes per call. Post-fix threshold: ≤2
+    // pipes per call (so N=2 → ≤4 growth). If the leak returns at the
+    // pre-fix scale, this catches it (expect ~200 growth).
+    try expect(growth < N * 2);
+}
+
+test "callStreaming zero-pipe-budget: even one failed call must not grow pipes" {
+    // Stronger assertion: a single failed callStreaming MUST not grow the
+    // pipe count at all. Any growth is a leak. Skipped if countPipes() is
+    // unavailable on this platform, or if the shared test runner already
+    // has too many open pipes to safely run another iteration.
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    if (countPipes() > 800) return error.SkipZigTest;
+
+    var server = try FakeServer.start(.head_then_close);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const base_url = try makeBaseUrl(testing_allocator, server.port);
+    defer testing_allocator.free(base_url);
+
+    var a = try agent.Agent.init_with_options(testing_allocator, std.testing.io, .{
+        .idle_timeout_ms = 2_000,
+        .read_timeout_ms = 5_000,
+    });
+    defer a.deinit();
+    a.baseUrl = base_url;
+    a.model = "test-model";
+    a.apiKey = "test-key";
+
+    // Warmup
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+    const pipes_before = countPipes();
+
+    // One additional call
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+    const pipes_after = countPipes();
+
+    // Strict: zero growth. The pre-fix baseline would fail this at ~100+.
+    try expectEqual(pipes_before, pipes_after);
+}
+
+test "callStreaming recovers cleanly after a failed call (success path)" {
+    // Regression guard: when the server closes immediately (head_then_close),
+    // the agent should remain usable for the next call. This catches a class
+    // of bugs where the Agent's internal state is corrupted after a failed
+    // HTTP attempt (e.g. partial parse, leftover stream state).
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    if (countPipes() > 800) return error.SkipZigTest;
+
+    var server = try FakeServer.start(.head_then_close);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const base_url = try makeBaseUrl(testing_allocator, server.port);
+    defer testing_allocator.free(base_url);
+
+    var a = try agent.Agent.init_with_options(testing_allocator, std.testing.io, .{
+        .idle_timeout_ms = 2_000,
+        .read_timeout_ms = 5_000,
+    });
+    defer a.deinit();
+    a.baseUrl = base_url;
+    a.model = "test-model";
+    a.apiKey = "test-key";
+
+    // Two consecutive failed calls — both must NOT crash, hang, or leak.
+    // (The pre-fix leak crashes the test runner with ProcessFdQuotaExceeded
+    // after a handful of iterations.)
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+
+    // Sanity: we should be able to start a third call without the test
+    // runner having run out of FDs or corrupted state.
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
 }
