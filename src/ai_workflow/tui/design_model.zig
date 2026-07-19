@@ -446,6 +446,12 @@ pub const AddElementInput = struct {
     text_content: []const u8 = "",
     text_style: []const u8 = "",
     image_url: []const u8 = "",
+    /// Optional parent element id. When set, the referenced element
+    /// must exist on the SAME page and have `type IN ('frame',
+    /// 'group')`. Pass `null` (the default) for top-level elements.
+    /// Validation runs BEFORE INSERT; mismatches return
+    /// `InvalidParent` with no row written.
+    parent_id: ?[]const u8 = null,
 };
 
 pub const AddElementError = error{
@@ -454,8 +460,41 @@ pub const AddElementError = error{
     BadName,
     FileWriteFailed,
     DbError,
+    /// `parent_id` was set but the referenced element doesn't exist,
+    /// is on a different page, or has a non-container type
+    /// (not `frame` / `group`).
+    InvalidParent,
     OutOfMemory,
 };
+
+/// When `parent_id` is set on the input, verify the parent:
+///   1. exists in `design_page_elements`,
+///   2. shares the same `page_id` as the new child (cross-page
+///      parenting would orphan the child on the wrong page once
+///      filter-by-page queries run),
+///   3. has `type IN ('frame', 'group')` — only containers can
+///      hold children (rectangles/text/etc. cannot).
+/// Returns `InvalidParent` on any mismatch. Caller passes `parent_id`
+/// as `?[]const u8` so a `null` short-circuits to "skip validation".
+fn validateParent(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    page_id: []const u8,
+    parent_id: []const u8,
+) !void {
+    var q = try db.query(allocator,
+        \\SELECT de.page_id, de.type
+        \\FROM design_page_elements de
+        \\WHERE de.id = ?
+    , &.{parent_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.InvalidParent;
+    defer row.deinit(allocator);
+    if (!std.mem.eql(u8, row.values[0], page_id)) return error.InvalidParent;
+    const etype = row.values[1];
+    if (!std.mem.eql(u8, etype, "frame") and
+        !std.mem.eql(u8, etype, "group")) return error.InvalidParent;
+}
 
 /// Add a new element to a design page. Atomically writes the element's
 /// HTML to disk and inserts the corresponding metadata row.
@@ -547,6 +586,16 @@ pub fn addElement(
     defer allocator.free(opacity_str);
     const elem_type_str = @tagName(input.elem_type);
 
+    // Validate parent_id BEFORE the INSERT. validateParent short-
+    // circuits on null input (no allocation, no query). Empty-slice
+    // → SQL NULL binding (per project memory: `db.exec binds empty
+    // `[]const u8` as SQL NULL`), which stores NULL — the desired
+    // "no parent" sentinel.
+    if (input.parent_id) |pid| {
+        try validateParent(allocator, db, input.page_id, pid);
+    }
+    const parent_id_arg: []const u8 = input.parent_id orelse "";
+
     try db.exec(allocator,
         \\INSERT INTO design_page_elements (
         \\    id, page_id, name, file_path, x, y, width, height, z_index, position,
@@ -557,13 +606,14 @@ pub fn addElement(
         \\    ?, ?, ?, ?, ?, ?, ?, ?, 0,
         \\    COALESCE((SELECT MAX(de.position) FROM design_page_elements de
         \\        WHERE de.page_id = ?), -1) + 1,
-        \\    ?, ?, ?, '', 0, ?, ?, '', '', '', NULL,
+        \\    ?, ?, ?, '', 0, ?, ?, '', '', '', ?,
         \\    datetime('now'), datetime('now')
         \\)
     , &.{
         id, input.page_id, input.name, file_path,
         x_str, y_str, width_str, height_str, input.page_id,
         elem_type_str, rotation_str, input.fill, corner_radius_str, opacity_str,
+        parent_id_arg,
     });
 
     // Emit SSE event AFTER the SQL INSERT succeeded. Best-effort: if
