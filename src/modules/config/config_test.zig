@@ -519,6 +519,33 @@ test "mcp_servers: clone produces independent deep copy" {
     try std.testing.expect(orig_key.ptr != ctx.headers.get("CONTEXT7_API_KEY").?.ptr);
 }
 
+test "LlmConfig.clone preserves user_identifier (independent allocation)" {
+    // Regression for the bug where clone() silently dropped user_identifier,
+    // defeating the LLM-API end-user identifier feature on cloned configs.
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "user_identifier": "preset-uuid-aaaa-bbbb"
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    var cloned = try cfg.clone();
+    defer {
+        cfg.deinit();
+        cloned.deinit();
+    }
+
+    // Same value preserved.
+    try std.testing.expectEqualStrings("preset-uuid-aaaa-bbbb", cfg.user_identifier);
+    try std.testing.expectEqualStrings("preset-uuid-aaaa-bbbb", cloned.user_identifier);
+
+    // Independent allocation (cloning deep-copies the slice).
+    try std.testing.expect(cfg.user_identifier.ptr != cloned.user_identifier.ptr);
+}
+
 // ---------------------------------------------------------------------------
 // sub_agents: top-level typed array
 // ---------------------------------------------------------------------------

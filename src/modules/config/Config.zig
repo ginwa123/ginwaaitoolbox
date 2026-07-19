@@ -876,6 +876,7 @@ pub const LlmConfig = struct {
             .model = try self.allocator.dupe(u8, self.model),
             .base_url = try self.allocator.dupe(u8, self.base_url),
             .url_style = try self.allocator.dupe(u8, self.url_style),
+            .user_identifier = try self.allocator.dupe(u8, self.user_identifier),
             .model_compaction_size_kb = self.model_compaction_size_kb,
             .notify_on_complete = self.notify_on_complete,
             // Top-level compaction defaults — primitive copies, no
@@ -892,6 +893,7 @@ pub const LlmConfig = struct {
             self.allocator.free(config.model);
             self.allocator.free(config.base_url);
             self.allocator.free(config.url_style);
+            self.allocator.free(config.user_identifier);
             freeMcpServersMap(&config.mcp_servers, self.allocator);
             freeProfilesMap(&config.profiles_models, self.allocator);
             freeSubAgentsList(config.sub_agents, self.allocator);
