@@ -278,10 +278,10 @@ pub fn execute_lsp_definition(allocator: std.mem.Allocator, io: std.Io, environm
         .stdout = .pipe,
         .stderr = .ignore,
     });
-    defer {
-        child.kill(io);
-        _ = child.wait(io) catch {};
-    }
+    // child.kill(io) is `void` in Zig 0.16 and blocks until reaped +
+    // pipe FDs are closed. Calling child.wait(io) AFTER a successful
+    // kill asserts `child.id != null` and panics. Use kill() alone.
+    defer child.kill(io);
 
     const stdin = child.stdin.?;
     const stdout = child.stdout.?;
