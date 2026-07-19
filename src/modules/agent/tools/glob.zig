@@ -1,6 +1,8 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
+const nalarcore = @import("nalarcore");
+const helpers = nalarcore.helpers;
 
 /// Cross-platform `/`-separator path concat. See memories.zig's
 /// `joinPath` for the rationale — `std.fs.path.join` produces
@@ -92,10 +94,10 @@ fn loadGitignore(allocator: std.mem.Allocator, dir_path: []const u8) !?Gitignore
     const gitignore_path = std.fs.path.join(allocator, &.{ dir_path, ".gitignore" }) catch return error.OutOfMemory;
     defer allocator.free(gitignore_path);
 
-    var file = std.fs.openFileAbsolute(gitignore_path, .{}) catch return null;
-    defer std.fs.File.close(file);
-
-    const content = file.readToEndAllocOptions(allocator, 1024 * 64, null, @alignOf(u32), 0) catch return null;
+    // `std.fs.openFileAbsolute` was removed in Zig 0.16. Use the cross-platform
+    // `helpers.readFile` (libc `fopen`/`fread`) which works on Linux,
+    // macOS, and Windows via UCRT without an `io: std.Io` runtime.
+    const content = helpers.readFile(allocator, gitignore_path) catch return null;
     defer allocator.free(content);
 
     var entries = std.ArrayList(GitignoreEntry).empty;
