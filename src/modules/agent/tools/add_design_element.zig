@@ -67,6 +67,13 @@ pub const AddElementInput = struct {
     text_style: []const u8 = "",
     /// Image URL (for `type='image'`). Defaults to "".
     image_url: []const u8 = "",
+    /// Optional parent element id. When set, the referenced element
+    /// must exist on the SAME page and have `type` of `frame` or
+    /// `group` (containers only). Defaults to `""` (= top-level
+    /// element). The parent must be created in a separate prior
+    /// `add_element` call; the response of THAT call returns the
+    /// `id="..."` attribute the LLM should pass here.
+    parent_id: []const u8 = "",
 };
 
 /// Top-level tool definition for the LLM.
@@ -168,6 +175,11 @@ pub const add_design_element_tool = AgentTool{
                     .name = "image_url",
                     .type = "string",
                     .description = "Image URL (for type='image'). Defaults to ''.",
+                },
+                .{
+                    .name = "parent_id",
+                    .type = "string",
+                    .description = "Optional parent element id. Must reference a 'frame' or 'group' element on the same page; pass '' (or omit) for top-level. Create the parent in a SEPARATE prior add_element call (read the `id=\"...\"` attribute from its response). Nesting requires the parent to exist FIRST — set parent_id only after the frame/group is on the page.",
                 },
             },
             .required = &.{ "page_id", "name", "type", "html" },
@@ -326,6 +338,15 @@ pub fn elementToXml(
         try xml.appendSlice(allocator, v);
         try xml.appendSlice(allocator, "\"");
     }
+    if (elem.parent_id) |pid| {
+        if (pid.len > 0) {
+            const v = try xmlEscape(allocator, pid);
+            defer allocator.free(v);
+            try xml.appendSlice(allocator, " parent_id=\"");
+            try xml.appendSlice(allocator, v);
+            try xml.appendSlice(allocator, "\"");
+        }
+    }
     if (elem.file_path.len > 0) {
         const v = try xmlEscape(allocator, elem.file_path);
         defer allocator.free(v);
@@ -472,6 +493,11 @@ pub fn executeAddElementToString(
     // string. The element XML response still surfaces the original
     // `input.fill` value via `getElement` (which reads back `''`).
     const fill_for_db: []const u8 = if (input.fill.len == 0) "transparent" else input.fill;
+    // parent_id: empty string → null (top-level). Non-empty → passed
+    // through to addElement for validation + INSERT. Empty-slice-as-
+    // NULL binding semantics (per `db.exec` project memory) give us
+    // "no parent" for free.
+    const parent_id_opt: ?[]const u8 = if (input.parent_id.len == 0) null else input.parent_id;
     const element_id = design_model.addElement(allocator, db, io, .{
         .page_id = input.page_id,
         .name = input.name,
@@ -488,11 +514,13 @@ pub fn executeAddElementToString(
         .text_content = input.text_content,
         .text_style = input.text_style,
         .image_url = input.image_url,
+        .parent_id = parent_id_opt,
     }) catch |err| switch (err) {
         error.PageNotFound => return try errorXml(allocator, "page_id does not match any design page — call set_design_page first"),
         error.ItemPathMissing => return try errorXml(allocator, "the design item has no path; set one via AddDesignDialog"),
         error.BadName => return try errorXml(allocator, "name is invalid (empty or contains illegal characters)"),
         error.FileWriteFailed => return try errorXml(allocator, "could not write the HTML file to disk (permission denied or out of space)"),
+        error.InvalidParent => return try errorXml(allocator, "parent_id must reference an existing 'frame' or 'group' element on the same page; create the parent first via a separate add_element call with type='frame' or type='group'"),
         else => return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: addElement failed: {s}", .{@errorName(err)})),
     };
     defer allocator.free(element_id);
