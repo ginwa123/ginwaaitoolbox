@@ -765,6 +765,12 @@ pub const DesignElementResponse = struct {
     image_url: []const u8,
     z_index: i64,
     position: i64,
+    /// Optional parent element id (FK to `design_page_elements.id`).
+    /// `null` for top-level elements. Wired by `parent_id` column
+    /// (Migration 062) — was dead code in the DB until this PR made
+    /// it live. Nullable in the wire format so the frontend can
+    /// distinguish "no parent" from "empty string" cleanly.
+    parent_id: ?[]const u8,
     created_at: []const u8,
     updated_at: []const u8,
 };
@@ -795,6 +801,7 @@ pub fn makeDesignElementResponse(elem: anytype) DesignElementResponse {
         .image_url = elem.image_url,
         .z_index = elem.z_index,
         .position = elem.position,
+        .parent_id = elem.parent_id,
         .created_at = elem.created_at,
         .updated_at = elem.updated_at,
     };
