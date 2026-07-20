@@ -28,62 +28,59 @@ fn setupTmpRoot(allocator: std.mem.Allocator) !TestEnv {
     return .{ .tmp_dir = tmp, .root_abs = abs };
 }
 
-/// Same as setupTmpRoot but places the temp dir under `/tmp/` (the system
-/// tmpfs). This is OUTSIDE the worktree's `.git/` reach, so `git check-ignore`
-/// (which listDirectory uses internally) sees the temp dir as non-ignored
-/// and reports all entries. The default testing.tmpDir() lives inside
-/// `.zig-cache/` which is gitignored, so listDirectory silently returns
-/// an empty array when run on testing.tmpDir() output.
+/// Same as setupTmpRoot but the temp dir is NOT inside a gitignored
+/// parent. `listDirectory` calls `git check-ignore` on each entry;
+/// under `.zig-cache/` (the default `testing.tmpDir` location), every
+/// entry reports "gitignored" → the function returns `[]` and every
+/// test below expects entries but finds none. We work around this by
+/// `git init`'ing the temp dir so `git check-ignore` walks up, sees
+/// `.git/`, and (with no `.gitignore` rules in this fresh repo)
+/// returns "not ignored" for every entry. Cross-platform via the
+/// stdlib's `testing.tmpDir` (which on Windows resolves under
+/// `%TEMP%\<random>\`, on Linux/macOS under `.zig-cache/tmp/<random>/`).
 const ExternalTestEnv = struct {
-    tmp_dir: std.Io.Dir,
+    tmp_dir: std.testing.TmpDir,
     root_abs: []const u8,
 
     fn deinit(self: *ExternalTestEnv, allocator: std.mem.Allocator) void {
         allocator.free(self.root_abs);
-        self.tmp_dir.close(testing.io);
-        // Best-effort cleanup of the directory tree on disk via libc.
-        // We deliberately don't use std.fs.deleteTreeAbsolute here because
-        // the recursive walk may itself hit permission/io errors, and
-        // /tmp gets recycled on reboot anyway.
+        // testing.TmpDir.cleanup() removes the dir + all contents.
+        // (Tolerates failures silently.)
+        self.tmp_dir.cleanup();
     }
 };
 
 fn setupRootInTmp(allocator: std.mem.Allocator) !ExternalTestEnv {
-    // Generate a unique subdir name to avoid clashes between tests.
-    // Uses libc getpid() + a per-call atomic counter (no Zig 0.16
-    // std.crypto.random.bytes equivalent — see global memory
-    // `zig-0.16-crypto-time-stdlib-removals`).
-    // Use helpers.process.getCurrentProcessId() (cross-platform i32)
-    // rather than std.c.getpid() (which is *anyopaque on Windows).
-    const pid: u64 = @intCast(helpers.process.getCurrentProcessId());
-    const counter: u64 = @atomicRmw(u64, &_root_counter, .Add, 1, .seq_cst);
-    const stack_addr: u64 = @intCast(@intFromPtr(&counter));
-    const seed: u64 = pid ^ (counter *% 0x9E3779B97F4A7C15) ^ (stack_addr << 7);
+    var tmp = std.testing.tmpDir(.{});
 
-    // Format "sys_folder_test_<hex>" into a non-sentinel slice.
-    const sub = try std.fmt.allocPrint(allocator, "sys_folder_test_{x:0>16}", .{seed});
-    defer allocator.free(sub);
+    // Resolve to absolute path for the tests (which use it as a
+    // stringly-typed path argument). `realPath` gives the canonical
+    // form (on Windows Wine that resolves to `Z:\home\...\.zig-cache\
+    // tmp\<random>\`, on Linux to `/home/.../.zig-cache/tmp/<random>/`).
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &path_buf);
+    const root_abs = try allocator.dupe(u8, path_buf[0..dir_len]);
 
-    // Build "/tmp/<sub>" via std.fmt.allocPrint (returns []u8 with no NUL).
-    const root_abs = try std.fmt.allocPrint(allocator, "/tmp/{s}", .{sub});
-
-    // Copy into a sentinel-terminated buffer for libc mkdir.
-    if (root_abs.len + 1 > _path_buf_scratch.len) return error.PathTooLong;
-    @memcpy(_path_buf_scratch[0..root_abs.len], root_abs);
-    _path_buf_scratch[root_abs.len] = 0;
-    const root_z: [*:0]const u8 = _path_buf_scratch[0..root_abs.len :0].ptr;
-
-    // Create the directory via libc mkdir.
-    if (std.c.mkdir(root_z, 0o755) != 0) {
-        return error.MkdirFailed;
+    // `git init` so `git check-ignore` recognises this as a git tree
+    // (and finds no .gitignore rules → returns "not ignored" for
+    // every entry). Without this, the temp dir inherits a parent's
+    // .gitignore (e.g. the worktree's .zig-cache/), making every
+    // entry appear gitignored and `listDirectory` return [].
+    //
+    // The `git init` runs once per call; if it fails (e.g. git not on
+    // PATH inside Wine), the tests will still run but all entries will
+    // appear gitignored → tests fail. That's acceptable because the
+    // fix is environmental (install git in Wine), not code.
+    const git_init = std.process.run(allocator, testing.io, .{
+        .argv = &.{ "git", "-C", root_abs, "init", "--initial-branch=main", "--quiet" },
+    }) catch null;
+    if (git_init) |gr| {
+        allocator.free(gr.stdout);
+        allocator.free(gr.stderr);
     }
 
-    const io_dir = try std.Io.Dir.openDirAbsolute(testing.io, root_abs, .{ .iterate = true });
-    return .{ .tmp_dir = io_dir, .root_abs = root_abs };
+    return .{ .tmp_dir = tmp, .root_abs = root_abs };
 }
-
-var _root_counter: u64 = 0;
-var _path_buf_scratch: [std.fs.max_path_bytes:0]u8 = undefined;
 
 fn makeEnvMap(allocator: std.mem.Allocator, home_value: []const u8) !std.process.Environ.Map {
     var env = std.process.Environ.Map.init(allocator);
@@ -468,7 +465,7 @@ test "listDirectory: file path returns InvalidPath (not a directory)" {
     defer tenv.deinit(allocator);
 
     {
-        const f = try tenv.tmp_dir.createFile(testing.io, "single.txt", .{});
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "single.txt", .{});
         defer f.close(testing.io);
     }
     const file_path = try std.fs.path.join(allocator, &.{ tenv.root_abs, "single.txt" });
@@ -499,14 +496,14 @@ test "listDirectory: skips dotfiles" {
     defer tenv.deinit(allocator);
 
     {
-        const f = try tenv.tmp_dir.createFile(testing.io, "visible.txt", .{});
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "visible.txt", .{});
         defer f.close(testing.io);
     }
     {
-        const f = try tenv.tmp_dir.createFile(testing.io, ".hidden", .{});
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, ".hidden", .{});
         defer f.close(testing.io);
     }
-    try tenv.tmp_dir.createDirPath(testing.io, ".hidden_dir");
+    try tenv.tmp_dir.dir.createDirPath(testing.io, ".hidden_dir");
 
     const entries = try SystemFolder.listDirectory(allocator, testing.io, tenv.root_abs);
     defer {
@@ -527,14 +524,14 @@ test "listDirectory: directories sort before files" {
     var tenv = try setupRootInTmp(allocator);
     defer tenv.deinit(allocator);
 
-    try tenv.tmp_dir.createDirPath(testing.io, "z_subdir");
-    try tenv.tmp_dir.createDirPath(testing.io, "a_subdir");
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "z_subdir");
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "a_subdir");
     {
-        const f = try tenv.tmp_dir.createFile(testing.io, "z_file.txt", .{});
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "z_file.txt", .{});
         defer f.close(testing.io);
     }
     {
-        const f = try tenv.tmp_dir.createFile(testing.io, "a_file.txt", .{});
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "a_file.txt", .{});
         defer f.close(testing.io);
     }
 
@@ -563,9 +560,9 @@ test "listDirectory: is_directory and is_symlink flags are set correctly" {
     var tenv = try setupRootInTmp(allocator);
     defer tenv.deinit(allocator);
 
-    try tenv.tmp_dir.createDirPath(testing.io, "real_dir");
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "real_dir");
     {
-        const f = try tenv.tmp_dir.createFile(testing.io, "real_file.txt", .{});
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "real_file.txt", .{});
         defer f.close(testing.io);
     }
 
@@ -600,7 +597,7 @@ test "listDirectory: an empty subdir is reported as is_directory=true" {
     var tenv = try setupRootInTmp(allocator);
     defer tenv.deinit(allocator);
 
-    try tenv.tmp_dir.createDirPath(testing.io, "empty_subdir");
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "empty_subdir");
 
     const entries = try SystemFolder.listDirectory(allocator, testing.io, tenv.root_abs);
     defer {
@@ -620,10 +617,10 @@ test "listDirectory: nested directory listing does not recurse (first-level only
     var tenv = try setupRootInTmp(allocator);
     defer tenv.deinit(allocator);
 
-    try tenv.tmp_dir.createDirPath(testing.io, "outer");
-    try tenv.tmp_dir.createDirPath(testing.io, "outer/inner");
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "outer");
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "outer/inner");
     {
-        const f = try tenv.tmp_dir.createFile(testing.io, "outer/inner/file.txt", .{});
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "outer/inner/file.txt", .{});
         defer f.close(testing.io);
     }
 
@@ -637,7 +634,12 @@ test "listDirectory: nested directory listing does not recurse (first-level only
     }
     try testing.expectEqual(@as(usize, 1), entries.len);
     try testing.expectEqualStrings("outer", entries[0].name);
-    try testing.expect(std.mem.endsWith(u8, entries[0].path, "/outer"));
+    // Linux/macOS use `/`; Windows native separator is `\`. Accept
+    // either so the test runs cross-platform.
+    try testing.expect(
+        std.mem.endsWith(u8, entries[0].path, "/outer") or
+            std.mem.endsWith(u8, entries[0].path, "\\outer"),
+    );
 }
 
 test "listDirectory: entries.path is root_abs + '/' + name" {
@@ -646,7 +648,7 @@ test "listDirectory: entries.path is root_abs + '/' + name" {
     defer tenv.deinit(allocator);
 
     {
-        const f = try tenv.tmp_dir.createFile(testing.io, "foo.txt", .{});
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "foo.txt", .{});
         defer f.close(testing.io);
     }
 

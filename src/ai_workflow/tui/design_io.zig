@@ -73,6 +73,10 @@ const win32_apis = if (builtin.os.tag == .windows) struct {
 
     const GENERIC_WRITE: u32 = 0x40000000;
     const FILE_SHARE_NONE: u32 = 0;
+    // Win32 share-mode bit flags (see Win32 CreateFileW docs).
+    const FILE_SHARE_READ: u32 = 0x01;
+    const FILE_SHARE_WRITE: u32 = 0x02;
+    const FILE_SHARE_DELETE: u32 = 0x04;
     const CREATE_NEW: u32 = 1;
     const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
     const MOVEFILE_REPLACE_EXISTING: u32 = 1;
@@ -258,10 +262,13 @@ fn atomicWriteFileWindows(path: []const u8, content: []const u8) !void {
     const tmp_w: [:0]u16 = tmp_w_buf[0..path_w.len + 4 :0];
 
     // 1. CreateFileW with CREATE_NEW (equivalent to O_CREAT|O_EXCL).
+    // CRITICAL: pass FILE_SHARE_DELETE so MoveFileExW can rename the
+    // file even while we hold a handle to it. Without this, the rename
+    // below fails with ERROR_SHARING_VIOLATION.
     const handle: win32_apis.HANDLE = win32_apis.CreateFileW(
         tmp_w.ptr,
         win32_apis.GENERIC_WRITE,
-        win32_apis.FILE_SHARE_NONE,
+        win32_apis.FILE_SHARE_READ | win32_apis.FILE_SHARE_WRITE | win32_apis.FILE_SHARE_DELETE,
         null,
         win32_apis.CREATE_NEW,
         win32_apis.FILE_ATTRIBUTE_NORMAL,
@@ -273,7 +280,6 @@ fn atomicWriteFileWindows(path: []const u8, content: []const u8) !void {
     if (handle_addr == 0 or handle_addr == win32_apis.INVALID_HANDLE_VALUE_PTR) {
         return error.WriteTmpFailed;
     }
-    defer _ = win32_apis.CloseHandle(handle);
 
     // 2. Write the entire content (loop on partial writes). WriteFile
     // takes a u32 byte count per call — chunk to ~4 MB to stay under
@@ -289,24 +295,39 @@ fn atomicWriteFileWindows(path: []const u8, content: []const u8) !void {
             &written_chunk,
             null,
         );
-        if (ok == 0) return error.WriteFailed;
+        if (ok == 0) {
+            _ = win32_apis.CloseHandle(handle);
+            return error.WriteFailed;
+        }
         written_total += written_chunk;
         // WriteFile can return success with written_chunk=0 (broken
         // handle, disk full, etc.). Treat as failure to avoid an
         // infinite loop.
-        if (written_chunk == 0) return error.WriteFailed;
+        if (written_chunk == 0) {
+            _ = win32_apis.CloseHandle(handle);
+            return error.WriteFailed;
+        }
     }
 
     // 3. FlushFileBuffers — equivalent to fsync(2). Ensures the data
     // is on stable storage before the rename atomically swaps it in.
     _ = win32_apis.FlushFileBuffers(handle);
 
-    // 4. Atomic rename via MoveFileExW with MOVEFILE_REPLACE_EXISTING.
+    // 4. Close the handle BEFORE MoveFileExW. Even with FILE_SHARE_DELETE
+    // some Win32 implementations (and Wine's POSIX-layer emulation)
+    // refuse to rename a file we still hold a handle to. Closing first
+    // guarantees the rename can proceed cleanly.
+    _ = win32_apis.CloseHandle(handle);
+
+    // 5. Atomic rename via MoveFileExW with MOVEFILE_REPLACE_EXISTING.
     // Win32 guarantees the swap is atomic for files on the same
     // volume; cross-volume MoveFileExW falls back to copy+delete (NOT
     // atomic) but our usage is always within the same workspace so
     // that doesn't matter.
     if (win32_apis.MoveFileExW(tmp_w.ptr, path_w.ptr, win32_apis.MOVEFILE_REPLACE_EXISTING) == 0) {
+        // Best-effort cleanup of the orphan .tmp so the next call doesn't
+        // get ERROR_FILE_EXISTS from CREATE_NEW.
+        _ = win32_apis.DeleteFileW(tmp_w.ptr);
         return error.RenameFailed;
     }
 }
