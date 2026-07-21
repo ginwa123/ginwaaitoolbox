@@ -150,20 +150,19 @@ pub fn redirectStdioToLog(log_path: []const u8) !void {
     _ = std.c.close(log_fd);
 }
 
-/// Check if a process is alive via kill(pid, 0). Returns true for any
-/// of: (a) process exists and we can signal it, (b) process exists but
-/// we lack permission to signal it (EPERM).
-///
-/// Returns false if the process does not exist (ESRCH) or the pid is
-/// invalid (≤ 0).
-pub fn pidAlive(pid: i32) bool {
-    if (pid <= 0) return false;
-    // libc kill() accepts signal 0 (the "null signal") as a probe for
-    // existence/permissions without actually delivering a signal.
-    // Zig's std.c.SIG enum doesn't expose signal 0 as a named member,
-    // so we @enumFromInt it from 0.
-    const rc = std.c.kill(pid, @as(std.c.SIG, @enumFromInt(0)));
-    if (rc == 0) return true;
-    const errno_val = std.c.errno(rc);
-    return errno_val == .PERM;
-}
+// `pidAlive` was REMOVED from this file on 2026-07-24. Callers now use
+// the cross-platform helper `helpers.process_status.isProcessRunning(pid)`
+// from `src/helpers/process_status.zig`, which handles `pid <= 0`
+// early-return plus the Windows `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`
+// path. The old POSIX implementation here used libc `kill(pid, 0)`
+// which doesn't compile on Windows in Zig 0.16 (`std.c.pid_t` is
+// `*anyopaque`).
+//
+// Previous call sites (now routed via the helper):
+//   src/main_service.zig::serviceStart  (1 site)
+//   src/main_service.zig::serviceStop   (3 sites)
+//   src/main_service.zig::serviceStatus (1 site)
+//   src/daemon_test.zig                 (4 tests, renamed)
+//
+// Do NOT re-add `pub fn pidAlive(...)` here — it would re-introduce the
+// Windows compile blocker.

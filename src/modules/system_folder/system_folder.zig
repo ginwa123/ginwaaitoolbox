@@ -140,10 +140,26 @@ pub const SystemFolder = struct {
                     continue;
                 };
 
-                // Check if path is gitignored (use -C to set working directory)
+                // Check if path is gitignored (use -C to set working
+                // directory). Spawn failures (e.g. `git` not on PATH
+                // on Windows / Wine) are FALL-THROUGH-OK: the entry
+                // is kept because we can't prove it's gitignored. The
+                // old `catch continue` silently dropped every entry
+                // when git was unavailable — which made listDirectory
+                // return `[]` for any Windows / sandboxed environment.
                 const git_result = std.process.run(allocator, io, .{
                     .argv = &.{ "git", "-C", dir_path, "check-ignore", name },
-                }) catch continue;
+                }) catch blk: {
+                    // Spawn failed — treat as "not gitignored" so
+                    // callers see the entry rather than a confusing
+                    // empty list. The fake Term.exited=128 mirrors
+                    // git's "not a git repo" exit code.
+                    break :blk std.process.RunResult{
+                        .term = .{ .exited = 128 },
+                        .stdout = &[_]u8{},
+                        .stderr = &[_]u8{},
+                    };
+                };
                 defer allocator.free(git_result.stdout);
                 defer allocator.free(git_result.stderr);
                 if (git_result.term.exited == 0) {

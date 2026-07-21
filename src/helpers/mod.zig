@@ -241,6 +241,66 @@ fn unixTimestampNanosWindows() i128 {
     return ns_since_1601 - ns_1601_to_1970;
 }
 
+/// Cross-platform monotonic nanosecond timestamp.
+///
+/// Returns a non-negative `u64` value that increases monotonically with
+/// wall-clock time. The reference point is implementation-defined (NOT
+/// Unix epoch) — only DELTAS between values are meaningful. Use for
+/// deadline tracking (`now + timeout_ns` style), elapsed-time
+/// measurement, or inter-call ordering.
+///
+/// **Do not** use this for "current time of day" — that requires
+/// `unixTimestampNanos()` (which is REALTIME and can jump backwards on
+/// NTP adjust). This helper is the monotonic counterpart.
+///
+/// ## Why this exists (and `helpers.unixTimestampNanos` isn't enough)
+///
+/// `unixTimestampNanos` uses `CLOCK_REALTIME` on POSIX (which NTP can
+/// step backwards — bad for deadlines). For "wait up to N ns" use cases
+/// the absolute reference doesn't matter, but monotonicity does: if the
+/// clock jumps backwards while we're in a sleep loop, our `deadline_ns`
+/// comparison breaks. `CLOCK_MONOTONIC` and `QueryPerformanceCounter`
+/// are immune to NTP step adjustments.
+///
+/// ## Platform implementation
+///
+/// - **POSIX (Linux/macOS):** libc `clock_gettime(CLOCK_MONOTONIC, ...)`.
+///   `CLOCK_MONOTONIC = 1` is portable across Linux glibc, macOS, BSDs.
+///   Declared at the bottom of this file because `std.c.clockid_t` is
+///   `void` on Windows so we can't route through `std.c.clock_gettime`.
+/// - **Windows:** `QueryPerformanceCounter` × `(1_000_000_000 / freq)`
+///   via `windows.ntdll.RtlQueryPerformanceCounter/Frequency` (proper
+///   stdlib externs — see `/usr/local/lib/zig/std/os/windows/ntdll.zig`).
+///   QPC freq is typically the motherboard's TSC frequency (~10 MHz to
+///   ~GHz). QueryPerformanceFrequency is called twice per invocation;
+///   no caching because deadline-tracking call rates are low (50 ms poll
+///   is the heaviest use case in this codebase).
+pub fn monotonicTimestampNanos() u64 {
+    return switch (builtin.os.tag) {
+        .linux, .macos => monotonicTimestampNanosPosix(),
+        .windows => monotonicTimestampNanosWindows(),
+        else => @compileError("helpers.monotonicTimestampNanos: unsupported platform " ++ @tagName(builtin.os.tag)),
+    };
+}
+
+fn monotonicTimestampNanosPosix() u64 {
+    var ts: PosixTimespec = undefined;
+    _ = clock_gettime(CLOCK_MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+}
+
+fn monotonicTimestampNanosWindows() u64 {
+    var counter: std.os.windows.LARGE_INTEGER = undefined;
+    var freq: std.os.windows.LARGE_INTEGER = undefined;
+    _ = std.os.windows.ntdll.RtlQueryPerformanceCounter(&counter);
+    _ = std.os.windows.ntdll.RtlQueryPerformanceFrequency(&freq);
+    // Convert ticks to ns: ns = ticks * 1e9 / freq. Both inputs are
+    // strictly positive after a successful RtlQuery call, so the unsigned
+    // math is safe. Use u128 intermediate to dodge the i64 multiplication
+    // overflow at GHz-class TSC frequencies.
+    return @intCast(@divTrunc(@as(u128, @intCast(counter)) * 1_000_000_000, @as(u128, freq)));
+}
+
 /// Returns the current UTC time as an ISO-8601 string (`"2026-07-15 19:43:09"`).
 ///
 /// This is the canonical form used by `llm_history.created_iso` for
@@ -354,6 +414,10 @@ extern "c" fn nanosleep(req: *const PosixTimespec, rem: ?*PosixTimespec) c_int;
 /// POSIX platforms. Declared as `c_int` literal because `std.c.CLOCK`
 /// is not exposed on all platforms.
 const CLOCK_REALTIME: c_int = 0;
+
+/// POSIX CLOCK_MONOTONIC. Linux glibc = 1; macOS = 1; matches across
+/// all the POSIX variants we target. Used by `monotonicTimestampNanosPosix`.
+const CLOCK_MONOTONIC: c_int = 1;
 
 // === Tests ===
 

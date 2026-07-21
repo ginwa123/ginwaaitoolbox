@@ -1,5 +1,7 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
+const nalarcore = @import("nalarcore");
+const helpers = nalarcore.helpers;
 const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
@@ -272,26 +274,20 @@ pub fn xmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []cons
 
 /// Load agent from absolute file path
 fn loadAgentFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-    const file = std.fs.openFileAbsolute(path, .{}) catch {
+    // `std.fs.openFileAbsolute` was removed in Zig 0.16. Use the
+    // cross-platform `helpers.readFile` (libc `fopen`/`fread`) which
+    // works on Linux, macOS, and Windows via UCRT without an
+    // `io: std.Io` runtime. The helper combines open + read so the
+    // previous two-stage error reporting (open vs read) collapses to
+    // a single "Failed to open file" message — acceptable since the
+    // downstream consumer just checks `loaded=true`.
+    const content = helpers.readFile(allocator, path) catch {
         const result = try std.fmt.allocPrint(allocator,
             \\<agent>
             \\  <agent_name></agent_name>
             \\  <content></content>
             \\  <loaded>false</loaded>
             \\  <error>Failed to open file</error>
-            \\</agent>
-        , .{});
-        return result;
-    };
-    defer file.close();
-
-    const content = file.readToEndAlloc(allocator, std.math.maxInt(usize)) catch {
-        const result = try std.fmt.allocPrint(allocator,
-            \\<agent>
-            \\  <agent_name></agent_name>
-            \\  <content></content>
-            \\  <loaded>false</loaded>
-            \\  <error>Failed to read file</error>
             \\</agent>
         , .{});
         return result;

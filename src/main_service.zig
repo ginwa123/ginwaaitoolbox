@@ -19,6 +19,7 @@ const builtin = @import("builtin");
 const state_file = @import("state_file.zig");
 const daemon = @import("daemon.zig");
 const signal_handlers = @import("signal_handlers.zig");
+const helpers = @import("helpers/mod.zig");
 
 pub const Subcommand = union(enum) {
     start: struct {
@@ -163,13 +164,15 @@ pub fn serviceStart(
     // 1. Refuse if a live daemon is already tracked in state.json.
     if (try state_file.readStateFile(allocator, io, opts.state_path)) |existing| {
         defer state_file.freeState(allocator, existing);
-        if (daemon.pidAlive(existing.pid)) return error.AlreadyRunning;
+        if (helpers.process_status.isProcessRunning(existing.pid)) return error.AlreadyRunning;
         // Stale state (pid is dead) — remove and proceed.
         std.Io.Dir.cwd().deleteFile(io, opts.state_path) catch {};
     }
 
-    // 2. Daemonize. After this returns, we're the grandchild. The
-    //    parent paths exit(0) inside daemonizePosix.
+    // 2. Daemonize. POSIX-only — Windows has no fork/double-fork. The
+    //    daemon lifecycle is unsupported on Windows in this codebase
+    //    (Windows service control manager APIs would be needed).
+    if (builtin.os.tag == .windows) return error.UnsupportedOS;
     try daemon.daemonizePosix();
     try daemon.redirectStdioToLog(opts.log_path);
 
@@ -222,32 +225,43 @@ pub fn serviceStop(
         return;
     };
     defer state_file.freeState(allocator, state);
-    if (!daemon.pidAlive(state.pid)) {
+    if (!helpers.process_status.isProcessRunning(state.pid)) {
         std.log.warn("Stale state file (pid {d} is dead); removing.", .{state.pid});
         std.Io.Dir.cwd().deleteFile(io, opts.state_path) catch {};
         return;
     }
-    _ = std.c.kill(state.pid, @as(std.c.SIG, @enumFromInt(15))); // SIGTERM
-    // Poll until dead or graceful_timeout_ms. Zig 0.16 removed
-    // std.time.monotonic(); libc clock_gettime(CLOCK_MONOTONIC) works.
-    const start_ns = readMonotonicNs();
-    const deadline_ns: u64 = start_ns + @as(u64, opts.graceful_timeout_ms) * std.time.ns_per_ms;
-    while (readMonotonicNs() < deadline_ns) {
-        if (!daemon.pidAlive(state.pid)) break;
-        var ts = std.posix.timespec{ .sec = 0, .nsec = 50_000_000 };
-        _ = std.c.nanosleep(&ts, null);
-    }
-    if (daemon.pidAlive(state.pid)) {
-        std.log.warn("Graceful shutdown timed out, sending SIGKILL.", .{});
-        _ = std.c.kill(state.pid, @as(std.c.SIG, @enumFromInt(9))); // SIGKILL
+
+    // Cross-platform terminate-with-grace.
+    //
+    // POSIX path: send SIGTERM (15) — daemon gets a chance to run its
+    // signal handler (signal_handlers.installSigtermHandler) which calls
+    // opts.on_shutdown to close the GinwaServer and flush state. After
+    // up to opts.graceful_timeout_ms, escalation to SIGKILL (9) via
+    // helpers.process_status.killProcess (which wraps SIGKILL on POSIX
+    // and TerminateProcess on Windows).
+    //
+    // Windows path: no SIGTERM concept. Just TerminateProcess directly
+    // and fall through to state-file cleanup (same end state).
+    if (builtin.os.tag == .windows) {
+        _ = helpers.process_status.killProcess(state.pid);
+    } else {
+        _ = std.c.kill(state.pid, @as(std.c.SIG, @enumFromInt(15))); // SIGTERM
+        // Monotonic ns for deadline tracking (CLOCK_REALTIME can jump
+        // backwards under NTP step — bad for `start + offset` deadlines;
+        // CLOCK_MONOTONIC is immune).
+        const start_ns: u64 = helpers.monotonicTimestampNanos();
+        const deadline_ns: u64 = start_ns +
+            @as(u64, opts.graceful_timeout_ms) * std.time.ns_per_ms;
+        while (helpers.monotonicTimestampNanos() < deadline_ns) {
+            if (!helpers.process_status.isProcessRunning(state.pid)) break;
+            helpers.sleepMillis(50);
+        }
+        if (helpers.process_status.isProcessRunning(state.pid)) {
+            std.log.warn("Graceful shutdown timed out, sending SIGKILL.", .{});
+            _ = helpers.process_status.killProcess(state.pid);
+        }
     }
     std.Io.Dir.cwd().deleteFile(io, opts.state_path) catch {};
-}
-
-fn readMonotonicNs() u64 {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts);
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
 /// Report service status. Logs (using std.log) whether the service is
@@ -262,7 +276,7 @@ pub fn serviceStatus(
         return;
     };
     defer state_file.freeState(allocator, state);
-    if (!daemon.pidAlive(state.pid)) {
+    if (!helpers.process_status.isProcessRunning(state.pid)) {
         std.log.warn("status: stale state (pid {d} is dead)", .{state.pid});
         return;
     }

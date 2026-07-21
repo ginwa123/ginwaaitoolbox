@@ -1,6 +1,25 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+// === Cross-platform note (2026-07-24) ===
+//
+// The bash tool spawns `bash -c <command>` by argv, sends signals to
+// process groups via std.posix.kill(-pgid, ...), and uses other
+// POSIX-only primitives (std.posix.pid_t, std.posix.kill, the .pgid
+// field on std.process.Child). None of these exist on Windows in
+// Zig 0.16 (`std.posix.pid_t` is `*anyopaque`, `std.posix.kill` has
+// `@compileError`, `.pgid` is `?*anyopaque`).
+//
+// The plan §2.1 alternative of a FILE-LEVEL `@compileError("bash is
+// POSIX-only")` is NOT chosen here — that would block the entire
+// tool_registry.zig (and therefore workflow.zig and nalarcore) from
+// compiling on Windows, because they `const bash_tool_mod =
+// nalar_mod.bash_tool` at module scope. Instead we guard only the two
+// spawn sites with `if (builtin.os.tag == .windows) return error.UnsupportedOS;`.
+// The tool stays in the registered tool table on Windows (with its
+// full schema + description so the LLM can learn about it), but invoking
+// it returns a clean error rather than failing to compile.
+
 // POSIX `nanosleep(req, rem)` — declared as `extern "c"` so the call
 // doesn't go through Zig 0.16's Io runtime. We deliberately avoid
 // `std.Io.sleep` here because the bash tool is invoked from the AI
@@ -298,6 +317,12 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         );
         defer allocator.free(bg_command);
 
+        // bash tool is POSIX-only. Windows has no `bash` on $PATH by default
+        // (Git Bash / WSL are user-side installs that we can't assume).
+        // Returning error.UnsupportedOS lets the LLM see a clean error
+        // rather than a cryptic filesystem ENOENT.
+        if (builtin.os.tag == .windows) return error.UnsupportedOS;
+
         var child = try std.process.spawn(io, .{
             .argv = &.{ "bash", "-c", bg_command },
             .cwd = if (input.cwd) |cwd| .{ .path = cwd } else .inherit,
@@ -368,6 +393,14 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     // notes this) and the smoke-test commands that work on Linux tend
     // to be single-process. Any real agent command (rg | head, ls -laR,
     // timeouts, multi-stage builds) hits the subshell path and hangs.
+    // bash tool is POSIX-only (matches background-mode guard above).
+    // The Windows branch returns error.UnsupportedOS so the tool is still
+    // registered — the LLM gets a clean error if it tries to invoke bash.
+    // Note: the `.pgid = 0` field below is a Linux/macOS-only process-group
+    // leadership hint and wouldn't compile on Windows (the field type is
+    // `?*anyopaque` there). Guarding this whole spawn makes that disappear.
+    if (builtin.os.tag == .windows) return error.UnsupportedOS;
+
     var child = try std.process.spawn(io, .{
         .argv = &.{ "bash", "-c", command },
         .cwd = if (input.cwd) |cwd| .{ .path = cwd } else .inherit,
