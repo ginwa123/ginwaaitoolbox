@@ -42,6 +42,7 @@ pub const OPT = struct {
     pub const CUSTOMREQUEST: c_int = @intCast(C.CURLOPT_CUSTOMREQUEST);
     pub const HTTPHEADER: c_int = @intCast(C.CURLOPT_HTTPHEADER);
     pub const POSTFIELDS: c_int = @intCast(C.CURLOPT_POSTFIELDS);
+    pub const COPYPOSTFIELDS: c_int = @intCast(C.CURLOPT_COPYPOSTFIELDS);
     pub const POSTFIELDSIZE: c_int = @intCast(C.CURLOPT_POSTFIELDSIZE);
     pub const POSTFIELDSIZE_LARGE: c_int = @intCast(C.CURLOPT_POSTFIELDSIZE_LARGE);
     pub const WRITEFUNCTION: c_int = @intCast(C.CURLOPT_WRITEFUNCTION);

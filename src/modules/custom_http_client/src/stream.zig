@@ -5,10 +5,15 @@
 //! chunks as they arrive from a worker thread; caller iterates via
 //! `next()` (chunks) or wraps in a `StreamScanner` (lines).
 //!
-//! **Lifetime note:** the worker thread and the calling thread share
-//! a heap-allocated `SharedState`. The caller MUST call `deinit()`
-//! which joins the worker and frees the heap. After deinit the
-//! stream is unusable.
+//! **Threading model:** We use `std.Io.Mutex` (futex-based, from
+//! Zig 0.16 std.Io) for the chunk-queue mutex — NOT a hand-rolled
+//! spinlock. `std.Io.Mutex` is the canonical Zig 0.16 implementation
+//! for Io-runtime code (see `~/.nalar/memories/zig-0.16-stdlib-changes`).
+//!
+//! **Lifetime:** the worker thread and the calling thread share a
+//! heap-allocated `SharedState`. The caller MUST call `deinit()` which
+//! joins the worker and frees the heap. After deinit the stream is
+//! unusable.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -26,44 +31,37 @@ const LocalError = root.Error;
 /// a slow consumer can't grow memory without bound.
 const QUEUE_CAPACITY: usize = 64;
 
-/// Tiny atomic spinlock (Zig 0.16 has no built-in Mutex — see
-/// `~/.nalar/memories/zig-0.16-stdlib-changes` for context).
-const Spinlock = struct {
-    state: std.atomic.Value(u32) = .init(0),
-    const UNLOCKED: u32 = 0;
-    const LOCKED: u32 = 1;
-
-    fn lock(self: *Spinlock) void {
-        while (true) {
-            const prev = self.state.cmpxchgWeak(UNLOCKED, LOCKED, .acquire, .monotonic);
-            if (prev == null) break;
-            std.atomic.spinLoopHint();
-        }
-    }
-
-    fn unlock(self: *Spinlock) void {
-        self.state.store(UNLOCKED, .release);
-    }
-};
+/// libcurl's CURLOPT_ERRORBUFFER expects a buffer of at least
+/// `CURL_ERROR_SIZE` bytes (256 per the curl.h header). We size it
+/// generously so a future curl bump can't silently truncate us.
+const CURL_ERRORBUFFER_LEN: usize = 256;
 
 const ChunkQueue = struct {
-    mutex: Spinlock,
+    mutex: *std.Io.Mutex,
     slots: [QUEUE_CAPACITY]?[]u8,
     head: usize,
     tail: usize,
+    io: std.Io,
 
-    pub fn init() ChunkQueue {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) ChunkQueue {
+        const mutex = allocator.create(std.Io.Mutex) catch unreachable;
+        mutex.* = .init;
         return .{
-            .mutex = .{},
+            .mutex = mutex,
             .slots = [_]?[]u8{null} ** QUEUE_CAPACITY,
             .head = 0,
             .tail = 0,
+            .io = io,
         };
     }
 
+    pub fn deinit(self: *ChunkQueue, allocator: std.mem.Allocator) void {
+        allocator.destroy(self.mutex);
+    }
+
     fn push(self: *ChunkQueue, allocator: std.mem.Allocator, chunk: []const u8) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         const next_tail = (self.tail + 1) % QUEUE_CAPACITY;
         if (next_tail == self.head) return false;
         const owned = allocator.dupe(u8, chunk) catch return false;
@@ -73,8 +71,8 @@ const ChunkQueue = struct {
     }
 
     fn popOne(self: *ChunkQueue) ?[]u8 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         if (self.head == self.tail) return null;
         const chunk = self.slots[self.head].?;
         self.slots[self.head] = null;
@@ -99,6 +97,14 @@ const SharedState = struct {
     worker_error: ?LocalError = null,
     total_time_ms: u64 = 0,
     io: std.Io,
+    /// Backing storage for `CURLOPT_ERRORBUFFER`. Lives on the heap
+    /// (via SharedState) because libcurl stores the raw pointer and
+    /// writes into it whenever an error string is produced — often
+    /// AFTER `openStream` has returned, from inside `streamWorker`
+    /// running on a separate `std.Thread`. A stack-local here would
+    /// be a classic use-after-free the moment the worker fired an
+    /// error path.
+    errbuf: [CURL_ERRORBUFFER_LEN]u8 = [_]u8{0} ** CURL_ERRORBUFFER_LEN,
 
     fn deinit(self: *SharedState) void {
         self.cancel();
@@ -113,6 +119,7 @@ const SharedState = struct {
         while (self.queue.popOne()) |chunk| {
             self.allocator.free(chunk);
         }
+        self.queue.deinit(self.allocator);
     }
 
     fn cancel(self: *SharedState) void {
@@ -126,10 +133,6 @@ pub const ResponseStream = struct {
     state: *SharedState,
     thread: std.Thread,
 
-    /// Pulls the next body chunk. Returns null only when the transfer
-    /// has finished cleanly AND no chunks remain in the queue. Returns
-    /// an Error if the worker hit one (the stream is then unusable —
-    /// caller should still `deinit()`).
     pub fn next(self: *ResponseStream) !?[]const u8 {
         if (self.state.worker_error) |e| return e;
         if (self.state.queue.popOne()) |chunk| return chunk;
@@ -231,13 +234,7 @@ pub const StreamScanner = struct {
     }
 };
 
-// ----- Callbacks -----
-
 fn writeCallback(buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque) callconv(.c) u64 {
-    // userdata IS the heap-allocated SharedState (passed directly via
-    // `@ptrCast`/`@ptrCast` round-trip when setting the option). This
-    // avoids the "callback-context stack value goes out of scope"
-    // footgun — the pointer survives until ResponseStream.deinit.
     const state: *SharedState = @ptrCast(@alignCast(userdata));
     const slice = buf[0 .. size * nmemb];
     if (!state.queue.push(state.allocator, slice)) return 0;
@@ -262,9 +259,6 @@ fn progressCallback(
 }
 
 fn headerCallback(buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque) callconv(.c) u64 {
-    // userdata points to the SharedState (heap-allocated). We use the
-    // embedded allocator + headers list directly — see writeCallback
-    // for the lifetime rationale.
     const state: *SharedState = @ptrCast(@alignCast(userdata));
     const slice = buf[0 .. size * nmemb];
     if (slice.len == 0) return size * nmemb;
@@ -291,8 +285,6 @@ fn headerCallback(buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque)
     return size * nmemb;
 }
 
-// Worker thread entry point. Pulls `*SharedState` from the heap so
-// the pointer outlives any stack frames.
 fn streamWorker(state: *SharedState) void {
     const rc: c_uint = curl.easy_perform(state.handle);
     if (rc != curl.C.CURLE_OK and state.worker_error == null) {
@@ -354,11 +346,6 @@ fn setoptSlist(handle: *curl.C.CURL, option: c_int, value: ?*curl.C.struct_curl_
     return curl.easy_setopt_raw(handle, @as(c_uint, @intCast(option)), value);
 }
 
-/// Open a streaming HTTP request. The transfer runs in a worker thread;
-/// chunks arrive via `ResponseStream.next`. The caller MUST call
-/// `deinit` on the returned stream exactly once. On error, the stream
-/// is unusable — call `deinit` (which will block briefly joining the
-/// worker).
 pub fn openStream(
     client: *Client,
     io: std.Io,
@@ -368,39 +355,27 @@ pub fn openStream(
     const allocator = client.allocator;
 
     const handle = curl.easy_init() orelse return LocalError.InitFailed;
-    // Single source-located cleanup for the handle. Set to a no-op
-    // once the handle has been transferred to a heap-owned SharedState
-    // (whose `deinit` calls `easy_cleanup` itself). This keeps
-    // `easy_init` = `easy_cleanup` count exactly 1:1 in source.
     var handle_alive = true;
     defer if (handle_alive) curl.easy_cleanup(handle);
 
-    // Allocate SharedState on the heap so the worker thread's pointer
-    // outlives any stack frame. `client.allocator` is the destination.
-    //
-    // Both the alloc-fail path AND the spawn-fail path funnel through
-    // `state.deinit()` for cleanup so there's exactly ONE place that
-    // calls `curl.easy_cleanup` per `curl_easy_init`. The static-
-    // contract test counts source occurrences; each path uses the same
-    // helper.
     const state = allocator.create(SharedState) catch return LocalError.InitFailed;
     state.* = .{
         .allocator = allocator,
         .handle = handle,
-        .queue = .init(),
+        .queue = .init(allocator, io),
         .primary_ip = .empty,
         .url_effective = .empty,
         .headers = .empty,
         .io = io,
     };
-    // From here on the handle is owned by `state`. The deferred
-    // cleanup at the top of openStream becomes a no-op.
     handle_alive = false;
 
-    var errbuf: [256]u8 = [_]u8{0} ** 256;
-    _ = setoptLong(handle, curl.OPT.ERRORBUFFER, @as(c_long, @intCast(@intFromPtr(&errbuf))));
+    // ERRORBUFFER backing is now state.errbuf (heap, lifetime matches the
+    // handle). libcurl holds this raw pointer and writes into it from the
+    // worker thread, possibly AFTER this function returns — a stack-local
+    // would be a use-after-free the moment an error fires.
+    _ = setoptLong(handle, curl.OPT.ERRORBUFFER, @as(c_long, @intCast(@intFromPtr(&state.errbuf))));
 
-    // URL with sentinel terminator.
     const url_buf = try allocator.allocSentinel(u8, req.url.len, 0);
     @memcpy(url_buf, req.url);
     _ = setoptPtr(handle, curl.OPT.URL, url_buf.ptr);
@@ -411,7 +386,6 @@ pub fn openStream(
     method_z[mlen] = 0;
     _ = setoptPtr(handle, curl.OPT.CUSTOMREQUEST, method_z[0..mlen :0].ptr);
 
-    // Headers slist.
     var slist: ?*curl.C.struct_curl_slist = null;
     defer if (slist) |s| curl.slist_free_all(s);
 
@@ -448,7 +422,12 @@ pub fn openStream(
     _ = setoptSlist(handle, curl.OPT.HTTPHEADER, slist);
 
     if (req.body) |body| {
-        _ = setoptPtr(handle, curl.OPT.POSTFIELDS, body.ptr);
+        // COPYPOSTFIELDS makes libcurl duplicate the body internally so we
+        // don't borrow `req.body` (which the caller may free as soon as
+        // openStream returns, while the worker thread is still running).
+        // POSTFIELDSIZE_LARGE lets us pass the length without the body
+        // needing to be NUL-terminated.
+        _ = setoptPtr(handle, curl.OPT.COPYPOSTFIELDS, body.ptr);
         _ = setoptLong(handle, curl.OPT.POSTFIELDSIZE_LARGE, @as(c_long, @intCast(body.len)));
     }
 
@@ -462,13 +441,6 @@ pub fn openStream(
     _ = setoptLong(handle, curl.OPT.SSL_VERIFYPEER, if (options.verify_ssl) @as(c_long, 1) else @as(c_long, 0));
     _ = setoptLong(handle, curl.OPT.SSL_VERIFYHOST, if (options.verify_ssl) @as(c_long, 2) else @as(c_long, 0));
 
-    // ----- Callbacks -----
-    // We pass the heap-allocated `state` pointer directly as the
-    // userdata for the body and header callbacks. The state outlives
-    // both threads (till deinit frees it), so the callbacks can read
-    // through it safely. Passing a stack-allocated context struct
-    // was a previous bug — its frame went out of scope the moment
-    // openStream returned.
     _ = curl.easy_setopt_raw(handle, curl.OPT.WRITEFUNCTION, @as(curl.WriteCallback, @ptrCast(&writeCallback)));
     _ = curl.easy_setopt_raw(handle, curl.OPT.WRITEDATA, @as(*anyopaque, @ptrCast(state)));
 
@@ -479,8 +451,6 @@ pub fn openStream(
     _ = curl.easy_setopt_raw(handle, curl.OPT.XFERINFOFUNCTION, @as(curl.ProgressCallback, @ptrCast(&progressCallback)));
     _ = curl.easy_setopt_raw(handle, curl.OPT.XFERINFODATA, @as(*anyopaque, @ptrCast(&state.cancelled)));
 
-    // Spawn worker thread that runs curl_easy_perform. Pass the heap
-    // pointer — it survives until `state.deinit()` in our `deinit`.
     const thread = std.Thread.spawn(.{}, streamWorker, .{state}) catch |err| switch (err) {
         error.ThreadQuotaExceeded,
         error.LockedMemoryLimitExceeded,
