@@ -159,10 +159,31 @@ pub const ResponseStream = struct {
     thread: std.Thread,
 
     pub fn next(self: *ResponseStream) !?[]const u8 {
-        if (self.state.worker_error) |e| return e;
-        if (self.state.queue.popOne()) |chunk| return chunk;
-        if (self.state.finished.load(.acquire)) return null;
-        return null;
+        // Block briefly waiting for the worker thread to push a chunk
+        // or signal completion. Without this, `next()` would return
+        // null on the very first call (race vs the worker thread),
+        // causing streaming tests to exit prematurely with 0 chunks.
+        //
+        // Poll budget is short (5s, generous for slow handshakes) but
+        // we exit early as soon as a chunk arrives or the worker
+        // reports completion. We use libc clock_gettime rather than
+        // std.Io.Clock.now because the latter calls into the Io
+        // runtime from the test thread, which can deadlock against
+        // the worker thread that owns the runtime.
+        const poll_budget_ns: u64 = 5 * std.time.ns_per_s;
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(.MONOTONIC, &ts);
+        const start_ns: u64 = @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+        const deadline_ns: u64 = start_ns + poll_budget_ns;
+        while (true) {
+            if (self.state.worker_error) |e| return e;
+            if (self.state.queue.popOne()) |chunk| return chunk;
+            if (self.state.finished.load(.acquire)) return null;
+            _ = std.c.clock_gettime(.MONOTONIC, &ts);
+            const now_ns: u64 = @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+            if (now_ns >= deadline_ns) return null;
+            std.atomic.spinLoopHint();
+        }
     }
 
     pub fn statusCode(self: *const ResponseStream) u16 {
