@@ -130,16 +130,21 @@ fn statusHandler(ctx: HttpContext, req: HttpRequest, _: HttpResponse) !HttpRespo
 
 fn redirectHandler(ctx: HttpContext, req: HttpRequest, _: HttpResponse) !HttpResponse {
     // /redirect/N → 302 to /redirect/(N-1); /redirect/1 → 302 to /get.
+    //
+    // The Location string is owned by the per-request arena. We do NOT
+    // free it here — the response's Location header holds a slice
+    // header pointing to it, and the server serializes the response
+    // AFTER this function returns. Deferring free would cause the
+    // Location header to point at freed memory when serialized.
     const n_str = req.params.get("n") orelse "1";
     const n = std.fmt.parseInt(usize, n_str, 10) catch 1;
-    const owned_location: []u8 = if (n <= 1)
-        try ctx.allocator.dupe(u8, "/get")
+    const location: []const u8 = if (n <= 1)
+        "/get"
     else
         std.fmt.allocPrint(ctx.allocator, "/redirect/{d}", .{n - 1}) catch unreachable;
-    defer ctx.allocator.free(owned_location);
 
     var resp = HttpResponse.init(302, "Found", ctx.allocator);
-    try resp.headers.put("location", owned_location);
+    try resp.headers.put("location", location);
     return resp;
 }
 
