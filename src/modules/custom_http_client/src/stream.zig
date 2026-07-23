@@ -64,6 +64,9 @@ const ChunkQueue = struct {
         defer self.mutex.unlock(self.io);
         const next_tail = (self.tail + 1) % QUEUE_CAPACITY;
         if (next_tail == self.head) return false;
+        // dupe makes a heap-owned copy so the data outlives libcurl's
+        // write-callback buffer (which can be invalidated as soon as
+        // we return).
         const owned = allocator.dupe(u8, chunk) catch return false;
         self.slots[self.tail] = owned;
         self.tail = next_tail;
@@ -283,6 +286,8 @@ pub const StreamScanner = struct {
 fn writeCallback(buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque) callconv(.c) u64 {
     const state: *SharedState = @ptrCast(@alignCast(userdata));
     const slice = buf[0 .. size * nmemb];
+    // dupe the body so we don't depend on libcurl's internal buffer
+    // remaining valid after this callback returns (it doesn't).
     if (!state.queue.push(state.allocator, slice)) return 0;
     return size * nmemb;
 }

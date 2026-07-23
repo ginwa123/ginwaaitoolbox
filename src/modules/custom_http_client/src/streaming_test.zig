@@ -105,9 +105,16 @@ fn streamHandler(ctx: HttpContext, _: HttpRequest, res: HttpResponse) !HttpRespo
     // Emit 20 NDJSON lines: `{"id": <i>}\n` for i in [0..20). StreamScanner
     // will yield one line per Scan() call; carry-over handles chunks
     // that split across line boundaries.
+    //
+    // The body is allocated from the per-request arena (ctx.allocator).
+    // We do NOT deinit `body` here — the response holds the slice
+    // header (pointer+length) and the arena will reap the backing
+    // memory after the response has been serialized and written to
+    // the socket. Calling `defer body.deinit(...)` here would free
+    // the body BEFORE `toBytes()` runs, producing 0xAA-filled body
+    // bytes (the debug allocator's free-fill pattern) in the response.
     const n: usize = 20;
     var body: std.ArrayList(u8) = .empty;
-    defer body.deinit(ctx.allocator);
     var i: usize = 0;
     while (i < n) : (i += 1) {
         var line_buf: [64]u8 = undefined;
@@ -126,8 +133,10 @@ fn noContentHandler(ctx: HttpContext, _: HttpRequest, _: HttpResponse) !HttpResp
 }
 
 fn echoHeadersHandler(ctx: HttpContext, req: HttpRequest, res: HttpResponse) !HttpResponse {
+    // Body is allocated from the per-request arena; do NOT deinit here
+    // — the response holds the slice header and the arena will reap
+    // the backing memory after the response is serialized and sent.
     var body: std.ArrayList(u8) = .empty;
-    defer body.deinit(ctx.allocator);
     var iter = req.headers.iterator();
     while (iter.next()) |entry| {
         try body.print(ctx.allocator, "{s}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
@@ -136,8 +145,9 @@ fn echoHeadersHandler(ctx: HttpContext, req: HttpRequest, res: HttpResponse) !Ht
 }
 
 fn bigBodyHandler(ctx: HttpContext, _: HttpRequest, res: HttpResponse) !HttpResponse {
+    // Body lives in the per-request arena — let the arena reap it
+    // after the response is sent (see streamHandler for the rationale).
     var body: std.ArrayList(u8) = .empty;
-    defer body.deinit(ctx.allocator);
     var i: usize = 0;
     while (i < 64 * 1024) : (i += 1) {
         try body.append(ctx.allocator, 'A');
