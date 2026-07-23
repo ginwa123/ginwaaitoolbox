@@ -61,6 +61,21 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_cmd.addArgs(args);
 
     // Test executable — exercises every `*_test.zig` registered via test_runner.zig.
+    //
+    // The streaming tests need an in-process HTTP server. We import the
+    // adjacent `custom_http_server` module (compiled from
+    // src/modules/custom_http_server/src/http_server.zig) so the tests
+    // can spin up a GinwaServer on an ephemeral port in-process,
+    // eliminating the httpbin.org network dependency. The import is
+    // attached to the test module only — production builds of
+    // custom_http_client don't pull in the server.
+    const server_mod = b.createModule(.{
+        .root_source_file = b.path("../custom_http_server/src/http_server.zig"),
+        .target = target,
+    });
+    server_mod.linkSystemLibrary("c", .{});
+    mod.addImport("custom_http_server", server_mod);
+
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
@@ -68,6 +83,7 @@ pub fn build(b: *std.Build) void {
     mod_tests.root_module.link_libc = true;
     if (target.result.os.tag == .linux) {
         mod_tests.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
+        server_mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
     }
 
     const run_mod_tests = b.addRunArtifact(mod_tests);

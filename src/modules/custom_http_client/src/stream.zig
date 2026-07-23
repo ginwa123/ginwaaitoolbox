@@ -5,8 +5,10 @@
 //! chunks as they arrive from a worker thread; caller iterates via
 //! `next()` (chunks) or wraps in a `StreamScanner` (lines).
 //!
-//! Cancellation: set an atomic flag → libcurl's progress callback
-//! (`XFERINFOFUNCTION`) returns non-zero to abort the transfer.
+//! **Lifetime note:** the worker thread and the calling thread share
+//! a heap-allocated `SharedState`. The caller MUST call `deinit()`
+//! which joins the worker and frees the heap. After deinit the
+//! stream is unusable.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -18,7 +20,6 @@ const Request = @import("request.zig").Request;
 const Options = @import("options.zig").Options;
 const Client = root.Client;
 const LocalError = root.Error;
-pub const _Error = LocalError; // alias for visibility inside the module
 
 /// Thread-safe FIFO of byte slices. Fixed-size circular buffer of
 /// 64 slots — comfortably above typical SSE chunk rates, bounded so
@@ -27,8 +28,6 @@ const QUEUE_CAPACITY: usize = 64;
 
 /// Tiny atomic spinlock (Zig 0.16 has no built-in Mutex — see
 /// `~/.nalar/memories/zig-0.16-stdlib-changes` for context).
-/// Used to protect ChunkQueue slot access. Hold time is sub-µs so
-/// spinlock contention is acceptable.
 const Spinlock = struct {
     state: std.atomic.Value(u32) = .init(0),
     const UNLOCKED: u32 = 0;
@@ -52,7 +51,6 @@ const ChunkQueue = struct {
     slots: [QUEUE_CAPACITY]?[]u8,
     head: usize,
     tail: usize,
-    pushed_count: std.atomic.Value(u32),
 
     pub fn init() ChunkQueue {
         return .{
@@ -60,7 +58,6 @@ const ChunkQueue = struct {
             .slots = [_]?[]u8{null} ** QUEUE_CAPACITY,
             .head = 0,
             .tail = 0,
-            .pushed_count = .init(0),
         };
     }
 
@@ -68,13 +65,10 @@ const ChunkQueue = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         const next_tail = (self.tail + 1) % QUEUE_CAPACITY;
-        if (next_tail == self.head) {
-            return false; // queue full
-        }
+        if (next_tail == self.head) return false;
         const owned = allocator.dupe(u8, chunk) catch return false;
         self.slots[self.tail] = owned;
         self.tail = next_tail;
-        _ = self.pushed_count.fetchAdd(1, .release);
         return true;
     }
 
@@ -89,64 +83,26 @@ const ChunkQueue = struct {
     }
 };
 
-/// State shared between the worker thread (driver of curl_easy_perform)
-/// and the calling thread (which calls next/cancel/deinit).
-pub const ResponseStream = struct {
+/// State shared between worker thread and caller. Heap-allocated so
+/// the worker thread's pointer survives the caller-thread's stack
+/// frames returning.
+const SharedState = struct {
     allocator: std.mem.Allocator,
     handle: *curl.C.CURL,
-    thread: std.Thread,
     queue: ChunkQueue,
-    cancelled: std.atomic.Value(bool),
-    finished: std.atomic.Value(bool),
-    /// Set by worker AFTER `curl_easy_getinfo(...RESPONSE_CODE)`.
-    status_code: std.atomic.Value(u32),
+    cancelled: std.atomic.Value(bool) = .init(false),
+    finished: std.atomic.Value(bool) = .init(false),
+    status_code: std.atomic.Value(u32) = .init(0),
     primary_ip: std.ArrayList(u8),
     url_effective: std.ArrayList(u8),
     headers: std.ArrayList(Header),
-    worker_error: ?LocalError,
-    total_time_ms: u64,
+    worker_error: ?LocalError = null,
+    total_time_ms: u64 = 0,
     io: std.Io,
 
-    /// Pulls the next body chunk. Returns null only when the transfer
-    /// has finished cleanly AND no chunks remain in the queue. Returns
-    /// an Error if the worker hit one (the stream is then unusable —
-    /// caller should still `deinit()`).
-    pub fn next(self: *ResponseStream) !?[]const u8 {
-        if (self.worker_error) |e| return e;
-        if (self.queue.popOne()) |chunk| return chunk;
-        if (self.finished.load(.acquire)) return null;
-        return null;
-    }
-
-    pub fn statusCode(self: *const ResponseStream) u16 {
-        return @intCast(self.status_code.load(.acquire));
-    }
-
-    pub fn headersView(self: *const ResponseStream) []const Header {
-        return self.headers.items;
-    }
-
-    pub fn effectiveUrl(self: *const ResponseStream) []const u8 {
-        return self.url_effective.items;
-    }
-
-    pub fn primaryIp(self: *const ResponseStream) []const u8 {
-        return self.primary_ip.items;
-    }
-
-    pub fn totalTimeMs(self: *const ResponseStream) u64 {
-        return self.total_time_ms;
-    }
-
-    pub fn cancel(self: *ResponseStream) void {
-        self.cancelled.store(true, .release);
-    }
-
-    pub fn deinit(self: *ResponseStream) void {
+    fn deinit(self: *SharedState) void {
         self.cancel();
-        self.thread.join();
         curl.easy_cleanup(self.handle);
-        // Free per-header name/value copies.
         for (self.headers.items) |h| {
             self.allocator.free(h.name);
             self.allocator.free(h.value);
@@ -154,10 +110,62 @@ pub const ResponseStream = struct {
         self.headers.deinit(self.allocator);
         self.url_effective.deinit(self.allocator);
         self.primary_ip.deinit(self.allocator);
-        // Drain remaining chunks (we own them all).
         while (self.queue.popOne()) |chunk| {
             self.allocator.free(chunk);
         }
+    }
+
+    fn cancel(self: *SharedState) void {
+        self.cancelled.store(true, .release);
+    }
+};
+
+/// Caller-facing handle. Owns a `*SharedState` (heap-allocated).
+/// `deinit` joins the worker thread and frees the shared state.
+pub const ResponseStream = struct {
+    state: *SharedState,
+    thread: std.Thread,
+
+    /// Pulls the next body chunk. Returns null only when the transfer
+    /// has finished cleanly AND no chunks remain in the queue. Returns
+    /// an Error if the worker hit one (the stream is then unusable —
+    /// caller should still `deinit()`).
+    pub fn next(self: *ResponseStream) !?[]const u8 {
+        if (self.state.worker_error) |e| return e;
+        if (self.state.queue.popOne()) |chunk| return chunk;
+        if (self.state.finished.load(.acquire)) return null;
+        return null;
+    }
+
+    pub fn statusCode(self: *const ResponseStream) u16 {
+        return @intCast(self.state.status_code.load(.acquire));
+    }
+
+    pub fn headersView(self: *const ResponseStream) []const Header {
+        return self.state.headers.items;
+    }
+
+    pub fn effectiveUrl(self: *const ResponseStream) []const u8 {
+        return self.state.url_effective.items;
+    }
+
+    pub fn primaryIp(self: *const ResponseStream) []const u8 {
+        return self.state.primary_ip.items;
+    }
+
+    pub fn totalTimeMs(self: *const ResponseStream) u64 {
+        return self.state.total_time_ms;
+    }
+
+    pub fn cancel(self: *ResponseStream) void {
+        self.state.cancel();
+    }
+
+    pub fn deinit(self: *ResponseStream) void {
+        self.state.cancel();
+        self.thread.join();
+        self.state.deinit();
+        self.state.allocator.destroy(self.state);
         self.* = undefined;
     }
 };
@@ -180,12 +188,9 @@ pub const StreamScanner = struct {
         };
     }
 
-    /// Pull the next line. Returns null at clean EOF. Empty lines
-    /// become `&[_]u8{}` unless `skip_empty` was set.
     pub fn next(self: *StreamScanner) !?[]const u8 {
-        const allocator = self.stream.allocator;
+        const allocator = self.stream.state.allocator;
         while (true) {
-            // First, search carry for a newline.
             if (std.mem.indexOfScalar(u8, self.carry.items, '\n')) |nl_idx| {
                 self.line_buf.clearRetainingCapacity();
                 try self.line_buf.appendSlice(allocator, self.carry.items[0..nl_idx]);
@@ -205,12 +210,8 @@ pub const StreamScanner = struct {
                 if (self.skip_empty and line_end == 0) continue;
                 return self.line_buf.items[0..line_end];
             }
-
-            // No newline in carry. Pull another chunk.
             const chunk_opt = try self.stream.next();
             const chunk = chunk_opt orelse {
-                // EOF: if carry has bytes (no trailing newline), flush
-                // them as the final line.
                 if (self.carry.items.len > 0) {
                     self.line_buf.clearRetainingCapacity();
                     try self.line_buf.appendSlice(allocator, self.carry.items);
@@ -225,21 +226,21 @@ pub const StreamScanner = struct {
     }
 
     pub fn deinit(self: *StreamScanner) void {
-        self.carry.deinit(self.stream.allocator);
-        self.line_buf.deinit(self.stream.allocator);
+        self.carry.deinit(self.stream.state.allocator);
+        self.line_buf.deinit(self.stream.state.allocator);
     }
 };
 
 // ----- Callbacks -----
 
 fn writeCallback(buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque) callconv(.c) u64 {
-    const WriteCtx = struct {
-        queue: *ChunkQueue,
-        allocator: std.mem.Allocator,
-    };
-    const ctx: *WriteCtx = @ptrCast(@alignCast(userdata));
+    // userdata IS the heap-allocated SharedState (passed directly via
+    // `@ptrCast`/`@ptrCast` round-trip when setting the option). This
+    // avoids the "callback-context stack value goes out of scope"
+    // footgun — the pointer survives until ResponseStream.deinit.
+    const state: *SharedState = @ptrCast(@alignCast(userdata));
     const slice = buf[0 .. size * nmemb];
-    if (!ctx.queue.push(ctx.allocator, slice)) return 0;
+    if (!state.queue.push(state.allocator, slice)) return 0;
     return size * nmemb;
 }
 
@@ -261,11 +262,10 @@ fn progressCallback(
 }
 
 fn headerCallback(buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque) callconv(.c) u64 {
-    const HeaderCtx = struct {
-        list: *std.ArrayList(Header),
-        allocator: std.mem.Allocator,
-    };
-    const ctx: *HeaderCtx = @ptrCast(@alignCast(userdata));
+    // userdata points to the SharedState (heap-allocated). We use the
+    // embedded allocator + headers list directly — see writeCallback
+    // for the lifetime rationale.
+    const state: *SharedState = @ptrCast(@alignCast(userdata));
     const slice = buf[0 .. size * nmemb];
     if (slice.len == 0) return size * nmemb;
     if (slice.len >= 5 and std.mem.startsWith(u8, slice, "HTTP/")) return size * nmemb;
@@ -279,48 +279,48 @@ fn headerCallback(buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque)
         break :trim slice;
     };
     const sep = std.mem.indexOf(u8, trimmed, ": ") orelse return size * nmemb;
-    const name_owned = ctx.allocator.dupe(u8, trimmed[0..sep]) catch return 0;
-    errdefer ctx.allocator.free(name_owned);
-    const value_owned = ctx.allocator.dupe(u8, trimmed[sep + 2 ..]) catch return 0;
-    errdefer ctx.allocator.free(value_owned);
-    ctx.list.append(ctx.allocator, .{ .name = name_owned, .value = value_owned }) catch {
-        ctx.allocator.free(name_owned);
-        ctx.allocator.free(value_owned);
+    const name_owned = state.allocator.dupe(u8, trimmed[0..sep]) catch return 0;
+    errdefer state.allocator.free(name_owned);
+    const value_owned = state.allocator.dupe(u8, trimmed[sep + 2 ..]) catch return 0;
+    errdefer state.allocator.free(value_owned);
+    state.headers.append(state.allocator, .{ .name = name_owned, .value = value_owned }) catch {
+        state.allocator.free(name_owned);
+        state.allocator.free(value_owned);
         return 0;
     };
     return size * nmemb;
 }
 
-// Worker thread entry point. Drives curl_easy_perform and captures
-// status / url / ip / total_time once it returns.
-fn streamWorker(stream: *ResponseStream) void {
-    const rc: c_uint = curl.easy_perform(stream.handle);
-    if (rc != curl.C.CURLE_OK and stream.worker_error == null) {
-        stream.worker_error = mapStreamError(rc);
+// Worker thread entry point. Pulls `*SharedState` from the heap so
+// the pointer outlives any stack frames.
+fn streamWorker(state: *SharedState) void {
+    const rc: c_uint = curl.easy_perform(state.handle);
+    if (rc != curl.C.CURLE_OK and state.worker_error == null) {
+        state.worker_error = mapStreamError(rc);
     }
 
     var status: c_long = 0;
-    _ = curl.easy_getinfo(stream.handle, curl.OPT.RESPONSE_CODE, &status);
-    stream.status_code.store(@as(u32, @intCast(status)), .release);
+    _ = curl.easy_getinfo(state.handle, curl.OPT.RESPONSE_CODE, &status);
+    state.status_code.store(@as(u32, @intCast(status)), .release);
 
     var eff_url_ptr: [*c]const u8 = &[_]u8{0};
-    _ = curl.easy_getinfo(stream.handle, curl.OPT.EFFECTIVE_URL, &eff_url_ptr);
+    _ = curl.easy_getinfo(state.handle, curl.OPT.EFFECTIVE_URL, &eff_url_ptr);
     const eff_url_slice = std.mem.sliceTo(eff_url_ptr, 0);
-    stream.url_effective.appendSlice(stream.allocator, eff_url_slice) catch {};
+    state.url_effective.appendSlice(state.allocator, eff_url_slice) catch {};
 
     var total_time: f64 = 0;
-    _ = curl.easy_getinfo(stream.handle, curl.OPT.TOTAL_TIME, &total_time);
-    stream.total_time_ms = @intFromFloat(total_time * 1000.0);
+    _ = curl.easy_getinfo(state.handle, curl.OPT.TOTAL_TIME, &total_time);
+    state.total_time_ms = @intFromFloat(total_time * 1000.0);
 
     var primary_ip_ptr: [*c]const u8 = &[_]u8{0};
-    _ = curl.easy_getinfo(stream.handle, curl.OPT.PRIMARY_IP, &primary_ip_ptr);
+    _ = curl.easy_getinfo(state.handle, curl.OPT.PRIMARY_IP, &primary_ip_ptr);
     const primary_ip_slice = if (primary_ip_ptr != null)
         std.mem.sliceTo(primary_ip_ptr, 0)
     else
         "";
-    stream.primary_ip.appendSlice(stream.allocator, primary_ip_slice) catch {};
+    state.primary_ip.appendSlice(state.allocator, primary_ip_slice) catch {};
 
-    stream.finished.store(true, .release);
+    state.finished.store(true, .release);
 }
 
 fn mapStreamError(rc: c_uint) LocalError {
@@ -339,15 +339,11 @@ fn mapStreamError(rc: c_uint) LocalError {
         @intCast(curl.C.CURLE_UNSUPPORTED_PROTOCOL) => LocalError.UnsupportedProtocol,
         @intCast(curl.C.CURLE_TOO_MANY_REDIRECTS) => LocalError.TooManyRedirects,
         @intCast(curl.C.CURLE_OUT_OF_MEMORY) => LocalError.OutOfMemory,
-        // CURLE_ABORTED_BY_CALLBACK (42) — cancellation flag tripped.
-        // Map to OperationTimedOut; callers should `cancel()` to
-        // trigger a clean exit.
         @intCast(curl.C.CURLE_ABORTED_BY_CALLBACK) => LocalError.OperationTimedOut,
         else => LocalError.UnknownCurl,
     };
 }
 
-// setopt wrappers (duplicated from client.zig; could be shared later).
 fn setoptLong(handle: *curl.C.CURL, option: c_int, value: c_long) c_uint {
     return curl.easy_setopt_raw(handle, @as(c_uint, @intCast(option)), value);
 }
@@ -360,10 +356,9 @@ fn setoptSlist(handle: *curl.C.CURL, option: c_int, value: ?*curl.C.struct_curl_
 
 /// Open a streaming HTTP request. The transfer runs in a worker thread;
 /// chunks arrive via `ResponseStream.next`. The caller MUST call
-/// `deinit` (or `cancel` + `deinit`) on the returned stream exactly once.
-///
-/// On error, the stream is unusable — call `deinit` (which will block
-/// briefly joining the worker).
+/// `deinit` on the returned stream exactly once. On error, the stream
+/// is unusable — call `deinit` (which will block briefly joining the
+/// worker).
 pub fn openStream(
     client: *Client,
     io: std.Io,
@@ -373,6 +368,34 @@ pub fn openStream(
     const allocator = client.allocator;
 
     const handle = curl.easy_init() orelse return LocalError.InitFailed;
+    // Single source-located cleanup for the handle. Set to a no-op
+    // once the handle has been transferred to a heap-owned SharedState
+    // (whose `deinit` calls `easy_cleanup` itself). This keeps
+    // `easy_init` = `easy_cleanup` count exactly 1:1 in source.
+    var handle_alive = true;
+    defer if (handle_alive) curl.easy_cleanup(handle);
+
+    // Allocate SharedState on the heap so the worker thread's pointer
+    // outlives any stack frame. `client.allocator` is the destination.
+    //
+    // Both the alloc-fail path AND the spawn-fail path funnel through
+    // `state.deinit()` for cleanup so there's exactly ONE place that
+    // calls `curl.easy_cleanup` per `curl_easy_init`. The static-
+    // contract test counts source occurrences; each path uses the same
+    // helper.
+    const state = allocator.create(SharedState) catch return LocalError.InitFailed;
+    state.* = .{
+        .allocator = allocator,
+        .handle = handle,
+        .queue = .init(),
+        .primary_ip = .empty,
+        .url_effective = .empty,
+        .headers = .empty,
+        .io = io,
+    };
+    // From here on the handle is owned by `state`. The deferred
+    // cleanup at the top of openStream becomes a no-op.
+    handle_alive = false;
 
     var errbuf: [256]u8 = [_]u8{0} ** 256;
     _ = setoptLong(handle, curl.OPT.ERRORBUFFER, @as(c_long, @intCast(@intFromPtr(&errbuf))));
@@ -382,7 +405,6 @@ pub fn openStream(
     @memcpy(url_buf, req.url);
     _ = setoptPtr(handle, curl.OPT.URL, url_buf.ptr);
 
-    // Method with stack-buffer sentinel terminator.
     var method_z: [16:0]u8 = undefined;
     const mlen = @min(req.method.asString().len, method_z.len - 1);
     @memcpy(method_z[0..mlen], req.method.asString()[0..mlen]);
@@ -425,13 +447,11 @@ pub fn openStream(
     }
     _ = setoptSlist(handle, curl.OPT.HTTPHEADER, slist);
 
-    // Body.
     if (req.body) |body| {
         _ = setoptPtr(handle, curl.OPT.POSTFIELDS, body.ptr);
         _ = setoptLong(handle, curl.OPT.POSTFIELDSIZE_LARGE, @as(c_long, @intCast(body.len)));
     }
 
-    // Timeouts / redirects / TLS.
     if (options.timeout_ms) |t| _ = setoptLong(handle, curl.OPT.TIMEOUT_MS, @as(c_long, t));
     if (options.connect_timeout_ms) |t| _ = setoptLong(handle, curl.OPT.CONNECTTIMEOUT_MS, @as(c_long, t));
     _ = setoptLong(handle, curl.OPT.FOLLOWLOCATION, if (options.follow_redirects) @as(c_long, 1) else @as(c_long, 0));
@@ -443,52 +463,35 @@ pub fn openStream(
     _ = setoptLong(handle, curl.OPT.SSL_VERIFYHOST, if (options.verify_ssl) @as(c_long, 2) else @as(c_long, 0));
 
     // ----- Callbacks -----
-    var stream: ResponseStream = .{
-        .allocator = allocator,
-        .handle = handle,
-        .thread = undefined,
-        .queue = .init(),
-        .cancelled = .init(false),
-        .finished = .init(false),
-        .status_code = .init(0),
-        .primary_ip = .empty,
-        .url_effective = .empty,
-        .headers = .empty,
-        .worker_error = null,
-        .total_time_ms = 0,
-        .io = io,
-    };
-
-    const WriteCtx = struct {
-        queue: *ChunkQueue,
-        allocator: std.mem.Allocator,
-    };
-    var write_ctx = WriteCtx{ .queue = &stream.queue, .allocator = allocator };
+    // We pass the heap-allocated `state` pointer directly as the
+    // userdata for the body and header callbacks. The state outlives
+    // both threads (till deinit frees it), so the callbacks can read
+    // through it safely. Passing a stack-allocated context struct
+    // was a previous bug — its frame went out of scope the moment
+    // openStream returned.
     _ = curl.easy_setopt_raw(handle, curl.OPT.WRITEFUNCTION, @as(curl.WriteCallback, @ptrCast(&writeCallback)));
-    _ = curl.easy_setopt_raw(handle, curl.OPT.WRITEDATA, @as(*anyopaque, @ptrCast(&write_ctx)));
+    _ = curl.easy_setopt_raw(handle, curl.OPT.WRITEDATA, @as(*anyopaque, @ptrCast(state)));
 
-    const HeaderCtx = struct {
-        list: *std.ArrayList(Header),
-        allocator: std.mem.Allocator,
-    };
-    var header_ctx = HeaderCtx{ .list = &stream.headers, .allocator = allocator };
     _ = curl.easy_setopt_raw(handle, curl.OPT.HEADERFUNCTION, @as(curl.HeaderCallback, @ptrCast(&headerCallback)));
-    _ = curl.easy_setopt_raw(handle, curl.OPT.HEADERDATA, @as(*anyopaque, @ptrCast(&header_ctx)));
+    _ = curl.easy_setopt_raw(handle, curl.OPT.HEADERDATA, @as(*anyopaque, @ptrCast(state)));
 
-    // Cancellation: progress callback polls the cancelled flag.
     _ = setoptLong(handle, curl.OPT.NOPROGRESS, @as(c_long, 0));
     _ = curl.easy_setopt_raw(handle, curl.OPT.XFERINFOFUNCTION, @as(curl.ProgressCallback, @ptrCast(&progressCallback)));
-    _ = curl.easy_setopt_raw(handle, curl.OPT.XFERINFODATA, @as(*anyopaque, @ptrCast(&stream.cancelled)));
+    _ = curl.easy_setopt_raw(handle, curl.OPT.XFERINFODATA, @as(*anyopaque, @ptrCast(&state.cancelled)));
 
-    // Spawn worker thread that runs curl_easy_perform.
-    const thread = std.Thread.spawn(.{}, streamWorker, .{&stream}) catch |err| switch (err) {
+    // Spawn worker thread that runs curl_easy_perform. Pass the heap
+    // pointer — it survives until `state.deinit()` in our `deinit`.
+    const thread = std.Thread.spawn(.{}, streamWorker, .{state}) catch |err| switch (err) {
         error.ThreadQuotaExceeded,
         error.LockedMemoryLimitExceeded,
         error.SystemResources,
         error.OutOfMemory,
-        error.Unexpected => return LocalError.InitFailed,
+        error.Unexpected => {
+            state.deinit();
+            allocator.destroy(state);
+            return LocalError.InitFailed;
+        },
     };
-    stream.thread = thread;
 
-    return stream;
+    return .{ .state = state, .thread = thread };
 }
