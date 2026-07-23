@@ -36,11 +36,22 @@ pub const delete = methods_mod.delete;
 //
 // Mirrors the convention in `src/modules/http/test_runner.zig` but
 // colocates the imports with the module's public surface so they
-// always get discovered. Each `*_test.zig` file is a named compile unit
-// that also compiles in the production `install` build (cheap, ~1ms).
+// always get discovered.
+//
+// All `*_test.zig` files in this directory are imported unconditionally:
+// even the network-touching integration / edge / stress / memory / FD
+// tests self-skip via `error.SkipZigTest` when the environment doesn't
+// support them, so it's safe to register them all here. `-Dintegration`
+// and `-Dstress` build options exist only for the user's documentation
+// ("I want to skip the integration suite"); they don't gate the imports.
 
 test {
     _ = @import("client_test.zig");
     _ = @import("options_test.zig");
     _ = @import("static_contract_test.zig");
+    _ = @import("memory_leak_test.zig");
+    _ = @import("fd_leak_test.zig");
+    _ = @import("edge_case_test.zig");
+    _ = @import("integration_test.zig");
+    _ = @import("stress_test.zig");
 }

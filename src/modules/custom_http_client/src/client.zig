@@ -132,11 +132,18 @@ pub const Client = struct {
         }
 
         for (req.headers) |h| {
-            var line: [2048]u8 = undefined;
-            const n = std.fmt.bufPrint(&line, "{s}: {s}", .{ h.name, h.value }) catch return Error.OutOfMemory;
-            if (n.len >= line.len) return Error.OutOfMemory;
-            line[n.len] = 0;
-            slist = curl.slist_append(slist, &line);
+            // Allocate a sentinel-terminated "Name: Value\0" string
+            // sized exactly to the header. We allocate (not stack-buffer)
+            // because header values can be unbounded (HTTP allows KiB+
+            // values) and `slist_append` requires NUL-terminated text.
+            const total_len = h.name.len + 2 + h.value.len;
+            const line = try self.allocator.allocSentinel(u8, total_len, 0);
+            defer self.allocator.free(line);
+            @memcpy(line[0..h.name.len], h.name);
+            line[h.name.len] = ':';
+            line[h.name.len + 1] = ' ';
+            @memcpy(line[h.name.len + 2 ..][0..h.value.len], h.value);
+            slist = curl.slist_append(slist, line);
         }
         _ = setoptSlist(handle, curl.OPT.HTTPHEADER, slist);
 

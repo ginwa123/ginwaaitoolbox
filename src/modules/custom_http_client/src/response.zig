@@ -20,7 +20,10 @@ pub const Response = struct {
 
     /// Free all heap-allocated fields. Safe to call ONCE per Response.
     /// After calling, the Response is left in zero-state.
-    pub fn deinit(self: *Response, allocator: std.mem.Allocator) void {
+    ///
+    /// Accepts `*const` so callers can use `const resp = ...; defer resp.deinit(...)`
+    /// without needing `@constCast`.
+    pub fn deinit(self: *const Response, allocator: std.mem.Allocator) void {
         allocator.free(self.body);
         for (self.headers) |h| {
             allocator.free(h.name);
@@ -29,6 +32,5 @@ pub const Response = struct {
         allocator.free(self.headers);
         allocator.free(self.url_effective);
         allocator.free(self.primary_ip);
-        self.* = undefined;
     }
 };
