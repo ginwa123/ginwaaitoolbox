@@ -246,7 +246,10 @@ test "stream: 204 response has zero body chunks" {
     defer stream.deinit();
 
     var chunks: usize = 0;
-    while (try stream.next()) |_| chunks += 1;
+    while (try stream.next()) |chunk| {
+        defer allocator.free(chunk);
+        chunks += 1;
+    }
     try testing.expectEqual(@as(usize, 0), chunks);
 }
 
@@ -265,8 +268,12 @@ test "stream: status_code is 200 once chunks arrive" {
     var stream = try client.openStream(io, .{ .method = .GET, .url = url }, .{});
     defer stream.deinit();
 
-    // Drain at least one chunk.
-    _ = stream.next() catch {};
+    // Drain the stream until the worker signals completion. The
+    // status_code field is populated by the worker AFTER easy_perform
+    // returns, so reading it before drain finishes would race.
+    // Each chunk returned by next() is heap-owned — free it.
+    while (try stream.next()) |chunk| allocator.free(chunk);
+
     const code = stream.statusCode();
     try testing.expectEqual(@as(u16, 200), code);
 }
@@ -319,10 +326,12 @@ test "stream: cancel() before chunks arrive stops transfer cleanly + no FD growt
     const fd_before = countFdsViaShell() catch 0;
     stream.cancel();
     // Drain whatever arrived so deinit doesn't block forever.
+    // Chunks returned by next() are heap-owned and must be freed.
     {
         drain: while (true) {
             const result = stream.next() catch break :drain;
-            if (result == null) break :drain;
+            const chunk = result orelse break :drain;
+            allocator.free(chunk);
         }
     }
     stream.deinit();
@@ -374,6 +383,7 @@ test "stream: 4 concurrent openStream calls all complete cleanly" {
                 drain: while (true) {
                     const r = stream.next() catch break :drain;
                     const chunk = r orelse break :drain;
+                    defer allocator.free(chunk);
                     total += chunk.len;
                 }
                 if (total > 0) {

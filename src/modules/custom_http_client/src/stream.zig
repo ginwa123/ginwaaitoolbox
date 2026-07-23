@@ -157,6 +157,10 @@ const SharedState = struct {
 
 /// Caller-facing handle. Owns a `*SharedState` (heap-allocated).
 /// `deinit` joins the worker thread and frees the shared state.
+///
+/// Each chunk returned by `next()` is a heap-owned `[]u8` slice that
+/// the caller MUST eventually `state.allocator.free(chunk)` after
+/// use. `deinit` does NOT clean up chunks the caller hasn't consumed.
 pub const ResponseStream = struct {
     state: *SharedState,
     thread: std.Thread,
@@ -273,6 +277,11 @@ pub const StreamScanner = struct {
                 }
                 return null;
             };
+            // appendSlice copies chunk bytes into carry; the chunk
+            // itself is a heap-owned slice (allocated by the worker's
+            // push() via dupe) and is no longer needed once carry has
+            // absorbed the bytes. Free it now.
+            defer allocator.free(chunk);
             try self.carry.appendSlice(allocator, chunk);
         }
     }
