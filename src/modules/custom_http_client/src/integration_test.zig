@@ -64,10 +64,10 @@ const TestServer = struct {
         try self.server.router.put("/put", echoPutHandler);
         try self.server.router.patch("/patch", echoPatchHandler);
         try self.server.router.delete("/delete", deleteHandler);
-        // /status/N → status code N (1..599). Parse N from the URL prefix.
-        try self.server.router.get("/status", statusHandler);
-        // /redirect/N → 302 to /redirect/(N-1); N=1 → /get (terminal).
-        try self.server.router.get("/redirect", redirectHandler);
+        // The GinwaServer router uses `:param` placeholders for path
+        // segments. /status/:n matches /status/404 etc.
+        try self.server.router.get("/status/:n", statusHandler);
+        try self.server.router.get("/redirect/:n", redirectHandler);
     }
 
     pub fn start(self: *TestServer) !void {
@@ -121,25 +121,16 @@ fn deleteHandler(_: HttpContext, _: HttpRequest, res: HttpResponse) !HttpRespons
 }
 
 fn statusHandler(ctx: HttpContext, req: HttpRequest, _: HttpResponse) !HttpResponse {
-    // Extract N from "/status/N" — the path lives on req.path.
-    const path = req.path;
-    const prefix = "/status/";
-    if (path.len <= prefix.len or !std.mem.startsWith(u8, path, prefix)) {
-        return HttpResponse.init(400, "Bad Request", ctx.allocator);
-    }
-    const n_str = path[prefix.len..];
+    // n is bound by the /status/:n route pattern. Default to 400 if
+    // the parameter is missing or unparseable.
+    const n_str = req.params.get("n") orelse "400";
     const code = std.fmt.parseInt(u16, n_str, 10) catch 400;
     return HttpResponse.init(code, "Status", ctx.allocator);
 }
 
 fn redirectHandler(ctx: HttpContext, req: HttpRequest, _: HttpResponse) !HttpResponse {
     // /redirect/N → 302 to /redirect/(N-1); /redirect/1 → 302 to /get.
-    const path = req.path;
-    const prefix = "/redirect/";
-    if (path.len <= prefix.len or !std.mem.startsWith(u8, path, prefix)) {
-        return HttpResponse.init(400, "Bad Request", ctx.allocator);
-    }
-    const n_str = path[prefix.len..];
+    const n_str = req.params.get("n") orelse "1";
     const n = std.fmt.parseInt(usize, n_str, 10) catch 1;
     const owned_location: []u8 = if (n <= 1)
         try ctx.allocator.dupe(u8, "/get")
@@ -331,7 +322,7 @@ test "integration: GET /redirect/3 with follow_redirects=true ends at /get" {
 
     var client = custom_http_client.Client.init(allocator);
     defer client.deinit();
-    var resp = client.perform(.{ .method = .GET, .url = url }, .{ .follow_redirects = true }) catch |err| switch (err) {
+    var resp = client.perform(.{ .method = .GET, .url = url }, .{ .follow_redirects = true, .max_redirects = 10 }) catch |err| switch (err) {
         error.ConnectionRefused,
         error.ConnectionTimeout,
         error.OperationTimedOut,
