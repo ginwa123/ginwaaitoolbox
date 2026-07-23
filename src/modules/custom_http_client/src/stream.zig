@@ -105,10 +105,28 @@ const SharedState = struct {
     /// be a classic use-after-free the moment the worker fired an
     /// error path.
     errbuf: [CURL_ERRORBUFFER_LEN]u8 = [_]u8{0} ** CURL_ERRORBUFFER_LEN,
+    /// Backing storage for `CURLOPT_URL`. Same lifetime reasoning
+    /// as errbuf — libcurl stores the pointer verbatim and reads it
+    /// from inside `easy_perform` on the worker thread.
+    url_buf: [:0]u8,
+    /// Backing storage for `CURLOPT_CUSTOMREQUEST`. Same reasoning.
+    method_buf: [:0]u8,
+    /// Backing storage for the optional User-Agent header line.
+    /// Used in the curl slist for HTTPHEADER.
+    ua_buf: ?[:0]u8,
+    /// Backing for the HTTPHEADER slist (which libcurl reads verbatim
+    /// from worker). Each line is [:0]u8; the slist is a linked
+    /// list of pointers that we own.
+    header_lines: std.ArrayList([:0]u8),
+    /// The compiled slist passed to libcurl. libcurl does NOT copy
+    /// this — it reads from the linked list whenever it serializes
+    /// the request. We must keep it alive until easy_cleanup runs.
+    header_slist: ?*curl.C.struct_curl_slist,
 
     fn deinit(self: *SharedState) void {
         self.cancel();
         curl.easy_cleanup(self.handle);
+        if (self.header_slist) |s| curl.slist_free_all(s);
         for (self.headers.items) |h| {
             self.allocator.free(h.name);
             self.allocator.free(h.value);
@@ -116,6 +134,13 @@ const SharedState = struct {
         self.headers.deinit(self.allocator);
         self.url_effective.deinit(self.allocator);
         self.primary_ip.deinit(self.allocator);
+        for (self.header_lines.items) |line| {
+            self.allocator.free(line);
+        }
+        self.header_lines.deinit(self.allocator);
+        self.allocator.free(self.url_buf);
+        self.allocator.free(self.method_buf);
+        if (self.ua_buf) |ua| self.allocator.free(ua);
         while (self.queue.popOne()) |chunk| {
             self.allocator.free(chunk);
         }
@@ -241,23 +266,6 @@ fn writeCallback(buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque) 
     return size * nmemb;
 }
 
-fn progressCallback(
-    handle: *curl.C.CURL,
-    dltotal: c_longlong,
-    dlnow: c_longlong,
-    ultotal: c_longlong,
-    ulnow: c_longlong,
-    userdata: *anyopaque,
-) callconv(.c) c_int {
-    _ = handle;
-    _ = dltotal;
-    _ = dlnow;
-    _ = ultotal;
-    _ = ulnow;
-    const cancelled: *std.atomic.Value(bool) = @ptrCast(@alignCast(userdata));
-    return if (cancelled.load(.acquire)) 1 else 0;
-}
-
 fn headerCallback(buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque) callconv(.c) u64 {
     const state: *SharedState = @ptrCast(@alignCast(userdata));
     const slice = buf[0 .. size * nmemb];
@@ -358,68 +366,115 @@ pub fn openStream(
     var handle_alive = true;
     defer if (handle_alive) curl.easy_cleanup(handle);
 
-    const state = allocator.create(SharedState) catch return LocalError.InitFailed;
-    state.* = .{
-        .allocator = allocator,
-        .handle = handle,
-        .queue = .init(allocator, io),
-        .primary_ip = .empty,
-        .url_effective = .empty,
-        .headers = .empty,
-        .io = io,
+    // Heap-allocate all the buffers libcurl will read from inside the
+    // worker thread (after this function returns). libcurl stores the
+    // raw pointer verbatim (no copy) for CURLOPT_URL, CUSTOMREQUEST,
+    // HTTPHEADER, and ERRORBUFFER — every one of these MUST outlive
+    // openStream. Putting them on the stack or in early-freed heap
+    // allocations produces use-after-free in the worker.
+    //
+    // Zig 0.16 has no errdefer-cancel, so we use a labeled block to
+    // bound the "we own these, clean up on any error" scope. Once
+    // SharedState takes ownership, control flow breaks out of the
+    // block; the errdefers inside it never fire on the success path.
+    const state = state: {
+        const url_buf = try allocator.allocSentinel(u8, req.url.len, 0);
+        errdefer allocator.free(url_buf);
+        @memcpy(url_buf, req.url);
+
+        const method_str = req.method.asString();
+        const method_buf = try allocator.allocSentinel(u8, method_str.len, 0);
+        errdefer allocator.free(method_buf);
+        @memcpy(method_buf, method_str);
+
+        // User-Agent — owned only if we end up sending one.
+        var ua_to_send: []const u8 = "";
+        if (options.user_agent.len > 0) {
+            ua_to_send = options.user_agent;
+        } else {
+            var has_in_headers = false;
+            for (req.headers) |h| {
+                if (std.ascii.eqlIgnoreCase(h.name, "user-agent")) {
+                    has_in_headers = true;
+                    break;
+                }
+            }
+            if (!has_in_headers) ua_to_send = "custom_http_client/0.1.0";
+        }
+        var ua_buf_owned: ?[:0]u8 = null;
+        if (ua_to_send.len > 0) {
+            const ua = try allocator.allocSentinel(u8, ua_to_send.len, 0);
+            errdefer allocator.free(ua);
+            @memcpy(ua, ua_to_send);
+            ua_buf_owned = ua;
+        }
+
+        // Heap-owned copies of every request header line. curl_slist_append
+        // does NOT copy — it just links the pointer — so the lines must
+        // be heap-owned and survive past openStream.
+        var header_lines: std.ArrayList([:0]u8) = .empty;
+        errdefer {
+            for (header_lines.items) |line| allocator.free(line);
+            header_lines.deinit(allocator);
+        }
+        for (req.headers) |h| {
+            const total_len = h.name.len + 2 + h.value.len;
+            const line = try allocator.allocSentinel(u8, total_len, 0);
+            errdefer allocator.free(line);
+            @memcpy(line[0..h.name.len], h.name);
+            line[h.name.len] = ':';
+            line[h.name.len + 1] = ' ';
+            @memcpy(line[h.name.len + 2 ..][0..h.value.len], h.value);
+            try header_lines.append(allocator, line);
+        }
+
+        // Build the slist from heap-owned lines. The slist's lifetime
+        // is tied to the handle — libcurl reads its pointer chain
+        // from the worker thread, and curl_easy_cleanup does NOT
+        // free slists, so we own it.
+        var slist: ?*curl.C.struct_curl_slist = null;
+        errdefer if (slist) |s| curl.slist_free_all(s);
+        for (header_lines.items) |line| {
+            slist = curl.slist_append(slist, line);
+        }
+
+        // Add User-Agent as the first slist entry if we have one.
+        if (ua_buf_owned) |ua| {
+            slist = curl.slist_append(slist, ua);
+        }
+
+        const st = allocator.create(SharedState) catch return LocalError.InitFailed;
+        errdefer allocator.destroy(st);
+
+        // Transfer ownership: url_buf, method_buf, ua_buf_owned,
+        // header_lines, slist all move into SharedState. The labeled
+        // block exits via `break :state st` so the errdefers above
+        // do NOT fire on the success path.
+        st.* = .{
+            .allocator = allocator,
+            .handle = handle,
+            .queue = .init(allocator, io),
+            .primary_ip = .empty,
+            .url_effective = .empty,
+            .headers = .empty,
+            .io = io,
+            .url_buf = url_buf,
+            .method_buf = method_buf,
+            .ua_buf = ua_buf_owned,
+            .header_lines = header_lines,
+            .header_slist = slist,
+        };
+        break :state st;
     };
     handle_alive = false;
 
-    // ERRORBUFFER backing is now state.errbuf (heap, lifetime matches the
-    // handle). libcurl holds this raw pointer and writes into it from the
-    // worker thread, possibly AFTER this function returns — a stack-local
-    // would be a use-after-free the moment an error fires.
+    // ERRORBUFFER backing is state.errbuf (heap, lifetime matches the
+    // handle). libcurl holds this raw pointer and writes into it from
+    // the worker thread, possibly AFTER this function returns.
     _ = setoptLong(handle, curl.OPT.ERRORBUFFER, @as(c_long, @intCast(@intFromPtr(&state.errbuf))));
-
-    const url_buf = try allocator.allocSentinel(u8, req.url.len, 0);
-    @memcpy(url_buf, req.url);
-    _ = setoptPtr(handle, curl.OPT.URL, url_buf.ptr);
-
-    var method_z: [16:0]u8 = undefined;
-    const mlen = @min(req.method.asString().len, method_z.len - 1);
-    @memcpy(method_z[0..mlen], req.method.asString()[0..mlen]);
-    method_z[mlen] = 0;
-    _ = setoptPtr(handle, curl.OPT.CUSTOMREQUEST, method_z[0..mlen :0].ptr);
-
-    var slist: ?*curl.C.struct_curl_slist = null;
-    defer if (slist) |s| curl.slist_free_all(s);
-
-    var ua_buf: [256]u8 = undefined;
-    var ua_to_send: []const u8 = "";
-    if (options.user_agent.len > 0) {
-        ua_to_send = options.user_agent;
-    } else {
-        var has_in_headers = false;
-        for (req.headers) |h| {
-            if (std.ascii.eqlIgnoreCase(h.name, "user-agent")) {
-                has_in_headers = true;
-                break;
-            }
-        }
-        if (!has_in_headers) ua_to_send = "custom_http_client/0.1.0";
-    }
-    if (ua_to_send.len > 0 and ua_to_send.len < ua_buf.len) {
-        @memcpy(ua_buf[0..ua_to_send.len], ua_to_send);
-        ua_buf[ua_to_send.len] = 0;
-        slist = curl.slist_append(slist, &ua_buf);
-    }
-
-    for (req.headers) |h| {
-        const total_len = h.name.len + 2 + h.value.len;
-        const line = try allocator.allocSentinel(u8, total_len, 0);
-        defer allocator.free(line);
-        @memcpy(line[0..h.name.len], h.name);
-        line[h.name.len] = ':';
-        line[h.name.len + 1] = ' ';
-        @memcpy(line[h.name.len + 2 ..][0..h.value.len], h.value);
-        slist = curl.slist_append(slist, line);
-    }
-    _ = setoptSlist(handle, curl.OPT.HTTPHEADER, slist);
+    _ = setoptPtr(handle, curl.OPT.URL, state.url_buf.ptr);
+    _ = setoptPtr(handle, curl.OPT.CUSTOMREQUEST, state.method_buf.ptr);
+    _ = setoptSlist(handle, curl.OPT.HTTPHEADER, state.header_slist);
 
     if (req.body) |body| {
         // COPYPOSTFIELDS makes libcurl duplicate the body internally so we
@@ -447,9 +502,21 @@ pub fn openStream(
     _ = curl.easy_setopt_raw(handle, curl.OPT.HEADERFUNCTION, @as(curl.HeaderCallback, @ptrCast(&headerCallback)));
     _ = curl.easy_setopt_raw(handle, curl.OPT.HEADERDATA, @as(*anyopaque, @ptrCast(state)));
 
-    _ = setoptLong(handle, curl.OPT.NOPROGRESS, @as(c_long, 0));
-    _ = curl.easy_setopt_raw(handle, curl.OPT.XFERINFOFUNCTION, @as(curl.ProgressCallback, @ptrCast(&progressCallback)));
-    _ = curl.easy_setopt_raw(handle, curl.OPT.XFERINFODATA, @as(*anyopaque, @ptrCast(&state.cancelled)));
+    // Progress callback DISABLED (NOPROGRESS=1). The previous wiring
+    // (XFERINFOFUNCTION reading &state.cancelled via userdata pointer)
+    // caused intermittent segfaults at atomic-load addresses inside
+    // libcurl — the XFERINFO callback fires from inside easy_perform
+    // on the worker thread, and the pointer math through userdata
+    // + @ptrCast landed on freed memory in some teardown paths.
+    //
+    // Cancellation now flows through `state.cancelled` being checked
+    // inside writeCallback/headerCallback (which already touch
+    // state.* and are guarded by the same lifetime), plus a hard
+    // timeout via CURLOPT_TIMEOUT_MS / CURLOPT_CONNECTTIMEOUT_MS
+    // (already set above from Options). For cooperative abort we
+    // rely on the worker's poll loop reading `state.cancelled`
+    // between chunk arrivals and bailing out cleanly.
+    _ = setoptLong(handle, curl.OPT.NOPROGRESS, @as(c_long, 1));
 
     const thread = std.Thread.spawn(.{}, streamWorker, .{state}) catch |err| switch (err) {
         error.ThreadQuotaExceeded,
