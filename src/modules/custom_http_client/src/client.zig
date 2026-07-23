@@ -68,6 +68,20 @@ pub const Client = struct {
         // existing HttpClient.zig posture.
     }
 
+    /// Open a streaming HTTP request. The transfer runs in a worker
+    /// thread (spawned by the stream module); chunks arrive via
+    /// `ResponseStream.next`. The caller MUST call `deinit` on the
+    /// returned stream exactly once. Implemented in `stream.zig`
+    /// to keep this file focused on the buffered path.
+    pub fn openStream(
+        self: *Client,
+        io: std.Io,
+        req: @import("request.zig").Request,
+        options: @import("options.zig").Options,
+    ) Error!@import("stream.zig").ResponseStream {
+        return @import("stream.zig").openStream(self, io, req, options);
+    }
+
     /// Make a HTTP call. Always buffers the entire response.
     /// Caller owns the returned `Response` and MUST call `.deinit()`.
     pub fn perform(self: *Client, req: Request, options: Options) Error!Response {

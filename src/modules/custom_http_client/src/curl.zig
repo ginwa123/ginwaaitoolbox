@@ -56,6 +56,9 @@ pub const OPT = struct {
     pub const SSL_VERIFYPEER: c_int = @intCast(C.CURLOPT_SSL_VERIFYPEER);
     pub const SSL_VERIFYHOST: c_int = @intCast(C.CURLOPT_SSL_VERIFYHOST);
     pub const NOSIGNAL: c_int = @intCast(C.CURLOPT_NOSIGNAL);
+    pub const NOPROGRESS: c_int = @intCast(C.CURLOPT_NOPROGRESS);
+    pub const XFERINFOFUNCTION: c_int = @intCast(C.CURLOPT_XFERINFOFUNCTION);
+    pub const XFERINFODATA: c_int = @intCast(C.CURLOPT_XFERINFODATA);
     pub const ERRORBUFFER: c_int = @intCast(C.CURLOPT_ERRORBUFFER);
     pub const RESPONSE_CODE: c_int = @intCast(C.CURLINFO_RESPONSE_CODE);
     pub const EFFECTIVE_URL: c_int = @intCast(C.CURLINFO_EFFECTIVE_URL);
@@ -68,3 +71,4 @@ pub const OPT = struct {
 /// to be at file top-level (per zig-language-quirks rule #5).
 pub const WriteCallback = *const fn (buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque) callconv(.c) u64;
 pub const HeaderCallback = *const fn (buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque) callconv(.c) u64;
+pub const ProgressCallback = *const fn (handle: *C.CURL, dltotal: c_longlong, dlnow: c_longlong, ultotal: c_longlong, ulnow: c_longlong, userdata: *anyopaque) callconv(.c) c_int;
