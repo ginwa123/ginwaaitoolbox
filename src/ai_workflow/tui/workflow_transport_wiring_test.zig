@@ -43,9 +43,10 @@ test "workflow.zig: callDynamicAgentNew branches on custom_http to Agent2" {
     const source = try readSource(testing.allocator, WORKFLOW_PATH);
     defer testing.allocator.free(source);
 
-    // The custom_http branch must instantiate Agent2, not Agent.
-    try testing.expect(std.mem.indexOf(u8, source, "agent.Agent2.init(") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "agent.Agent2.AgentCall{") != null);
+    // The custom_http branch must instantiate Agent2 (via the `agent2`
+    // alias declared near the top of the file), not Agent.
+    try testing.expect(std.mem.indexOf(u8, source, "agent2.Agent2.init(") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "agent2.AgentCall{") != null);
     try testing.expect(std.mem.indexOf(u8, source, "dynamic_agent2.callStreaming(") != null);
 
     // The custom_http branch must be guarded by an eql check on the

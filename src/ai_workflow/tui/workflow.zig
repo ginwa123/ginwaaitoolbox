@@ -15,6 +15,7 @@ const sqlite = nalarcore.sqlite;
 const config_mod = nalarcore.config;
 const logger_mod = nalarcore.loggermod;
 const agent = nalarcore.agent;
+const agent2 = nalarcore.agent2;
 const prompt = nalarcore.agent.prompt;
 const helpers = nalarcore.helpers;
 
@@ -1000,7 +1001,7 @@ fn callDynamicAgentNew(
         // Libcurl-backed Agent2 (custom_http_client). Same field names,
         // same callStreaming signature as Agent.zig — only the transport
         // differs.
-        var dynamic_agent2 = agent.Agent2.init(allocator, io);
+        var dynamic_agent2 = agent2.Agent2.init(allocator, io);
         // Same FD-leak fix as Agent.zig (PR 2026-07-14): Agent2.deinit()
         // closes the libcurl handle (no connection pool, but be safe).
         defer dynamic_agent2.deinit();
@@ -1008,7 +1009,12 @@ fn callDynamicAgentNew(
         dynamic_agent2.model = model;
         dynamic_agent2.baseUrl = base_url;
         dynamic_agent2.UrlStyle = url_style;
-        const dynamic_agent_call_params = agent.Agent2.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
+        // `messages_list.items` is `[]agent.AgentMessage`; `agent2.AgentCall.messages`
+        // wants `[]const agent2.AgentMessage`. The two `AgentMessage` types
+        // are byte-identical (file-level copy of the same struct), so a
+        // @ptrCast of the slice header is safe — no element copy needed.
+        const messages_for_agent2: []const agent2.AgentMessage = @ptrCast(messages_list.items);
+        const dynamic_agent_call_params = agent2.AgentCall{ .tools = tools, .messages = messages_for_agent2, .temperature = agent_temperature, .max_tokens = current_max_tokens };
         dynamic_agent2.thinkingEnabled = isThinking;
         dynamic_agent2.httpOptions.read_timeout_ms = 300_000; // 10 minutes
 
@@ -1017,8 +1023,39 @@ fn callDynamicAgentNew(
             .session_id = session_id,
             .chunk_index = 0,
         };
-        const res_dynamic_agent = try dynamic_agent2.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback);
-        return res_dynamic_agent;
+        // `stream_callback` is typed as agent.StreamCallback; agent2's
+        // callStreaming wants agent2.StreamCallback. The two function-pointer
+        // types differ only in the StreamChunk type alias, which is a
+        // byte-identical struct in both files. @ptrCast of the function
+        // pointer is safe.
+        const callback_for_agent2: agent2.StreamCallback = @ptrCast(&stream_callback);
+        const res_dynamic_agent = try dynamic_agent2.callStreaming(dynamic_agent_call_params, &stream_ctx, callback_for_agent2);
+        // `callDynamicAgentNew` is declared to return `agent.CallResponse`
+        // (the std_http path's type). agent2.CallResponse is a byte-
+        // identical struct in a different module — same fields, same
+        // layout — but Zig doesn't let us @bitCast structs (no
+        // guaranteed layout), so we field-by-field copy. The inner
+        // type mismatches (tool_calls slice elements, finish_reason
+        // enum) are resolved via @ptrCast / @enumFromInt — both are
+        // byte-identical types in different modules, so the cast is safe.
+        const tool_calls_for_agent: ?[]agent.ToolCall = if (res_dynamic_agent.tool_calls) |tc| @ptrCast(tc) else null;
+        const finish_reason_for_agent: ?agent.FinishReason = if (res_dynamic_agent.finish_reason) |fr|
+            @as(agent.FinishReason, @enumFromInt(@intFromEnum(fr)))
+        else
+            null;
+        const usage_for_agent: agent.Usage = .{
+            .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
+            .completion_tokens = res_dynamic_agent.usage.completion_tokens,
+            .total_tokens = res_dynamic_agent.usage.total_tokens,
+        };
+        return .{
+            .allocator = res_dynamic_agent.allocator,
+            .content = res_dynamic_agent.content,
+            .tool_calls = tool_calls_for_agent,
+            .finish_reason = finish_reason_for_agent,
+            .reasoning_content = res_dynamic_agent.reasoning_content,
+            .usage = usage_for_agent,
+        };
     }
 
     // Default: std.http.Client-backed Agent.zig.

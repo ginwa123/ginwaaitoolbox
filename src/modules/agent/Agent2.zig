@@ -1299,9 +1299,17 @@ pub const Agent2 = struct {
         var chunk_count: usize = 0;
         var stream_ended_cleanly = false;
 
-        // 9. SSE loop.
-        while (try scanner.next()) |line| {
-            if (parse_sse_line(line)) |data| {
+        // 9. SSE loop. The scanner's inferred error set is wider than
+        // CallError (it includes libcurl's LocalError variants like
+        // DnsError / TlsError / OperationTimedOut), so we use a
+        // `catch` that maps any scanner error to a CallError variant
+        // and returns — instead of `try`, which would fail to propagate
+        // errors outside CallError.
+        while (scanner.next() catch |err| {
+            self.log_fmt(.err, "[STREAM] scanner.next failed: {s}", .{@errorName(err)});
+            return error.StreamInterrupted;
+        }) |line| {
+            if (self.parse_sse_line(line)) |data| {
                 _ = line_arena.reset(.retain_capacity);
                 if (self.parse_stream_chunk(data, line_arena.allocator())) |chunk| {
                     chunk_count += 1;
