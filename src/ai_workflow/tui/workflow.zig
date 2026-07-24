@@ -192,9 +192,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     // Uses di.allocator (NOT parent_allocator) because parent_allocator
     // is per-block — the flag survives the entire function.
     const is_auto_retry_until_stop: bool = blk: {
-        var flag_rows = db.query(di.allocator,
-            "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?",
-            &.{copy_session_id}) catch break :blk false;
+        var flag_rows = db.query(di.allocator, "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{copy_session_id}) catch break :blk false;
         defer flag_rows.deinit();
         const flag_row = flag_rows.next() catch break :blk false;
         if (flag_row) |row| {
@@ -471,7 +469,13 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     \\Reason for last retry: {s} (source: {s}). The session keeps running.
                 , .{ retry_count, reason_error, reason_source }) catch "unattended soft-bail snapshot";
                 try agentic_loop_mod.insertLLMHistories(.{
-                    .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd,
+                    .allocator = allocator,
+                    .io = io,
+                    .db = db,
+                    .logger = logger,
+                    .event_bus = event_bus,
+                    .is_emit_sse = true,
+                    .cwd = copy_cwd,
                     .entity = .{
                         .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                         .session_id = copy_session_id,
@@ -497,7 +501,15 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                         .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     },
                 });
-                if (!retryDelayMs(allocator, config.retry_delay_ms, db, copy_session_id, io, logger)) {
+
+                if (!agentic_loop_mod.retryDelayMs(.{
+                    .allocator = allocator,
+                    .delay_ms = config.retry_delay_ms,
+                    .db = db,
+                    .session_id = copy_session_id,
+                    .io = io,
+                    .logger = logger,
+                })) {
                     logger.infoFmt("WORKFLOW CANCELLED during unattended soft-bail: session_id={s}", .{copy_session_id});
                     break;
                 }
@@ -612,7 +624,14 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // rate-limit window can close). 0 ms = no delay (current
             // behavior, the default). Interrupted by worker cancellation —
             // see retryDelayMs for the polling details.
-            if (!retryDelayMs(allocator, config.retry_delay_ms, db, copy_session_id, io, logger)) {
+            if (!agentic_loop_mod.retryDelayMs(.{
+                .allocator = allocator,
+                .delay_ms = config.retry_delay_ms,
+                .db = db,
+                .session_id = copy_session_id,
+                .io = io,
+                .logger = logger,
+            })) {
                 logger.infoFmt("WORKFLOW CANCELLED during retry delay: session_id={s}", .{copy_session_id});
                 break;
             }
@@ -702,7 +721,15 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 // sleep before the loop restarts so we don't hammer the
                 // upstream when it returns an unexpected finish_reason
                 // repeatedly. Interrupted by worker cancellation.
-                if (!retryDelayMs(allocator, config.retry_delay_ms, db, copy_session_id, io, logger)) {
+
+                if (!agentic_loop_mod.retryDelayMs(.{
+                    .allocator = allocator,
+                    .delay_ms = config.retry_delay_ms,
+                    .db = db,
+                    .session_id = copy_session_id,
+                    .io = io,
+                    .logger = logger,
+                })) {
                     logger.infoFmt("WORKFLOW CANCELLED during retry delay (finish_reason else): session_id={s}", .{copy_session_id});
                     break;
                 }
@@ -877,92 +904,6 @@ fn saveRetryAttemptMessage(
         .image_urls = null,
         .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
     } });
-}
-
-// POSIX `nanosleep` — declared `extern "c"` so the call doesn't go
-// through Zig 0.16's Io runtime. We deliberately avoid `std.Io.sleep`
-// because the workflow is dispatched as an `Io.Group.concurrent` task
-// from the event bus; blocking on `std.Io.sleep` inside that context
-// would deadlock the group (the workflow's worker thread is parked in
-// the Io sleep, the nested async tasks need other workers, but the
-// Io.Group can't signal completion while the workflow is parked).
-// Plain `nanosleep` parks the OS thread without involving the Io
-// runtime, so the rest of the group keeps making progress. See
-// `src/modules/agent/tools/bash.zig:4-22` for the canonical precedent.
-//
-// Field names differ between libc implementations: glibc uses
-// `tv_sec`/`tv_nsec`, Darwin and most BSDs use `sec`/`nsec`. We mirror
-// the local `PosixTimespec` shape from `helpers/mod.zig` (sec/nsec)
-// so this works on macOS too.
-const WorkflowNanoSleepTimespec = extern struct {
-    sec: c_long,
-    nsec: c_long,
-};
-// IMPORTANT: the symbol name MUST match the libc name (`nanosleep`),
-// NOT a Zig-side wrapper. In Zig 0.16 `extern "c" fn` keeps the
-// declared name verbatim — using a wrapper name like
-// `workflowNanosleep` produces a linker error "undefined symbol:
-// workflowNanosleep" because libc exports the symbol as `nanosleep`.
-// (See project memory `zig-extern-c-optional-pointer-return`.)
-extern "c" fn nanosleep(req: *const WorkflowNanoSleepTimespec, rem: ?*WorkflowNanoSleepTimespec) c_int;
-
-/// Sleep for up to `delay_ms` milliseconds, polling
-/// `agentic_loop.isWorkerCancelled` every 50 ms so a user-initiated
-/// cancel returns early. Returns `true` if the delay completed,
-/// `false` if it was interrupted by cancellation.
-///
-/// `delay_ms = 0` is a fast-path no-op (returns `true` immediately) —
-/// avoids one nanosleep call when the user has configured "no delay".
-///
-/// Chunk size: 50 ms balances two concerns:
-/// - Cancellation responsiveness: a cancel fires within 50 ms of
-///   the user clicking (imperceptible).
-/// - CPU overhead: 20 polls/sec is trivial; never spin-busy-waits.
-fn retryDelayMs(
-    allocator: std.mem.Allocator,
-    delay_ms: u32,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-    io: std.Io,
-    logger: *logger_mod.Logger,
-) bool {
-    if (delay_ms == 0) return true;
-
-    const deadline_ns: i96 = std.Io.Clock.now(.real, io).nanoseconds +
-        @as(i96, @intCast(delay_ms)) * std.time.ns_per_ms;
-
-    while (true) {
-        // Cancellation check — same shape as the loop-top check at
-        // workflow.zig:276 so the cancel UX is consistent.
-        if (agentic_loop_mod.isWorkerCancelled(agentic_loop_mod.IsWorkerCancelledInput{
-            .allocator = allocator,
-            .db = db,
-            .session_id = session_id,
-        })) {
-            const now_ns = std.Io.Clock.now(.real, io).nanoseconds;
-            const remaining_ns: i96 = @max(deadline_ns - now_ns, 0);
-            const remaining_ms: u32 = @intCast(@divFloor(remaining_ns, std.time.ns_per_ms));
-            logger.infoFmt(
-                "Retry delay interrupted by worker cancellation: session_id={s} remaining={d}ms",
-                .{ session_id, remaining_ms },
-            );
-            return false;
-        }
-        if (std.Io.Clock.now(.real, io).nanoseconds >= deadline_ns) return true;
-
-        const now_ns = std.Io.Clock.now(.real, io).nanoseconds;
-        const remaining_ms: u32 = @intCast(@divFloor(
-            deadline_ns - now_ns,
-            std.time.ns_per_ms,
-        ));
-        const chunk_ms: u32 = if (remaining_ms > 50) 50 else remaining_ms;
-
-        const ts = WorkflowNanoSleepTimespec{
-            .sec = 0,
-            .nsec = chunk_ms * std.time.ns_per_ms,
-        };
-        _ = nanosleep(&ts, null);
-    }
 }
 
 fn callDynamicAgentNew(
