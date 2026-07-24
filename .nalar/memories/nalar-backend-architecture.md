@@ -245,13 +245,27 @@ All three are variants of the same bug class: **a struct that owns resources (so
 
 3 static-contract regression tests in `src/modules/http/http_client_fd_leak_test.zig` lock in the fix.
 
-### Source C — `bash.zig` subprocess pipe leak in timeout/error paths
+### Source C — `bash.zig` foreground path leaks 2 FDs per SUCCESSFUL call (NOT just timeout)
 
-The bash tool kills its child via `std.posix.kill(-child_pgid, .KILL)` (raw libc, doesn't touch the Child struct) and constructs a synthetic `Term` value to skip `child.wait(io)`. **Problem:** `std.posix.kill` doesn't touch the Zig `Child` struct, so parent's pipe FDs are never closed. `std.Io.File` has no destructor.
+The bash tool's foreground path uses `waitPidBounded` (raw libc `waitpid`) instead of `child.wait(io)` to avoid hanging on D-state descendants. But `waitpid` does NOT trigger Zig 0.16's `childCleanupPosix` defer — only `child.wait(io)` does. The pipe FDs were never closed in the success path.
 
-**Fix:**
-1. In timeout path: call `child.wait(io)` immediately after the kill (child is already a zombie, returns instantly). The guard at line 496 correctly skips the duplicate wait.
-2. In pre-thread errdefer: also call `child.wait(io) catch {}` to reap the zombie and run `childCleanupPosix`.
+**Symptom**: at ~556 FDs in a 70-minute agent session, ~555 of which are orphan pipes (only the parent process holds each pipe inode; the child end was closed when bash exited). Bash was the most-called tool (17× in the recent log vs ~8 for the next-most-called). Each call leaks 2 FDs (stdout + stderr parent read ends) — the stdin pipe is properly closed by the parent after writing at `bash.zig:454`.
+
+**Root cause**: `bash.zig` foreground path (`src/modules/agent/tools/bash.zig:404-770`) has TWO switch statements, each with `.reaped`, `.no_child`, `.grace_period_expired`, and `.unexpected_error` arms. The `.grace_period_expired`/`.unexpected_error` arms DID close pipes inline (defending against D-state). The `.reaped`/`.no_child` arms (the happy path) broke out of the loop WITHOUT closing pipes. After the 2026-07-15 IO.Select→waitPidBounded refactor, nobody noticed the contract was broken.
+
+**Fix** (commit `2f873dbc`, plan `docs/superpowers/plans/2026-07-24-bash-tool-pipe-leak.md`): add a single post-loop pipe close AFTER `child_term = blk: { ... };` exits, BEFORE `stdout_thread.join()`. The block runs once for every code path that exits the loop, removing the per-arm duplication.
+
+```zig
+// After: child_term = blk: { ... };
+if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
+if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
+stdout_thread.join();
+stderr_thread.join();
+```
+
+**Verified**: 5 tests failed in red baseline (4 tightened from `diff <= 2` to `diff == 0`, plus 1 new 100-iter stress test). All 5 pass after the fix. Live session FD count is now stable (was growing at ~2 FDs per 5 seconds before the fix).
+
+**Why `countOpenFds` test helper was hiding the bug**: the previous helper used `ls /proc/self/fd | wc -l` which counts the BASH SUBSHELL's FDs (a fresh process with ~10 FDs), not the parent test process's FDs. Fixed by switching to `ls /proc/$PPID/fd | wc -l` (`$PPID` = bash's parent PID = the test process). Without this helper fix, the test would have passed despite the leak.
 
 ### Zig 0.16 std.process.Child API reality
 
@@ -260,11 +274,15 @@ The bash tool kills its child via `std.posix.kill(-child_pgid, .KILL)` (raw libc
 | `child.wait(io) !Term` | YES | YES (via defer'd `childCleanupPosix`) |
 | `child.kill(io) void` | YES | YES (via defer'd `childCleanupPosix` AFTER the kill) |
 | `child.deinit(io) void` | **NO** | N/A — doesn't exist |
+| `std.process.spawn` (raw) | YES | NO — only creates pipes, doesn't own them |
+| `std.c.waitpid(pid, &status, WNOHANG)` | YES (libc) | NO — doesn't touch the Child struct |
 | `std.posix.kill(pid, sig)` | YES (libc) | NO — doesn't touch the Child struct |
 
 **Implications:**
+- CODE THAT USES `child.wait(io)`: pipes auto-close via `childCleanupPosix`. ✅
+- CODE THAT USES `child.kill(io)`: pipes auto-close via `childCleanupPosix` post-kill. ✅
+- CODE THAT USES raw libc `waitpid` (like `waitPidBounded` in bash.zig): pipes do NOT close — caller MUST manually close `child.stdout`/`child.stderr` (and `child.stdin` if it was `.pipe`). ❌
 - ANY code that calls `std.posix.kill` to terminate a spawned child MUST also call `child.wait(io)` (or `child.kill(io)`) to close the pipe FDs.
-- ANY code that uses `child.kill(io)` does NOT need a separate `child.wait(io)`.
 - `std.Io.File` has no destructor — always call `file.close(io)` explicitly.
 
 ### Diagnostic recipe
@@ -273,15 +291,30 @@ The bash tool kills its child via `std.posix.kill(-child_pgid, .KILL)` (raw libc
 PID=$(pgrep -f "nalar --port 8081")
 echo "FD count: $(ls /proc/$PID/fd | wc -l)"
 
-# Orphan-FD detection (the smoking gun for any "FD leak"):
+# What KIND of FDs is leaking? (socket vs pipe vs anon_inode)
+ls -la /proc/$PID/fd 2>/dev/null | awk '{print $NF}' | \
+  sed 's|.*\[\(.*\)\].*|socket:[\1]|; s|^pipe.*$|pipe|; s|^/dev/null$|devnull|; s|^/tmp.*$|tmpfile|; s|^anon_inode.*$|anon_inode|; s|^/home.*$|homefile|; s|^/proc.*$|procfile|; s|^socket:.*$|socket|' | \
+  sort | uniq -c | sort -rn | head -10
+
+# Orphan pipe detection (the smoking gun for "subprocess pipe leak"):
 for fd in /proc/$PID/fd/*; do
     target=$(readlink "$fd" 2>/dev/null)
-    [[ "$target" == socket:* ]] || continue
-    inode=$(echo "$target" | sed 's/socket:\[\(.*\)\]/\1/')
-    if ! grep -q ": $inode " /proc/net/tcp /proc/net/tcp6 /proc/net/unix; then
-        echo "ORPHAN FD: $fd -> $target"
+    [[ "$target" == pipe:* ]] || continue
+    inode=$(echo "$target" | sed 's/pipe:\[\(.*\)\]/\1/')
+    # If ONLY this process holds the pipe inode, the child end closed
+    # (child exited) but the parent end is still open — LEAK.
+    OTHER=$(ls -la /proc/*/fd/* 2>/dev/null | grep -cF "$target")
+    if [ "$OTHER" -le 1 ]; then
+        echo "ORPHAN PIPE: $fd -> $target"
     fi
 done | head -n 30
+
+# FD creation burst analysis (groups FDs by second of creation):
+for fd in /proc/$PID/fd/*; do
+    stat -c %y /proc/$PID/fd/$fd 2>/dev/null | cut -d. -f1
+done | sort | uniq -c | sort -rn | head -20
+# Bursts of 6 FDs per 5s = spawn with stdin+stdout+stderr = .pipe each
+# (3 pipes × 2 ends = 6 FDs/call). Bursts of 4 FDs = stdin=.close.
 ```
 
 ### Static-analysis recipe for finding new instances
@@ -302,6 +335,11 @@ rg -n --multiline "var .* = .*\.init\([^;]+;\s*$" src/ \
 
 # 3. Also find std.posix.kill uses that may skip child.wait:
 rg -n "std\.posix\.kill\([^,]*-child" src/
+
+# 4. Find raw libc waitpid uses that may skip childCleanupPosix:
+rg -n "std\.c\.waitpid\(" src/
+# Any code using std.c.waitpid MUST manually close pipes — child.wait(io)
+# is the only path that triggers childCleanupPosix.
 ```
 
 ---
