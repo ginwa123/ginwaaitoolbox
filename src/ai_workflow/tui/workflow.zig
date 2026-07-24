@@ -167,6 +167,17 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         }
         break :blk config.url_style;
     };
+    // LLM HTTP transport: "std_http" (legacy Agent.zig) or
+    // "custom_http" (libcurl-backed Agent2.zig). Profile override wins,
+    // then top-level config, then default "std_http".
+    const effective_transport: []const u8 = blk: {
+        if (params.selected_profile_model.len > 0) {
+            if (config.getProfile(params.selected_profile_model)) |profile| {
+                if (profile.transport.len > 0) break :blk profile.transport;
+            }
+        }
+        break :blk config.transport;
+    };
 
     const copy_parent_session_id = try parent_allocator.dupe(u8, params.parent_session_id);
     const copy_session_id = try parent_allocator.dupe(u8, params.session_id);
@@ -592,7 +603,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
         logger.debugFmt("[WORKFLOW-debug-system-prompt] system_prompt={s}", .{messagesLists.items[0].content.?});
 
-        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, effective_api_key, effective_model, effective_base_url, effective_url_style, copy_session_id, merged_tools) catch |err| {
+        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, effective_api_key, effective_model, effective_base_url, effective_url_style, effective_transport, copy_session_id, merged_tools) catch |err| {
             if (err == error.Cancelled) {
                 logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{copy_session_id});
                 break;
@@ -976,9 +987,41 @@ fn callDynamicAgentNew(
     model: []const u8,
     base_url: []const u8,
     url_style: []const u8,
+    /// LLM HTTP transport: "std_http" (legacy Agent.zig) or
+    /// "custom_http" (libcurl-backed Agent2.zig). Empty string defaults
+    /// to "std_http" for backward compatibility.
+    transport: []const u8,
     session_id: []const u8,
     tools: []const agent.AgentTool,
 ) !agent.CallResponse {
+    const selected_transport = if (transport.len > 0) transport else "std_http";
+
+    if (std.mem.eql(u8, selected_transport, "custom_http")) {
+        // Libcurl-backed Agent2 (custom_http_client). Same field names,
+        // same callStreaming signature as Agent.zig — only the transport
+        // differs.
+        var dynamic_agent2 = agent.Agent2.init(allocator, io);
+        // Same FD-leak fix as Agent.zig (PR 2026-07-14): Agent2.deinit()
+        // closes the libcurl handle (no connection pool, but be safe).
+        defer dynamic_agent2.deinit();
+        dynamic_agent2.apiKey = api_key;
+        dynamic_agent2.model = model;
+        dynamic_agent2.baseUrl = base_url;
+        dynamic_agent2.UrlStyle = url_style;
+        const dynamic_agent_call_params = agent.Agent2.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
+        dynamic_agent2.thinkingEnabled = isThinking;
+        dynamic_agent2.httpOptions.read_timeout_ms = 300_000; // 10 minutes
+
+        var stream_ctx = StreamingContext{
+            .allocator = allocator,
+            .session_id = session_id,
+            .chunk_index = 0,
+        };
+        const res_dynamic_agent = try dynamic_agent2.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback);
+        return res_dynamic_agent;
+    }
+
+    // Default: std.http.Client-backed Agent.zig.
     var dynamic_agent = try agent.Agent.init(allocator, io);
     // BUG FIX 2026-07-14: missing `defer dynamic_agent.deinit()` was leaking
     // `httpClient`'s connection pool / sockets on every workflow loop iteration.

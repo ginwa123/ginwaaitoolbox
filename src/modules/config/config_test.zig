@@ -415,6 +415,57 @@ test "LlmConfig: url_style defaults to openai when missing from JSON" {
 }
 
 // ---------------------------------------------------------------------------
+// transport: HTTP transport selector (Agent.zig vs Agent2.zig). Plan
+// 2026-07-24-agent2-custom-http. Defaults to "std_http" (legacy) when
+// missing from JSON, so existing config files load without surprises.
+// ---------------------------------------------------------------------------
+
+test "LlmConfig: transport field round-trips through disk JSON" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "url_style": "openai", "transport": "custom_http"
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqualStrings("custom_http", cfg.transport);
+}
+
+test "LlmConfig: transport defaults to std_http when missing from JSON" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b" }
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqualStrings("std_http", cfg.transport);
+}
+
+test "LlmConfig: transport defaults to std_http when empty string in JSON" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "transport": ""
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqualStrings("std_http", cfg.transport);
+}
+
+// ---------------------------------------------------------------------------
 // retry_delay_ms: workflow retry backoff in milliseconds. 0 = no delay
 // (current behavior). Plan 2026-07-15-retry-delay. Defaults to 0 when
 // missing so existing config files load without surprises.

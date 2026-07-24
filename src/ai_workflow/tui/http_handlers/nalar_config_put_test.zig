@@ -33,6 +33,7 @@ fn makeConfig(allocator: std.mem.Allocator, model: []const u8) !*LlmConfig {
         .model = try allocator.dupe(u8, model),
         .base_url = try allocator.dupe(u8, "https://test.example.com"),
         .url_style = try allocator.dupe(u8, "openai"),
+        .transport = try allocator.dupe(u8, "std_http"),
         .model_compaction_size_kb = 100,
         .notify_on_complete = false,
         // Top-level compaction defaults — restored in plan
