@@ -79,33 +79,28 @@ test "HttpOptions.idle_timeout_ms default stays above TCP keepalive window" {
 }
 
 // ============================================================================
-// Static regression test for the ReadFailed diagnostic (2026-06-26).
+// Static regression test for the callStreaming transport (2026-07-25).
 //
-// Background: a user reported "ReadFailed with null underlying (chunks=0,
-// bytes=0)" in the nalar backend logs. The server had sent HTTP 200 +
-// Transfer-Encoding: chunked headers, then closed the TCP connection
-// cleanly before sending any body chunks. The chunked parser caught
-// EndOfStream, set `body_err = HttpChunkTruncated`, and returned ReadFailed.
-// The previous diagnostic only checked the transport-layer
-// `conn.stream_reader.err` (null on a clean close), so the real cause
-// "HttpChunkTruncated" was invisible.
+// Background: callStreaming was migrated from std.http.Client (with a custom
+// StreamWatchdog thread that dup2'd the socket fd to /dev/null on
+// idle/total timeouts) to libcurl's openStream + StreamScanner. The
+// watchdog path caused the production FD-leak hang and the std.Io.Threaded
+// closeFd panic — both fixed by the transport swap. This test pins the
+// NEW contracts so a regression that re-introduces std.http.Client (or
+// drops the libcurl scanner) gets caught at test time rather than in
+// production after hours of accumulated FDs.
 //
-// Fix: the diagnostic now also reads `response.request.reader.body_err`
-// and logs "[STREAM] http error: HttpChunkTruncated" instead of the
-// misleading "null underlying" message.
-//
-// This is a SOURCE-grep test (consistent with the project's static-test
-// pattern for handler diagnostics — see `http_handlers/*_test.zig`). The
-// alternative would be a fake-server test like the head_only_then_stall
-// variants above, but those are all skipped due to a known
-// `Io.Threaded.closeFd` hang in deferred cleanup; a skipped test would
-// not actually verify the fix. The source-grep pattern pins the fix
-// at the source level so it can't be silently reverted.
+// Note: the OLD "ReadFailed diagnostic checks BOTH transport and HTTP
+// body_err" test (verified `response.request.reader.body_err` and
+// `std.http.Reader.BodyError` substrings) was deleted alongside the
+// std.http.Reader dependency — the libcurl scanner doesn't surface
+// ReadFailed at all (it returns `custom_http_client.Error` variants
+// which callStreaming maps to StreamInterrupted / ApiError).
 // ============================================================================
 
 const AGENT_SOURCE_PATH = "src/modules/agent/Agent.zig";
 
-test "ReadFailed diagnostic checks BOTH transport and HTTP body_err" {
+test "callStreaming uses custom_http_client (libcurl) transport" {
     const source = std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         AGENT_SOURCE_PATH,
@@ -117,55 +112,78 @@ test "ReadFailed diagnostic checks BOTH transport and HTTP body_err" {
     };
     defer std.testing.allocator.free(source);
 
-    // Contract 1: the diagnostic must reference response.request.reader.body_err
-    // (the HTTP-level error field on std.http.Reader).
-    if (std.mem.indexOf(u8, source, "response.request.reader.body_err") == null) {
+    // Contract 1: callStreaming must import the libcurl-backed transport.
+    if (std.mem.indexOf(u8, source, "@import(\"custom_http_client\")") == null) {
         std.debug.print(
-            "!! {s} does not check `body_err` — server-side chunked-encoding " ++
-                "failures will log as misleading 'null underlying' instead of " ++
-                "the real cause (HttpChunkTruncated) !!\n",
+            "!! {s} does not import custom_http_client — callStreaming regressed " ++
+                "to the std.http.Client path that caused the FD-leak hang !!\n",
             .{AGENT_SOURCE_PATH},
         );
-        return error.BodyErrCheckMissing;
+        return error.CustomHttpClientImportMissing;
     }
 
-    // Contract 2: the diagnostic must use the typed ?std.http.Reader.BodyError
-    // so the @errorName format gives a meaningful string (not a tag name).
-    if (std.mem.indexOf(u8, source, "std.http.Reader.BodyError") == null) {
+    // Contract 2: callStreaming must use the libcurl Scanner (not raw byte
+    // parsing with line_buffer + readSliceShort + '\n' byte scanning).
+    if (std.mem.indexOf(u8, source, "custom_http_client.StreamScanner") == null) {
         std.debug.print(
-            "!! {s} does not declare the body_err as `?std.http.Reader.BodyError` " ++
-                "— @errorName will print the type tag, not the error name !!\n",
+            "!! {s} does not use custom_http_client.StreamScanner — callStreaming " ++
+                "regressed to hand-rolled SSE parsing, dropping the libcurl " ++
+                "chunked-encoding correctness !!\n",
             .{AGENT_SOURCE_PATH},
         );
-        return error.BodyErrorTypeMissing;
+        return error.StreamScannerMissing;
     }
 
-    // Contract 3: the diagnostic must log an http-error branch with
-    // @errorName(he) (where `he` is the unwrapped body_err), so the actual
-    // error name (HttpChunkTruncated etc.) appears in the log.
-    //
-    // We accept any branch that unwraps body_err into a variable named `he`
-    // and passes @errorName(he) to log_fmt — that's the actual cause string.
-    if (std.mem.indexOf(u8, source, "@errorName(he)") == null) {
+    // Contract 3: the Agent struct must own a libcurl Client field, not
+    // a std.http.Client. The old `httpClient: std.http.Client` field is
+    // the symptom of the regressed path.
+    if (std.mem.indexOf(u8, source, "client: custom_http_client.Client") == null) {
         std.debug.print(
-            "!! {s} does not log @errorName(he) — the http-error branch won't " ++
-                "show the actual BodyError variant (HttpChunkTruncated etc.) !!\n",
+            "!! {s} Agent struct does not own a custom_http_client.Client — " ++
+                "the std.http path is back !!\n",
             .{AGENT_SOURCE_PATH},
         );
-        return error.BodyErrorNameLogMissing;
+        return error.LibcurlClientFieldMissing;
+    }
+    if (std.mem.indexOf(u8, source, "httpClient: std.http.Client") != null) {
+        std.debug.print(
+            "!! {s} still has `httpClient: std.http.Client` — the old transport " ++
+                "is coexisting with the new one; remove the old field !!\n",
+            .{AGENT_SOURCE_PATH},
+        );
+        return error.OldHttpClientFieldPresent;
     }
 
-    // Contract 4: the old misleading "[STREAM] ReadFailed with null underlying"
-    // message must NOT appear anymore. It was replaced with the two-arm
-    // "http error: ..." / "transport error: ..." branches. If it comes back,
-    // grep-based log monitoring will trigger false alarms for users.
-    if (std.mem.indexOf(u8, source, "ReadFailed with null underlying") != null) {
+    // Contract 4: the StreamWatchdog + apply_tcp_keepalive + dup2-to-/dev/null
+    // machinery must NOT be present (it was the workaround for std.http
+    // parking workers in recv(); libcurl doesn't have that problem).
+    if (std.mem.indexOf(u8, source, "StreamWatchdog") != null) {
         std.debug.print(
-            "!! {s} still has the misleading 'ReadFailed with null underlying' " ++
-                "diagnostic — remove it or guard with a more specific message !!\n",
+            "!! {s} still references StreamWatchdog — the old std.http " ++
+                "parked-in-recv() workaround leaked FDs in production !!\n",
             .{AGENT_SOURCE_PATH},
         );
-        return error.ObsoleteNullUnderlyingDiagnosticPresent;
+        return error.StreamWatchdogPresent;
+    }
+    if (std.mem.indexOf(u8, source, "apply_tcp_keepalive") != null) {
+        std.debug.print(
+            "!! {s} still has apply_tcp_keepalive — the libcurl transport " ++
+                "doesn't need it (libcurl handles TCP keepalive internally) !!\n",
+            .{AGENT_SOURCE_PATH},
+        );
+        return error.ApplyTcpKeepalivePresent;
+    }
+
+    // Contract 5: the Anthropic endpoint must be the correct /v1/messages
+    // (the previous std.http path used a buggy /messages that the libcurl
+    // migration fixed in passing).
+    if (std.mem.indexOf(u8, source, "/v1/messages") == null) {
+        std.debug.print(
+            "!! {s} uses the wrong Anthropic endpoint — must be /v1/messages, " ++
+                "not the legacy /messages !!\n",
+            .{AGENT_SOURCE_PATH},
+        );
+        return error.AnthropicEndpointWrong;
     }
 }
 

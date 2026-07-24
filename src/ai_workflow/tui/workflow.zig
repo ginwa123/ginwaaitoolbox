@@ -15,7 +15,6 @@ const sqlite = nalarcore.sqlite;
 const config_mod = nalarcore.config;
 const logger_mod = nalarcore.loggermod;
 const agent = nalarcore.agent;
-const agent2 = nalarcore.agent2;
 const prompt = nalarcore.agent.prompt;
 const helpers = nalarcore.helpers;
 
@@ -754,7 +753,7 @@ fn generateSessionNameNew(
     name_messages[0] = .{ .role = .system, .content = prompt.GenerateSessionNameAgent };
     name_messages[1] = .{ .role = .user, .content = first_user_message.? };
 
-    var name_agent = agent.Agent.init(allocator, io) catch return;
+    var name_agent = agent.Agent.init(allocator, io);
     defer name_agent.deinit();
     name_agent.apiKey = api_key;
     name_agent.model = model;
@@ -980,52 +979,42 @@ fn callDynamicAgentNew(
     session_id: []const u8,
     tools: []const agent.AgentTool,
 ) !agent.CallResponse {
-    // Libcurl-backed Agent2 (custom_http_client). Same field names,
-    // same callStreaming signature as the previous Agent.zig — only the
-    // transport differs. The previous std.http.Client implementation had
-    // a 200-line StreamWatchdog / apply_tcp_keepalive / dup2-to-/dev/null
-    // workaround for std.Io.Threaded parking workers in recv(); Agent2
-    // uses libcurl's CURLOPT_TIMEOUT_MS instead, which doesn't have that
-    // issue.
-    var dynamic_agent2 = agent2.Agent2.init(allocator, io);
-    defer dynamic_agent2.deinit();
-    dynamic_agent2.apiKey = api_key;
-    dynamic_agent2.model = model;
-    dynamic_agent2.baseUrl = base_url;
-    dynamic_agent2.UrlStyle = url_style;
-    // `messages_list.items` is `[]agent.AgentMessage`; `agent2.AgentCall.messages`
-    // wants `[]const agent2.AgentMessage`. The two `AgentMessage` types
-    // are byte-identical (file-level copy of the same struct), so a
-    // @ptrCast of the slice header is safe — no element copy needed.
-    const messages_for_agent2: []const agent2.AgentMessage = @ptrCast(messages_list.items);
-    const dynamic_agent_call_params = agent2.AgentCall{ .tools = tools, .messages = messages_for_agent2, .temperature = agent_temperature, .max_tokens = current_max_tokens };
-    dynamic_agent2.thinkingEnabled = isThinking;
-    dynamic_agent2.httpOptions.read_timeout_ms = 300_000; // 10 minutes
+    // Libcurl-backed Agent (custom_http_client). Same field names,
+    // same callStreaming signature as the previous std.http.Client version
+    // — only the transport differs. The previous std.http.Client implementation
+    // had a 200-line StreamWatchdog / apply_tcp_keepalive / dup2-to-/dev/null
+    // workaround for std.Io.Threaded parking workers in recv(); the new
+    // Agent (formerly a separate Agent2.zig merged in this PR) uses
+    // libcurl's CURLOPT_TIMEOUT_MS instead, which doesn't have that issue.
+    var dynamic_agent = agent.Agent.init(allocator, io);
+    defer dynamic_agent.deinit();
+    dynamic_agent.apiKey = api_key;
+    dynamic_agent.model = model;
+    dynamic_agent.baseUrl = base_url;
+    dynamic_agent.UrlStyle = url_style;
+    // `messages_list.items` is `[]agent.AgentMessage`; the local
+    // `agent.AgentCall.messages` wants the same type — direct assignment.
+    const messages_for_agent: []const agent.AgentMessage = messages_list.items;
+    const dynamic_agent_call_params = agent.AgentCall{ .tools = tools, .messages = messages_for_agent, .temperature = agent_temperature, .max_tokens = current_max_tokens };
+    dynamic_agent.thinkingEnabled = isThinking;
+    dynamic_agent.httpOptions.read_timeout_ms = 300_000; // 10 minutes
 
     var stream_ctx = StreamingContext{
         .allocator = allocator,
         .session_id = session_id,
         .chunk_index = 0,
     };
-    // `stream_callback` is typed as agent.StreamCallback; agent2's
-    // callStreaming wants agent2.StreamCallback. The two function-pointer
-    // types differ only in the StreamChunk type alias, which is a
-    // byte-identical struct in both files. @ptrCast of the function
-    // pointer is safe.
-    const callback_for_agent2: agent2.StreamCallback = @ptrCast(&stream_callback);
-    const res_dynamic_agent = try dynamic_agent2.callStreaming(dynamic_agent_call_params, &stream_ctx, callback_for_agent2);
-    // `callDynamicAgentNew` is declared to return `agent.CallResponse`
-    // (preserves the upstream signature). agent2.CallResponse is a byte-
-    // identical struct in a different module — same fields, same layout
-    // — but Zig doesn't let us @bitCast structs (no guaranteed layout),
-    // so we field-by-field copy. The inner type mismatches (tool_calls
-    // slice elements, finish_reason enum) are resolved via @ptrCast /
-    // @enumFromInt — both are byte-identical types in different modules.
-    const tool_calls_for_agent: ?[]agent.ToolCall = if (res_dynamic_agent.tool_calls) |tc| @ptrCast(tc) else null;
-    const finish_reason_for_agent: ?agent.FinishReason = if (res_dynamic_agent.finish_reason) |fr|
-        @as(agent.FinishReason, @enumFromInt(@intFromEnum(fr)))
-    else
-        null;
+    // `stream_callback` is typed as agent.StreamCallback; callStreaming
+    // wants the same type — direct assignment, no @ptrCast needed.
+    const callback_for_agent: agent.StreamCallback = &stream_callback;
+    const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, callback_for_agent);
+    // `callDynamicAgentNew` returns `agent.CallResponse` (preserves the
+    // upstream signature). Pre-rename this was a byte-identical copy from
+    // agent2.CallResponse (different module). Post-rename both sides are
+    // the same struct in the same module — but the function signature is
+    // still `agent.CallResponse` so we just pass through the locals.
+    const tool_calls_for_agent: ?[]agent.ToolCall = res_dynamic_agent.tool_calls;
+    const finish_reason_for_agent: ?agent.FinishReason = res_dynamic_agent.finish_reason;
     const usage_for_agent: agent.Usage = .{
         .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
         .completion_tokens = res_dynamic_agent.usage.completion_tokens,

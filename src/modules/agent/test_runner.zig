@@ -11,9 +11,6 @@ test {
     // Agent request-body userIdentifier tests
     _ = @import("agent_request_user_id_test.zig");
 
-    // Agent2 (custom_http_client transport) — static-contract + behavioural
-    _ = @import("agent2_test.zig");
-
     // Prompt builder tests
     _ = @import("prompts_test.zig");
 

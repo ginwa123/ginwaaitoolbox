@@ -356,7 +356,6 @@ pub fn handleClientDisconnect(client_id: [16]u8) void {
 // Module exports - these are available via @import("nalarcore")
 // it should import from folder modules only
 pub const agent = @import("modules/agent/Agent.zig");
-pub const agent2 = @import("modules/agent/Agent2.zig");
 pub const llm_models = @import("modules/agent/LLMModels.zig");
 pub const prompt = @import("modules/agent/prompts.zig");
 pub const sqlite = @import("modules/databases/sqlite/Sqlite.zig");

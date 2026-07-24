@@ -59,4 +59,5 @@ test {
     _ = @import("integration_test.zig");
     _ = @import("stress_test.zig");
     _ = @import("streaming_test.zig");
+    _ = @import("cpu_usage_test.zig");
 }
