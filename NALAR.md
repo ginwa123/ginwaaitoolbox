@@ -21,3 +21,4 @@ Detailed patterns live in:
 # Mandatory
 - Dont ever kill the process port 8081 or process nalar !!!
 - If you want to test use process port 8080 and process nalar !!!
+- When create a test make sure its work on platform linux, mac and windows
