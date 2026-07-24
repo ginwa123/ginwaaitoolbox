@@ -827,12 +827,81 @@ pub fn BuildDesignCanvasPrompt(
         \\- `image` — raster image element. The `image_url` field is the
         \\  URL (https:// or data: or relative); `html` is the `<img>`
         \\  fragment the canvas mounts.
-        \\- `frame` — a reusable frame (template) — same properties as
-        \\  rectangle, but flagged as a frame for the layers panel.
-        \\- `group` — a logical group of child elements. The element's
-        \\  own `html` is the container; children are added by calling
-        \\  `add_element` with subsequent `position` numbers in the
-        \\  same group.
+        \\- `frame` — a CONTAINER that holds children. Create the frame
+        \\  FIRST (via `add_element` with `type='frame'`), then nest
+        \\  children inside it with a SECOND `add_element` call passing
+        \\  `parent_id=<frame.id>`. Children appear indented under the
+        \\  frame in the Layers panel.
+        \\- `group` — same as `frame` for nesting (`parent_id` works
+        \\  identically), but groups do not visually clip their
+        \\  children. Use `frame` for spatial containment (e.g. an app
+        \\  window containing panels); use `group` for logical grouping
+        \\  (e.g. an icon-button set you want to operate as one unit).
+        \\
+        \\**Designing INTERACTIVE HTML — the html field is a live
+        \\mini-browser, not a flat mockup.**
+        \\
+        \\Every element's `html` body is rendered inside a sandboxed
+        \\`<iframe>` in the user's canvas. The user can switch the
+        \\canvas into **Preview mode** (toolbar button or Cmd/Ctrl+P;
+        \\Esc exits) and INTERACT with the rendered HTML — type into
+        \\inputs, click buttons, toggle switches, scroll, select text,
+        \\fill forms end-to-end. The `html` field accepts ANY valid
+        \\HTML, not just visual shapes.
+        \\
+        \\You SHOULD write real interactive elements when the design
+        \\is a UI flow the user will exercise:
+        \\
+        \\- `<input type="text">`, `<input type="email">`, `<input
+        \\  type="checkbox">`, `<input type="radio">`, `<textarea>`,
+        \\  `<select>` — for forms.
+        \\- `<button>` with `onclick="..."` handlers — scripts run in
+        \\  the iframe sandbox (`allow-scripts`, no `allow-same-origin`).
+        \\  They can manipulate the iframe's own DOM (toggle visibility,
+        \\  update text, validate forms) but cannot reach the parent
+        \\  document. Cross-iframe state (click X in iframe A → open Y
+        \\  in iframe B) is NOT supported — keep state local to one
+        \\  element.
+        \\- `<a href="...">` links — they navigate inside the iframe,
+        \\  not the host app. Useful for tabs / in-iframe "pages".
+        \\- `<details>`/`<summary>`, `<dialog>`, native form validation
+        \\  (`required`, `pattern`, `min`/`max`) — all work in Preview.
+        \\
+        \\**Don't** render inputs as `<div>` styled to look like them.
+        \\Write the actual `<input>` / `<button>` / `<select>` so the
+        \\user can interact in Preview and verify the design works.
+        \\Quick comparison:
+        \\
+        \\  BAD (visual mockup, no interactivity):
+        \\    <div style="border:1px solid #ccc;padding:8px;">Email</div>
+        \\    <div style="background:#3b82f6;color:#fff;padding:8px 16px;
+        \\              border-radius:6px;">Submit</div>
+        \\  GOOD (interactive in Preview):
+        \\    <form>
+        \\      <label>Email <input type="email" required></label>
+        \\      <button type="submit">Submit</button>
+        \\    </form>
+        \\
+        \\**Nesting rules:**
+        \\  1. The parent must exist BEFORE the child. Two `add_element`
+        \\     calls: first the parent (frame/group), THEN the child with
+        \\     `parent_id=<parent.id>`.
+        \\  2. Re-parent with
+        \\     `update_element(child_id, parent_id='<new>')`. Pass
+        \\     `parent_id=''` to detach (make top-level). Omit
+        \\     `parent_id` to leave parent unchanged.
+        \\  3. The target parent must have `type='frame'` or
+        \\     `type='group'` and be on the SAME page.
+        \\  4. Self-parenting and creating a cycle (target is the
+        \\     element itself or any descendant) are rejected with
+        \\     `<error>parent_id must reference a frame or group...</error>`.
+        \\
+        \\**No cross-iframe persistence.** State inside one element's
+        \\iframe does NOT survive Preview-mode toggle (the iframe
+        \\reloads from the saved `html` on every Preview entry).
+        \\Anything the user types or toggles is ephemeral. If a flow
+        \\requires real persistence, surface it as an explicit ask
+        \\(e.g. "save to backend") — don't promise it works in Preview.
         \\
     );
 
