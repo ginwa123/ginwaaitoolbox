@@ -63,6 +63,15 @@ const props = withDefaults(
     workspaceId?: string
     itemId?: string
     pageId?: string
+    // When true, the parent canvas is in Preview/Edit mode (toggle
+    // in the canvas header bar). In Preview:
+    //   - the inner iframe gets `pointer-events: auto` so the user
+    //     can type into `<input>` elements, click buttons, etc.
+    //   - the wrapper div suppresses its drag handler
+    //   - the selection chrome (resize handles, outline) is hidden
+    //     even when `selected === true` — preview is "play, don't edit"
+    // Default false (the canvas's normal edit mode).
+    previewMode?: boolean
   }>(),
   {
     selected: false,
@@ -71,6 +80,7 @@ const props = withDefaults(
     workspaceId: '',
     itemId: '',
     pageId: '',
+    previewMode: false,
   },
 )
 
@@ -111,6 +121,10 @@ const isDragging = ref(false)
 
 const startDrag = (event: PointerEvent, mode: DragMode): void => {
   if (props.readonly) return
+  // In Preview mode, the canvas is "playing" the mockup — clicks
+  // on element bodies are absorbed by the inner iframe (typed text,
+  // button activations). Don't start a drag, don't emit select.
+  if (props.previewMode) return
   // Always emit select on pointerdown so clicking an element selects
   // it even if the user just clicks without dragging.
   emit('select', props.element.id)
@@ -306,6 +320,7 @@ onUnmounted(() => {
     :style="elementStyle"
     :data-testid="`design-element-${element.id}`"
     data-design-element="true"
+    :data-preview-mode="previewMode"
     @pointerdown="(e) => startDrag(e, 'move')"
   >
     <!-- Iframe preview with pointer-events:none so the parent owns
@@ -328,12 +343,16 @@ onUnmounted(() => {
            element.id / file_path / updated_at changes). The
            v-if="htmlBody" guard renders the placeholder rectangle
            underneath while the fetch is in flight, so the user sees
-           a graceful loading state instead of a flash of empty. -->
+           a graceful loading state instead of a flash of empty.
+           `pointerEvents` is `'none'` in Edit mode (clicks pass
+           through to the wrapper for drag/resize/select) and
+           `'auto'` in Preview mode (the iframe captures clicks so
+           the user can type into inputs / click buttons). -->
       <DesignElementPreview
         v-if="htmlBody"
         :html="htmlBody"
         :editable="false"
-        pointer-events="none"
+        :pointer-events="previewMode ? 'auto' : 'none'"
       />
       <!-- Loading state — empty until the iframe loads. Visible only
            briefly; the iframe replaces it within one render cycle of
@@ -370,7 +389,7 @@ onUnmounted(() => {
     <div
       class="absolute -top-5 left-0 text-[10px] pointer-events-none whitespace-nowrap"
       style="color: var(--semantic-text-dim);"
-      v-if="selected"
+      v-if="selected && !previewMode"
     >
       {{ element.name }}
     </div>
@@ -396,15 +415,17 @@ onUnmounted(() => {
       alt=""
     />
 
-    <!-- Selection outline (rendered only when selected) -->
+    <!-- Selection outline (rendered only when selected, and not in
+         Preview mode — preview is "play, don't edit"). -->
     <div
-      v-if="selected"
+      v-if="selected && !previewMode"
       class="absolute inset-0 pointer-events-none"
       style="outline: 2px solid var(--color-violet); outline-offset: 0;"
     />
 
-    <!-- Resize handles (8 total: 4 corners + 4 edge midpoints) -->
-    <template v-if="selected && !readonly">
+    <!-- Resize handles (8 total: 4 corners + 4 edge midpoints) —
+         also hidden in Preview mode. -->
+    <template v-if="selected && !readonly && !previewMode">
       <!-- Corners -->
       <div
         v-for="handle in (['nw', 'ne', 'sw', 'se'] as ResizeHandle[])"
