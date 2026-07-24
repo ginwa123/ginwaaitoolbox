@@ -22,3 +22,23 @@ Detailed patterns live in:
 - Dont ever kill the process port 8081 or process nalar !!!
 - If you want to test use process port 8080 and process nalar !!!
 - When create a test make sure its work on platform linux, mac and windows
+
+## 2026-07-25: Design element drag-and-drop wire repaired
+
+### Symptom (pre-fix)
+Click on a design element → violet outline + 8 resize handles appear (selection works).
+Click-and-drag → element does NOT move.
+
+### Root cause
+`AppLayout.handleDesignUpdateElement` (src/apps/desktop/src/components/AppLayout.vue:1129)
+was a TODO no-op (`void elementId; void patch`). DesignElement's pointermove emitted
+`update` patches, DesignView re-emitted them upward as `updateElement`, but the parent
+silently discarded them.
+
+### Fix
+- Added `activeDesignPageId` + `setActiveDesignPage` to workspaces store (Task 1.1).
+- DesignView mirrors its local `activePageId` to the store on mount + tab switch (Task 1.2).
+- Extracted design handlers into `useDesignHandlers` composable for testability (Task 1.3).
+- Replaced the no-op with a real handler that routes geometry-only patches to
+  `PATCH /geometry` and full patches to `PUT /elements/:id` (Task 1.3).
+- Throttled the drag stream to 50ms with a trailing emit on pointerup (Task 1.4).
