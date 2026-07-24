@@ -372,9 +372,19 @@ onUnmounted(() => {
          element has no file_path, (b) the HTML fetch is still in
          flight, or (c) the HTML fetch failed. Provides the dashed
          outline the user needs to see where the element is before
-         the iframe content arrives. -->
+         the iframe content arrives.
+
+         `pointer-events-none` is CRITICAL: this div is rendered
+         after the iframe wrapper in DOM order, which puts it ON
+         TOP in the stacking context. Without `pointer-events-none`,
+         it would capture clicks instead of the iframe — which
+         silently breaks Preview mode (user can't click inputs /
+         buttons inside the rendered HTML). With it, clicks pass
+         through to the iframe below, and Edit-mode drag still
+         works because clicks bubble up to the outer wrapper's
+         `@pointerdown` handler. -->
     <div
-      class="absolute inset-0"
+      class="absolute inset-0 pointer-events-none"
       :style="{
         backgroundColor: element.fill || 'rgba(127, 127, 127, 0.05)',
         borderRadius: `${element.corner_radius}px`,
