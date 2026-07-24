@@ -1,6 +1,25 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+// === Cross-platform note (2026-07-24) ===
+//
+// The bash tool spawns `bash -c <command>` by argv, sends signals to
+// process groups via std.posix.kill(-pgid, ...), and uses other
+// POSIX-only primitives (std.posix.pid_t, std.posix.kill, the .pgid
+// field on std.process.Child). None of these exist on Windows in
+// Zig 0.16 (`std.posix.pid_t` is `*anyopaque`, `std.posix.kill` has
+// `@compileError`, `.pgid` is `?*anyopaque`).
+//
+// The plan §2.1 alternative of a FILE-LEVEL `@compileError("bash is
+// POSIX-only")` is NOT chosen here — that would block the entire
+// tool_registry.zig (and therefore workflow.zig and nalarcore) from
+// compiling on Windows, because they `const bash_tool_mod =
+// nalar_mod.bash_tool` at module scope. Instead we guard only the two
+// spawn sites with `if (builtin.os.tag == .windows) return error.UnsupportedOS;`.
+// The tool stays in the registered tool table on Windows (with its
+// full schema + description so the LLM can learn about it), but invoking
+// it returns a clean error rather than failing to compile.
+
 // POSIX `nanosleep(req, rem)` — declared as `extern "c"` so the call
 // doesn't go through Zig 0.16's Io runtime. We deliberately avoid
 // `std.Io.sleep` here because the bash tool is invoked from the AI
@@ -298,6 +317,12 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
         );
         defer allocator.free(bg_command);
 
+        // bash tool is POSIX-only. Windows has no `bash` on $PATH by default
+        // (Git Bash / WSL are user-side installs that we can't assume).
+        // Returning error.UnsupportedOS lets the LLM see a clean error
+        // rather than a cryptic filesystem ENOENT.
+        if (builtin.os.tag == .windows) return error.UnsupportedOS;
+
         var child = try std.process.spawn(io, .{
             .argv = &.{ "bash", "-c", bg_command },
             .cwd = if (input.cwd) |cwd| .{ .path = cwd } else .inherit,
@@ -368,6 +393,14 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     // notes this) and the smoke-test commands that work on Linux tend
     // to be single-process. Any real agent command (rg | head, ls -laR,
     // timeouts, multi-stage builds) hits the subshell path and hangs.
+    // bash tool is POSIX-only (matches background-mode guard above).
+    // The Windows branch returns error.UnsupportedOS so the tool is still
+    // registered — the LLM gets a clean error if it tries to invoke bash.
+    // Note: the `.pgid = 0` field below is a Linux/macOS-only process-group
+    // leadership hint and wouldn't compile on Windows (the field type is
+    // `?*anyopaque` there). Guarding this whole spawn makes that disappear.
+    if (builtin.os.tag == .windows) return error.UnsupportedOS;
+
     var child = try std.process.spawn(io, .{
         .argv = &.{ "bash", "-c", command },
         .cwd = if (input.cwd) |cwd| .{ .path = cwd } else .inherit,
@@ -601,22 +634,17 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
             if (stdout_eof.load(.acquire) and stderr_eof.load(.acquire)) {
                 // Use the bounded wait so D-state descendants don't
                 // hang us forever. After the grace period expires we
-                // close the pipes manually and synthesize a Term.
+                // synthesize a Term (the pipe close happens in the
+                // unified post-loop block below).
                 const wait_result = waitPidBounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
-                switch (wait_result.outcome) {
-                    .reaped => break :blk statusToTerm(wait_result.status),
-                    .no_child => break :blk .{ .exited = 0 },
-                    .grace_period_expired, .unexpected_error => {
-                        // D-state descendant — give up gracefully.
-                        // Manually close pipes so reader threads exit.
-                        if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
-                        if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
-                        break :blk if (builtin.os.tag == .windows)
-                            .{ .unknown = 1 }
-                        else
-                            .{ .signal = .KILL };
-                    },
-                }
+                break :blk switch (wait_result.outcome) {
+                    .reaped => statusToTerm(wait_result.status),
+                    .no_child => .{ .exited = 0 },
+                    .grace_period_expired, .unexpected_error => if (builtin.os.tag == .windows)
+                        .{ .unknown = 1 }
+                    else
+                        .{ .signal = .KILL },
+                };
             }
             // Deadline reached?
             if (std.Io.Timestamp.now(io, .real).nanoseconds >= deadline_ns) {
@@ -629,19 +657,14 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
                 // Bounded wait — don't block forever on a D-state
                 // descendant that SIGKILL can't interrupt.
                 const wait_result = waitPidBounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
-                switch (wait_result.outcome) {
-                    .reaped => break :blk statusToTerm(wait_result.status),
-                    .no_child => break :blk .{ .exited = 0 },
-                    .grace_period_expired, .unexpected_error => {
-                        // Force-close pipes and synthesize a signal-killed term.
-                        if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
-                        if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
-                        break :blk if (builtin.os.tag == .windows)
-                            .{ .unknown = 1 }
-                        else
-                            .{ .signal = .KILL };
-                    },
-                }
+                break :blk switch (wait_result.outcome) {
+                    .reaped => statusToTerm(wait_result.status),
+                    .no_child => .{ .exited = 0 },
+                    .grace_period_expired, .unexpected_error => if (builtin.os.tag == .windows)
+                        .{ .unknown = 1 }
+                    else
+                        .{ .signal = .KILL },
+                };
             }
             // Sleep 10 ms — blocking the OS thread via raw libc
             // `nanosleep`, NOT through the Io runtime. This is exactly
@@ -655,6 +678,25 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
             _ = nanosleep(&ts, null);
         }
     };
+
+    // CRITICAL: close the parent-side pipe FDs after waitPidBounded
+    // returns. `waitPidBounded` uses raw libc `waitpid` which does NOT
+    // call `childCleanupPosix` (that only runs from `child.wait(io)`).
+    // Without this close, every successful bash tool call leaks 2 FDs
+    // (the parent's read ends of stdout + stderr pipes).
+    //
+    // The reader threads either saw EOF (happy path — child closed its
+    // write end on exit) or will see EBADF (D-state path — we close
+    // the read end under them) and exit cleanly. `std.Io.File` has no
+    // destructor, so we MUST close the FDs explicitly here or they
+    // leak until process exit.
+    //
+    // Unified single block (replaces the per-arm inline closes that
+    // previously lived in the .grace_period_expired/.unexpected_error
+    // switch arms — those only fired on the slow paths, leaving the
+    // fast paths to leak).
+    if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
+    if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
 
     // Join the reader threads. If the kill + bounded-wait closed the
     // pipes (grace period expired), the reader threads saw EOF and

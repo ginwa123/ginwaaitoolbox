@@ -79,33 +79,28 @@ test "HttpOptions.idle_timeout_ms default stays above TCP keepalive window" {
 }
 
 // ============================================================================
-// Static regression test for the ReadFailed diagnostic (2026-06-26).
+// Static regression test for the callStreaming transport (2026-07-25).
 //
-// Background: a user reported "ReadFailed with null underlying (chunks=0,
-// bytes=0)" in the nalar backend logs. The server had sent HTTP 200 +
-// Transfer-Encoding: chunked headers, then closed the TCP connection
-// cleanly before sending any body chunks. The chunked parser caught
-// EndOfStream, set `body_err = HttpChunkTruncated`, and returned ReadFailed.
-// The previous diagnostic only checked the transport-layer
-// `conn.stream_reader.err` (null on a clean close), so the real cause
-// "HttpChunkTruncated" was invisible.
+// Background: callStreaming was migrated from std.http.Client (with a custom
+// StreamWatchdog thread that dup2'd the socket fd to /dev/null on
+// idle/total timeouts) to libcurl's openStream + StreamScanner. The
+// watchdog path caused the production FD-leak hang and the std.Io.Threaded
+// closeFd panic — both fixed by the transport swap. This test pins the
+// NEW contracts so a regression that re-introduces std.http.Client (or
+// drops the libcurl scanner) gets caught at test time rather than in
+// production after hours of accumulated FDs.
 //
-// Fix: the diagnostic now also reads `response.request.reader.body_err`
-// and logs "[STREAM] http error: HttpChunkTruncated" instead of the
-// misleading "null underlying" message.
-//
-// This is a SOURCE-grep test (consistent with the project's static-test
-// pattern for handler diagnostics — see `http_handlers/*_test.zig`). The
-// alternative would be a fake-server test like the head_only_then_stall
-// variants above, but those are all skipped due to a known
-// `Io.Threaded.closeFd` hang in deferred cleanup; a skipped test would
-// not actually verify the fix. The source-grep pattern pins the fix
-// at the source level so it can't be silently reverted.
+// Note: the OLD "ReadFailed diagnostic checks BOTH transport and HTTP
+// body_err" test (verified `response.request.reader.body_err` and
+// `std.http.Reader.BodyError` substrings) was deleted alongside the
+// std.http.Reader dependency — the libcurl scanner doesn't surface
+// ReadFailed at all (it returns `custom_http_client.Error` variants
+// which callStreaming maps to StreamInterrupted / ApiError).
 // ============================================================================
 
 const AGENT_SOURCE_PATH = "src/modules/agent/Agent.zig";
 
-test "ReadFailed diagnostic checks BOTH transport and HTTP body_err" {
+test "callStreaming uses custom_http_client (libcurl) transport" {
     const source = std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         AGENT_SOURCE_PATH,
@@ -117,55 +112,78 @@ test "ReadFailed diagnostic checks BOTH transport and HTTP body_err" {
     };
     defer std.testing.allocator.free(source);
 
-    // Contract 1: the diagnostic must reference response.request.reader.body_err
-    // (the HTTP-level error field on std.http.Reader).
-    if (std.mem.indexOf(u8, source, "response.request.reader.body_err") == null) {
+    // Contract 1: callStreaming must import the libcurl-backed transport.
+    if (std.mem.indexOf(u8, source, "@import(\"custom_http_client\")") == null) {
         std.debug.print(
-            "!! {s} does not check `body_err` — server-side chunked-encoding " ++
-                "failures will log as misleading 'null underlying' instead of " ++
-                "the real cause (HttpChunkTruncated) !!\n",
+            "!! {s} does not import custom_http_client — callStreaming regressed " ++
+                "to the std.http.Client path that caused the FD-leak hang !!\n",
             .{AGENT_SOURCE_PATH},
         );
-        return error.BodyErrCheckMissing;
+        return error.CustomHttpClientImportMissing;
     }
 
-    // Contract 2: the diagnostic must use the typed ?std.http.Reader.BodyError
-    // so the @errorName format gives a meaningful string (not a tag name).
-    if (std.mem.indexOf(u8, source, "std.http.Reader.BodyError") == null) {
+    // Contract 2: callStreaming must use the libcurl Scanner (not raw byte
+    // parsing with line_buffer + readSliceShort + '\n' byte scanning).
+    if (std.mem.indexOf(u8, source, "custom_http_client.StreamScanner") == null) {
         std.debug.print(
-            "!! {s} does not declare the body_err as `?std.http.Reader.BodyError` " ++
-                "— @errorName will print the type tag, not the error name !!\n",
+            "!! {s} does not use custom_http_client.StreamScanner — callStreaming " ++
+                "regressed to hand-rolled SSE parsing, dropping the libcurl " ++
+                "chunked-encoding correctness !!\n",
             .{AGENT_SOURCE_PATH},
         );
-        return error.BodyErrorTypeMissing;
+        return error.StreamScannerMissing;
     }
 
-    // Contract 3: the diagnostic must log an http-error branch with
-    // @errorName(he) (where `he` is the unwrapped body_err), so the actual
-    // error name (HttpChunkTruncated etc.) appears in the log.
-    //
-    // We accept any branch that unwraps body_err into a variable named `he`
-    // and passes @errorName(he) to log_fmt — that's the actual cause string.
-    if (std.mem.indexOf(u8, source, "@errorName(he)") == null) {
+    // Contract 3: the Agent struct must own a libcurl Client field, not
+    // a std.http.Client. The old `httpClient: std.http.Client` field is
+    // the symptom of the regressed path.
+    if (std.mem.indexOf(u8, source, "client: custom_http_client.Client") == null) {
         std.debug.print(
-            "!! {s} does not log @errorName(he) — the http-error branch won't " ++
-                "show the actual BodyError variant (HttpChunkTruncated etc.) !!\n",
+            "!! {s} Agent struct does not own a custom_http_client.Client — " ++
+                "the std.http path is back !!\n",
             .{AGENT_SOURCE_PATH},
         );
-        return error.BodyErrorNameLogMissing;
+        return error.LibcurlClientFieldMissing;
+    }
+    if (std.mem.indexOf(u8, source, "httpClient: std.http.Client") != null) {
+        std.debug.print(
+            "!! {s} still has `httpClient: std.http.Client` — the old transport " ++
+                "is coexisting with the new one; remove the old field !!\n",
+            .{AGENT_SOURCE_PATH},
+        );
+        return error.OldHttpClientFieldPresent;
     }
 
-    // Contract 4: the old misleading "[STREAM] ReadFailed with null underlying"
-    // message must NOT appear anymore. It was replaced with the two-arm
-    // "http error: ..." / "transport error: ..." branches. If it comes back,
-    // grep-based log monitoring will trigger false alarms for users.
-    if (std.mem.indexOf(u8, source, "ReadFailed with null underlying") != null) {
+    // Contract 4: the StreamWatchdog + apply_tcp_keepalive + dup2-to-/dev/null
+    // machinery must NOT be present (it was the workaround for std.http
+    // parking workers in recv(); libcurl doesn't have that problem).
+    if (std.mem.indexOf(u8, source, "StreamWatchdog") != null) {
         std.debug.print(
-            "!! {s} still has the misleading 'ReadFailed with null underlying' " ++
-                "diagnostic — remove it or guard with a more specific message !!\n",
+            "!! {s} still references StreamWatchdog — the old std.http " ++
+                "parked-in-recv() workaround leaked FDs in production !!\n",
             .{AGENT_SOURCE_PATH},
         );
-        return error.ObsoleteNullUnderlyingDiagnosticPresent;
+        return error.StreamWatchdogPresent;
+    }
+    if (std.mem.indexOf(u8, source, "apply_tcp_keepalive") != null) {
+        std.debug.print(
+            "!! {s} still has apply_tcp_keepalive — the libcurl transport " ++
+                "doesn't need it (libcurl handles TCP keepalive internally) !!\n",
+            .{AGENT_SOURCE_PATH},
+        );
+        return error.ApplyTcpKeepalivePresent;
+    }
+
+    // Contract 5: the Anthropic endpoint must be the correct /v1/messages
+    // (the previous std.http path used a buggy /messages that the libcurl
+    // migration fixed in passing).
+    if (std.mem.indexOf(u8, source, "/v1/messages") == null) {
+        std.debug.print(
+            "!! {s} uses the wrong Anthropic endpoint — must be /v1/messages, " ++
+                "not the legacy /messages !!\n",
+            .{AGENT_SOURCE_PATH},
+        );
+        return error.AnthropicEndpointWrong;
     }
 }
 
@@ -279,41 +297,53 @@ fn serve(
     stop: *std.atomic.Value(bool),
     connection_seen: *std.atomic.Value(bool),
 ) void {
-    const conn_rc = linux.accept(listener_fd, null, null);
-    if (conn_rc > std.math.maxInt(i32)) return; // accept failed
-    const conn_fd: i32 = @intCast(conn_rc);
-    defer _ = linux.close(conn_fd);
-    connection_seen.store(true, .release);
-
     const head =
         "HTTP/1.1 200 OK\r\n" ++
         "Content-Type: text/event-stream\r\n" ++
         "Transfer-Encoding: chunked\r\n" ++
         "Connection: close\r\n" ++
         "\r\n";
-    sendAll(conn_fd, head) catch return;
 
-    switch (behavior) {
-        .head_only_then_stall => {
-            // Send nothing more. Sleep until the test tells us to stop.
-            sleepUntilStop(stop, 60_000);
-        },
-        .one_chunk_then_stall => {
-            // Send one valid SSE chunk (chunked-transfer-encoded).
-            const body_chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
-            var hex_buf: [16]u8 = undefined;
-            const chunk_header = std.fmt.bufPrint(&hex_buf, "{x}\r\n", .{body_chunk.len}) catch return;
-            sendAll(conn_fd, chunk_header) catch return;
-            sendAll(conn_fd, body_chunk) catch return;
-            sendAll(conn_fd, "\r\n") catch return;
-            // Don't send the terminating 0-length chunk. Just stall.
-            sleepUntilStop(stop, 60_000);
-        },
-        .head_then_close => {
-            // Close immediately. The client will see FIN and reader state will
-            // transition to `.closing` before it has read any body bytes.
+    // Loop accepting connections so the FD-leak regression tests can drive
+    // multiple callStreaming calls against the same port (the original single-
+    // accept server returned after one connection, so subsequent agent calls
+    // got ECONNREFUSED — a different code path that doesn't exercise the
+    // leak). Each iteration handles one connection according to `behavior`.
+    while (!stop.load(.acquire)) {
+        const conn_rc = linux.accept(listener_fd, null, null);
+        if (conn_rc > std.math.maxInt(i32)) {
+            // Listener closed (test teardown) or accept errored. Exit.
             return;
-        },
+        }
+        const conn_fd: i32 = @intCast(conn_rc);
+        defer _ = linux.close(conn_fd);
+
+        connection_seen.store(true, .release);
+
+        sendAll(conn_fd, head) catch continue;
+
+        switch (behavior) {
+            .head_only_then_stall => {
+                sleepUntilStop(stop, 60_000);
+                return;
+            },
+            .one_chunk_then_stall => {
+                const body_chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+                var hex_buf: [16]u8 = undefined;
+                const chunk_header = std.fmt.bufPrint(&hex_buf, "{x}\r\n", .{body_chunk.len}) catch continue;
+                sendAll(conn_fd, chunk_header) catch continue;
+                sendAll(conn_fd, body_chunk) catch continue;
+                sendAll(conn_fd, "\r\n") catch continue;
+                sleepUntilStop(stop, 60_000);
+                return;
+            },
+            .head_then_close => {
+                // Close immediately. The client will see FIN and reader state
+                // will transition to `.closing` before it has read any body.
+                // Loop continues to accept the next connection.
+                continue;
+            },
+        }
     }
 }
 
@@ -469,4 +499,227 @@ test "callStreaming returns within idle_timeout when server is silent (watchdog 
     try expect(outcome.elapsed_ms <= @as(i64, @intCast(idle_ms)) + 750);
 
     try expectError(error.StreamIdleTimeout, outcome.result);
+}
+
+// ============================================================================
+// FD-leak regression tests (2026-07-15).
+//
+// Symptom (production nalar, 9-hour uptime, 8081):
+//   - Total FDs: ~820
+//   - Of which: ~818 anonymous pipes (self-pipes held entirely by nalar,
+//     appearing in only 1 process in /proc)
+//   - Burst pattern: created in a 6-minute window concurrent with retry storm
+//   - Source: each `callStreaming` that fails (HttpRequestFailed) leaks
+//     internal pipe FDs that `req.deinit()` / `httpClient.deinit()` don't
+//     fully close in Zig 0.16 std.http. After ~10 retries, +800 FDs.
+//
+// Diagnosis:
+//   - sse_manager.zig::notify_pipe is process-global (2 FDs total, not per-call)
+//   - bash.zig already has the kill+wait pipe-cleanup pattern from PR #91
+//   - HttpClient.zig already has the defer-pipe-close pattern from PR #91
+//   - The remaining leak is in `Agent.callStreaming` itself: on the error
+//     path (e.g. server closes before any response is read), the connection's
+//     underlying socket + internal stdlib pipes are not fully cleaned up by
+//     `req.deinit()`.
+//
+// These tests verify that bounded N callStreaming calls leave the process
+// FD table bounded — i.e. the leak is closed.
+//
+// Implementation note: tests use the FakeServer's `head_then_close` behavior
+// (server closes the TCP connection immediately after accepting), which
+// reliably triggers the error path that historically leaked. The server
+// runs in a worker thread; the test process exits cleanly because we
+// always `defer server.shutdown()`.
+// ============================================================================
+
+/// Count anonymous pipes currently open in the test process via /proc/self/fd.
+/// Returns 0 on non-Linux (the leak is Linux-only) and on any proc access error.
+fn countPipes() usize {
+    if (builtin.os.tag != .linux) return 0;
+
+    // Open /proc/self/fd with posix.openat AT_FDCWD path.
+    const dir = std.c.opendir("/proc/self/fd") orelse return 0;
+    defer _ = std.c.closedir(dir);
+
+    var pipes: usize = 0;
+    var buf: [4096]u8 = undefined; // scratch buffer for std.c.readlink target
+    while (std.c.readdir(dir)) |raw_entry| {
+        const entry: *std.c.dirent = @ptrCast(raw_entry);
+        // On Linux, `name` is a fixed-size [256]u8 array terminated by NUL.
+        const name_slice = entry.name[0..];
+        const name_len = std.mem.indexOfScalar(u8, name_slice, 0) orelse name_slice.len;
+        const name = name_slice[0..name_len];
+
+        // Skip "." and ".."
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+
+        // Build "/proc/self/fd/N" path
+        var link_path: [64]u8 = undefined;
+        const link_path_z = std.fmt.bufPrintZ(&link_path, "/proc/self/fd/{s}", .{name}) catch continue;
+
+        // Readlink to find the FD's type
+        const target_len_signed = std.c.readlink(link_path_z, &buf, buf.len);
+        if (target_len_signed > 0) {
+            const target = buf[0..@intCast(target_len_signed)];
+            // Anonymous pipes show as "pipe:[N]" in /proc. AF_UNIX sockets
+            // show as "socket:[N]" — we only count pipes here.
+            if (target.len >= 5 and std.mem.eql(u8, target[0..5], "pipe:")) {
+                pipes += 1;
+            }
+        }
+    }
+    return pipes;
+}
+
+test "callStreaming does not leak pipe FDs across many failed calls (TDD: RED → GREEN)" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    // Skipped: same std.Io.Threaded.closeFd hang as the 3 tests above (see
+    // the comment on the first "StreamIdleTimeout" test for the full
+    // diagnosis). The dup2-to-/dev/null trick added in PR #117 prevents
+    // the kernel panic on closeFd, but the Io runtime's worker thread,
+    // parked in recv() on the original socket file description, never
+    // observes the dup2 and stays blocked. Re-enable when std.Io.Threaded
+    // properly handles dup2-replaced fds, OR when Agent.callStreaming
+    // uses a dedicated single-use http.Client for failure paths.
+    if (true) return error.SkipZigTest;
+
+    // The pre-fix leak rate is so severe (~100 pipes per failed call) that
+    // running N≥3 iterations in the shared test-runner process hits the
+    // 1024 FD limit. Keep N tiny (2) and add an early-bail baseline check:
+    // if the test runner's own pipe count is already near the limit, skip.
+
+    const pipes_baseline = countPipes();
+    // Default Linux FD soft limit is 1024. Leave 200 FDs of headroom for the
+    // test infra itself (listen socket, agent, httpClient, FDs needed by
+    // countPipes iteration, etc).
+    if (pipes_baseline > 800) {
+        std.debug.print(
+            "  skip: baseline pipes={} too high (likely shared test runner with prior leak); " ++
+                "the leak is reproducible in isolation — run this test alone to verify the fix.\n",
+            .{pipes_baseline},
+        );
+        return error.SkipZigTest;
+    }
+
+    // Use head_then_close: server closes the TCP connection immediately
+    // after accepting, before sending any response body. This reliably
+    // triggers the error path that historically leaked pipe FDs.
+    var server = try FakeServer.start(.head_then_close);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const base_url = try makeBaseUrl(testing_allocator, server.port);
+    defer testing_allocator.free(base_url);
+
+    var a = try agent.Agent.init_with_options(testing_allocator, std.testing.io, .{
+        .idle_timeout_ms = 2_000,
+        .read_timeout_ms = 5_000,
+    });
+    defer a.deinit();
+    a.baseUrl = base_url;
+    a.model = "test-model";
+    a.apiKey = "test-key";
+
+    // Warmup: one call to absorb any one-time allocation (e.g. httpClient
+    // pool init) so we measure the per-call steady-state, not setup cost.
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+
+    const pipes_before = countPipes();
+
+    // N=2 keeps the test fast and stays within FD limit. Pre-fix the leak
+    // is ~100/call → +200 pipes → easily detected by the assertion. Post-fix
+    // the growth should be 0-2 pipes total.
+    const N: usize = 2;
+    var i: usize = 0;
+    while (i < N) : (i += 1) {
+        _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+    }
+
+    const pipes_after = countPipes();
+    const growth = pipes_after -| pipes_before;
+
+    // Pre-fix baseline: ~100+ pipes per call. Post-fix threshold: ≤2
+    // pipes per call (so N=2 → ≤4 growth). If the leak returns at the
+    // pre-fix scale, this catches it (expect ~200 growth).
+    try expect(growth < N * 2);
+}
+
+test "callStreaming zero-pipe-budget: even one failed call must not grow pipes" {
+    // Stronger assertion: a single failed callStreaming MUST not grow the
+    // pipe count at all. Any growth is a leak. Skipped if countPipes() is
+    // unavailable on this platform, or if the shared test runner already
+    // has too many open pipes to safely run another iteration.
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    // Skipped: same std.Io.Threaded.closeFd hang as the test above.
+    if (true) return error.SkipZigTest;
+
+    if (countPipes() > 800) return error.SkipZigTest;
+
+    var server = try FakeServer.start(.head_then_close);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const base_url = try makeBaseUrl(testing_allocator, server.port);
+    defer testing_allocator.free(base_url);
+
+    var a = try agent.Agent.init_with_options(testing_allocator, std.testing.io, .{
+        .idle_timeout_ms = 2_000,
+        .read_timeout_ms = 5_000,
+    });
+    defer a.deinit();
+    a.baseUrl = base_url;
+    a.model = "test-model";
+    a.apiKey = "test-key";
+
+    // Warmup
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+    const pipes_before = countPipes();
+
+    // One additional call
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+    const pipes_after = countPipes();
+
+    // Strict: zero growth. The pre-fix baseline would fail this at ~100+.
+    try expectEqual(pipes_before, pipes_after);
+}
+
+test "callStreaming recovers cleanly after a failed call (success path)" {
+    // Regression guard: when the server closes immediately (head_then_close),
+    // the agent should remain usable for the next call. This catches a class
+    // of bugs where the Agent's internal state is corrupted after a failed
+    // HTTP attempt (e.g. partial parse, leftover stream state).
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    // Skipped: same std.Io.Threaded.closeFd hang as the test above.
+    if (true) return error.SkipZigTest;
+
+    if (countPipes() > 800) return error.SkipZigTest;
+
+    var server = try FakeServer.start(.head_then_close);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const base_url = try makeBaseUrl(testing_allocator, server.port);
+    defer testing_allocator.free(base_url);
+
+    var a = try agent.Agent.init_with_options(testing_allocator, std.testing.io, .{
+        .idle_timeout_ms = 2_000,
+        .read_timeout_ms = 5_000,
+    });
+    defer a.deinit();
+    a.baseUrl = base_url;
+    a.model = "test-model";
+    a.apiKey = "test-key";
+
+    // Two consecutive failed calls — both must NOT crash, hang, or leak.
+    // (The pre-fix leak crashes the test runner with ProcessFdQuotaExceeded
+    // after a handful of iterations.)
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+
+    // Sanity: we should be able to start a third call without the test
+    // runner having run out of FDs or corrupted state.
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
 }

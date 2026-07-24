@@ -31,7 +31,6 @@ pub fn callCompactAgent(
     const base_url = obj.base_url;
     const io = obj.io;
 
-
     if (messages.items.len < 2) {
         logger.?.warnFmt("[COMPACTION] Not enough messages to compact", .{});
         return null;
@@ -161,10 +160,7 @@ pub fn callCompactAgent(
         return null;
     };
 
-    var compaction_agent = agent.Agent.init(allocator, io) catch |err| {
-        logger.?.errFmt("[COMPACTION] Agent.init failed: {s}", .{@errorName(err)});
-        return null;
-    };
+    var compaction_agent = agent.Agent.init(allocator, io);
     defer compaction_agent.deinit();
 
     compaction_agent.apiKey = api_key;

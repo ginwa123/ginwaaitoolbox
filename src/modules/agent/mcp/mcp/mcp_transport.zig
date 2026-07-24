@@ -3,16 +3,16 @@ const std = @import("std");
 /// MCP Stdio Transport - reads from stdin, writes to stdout
 pub const McpTransport = struct {
     allocator: std.mem.Allocator,
-    stdin: std.fs.File,
-    stdout: std.fs.File,
+    stdin: std.Io.File,
+    stdout: std.Io.File,
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
             .allocator = allocator,
-            .stdin = std.fs.File{ .handle = std.posix.STDIN_FILENO },
-            .stdout = std.fs.File{ .handle = std.posix.STDOUT_FILENO },
+            .stdin = std.Io.File.stdin(),
+            .stdout = std.Io.File.stdout(),
         };
     }
 

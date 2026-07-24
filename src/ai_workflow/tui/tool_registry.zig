@@ -879,7 +879,7 @@ pub fn execRemoveAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     };
     defer parsed.deinit();
 
-    const inner = remove_agent_mod.execute_remove_agent_to_string(ctx.allocator, parsed.value) catch |err| {
+    const inner = remove_agent_mod.execute_remove_agent_to_string(ctx.allocator, ctx.io, parsed.value) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "remove_agent failed: {s}", .{@errorName(err)});
         const output = try wrapToolOutput(ctx.allocator, "remove_agent", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };

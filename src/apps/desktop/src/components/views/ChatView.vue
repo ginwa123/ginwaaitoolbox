@@ -2242,14 +2242,18 @@ const compactSession = async () => {
                           class="mb-2"
                         >
                           <div class="flex flex-wrap gap-2">
-                            <img
+                            <div
                               v-for="(imgUrl, imgIdx) in group.messages[0]!.image_urls"
                               :key="imgIdx"
-                              :src="imgUrl"
-                              alt="Attached image"
-                              class="max-w-full rounded-lg max-h-64 cursor-pointer hover:opacity-90"
+                              class="chat-attached-image-thumb"
                               @click="openImagePreview(imgUrl)"
-                            />
+                            >
+                              <img
+                                :src="imgUrl"
+                                alt="Attached image"
+                                class="chat-attached-image-img"
+                              />
+                            </div>
                           </div>
                         </div>
                         {{ group.messages[0]!.content }}
@@ -3031,5 +3035,29 @@ const compactSession = async () => {
 
 :deep(.markdown-content pre:hover .code-copy-btn) {
   opacity: 1;
+}
+
+/* Attached image thumbnail — small fixed-size preview matching
+   FileInput.vue's FilePreview (80×80px, rounded, object-fit:cover).
+   Click opens the full-screen ImagePreview via openImagePreview(). */
+.chat-attached-image-thumb {
+  width: 80px;
+  height: 80px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  background-color: var(--semantic-sidebar-bg);
+  cursor: pointer;
+}
+
+.chat-attached-image-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.chat-attached-image-thumb:hover .chat-attached-image-img {
+  opacity: 0.9;
 }
 </style>

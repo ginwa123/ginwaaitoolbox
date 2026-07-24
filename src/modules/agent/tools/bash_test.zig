@@ -261,12 +261,24 @@ test "bash_tool: background mode ignores missing mandatory_timeout" {
 // `child.wait(io)` waits forever for the subshell to exit.
 // =========================================================================
 
-/// Returns the count of open FDs in /proc/self/fd. Linux/macOS only.
+/// Returns the count of open FDs in the TEST PROCESS (not the bash
+/// subshell). Linux/macOS only.
 ///
-/// Implemented via `ls -1 /proc/self/fd | wc -l` invoked through the bash
-/// tool itself. This avoids the open-during-walk problem where opening
-/// the dir gives us a new FD that the walker then tries to read from,
-/// causing a BADF panic in the Io runtime.
+/// Implemented via `ls -1 /proc/$PPID/fd | wc -l` invoked through
+/// the bash tool itself. `$PPID` is bash's parent PID, which is the
+/// test process — so this measures the test process's actual FD
+/// table, NOT the bash subshell's (which is a fresh process with a
+/// tiny FD count that would mask parent-side leaks).
+///
+/// Why not `/proc/self/fd`? That's the bash subshell's FD count,
+/// which is ~10 (stdin/stdout/stderr + the bash exec pipes). The
+/// 2-FDs-per-call leak in `execute_bash`'s foreground path lives in
+/// the PARENT (test) process, so `self` reports a constant ~10 and
+/// the leak is invisible. Using `$PPID` (which expands to the parent
+/// of the bash subshell = the test process) gives the real FD count.
+///
+/// The `$PPID` expansion happens inside bash, which sees the
+/// immediate parent PID — exactly what we want.
 fn countOpenFds() !usize {
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return 0;
 
@@ -274,7 +286,8 @@ fn countOpenFds() !usize {
     const io = std.testing.io;
 
     const result = try bash.execute_bash(allocator, io, .{
-        .command = "ls -1 /proc/self/fd 2>/dev/null | wc -l",
+        // $PPID = bash's parent PID = the test process.
+        .command = "ls -1 /proc/$PPID/fd 2>/dev/null | wc -l",
         .cwd = "/tmp",
         .mandatory_timeout = 5,
     });
@@ -483,14 +496,17 @@ test "bash_tool: no FD leak after single call" {
 
     const fd_count_after = try countOpenFds();
 
-    // After the call returns, no extra FDs should remain. We allow
-    // a small tolerance (2 FDs) for transient async allocations
-    // (test runner internal state) but anything more indicates a leak.
+    // After the call returns, zero extra FDs should remain. The
+    // previous `diff <= 2` tolerance masked a per-call 2-FD leak in
+    // execute_bash's foreground success path (waitPidBounded does
+    // NOT call childCleanupPosix, so the parent's stdout + stderr
+    // read ends were never closed). The fix in bash.zig adds an
+    // explicit post-loop pipe close, so this test now expects 0.
     const diff: usize = if (fd_count_after > fd_count_before)
         fd_count_after - fd_count_before
     else
         0;
-    try testing.expect(diff <= 2);
+    try testing.expect(diff == 0);
 }
 
 test "bash_tool: no FD leak after timeout-forced kill" {
@@ -521,7 +537,7 @@ test "bash_tool: no FD leak after timeout-forced kill" {
         fd_count_after - fd_count_before
     else
         0;
-    try testing.expect(diff <= 2);
+    try testing.expect(diff == 0);
 }
 
 test "bash_tool: no FD accumulation across 20 sequential calls" {
@@ -556,9 +572,46 @@ test "bash_tool: no FD accumulation across 20 sequential calls" {
         fd_count_after - fd_count_before
     else
         0;
-    // Allow a tiny slack for transient state (e.g. fd walker itself
-    // opening /proc/self/fd). Anything > 2 indicates a real leak.
-    try testing.expect(diff <= 2);
+    // Tightened from `diff <= 2` to `diff == 0` after the foreground
+    // pipe-leak fix. Pre-fix: 20 calls × 2 leaked FDs/call = 40 FDs.
+    try testing.expect(diff == 0);
+}
+
+test "bash_tool: 100 sequential calls do not grow the open-fd count" {
+    // Stress regression test for the foreground pipe-leak fix. Calls
+    // execute_bash 100 times (the long-running-agent scenario) and
+    // asserts zero FD growth. Pre-fix: 100 calls × 2 leaked FDs/call
+    // = 200 FDs accumulated over the loop.
+    //
+    // This is a more aggressive version of the 20-iteration test above
+    // — if a single FDs-per-call leak slipped back in, this catches
+    // it long before the 20-call test would.
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
+
+    const allocator = testing.allocator;
+    const io = std.testing.io;
+
+    const fd_count_before = try countOpenFds();
+
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        const result = try bash.execute_bash(allocator, io, .{
+            .command = "echo hello",
+            .cwd = "/tmp",
+            .mandatory_timeout = 5,
+        });
+        allocator.free(result.command);
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    const fd_count_after = try countOpenFds();
+
+    const diff: usize = if (fd_count_after > fd_count_before)
+        fd_count_after - fd_count_before
+    else
+        0;
+    try testing.expect(diff == 0);
 }
 
 test "bash_tool: no memory leak after single call" {
@@ -694,7 +747,11 @@ test "bash_tool: stdin_data command completes cleanly" {
         fd_count_after - fd_count_before
     else
         0;
-    try testing.expect(diff <= 2);
+    // Tightened from `diff <= 2` to `diff == 0` after the foreground
+    // pipe-leak fix. Pre-fix: stdin_data path also leaked 2 FDs/call
+    // (stdout + stderr pipes; stdin pipe was properly closed by the
+    // parent after writing).
+    try testing.expect(diff == 0);
 }
 
 test "bash_tool: command that produces lots of output is truncated without hanging" {

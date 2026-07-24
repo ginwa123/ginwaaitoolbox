@@ -49,6 +49,55 @@ pub fn build(b: *std.Build) void {
     });
 
     mod.addImport("nalarcore", mod);
+
+    // === custom_http_client module (libcurl-backed HTTP) ===
+    // Exposed as a separate module so Agent2.zig (in src/modules/agent/)
+    // can `@import("custom_http_client")`. Same libcurl deps as the
+    // sibling build at src/modules/custom_http_client/build.zig.
+    //
+    // Cross-platform libcurl paths (mirrors `-Dsqlite-prefix` for
+    // libsqlite3 — see `configureSqlitePrefix` below):
+    //   - Linux:   /usr/include + system libcurl
+    //   - macOS:   $(brew --prefix curl)/{include,lib}   (keg-only)
+    //   - Windows: $(vcpkg root)/installed/x64-windows/{include,lib}
+    //
+    // The macOS default `/opt/homebrew` is the Apple-Silicon layout;
+    // Intel macs override with `-Dcurl-prefix=/usr/local`. Options
+    // are declared ONCE here so `b.option()`'s anti-duplicate rule
+    // isn't violated when the same value feeds multiple link sites.
+    const curl_prefix = b.option(
+        []const u8,
+        "curl-prefix",
+        "Homebrew prefix for the libcurl keg (default: /opt/homebrew)",
+    ) orelse "/opt/homebrew";
+    const curl_vcpkg_root = b.option(
+        []const u8,
+        "curl-vcpkg-root",
+        "vcpkg root for Windows libcurl (default: C:/vcpkg)",
+    ) orelse "C:/vcpkg";
+
+    const custom_http_client_mod = b.addModule("custom_http_client", .{
+        .root_source_file = b.path("src/modules/custom_http_client/src/root.zig"),
+        .target = target,
+    });
+    custom_http_client_mod.linkSystemLibrary("curl", .{});
+    custom_http_client_mod.link_libc = true;
+    switch (target.result.os.tag) {
+        .linux => {
+            custom_http_client_mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+        },
+        .macos => {
+            custom_http_client_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/curl/include", .{curl_prefix}) });
+            custom_http_client_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/opt/curl/lib", .{curl_prefix}) });
+        },
+        .windows => {
+            custom_http_client_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/include", .{curl_vcpkg_root}) });
+            custom_http_client_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/lib", .{curl_vcpkg_root}) });
+        },
+        else => {},
+    }
+    mod.addImport("custom_http_client", custom_http_client_mod);
+
     // Platform-specific link libs (sqlite3/ssl/crypto on Linux,
     // vendored sqlite3.c on Windows/macOS) are added below in the
     // test/dev-exe/inline-exe setup blocks. They propagate to every
@@ -75,6 +124,8 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     exe.root_module.linkSystemLibrary("c", .{});
+    exe.root_module.linkSystemLibrary("curl", .{});
+    exe.root_module.link_libc = true;
     if (target.result.os.tag == .linux) {
         exe.root_module.linkSystemLibrary("sqlite3", .{});
         exe.root_module.linkSystemLibrary("ssl", .{});

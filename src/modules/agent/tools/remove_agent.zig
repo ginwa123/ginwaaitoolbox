@@ -43,8 +43,15 @@ pub const remove_agent_tool = AgentTool{
 /// Execute the remove_agent tool - deletes agent directory from .nalar/agents/
 /// Returns an XML string with result
 /// Caller owns the returned memory and must free it with allocator.free()
+///
+/// `io: std.Io` is required for the cross-platform recursive-delete
+/// (`std.Io.Dir.cwd().deleteTree`). `std.fs.deleteTreeAbsolute` was
+/// removed in Zig 0.16 and on Windows there is no portable libc
+/// equivalent — the Io runtime + `Io.Dir.cwd().deleteTree` is the
+/// only cross-platform option.
 pub fn execute_remove_agent_to_string(
     allocator: std.mem.Allocator,
+    io: std.Io,
     input: RemoveAgentInput,
 ) ![]const u8 {
     // Validate input
@@ -69,21 +76,21 @@ pub fn execute_remove_agent_to_string(
     const agent_dir_path = try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "agents", name_copy });
     defer allocator.free(agent_dir_path);
 
-    // Check if the agent directory exists
-    const dir_exists = blk: {
-        std.fs.cwd().access(agent_dir_path, .{}) catch {
-            break :blk false;
-        };
-        break :blk true;
-    };
+    // Check if the agent directory exists. Uses the cross-platform
+    // `helpers.fileExists` (libc access()) since Zig 0.16 removed
+    // `std.fs.cwd().access`.
+    const dir_exists = helpers.fileExists(agent_dir_path);
 
     if (!dir_exists) {
         // Agent directory doesn't exist
         return errorToXml(allocator, input.name, "Agent directory not found in .nalar/agents/");
     }
 
-    // Delete the agent directory recursively
-    std.fs.deleteTreeAbsolute(agent_dir_path) catch {
+    // Delete the agent directory recursively. `std.fs.deleteTreeAbsolute`
+    // was removed in Zig 0.16 — use the cross-platform
+    // `std.Io.Dir.cwd().deleteTree` (POSIX: recursive unlink + rmdir;
+    // Windows: Win32 DeleteFileW/RemoveDirectoryW per design_io.zig).
+    std.Io.Dir.cwd().deleteTree(io, agent_dir_path) catch {
         return errorToXml(allocator, input.name, "Failed to delete agent directory");
     };
 

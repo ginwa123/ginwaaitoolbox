@@ -9,37 +9,47 @@
 //   * std.c.pipe(&pipe_fds) returns 0 on success; -1 on error.
 //   * std.c.fork returns the new child's PID (c_int) in the parent,
 //     0 in the child, or -1 on error.
-//   * std.c.kill(pid, 0) returns 0 on success, -1 (with errno) on
-//     failure. We use it for the "is process alive" check.
 //   * std.c.write / read / close are libc wrappers returning
 //     isize / c_int; -1 (with errno) on error.
+//
+// As of 2026-07-24, `daemon.zig::pidAlive` was deleted in favour of the
+// cross-platform helper `helpers.process_status.isProcessRunning` —
+// which already handles `pid <= 0` early-return plus the Windows
+// `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` path (see
+// `src/helpers/process_status.zig`). The four pidAlive tests now
+// exercise that helper directly.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const testing = std.testing;
+const helpers = @import("helpers/mod.zig");
 const daemon = @import("daemon.zig");
 
-test "pidAlive returns false for pid 0" {
-    if (builtin.os.tag == .windows) return;
-    try testing.expect(!daemon.pidAlive(0));
+test "isProcessRunning returns false for pid 0" {
+    try testing.expect(!helpers.process_status.isProcessRunning(0));
 }
 
-test "pidAlive returns false for negative pid" {
-    if (builtin.os.tag == .windows) return;
-    try testing.expect(!daemon.pidAlive(-1));
-    try testing.expect(!daemon.pidAlive(-99999));
+test "isProcessRunning returns false for negative pid" {
+    try testing.expect(!helpers.process_status.isProcessRunning(-1));
+    try testing.expect(!helpers.process_status.isProcessRunning(-99999));
 }
 
-test "pidAlive returns true for own pid" {
-    if (builtin.os.tag == .windows) return;
-    try testing.expect(daemon.pidAlive(std.c.getpid()));
+test "isProcessRunning returns true for own pid" {
+    // Use helpers.process.getCurrentProcessId() (returns i32 cross-platform)
+    // rather than std.c.getpid() which returns `*anyopaque` on Windows.
+    try testing.expect(helpers.process_status.isProcessRunning(helpers.process.getCurrentProcessId()));
 }
 
-test "pidAlive returns false for nonexistent pid" {
-    if (builtin.os.tag == .windows) return;
+test "isProcessRunning returns false for nonexistent pid" {
+    if (builtin.os.tag == .windows) {
+        // Skip: on Windows we'd need a PID we KNOW doesn't exist and that
+        // doesn't get auto-recycled by the kernel in the test window.
+        // Skip rather than flaky-test.
+        return;
+    }
     // Pick a PID that's almost certainly not running. 0x7ffffff0 is
     // near INT_MAX and outside the typical PID range on Linux.
-    try testing.expect(!daemon.pidAlive(0x7ffffff0));
+    try testing.expect(!helpers.process_status.isProcessRunning(0x7ffffff0));
 }
 
 test "POSIX daemonize detaches the grandchild from the original" {

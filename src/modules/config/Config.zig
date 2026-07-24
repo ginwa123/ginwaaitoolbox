@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const json = std.json;
 const Io = std.Io;
 const LLMModels = @import("../agent/LLMModels.zig");
+const helpers = @import("../../helpers/mod.zig");
 
 pub const LlmConfig = struct {
     allocator: std.mem.Allocator,
@@ -236,6 +237,11 @@ pub const LlmConfig = struct {
         /// Top-level sub-agents array. Raw JSON value parsed via
         /// `parseSubAgentsList` into an owned `[]SubAgentConfig`.
         sub_agents: ?std.json.Value = null,
+        /// Stable per-install UUID used as the LLM-API end-user identifier.
+        /// Empty string when missing from the parsed JSON (legacy configs).
+        /// `LlmConfig.init` auto-migrates empty values by generating a fresh
+        /// UUID and rewriting the config file atomically.
+        user_identifier: []const u8 = "",
     };
 
     /// JSON-side parse struct for a single sub-agent entry. Mirrors

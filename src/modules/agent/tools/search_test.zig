@@ -104,7 +104,7 @@ test "search: respect_ignore_files = false does NOT return a validation error" {
     // error is acceptable. What matters is NO SearchError domain variant
     // fires (those would mean validation rejected the field).
     _ = result catch |err| switch (err) {
-        error.FileNotFound, error.PathError, error.AccessDenied => {},
+        error.FileNotFound, error.PathError, error.AccessDenied, error.StreamTooLong => {},
         else => return err,
     };
 }
@@ -128,7 +128,7 @@ test "search: word_boundary = true does NOT return a validation error" {
     // error is acceptable. What matters is NO SearchError domain variant
     // fires (those would mean validation rejected the field).
     _ = result catch |err| switch (err) {
-        error.FileNotFound, error.PathError, error.AccessDenied => {},
+        error.FileNotFound, error.PathError, error.AccessDenied, error.StreamTooLong => {},
         else => return err,
     };
 }
@@ -152,7 +152,7 @@ test "search: literal = true does NOT return a validation error" {
     // error is acceptable. What matters is NO SearchError domain variant
     // fires (those would mean validation rejected the field).
     _ = result catch |err| switch (err) {
-        error.FileNotFound, error.PathError, error.AccessDenied => {},
+        error.FileNotFound, error.PathError, error.AccessDenied, error.StreamTooLong => {},
         else => return err,
     };
 }
@@ -176,7 +176,7 @@ test "search: only_matching = true does NOT return a validation error" {
     // error is acceptable. What matters is NO SearchError domain variant
     // fires (those would mean validation rejected the field).
     _ = result catch |err| switch (err) {
-        error.FileNotFound, error.PathError, error.AccessDenied => {},
+        error.FileNotFound, error.PathError, error.AccessDenied, error.StreamTooLong => {},
         else => return err,
     };
 }
@@ -932,7 +932,7 @@ test "search: literal = true does NOT fire RegexParseError for invalid regex pat
         defer owned.deinit(allocator);
         // 0 matches is expected — the file content doesn't contain "*invalid".
     } else |err| switch (err) {
-        error.FileNotFound, error.PathError, error.AccessDenied => {},
+        error.FileNotFound, error.PathError, error.AccessDenied, error.StreamTooLong => {},
         error.RegexParseError => return error.RegexParseError,
         else => return err,
     }

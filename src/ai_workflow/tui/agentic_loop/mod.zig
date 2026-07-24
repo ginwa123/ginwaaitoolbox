@@ -83,3 +83,8 @@ const mark_history_not_for_llmrun_mod = @import("markHistoryNotForLLMRun.zig");
 pub const mark_history_not_for_llmrun = mark_history_not_for_llmrun_mod.markHistoryNotForLLMRun;
 
 pub const makeWorkingDirectoryContext = prompts_mod.makeWorkingDirectoryContext;
+
+
+const retry_delay_ms_mod = @import("retry_delay_ms.zig");
+pub const retryDelayMs = retry_delay_ms_mod.retryDelayMs;
+pub const RetryDelayMsInput = retry_delay_ms_mod.RetryDelayMsInput;

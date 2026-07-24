@@ -271,12 +271,7 @@ pub fn resolve_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
     // Try local path first
     if (get_local_skills_path(allocator)) |local_path| {
         // Check if directory exists
-        const exists = blk: {
-            std.fs.cwd().access(local_path, .{}) catch {
-                break :blk false;
-            };
-            break :blk true;
-        };
+        const exists = helpers.fileExists(local_path);
         if (exists) {
             return local_path;
         }
@@ -286,12 +281,7 @@ pub fn resolve_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
     // Try global path
     if (get_global_skills_path(allocator, null)) |global_path| {
         // Check if directory exists
-        const exists = blk: {
-            std.fs.cwd().access(global_path, .{}) catch {
-                break :blk false;
-            };
-            break :blk true;
-        };
+        const exists = helpers.fileExists(global_path);
         if (exists) {
             return global_path;
         }

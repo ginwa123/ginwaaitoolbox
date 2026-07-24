@@ -40,12 +40,14 @@ fn panicHandler(comptime message: []const u8, _: ?*std.builtin.StackTrace) noret
 
     const panic_log: []const u8 = panic_buf.items;
 
-    // Write to panic log file if path is set
+    // Write to panic log file if path is set. `std.fs.openFileAbsolute`
+    // was removed in Zig 0.16 — use libc `std.c.fopen("a", append mode)`
+    // which works on Linux, macOS, and Windows via UCRT.
     if (panic_log_path) |path| {
-        const file = std.fs.openFileAbsolute(path, .{ .mode = .append_to_file }) catch null;
+        const file = std.c.fopen(path, "a") orelse null;
         if (file) |f| {
-            f.writeAll(panic_log) catch {};
-            f.close();
+            _ = std.c.fwrite(panic_log.ptr, 1, panic_log.len, f);
+            _ = std.c.fclose(f);
         }
     }
 

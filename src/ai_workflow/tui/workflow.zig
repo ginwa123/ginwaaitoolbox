@@ -192,9 +192,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     // Uses di.allocator (NOT parent_allocator) because parent_allocator
     // is per-block — the flag survives the entire function.
     const is_auto_retry_until_stop: bool = blk: {
-        var flag_rows = db.query(di.allocator,
-            "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?",
-            &.{copy_session_id}) catch break :blk false;
+        var flag_rows = db.query(di.allocator, "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{copy_session_id}) catch break :blk false;
         defer flag_rows.deinit();
         const flag_row = flag_rows.next() catch break :blk false;
         if (flag_row) |row| {
@@ -471,7 +469,13 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     \\Reason for last retry: {s} (source: {s}). The session keeps running.
                 , .{ retry_count, reason_error, reason_source }) catch "unattended soft-bail snapshot";
                 try agentic_loop_mod.insertLLMHistories(.{
-                    .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd,
+                    .allocator = allocator,
+                    .io = io,
+                    .db = db,
+                    .logger = logger,
+                    .event_bus = event_bus,
+                    .is_emit_sse = true,
+                    .cwd = copy_cwd,
                     .entity = .{
                         .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                         .session_id = copy_session_id,
@@ -497,7 +501,15 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                         .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     },
                 });
-                if (!retryDelayMs(allocator, config.retry_delay_ms, db, copy_session_id, io, logger)) {
+
+                if (!agentic_loop_mod.retryDelayMs(.{
+                    .allocator = allocator,
+                    .delay_ms = config.retry_delay_ms,
+                    .db = db,
+                    .session_id = copy_session_id,
+                    .io = io,
+                    .logger = logger,
+                })) {
                     logger.infoFmt("WORKFLOW CANCELLED during unattended soft-bail: session_id={s}", .{copy_session_id});
                     break;
                 }
@@ -612,7 +624,14 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // rate-limit window can close). 0 ms = no delay (current
             // behavior, the default). Interrupted by worker cancellation —
             // see retryDelayMs for the polling details.
-            if (!retryDelayMs(allocator, config.retry_delay_ms, db, copy_session_id, io, logger)) {
+            if (!agentic_loop_mod.retryDelayMs(.{
+                .allocator = allocator,
+                .delay_ms = config.retry_delay_ms,
+                .db = db,
+                .session_id = copy_session_id,
+                .io = io,
+                .logger = logger,
+            })) {
                 logger.infoFmt("WORKFLOW CANCELLED during retry delay: session_id={s}", .{copy_session_id});
                 break;
             }
@@ -702,7 +721,15 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 // sleep before the loop restarts so we don't hammer the
                 // upstream when it returns an unexpected finish_reason
                 // repeatedly. Interrupted by worker cancellation.
-                if (!retryDelayMs(allocator, config.retry_delay_ms, db, copy_session_id, io, logger)) {
+
+                if (!agentic_loop_mod.retryDelayMs(.{
+                    .allocator = allocator,
+                    .delay_ms = config.retry_delay_ms,
+                    .db = db,
+                    .session_id = copy_session_id,
+                    .io = io,
+                    .logger = logger,
+                })) {
                     logger.infoFmt("WORKFLOW CANCELLED during retry delay (finish_reason else): session_id={s}", .{copy_session_id});
                     break;
                 }
@@ -753,7 +780,7 @@ fn generateSessionNameNew(
     name_messages[0] = .{ .role = .system, .content = prompt.GenerateSessionNameAgent };
     name_messages[1] = .{ .role = .user, .content = first_user_message.? };
 
-    var name_agent = agent.Agent.init(allocator, io) catch return;
+    var name_agent = agent.Agent.init(allocator, io);
     defer name_agent.deinit();
     name_agent.apiKey = api_key;
     name_agent.model = model;
@@ -879,92 +906,6 @@ fn saveRetryAttemptMessage(
     } });
 }
 
-// POSIX `nanosleep` — declared `extern "c"` so the call doesn't go
-// through Zig 0.16's Io runtime. We deliberately avoid `std.Io.sleep`
-// because the workflow is dispatched as an `Io.Group.concurrent` task
-// from the event bus; blocking on `std.Io.sleep` inside that context
-// would deadlock the group (the workflow's worker thread is parked in
-// the Io sleep, the nested async tasks need other workers, but the
-// Io.Group can't signal completion while the workflow is parked).
-// Plain `nanosleep` parks the OS thread without involving the Io
-// runtime, so the rest of the group keeps making progress. See
-// `src/modules/agent/tools/bash.zig:4-22` for the canonical precedent.
-//
-// Field names differ between libc implementations: glibc uses
-// `tv_sec`/`tv_nsec`, Darwin and most BSDs use `sec`/`nsec`. We mirror
-// the local `PosixTimespec` shape from `helpers/mod.zig` (sec/nsec)
-// so this works on macOS too.
-const WorkflowNanoSleepTimespec = extern struct {
-    sec: c_long,
-    nsec: c_long,
-};
-// IMPORTANT: the symbol name MUST match the libc name (`nanosleep`),
-// NOT a Zig-side wrapper. In Zig 0.16 `extern "c" fn` keeps the
-// declared name verbatim — using a wrapper name like
-// `workflowNanosleep` produces a linker error "undefined symbol:
-// workflowNanosleep" because libc exports the symbol as `nanosleep`.
-// (See project memory `zig-extern-c-optional-pointer-return`.)
-extern "c" fn nanosleep(req: *const WorkflowNanoSleepTimespec, rem: ?*WorkflowNanoSleepTimespec) c_int;
-
-/// Sleep for up to `delay_ms` milliseconds, polling
-/// `agentic_loop.isWorkerCancelled` every 50 ms so a user-initiated
-/// cancel returns early. Returns `true` if the delay completed,
-/// `false` if it was interrupted by cancellation.
-///
-/// `delay_ms = 0` is a fast-path no-op (returns `true` immediately) —
-/// avoids one nanosleep call when the user has configured "no delay".
-///
-/// Chunk size: 50 ms balances two concerns:
-/// - Cancellation responsiveness: a cancel fires within 50 ms of
-///   the user clicking (imperceptible).
-/// - CPU overhead: 20 polls/sec is trivial; never spin-busy-waits.
-fn retryDelayMs(
-    allocator: std.mem.Allocator,
-    delay_ms: u32,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-    io: std.Io,
-    logger: *logger_mod.Logger,
-) bool {
-    if (delay_ms == 0) return true;
-
-    const deadline_ns: i96 = std.Io.Clock.now(.real, io).nanoseconds +
-        @as(i96, @intCast(delay_ms)) * std.time.ns_per_ms;
-
-    while (true) {
-        // Cancellation check — same shape as the loop-top check at
-        // workflow.zig:276 so the cancel UX is consistent.
-        if (agentic_loop_mod.isWorkerCancelled(agentic_loop_mod.IsWorkerCancelledInput{
-            .allocator = allocator,
-            .db = db,
-            .session_id = session_id,
-        })) {
-            const now_ns = std.Io.Clock.now(.real, io).nanoseconds;
-            const remaining_ns: i96 = @max(deadline_ns - now_ns, 0);
-            const remaining_ms: u32 = @intCast(@divFloor(remaining_ns, std.time.ns_per_ms));
-            logger.infoFmt(
-                "Retry delay interrupted by worker cancellation: session_id={s} remaining={d}ms",
-                .{ session_id, remaining_ms },
-            );
-            return false;
-        }
-        if (std.Io.Clock.now(.real, io).nanoseconds >= deadline_ns) return true;
-
-        const now_ns = std.Io.Clock.now(.real, io).nanoseconds;
-        const remaining_ms: u32 = @intCast(@divFloor(
-            deadline_ns - now_ns,
-            std.time.ns_per_ms,
-        ));
-        const chunk_ms: u32 = if (remaining_ms > 50) 50 else remaining_ms;
-
-        const ts = WorkflowNanoSleepTimespec{
-            .sec = 0,
-            .nsec = chunk_ms * std.time.ns_per_ms,
-        };
-        _ = nanosleep(&ts, null);
-    }
-}
-
 fn callDynamicAgentNew(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -979,21 +920,23 @@ fn callDynamicAgentNew(
     session_id: []const u8,
     tools: []const agent.AgentTool,
 ) !agent.CallResponse {
-    var dynamic_agent = try agent.Agent.init(allocator, io);
-    // BUG FIX 2026-07-14: missing `defer dynamic_agent.deinit()` was leaking
-    // `httpClient`'s connection pool / sockets on every workflow loop iteration.
-    // After extended uptime the leak reaches the soft FD limit (1024) and triggers
-    // `error.ProcessFdQuotaExceeded` in any subsequent FD-allocating call. The
-    // other two `Agent.init` call sites in this codebase already had the matching
-    // defer: `name_agent` (workflow.zig:637) and `compaction_agent`
-    // (compaction.zig:168). `Agent.deinit()` (Agent.zig:1815) calls
-    // `self.httpClient.deinit()` which frees any pooled HTTP connections.
+    // Libcurl-backed Agent (custom_http_client). Same field names,
+    // same callStreaming signature as the previous std.http.Client version
+    // — only the transport differs. The previous std.http.Client implementation
+    // had a 200-line StreamWatchdog / apply_tcp_keepalive / dup2-to-/dev/null
+    // workaround for std.Io.Threaded parking workers in recv(); the new
+    // Agent (formerly a separate Agent2.zig merged in this PR) uses
+    // libcurl's CURLOPT_TIMEOUT_MS instead, which doesn't have that issue.
+    var dynamic_agent = agent.Agent.init(allocator, io);
     defer dynamic_agent.deinit();
     dynamic_agent.apiKey = api_key;
     dynamic_agent.model = model;
     dynamic_agent.baseUrl = base_url;
     dynamic_agent.UrlStyle = url_style;
-    const dynamic_agent_call_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
+    // `messages_list.items` is `[]agent.AgentMessage`; the local
+    // `agent.AgentCall.messages` wants the same type — direct assignment.
+    const messages_for_agent: []const agent.AgentMessage = messages_list.items;
+    const dynamic_agent_call_params = agent.AgentCall{ .tools = tools, .messages = messages_for_agent, .temperature = agent_temperature, .max_tokens = current_max_tokens };
     dynamic_agent.thinkingEnabled = isThinking;
     dynamic_agent.httpOptions.read_timeout_ms = 300_000; // 10 minutes
 
@@ -1002,9 +945,30 @@ fn callDynamicAgentNew(
         .session_id = session_id,
         .chunk_index = 0,
     };
-    const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback);
-
-    return res_dynamic_agent;
+    // `stream_callback` is typed as agent.StreamCallback; callStreaming
+    // wants the same type — direct assignment, no @ptrCast needed.
+    const callback_for_agent: agent.StreamCallback = &stream_callback;
+    const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, callback_for_agent);
+    // `callDynamicAgentNew` returns `agent.CallResponse` (preserves the
+    // upstream signature). Pre-rename this was a byte-identical copy from
+    // agent2.CallResponse (different module). Post-rename both sides are
+    // the same struct in the same module — but the function signature is
+    // still `agent.CallResponse` so we just pass through the locals.
+    const tool_calls_for_agent: ?[]agent.ToolCall = res_dynamic_agent.tool_calls;
+    const finish_reason_for_agent: ?agent.FinishReason = res_dynamic_agent.finish_reason;
+    const usage_for_agent: agent.Usage = .{
+        .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
+        .completion_tokens = res_dynamic_agent.usage.completion_tokens,
+        .total_tokens = res_dynamic_agent.usage.total_tokens,
+    };
+    return .{
+        .allocator = res_dynamic_agent.allocator,
+        .content = res_dynamic_agent.content,
+        .tool_calls = tool_calls_for_agent,
+        .finish_reason = finish_reason_for_agent,
+        .reasoning_content = res_dynamic_agent.reasoning_content,
+        .usage = usage_for_agent,
+    };
 }
 
 /// Conditionally compact `messages` in place. When `force` is false, compaction
