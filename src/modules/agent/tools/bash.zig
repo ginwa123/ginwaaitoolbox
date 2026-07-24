@@ -634,22 +634,17 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
             if (stdout_eof.load(.acquire) and stderr_eof.load(.acquire)) {
                 // Use the bounded wait so D-state descendants don't
                 // hang us forever. After the grace period expires we
-                // close the pipes manually and synthesize a Term.
+                // synthesize a Term (the pipe close happens in the
+                // unified post-loop block below).
                 const wait_result = waitPidBounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
-                switch (wait_result.outcome) {
-                    .reaped => break :blk statusToTerm(wait_result.status),
-                    .no_child => break :blk .{ .exited = 0 },
-                    .grace_period_expired, .unexpected_error => {
-                        // D-state descendant — give up gracefully.
-                        // Manually close pipes so reader threads exit.
-                        if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
-                        if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
-                        break :blk if (builtin.os.tag == .windows)
-                            .{ .unknown = 1 }
-                        else
-                            .{ .signal = .KILL };
-                    },
-                }
+                break :blk switch (wait_result.outcome) {
+                    .reaped => statusToTerm(wait_result.status),
+                    .no_child => .{ .exited = 0 },
+                    .grace_period_expired, .unexpected_error => if (builtin.os.tag == .windows)
+                        .{ .unknown = 1 }
+                    else
+                        .{ .signal = .KILL },
+                };
             }
             // Deadline reached?
             if (std.Io.Timestamp.now(io, .real).nanoseconds >= deadline_ns) {
@@ -662,19 +657,14 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
                 // Bounded wait — don't block forever on a D-state
                 // descendant that SIGKILL can't interrupt.
                 const wait_result = waitPidBounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
-                switch (wait_result.outcome) {
-                    .reaped => break :blk statusToTerm(wait_result.status),
-                    .no_child => break :blk .{ .exited = 0 },
-                    .grace_period_expired, .unexpected_error => {
-                        // Force-close pipes and synthesize a signal-killed term.
-                        if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
-                        if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
-                        break :blk if (builtin.os.tag == .windows)
-                            .{ .unknown = 1 }
-                        else
-                            .{ .signal = .KILL };
-                    },
-                }
+                break :blk switch (wait_result.outcome) {
+                    .reaped => statusToTerm(wait_result.status),
+                    .no_child => .{ .exited = 0 },
+                    .grace_period_expired, .unexpected_error => if (builtin.os.tag == .windows)
+                        .{ .unknown = 1 }
+                    else
+                        .{ .signal = .KILL },
+                };
             }
             // Sleep 10 ms — blocking the OS thread via raw libc
             // `nanosleep`, NOT through the Io runtime. This is exactly
@@ -688,6 +678,25 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
             _ = nanosleep(&ts, null);
         }
     };
+
+    // CRITICAL: close the parent-side pipe FDs after waitPidBounded
+    // returns. `waitPidBounded` uses raw libc `waitpid` which does NOT
+    // call `childCleanupPosix` (that only runs from `child.wait(io)`).
+    // Without this close, every successful bash tool call leaks 2 FDs
+    // (the parent's read ends of stdout + stderr pipes).
+    //
+    // The reader threads either saw EOF (happy path — child closed its
+    // write end on exit) or will see EBADF (D-state path — we close
+    // the read end under them) and exit cleanly. `std.Io.File` has no
+    // destructor, so we MUST close the FDs explicitly here or they
+    // leak until process exit.
+    //
+    // Unified single block (replaces the per-arm inline closes that
+    // previously lived in the .grace_period_expired/.unexpected_error
+    // switch arms — those only fired on the slow paths, leaving the
+    // fast paths to leak).
+    if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
+    if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
 
     // Join the reader threads. If the kill + bounded-wait closed the
     // pipes (grace period expired), the reader threads saw EOF and
