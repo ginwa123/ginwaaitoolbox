@@ -311,11 +311,6 @@ const win32_apis = if (builtin.os.tag == .windows) struct {
         nSize: u32,
     ) callconv(.winapi) u32;
 
-    extern "kernel32" fn SetEnvironmentVariableW(
-        lpName: [*]const u16,
-        lpValue: ?[*]const u16,
-    ) callconv(.winapi) u32;
-
     const STARTUPINFOW = extern struct {
         cb: u32,
         lpReserved: ?[*]u16,
@@ -572,12 +567,6 @@ fn getEnvVarW(name: [:0]const u16) !?[:0]u16 {
         return error.OutOfMemory;
     @memcpy(result[0..len], buf[0..len]);
     return result;
-}
-
-/// Set an environment variable to a wide-string value.
-fn setEnvVarW(name: [:0]const u16, value: [:0]const u16) bool {
-    if (builtin.os.tag != .windows) unreachable;
-    return win32_apis.SetEnvironmentVariableW(@ptrCast(name.ptr), @ptrCast(value.ptr)) != 0;
 }
 
 /// Build a command line string for CreateProcessW. Format: `"<exe>"`.

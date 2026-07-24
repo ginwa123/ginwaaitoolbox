@@ -149,12 +149,17 @@ pub const StartOptions = struct {
 ///
 /// POSIX daemonization is permanent — once `serviceStart` returns to the
 /// caller, the daemon is running and the caller (the foreground
-/// `nalar service start` invocation) has exited via daemonizePosix.
+/// `nalar service start` invocation) has exited via daemonize.
 ///
 /// Windows daemonization is implemented in daemon.zig via CreateProcessW
 /// with DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP. The spawned child
 /// (the daemon) sees `NALAR_DAEMON_CHILD=1` and continues; the parent
 /// (the foreground process) exits with code 0.
+///
+/// On both platforms the shutdown callback is wired up to the
+/// platform-appropriate shutdown signal (SIGTERM on POSIX, console-ctrl
+/// events on Windows) so `nalar service stop` / Ctrl-C / system logoff
+/// all trigger graceful shutdown.
 pub fn serviceStart(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -189,26 +194,15 @@ pub fn serviceStart(
     };
     try state_file.writeStateFile(allocator, io, opts.state_path, state);
 
-    // 4. Install SIGTERM handler that invokes the injectable shutdown.
-    //    On Windows, the POSIX-only signal_handlers.installSigtermHandler
-    //    is a compile error — skip it. The Windows SetConsoleCtrlHandler
-    //    path is a follow-up (see signal_handlers.zig).
-    if (builtin.os.tag != .windows) {
-        signal_handlers.installSigtermHandler(opts.on_shutdown);
-    }
+    // 4. Install the shutdown-signal handler. Cross-platform:
+    //    POSIX = SIGTERM via std.posix.sigaction
+    //    Windows = console-ctrl events via SetConsoleCtrlHandler
+    //    Both invoke opts.on_shutdown to close the server gracefully.
+    signal_handlers.installSigtermHandler(opts.on_shutdown);
 
     // 5. Hand off to the caller-supplied server run-loop. This blocks
     //    until the server stops (typical: shutdown HTTP endpoint
     //    called, or SIGTERM received).
-}
-
-/// Unix timestamp in seconds. Uses libc gettimeofday (no Io required).
-/// (Kept as a fallback if helpers.unixTimestamp is unavailable; main
-/// path uses helpers.unixTimestamp for cross-platform support.)
-fn unixTimestampSeconds() i64 {
-    var tv: std.c.timeval = undefined;
-    _ = std.c.gettimeofday(&tv, null);
-    return @intCast(tv.sec);
 }
 
 pub const StopError = error{ OutOfMemory };
