@@ -311,6 +311,12 @@ watch(
 // watch(activePageId) → fetch elements for the new page (mirrors
 // KanbanView's loadColumns pattern).
 watch(activePageId, (pageId) => {
+  // Mirror to the store FIRST so AppLayout's design handlers
+  // (handleDesignUpdateElement / handleDesignDeleteElement) always
+  // see the latest selection, even if the early-return below fires
+  // (no item, no workspace, empty page). The store ref starts at ''
+  // and clears in onUnmounted (below).
+  workspacesStore.setActiveDesignPage(pageId ?? '')
   selectedElementId.value = null
   if (!pageId) return
   if (!props.workspaceId || !effectiveItemId.value) return
@@ -437,6 +443,10 @@ onUnmounted(() => {
   window.removeEventListener('blur', handleWindowBlur)
   // Defensive: clear body cursor if we unmount mid-press.
   document.body.style.cursor = ''
+  // Clear the mirrored active page id so AppLayout's design handlers
+  // don't try to route PATCH/PUT/DELETE to a page whose view has
+  // unmounted. Task 1.2 of the design-element-drag-and-drop plan.
+  workspacesStore.setActiveDesignPage('')
 })
 
 // ─── Handlers ──────────────────────────────────────────────────────────
