@@ -35,7 +35,10 @@ pub const RequestId = struct {
         // Generate random 4-character hex suffix using entropy
         const entropy = ts_ns ^ @as(u64, @intFromPtr(&self));
         var random_bytes: [2]u8 = undefined;
-        @as(*u16, @ptrCast(@alignCast(&random_bytes))).* = @as(u16, @truncate(@as(u64, @intCast(entropy))));
+        // std.mem.writeInt handles alignment internally — safe on any
+        // stack-allocated buffer. Avoids Zig 0.16's strict `@alignCast`
+        // panic when the buffer happens to land on a non-2-byte boundary.
+        std.mem.writeInt(u16, &random_bytes, @as(u16, @truncate(@as(u64, @intCast(entropy)))), .little);
         
         // Format: REQ-YYYYMMDD-HHMMSS-XXXX
         _ = std.fmt.bufPrint(&self.value, "REQ-{d:0>4}{d:0>2}{d:0>2}-{d:0>2}{d:0>2}{d:0>2}-{x:0>2}{x:0>2}", .{

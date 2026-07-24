@@ -16,7 +16,10 @@ pub fn generateSessionId(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     // Use timestamp + PID + pointer for pseudo-random entropy
     const entropy: u64 = (@as(u64, @intCast(pid)) << 32) ^ @as(u64, @intCast(timestamp));
     var random_bytes: [8]u8 = undefined;
-    @as(*u64, @ptrCast(@alignCast(&random_bytes))).* = entropy;
+    // std.mem.writeInt handles alignment internally — safe on any
+    // stack-allocated buffer. Avoids Zig 0.16's strict `@alignCast`
+    // panic when the buffer happens to land on a non-8-byte boundary.
+    std.mem.writeInt(u64, &random_bytes, entropy, .little);
 
     // Convert random bytes to hex string
     var hex_chars: [16]u8 = undefined;

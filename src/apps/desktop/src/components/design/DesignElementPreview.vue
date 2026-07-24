@@ -29,11 +29,16 @@
     - When `editable=true`, the parent's contenteditable on the body
       element makes the iframe content editable; the parent listens
       for blur and reads `iframe.contentDocument.body.innerHTML`.
-    - The srcdoc is bound directly — Vue's reactivity keeps it in
-      sync with the `html` prop.
+    - The `srcdoc` is wrapped with a `<style>html,body{margin:0;
+      height:100%}</style>` preamble (see `iframeHtml` below) so
+      percentage-based layouts inside the user's HTML resolve
+      correctly — the iframe body defaults to `height: auto`, which
+      would otherwise collapse every `height: 100%` container to 0.
+    - The `html` prop is bound through the `iframeHtml` computed so
+      Vue's reactivity keeps the srcdoc in sync with `props.html`.
 -->
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -54,6 +59,21 @@ const props = withDefaults(
 const emit = defineEmits<{
   htmlChanged: [html: string]
 }>()
+
+// Iframe srcdoc body has no implicit height. Without an explicit
+// `height: 100%` on <html>/<body>, any `height: 100%` on the
+// user's outer <div> collapses to 0 (because body is `height: auto`),
+// and any `position: relative` on that div becomes a 0-height
+// containing block for absolutely-positioned children — those
+// children collapse too, and the iframe's `background: white`
+// (set inline below) shows through, making the element appear blank.
+//
+// Prepending a stylesheet that forces html/body to fill the iframe
+// makes percentage-based layouts (and position:relative containing
+// blocks) behave as users expect.
+const iframeHtml = computed(
+  () => `<style>html,body{margin:0;height:100%;}</style>${props.html}`,
+)
 
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 
@@ -98,7 +118,7 @@ watch(
     sandbox="allow-scripts"
     class="w-full h-full"
     :style="{ border: 'none', background: 'white', pointerEvents: props.pointerEvents }"
-    :srcdoc="html"
+    :srcdoc="iframeHtml"
     data-testid="design-element-preview"
     @load="onIframeLoad"
   />

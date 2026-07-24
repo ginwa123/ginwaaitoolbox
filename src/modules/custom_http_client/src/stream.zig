@@ -166,18 +166,33 @@ pub const ResponseStream = struct {
     thread: std.Thread,
 
     pub fn next(self: *ResponseStream) !?[]const u8 {
-        // Block briefly waiting for the worker thread to push a chunk
+        // Block waiting for the worker thread to push a chunk
         // or signal completion. Without this, `next()` would return
         // null on the very first call (race vs the worker thread),
         // causing streaming tests to exit prematurely with 0 chunks.
         //
-        // Poll budget is short (5s, generous for slow handshakes) but
-        // we exit early as soon as a chunk arrives or the worker
-        // reports completion. We use libc clock_gettime rather than
-        // std.Io.Clock.now because the latter calls into the Io
-        // runtime from the test thread, which can deadlock against
-        // the worker thread that owns the runtime.
-        const poll_budget_ns: u64 = 5 * std.time.ns_per_s;
+        // The polling budget is set to match the default libcurl
+        // `CURLOPT_TIMEOUT_MS` (300 s = 5 min) configured in `client.zig`.
+        // Reasoning models (Claude with extended thinking, OpenAI o1/o3,
+        // DeepSeek R1, Qwen QwQ) routinely pause 30-60 s — sometimes
+        // longer — between SSE chunks while reasoning internally. The
+        // previous 5-second budget caused false "EOF" events on healthy
+        // streams (the 5 s cap fired before the next chunk arrived),
+        // which surfaced as `StreamInterrupted` in Agent2.zig because
+        // the parser never saw a `finish_reason`.
+        //
+        // Trade-off: if the worker is truly stuck (e.g. deadlocked),
+        // next() blocks until the libcurl timeout fires and the worker
+        // sets `worker_error`. That's the bound we want — the caller
+        // can't distinguish "polling timeout" from "EOF" without
+        // inspecting the worker state, so the right answer is to let
+        // libcurl be the source of truth for "is this connection dead".
+        //
+        // We use libc clock_gettime rather than std.Io.Clock.now because
+        // the latter calls into the Io runtime from the test thread,
+        // which can deadlock against the worker thread that owns the
+        // runtime.
+        const poll_budget_ns: u64 = 300 * std.time.ns_per_s;
         var ts: std.c.timespec = undefined;
         _ = std.c.clock_gettime(.MONOTONIC, &ts);
         const start_ns: u64 = @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
@@ -331,6 +346,18 @@ fn headerCallback(buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque)
 fn streamWorker(state: *SharedState) void {
     const rc: c_uint = curl.easy_perform(state.handle);
     if (rc != curl.C.CURLE_OK and state.worker_error == null) {
+        // Log libcurl's human-readable error message (filled into
+        // state.errbuf by libcurl via CURLOPT_ERRORBUFFER) so callers
+        // can see WHY the request failed — e.g. "HTTP error returned"
+        // for a 401, "Couldn't resolve host", "SSL connect error",
+        // etc. The UnknownCurl mapping alone is opaque; the message
+        // identifies the actual cause.
+        const err_msg_slice = std.mem.sliceTo(&state.errbuf, 0);
+        if (err_msg_slice.len > 0) {
+            std.log.warn("curl_easy_perform failed: code={d} msg={s}", .{ rc, err_msg_slice });
+        } else {
+            std.log.warn("curl_easy_perform failed: code={d}", .{rc});
+        }
         state.worker_error = mapStreamError(rc);
     }
 
@@ -512,12 +539,17 @@ pub fn openStream(
     _ = setoptSlist(handle, curl.OPT.HTTPHEADER, state.header_slist);
 
     if (req.body) |body| {
-        // COPYPOSTFIELDS makes libcurl duplicate the body internally so we
-        // don't borrow `req.body` (which the caller may free as soon as
-        // openStream returns, while the worker thread is still running).
-        // POSTFIELDSIZE_LARGE lets us pass the length without the body
-        // needing to be NUL-terminated.
-        _ = setoptPtr(handle, curl.OPT.COPYPOSTFIELDS, body.ptr);
+        // Use POSTFIELDS (pointer, no copy) + POSTFIELDSIZE_LARGE for
+        // non-NUL-terminated request bodies. COPYPOSTFIELDS would call
+        // strlen() on `body.ptr` and read past the end of the buffer
+        // (JSON has no NUL bytes, so strlen scans heap memory beyond
+        // the allocation) — libcurl then sees "0 bytes read" against
+        // the POSTFIELDSIZE_LARGE value and aborts with CURLE_READ_ERROR
+        // ("client read function EOF fail"). The body MUST outlive the
+        // worker thread, which is guaranteed because the caller (Agent2)
+        // holds `json_body` alive through `defer` until callStreaming
+        // returns AFTER stream.deinit() joins the worker.
+        _ = setoptPtr(handle, curl.OPT.POSTFIELDS, body.ptr);
         _ = setoptLong(handle, curl.OPT.POSTFIELDSIZE_LARGE, @as(c_long, @intCast(body.len)));
     }
 

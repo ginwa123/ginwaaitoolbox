@@ -49,6 +49,22 @@ pub fn build(b: *std.Build) void {
     });
 
     mod.addImport("nalarcore", mod);
+
+    // === custom_http_client module (libcurl-backed HTTP) ===
+    // Exposed as a separate module so Agent2.zig (in src/modules/agent/)
+    // can `@import("custom_http_client")`. Same libcurl deps as the
+    // sibling build at src/modules/custom_http_client/build.zig.
+    const custom_http_client_mod = b.addModule("custom_http_client", .{
+        .root_source_file = b.path("src/modules/custom_http_client/src/root.zig"),
+        .target = target,
+    });
+    custom_http_client_mod.linkSystemLibrary("curl", .{});
+    custom_http_client_mod.link_libc = true;
+    if (target.result.os.tag == .linux) {
+        custom_http_client_mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    }
+    mod.addImport("custom_http_client", custom_http_client_mod);
+
     // Platform-specific link libs (sqlite3/ssl/crypto on Linux,
     // vendored sqlite3.c on Windows/macOS) are added below in the
     // test/dev-exe/inline-exe setup blocks. They propagate to every
@@ -75,6 +91,8 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     exe.root_module.linkSystemLibrary("c", .{});
+    exe.root_module.linkSystemLibrary("curl", .{});
+    exe.root_module.link_libc = true;
     if (target.result.os.tag == .linux) {
         exe.root_module.linkSystemLibrary("sqlite3", .{});
         exe.root_module.linkSystemLibrary("ssl", .{});

@@ -15,6 +15,7 @@ const sqlite = nalarcore.sqlite;
 const config_mod = nalarcore.config;
 const logger_mod = nalarcore.loggermod;
 const agent = nalarcore.agent;
+const agent2 = nalarcore.agent2;
 const prompt = nalarcore.agent.prompt;
 const helpers = nalarcore.helpers;
 
@@ -979,32 +980,65 @@ fn callDynamicAgentNew(
     session_id: []const u8,
     tools: []const agent.AgentTool,
 ) !agent.CallResponse {
-    var dynamic_agent = try agent.Agent.init(allocator, io);
-    // BUG FIX 2026-07-14: missing `defer dynamic_agent.deinit()` was leaking
-    // `httpClient`'s connection pool / sockets on every workflow loop iteration.
-    // After extended uptime the leak reaches the soft FD limit (1024) and triggers
-    // `error.ProcessFdQuotaExceeded` in any subsequent FD-allocating call. The
-    // other two `Agent.init` call sites in this codebase already had the matching
-    // defer: `name_agent` (workflow.zig:637) and `compaction_agent`
-    // (compaction.zig:168). `Agent.deinit()` (Agent.zig:1815) calls
-    // `self.httpClient.deinit()` which frees any pooled HTTP connections.
-    defer dynamic_agent.deinit();
-    dynamic_agent.apiKey = api_key;
-    dynamic_agent.model = model;
-    dynamic_agent.baseUrl = base_url;
-    dynamic_agent.UrlStyle = url_style;
-    const dynamic_agent_call_params = agent.AgentCall{ .tools = tools, .messages = messages_list.items, .temperature = agent_temperature, .max_tokens = current_max_tokens };
-    dynamic_agent.thinkingEnabled = isThinking;
-    dynamic_agent.httpOptions.read_timeout_ms = 300_000; // 10 minutes
+    // Libcurl-backed Agent2 (custom_http_client). Same field names,
+    // same callStreaming signature as the previous Agent.zig — only the
+    // transport differs. The previous std.http.Client implementation had
+    // a 200-line StreamWatchdog / apply_tcp_keepalive / dup2-to-/dev/null
+    // workaround for std.Io.Threaded parking workers in recv(); Agent2
+    // uses libcurl's CURLOPT_TIMEOUT_MS instead, which doesn't have that
+    // issue.
+    var dynamic_agent2 = agent2.Agent2.init(allocator, io);
+    defer dynamic_agent2.deinit();
+    dynamic_agent2.apiKey = api_key;
+    dynamic_agent2.model = model;
+    dynamic_agent2.baseUrl = base_url;
+    dynamic_agent2.UrlStyle = url_style;
+    // `messages_list.items` is `[]agent.AgentMessage`; `agent2.AgentCall.messages`
+    // wants `[]const agent2.AgentMessage`. The two `AgentMessage` types
+    // are byte-identical (file-level copy of the same struct), so a
+    // @ptrCast of the slice header is safe — no element copy needed.
+    const messages_for_agent2: []const agent2.AgentMessage = @ptrCast(messages_list.items);
+    const dynamic_agent_call_params = agent2.AgentCall{ .tools = tools, .messages = messages_for_agent2, .temperature = agent_temperature, .max_tokens = current_max_tokens };
+    dynamic_agent2.thinkingEnabled = isThinking;
+    dynamic_agent2.httpOptions.read_timeout_ms = 300_000; // 10 minutes
 
     var stream_ctx = StreamingContext{
         .allocator = allocator,
         .session_id = session_id,
         .chunk_index = 0,
     };
-    const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, stream_callback);
-
-    return res_dynamic_agent;
+    // `stream_callback` is typed as agent.StreamCallback; agent2's
+    // callStreaming wants agent2.StreamCallback. The two function-pointer
+    // types differ only in the StreamChunk type alias, which is a
+    // byte-identical struct in both files. @ptrCast of the function
+    // pointer is safe.
+    const callback_for_agent2: agent2.StreamCallback = @ptrCast(&stream_callback);
+    const res_dynamic_agent = try dynamic_agent2.callStreaming(dynamic_agent_call_params, &stream_ctx, callback_for_agent2);
+    // `callDynamicAgentNew` is declared to return `agent.CallResponse`
+    // (preserves the upstream signature). agent2.CallResponse is a byte-
+    // identical struct in a different module — same fields, same layout
+    // — but Zig doesn't let us @bitCast structs (no guaranteed layout),
+    // so we field-by-field copy. The inner type mismatches (tool_calls
+    // slice elements, finish_reason enum) are resolved via @ptrCast /
+    // @enumFromInt — both are byte-identical types in different modules.
+    const tool_calls_for_agent: ?[]agent.ToolCall = if (res_dynamic_agent.tool_calls) |tc| @ptrCast(tc) else null;
+    const finish_reason_for_agent: ?agent.FinishReason = if (res_dynamic_agent.finish_reason) |fr|
+        @as(agent.FinishReason, @enumFromInt(@intFromEnum(fr)))
+    else
+        null;
+    const usage_for_agent: agent.Usage = .{
+        .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
+        .completion_tokens = res_dynamic_agent.usage.completion_tokens,
+        .total_tokens = res_dynamic_agent.usage.total_tokens,
+    };
+    return .{
+        .allocator = res_dynamic_agent.allocator,
+        .content = res_dynamic_agent.content,
+        .tool_calls = tool_calls_for_agent,
+        .finish_reason = finish_reason_for_agent,
+        .reasoning_content = res_dynamic_agent.reasoning_content,
+        .usage = usage_for_agent,
+    };
 }
 
 /// Conditionally compact `messages` in place. When `force` is false, compaction
