@@ -178,7 +178,7 @@ pub const ResponseStream = struct {
         // longer — between SSE chunks while reasoning internally. The
         // previous 5-second budget caused false "EOF" events on healthy
         // streams (the 5 s cap fired before the next chunk arrived),
-        // which surfaced as `StreamInterrupted` in Agent2.zig because
+        // which surfaced as `StreamInterrupted` in Agent.zig because
         // the parser never saw a `finish_reason`.
         //
         // Trade-off: if the worker is truly stuck (e.g. deadlocked),
@@ -546,7 +546,7 @@ pub fn openStream(
         // the allocation) — libcurl then sees "0 bytes read" against
         // the POSTFIELDSIZE_LARGE value and aborts with CURLE_READ_ERROR
         // ("client read function EOF fail"). The body MUST outlive the
-        // worker thread, which is guaranteed because the caller (Agent2)
+        // worker thread, which is guaranteed because the caller (Agent)
         // holds `json_body` alive through `defer` until callStreaming
         // returns AFTER stream.deinit() joins the worker.
         _ = setoptPtr(handle, curl.OPT.POSTFIELDS, body.ptr);

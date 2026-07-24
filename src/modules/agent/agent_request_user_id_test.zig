@@ -7,14 +7,14 @@ const agent = @import("Agent.zig");
 const HARDCODED_USER_ID = "AnakMagang";
 
 fn makeAgent(user_id: []const u8) agent.Agent {
-    var a = agent.Agent.init(testing.allocator, testing.io) catch unreachable;
+    var a = agent.Agent.init(testing.allocator, testing.io);
     a.model = "test-model";
     a.userIdentifier = user_id;
     return a;
 }
 
 test "Agent default userIdentifier is hardcoded to 'AnakMagang'" {
-    var a = agent.Agent.init(testing.allocator, testing.io) catch unreachable;
+    var a = agent.Agent.init(testing.allocator, testing.io);
     defer a.deinit();
     try testing.expectEqualStrings("AnakMagang", a.userIdentifier);
 }
