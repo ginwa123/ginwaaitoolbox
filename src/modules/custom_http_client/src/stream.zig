@@ -36,6 +36,16 @@ const QUEUE_CAPACITY: usize = 64;
 /// generously so a future curl bump can't silently truncate us.
 const CURL_ERRORBUFFER_LEN: usize = 256;
 
+/// Monotonic clock reading in nanoseconds. Uses libc clock_gettime
+/// directly to avoid deadlock against the worker thread which doesn't
+/// own the Io runtime (see ResponseStream.next comment for the same
+/// reasoning).
+fn monotonicNs() u64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+}
+
 const ChunkQueue = struct {
     mutex: *std.Io.Mutex,
     slots: [QUEUE_CAPACITY]?[]u8,
@@ -82,6 +92,15 @@ const ChunkQueue = struct {
         self.head = (self.head + 1) % QUEUE_CAPACITY;
         return chunk;
     }
+
+    /// Returns true if the queue was empty BEFORE this call. Used by
+    /// the write callback to decide whether to wake a sleeping
+    /// consumer (only wake on the empty -> non-empty transition).
+    fn isEmpty(self: *ChunkQueue) bool {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.head == self.tail;
+    }
 };
 
 /// State shared between worker thread and caller. Heap-allocated so
@@ -100,6 +119,28 @@ const SharedState = struct {
     worker_error: ?LocalError = null,
     total_time_ms: u64 = 0,
     io: std.Io,
+
+    /// Wakeup-generation counter. Bumped by the worker thread every
+    /// time it pushes a chunk into the queue AND when it sets
+    /// `finished`. The consumer thread waits on this via
+    /// `io.futexWaitTimeout` — when the value changes, the kernel
+    /// wakes the consumer; the consumer re-checks the queue and
+    /// either returns a chunk or breaks out (finished).
+    ///
+    /// Why a separate counter (not `finished`):
+    /// - We want to wake on EVERY chunk push, not just completion
+    ///   (chunks can arrive well before `finished` is set).
+    /// - We want to wake on completion (the worker bumps once more
+    ///   before setting `finished`).
+    /// - One atomic word lets both events flow through the same
+    ///   wakeup channel.
+    ///
+    /// The futex protocol guarantees no lost wakeups: the consumer
+    /// snapshots the value BEFORE checking the queue. If the worker
+    /// bumps the counter (and pushes) between the consumer's
+    /// snapshot and futex_wait, the futex_wait returns immediately
+    /// with EAGAIN because the value no longer matches.
+    signal_gen: std.atomic.Value(u32) = .init(0),
     /// Backing storage for `CURLOPT_ERRORBUFFER`. Lives on the heap
     /// (via SharedState) because libcurl stores the raw pointer and
     /// writes into it whenever an error string is produced — often
@@ -167,44 +208,88 @@ pub const ResponseStream = struct {
 
     pub fn next(self: *ResponseStream) !?[]const u8 {
         // Block waiting for the worker thread to push a chunk
-        // or signal completion. Without this, `next()` would return
-        // null on the very first call (race vs the worker thread),
-        // causing streaming tests to exit prematurely with 0 chunks.
+        // or signal completion. We use a futex-based wait keyed on
+        // `state.signal_gen` — the worker bumps this counter every
+        // time it pushes a chunk (writeCallback) and once more when
+        // libcurl completes (streamWorker). The consumer parks in
+        // the kernel via `io.futexWaitTimeout` and is woken the
+        // moment the value changes — no CPU burn while idle.
         //
-        // The polling budget is set to match the default libcurl
-        // `CURLOPT_TIMEOUT_MS` (300 s = 5 min) configured in `client.zig`.
-        // Reasoning models (Claude with extended thinking, OpenAI o1/o3,
-        // DeepSeek R1, Qwen QwQ) routinely pause 30-60 s — sometimes
-        // longer — between SSE chunks while reasoning internally. The
-        // previous 5-second budget caused false "EOF" events on healthy
-        // streams (the 5 s cap fired before the next chunk arrived),
-        // which surfaced as `StreamInterrupted` in Agent.zig because
-        // the parser never saw a `finish_reason`.
+        // Why this replaces the previous busy-spin loop:
+        // - Reasoning models (Claude extended thinking, OpenAI o1/o3,
+        //   DeepSeek R1, Qwen QwQ) routinely pause 30-60 s — sometimes
+        //   longer — between SSE chunks. The previous `spinLoopHint`
+        //   + per-iteration `clock_gettime` polling kept the consumer
+        //   thread pinned at 100% CPU during those pauses, which
+        //   manifested as 12-58% `nalar` CPU usage during streaming
+        //   sessions (the worker thread was correctly parked at
+        //   `wchan = futex_wait`; only the consumer was spinning).
+        // - With the futex wait, the consumer sleeps in the kernel
+        //   until the worker wakes it (chunk arrival or completion).
+        //   A typical 500ms gap between chunks costs < 1ms CPU now.
         //
-        // Trade-off: if the worker is truly stuck (e.g. deadlocked),
-        // next() blocks until the libcurl timeout fires and the worker
-        // sets `worker_error`. That's the bound we want — the caller
-        // can't distinguish "polling timeout" from "EOF" without
-        // inspecting the worker state, so the right answer is to let
-        // libcurl be the source of truth for "is this connection dead".
+        // The 300 s overall budget matches libcurl's
+        // `CURLOPT_TIMEOUT_MS` (5 min) configured in `client.zig`.
+        // If the worker is truly stuck, libcurl fires its timeout and
+        // the worker sets `worker_error`, which we surface on the
+        // next loop iteration. If the budget elapses without a
+        // chunk or an error, we return null — same shape as before.
         //
         // We use libc clock_gettime rather than std.Io.Clock.now because
-        // the latter calls into the Io runtime from the test thread,
-        // which can deadlock against the worker thread that owns the
-        // runtime.
+        // the latter calls into the Io runtime from the consumer
+        // thread, which can deadlock against the Io runtime used by
+        // the worker thread.
         const poll_budget_ns: u64 = 300 * std.time.ns_per_s;
-        var ts: std.c.timespec = undefined;
-        _ = std.c.clock_gettime(.MONOTONIC, &ts);
-        const start_ns: u64 = @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-        const deadline_ns: u64 = start_ns + poll_budget_ns;
+        const deadline_ns: u64 = monotonicNs() + poll_budget_ns;
+
         while (true) {
             if (self.state.worker_error) |e| return e;
             if (self.state.queue.popOne()) |chunk| return chunk;
             if (self.state.finished.load(.acquire)) return null;
-            _ = std.c.clock_gettime(.MONOTONIC, &ts);
-            const now_ns: u64 = @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+
+            // Compute the remaining wait time. If we've burned
+            // through the budget already, return null — same as the
+            // old busy-spin's deadline check.
+            const now_ns = monotonicNs();
             if (now_ns >= deadline_ns) return null;
-            std.atomic.spinLoopHint();
+            const remaining_ns: u64 = deadline_ns - now_ns;
+
+            // Snapshot the wakeup-generation. The futex returns
+            // immediately (EAGAIN) if the value changes between this
+            // load and the wait syscall, so we never lose a wakeup.
+            // On spurious wakeups we loop back, re-check the queue,
+            // and either return a chunk or sleep again.
+            const expected = self.state.signal_gen.load(.acquire);
+
+            // Park in the kernel until either the counter changes
+            // (worker pushed a chunk, or libcurl completed) or the
+            // remaining budget elapses. We pass an absolute deadline
+            // (Timeout.deadline) so the futex gets a real
+            // CLOCK_MONOTONIC timestamp — `futexWaitTimeout` is the
+            // canonical primitive the Zig 0.16 Io runtime exposes
+            // for this exact use case.
+            //
+            // Error union: `error.Timeout` if the budget elapsed (we
+            // return null), `error.Canceled` from the Io runtime
+            // (unreachable from the test path; we never cancel).
+            //
+            // We use Io.Clock.Timestamp.fromNow (which calls into the
+            // Io runtime to read .monotonic) — this is fine on the
+            // consumer thread because the worker thread doesn't own
+            // an Io runtime (it just runs curl_easy_perform).
+            const deadline_ts = std.Io.Clock.Timestamp.fromNow(self.state.io, .{
+                .raw = .{ .nanoseconds = @intCast(remaining_ns) },
+                .clock = .awake, // CLOCK_MONOTONIC on Linux; what futex_wait uses
+            });
+            // error.Canceled is the only error in the Cancelable set.
+// Timeout is handled internally by the Io runtime (the vtable
+// returns success on timeout), so we only need to handle
+// Canceled. After the futex returns (success or spurious
+// wakeup), we loop back, re-check the queue / finished flag /
+// budget, and either return a chunk, return null, or sleep again.
+            self.state.io.futexWaitTimeout(u32, &self.state.signal_gen.raw, expected, .{ .deadline = deadline_ts }) catch |err| switch (err) {
+                error.Canceled => return null, // never happens on our path
+            };
         }
     }
 
@@ -310,9 +395,26 @@ pub const StreamScanner = struct {
 fn writeCallback(buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque) callconv(.c) u64 {
     const state: *SharedState = @ptrCast(@alignCast(userdata));
     const slice = buf[0 .. size * nmemb];
+    // Capture empty-state BEFORE push so we can decide whether to
+    // wake a sleeping consumer. Only wake on the empty -> non-empty
+    // transition — waking on every push would be wasted work when
+    // the consumer is keeping up.
+    const was_empty = state.queue.isEmpty();
     // dupe the body so we don't depend on libcurl's internal buffer
     // remaining valid after this callback returns (it doesn't).
     if (!state.queue.push(state.allocator, slice)) return 0;
+    if (was_empty) {
+        // Empty -> non-empty: bump the wakeup-generation counter
+        // (release semantics) and wake exactly one consumer. The
+        // bump must happen BEFORE the wake so the consumer, when it
+        // wakes and re-checks, is guaranteed to see a non-empty
+        // queue. The consumer's futexWaitTimeout captures the old
+        // value before sleeping; FUTEX_WAIT_BITSET returns EAGAIN if
+        // the value changes between capture and sleep, so no wakeup
+        // is ever lost.
+        _ = state.signal_gen.fetchAdd(1, .release);
+        state.io.futexWake(u32, &state.signal_gen.raw, 1);
+    }
     return size * nmemb;
 }
 
@@ -383,6 +485,14 @@ fn streamWorker(state: *SharedState) void {
     state.primary_ip.appendSlice(state.allocator, primary_ip_slice) catch {};
 
     state.finished.store(true, .release);
+    // Bump signal_gen and wake any consumer blocked in next() so it
+    // sees the freshly-set `finished` flag. Without this, a consumer
+    // who called next() right after the last chunk would spin on its
+    // idle budget (300s) until the deadline — instead of waking
+    // immediately when libcurl completes. Same ordering protocol as
+    // writeCallback: bump (release) before wake.
+    _ = state.signal_gen.fetchAdd(1, .release);
+    state.io.futexWake(u32, &state.signal_gen.raw, 1);
 }
 
 fn mapStreamError(rc: c_uint) LocalError {
