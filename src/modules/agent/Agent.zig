@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const json = std.json;
 const Reader = std.Io.Reader;
 const bashTool = @import("tools/bash.zig").bash_tool;
@@ -13,6 +12,7 @@ pub const AgentTool = schemas.AgentTool;
 pub const prompt = @import("prompts.zig");
 pub const LLMModels = @import("LLMModels.zig");
 const helpers = @import("../../helpers/mod.zig");
+const custom_http_client = @import("custom_http_client");
 
 /// Log level for agent logging
 const LogLevel = enum { err, warn, info, debug };
@@ -772,7 +772,13 @@ pub const Agent = struct {
     model: []const u8 = "",
     temperature: f32 = 0.4,
     maxTokens: usize = 4096,
-    httpClient: std.http.Client,
+    /// Custom HTTP client (libcurl-backed). One per Agent; libcurl
+    /// handles are per-thread, so each Agent owns its own client.
+    client: custom_http_client.Client,
+    /// Io runtime — needed for the streaming worker thread spawned
+    /// inside `custom_http_client.openStream`. Stored on the struct so
+    /// callers don't have to thread it through every call.
+    io: std.Io,
     thinkingEnabled: bool = true,
     allocator: std.mem.Allocator,
     httpOptions: HttpOptions = .{},
@@ -784,21 +790,19 @@ pub const Agent = struct {
     /// identifier in the request body (used by tests for the absence case).
     userIdentifier: []const u8 = "AnakMagang",
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io) !Agent {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) Agent {
         return Agent{
             .allocator = allocator,
-            .httpClient = std.http.Client{ .allocator = allocator, .io = io },
+            .io = io,
+            .client = custom_http_client.Client.init(allocator),
         };
     }
 
-    pub fn init_with_options(allocator: std.mem.Allocator, io: std.Io, options: HttpOptions) !Agent {
+    pub fn init_with_options(allocator: std.mem.Allocator, io: std.Io, options: HttpOptions) Agent {
         return Agent{
             .allocator = allocator,
-            .httpClient = std.http.Client{
-                .allocator = allocator,
-                .io = io,
-                .read_buffer_size = options.header_buffer_size,
-            },
+            .io = io,
+            .client = custom_http_client.Client.init(allocator),
             .httpOptions = options,
         };
     }
@@ -839,207 +843,6 @@ pub const Agent = struct {
         self.log_fmt(.debug, "HTTP {s} {s} (body: {} bytes)", .{ method, url, body_len });
     }
 
-    /// Apply TCP keepalive so that dead connections (Wi-Fi drop, server crash
-    /// without FIN/RST) are detected by the OS rather than hanging forever.
-    ///
-    /// With keepidle=10, keepintvl=5, keepcnt=3 the OS detects a dead
-    /// connection in ~25s and returns ConnectionResetByPeer from readSliceShort,
-    /// which the streaming loop surfaces as StreamInterrupted.
-    ///
-    /// NOTE: Do NOT use SO_RCVTIMEO with Zig 0.16's std.Io Threaded backend.
-    /// The backend treats EAGAIN as a programmer bug and panics. TCP keepalive
-    /// is the correct mechanism here.
-    fn apply_tcp_keepalive(self: Agent, req: anytype) ?i32 {
-        // Windows: std.posix.setsockopt has @compileError("use std.Io instead")
-        // on Windows. The full std.Io.Net migration of the streaming sockets
-        // is a larger follow-up; for now we skip keepalive on Windows, which
-        // means the watchdog does not spawn and stall-detection falls back to
-        // TCP's default ~2h timeout. The connection still works.
-        if (builtin.os.tag == .windows) return null;
-
-        const conn = req.connection orelse {
-            self.log_msg(.warn, "[STREAM] cannot set TCP keepalive: no connection");
-            return null;
-        };
-        const sock = conn.stream_reader.stream.socket.handle;
-
-        const on: c_int = 1;
-        std.posix.setsockopt(sock, std.posix.SOL.SOCKET, std.posix.SO.KEEPALIVE,
-            std.mem.asBytes(&on)) catch |err| {
-            self.log_fmt(.warn, "[STREAM] SO_KEEPALIVE failed: {s}", .{@errorName(err)});
-            return sock;
-        };
-
-        // First keepalive probe after 10s of idle. `TCP.KEEPIDLE`
-        // is Linux-only; on macOS the equivalent is to set the
-        // `KEEPALIVE` option (which doubles as the idle timer on
-        // Darwin). Skip the idle config on macOS — the 5s probe
-        // interval + 3 probes already detects a dead connection
-        // quickly using the default ~2h idle.
-        if (builtin.os.tag == .linux) {
-            const keepidle: c_int = 10;
-            std.posix.setsockopt(sock, std.posix.IPPROTO.TCP, std.posix.TCP.KEEPIDLE,
-                std.mem.asBytes(&keepidle)) catch {};
-        }
-
-        // Probe every 5s
-        const keepintvl: c_int = 5;
-        std.posix.setsockopt(sock, std.posix.IPPROTO.TCP, std.posix.TCP.KEEPINTVL,
-            std.mem.asBytes(&keepintvl)) catch {};
-
-        // Give up after 3 failed probes (~25s total to detect dead connection)
-        const keepcnt: c_int = 3;
-        std.posix.setsockopt(sock, std.posix.IPPROTO.TCP, std.posix.TCP.KEEPCNT,
-            std.mem.asBytes(&keepcnt)) catch {};
-
-        self.log_fmt(.debug, "[STREAM] TCP keepalive set: idle=10s, intvl=5s, cnt=3 (detects dead conn in ~25s)", .{});
-        return sock;
-    }
-
-    /// Background thread that force-closes the stream socket when the read
-    /// loop stalls. Works around the std.Io.Threaded "parked in recv()" problem:
-    /// the user-space deadline checks in the read loop never fire while the
-    /// worker is blocked in the kernel. The watchdog calls shutdown(SHUT_RD)
-    /// on the socket from outside the Io runtime, which (per Linux shutdown(2)
-    /// man page) "may" unblock a pending recv; the watchdog then also dup2's
-    /// the socket fd to /dev/null so the Io runtime's later close() succeeds
-    /// (no EBADF / no panic).
-    ///
-    /// close() alone would also unblock the recv but causes a "use after free"
-    /// panic in std.Io.Threaded.closeFd when the Io runtime later closes the
-    /// already-closed fd. The dup2 trick leaves the fd NUMBER valid (pointing
-    /// to /dev/null) so the later close() succeeds.
-    ///
-    /// This watchdog is purely additive — keepalive (above) remains as a slower
-    /// secondary defense for cases where the watchdog itself is delayed.
-    const StreamWatchdog = struct {
-        /// shutdown(2) "how" constants on Linux.
-        ///   SHUT_RD   = 0  (further receives disallowed; may unblock recv)
-        ///   SHUT_WR   = 1
-        ///   SHUT_RDWR = 2
-        const SHUT_RD: i32 = 0;
-        fd: std.atomic.Value(i32), // -1 when cancelled; the live socket fd otherwise
-        last_byte_ms: std.atomic.Value(i64), // wall-clock ms of last received byte
-        cancel: std.atomic.Value(bool), // set by main thread on exit
-        fired_for: std.atomic.Value(u8), // 0=none, 1=idle, 2=max_total
-        thread: std.Thread,
-        start_ms: i64,
-        idle_timeout_ms: i64,
-        max_total_ms: i64,
-
-        const Reason = enum(u8) { none = 0, idle = 1, max_total = 2 };
-
-        fn threadMain(wd: *StreamWatchdog) void {
-            while (true) {
-                // `std.os.windows.kernel32.Sleep` was removed from the Zig 0.16
-                // stdlib (verified: 0 hits for `Sleep` in
-                // /usr/local/lib/zig/std/os/windows/kernel32.zig). The
-                // helpers.sleepMillis wrapper handles the per-platform sleep
-                // call (POSIX `nanosleep` on Linux/macOS, kernel32.Sleep on
-                // Windows) without requiring an `io: std.Io` runtime.
-                helpers.sleepMillis(250);
-                if (wd.cancel.load(.acquire)) return;
-                const fd_now = wd.fd.load(.acquire);
-                if (fd_now < 0) return; // main thread reset fd
-                const now = wallClockMs();
-                if (now - wd.start_ms >= wd.max_total_ms) {
-                    wd.fired_for.store(@intFromEnum(Reason.max_total), .release);
-                    forceCancel(fd_now);
-                    return;
-                }
-                if (now - wd.last_byte_ms.load(.acquire) >= wd.idle_timeout_ms) {
-                    wd.fired_for.store(@intFromEnum(Reason.idle), .release);
-                    forceCancel(fd_now);
-                    return;
-                }
-            }
-        }
-
-        /// Cancel the in-flight recv by atomically replacing the socket fd
-        /// with /dev/null via dup2(2). This:
-        ///   1. Closes the underlying TCP socket (kernel sends FIN, recv returns).
-        ///   2. Leaves the fd NUMBER valid in the process (now pointing to /dev/null).
-        ///   3. The Io runtime's later close() on this fd closes the /dev/null
-        ///      reference harmlessly — no "use after free" / EBADF panic.
-        ///
-        /// Why not just close()? The Io runtime stores the original socket fd
-        /// in its Connection struct and calls close() on it during deinit.
-        /// If we close() it first, the runtime's close returns EBADF which
-        /// std.Io.Threaded's closeFd treats as a programmer bug and panics
-        /// (recoverableOsBugDetected → unreachable in debug).
-        ///
-        /// Why not just shutdown(SHUT_RDWR)? The shutdown() syscall sends FIN
-        /// to the peer but does NOT unblock a recv() that's already in
-        /// progress on the local side (the kernel is waiting for data, not
-        /// for the peer's FIN). The local recv would remain stuck.
-        fn forceCancel(fd_now: i32) void {
-            // This function uses Linux-only syscalls (shutdown, dup2, open /dev/null)
-            // to force-cancel a blocked recv. On Windows, these syscalls are not
-            // available. The stream watchdog is a best-effort mechanism; on Windows
-            // we rely on TCP keepalive and the Io runtime's timeout instead.
-            if (builtin.os.tag != .linux) return;
-
-            // Two-pronged approach: shutdown(SHUT_RD) "may" unblock the pending
-            // recv on Linux (per shutdown(2) man page). If it doesn't, the
-            // dup2-to-/dev/null trick replaces the socket fd with /dev/null so
-            // the Io runtime's later close() succeeds (no EBADF / no panic).
-            // Together, they cover both:
-            //   - The recv that may return when the socket's read side is shut down.
-            //   - The Io's later close() that must not see a closed fd.
-            //
-            // Why we can't just close() the socket:
-            //   std.Io.Threaded treats close() on a bad fd as a programmer bug
-            //   and panics in debug. The dup2 leaves the fd NUMBER valid
-            //   (now pointing to /dev/null) so the later close() succeeds.
-            _ = std.os.linux.shutdown(fd_now, SHUT_RD);
-
-            const devnull_rc = std.os.linux.open("/dev/null", .{}, 0);
-            if (devnull_rc > std.math.maxInt(i32)) return;
-            const devnull_fd: i32 = @intCast(devnull_rc);
-            const dup2_rc = std.os.linux.dup2(devnull_fd, fd_now);
-            if (dup2_rc > std.math.maxInt(i32)) {
-                _ = std.os.linux.close(devnull_fd);
-                return;
-            }
-            _ = std.os.linux.close(devnull_fd);
-        }
-
-        fn wallClockMs() i64 {
-            if (builtin.os.tag == .windows) {
-                // NOTE: this is wall-clock seconds × 1000 (epoch = 1970-01-01).
-                // The POSIX branch below uses CLOCK_MONOTONIC (epoch = boot
-                // time on Linux), so the two paths have different epochs and
-                // ARE NOT COMPARABLE across processes. We preserve the
-                // pre-existing behavior here for the Windows build (which
-                // never compiled before this fix); the difference is
-                // negligible for the StreamWatchdog's relative-time
-                // accounting — both clocks increase monotonically.
-                return @import("../../helpers/mod.zig").unixTimestamp() * 1000;
-            } else {
-                // CLOCK_MONOTONIC is a POSIX thing. std.c.clock_gettime
-                // cannot be referenced on Windows in Zig 0.16 (clockid_t is
-                // void there), so we declare our own extern in helpers/mod.zig
-                // and use it here.
-                //
-                // CLOCK_MONOTONIC = 1 works on Linux glibc but returns
-                // EINVAL on macOS arm64 (the Darwin kernel routes that
-                // clock ID differently — it expects CLOCK_UPTIME_RAW = 8
-                // for the "seconds since boot" semantic). The unchecked
-                // `_ =` was masking the failure, leaving ts uninitialized
-                // and producing a garbage `sec * 1000` that overflowed i64.
-                // Probe CLOCK_MONOTONIC first; on EINVAL, retry with
-                // CLOCK_UPTIME_RAW (8). Both clocks increase monotonically,
-                // so the StreamWatchdog's relative-time accounting is
-                // unaffected by the swap.
-                var ts: helpers.PosixTimespec = undefined;
-                if (helpers.clock_gettime(1, &ts) != 0) {
-                    _ = helpers.clock_gettime(8, &ts);
-                }
-                const sec: i64 = @intCast(ts.sec);
-                return sec * 1000 + @divFloor(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
-            }
-        }
-    };
 
     pub fn buildJsonAnthropicRequest(self: Agent, params: AgentCall, stream: bool) ![]u8 {
         const allocator = self.allocator;
@@ -1385,18 +1188,24 @@ pub const Agent = struct {
         }
 
         return chunk;
-    }
 
+    }
     pub fn callStreaming(
         self: *Agent,
         params: AgentCall,
         ctx: ?*anyopaque,
         callback: StreamCallback,
     ) CallError!CallResponse {
+        // TODO: Anthropic streaming body parsing is OpenAI-format. content
+        // extraction for the /v1/messages endpoint is broken in v1 — only
+        // finish_reason is captured. Extend parse_stream_chunk (or add a new
+        // parse_anthropic_stream_chunk) to handle the Anthropic SSE shape
+        // (`event: content_block_delta` with `delta.text`). Tracked as a follow-up.
         self.log_fmt(.info, "[STREAM START] model={s} | messages={} | tools={} | streaming=true", .{
             self.model, params.messages.len, params.tools.len,
         });
 
+        // 1. Build JSON body (unchanged from Agent.zig).
         var json_body: []u8 = undefined;
         if (std.mem.eql(u8, self.UrlStyle, "openai")) {
             json_body = self.buildJsonOpenAIRequest(params, true) catch |err| {
@@ -1418,465 +1227,152 @@ pub const Agent = struct {
         const json_ellipsis = if (json_body.len > 500) "..." else "";
         self.log_fmt(.debug, "[STREAM REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
 
-        const endpoint = if (std.mem.eql(u8, self.UrlStyle, "anthropic")) "/messages" else "/chat/completions";
+        // 2. Compose URL: baseUrl + endpoint.
+        // Anthropic's correct API path is /v1/messages.
+        const endpoint = if (std.mem.eql(u8, self.UrlStyle, "anthropic"))
+            "/v1/messages"
+        else
+            "/chat/completions";
         const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, endpoint }) catch |err| {
             self.log_error("concat URI", err, null);
             return error.OutOfMemory;
         };
         defer self.allocator.free(uri_str);
 
-        const uri = std.Uri.parse(uri_str) catch |err| {
-            self.log_fmt(.err, "Failed to parse URI '{s}': {s}", .{ uri_str, @errorName(err) });
-            return error.InvalidUri;
-        };
-
+        // 3. Compose auth header.
         const auth_value = std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey }) catch |err| {
             self.log_error("concat auth", err, null);
             return error.OutOfMemory;
         };
         defer self.allocator.free(auth_value);
 
-        var req = self.httpClient.request(.POST, uri, .{
-            .version = .@"HTTP/1.1",
-            .headers = .{
-                .authorization = .{ .override = auth_value },
-                .content_type = .{ .override = "application/json" },
-                .accept_encoding = .{ .override = "identity" },
-            },
-        }) catch |err| {
-            self.log_fmt(.err, "HTTP streaming request failed to '{s}': {s}", .{ uri_str, @errorName(err) });
+        // 4. Build the custom_http_client.Request.
+        const headers = [_]custom_http_client.Header{
+            .{ .name = "authorization", .value = auth_value },
+            .{ .name = "content-type", .value = "application/json" },
+            .{ .name = "accept-encoding", .value = "identity" },
+        };
+        const req = custom_http_client.Request{
+            .method = .POST,
+            .url = uri_str,
+            .headers = &headers,
+            .body = json_body,
+        };
+
+        // 5. Build Options. Standard libcurl timeouts — no custom watchdog.
+        // CURLOPT_TIMEOUT_MS covers the total deadline; libcurl will fire it
+        // when the server stalls without sending bytes.
+        const options = custom_http_client.Options{
+            .timeout_ms = self.httpOptions.read_timeout_ms,
+            .connect_timeout_ms = 30_000,
+            .follow_redirects = false,
+            .verify_ssl = true,
+        };
+
+        // 6. Open the streaming request.
+        var stream = self.client.openStream(self.io, req, options) catch |err| {
+            self.log_fmt(.err, "[STREAM] openStream failed: {s}", .{@errorName(err)});
             return error.HttpRequestFailed;
         };
-        // FD-leak workaround (PR #117, 2026-07-15): in Zig 0.16 std.http, when
-        // the HTTP request errors out before the response body is fully
-        // drained (e.g. server closes the TCP connection immediately, or
-        // the LLM upstream returns HTTP error before any body data),
-        // `req.deinit()` would otherwise panic with "use after free" when
-        // the Io runtime's later close() in the connection pool hits an
-        // already-closed fd. The dup2-to-/dev/null trick replaces the
-        // socket FD with /dev/null so the close() succeeds harmlessly.
-        // This prevents the production "ProcessFdQuotaExceeded after ~1h
-        // of LLM retries" bug (commit message of PR #117).
-        //
-        // KNOWN LIMITATION (2026-07-23): the dup2 trick prevents the
-        // panic but introduces a hang in the production FD-leak
-        // regression test (`call_streaming_test.zig:556`) at call #2 or
-        // #3 — the Io runtime's worker thread, parked in recv() on the
-        // original socket file description, never observes the dup2 and
-        // stays blocked. That test is currently skip-listed. Re-enable
-        // once std.Io.Threaded properly handles dup2-replaced fds.
-        defer {
-            if (builtin.os.tag == .linux) {
-                if (req.connection) |conn| {
-                    const sock_fd = conn.stream_reader.stream.socket.handle;
-                    if (sock_fd >= 0) {
-                        const devnull_rc = std.os.linux.open("/dev/null", .{}, 0);
-                        if (devnull_rc <= std.math.maxInt(i32)) {
-                            const devnull_fd: i32 = @intCast(devnull_rc);
-                            _ = std.os.linux.dup2(devnull_fd, sock_fd);
-                            _ = std.os.linux.close(devnull_fd);
-                        }
-                    }
-                }
-            }
-            req.deinit();
-        }
+        defer stream.deinit();
 
-        req.sendBodyComplete(json_body) catch |err| {
-            self.log_error("sendBodyComplete", err, null);
-            return error.SendBodyFailed;
-        };
+        const status = stream.statusCode();
+        self.log_fmt(.info, "[STREAM] Connected with HTTP {d}", .{status});
 
-        // Apply TCP keepalive AFTER sending body, BEFORE receiving head.
-        // This detects dead connections (~25s) via ConnectionResetByPeer
-        // without triggering the EAGAIN panic that SO_RCVTIMEO causes in
-        // Zig 0.16's std.Io Threaded backend.
-        const stream_fd_opt = self.apply_tcp_keepalive(&req);
-
-        const stream_start = timestampMs(self.httpClient.io);
-
-        // Spawn the watchdog thread if we got a live socket fd. The watchdog
-        // force-closes the fd when idle/max timeouts expire, which forces the
-        // Io worker's recv() to return an error and the read loop to exit.
-        //
-        // IMPORTANT: `watchdog` MUST be in function scope (not inside the
-        // if block) so its address stays valid for the spawned thread. The
-        // thread runs concurrently with the rest of callStreaming and reads
-        // `wd.fd` / `wd.fired_for` etc. via the pointer it received. If `wd`
-        // were scoped to the if block, the thread would access a dangling
-        // pointer the moment the block exits — the exact bug that caused the
-        // watchdog to silently never fire in earlier iterations.
-        var watchdog: ?StreamWatchdog = null;
-        if (stream_fd_opt) |fd| {
-            const now_ms = StreamWatchdog.wallClockMs();
-            watchdog = .{
-                .fd = std.atomic.Value(i32).init(fd),
-                .last_byte_ms = std.atomic.Value(i64).init(now_ms),
-                .cancel = std.atomic.Value(bool).init(false),
-                .fired_for = std.atomic.Value(u8).init(@intFromEnum(StreamWatchdog.Reason.none)),
-                .thread = undefined,
-                .start_ms = now_ms,
-                .idle_timeout_ms = @intCast(self.httpOptions.idle_timeout_ms),
-                .max_total_ms = @intCast(self.httpOptions.read_timeout_ms),
-            };
-            if (std.Thread.spawn(.{}, StreamWatchdog.threadMain, .{&watchdog.?})) |t| {
-                watchdog.?.thread = t;
-                self.log_fmt(.debug, "[STREAM] watchdog spawned: fd={d} idle_ms={d} max_ms={d}", .{
-                    fd, watchdog.?.idle_timeout_ms, watchdog.?.max_total_ms,
-                });
-            } else |err| {
-                self.log_fmt(.warn, "[STREAM] watchdog thread spawn failed: {s}", .{@errorName(err)});
-                watchdog = null;
-            }
-        }
-        // Defer watchdog cleanup. Fires on every exit path (normal and error).
-        // Order matters: this fires BEFORE req.deinit() because defer is LIFO.
-        // We reset fd to -1 first so the watchdog stops trying to close it,
-        // then set cancel, then join.
-        defer if (watchdog) |*wd| {
-            wd.fd.store(-1, .release);
-            wd.cancel.store(true, .release);
-            wd.thread.join();
-            // Note: we deliberately do NOT translate fired_for back to a
-            // CallError variant. If the watchdog fired, the existing read loop
-            // error path already returned error.StreamInterrupted (which is
-            // semantically correct: the connection died). The exact variant
-            // (Idle vs Total) is observable only via the watchdog's atomic
-            // fired_for field, which is preserved for debugging.
-        };
-        var redirect_buffer: [8192]u8 = undefined;
-        var response = req.receiveHead(&redirect_buffer) catch |err| {
-            self.log_fmt(.err, "[TIMEOUT] No response after {}ms: {s}", .{
-                elapsedMs(self.httpClient.io, stream_start), @errorName(err),
-            });
-            return error.ReceiveFailed;
-        };
-
-        const stream_duration = elapsedMs(self.httpClient.io, stream_start);
-        const stream_duration_fmt = formatDuration(stream_duration);
-        self.log_fmt(.info, "[STREAM] Connected in {}{s} (HTTP {d})", .{
-            stream_duration_fmt.value, stream_duration_fmt.unit, @intFromEnum(response.head.status),
-        });
-
-        const encoding_str = if (response.head.transfer_encoding == .chunked) "chunked" else "fixed";
-        var content_len_buf: [32]u8 = undefined;
-        const content_len_str = if (response.head.content_length) |cl|
-            std.fmt.bufPrint(&content_len_buf, "{}", .{cl}) catch "?"
-        else
-            "unknown";
-        self.log_fmt(.debug, "[STREAM] Transfer: encoding={s}, content_length={s}, keep_alive={}", .{
-            encoding_str, content_len_str, response.head.keep_alive,
-        });
-
-        if (response.head.status.class() == .client_error or response.head.status.class() == .server_error) {
-            const status_code = @intFromEnum(response.head.status);
-            self.log_fmt(.err, "[STREAM] HTTP error status: {d}", .{status_code});
-            const transfer_buf = self.allocator.alloc(u8, 4096) catch null;
-            if (transfer_buf) |buf| {
-                defer self.allocator.free(buf);
-                var err_reader = response.request.reader.bodyReader(buf, response.head.transfer_encoding, response.head.content_length);
-                const error_body = err_reader.allocRemaining(self.allocator, .unlimited) catch null;
-                if (error_body) |body| {
-                    defer self.allocator.free(body);
-                    self.log_fmt(.err, "[STREAM] Server error response: {s}", .{body});
-                }
-            }
+        if (status >= 400) {
+            self.log_fmt(.err, "[STREAM] HTTP error status: {d}", .{status});
             return error.ApiError;
         }
 
-        if (!response.request.method.responseHasBody()) {
-            self.log_msg(.info, "[STREAM] Response has no body (status code)");
-            return CallResponse{ .allocator = self.allocator, .content = "", .tool_calls = null, .finish_reason = null };
-        }
+        // 7. SSE scanner for line-by-line reads.
+        var scanner = custom_http_client.StreamScanner.init(&stream, false);
+        defer scanner.deinit();
 
-        if (response.head.content_length == null and response.head.transfer_encoding != .chunked) {
-            self.log_msg(.info, "[STREAM] Response has no body (no content-length, not chunked)");
-            return CallResponse{ .allocator = self.allocator, .content = "", .tool_calls = null, .finish_reason = null };
-        }
-
-        if (response.head.content_length != null and response.head.content_length.? == 0) {
-            self.log_msg(.info, "[STREAM] Response has empty body (content-length=0)");
-            return CallResponse{ .allocator = self.allocator, .content = "", .tool_calls = null, .finish_reason = null };
-        }
-
+        // 8. Aggregator.
         var aggregator = StreamingAggregator.init(self.allocator);
         defer aggregator.deinit();
 
-        const transfer_buffer = self.allocator.alloc(u8, self.httpOptions.response_buffer_size) catch |err| {
-            self.log_error("alloc transfer_buffer", err, null);
-            return error.OutOfMemory;
-        };
-        defer self.allocator.free(transfer_buffer);
-
-        self.log_fmt(.info, "[STREAM] bodyReader called: transfer_encoding={s}, content_length={?}", .{
-            if (response.head.transfer_encoding == .chunked) "chunked" else "none",
-            response.head.content_length,
-        });
-
-        var line_buffer: std.ArrayList(u8) = .empty;
-        defer line_buffer.deinit(self.allocator);
-
-        var chunk_arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer chunk_arena.deinit();
+        var line_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer line_arena.deinit();
 
         var chunk_count: usize = 0;
         var stream_ended_cleanly = false;
-        var total_bytes_read: usize = 0;
 
-        const stream_read_deadline_ms: i64 = @intCast(self.httpOptions.read_timeout_ms);
-        const stream_idle_deadline_ms: i64 = @intCast(self.httpOptions.idle_timeout_ms);
-
-        // last_byte_at_ms tracks when we last received real data.
-        // It is updated AFTER readSliceShort returns with n > 0.
-        // The idle check runs AFTER each readSliceShort call, so it can
-        // correctly accumulate idle time across blocking syscall durations.
-        var last_byte_at_ms: i64 = timestampMs(self.httpClient.io);
-
-        const reader = response.request.reader.bodyReader(
-            transfer_buffer,
-            response.head.transfer_encoding,
-            response.head.content_length,
-        );
-
-        const read_buffer = self.allocator.alloc(u8, 8192) catch {
-            self.log_msg(.err, "[STREAM] failed to alloc read_buffer");
-            return error.OutOfMemory;
-        };
-        defer self.allocator.free(read_buffer);
-
+        // 9. SSE loop. The scanner's inferred error set is wider than
+        // CallError (it includes libcurl's LocalError variants like
+        // DnsError / TlsError / OperationTimedOut), so we use a
+        // `catch` that maps any scanner error to a CallError variant
+        // and returns — instead of `try`, which would fail to propagate
+        // errors outside CallError.
+        //
+        // `scanner.next()` can return null for two reasons:
+        //   (a) the worker has finished cleanly (clean EOF); or
+        //   (b) the polling budget elapsed without a chunk arriving.
+        // `StreamScanner` does NOT distinguish the two — both return
+        // null. Reasoning-model LLMs (Claude extended thinking, OpenAI
+        // o1/o3, DeepSeek R1) routinely pause 30-60s+ between chunks,
+        // so a polling-budget return would otherwise produce a spurious
+        // `StreamInterrupted` on a healthy stream.
+        //
+        // Mitigations:
+        //   - `custom_http_client.StreamScanner.next()` was bumped from
+        //     5s to 300s in commit `…` (matches libcurl's
+        //     CURLOPT_TIMEOUT_MS) — fixes the common case.
+        //   - This loop treats a null as "give the worker one more
+        //     chance" — call next() again. If the worker has truly
+        //     finished, the second call returns null immediately. If
+        //     the worker is still going, the second call blocks until
+        //     the next chunk or the libcurl timeout.
+        var scanner_null_count: u32 = 0;
         while (true) {
-            // Check reader state for clean end BEFORE blocking on read.
-            const state_before = response.request.reader.state;
-            if (state_before == .ready) {
-                stream_ended_cleanly = true;
-                self.log_msg(.info, "[STREAM] Reader state is ready, stream ended cleanly");
-                break;
-            }
-
-            // ---------------------------------------------------------------
-            // Block here until data arrives, stream ends, or a transport
-            // error occurs (e.g. ConnectionResetByPeer from TCP keepalive).
-            //
-            // readSliceShort returns:
-            //   n > 0          → got data, update idle timer, process bytes
-            //   n == 0         → no data yet or stream closing, check state
-            //   EndOfStream    → clean close from peer
-            //   ReadFailed     → transport error (keepalive detected dead conn)
-            // ---------------------------------------------------------------
-            const n = reader.readSliceShort(read_buffer[0..]) catch |err| {
-                if (err == error.ReadFailed) {
-                    // ReadFailed can be raised by TWO distinct layers:
-                    //   1. Transport: conn.stream_reader.err (RST/ECONNRESET/EPIPE/etc.)
-                    //      set by Io/net.zig when io.vtable.netRead fails.
-                    //   2. HTTP protocol: response.request.reader.body_err
-                    //      (HttpChunkInvalid / HttpChunkTruncated / HttpHeadersOversize)
-                    //      set by chunkedStream / chunkedDiscard in std/http.zig when
-                    //      the chunked-encoded body is malformed or the server closed
-                    //      cleanly before sending the terminating chunk.
-                    // The previous diagnostic only checked (1), so a clean TCP FIN
-                    // before any body data was logged as "null underlying" instead of
-                    // the real "HttpChunkTruncated" cause. Check BOTH layers.
-                    const conn = response.request.connection orelse {
-                        self.log_msg(.err, "[STREAM] ReadFailed with no connection");
-                        return error.StreamInterrupted;
-                    };
-                    const http_err_opt: ?std.http.Reader.BodyError =
-                        response.request.reader.body_err;
-                    const transport_err_opt: ?std.Io.net.Stream.Reader.Error =
-                        conn.stream_reader.err;
-                    if (http_err_opt) |he| {
-                        // HTTP-level error (most common: server sent 200 + chunked
-                        // headers, then closed cleanly before sending any chunks →
-                        // HttpChunkTruncated). The transport is fine; the response
-                        // body is just truncated.
-                        self.log_fmt(.err, "[STREAM] http error: {s} (chunks={}, bytes={}, transport={?s})", .{
-                            @errorName(he), chunk_count, total_bytes_read,
-                            if (transport_err_opt) |t| @errorName(t) else null,
-                        });
-                    } else if (transport_err_opt) |te| {
-                        // Transport-level error (typical: ConnectionResetByPeer
-                        // from TCP keepalive detecting a dead conn after ~25s).
-                        self.log_fmt(.err, "[STREAM] transport error: {s} (chunks={}, bytes={}, elapsed={}ms)", .{
-                            @errorName(te), chunk_count, total_bytes_read,
-                            elapsedMs(self.httpClient.io, stream_start),
-                        });
-                    } else {
-                        // Both null is rare — readSliceShort got ReadFailed from
-                        // somewhere other than transport or chunked-parser. Log
-                        // with the explicit "AND no body_err" wording so future
-                        // grep for "null underlying" is unambiguous about which
-                        // variant fired.
-                        self.log_fmt(.err, "[STREAM] ReadFailed with null transport AND null body_err (chunks={}, bytes={})", .{
-                            chunk_count, total_bytes_read,
-                        });
-                    }
-                    // If the watchdog triggered the close, translate the
-                    // StreamInterrupted to the more specific timeout variant.
-                    // Without this, the caller can't distinguish "kernel
-                    // detected dead connection" from "watchdog killed a stall".
-                    if (watchdog) |*wd| {
-                        switch (wd.fired_for.load(.acquire)) {
-                            @intFromEnum(StreamWatchdog.Reason.idle) => return error.StreamIdleTimeout,
-                            @intFromEnum(StreamWatchdog.Reason.max_total) => return error.StreamTimeout,
-                            else => {},
-                        }
-                    }
-                    return error.StreamInterrupted;
-                }
-                // EndOfStream: clean close from peer.
-                // But if we don't have a finish_reason, the server died unexpectedly
-                // mid-stream (no finish event was received before the FIN).
-                // This is a transport interruption, not a clean end.
-                if (aggregator.finish_reason == null) {
-                    self.log_fmt(.err, "[STREAM] EndOfStream without finish_reason (chunks={}, bytes={})", .{
-                        chunk_count, total_bytes_read,
-                    });
-                    return error.StreamInterrupted;
-                }
-                self.log_msg(.info, "[STREAM] EndOfStream from readSliceShort");
-                stream_ended_cleanly = true;
-                break;
+            const next_result = scanner.next() catch |err| {
+                self.log_fmt(.err, "[STREAM] scanner.next failed: {s}", .{@errorName(err)});
+                return error.StreamInterrupted;
             };
-
-            // ---------------------------------------------------------------
-            // Deadline checks run AFTER readSliceShort returns, not before.
-            // This is the key fix: the idle timer accumulates correctly because
-            // we measure elapsed time after the blocking call returns, rather
-            // than resetting last_byte_at_ms based on when we entered the loop.
-            // ---------------------------------------------------------------
-            const now_ms = timestampMs(self.httpClient.io);
-            const overall_elapsed_ms = now_ms - stream_start;
-            const idle_elapsed_ms = now_ms - last_byte_at_ms;
-
-            // Overall stream deadline
-            if (overall_elapsed_ms > stream_read_deadline_ms) {
-                self.log_fmt(.err, "[STREAM] overall deadline exceeded: {}ms > {}ms (chunks={}, bytes={})", .{
-                    overall_elapsed_ms, stream_read_deadline_ms, chunk_count, total_bytes_read,
-                });
-                return error.StreamTimeout;
-            }
-
-            if (n == 0) {
-                // No data returned. Check for clean close.
-                const state_after = response.request.reader.state;
-                if (state_after == .closing or state_after == .ready) {
-                    stream_ended_cleanly = true;
-                    self.log_msg(.info, "[STREAM] Reader closing/ready with n=0, stream ended cleanly");
-                    break;
+            if (next_result) |line| {
+                scanner_null_count = 0;
+                if (self.parse_sse_line(line)) |data| {
+                    _ = line_arena.reset(.retain_capacity);
+                    if (self.parse_stream_chunk(data, line_arena.allocator())) |chunk| {
+                        chunk_count += 1;
+                        callback(ctx, chunk);
+                        aggregator.process_chunk(chunk) catch {};
+                    } else {
+                        self.log_fmt(.err, "[STREAM] parse_stream_chunk returned null for: {s}", .{data});
+                    }
                 }
-
-                // Check idle timeout - this fires if keepalive detected dead conn
-                // and readSliceShort keeps returning 0 without an error.
-                if (idle_elapsed_ms >= stream_idle_deadline_ms) {
-                    self.log_fmt(.err, "[STREAM] idle timeout: {}ms with no data (chunks={}, bytes={})", .{
-                        idle_elapsed_ms, chunk_count, total_bytes_read,
-                    });
-                    return error.StreamIdleTimeout;
-                }
-
-                // Brief yield to avoid busy-spinning on n=0.
-                std.Io.sleep(self.httpClient.io, .{ .nanoseconds = 50_000 }, .real) catch {};
                 continue;
             }
-
-            // Got real data - reset idle timer and accumulate bytes.
-            last_byte_at_ms = now_ms;
-            if (watchdog) |*wd| wd.last_byte_ms.store(now_ms, .release);
-            total_bytes_read += n;
-            self.log_fmt(.debug, "[STREAM] read {} bytes (total={})", .{ n, total_bytes_read });
-
-            // Small yield to prevent tight CPU spinning on very fast streams.
-            if (n < 64) {
-                std.Io.sleep(self.httpClient.io, .{ .nanoseconds = 100_000 }, .real) catch {};
-            }
-
-            // Parse bytes into SSE lines.
-            for (read_buffer[0..n]) |byte| {
-                if (byte == '\n') {
-                    if (line_buffer.items.len > 0) {
-                        const line = line_buffer.items;
-                        if (self.parse_sse_line(line)) |data| {
-                            _ = chunk_arena.reset(.retain_capacity);
-                            if (self.parse_stream_chunk(data, chunk_arena.allocator())) |chunk| {
-                                chunk_count += 1;
-                                self.log_fmt(.debug, "[STREAM] chunk #{}: content={}, reasoning={}, tool_calls={}", .{
-                                    chunk_count,
-                                    if (chunk.content) |c| c.len else 0,
-                                    if (chunk.reasoning_content) |r| r.len else 0,
-                                    if (chunk.tool_calls_delta) |t| t.len else 0,
-                                });
-                                callback(ctx, chunk);
-                                aggregator.process_chunk(chunk) catch {};
-                            } else {
-                                self.log_fmt(.err, "[STREAM] parse_stream_chunk returned null for: {s}", .{data});
-                            }
-                        }
-                        line_buffer.clearRetainingCapacity();
-                    }
-                } else if (byte != '\r') {
-                    line_buffer.append(self.allocator, byte) catch {};
-                }
-            }
+            // next() returned null. The worker MIGHT have finished
+            // (clean EOF) OR the polling budget might have elapsed
+            // (worker still going). One more call lets us tell apart
+            // the two: a clean EOF returns null immediately on the
+            // second call, a polling timeout blocks until the next
+            // chunk. We cap at 2 nulls in a row to be defensive —
+            // if the second call also returns null, the worker
+            // definitely finished.
+            scanner_null_count += 1;
+            if (scanner_null_count >= 2) break;
         }
 
-        // Process any remaining partial line.
-        if (line_buffer.items.len > 0) {
-            if (self.parse_sse_line(line_buffer.items)) |data| {
-                _ = chunk_arena.reset(.retain_capacity);
-                if (self.parse_stream_chunk(data, chunk_arena.allocator())) |chunk| {
-                    callback(ctx, chunk);
-                    aggregator.process_chunk(chunk) catch {};
-                }
-            }
-        }
-
-        // If the watchdog fired (force-closed the socket), translate to the
-        // appropriate timeout variant. The dup2-to-/dev/null trick produces
-        // an EOF on the read loop, which would otherwise fall through to
-        // StreamEmpty / StreamInterrupted. The user wants to know whether
-        // the LLM call was killed by a deadline vs an actual clean end.
-        if (watchdog) |*wd| {
-            switch (wd.fired_for.load(.acquire)) {
-                @intFromEnum(StreamWatchdog.Reason.idle) => {
-                    self.log_fmt(.err, "[STREAM] watchdog fired (idle timeout, {d}ms)", .{
-                        elapsedMs(self.httpClient.io, stream_start),
-                    });
-                    return error.StreamIdleTimeout;
-                },
-                @intFromEnum(StreamWatchdog.Reason.max_total) => {
-                    self.log_fmt(.err, "[STREAM] watchdog fired (max total timeout, {d}ms)", .{
-                        elapsedMs(self.httpClient.io, stream_start),
-                    });
-                    return error.StreamTimeout;
-                },
-                else => {},
-            }
-        }
-
-        // Enforce clean-end semantics.
-        if (!stream_ended_cleanly) {
-            if (chunk_count == 0) {
-                self.log_fmt(.err, "[STREAM] ended with 0 chunks and no clean-end signal", .{});
-                return error.StreamEmpty;
-            }
-            self.log_fmt(.err, "[STREAM] did not end cleanly: chunks={}, bytes={}, elapsed={}ms", .{
-                chunk_count, total_bytes_read, elapsedMs(self.httpClient.io, stream_start),
-            });
+        // 10. The scanner returned null twice in a row, which means
+        // the worker has definitively finished (clean EOF) without
+        // sending a finish_reason chunk. Treat as a mid-stream death.
+        if (aggregator.finish_reason == null) {
+            self.log_fmt(.err, "[STREAM] stream ended without finish_reason (chunks={})", .{chunk_count});
             return error.StreamInterrupted;
         }
+        stream_ended_cleanly = true;
 
         callback(ctx, .{ .done = true });
 
-        const fr_str = if (aggregator.finish_reason) |fr| fr.to_str() else "incomplete";
-        self.log_fmt(.info, "[STREAM] Finalizing: finish_reason={s}, content_len={}, tool_buffers={}", .{
-            fr_str, aggregator.content.items.len, aggregator.tool_call_buffers.count(),
-        });
-
+        // 11. Finalize.
         const stream_response = aggregator.finalize() catch |err| {
             self.log_error("finalize streaming response", err, null);
             return error.AllocFailed;
         };
 
+        // 12. Cost tracking (matches Agent.zig's pricing).
         const prompt_cost = @as(f64, @floatFromInt(stream_response.usage.prompt_tokens)) * 0.000003;
         const completion_cost = @as(f64, @floatFromInt(stream_response.usage.completion_tokens)) * 0.000015;
         const total_cost = prompt_cost + completion_cost;
@@ -1891,6 +1387,6 @@ pub const Agent = struct {
     }
 
     pub fn deinit(self: *Agent) void {
-        self.httpClient.deinit();
+        self.client.deinit();
     }
 };
