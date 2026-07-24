@@ -1305,24 +1305,60 @@ pub const Agent2 = struct {
         // `catch` that maps any scanner error to a CallError variant
         // and returns — instead of `try`, which would fail to propagate
         // errors outside CallError.
-        while (scanner.next() catch |err| {
-            self.log_fmt(.err, "[STREAM] scanner.next failed: {s}", .{@errorName(err)});
-            return error.StreamInterrupted;
-        }) |line| {
-            if (self.parse_sse_line(line)) |data| {
-                _ = line_arena.reset(.retain_capacity);
-                if (self.parse_stream_chunk(data, line_arena.allocator())) |chunk| {
-                    chunk_count += 1;
-                    callback(ctx, chunk);
-                    aggregator.process_chunk(chunk) catch {};
-                } else {
-                    self.log_fmt(.err, "[STREAM] parse_stream_chunk returned null for: {s}", .{data});
+        //
+        // `scanner.next()` can return null for two reasons:
+        //   (a) the worker has finished cleanly (clean EOF); or
+        //   (b) the polling budget elapsed without a chunk arriving.
+        // `StreamScanner` does NOT distinguish the two — both return
+        // null. Reasoning-model LLMs (Claude extended thinking, OpenAI
+        // o1/o3, DeepSeek R1) routinely pause 30-60s+ between chunks,
+        // so a polling-budget return would otherwise produce a spurious
+        // `StreamInterrupted` on a healthy stream.
+        //
+        // Mitigations:
+        //   - `custom_http_client.StreamScanner.next()` was bumped from
+        //     5s to 300s in commit `…` (matches libcurl's
+        //     CURLOPT_TIMEOUT_MS) — fixes the common case.
+        //   - This loop treats a null as "give the worker one more
+        //     chance" — call next() again. If the worker has truly
+        //     finished, the second call returns null immediately. If
+        //     the worker is still going, the second call blocks until
+        //     the next chunk or the libcurl timeout.
+        var scanner_null_count: u32 = 0;
+        while (true) {
+            const next_result = scanner.next() catch |err| {
+                self.log_fmt(.err, "[STREAM] scanner.next failed: {s}", .{@errorName(err)});
+                return error.StreamInterrupted;
+            };
+            if (next_result) |line| {
+                scanner_null_count = 0;
+                if (self.parse_sse_line(line)) |data| {
+                    _ = line_arena.reset(.retain_capacity);
+                    if (self.parse_stream_chunk(data, line_arena.allocator())) |chunk| {
+                        chunk_count += 1;
+                        callback(ctx, chunk);
+                        aggregator.process_chunk(chunk) catch {};
+                    } else {
+                        self.log_fmt(.err, "[STREAM] parse_stream_chunk returned null for: {s}", .{data});
+                    }
                 }
+                continue;
             }
+            // next() returned null. The worker MIGHT have finished
+            // (clean EOF) OR the polling budget might have elapsed
+            // (worker still going). One more call lets us tell apart
+            // the two: a clean EOF returns null immediately on the
+            // second call, a polling timeout blocks until the next
+            // chunk. We cap at 2 nulls in a row to be defensive —
+            // if the second call also returns null, the worker
+            // definitely finished.
+            scanner_null_count += 1;
+            if (scanner_null_count >= 2) break;
         }
 
-        // 10. The scanner returns null after the worker reports finished. If we
-        // got here without a finish_reason, the server died mid-stream.
+        // 10. The scanner returned null twice in a row, which means
+        // the worker has definitively finished (clean EOF) without
+        // sending a finish_reason chunk. Treat as a mid-stream death.
         if (aggregator.finish_reason == null) {
             self.log_fmt(.err, "[STREAM] stream ended without finish_reason (chunks={})", .{chunk_count});
             return error.StreamInterrupted;

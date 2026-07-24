@@ -166,18 +166,33 @@ pub const ResponseStream = struct {
     thread: std.Thread,
 
     pub fn next(self: *ResponseStream) !?[]const u8 {
-        // Block briefly waiting for the worker thread to push a chunk
+        // Block waiting for the worker thread to push a chunk
         // or signal completion. Without this, `next()` would return
         // null on the very first call (race vs the worker thread),
         // causing streaming tests to exit prematurely with 0 chunks.
         //
-        // Poll budget is short (5s, generous for slow handshakes) but
-        // we exit early as soon as a chunk arrives or the worker
-        // reports completion. We use libc clock_gettime rather than
-        // std.Io.Clock.now because the latter calls into the Io
-        // runtime from the test thread, which can deadlock against
-        // the worker thread that owns the runtime.
-        const poll_budget_ns: u64 = 5 * std.time.ns_per_s;
+        // The polling budget is set to match the default libcurl
+        // `CURLOPT_TIMEOUT_MS` (300 s = 5 min) configured in `client.zig`.
+        // Reasoning models (Claude with extended thinking, OpenAI o1/o3,
+        // DeepSeek R1, Qwen QwQ) routinely pause 30-60 s — sometimes
+        // longer — between SSE chunks while reasoning internally. The
+        // previous 5-second budget caused false "EOF" events on healthy
+        // streams (the 5 s cap fired before the next chunk arrived),
+        // which surfaced as `StreamInterrupted` in Agent2.zig because
+        // the parser never saw a `finish_reason`.
+        //
+        // Trade-off: if the worker is truly stuck (e.g. deadlocked),
+        // next() blocks until the libcurl timeout fires and the worker
+        // sets `worker_error`. That's the bound we want — the caller
+        // can't distinguish "polling timeout" from "EOF" without
+        // inspecting the worker state, so the right answer is to let
+        // libcurl be the source of truth for "is this connection dead".
+        //
+        // We use libc clock_gettime rather than std.Io.Clock.now because
+        // the latter calls into the Io runtime from the test thread,
+        // which can deadlock against the worker thread that owns the
+        // runtime.
+        const poll_budget_ns: u64 = 300 * std.time.ns_per_s;
         var ts: std.c.timespec = undefined;
         _ = std.c.clock_gettime(.MONOTONIC, &ts);
         const start_ns: u64 = @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
