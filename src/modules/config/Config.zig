@@ -23,10 +23,6 @@ pub const LlmConfig = struct {
     /// with its own owned strings.
     sub_agents: SubAgentsList,
     url_style: []const u8,
-    /// LLM HTTP transport: "std_http" (Agent.zig) or "custom_http"
-    /// (Agent2.zig / libcurl). Empty = use the default (std_http).
-    /// Owned slice, allocated on `allocator`.
-    transport: []const u8,
     /// When true, fire an OS-level notification when an LLM response
     /// finishes with `finish_reason === 'stop'`. Off by default — the
     /// user opts in via the config. Notifications are dispatched from
@@ -93,10 +89,6 @@ pub const LlmConfig = struct {
         temperature: []const u8 = "auto",
         api_key: []const u8 = "",
         url_style: []const u8 = "openai",
-        /// Per-profile transport override. Empty = fall through to
-        /// top-level config, then the built-in default "std_http".
-        /// See `LlmConfigJson.transport` for accepted values.
-        transport: []const u8 = "",
         /// Per-profile sub-agents. Owned `[]SubAgentConfig` (default empty).
         /// Each entry's strings are allocated with the parent `LlmConfig.allocator`.
         sub_agents: SubAgentsList = &.{},
@@ -204,10 +196,6 @@ pub const LlmConfig = struct {
         temperature: []const u8 = "auto",
         api_key: []const u8 = "",
         url_style: []const u8 = "openai",
-        /// Per-profile transport override. Empty string = fall through to
-        /// the top-level config, then the default "std_http". See
-        /// `LlmConfigJson.transport` for accepted values.
-        transport: []const u8 = "",
         /// Per-profile sub-agents (typed — defaults to absent). Each entry
         /// is parsed via the existing `SubAgentJson` struct, so unknown
         /// fields are silently ignored and missing fields fall back to
@@ -227,12 +215,6 @@ pub const LlmConfig = struct {
         model: []const u8 = "",
         base_url: []const u8 = "",
         url_style: []const u8 = "openai",
-        /// LLM HTTP transport selector. "std_http" = the legacy
-        /// std.http.Client implementation (Agent.zig). "custom_http" = the
-        /// new libcurl-backed implementation (Agent2.zig). Empty string
-        /// falls through to the per-profile override, then to the
-        /// built-in default of "std_http".
-        transport: []const u8 = "",
         model_compaction_size_kb: usize = 100,
         /// Opt-in: fire an OS notification when an LLM response finishes
         /// with `finish_reason === 'stop'`. Default false (user must
@@ -404,7 +386,6 @@ pub const LlmConfig = struct {
             .model = try allocator.dupe(u8, config_json.model),
             .base_url = try allocator.dupe(u8, config_json.base_url),
             .url_style = try allocator.dupe(u8, config_json.url_style),
-            .transport = try allocator.dupe(u8, if (config_json.transport.len > 0) config_json.transport else "std_http"),
             .model_compaction_size_kb = config_json.model_compaction_size_kb,
             .notify_on_complete = config_json.notify_on_complete,
             .retry_delay_ms = config_json.retry_delay_ms,
@@ -424,7 +405,6 @@ pub const LlmConfig = struct {
             allocator.free(config.model);
             allocator.free(config.base_url);
             allocator.free(config.url_style);
-            allocator.free(config.transport);
             freeMcpServersMap(&config.mcp_servers, allocator);
             freeProfilesMap(&config.profiles_models, allocator);
             freeSubAgentsList(config.sub_agents, allocator);
@@ -500,7 +480,6 @@ pub const LlmConfig = struct {
             allocator.free(entry.value_ptr.temperature);
             allocator.free(entry.value_ptr.api_key);
             allocator.free(entry.value_ptr.url_style);
-            allocator.free(entry.value_ptr.transport);
             freeSubAgentsList(entry.value_ptr.sub_agents, allocator);
         }
         map.deinit();
@@ -531,9 +510,6 @@ pub const LlmConfig = struct {
         const api_key = try alloc.dupe(u8, profile.api_key);
         errdefer alloc.free(api_key);
 
-        const transport = try alloc.dupe(u8, if (profile.transport.len > 0) profile.transport else "std_http");
-        errdefer alloc.free(transport);
-
         const profile_sub_agents = try parseSubAgentsJson(alloc, profile.sub_agents);
         errdefer freeSubAgentsList(profile_sub_agents, alloc);
 
@@ -544,7 +520,6 @@ pub const LlmConfig = struct {
             .temperature = temperature,
             .api_key = api_key,
             .url_style = url_style,
-            .transport = transport,
             .sub_agents = profile_sub_agents,
             // Per-profile compaction overrides — optional, parsed from JSON.
             .max_capacity_tokens = profile.max_capacity_tokens,
@@ -837,7 +812,6 @@ pub const LlmConfig = struct {
         self.allocator.free(self.model);
         self.allocator.free(self.base_url);
         self.allocator.free(self.url_style);
-        self.allocator.free(self.transport);
 
         freeMcpServersMap(&self.mcp_servers, self.allocator);
         freeProfilesMap(&self.profiles_models, self.allocator);
@@ -866,7 +840,6 @@ pub const LlmConfig = struct {
             .model = try self.allocator.dupe(u8, self.model),
             .base_url = try self.allocator.dupe(u8, self.base_url),
             .url_style = try self.allocator.dupe(u8, self.url_style),
-            .transport = try self.allocator.dupe(u8, self.transport),
             .model_compaction_size_kb = self.model_compaction_size_kb,
             .notify_on_complete = self.notify_on_complete,
             // Top-level compaction defaults — primitive copies, no
@@ -883,7 +856,6 @@ pub const LlmConfig = struct {
             self.allocator.free(config.model);
             self.allocator.free(config.base_url);
             self.allocator.free(config.url_style);
-            self.allocator.free(config.transport);
             freeMcpServersMap(&config.mcp_servers, self.allocator);
             freeProfilesMap(&config.profiles_models, self.allocator);
             freeSubAgentsList(config.sub_agents, self.allocator);
@@ -955,7 +927,6 @@ pub const LlmConfig = struct {
                     .temperature = entry.value_ptr.temperature,
                     .api_key = entry.value_ptr.api_key,
                     .url_style = entry.value_ptr.url_style,
-                    .transport = entry.value_ptr.transport,
                     .sub_agents = null,
                 },
                 self.allocator,

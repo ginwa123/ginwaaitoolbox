@@ -29,7 +29,6 @@ fn makeLlmConfig(allocator: std.mem.Allocator) !*nalarcore.config.LlmConfig {
         .model = try allocator.dupe(u8, "MiniMax-M2.7"),
         .base_url = try allocator.dupe(u8, "https://test.example.com"),
         .url_style = try allocator.dupe(u8, "openai"),
-        .transport = try allocator.dupe(u8, "std_http"),
         .model_compaction_size_kb = 100,
         .notify_on_complete = false,
         .mcpServers_parsed = null,

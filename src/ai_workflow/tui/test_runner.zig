@@ -39,7 +39,6 @@ test {
     _ = @import("llm_history_worker_info_test.zig"); // NEW: sprint 2 "git worktree cwd, worker"
     _ = @import("llm_history_description_test.zig"); // Migration 062 description propagation
     _ = @import("compaction_long_context_test.zig");
-    _ = @import("workflow_transport_wiring_test.zig"); // 2026-07-24-agent2-custom-http
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     _ = @import("http_handlers/workspace_items_reorder_test.zig");
     _ = @import("http_handlers/task_pin_test.zig");
