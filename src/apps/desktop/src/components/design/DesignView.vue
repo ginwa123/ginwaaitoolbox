@@ -121,6 +121,35 @@ const activeElement = computed<DesignElementApi | null>(() => {
   return elements.value.find((e) => e.id === selectedElementId.value) ?? null
 })
 
+// ─── Preview/Edit mode ──────────────────────────────────────────────────
+//
+// When `isPreviewMode === true`, each element's iframe gets
+// `pointer-events: auto` (so the user can type into inputs / click
+// buttons inside the rendered HTML) and the edit chrome (resize
+// handles, selection outline, drag handler) is suppressed. State is
+// transient — no localStorage, no backend roundtrip — a "play the
+// mockup" affordance. Default false.
+//
+// Keyboard:
+//   - Cmd/Ctrl+P: toggle Preview ↔ Edit
+//   - Esc: exit Preview (return to Edit)
+const isPreviewMode = ref<boolean>(false)
+
+const togglePreviewMode = (): void => {
+  isPreviewMode.value = !isPreviewMode.value
+}
+const exitPreviewMode = (): void => {
+  if (isPreviewMode.value) isPreviewMode.value = false
+}
+
+// Exiting Preview mode clears the selection so the user isn't surprised
+// by a now-visible resize handle on an element they didn't pick during
+// preview. Doing this in a watcher keeps the prop drill minimal — we
+// only need to react to the toggle, not poll for it.
+watch(isPreviewMode, (now) => {
+  if (!now) selectedElementId.value = null
+})
+
 // ─── Right sidebar width (drag-resize handle) ──────────────────────────
 
 const SIDEBAR_WIDTH_KEY = 'design-view-sidebar-width'
@@ -333,11 +362,34 @@ const handleKeydown = (event: KeyboardEvent): void => {
   }
 
   if (event.key === 'Escape') {
+    // Esc exits Preview first (more useful than clearing selection
+    // — the user is trying to get back to editing). Only clear the
+    // selection if we're already in Edit mode.
+    if (isPreviewMode.value) {
+      isPreviewMode.value = false
+      return
+    }
     selectedElementId.value = null
     // Also close the add-element dialog if it's open.
     if (showAddElementDialog.value) {
       showAddElementDialog.value = false
     }
+    return
+  }
+
+  // Cmd/Ctrl+P toggles Preview/Edit mode. Plain P (no modifier) is a
+  // common type-to-pan shortcut in design tools — not used here, but
+  // we intentionally don't bind it so the future pan-tool doesn't
+  // conflict. Cmd+P conflicts with browser Print on some platforms;
+  // users can use the toolbar button as a fallback.
+  if (
+    (event.key === 'p' || event.key === 'P') &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.shiftKey &&
+    !event.altKey
+  ) {
+    event.preventDefault()
+    togglePreviewMode()
     return
   }
 
@@ -390,6 +442,13 @@ onUnmounted(() => {
 // ─── Handlers ──────────────────────────────────────────────────────────
 
 const handleCanvasClick = (event: MouseEvent): void => {
+  // In Preview mode, canvas clicks are user-typed values inside
+  // iframes or pan gestures — neither should clear the selection.
+  // The iframes' `pointer-events: auto` (set in DesignElement.vue
+  // for Preview) means clicks on element bodies never reach this
+  // handler anyway, but we guard the canvas-background case too so
+  // panning doesn't deselect during a Preview session.
+  if (isPreviewMode.value) return
   // If we just finished a pan-drag (Space + drag), swallow the
   // click so it doesn't deselect the active element. The browser
   // dispatches a synthetic click after pointerup; without this
@@ -850,6 +909,7 @@ onUnmounted(() => {
           data-testid="design-canvas-header"
         >
           <button
+            v-if="!isPreviewMode"
             type="button"
             class="px-2 py-1 rounded text-xs font-medium"
             style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
@@ -874,7 +934,7 @@ onUnmounted(() => {
             (no page selected)
           </div>
           <div
-            v-if="activePage"
+            v-if="activePage && !isPreviewMode"
             class="flex items-center gap-1 text-xs shrink-0"
             style="color: var(--semantic-text-dim);"
             data-testid="design-page-size"
@@ -908,6 +968,29 @@ onUnmounted(() => {
           <div class="text-xs" style="color: var(--semantic-text-dim);">
             {{ elements.length }} element{{ elements.length === 1 ? '' : 's' }}
           </div>
+          <!--
+            Preview/Edit mode toggle. When active, each element's iframe
+            gets `pointer-events: auto` and the edit chrome is suppressed
+            — the user can type into form fields and click buttons inside
+            the rendered HTML without selecting elements. Keyboard shortcut:
+            Cmd/Ctrl+P toggles, Esc exits. See `isPreviewMode` ref above.
+          -->
+          <button
+            type="button"
+            class="px-2 py-0.5 rounded text-xs font-medium transition-colors"
+            :style="isPreviewMode
+              ? 'background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg); border: none;'
+              : 'color: var(--semantic-text); border: 1px solid var(--color-border); opacity: 0.8;'"
+            :title="isPreviewMode
+              ? 'Exit Preview mode (shortcut: Esc)'
+              : 'Preview the mockup — type into inputs, click buttons (shortcut: Cmd/Ctrl+P)'"
+            :aria-label="isPreviewMode ? 'Exit Preview mode' : 'Enter Preview mode'"
+            :aria-pressed="isPreviewMode"
+            data-testid="design-preview-toggle"
+            @click="togglePreviewMode"
+          >
+            <span aria-hidden="true">{{ isPreviewMode ? '■ ' : '▶ ' }}</span>Preview
+          </button>
           <div
             class="flex items-center gap-1 shrink-0"
             data-testid="design-zoom-toolbar"
@@ -984,6 +1067,7 @@ onUnmounted(() => {
               :workspace-id="workspaceId"
               :item-id="itemId || item.id"
               :page-id="activePageId"
+              :preview-mode="isPreviewMode"
               @select="handleElementSelect"
               @update="handleElementUpdate"
               @html-changed="handleElementHtmlChanged"
@@ -1044,7 +1128,7 @@ onUnmounted(() => {
           <LayersPanel
             :elements="elements"
             :selected-element-id="selectedElementId"
-            :readonly="false"
+            :readonly="isPreviewMode"
             @select="handleElementSelect"
             @reorder="handleReorderElements"
             @delete="handleElementDelete"
@@ -1069,6 +1153,7 @@ onUnmounted(() => {
           <PropertiesPanel
             :element="activeElement"
             :readonly="false"
+            :preview-mode="isPreviewMode"
             @update="handlePropertiesUpdate"
             @html-changed="handlePropertiesHtmlChanged"
             @delete="handlePropertiesDelete"

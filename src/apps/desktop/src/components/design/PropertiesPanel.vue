@@ -51,9 +51,15 @@ const props = withDefaults(
   defineProps<{
     element: DesignElement | null
     readonly?: boolean
+    // When true, the parent canvas is in Preview mode (toggle in the
+    // canvas header bar). The form fields are hidden and replaced
+    // with a "you're previewing" banner — the user is interacting
+    // with the mockup, not editing its metadata.
+    previewMode?: boolean
   }>(),
   {
     readonly: false,
+    previewMode: false,
   },
 )
 
@@ -213,9 +219,32 @@ const showTypeSpecificSection = computed(
     style="scrollbar-width: thin;"
     data-testid="properties-panel"
   >
+    <!-- ─── Preview-mode banner ────────────────────────────────────── -->
+    <!--
+      Shown when the parent canvas is in Preview mode (toggle in
+      the canvas header bar). Replaces the entire form with a
+      compact hint — the user is interacting with the rendered HTML,
+      not editing element metadata. Pressing Esc (handled in
+      DesignView.vue) exits Preview and restores the form.
+    -->
+    <div
+      v-if="previewMode"
+      class="flex-1 flex items-center justify-center p-6 text-sm"
+      style="color: var(--semantic-text-dim);"
+      data-testid="properties-panel-preview"
+    >
+      <div class="text-center">
+        <div class="text-3xl mb-2" aria-hidden="true">▶</div>
+        <div>Previewing — interact with the mockup</div>
+        <div class="text-xs mt-1" style="opacity: 0.7;">
+          Press Esc to return to editing
+        </div>
+      </div>
+    </div>
+
     <!-- ─── Empty state ────────────────────────────────────────────── -->
     <div
-      v-if="!element"
+      v-if="!element && !previewMode"
       class="flex-1 flex items-center justify-center p-6 text-sm"
       style="color: var(--semantic-text-dim);"
       data-testid="properties-panel-empty"
@@ -226,7 +255,7 @@ const showTypeSpecificSection = computed(
       </div>
     </div>
 
-    <template v-else>
+    <template v-if="element && !previewMode">
       <!-- ─── Header ───────────────────────────────────────────────── -->
       <div
         class="px-4 py-3 shrink-0"

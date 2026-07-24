@@ -80,7 +80,11 @@ describe('DesignElement.vue static contract', () => {
     expect(source).toContain('<DesignElementPreview')
     expect(source).toContain('v-if="element.file_path"')
     expect(source).toContain(':html="htmlBody"')
-    expect(source).toContain('pointer-events="none"')
+    // pointer-events is bound dynamically: 'none' in Edit mode (clicks
+    // pass through to the wrapper for drag/resize/select) and 'auto' in
+    // Preview mode (so the user can type into the iframe's inputs).
+    // The `:pointer-events=` Vue binding handles both branches.
+    expect(source).toContain(':pointer-events="previewMode ? \'auto\' : \'none\'"')
   })
 
   // Regression test for the 2026-07-18 bug: the element must fetch
@@ -104,5 +108,21 @@ describe('DesignElement.vue static contract', () => {
     expect(source).toContain('workspaceId:')
     expect(source).toContain('itemId:')
     expect(source).toContain('pageId:')
+  })
+
+  // The Preview/Edit mode toggle (canvas header bar) is plumbed
+  // down as `previewMode`. When true:
+  //   - startDrag short-circuits (no drag/resize/select)
+  //   - the resize-handles and selection-outline are hidden
+  //   - the iframe gets pointer-events: auto so the user can interact
+  //     with the rendered HTML.
+  it('declares previewMode prop and gates edit chrome on it', () => {
+    expect(source).toContain('previewMode?: boolean')
+    expect(source).toContain('previewMode: false')
+    expect(source).toContain('if (props.previewMode) return') // startDrag guard
+    // Selection chrome (outline + resize handles) hidden in Preview:
+    expect(source).toContain('selected && !previewMode')
+    // data-preview-mode attribute exposes the mode for E2E tests:
+    expect(source).toContain(':data-preview-mode="previewMode"')
   })
 })
