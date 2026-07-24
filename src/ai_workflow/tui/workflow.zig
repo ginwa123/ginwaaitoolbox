@@ -369,6 +369,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     .is_output = false,
                     .image_urls = image_urls,
                     .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+                    .is_feed_to_llm = true,
                 } });
 
                 try agentic_loop_mod.deleteQueuedMessage(.{
@@ -499,6 +500,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                         .is_output = false,
                         .image_urls = null,
                         .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+                        .is_feed_to_llm = false
                     },
                 });
 
@@ -552,6 +554,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 .is_output = false,
                 .image_urls = null,
                 .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+                .is_feed_to_llm = false,
             } });
 
             return error.TooManyRetries;
@@ -900,7 +903,7 @@ fn saveRetryAttemptMessage(
         .parent_session_id = parent_session_id,
         .is_input = true,
         .is_output = false,
-        .is_feed_to_llm = true,
+        .is_feed_to_llm = false,
         .image_urls = null,
         .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
     } });
