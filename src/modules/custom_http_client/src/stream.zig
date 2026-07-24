@@ -539,12 +539,17 @@ pub fn openStream(
     _ = setoptSlist(handle, curl.OPT.HTTPHEADER, state.header_slist);
 
     if (req.body) |body| {
-        // COPYPOSTFIELDS makes libcurl duplicate the body internally so we
-        // don't borrow `req.body` (which the caller may free as soon as
-        // openStream returns, while the worker thread is still running).
-        // POSTFIELDSIZE_LARGE lets us pass the length without the body
-        // needing to be NUL-terminated.
-        _ = setoptPtr(handle, curl.OPT.COPYPOSTFIELDS, body.ptr);
+        // Use POSTFIELDS (pointer, no copy) + POSTFIELDSIZE_LARGE for
+        // non-NUL-terminated request bodies. COPYPOSTFIELDS would call
+        // strlen() on `body.ptr` and read past the end of the buffer
+        // (JSON has no NUL bytes, so strlen scans heap memory beyond
+        // the allocation) — libcurl then sees "0 bytes read" against
+        // the POSTFIELDSIZE_LARGE value and aborts with CURLE_READ_ERROR
+        // ("client read function EOF fail"). The body MUST outlive the
+        // worker thread, which is guaranteed because the caller (Agent2)
+        // holds `json_body` alive through `defer` until callStreaming
+        // returns AFTER stream.deinit() joins the worker.
+        _ = setoptPtr(handle, curl.OPT.POSTFIELDS, body.ptr);
         _ = setoptLong(handle, curl.OPT.POSTFIELDSIZE_LARGE, @as(c_long, @intCast(body.len)));
     }
 
