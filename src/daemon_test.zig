@@ -1,11 +1,26 @@
 // src/daemon_test.zig
 //
-// Tests for src/daemon.zig. The daemonize() test forks a child process
-// and verifies the grandchild's PPID differs from the original process
-// (which is the daemon(7) invariant for "detached from controlling
-// terminal / parent process group").
+// Tests for src/daemon.zig (cross-platform daemonization).
 //
-// Zig 0.16 API notes:
+// ## POSIX daemonize
+//
+// The POSIX daemonize test forks a child process and verifies the
+// grandchild's PPID differs from the original process (which is the
+// daemon(7) invariant for "detached from controlling terminal / parent
+// process group").
+//
+// ## Windows daemonize
+//
+// On Windows, `daemonize()` re-launches the current process via
+// `CreateProcessW` with `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`
+// flags, then the parent exits. The detection that "we are the
+// detached daemon, not the parent" uses an environment-variable
+// sentinel (`NALAR_DAEMON_CHILD=1`). The static-contract test verifies
+// the sentinel-based dispatch is in place; the behavioral test
+// (forking the executable) only runs on POSIX.
+//
+// ## Zig 0.16 API notes
+//
 //   * std.c.pipe(&pipe_fds) returns 0 on success; -1 on error.
 //   * std.c.fork returns the new child's PID (c_int) in the parent,
 //     0 in the child, or -1 on error.
@@ -51,6 +66,51 @@ test "isProcessRunning returns false for nonexistent pid" {
     // near INT_MAX and outside the typical PID range on Linux.
     try testing.expect(!helpers.process_status.isProcessRunning(0x7ffffff0));
 }
+
+// ============================================================================
+// Cross-platform daemonize() tests
+// ============================================================================
+
+// Static contract: a cross-platform `daemonize()` function must exist.
+// On POSIX it wraps the double-fork + setsid; on Windows it re-execs
+// via CreateProcessW with DETACHED_PROCESS. The function is referenced
+// here so the compiler must type-check it on every platform — if the
+// function is missing OR throws @compileError on a target, this test
+// fails to compile.
+test "daemon.daemonize is callable cross-platform" {
+    // Just take the address — if this compiles, the function exists.
+    const function_pointer = &daemon.daemonize;
+    _ = function_pointer;
+    try testing.expect(true);
+}
+
+// Static contract: `daemon.daemonizePosix` is kept as a backward-compat
+// alias for `daemonize` on POSIX. On Windows, the function exists but
+// calls into the Windows implementation (so legacy callers compile).
+test "daemon.daemonizePosix is callable cross-platform" {
+    const function_pointer = &daemon.daemonizePosix;
+    _ = function_pointer;
+    try testing.expect(true);
+}
+
+// Static contract: the daemonize dispatch must be at comptime — a
+// switch on `builtin.os.tag` (NOT runtime detection). This pins the
+// pattern in case a future refactor accidentally does runtime
+// platform detection (which would silently break Windows builds).
+test "daemonize uses comptime builtin.os.tag switch" {
+    const source = @embedFile("daemon.zig");
+    // Must contain a switch on builtin.os.tag inside the daemonize
+    // function. Look for the canonical Zig pattern.
+    try testing.expect(std.mem.indexOf(u8, source, "switch (builtin.os.tag)") != null);
+    // Must reference all three supported OSes in that switch.
+    try testing.expect(std.mem.indexOf(u8, source, ".linux") != null);
+    try testing.expect(std.mem.indexOf(u8, source, ".macos") != null);
+    try testing.expect(std.mem.indexOf(u8, source, ".windows") != null);
+}
+
+// ============================================================================
+// Existing POSIX tests
+// ============================================================================
 
 test "POSIX daemonize detaches the grandchild from the original" {
     if (builtin.os.tag == .windows) return;
@@ -135,4 +195,66 @@ test "mkdirP is idempotent on an already-existing parent dir" {
     // /tmp always exists; calling mkdirP on "/tmp/anything" must not error.
     try daemon.mkdirP("/tmp/this-is-a-mkdirP-test/service.log");
     try daemon.mkdirP("/tmp/this-is-a-mkdirP-test/service.log");
+}
+
+// ============================================================================
+// Windows-specific cross-platform tests
+// ============================================================================
+
+// On Windows, mkdirP is implemented via CreateDirectoryW. It should
+// still create nested dirs and be idempotent. We run a smoke test
+// using a path under the system temp dir.
+test "Windows mkdirP creates all parent dirs of a fresh nested path" {
+    if (builtin.os.tag != .windows) return;
+
+    // The system temp dir on Windows is %TEMP% (typically C:\Users\<user>\AppData\Local\Temp).
+    // We can't depend on std.testing.tmpDir returning a cross-platform
+    // realpath on Windows (the underlying realpath uses posix symlinks
+    // semantics). Instead we build a unique path under the temp dir.
+    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_z = std.c.getenv("TEMP") orelse std.c.getenv("TMP") orelse return;
+    const tmp = std.mem.sliceTo(tmp_z, 0);
+    if (tmp.len >= tmp_buf.len) return;
+    @memcpy(tmp_buf[0..tmp.len], tmp);
+    const tmp_dir_path: []u8 = tmp_buf[0..tmp.len];
+
+    const leaf = "\\nalar-mkdirP-test\\deeply\\nested\\that\\does\\not\\exist\\service.log";
+    const path = try testing.allocator.alloc(u8, tmp_dir_path.len + leaf.len);
+    defer testing.allocator.free(path);
+    @memcpy(path[0..tmp_dir_path.len], tmp_dir_path);
+    @memcpy(path[tmp_dir_path.len..], leaf);
+
+    // Best-effort cleanup of any prior test residue (idempotent).
+    try daemon.mkdirP(path);
+
+    // Idempotency: calling again must not error.
+    try daemon.mkdirP(path);
+}
+
+// Static contract: the file must contain a Windows mkdirP path that
+// uses CreateDirectoryW (or _wmkdir via UCRT). This pins the API so
+// a future refactor that drops the Windows branch is caught.
+test "daemon.zig has a Windows-specific mkdirP implementation" {
+    const source = @embedFile("daemon.zig");
+    try testing.expect(std.mem.indexOf(u8, source, "mkdirPWindows") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "CreateDirectoryW") != null);
+}
+
+// Static contract: the file must contain a Windows redirectStdioToLog
+// path that uses CreateFileW + SetStdHandle (or freopen via UCRT).
+test "daemon.zig has a Windows-specific redirectStdioToLog implementation" {
+    const source = @embedFile("daemon.zig");
+    try testing.expect(std.mem.indexOf(u8, source, "redirectStdioToLogWindows") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "SetStdHandle") != null);
+}
+
+// Static contract: the file must contain a Windows daemonize path
+// that uses CreateProcessW with DETACHED_PROCESS. This pins the API.
+test "daemon.zig has a Windows-specific daemonize implementation" {
+    const source = @embedFile("daemon.zig");
+    try testing.expect(std.mem.indexOf(u8, source, "daemonizeWindows") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "DETACHED_PROCESS") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "CREATE_NEW_PROCESS_GROUP") != null);
+    // The sentinel env var tells the spawned child "you ARE the daemon".
+    try testing.expect(std.mem.indexOf(u8, source, "NALAR_DAEMON_CHILD") != null);
 }

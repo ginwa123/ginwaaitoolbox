@@ -151,16 +151,15 @@ pub const StartOptions = struct {
 /// caller, the daemon is running and the caller (the foreground
 /// `nalar service start` invocation) has exited via daemonizePosix.
 ///
-/// Windows is not implemented in v1 (compile error).
+/// Windows daemonization is implemented in daemon.zig via CreateProcessW
+/// with DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP. The spawned child
+/// (the daemon) sees `NALAR_DAEMON_CHILD=1` and continues; the parent
+/// (the foreground process) exits with code 0.
 pub fn serviceStart(
     allocator: std.mem.Allocator,
     io: std.Io,
     opts: StartOptions,
 ) StartError!void {
-    if (builtin.os.tag == .windows) {
-        @compileError("serviceStart is POSIX-only in v1");
-    }
-
     // 1. Refuse if a live daemon is already tracked in state.json.
     if (try state_file.readStateFile(allocator, io, opts.state_path)) |existing| {
         defer state_file.freeState(allocator, existing);
@@ -169,11 +168,11 @@ pub fn serviceStart(
         std.Io.Dir.cwd().deleteFile(io, opts.state_path) catch {};
     }
 
-    // 2. Daemonize. POSIX-only — Windows has no fork/double-fork. The
-    //    daemon lifecycle is unsupported on Windows in this codebase
-    //    (Windows service control manager APIs would be needed).
-    if (builtin.os.tag == .windows) return error.UnsupportedOS;
-    try daemon.daemonizePosix();
+    // 2. Daemonize. Cross-platform: POSIX double-fork + setsid, or
+    //    Windows CreateProcessW with DETACHED_PROCESS. The POSIX parent
+    //    / Windows parent exits inside `daemonize`; the function only
+    //    returns to the grandchild (POSIX) or spawned child (Windows).
+    try daemon.daemonize();
     try daemon.redirectStdioToLog(opts.log_path);
 
     // 3. Write our state.json (with the just-allocated PID).
@@ -181,17 +180,22 @@ pub fn serviceStart(
     //    attached to is the same nalar that's serving files (and so a
     //    future `service status` can show it).
     const state: state_file.State = .{
-        .pid = std.c.getpid(),
+        .pid = helpers.process_status.getCurrentProcessIdInt(),
         .port = opts.port,
         .host = "127.0.0.1",
-        .started_at = unixTimestampSeconds(),
+        .started_at = helpers.unixTimestamp(),
         .version = "0.4.0",
         .static_dir = opts.static_dir,
     };
     try state_file.writeStateFile(allocator, io, opts.state_path, state);
 
     // 4. Install SIGTERM handler that invokes the injectable shutdown.
-    signal_handlers.installSigtermHandler(opts.on_shutdown);
+    //    On Windows, the POSIX-only signal_handlers.installSigtermHandler
+    //    is a compile error — skip it. The Windows SetConsoleCtrlHandler
+    //    path is a follow-up (see signal_handlers.zig).
+    if (builtin.os.tag != .windows) {
+        signal_handlers.installSigtermHandler(opts.on_shutdown);
+    }
 
     // 5. Hand off to the caller-supplied server run-loop. This blocks
     //    until the server stops (typical: shutdown HTTP endpoint
@@ -199,6 +203,8 @@ pub fn serviceStart(
 }
 
 /// Unix timestamp in seconds. Uses libc gettimeofday (no Io required).
+/// (Kept as a fallback if helpers.unixTimestamp is unavailable; main
+/// path uses helpers.unixTimestamp for cross-platform support.)
 fn unixTimestampSeconds() i64 {
     var tv: std.c.timeval = undefined;
     _ = std.c.gettimeofday(&tv, null);
