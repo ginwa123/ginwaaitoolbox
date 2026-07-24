@@ -175,6 +175,19 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Active task within the selected workspace item
   const activeTaskId = ref<string | null>(null)
 
+  // NEW (Chunk 1 of design-element-drag-and-drop plan). The currently
+  // active design page id, set by DesignView on mount / tab switch and
+  // cleared on unmount. Read by AppLayout's design handlers
+  // (handleDesignUpdateElement / handleDesignDeleteElement) so they can
+  // route PATCH/PUT/DELETE to the correct page. Empty string means
+  // "no active design page" (DesignView is not mounted, or no page is
+  // selected yet). Using empty string (not null) keeps the type as
+  // string and makes the "no active page" check a single `!pageId`.
+  const activeDesignPageId = ref<string>('')
+  function setActiveDesignPage(pageId: string): void {
+    activeDesignPageId.value = pageId
+  }
+
   // System folder info from API
   const systemFolderInfo = ref<SystemFolderInfo | null>(null)
   const systemFolderLoading = ref(false)
@@ -2089,6 +2102,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     activeWorkspaceItemId,
     expandedItemIds,
     activeTaskId,
+    // NEW (Chunk 1 of design-element-drag-and-drop plan): the currently
+    // active design page id, mirrored from DesignView so AppLayout's
+    // design handlers can route PATCH/PUT/DELETE to the right page.
+    activeDesignPageId,
     systemFolderInfo,
     systemFolderLoading,
     systemFolderError,
@@ -2106,6 +2123,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     toggleExpandedItem,
     setActiveWorkspaceItem,
     setActiveTask,
+    // NEW (Chunk 1 of design-element-drag-and-drop plan): mirror the
+    // active design page id from DesignView. Called on mount + tab
+    // switch, and cleared on unmount.
+    setActiveDesignPage,
     addWorkspace,
     addWorkspaceItem,
     removeWorkspaceItem,
