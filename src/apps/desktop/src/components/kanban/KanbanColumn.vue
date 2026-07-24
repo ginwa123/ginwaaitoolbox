@@ -48,12 +48,18 @@ import KanbanCard from './KanbanCard.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import type { KanbanColumn, Task } from '../../stores/workspaces'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   column: KanbanColumn
   tasks: Task[]
   workspaceId: string
   itemId: string
-}>()
+  // Absolute path used as the root for `@`-trigger file pickers /
+  // file-path resolution in descendant cards. Threaded from
+  // <KanbanView> via `props.item.path`.
+  cwd?: string
+}>(), {
+  cwd: '',
+})
 
 const emit = defineEmits<{
   addTask: [columnId: string]
@@ -582,6 +588,7 @@ const handleAddClick = () => {
         :task="task"
         :workspace-id="workspaceId"
         :item-id="itemId"
+        :cwd="cwd"
         :style="isDragging ? 'opacity: 0.4;' : ''"
         @select-task="(id) => emit('selectTask', id)"
         @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"

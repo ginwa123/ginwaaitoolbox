@@ -41,6 +41,14 @@ export interface TaskComponentProps {
    * null means no indicator.
    */
   dropIndicator?: 'above' | 'below' | null
+  /**
+   * Absolute path used as the root for `@`-trigger file pickers in
+   * descendant editors / markdown renderers. Optional — task-list
+   * callers in <WorkspaceItem> don't pass it (no kanban context). The
+   * kanban column passes it through so `@/path` references in the
+   * card's description resolve against the kanban's filesystem path.
+   */
+  cwd?: string
 }
 
 /**

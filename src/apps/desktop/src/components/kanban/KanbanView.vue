@@ -514,6 +514,7 @@ const handleCreateTaskSave = async (payload: {
           :tasks="tasks"
           :workspace-id="workspaceId"
           :item-id="itemId || item.id"
+          :cwd="item.path || ''"
           @add-task="handleViewCreateTask"
           @move-task="(payload) => emit('moveTask', payload)"
           @rename-column="(payload) => emit('renameColumn', payload)"
@@ -562,6 +563,7 @@ const handleCreateTaskSave = async (payload: {
     v-model:show="showTaskDetail"
     :task="activeTaskDetail"
     :column="activeTaskDetailColumn"
+    :cwd="item.path || ''"
     @save="handleTaskDetailSave"
     @update-unattended="handleUnattendedToggle"
   />
@@ -578,6 +580,7 @@ const handleCreateTaskSave = async (payload: {
     mode="create"
     :task="null"
     :column="activeCreateColumn"
+    :cwd="item.path || ''"
     :error-message="createError"
     @create="handleCreateTaskSave"
   />

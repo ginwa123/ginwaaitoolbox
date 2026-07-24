@@ -72,6 +72,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
 import type { Task, KanbanColumn } from '../../stores/workspaces'
+import KanbanDescriptionEditor from './KanbanDescriptionEditor.vue'
+import MarkdownDescription from './MarkdownDescription.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -80,11 +82,16 @@ const props = withDefaults(
     task: Task | null
     column?: KanbanColumn | null  // optional — shown in metadata strip
     errorMessage?: string | null  // optional — red banner in body
+    // Absolute path used as the root for the `@`-trigger file picker
+    // in <KanbanDescriptionEditor>. Falls back to '' (no picker
+    // results) for legacy kanbans that don't have a path set.
+    cwd?: string
   }>(),
   {
     mode: 'edit',
     column: null,
     errorMessage: null,
+    cwd: '',
   },
 )
 
@@ -131,6 +138,13 @@ const description = ref('')
 const unattended = ref<'0' | '1'>('0')
 const nameInput = ref<HTMLInputElement | null>(null)
 const DESCRIPTION_MAX = 5000
+// Description render mode:
+//   - Both modes default to the editor (textarea + paperclip + char
+//     counter). The textarea is always available so existing test
+//     selectors + form-state machinery keep working.
+//   - A "Preview" toggle flips to <MarkdownDescription> for a rendered
+//     view without leaving the form.
+const isPreviewingDescription = ref(false)
 
 // True when the dialog is rendering the create flow (rather than
 // edit-in-place). Drives header copy / icon, save-button text, the
@@ -148,10 +162,12 @@ watch(
       name.value = ''
       description.value = ''
       unattended.value = '0'
+      isPreviewingDescription.value = false
     } else if (props.task) {
       name.value = props.task.name
       description.value = props.task.description ?? ''
       unattended.value = props.task.is_auto_retry_until_stop === '1' ? '1' : '0'
+      isPreviewingDescription.value = false
     }
     await nextTick()
     nameInput.value?.focus()
@@ -394,9 +410,15 @@ const columnLabel = computed<string | null>(() => {
               </span>
             </div>
 
-            <!-- Description textarea — big (10 rows vs AddTaskDialog's 3),
-                 full width. resize-y so the user can drag the corner to
-                 make it taller for long descriptions. -->
+            <!-- Description — editor by default in both modes (preserves the
+                 existing test contract: the textarea is always
+                 available). A "Preview" toggle below renders the
+                 current description as Markdown so the user can see
+                 how it'll look on the card without leaving the form.
+
+                 The editor owns its own textarea, paperclip, char
+                 counter, @-trigger file picker, and image previews —
+                 the dialog just passes the v-model and the cwd. -->
             <div>
               <label
                 for="kanban-task-detail-description"
@@ -404,26 +426,57 @@ const columnLabel = computed<string | null>(() => {
                 style="color: var(--semantic-text-dim);"
               >
                 Description
-                <span class="ml-1 text-[10px]" style="color: var(--semantic-text-dim);">
+                <span
+                  class="ml-1 text-[10px]"
+                  style="color: var(--semantic-text-dim);"
+                >
                   ({{ description.length }} / {{ DESCRIPTION_MAX }})
                 </span>
               </label>
-              <textarea
-                id="kanban-task-detail-description"
+
+              <!-- Editor: shown by default in BOTH create + edit modes. -->
+              <KanbanDescriptionEditor
+                v-show="!isPreviewingDescription"
                 v-model="description"
-                :maxlength="DESCRIPTION_MAX"
-                rows="10"
-                placeholder="Add a description…"
-                :data-testid="isCreateMode ? 'kanban-task-detail-create-description' : 'kanban-task-detail-description'"
-                class="w-full px-3 py-2.5 rounded-lg text-sm outline-none transition-all duration-200 resize-y"
+                :cwd="cwd"
+                :max-length="DESCRIPTION_MAX"
+                :test-id="isCreateMode ? 'kanban-task-detail-create-description' : 'kanban-task-detail-description'"
+                data-testid="kanban-task-detail-description-editor"
+              />
+
+              <!-- Preview: opt-in via the toggle button below. Renders
+                   the description as Markdown via <MarkdownDescription>. -->
+              <div
+                v-if="isPreviewingDescription"
+                class="px-3 py-2.5 rounded-lg text-sm"
                 style="
                   background-color: var(--semantic-sidebar-bg);
                   border: 1px solid var(--color-border);
                   color: var(--semantic-text);
-                  font-family: inherit;
-                  min-height: 200px;
+                  min-height: 160px;
                 "
-              />
+                data-testid="kanban-task-detail-description-preview"
+              >
+                <MarkdownDescription
+                  :source="description"
+                  :cwd="cwd"
+                  :test-id="`kanban-task-detail-description-preview-rendered`"
+                />
+              </div>
+
+              <button
+                type="button"
+                class="mt-2 text-xs px-2 py-1 rounded transition-colors"
+                style="
+                  background-color: var(--semantic-card-bg);
+                  border: 1px solid var(--color-border);
+                  color: var(--semantic-text-muted);
+                "
+                data-testid="kanban-task-detail-description-preview-toggle"
+                @click="isPreviewingDescription = !isPreviewingDescription"
+              >
+                {{ isPreviewingDescription ? 'Edit description' : 'Preview' }}
+              </button>
             </div>
 
             <!-- Unattended-mode toggle (always shown). Flips the
