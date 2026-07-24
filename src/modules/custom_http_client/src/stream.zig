@@ -346,6 +346,18 @@ fn headerCallback(buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque)
 fn streamWorker(state: *SharedState) void {
     const rc: c_uint = curl.easy_perform(state.handle);
     if (rc != curl.C.CURLE_OK and state.worker_error == null) {
+        // Log libcurl's human-readable error message (filled into
+        // state.errbuf by libcurl via CURLOPT_ERRORBUFFER) so callers
+        // can see WHY the request failed — e.g. "HTTP error returned"
+        // for a 401, "Couldn't resolve host", "SSL connect error",
+        // etc. The UnknownCurl mapping alone is opaque; the message
+        // identifies the actual cause.
+        const err_msg_slice = std.mem.sliceTo(&state.errbuf, 0);
+        if (err_msg_slice.len > 0) {
+            std.log.warn("curl_easy_perform failed: code={d} msg={s}", .{ rc, err_msg_slice });
+        } else {
+            std.log.warn("curl_easy_perform failed: code={d}", .{rc});
+        }
         state.worker_error = mapStreamError(rc);
     }
 
