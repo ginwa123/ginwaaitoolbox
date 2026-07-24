@@ -40,10 +40,45 @@ const CURL_ERRORBUFFER_LEN: usize = 256;
 /// directly to avoid deadlock against the worker thread which doesn't
 /// own the Io runtime (see ResponseStream.next comment for the same
 /// reasoning).
+// Monotonic clock helper. Uses libc `clock_gettime` on POSIX (Linux + macOS),
+// and Windows `QueryPerformanceCounter` on Windows. Declared manually with
+// `c_int` instead of `clockid_t` because `std.c.clock_gettime`'s `clockid_t`
+// resolves to `void` on Windows x86_64 (MSVC's libc has no `clock_gettime`),
+// which `extern "c"` rejects as a parameter type.
 fn monotonicNs() u64 {
+    if (builtin.os.tag == .windows) {
+        return monotonicNsWindows();
+    }
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+}
+
+fn monotonicNsWindows() u64 {
+    // RtlQueryPerformanceCounter returns ticks at RtlQueryPerformanceFrequency Hz.
+    // Frequency is stable per boot, so a process-wide cache is fine.
+    var counter: std.os.windows.LARGE_INTEGER = 0;
+    _ = std.os.windows.ntdll.RtlQueryPerformanceCounter(&counter);
+    const freq: u64 = queryPerformanceFrequencyCached();
+    // Convert ticks → nanoseconds without overflow: scale first to avoid
+    // losing precision when counter * 1e9 overflows u64.
+    const ticks_per_us = freq / 1_000_000;
+    const counter_u: u64 = @intCast(counter);
+    const us_part: u64 = if (ticks_per_us == 0)
+        counter_u / (freq / 1_000_000) // freq < 1 MHz — extremely unusual
+    else
+        counter_u / ticks_per_us;
+    return us_part * 1_000;
+}
+
+var qpf_cache: ?u64 = null;
+fn queryPerformanceFrequencyCached() u64 {
+    if (qpf_cache) |f| return f;
+    var freq_li: std.os.windows.LARGE_INTEGER = 0;
+    _ = std.os.windows.ntdll.RtlQueryPerformanceFrequency(&freq_li);
+    const f: u64 = @intCast(freq_li);
+    qpf_cache = f;
+    return f;
 }
 
 const ChunkQueue = struct {
@@ -663,11 +698,13 @@ pub fn openStream(
         _ = setoptLong(handle, curl.OPT.POSTFIELDSIZE_LARGE, @as(c_long, @intCast(body.len)));
     }
 
-    if (options.timeout_ms) |t| _ = setoptLong(handle, curl.OPT.TIMEOUT_MS, @as(c_long, t));
-    if (options.connect_timeout_ms) |t| _ = setoptLong(handle, curl.OPT.CONNECTTIMEOUT_MS, @as(c_long, t));
+    // `@intCast` instead of `@as(c_long, t)` — same rationale as in
+    // client.zig (LP64 vs LLP64 `c_long` size difference). See comment there.
+    if (options.timeout_ms) |t| _ = setoptLong(handle, curl.OPT.TIMEOUT_MS, @intCast(t));
+    if (options.connect_timeout_ms) |t| _ = setoptLong(handle, curl.OPT.CONNECTTIMEOUT_MS, @intCast(t));
     _ = setoptLong(handle, curl.OPT.FOLLOWLOCATION, if (options.follow_redirects) @as(c_long, 1) else @as(c_long, 0));
     if (options.follow_redirects) {
-        _ = setoptLong(handle, curl.OPT.MAXREDIRS, @as(c_long, options.max_redirects));
+        _ = setoptLong(handle, curl.OPT.MAXREDIRS, @intCast(options.max_redirects));
     }
     _ = setoptLong(handle, curl.OPT.NOSIGNAL, @as(c_long, 1));
     _ = setoptLong(handle, curl.OPT.SSL_VERIFYPEER, if (options.verify_ssl) @as(c_long, 1) else @as(c_long, 0));

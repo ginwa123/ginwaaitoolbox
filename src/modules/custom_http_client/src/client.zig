@@ -170,11 +170,15 @@ pub const Client = struct {
         }
 
         // ----- Timeouts / redirects / TLS.
-        if (options.timeout_ms) |t| _ = setoptLong(handle, curl.OPT.TIMEOUT_MS, @as(c_long, t));
-        if (options.connect_timeout_ms) |t| _ = setoptLong(handle, curl.OPT.CONNECTTIMEOUT_MS, @as(c_long, t));
+        // `@intCast` lets Zig infer the destination type from the function
+        // parameter (`c_long`). On Linux x64 `c_long = i64`; on Windows x64
+        // `c_long = i32` (LP64 vs LLP64). Runtime check is a no-op for the
+        // small values we pass (timeouts in ms, redirect counts).
+        if (options.timeout_ms) |t| _ = setoptLong(handle, curl.OPT.TIMEOUT_MS, @intCast(t));
+        if (options.connect_timeout_ms) |t| _ = setoptLong(handle, curl.OPT.CONNECTTIMEOUT_MS, @intCast(t));
         _ = setoptLong(handle, curl.OPT.FOLLOWLOCATION, if (options.follow_redirects) @as(c_long, 1) else @as(c_long, 0));
         if (options.follow_redirects) {
-            _ = setoptLong(handle, curl.OPT.MAXREDIRS, @as(c_long, options.max_redirects));
+            _ = setoptLong(handle, curl.OPT.MAXREDIRS, @intCast(options.max_redirects));
         }
         _ = setoptLong(handle, curl.OPT.NOSIGNAL, @as(c_long, 1)); // multi-thread safety
         _ = setoptLong(handle, curl.OPT.SSL_VERIFYPEER, if (options.verify_ssl) @as(c_long, 1) else @as(c_long, 0));

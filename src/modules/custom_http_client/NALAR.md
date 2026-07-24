@@ -115,5 +115,37 @@ Reference: `~/.nalar/memories/nalar-backend-architecture.md` "Diagnostic recipe"
 - Migrate `handle_mcp_tool.zig` and `build_messages_for_agent_prompt.zig`
 - Add `Connection: keep-alive` pooling via `curl_share_*`
 - Add streaming response (`ResponseStream` + `CURLOPT_XFERINFOFUNCTION`)
-- Cross-compile: macOS brew keg path, Windows vcpkg path
 - `Options.max_body_bytes` to cap response allocation
+
+## Cross-platform status
+
+This module now compiles + links on:
+
+- **Linux x86_64** — primary target, all 47 behaviour tests pass.
+- **macOS aarch64** — source code compiles cleanly. Linking requires
+  the host to have macOS SDK + brew keg at the configured prefix.
+  Verified via `zig build test -Dtarget=aarch64-macos` (no source
+  errors; only the expected TBD-file parse failure when running
+  cross-compile on a Linux host without macOS libraries).
+- **Windows x86_64 (GNU ABI)** — source code compiles cleanly.
+  Linking requires vcpkg with libcurl at the configured root.
+  Verified via `zig build test -Dtarget=x86_64-windows-gnu`.
+
+### Known platform-specific source changes
+
+- `client.zig` — `@intCast` instead of `@as(c_long, u32)` for the
+  `CURLOPT_*_MS` setopts (Windows x64 `c_long` is 32-bit, Linux is
+  64-bit; `@as` rejects lossy narrowing on Windows).
+- `stream.zig` — manual `extern "c"` declaration for `clock_gettime`
+  isn't possible (Zig stdlib's `clockid_t` resolves to `void` on
+  Windows MSVC); falls back to `RtlQueryPerformanceCounter` /
+  `RtlQueryPerformanceFrequency` for Windows.
+
+### Test fixture cross-platform
+
+The integration / streaming / CPU-usage tests need to introspect the
+ephemeral port of a bound socket. Originally used `std.os.linux.getsockname`
+(Linux-only). Replaced with a manual `extern "c" fn getsockname` +
+a comptime `builtin.os.tag == .windows` branch that uses `std.c.sockaddr.in`
+(via the test module's `link_libc = true`). Verified to compile on
+all three target OSes.

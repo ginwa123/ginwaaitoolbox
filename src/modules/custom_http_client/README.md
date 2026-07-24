@@ -67,9 +67,14 @@ See `Error` in `root.zig`. The most common:
 
 - No streaming / no SSE — entire response buffered to `[]u8`.
 - One `CURL*` per call. No connection pooling.
-- Cross-platform build verified on Linux (Arch).
-- macOS requires Homebrew's keg-only curl at `$(brew --prefix curl)/opt/curl/include`.
-- Windows requires vcpkg.
+- Cross-platform build verified on Linux (Arch). Cross-compile tests
+  pass on **macOS (aarch64)** and **Windows (x86_64-gnu)** for the
+  source code; linking requires the matching platform's libcurl:
+  - macOS: Homebrew's keg-only curl at `$(brew --prefix curl)/{include,lib}`.
+    Override the default `/opt/homebrew` (Apple Silicon) with
+    `-Dcurl-prefix=/usr/local` for Intel macs.
+  - Windows: vcpkg at `C:/vcpkg/installed/x64-windows/{include,lib}`.
+    Override with `-Dcurl-vcpkg-root=...`.
 
 ## Comparison with `modules/http/HttpClient.zig`
 

@@ -18,6 +18,7 @@
 //! `modules/http/HttpClient.zig` for parity testing.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const custom_http_client = @import("root.zig");
 const gserverz = @import("custom_http_server");
@@ -40,11 +41,7 @@ const TestServer = struct {
 
         const addr = try gserverz.Address.init(0);
 
-        var raw_addr: std.posix.sockaddr.in = undefined;
-        var len: std.posix.socklen_t = @sizeOf(@TypeOf(raw_addr));
-        const rc = std.os.linux.getsockname(addr.sock_fd, @ptrCast(&raw_addr), &len);
-        if (rc != 0) return error.BindFailed;
-        const port: u16 = @byteSwap(@as(u16, @intCast(raw_addr.port)));
+        const port: u16 = try getBoundPort(addr.sock_fd);
 
         const gs = try gserverz.GinwaServer.init(allocator, io, addr);
 
@@ -91,6 +88,37 @@ fn listenFn(server: *gserverz.GinwaServer) void {
 }
 
 // ----- Route handlers -----
+
+/// Cross-platform `getsockname` wrapper. Linux/macOS share
+/// `std.posix.sockaddr.in`; Windows needs `std.os.windows.sockaddr.in`.
+/// Both are `struct { family: u16, port: u8[2], addr: u8[4], zero: u8[8] }`
+/// (IPv4 sockaddr_in) — we just need `.port` at the same offset.
+/// Declared at module scope (Zig 0.16 rule: `extern "c"` must be at file
+/// top-level, not inside function bodies).
+extern "c" fn getsockname(
+    sockfd: c_int,
+    addr: *std.posix.sockaddr,
+    addrlen: *std.posix.socklen_t,
+) c_int;
+
+fn getBoundPort(sock_fd: c_int) !u16 {
+    if (builtin.os.tag == .windows) {
+        // On Windows we go through libc (link_libc is true for the test
+        // module via custom_http_server's build.zig). `std.c.sockaddr.in`
+        // has the same layout as Linux's `std.posix.sockaddr.in`:
+        // `sin_port` is `u16` in network byte order.
+        var raw: std.c.sockaddr.in = undefined;
+        var len: c_int = @intCast(@sizeOf(@TypeOf(raw)));
+        const rc = getsockname(sock_fd, @ptrCast(&raw), @ptrCast(&len));
+        if (rc != 0) return error.BindFailed;
+        return @byteSwap(@as(u16, @intCast(raw.port)));
+    }
+    var raw: std.posix.sockaddr.in = undefined;
+    var len: std.posix.socklen_t = @sizeOf(@TypeOf(raw));
+    const rc = getsockname(sock_fd, @ptrCast(&raw), &len);
+    if (rc != 0) return error.BindFailed;
+    return @byteSwap(@as(u16, @intCast(raw.port)));
+}
 
 fn getHandler(_: HttpContext, _: HttpRequest, res: HttpResponse) !HttpResponse {
     return res.withBody("ok");

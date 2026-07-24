@@ -6,6 +6,11 @@ const std = @import("std");
 const testing = std.testing;
 const builtin = @import("builtin");
 const custom_http_client = @import("root.zig");
+const gserverz = @import("custom_http_server");
+
+const HttpContext = gserverz.HttpContext;
+const HttpRequest = gserverz.HttpRequest;
+const HttpResponse = gserverz.HttpResponse;
 
 fn runOne(allocator: std.mem.Allocator, url: []const u8, method: custom_http_client.Method) !bool {
     var client = custom_http_client.Client.init(allocator);
@@ -24,6 +29,108 @@ test "stress: 100 sequential successful GETs to example.com" {
     }
     if (ok < 50) return error.SkipZigTest;
     std.debug.print("\nstress: {d}/100 successful\n", .{ok});
+}
+
+test "stress: 100 KiB body round-trips" {
+    // Was https://example.com — flaky in air-gapped sandboxes. Converted
+    // to a local TestServer echo so the test runs network-independently.
+    // The 100 KiB body exercises the same write/read path as the
+    // 1 MiB edge case test.
+    const allocator = testing.allocator;
+    const io = std.testing.io;
+    const ts = TestServer.init(allocator, io) catch return error.SkipZigTest;
+    defer ts.deinit();
+    ts.registerRoutes() catch return error.SkipZigTest;
+    ts.start() catch return error.SkipZigTest;
+
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(allocator);
+    var i: usize = 0;
+    while (i < 100 * 1024) : (i += 1) try body.append(allocator, 'x');
+
+    const url = ts.url("/post") catch return error.SkipZigTest;
+    defer allocator.free(url);
+
+    var client = custom_http_client.Client.init(allocator);
+    defer client.deinit();
+    var resp = client.perform(.{ .method = .POST, .url = url, .body = body.items }, .{ .timeout_ms = 10_000 }) catch return error.SkipZigTest;
+    defer resp.deinit(allocator);
+
+    try testing.expectEqual(@as(u16, 200), resp.status_code);
+    try testing.expectEqual(body.items.len, resp.body.len);
+    try testing.expectEqual(@as(u8, 'x'), resp.body[0]);
+    try testing.expectEqual(@as(u8, 'x'), resp.body[resp.body.len - 1]);
+}
+
+const TestServer = struct {
+    server: *gserverz.GinwaServer,
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    listener_thread: std.Thread,
+    port: u16,
+
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !*TestServer {
+        const ts = try allocator.create(TestServer);
+        const addr = try gserverz.Address.init(0);
+        const port: u16 = try getBoundPort(addr.sock_fd);
+        const gs = try gserverz.GinwaServer.init(allocator, io, addr);
+        ts.* = .{
+            .server = gs,
+            .io = io,
+            .allocator = allocator,
+            .listener_thread = undefined,
+            .port = port,
+        };
+        return ts;
+    }
+
+    pub fn registerRoutes(self: *TestServer) !void {
+        try self.server.router.post("/post", echoPostHandler);
+    }
+
+    pub fn start(self: *TestServer) !void {
+        self.listener_thread = try std.Thread.spawn(.{}, listenFn, .{self.server});
+    }
+
+    pub fn url(self: *TestServer, path: []const u8) ![]u8 {
+        return std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}{s}", .{ self.port, path });
+    }
+
+    pub fn deinit(self: *TestServer) void {
+        self.server.shutdown();
+        self.listener_thread.join();
+        self.server.destroy(self.allocator);
+        self.allocator.destroy(self);
+    }
+};
+
+fn echoPostHandler(_: HttpContext, req: HttpRequest, res: HttpResponse) !HttpResponse {
+    return res.withBody(req.body);
+}
+
+fn listenFn(server: *gserverz.GinwaServer) void {
+    server.listen() catch {};
+}
+
+extern "c" fn getsockname(
+    sockfd: c_int,
+    addr: *std.posix.sockaddr,
+    addrlen: *std.posix.socklen_t,
+) c_int;
+
+fn getBoundPort(sock_fd: c_int) !u16 {
+    if (builtin.os.tag == .windows) {
+        var raw: std.c.sockaddr.in = undefined;
+        var len: c_int = @intCast(@sizeOf(@TypeOf(raw)));
+        const rc = getsockname(sock_fd, @ptrCast(&raw), @ptrCast(&len));
+        if (rc != 0) return error.BindFailed;
+        return @byteSwap(@as(u16, @intCast(raw.port)));
+    }
+    var raw: std.posix.sockaddr.in = undefined;
+    var len: std.posix.socklen_t = @sizeOf(@TypeOf(raw));
+    const rc = getsockname(sock_fd, @ptrCast(&raw), &len);
+    if (rc != 0) return error.BindFailed;
+    return @byteSwap(@as(u16, @intCast(raw.port)));
 }
 
 test "stress: alternating success / refused calls do not interleave state" {
@@ -113,19 +220,11 @@ test "stress: 500 small GET requests in a tight loop — no allocation growth le
     try testing.expect(ok >= 50);
 }
 
-test "stress: 100 KiB body round-trips" {
-    const allocator = testing.allocator;
-
-    var body: std.ArrayList(u8) = .empty;
-    defer body.deinit(allocator);
-    var i: usize = 0;
-    while (i < 100 * 1024) : (i += 1) try body.append(allocator, 'A');
-
-    var resp = client_fetch(allocator,
-        .{ .method = .POST, .url = "https://httpbin.org/anything", .body = body.items },
-    ) catch return error.SkipZigTest;
-    defer resp.deinit(allocator);
-    try testing.expect(resp.body.len >= body.items.len);
+test "stress: 100 KiB body round-trips (legacy httpbin variant)" {
+    // SKIPPED: superseded by the local-server variant added in
+    // custom-http-client-cross-platform. Kept as a skip-stub so any
+    // historical grep for the old name still finds something.
+    return error.SkipZigTest;
 }
 
 fn client_fetch(allocator: std.mem.Allocator, req: custom_http_client.Request) !custom_http_client.Response {

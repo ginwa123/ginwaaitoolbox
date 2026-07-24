@@ -10,6 +10,28 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Cross-platform libcurl paths (mirrors the `-Dsqlite-prefix` convention
+    // used by the parent `build.zig` for libsqlite3). Declared ONCE here so
+    // we can pass the resolved strings into `configureLibcurl` — Zig's
+    // `b.option()` API rejects double-declaration of the same option name.
+    //
+    //   - Linux:   `/usr/include` + system libcurl
+    //   - macOS:   $(brew --prefix curl)/{include,lib}   (Homebrew keg-only)
+    //   - Windows: $(vcpkg root)/installed/x64-windows/{include,lib}
+    //
+    // The macOS default `/opt/homebrew` is the Apple-Silicon layout; Intel
+    // Macs override with `-Dcurl-prefix=/usr/local`.
+    const curl_prefix = b.option(
+        []const u8,
+        "curl-prefix",
+        "Homebrew prefix for the libcurl keg (default: /opt/homebrew)",
+    ) orelse "/opt/homebrew";
+    const curl_vcpkg_root = b.option(
+        []const u8,
+        "curl-vcpkg-root",
+        "vcpkg root for Windows libcurl (default: C:/vcpkg)",
+    ) orelse "C:/vcpkg";
+
     const mod = b.addModule("custom_http_client", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -17,22 +39,9 @@ pub fn build(b: *std.Build) void {
 
     // Link libcurl on every platform we support. libcurl's `curl_easy_*` ABI
     // is stable across versions; we only need its header path on Linux.
-    // (macOS brew keg-only / Windows vcpkg are documented in NALAR.md as
-    // follow-ups — this v1 only verifies the Linux path.)
     mod.linkSystemLibrary("curl", .{});
     mod.link_libc = true;
-
-    // Link against system libcurl headers (libcurl 8.21.0 ships at
-    // /usr/include/curl/curl.h on Arch Linux).
-    const builtin = @import("builtin");
-    if (target.result.os.tag == .linux) {
-        mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    } else if (target.result.os.tag == .macos) {
-        // Homebrew's curl is keg-only. The parent build is expected to
-        // wire the include path via the existing PKG_CONFIG_PATH plumbing.
-        mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    }
-    _ = builtin;
+    configureLibcurl(b, mod, target.result.os.tag, curl_prefix, curl_vcpkg_root);
 
     // CLI executable (manual smoke test). The tests below also exercise
     // the module directly.
@@ -49,9 +58,7 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.linkSystemLibrary("curl", .{});
     exe.root_module.link_libc = true;
-    if (target.result.os.tag == .linux) {
-        exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    }
+    configureLibcurl(b, exe.root_module, target.result.os.tag, curl_prefix, curl_vcpkg_root);
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the app");
@@ -81,8 +88,8 @@ pub fn build(b: *std.Build) void {
     });
     mod_tests.root_module.linkSystemLibrary("curl", .{});
     mod_tests.root_module.link_libc = true;
+    configureLibcurl(b, mod_tests.root_module, target.result.os.tag, curl_prefix, curl_vcpkg_root);
     if (target.result.os.tag == .linux) {
-        mod_tests.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
         server_mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
     }
 
@@ -93,9 +100,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_tests.root_module.linkSystemLibrary("curl", .{});
     exe_tests.root_module.link_libc = true;
-    if (target.result.os.tag == .linux) {
-        exe_tests.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    }
+    configureLibcurl(b, exe_tests.root_module, target.result.os.tag, curl_prefix, curl_vcpkg_root);
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
     const test_step = b.step("test", "Run tests");
@@ -106,4 +111,44 @@ pub fn build(b: *std.Build) void {
     // in the plan; the actual opt-in wiring lives in `test_runner.zig` via
     // generated module files we plan to add in Chunk 3 when needed. For
     // Chunk 1 we keep the test suite deterministic (no live network).
+}
+
+/// Wire the platform-specific include + library paths for libcurl. Extracted
+/// as a helper so the same logic applies to the library module, the CLI exe,
+/// and both test executables (4 link points per build invocation).
+///
+/// Mirrors the `-Dsqlite-prefix` pattern in the parent `build.zig`
+/// (lines 430-450) — see that file for the full rationale on brew keg-only
+/// paths and vcpkg sysroot layouts.
+///
+/// Options are resolved in `build()` ONCE (Zig's `b.option()` rejects
+/// double-declaration) and passed in as plain `[]const u8` slices.
+fn configureLibcurl(
+    b: *std.Build,
+    module: *std.Build.Module,
+    os_tag: std.Target.Os.Tag,
+    curl_prefix: []const u8,
+    curl_vcpkg_root: []const u8,
+) void {
+    switch (os_tag) {
+        .linux => {
+            module.addIncludePath(.{ .cwd_relative = "/usr/include" });
+        },
+        .macos => {
+            // Homebrew's curl is keg-only. Apple-Silicon default prefix is
+            // `/opt/homebrew`; Intel macs override with `-Dcurl-prefix=/usr/local`.
+            module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/curl/include", .{curl_prefix}) });
+            module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/opt/curl/lib", .{curl_prefix}) });
+        },
+        .windows => {
+            // vcpkg layout: <root>/installed/<triplet>/{include,lib}.
+            // Default triplet is x64-windows; ARM64 would be arm64-windows.
+            module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/include", .{curl_vcpkg_root}) });
+            module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/lib", .{curl_vcpkg_root}) });
+        },
+        else => {
+            // Other targets (WASI, freestanding, etc.) — not supported.
+            // linkSystemLibrary("curl") will fail at link time with a clear error.
+        },
+    }
 }
