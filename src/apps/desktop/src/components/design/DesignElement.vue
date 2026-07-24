@@ -125,16 +125,13 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // on element bodies are absorbed by the inner iframe (typed text,
   // button activations). Don't start a drag, don't emit select.
   if (props.previewMode) return
-  // Always emit select on pointerdown so clicking an element selects
-  // it even if the user just clicks without dragging.
-  emit('select', props.element.id)
-
   // Don't initiate a drag if the click was on an interactive child
   // (e.g. the iframe content) — pointer-events:none on the iframe
   // already prevents that, but we double-check.
   if (event.button !== 0) return
-
+  emit('select', props.element.id)
   event.preventDefault()
+
   const target = event.currentTarget as HTMLElement | null
   if (!target) return
   target.setPointerCapture(event.pointerId)
@@ -143,44 +140,56 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   const startX = event.clientX
   const startY = event.clientY
   const start = {
-    x: props.element.x,
-    y: props.element.y,
-    width: props.element.width,
-    height: props.element.height,
+    x: props.element.x, y: props.element.y,
+    width: props.element.width, height: props.element.height,
+  }
+
+  // The latest patch we intend to emit. Throttled: we only emit when
+  // either (a) 50ms has elapsed since the last emit, or (b) pointerup
+  // fires (the trailing emit captures the final position even if the
+  // throttle window hasn't elapsed).
+  let pendingPatch: Partial<DesignElement> | null = null
+  let lastEmitMs = 0
+  const THROTTLE_MS = 50
+
+  const flushEmit = (): void => {
+    if (pendingPatch) {
+      emit('update', pendingPatch)
+      pendingPatch = null
+      lastEmitMs = performance.now()
+    }
+  }
+
+  const computePatch = (dx: number, dy: number): Partial<DesignElement> => {
+    if (mode === 'move') {
+      return {
+        x: Math.round(start.x + dx),
+        y: Math.round(start.y + dy),
+      }
+    }
+    const patch: Partial<DesignElement> = {}
+    const h = mode.resize
+    if (h.includes('e')) patch.width = Math.max(10, Math.round(start.width + dx))
+    if (h.includes('s')) patch.height = Math.max(10, Math.round(start.height + dy))
+    if (h.includes('w')) {
+      patch.width = Math.max(10, Math.round(start.width - dx))
+      patch.x = Math.round(start.x + (start.width - (patch.width ?? start.width)))
+    }
+    if (h.includes('n')) {
+      patch.height = Math.max(10, Math.round(start.height - dy))
+      patch.y = Math.round(start.y + (start.height - (patch.height ?? start.height)))
+    }
+    return patch
   }
 
   const onMove = (e: PointerEvent): void => {
-    // Under zoom != 1.0 the canvas is CSS-scaled — cursor delta is
-    // in screen-px, but the model stores design-px. Divide by zoom
-    // so a 10-screen-px move at 50% zoom produces a 5-design-px
-    // move (the visible element glides 1:1 with the cursor).
     const inv = 1 / Math.max(0.01, props.zoom)
     const dx = (e.clientX - startX) * inv
     const dy = (e.clientY - startY) * inv
-    if (mode === 'move') {
-      // Move: apply delta to x/y.
-      emit('update', {
-        x: Math.round(start.x + dx),
-        y: Math.round(start.y + dy),
-      })
-    } else {
-      // Resize: apply delta to width/height per the handle.
-      const patch: Partial<DesignElement> = {}
-      const h = mode.resize
-      // East / south edges grow with positive delta; north / west
-      // edges grow with negative delta (top-left handle drags
-      // up-left to make the element bigger).
-      if (h.includes('e')) patch.width = Math.max(10, Math.round(start.width + dx))
-      if (h.includes('s')) patch.height = Math.max(10, Math.round(start.height + dy))
-      if (h.includes('w')) {
-        patch.width = Math.max(10, Math.round(start.width - dx))
-        patch.x = Math.round(start.x + (start.width - (patch.width ?? start.width)))
-      }
-      if (h.includes('n')) {
-        patch.height = Math.max(10, Math.round(start.height - dy))
-        patch.y = Math.round(start.y + (start.height - (patch.height ?? start.height)))
-      }
-      emit('update', patch)
+    pendingPatch = computePatch(dx, dy)
+    const now = performance.now()
+    if (now - lastEmitMs >= THROTTLE_MS) {
+      flushEmit()
     }
   }
 
@@ -189,6 +198,8 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
       target.releasePointerCapture(e.pointerId)
     }
     isDragging.value = false
+    // Trailing emit: capture the final position regardless of throttle.
+    flushEmit()
     target.removeEventListener('pointermove', onMove)
     target.removeEventListener('pointerup', onUp)
     target.removeEventListener('pointercancel', onUp)
