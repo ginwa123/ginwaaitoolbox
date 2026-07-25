@@ -157,6 +157,7 @@ import {
   addDesignElement as addDesignElementApi,
   updateDesignElement as updateDesignElementApi,
   deleteDesignElement as deleteDesignElementApi,
+  deleteDesignPage as deleteDesignPageApi,
   updateDesignElementGeometry as updateDesignElementGeometryApi,
   updateDesignPage as updateDesignPageApi,
 } from '../api'
@@ -1204,6 +1205,26 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Delete a page. Idempotent on the backend (404 = already gone).
+  // Note: DesignView manages its own local `pages` array (fetched
+  // via `listDesignPages`); there is no `design_pages` field on the
+  // WorkspaceItem type. So the store's only responsibility here is
+  // to clear `activeDesignPageId` if it matches the deleted page —
+  // DesignView's own `watch(activePageId)` picks up the change and
+  // re-fetches via `listDesignPages`, which returns the new (smaller)
+  // page list. The next-page-active pick uses DesignView's own
+  // first-page-defaults-to-empty convention.
+  async function deleteDesignPage(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+  ): Promise<void> {
+    await deleteDesignPageApi(workspaceId, itemId, pageId)
+    if (activeDesignPageId.value === pageId) {
+      activeDesignPageId.value = ''
+    }
+  }
+
   // Manually fire a routine. Returns the backend's
   // `{ session_id }` on success, or `undefined` on failure (the
   // caller's responsibility to navigate / show an error).
@@ -2179,6 +2200,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     updateDesignElement,
     updateDesignElementGeometry,
     deleteDesignElement,
+    deleteDesignPage,
     updateDesignPage,
     initializeFromSystemFolder,
     onSessionEvent,
