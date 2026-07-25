@@ -42,11 +42,18 @@ const props = withDefaults(
   defineProps<{
     modelValue: string
     cwd: string
+    // Required for image upload. The kanban task id is used as the
+    // upload bucket — files land in
+    // `<item.path>/.nalar/attachments/<taskId>/<n>.<ext>`.
+    // Empty string disables image upload (the editor still works for
+    // text + @path references).
+    taskId?: string
     maxLength?: number
     placeholder?: string
     testId?: string
   }>(),
   {
+    taskId: '',
     maxLength: 5000,
     placeholder: 'Add a description…',
     testId: 'kanban-description-editor',
@@ -247,11 +254,35 @@ const downscaleIfTooLarge = async (file: File): Promise<File> => {
 const addImageFile = async (file: File) => {
   if (!isImageFile(file)) return
   const downscaled = await downscaleIfTooLarge(file)
+
+  // Show a "uploading..." preview slot so the user sees feedback
+  // while the upload is in flight.
   const previewUrl = URL.createObjectURL(downscaled)
+  const uploadingIdx = previewFiles.value.length
   previewFiles.value.push({ file: downscaled, previewUrl })
-  // Insert the data URL into the markdown at the cursor.
-  const dataUrl = await fileToDataUrl(downscaled)
-  const insertText = `![${downscaled.name}](${dataUrl})`
+
+  if (!props.taskId) {
+    // No taskId yet (create mode before the task exists). Fall back
+    // to inline data URL — the user can save later and the editor
+    // will re-upload on next edit. Better UX than failing silently.
+    const dataUrl = await fileToDataUrl(downscaled)
+    insertMarkdown(`![${downscaled.name}](${dataUrl})`)
+    return
+  }
+
+  try {
+    const { url } = await api.uploadTaskAttachment(props.taskId, downscaled)
+    insertMarkdown(`![${downscaled.name}](${url})`)
+  } catch (err) {
+    console.error('[attachment] upload failed:', err)
+    // Roll back the preview thumbnail on failure so the user knows
+    // the upload didn't go through. Keep the user's text intact.
+    previewFiles.value.splice(uploadingIdx, 1)
+    if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl)
+  }
+}
+
+const insertMarkdown = (insertText: string) => {
   if (textareaRef.value) {
     const pos = textareaRef.value.selectionStart ?? text.value.length
     text.value = text.value.slice(0, pos) + insertText + text.value.slice(pos)
@@ -337,16 +368,17 @@ const handlePreviewUpdate = (newFiles: PreviewFile[]) => {
     previewFiles.value = newFiles
     return
   }
-  // Strip each removed file's data URL from the markdown.
-  // We compare by name + size (the simplest stable identifier without
-  // re-hashing the base64 payload).
+  // Strip each removed file's markdown block from the description.
+  // Matches both:
+  //   - Inline data URLs (legacy / fallback): `![name](data:...)`
+  //   - Server URLs: `![name](/api/workspaces/tasks/<id>/attachments/<n>.<ext>)`
+  // The pattern matches the URL portion by `[^)]+` (anything until
+  // the closing paren).
   for (const r of removed) {
     if (r.previewUrl.startsWith('blob:')) URL.revokeObjectURL(r.previewUrl)
     const fileName = r.file.name
-    // Match the `![fileName](data:...)` block. Escape the file name
-    // for the regex.
     const escapedName = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const blockRegex = new RegExp(`!\\[${escapedName}\\]\\(data:[^)]+\\)`, 'g')
+    const blockRegex = new RegExp(`!\\[${escapedName}\\]\\([^)]+\\)`, 'g')
     text.value = text.value.replace(blockRegex, '').replace(/[ \t]+(\n|$)/g, '$1')
   }
   previewFiles.value = newFiles
@@ -354,7 +386,7 @@ const handlePreviewUpdate = (newFiles: PreviewFile[]) => {
 
 // ─── Mount: re-hydrate previewFiles from existing modelValue ───────────
 
-const PNG_DATA_URL_PREFIX = 'data:image/'
+const ATTACHMENT_URL_PREFIX = '/api/workspaces/tasks/'
 
 // Decode a `data:<mime>;base64,<payload>` URL into a File. Avoids
 // `fetch(dataUrl)` because jsdom does not implement data: URL fetch.
@@ -369,20 +401,63 @@ const dataUrlToFile = (dataUrl: string, name: string): File => {
   return new File([bytes], name || `pasted-image-${Date.now()}.${ext}`, { type: mime })
 }
 
+// Fetch a server-side attachment and convert it to a File for the
+// preview thumbnail. Uses fetch() which jsdom supports (unlike
+// data: URLs).
+const serverUrlToFile = async (
+  url: string,
+  filename: string,
+): Promise<File | null> => {
+  try {
+    const response = await fetch(url)
+    if (!response.ok) return null
+    const blob = await response.blob()
+    // Detect MIME from the response (or fall back to extension guess).
+    const mime = blob.type || guessMimeFromFilename(filename)
+    return new File([blob], filename, { type: mime })
+  } catch {
+    return null
+  }
+}
+
+const guessMimeFromFilename = (filename: string): string => {
+  const dot = filename.lastIndexOf('.')
+  const ext = dot >= 0 ? filename.slice(dot + 1).toLowerCase() : ''
+  if (ext === 'png') return 'image/png'
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+  if (ext === 'gif') return 'image/gif'
+  if (ext === 'webp') return 'image/webp'
+  if (ext === 'svg') return 'image/svg+xml'
+  if (ext === 'bmp') return 'image/bmp'
+  return 'application/octet-stream'
+}
+
 const rehydratePreviews = () => {
-  // Find all `![name](data:image/...)` blocks in the current text.
-  const imageRegex = /!\[([^\]]*)\]\((data:image\/[^)]+)\)/g
+  // Match both inline data: URLs (legacy / fallback) and server-side
+  // attachment URLs.
+  const imageRegex = /!\[([^\]]*)\]\((data:image\/[^)]+|[^)]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp))\)/g
   const matches = [...text.value.matchAll(imageRegex)]
   if (matches.length === 0) return
   for (const m of matches) {
     const alt = m[1] ?? ''
-    const dataUrl = m[2] ?? ''
-    try {
-      const file = dataUrlToFile(dataUrl, alt)
-      const previewUrl = URL.createObjectURL(file)
-      previewFiles.value.push({ file, previewUrl })
-    } catch (err) {
-      console.warn('[rehydrate] failed to load image', err)
+    const url = m[2] ?? ''
+    if (url.startsWith('data:')) {
+      try {
+        const file = dataUrlToFile(url, alt)
+        const previewUrl = URL.createObjectURL(file)
+        previewFiles.value.push({ file, previewUrl })
+      } catch (err) {
+        console.warn('[rehydrate] failed to load inline image', err)
+      }
+    } else {
+      // Server-side attachment — fetch async, push when ready.
+      void (async () => {
+        const filename = url.split('/').pop() ?? 'attachment'
+        const file = await serverUrlToFile(url, filename)
+        if (!file) return
+        const previewUrl = URL.createObjectURL(file)
+        previewFiles.value.push({ file, previewUrl })
+      })()
     }
   }
 }
@@ -401,15 +476,20 @@ watch(
   (v) => {
     if (v === lastSeenText) return
     lastSeenText = v
-    // Only re-hydrate when the new value contains image data URLs and
-    // the preview list is currently empty (avoids duplicate previews).
-    if (previewFiles.value.length === 0 && v.includes(PNG_DATA_URL_PREFIX)) {
+    // Only re-hydrate when the new value contains image references
+    // (inline data: OR server-side attachment URLs) and the preview
+    // list is currently empty (avoids duplicate previews).
+    if (previewFiles.value.length === 0 && /!\[.*?\]\(((data:image\/|\/api\/))/.test(v)) {
       rehydratePreviews()
     }
   },
 )
 
-// Keep lastSeenText in sync with our own writes.
+// ─── Watch modelValue for external image changes (e.g. dialog re-open) ──
+// We only re-hydrate when the modelValue grows (new image added externally).
+// (lastSeenText + the two watches are declared at the top of the file
+// to avoid duplicate declarations; this comment is a marker for the
+// second half of the lifecycle logic.)
 watch(text, (v) => {
   lastSeenText = v
 })

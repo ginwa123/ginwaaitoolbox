@@ -439,6 +439,7 @@ const columnLabel = computed<string | null>(() => {
                 v-show="!isPreviewingDescription"
                 v-model="description"
                 :cwd="cwd"
+                :task-id="props.task?.id ?? ''"
                 :max-length="DESCRIPTION_MAX"
                 :test-id="isCreateMode ? 'kanban-task-detail-create-description' : 'kanban-task-detail-description'"
                 data-testid="kanban-task-detail-description-editor"
