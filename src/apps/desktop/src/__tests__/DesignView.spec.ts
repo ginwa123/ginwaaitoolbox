@@ -141,3 +141,67 @@ describe('DesignView.vue static contract', () => {
     expect(source).toMatch(/handleOpenChat\s*=\s*\([^)]*\)\s*:\s*void\s*=>\s*\{[^}]*emit\('openChat'\)/)
   })
 })
+
+// ─── Behavioral tests: mirror activePageId to workspacesStore ─────────────
+// NEW (Chunk 1, Task 1.2 of design-element-drag-and-drop plan).
+// DesignView owns the local `activePageId` ref. AppLayout's design
+// handlers (handleDesignUpdateElement / handleDesignDeleteElement) need
+// the page id to route PATCH/PUT/DELETE to the right page, so DesignView
+// mirrors activePageId to workspacesStore.activeDesignPageId on mount,
+// tab switch, and unmount.
+
+import { flushPromises, mount } from '@vue/test-utils'
+import { setActivePinia, createPinia } from 'pinia'
+import { afterEach, beforeEach, describe as describeRuntime, expect as expectRuntime, it as itRuntime, vi } from 'vitest'
+import DesignView from '../components/design/DesignView.vue'
+import { useWorkspacesStore } from '../stores/workspaces'
+import type { WorkspaceItem } from '../stores/workspaces'
+
+const WS_ID = 'ws_1'
+const ITEM_ID = 'item_1'
+
+function makeItem(): WorkspaceItem {
+  return {
+    id: ITEM_ID,
+    name: 'Test',
+    item_type: 'design',
+    path: '/tmp/test',
+    design_elements: [],
+  }
+}
+
+describeRuntime('DesignView → workspacesStore active page id', () => {
+  const originalFetch = global.fetch
+  const fetchMock = vi.fn()
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    fetchMock.mockReset()
+    global.fetch = originalFetch
+  })
+
+  itRuntime('publishes the active page id to the workspaces store on mount and on tab switch', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true, status: 200,
+      json: () => Promise.resolve({
+        pages: [
+          { id: 'page_first', workspace_item_id: ITEM_ID, name: 'A', width: 1440, height: 1024, position: 0, created_at: '', updated_at: '' },
+          { id: 'page_second', workspace_item_id: ITEM_ID, name: 'B', width: 1440, height: 1024, position: 1, created_at: '', updated_at: '' },
+        ],
+        count: 2,
+      }),
+      text: () => Promise.resolve(''),
+    } as Response)
+    global.fetch = fetchMock as unknown as typeof fetch
+    const wrapper = mount(DesignView, {
+      props: { item: makeItem(), workspaceId: WS_ID, itemId: ITEM_ID },
+    })
+    await flushPromises()
+    expectRuntime(useWorkspacesStore().activeDesignPageId).toBe('page_first')
+    wrapper.unmount()
+    expectRuntime(useWorkspacesStore().activeDesignPageId).toBe('')
+  })
+})

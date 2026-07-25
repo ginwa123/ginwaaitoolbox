@@ -22,3 +22,76 @@ Detailed patterns live in:
 - Dont ever kill the process port 8081 or process nalar !!!
 - If you want to test use process port 8080 and process nalar !!!
 - When create a test make sure its work on platform linux, mac and windows
+
+## 2026-07-25: Design element drag-and-drop wire repaired
+
+### Symptom (pre-fix)
+Click on a design element → violet outline + 8 resize handles appear (selection works).
+Click-and-drag → element does NOT move.
+
+### Root cause
+`AppLayout.handleDesignUpdateElement` (src/apps/desktop/src/components/AppLayout.vue:1129)
+was a TODO no-op (`void elementId; void patch`). DesignElement's pointermove emitted
+`update` patches, DesignView re-emitted them upward as `updateElement`, but the parent
+silently discarded them.
+
+### Fix
+- Added `activeDesignPageId` + `setActiveDesignPage` to workspaces store (Task 1.1).
+- DesignView mirrors its local `activePageId` to the store on mount + tab switch (Task 1.2).
+- Extracted design handlers into `useDesignHandlers` composable for testability (Task 1.3).
+- Replaced the no-op with a real handler that routes geometry-only patches to
+  `PATCH /geometry` and full patches to `PUT /elements/:id` (Task 1.3).
+- Throttled the drag stream to 50ms with a trailing emit on pointerup (Task 1.4).
+
+## 2026-07-25: Design mode multi-select + group drag
+
+Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 2)
+
+### What landed
+- Selection is now `Set<string>` instead of `string | null`. Shift+click toggles membership; plain click is exclusive.
+- Dragging one element in a multi-selection moves the entire selection (same dx/dy applied to all).
+- Delete/Backspace removes every selected element (one keystroke).
+- Escape clears the entire selection.
+- PropertiesPanel renders a "N elements selected" banner when multiple are selected; the single-element form only shows for exactly one.
+
+## 2026-07-25: Design mode snap-to-edges + alignment guides
+
+Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 3)
+
+### What landed
+- Pure-function `computeSnapDelta` snaps within 6 design-px of any other element's edge/center.
+- Canvas-center + canvas-edge fallback targets (snaps to page center when no other element is nearby).
+- 1px violet SVG alignment guides render during drag and clear on pointerup.
+- Group drag applies snap to the selection's union bbox (the whole group snaps together).
+
+## 2026-07-25: Design mode keyboard nudge
+
+Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 4)
+
+### What landed
+- Arrow keys move the selection by 1 design-px: ←/→ for x, ↑/↓ for y.
+- Shift+arrow moves by 10 design-px (Figma's "big step").
+- Input-focus guard preserved (PropertiesPanel X/Y inputs still get their arrow keys for cursor navigation).
+- No-op when nothing is selected (no escape route from the canvas for stray arrows).
+
+## 2026-07-25: Design mode element drag-and-drop (Figma-style) — COMPLETE
+
+Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md
+
+### What landed (all 5 chunks)
+- **Drag-to-move works** (was a TODO no-op in AppLayout.handleDesignUpdateElement).
+- **Multi-select** via Shift+click; group drag; multi-delete with one Delete key.
+- **Snap-to-edges** with 1px violet alignment guides (6px threshold; canvas-center fallback).
+- **Keyboard nudge** — arrow keys = 1px, Shift+arrow = 10px.
+- **Constrain-to-canvas** — drag and nudge that would push an element entirely off-canvas clamp at 10px sliver.
+
+### Bug fix at the heart
+`AppLayout.handleDesignUpdateElement` was a TODO no-op (`void elementId; void patch`). The drag handler in DesignElement emitted `update` patches on every pointermove, but the parent silently discarded them. Now the wire is alive: the composable `useDesignHandlers` routes geometry-only patches to `PATCH /geometry` (60+/sec safe) and full patches to `PUT /elements/:id`.
+
+### What was deferred (out of scope for this plan)
+- Marquee drag-select (draw a rectangle to select everything inside). Lower priority — Shift+click is enough for the common 1-5-element case.
+- Smart-spacing/distribute-horizontal/vertical (would need a server endpoint for batch geometry updates).
+- Snap-to-grid (Figma toggle; can be added once snap-to-edges is comfortable).
+- Drag-from-layers-panel to canvas (next plan if requested).
+- Lock/hide (needs schema migration).
+- Group containers — dragging elements INTO a frame (out of scope; `frame`/`group` element types exist but UI doesn't support drag-into yet).

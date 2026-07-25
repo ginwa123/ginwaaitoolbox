@@ -28,6 +28,7 @@ import {
   type OpenInCodeEditorFn,
   type OpenInCodeEditorOptions,
 } from '../composables/useCodeEditor'
+import { useDesignHandlers } from '../composables/useDesignHandlers'
 
 const router = useRouter()
 const route = useRoute()
@@ -193,6 +194,13 @@ watch(
 // HMR, route changes that briefly tear down AppLayout).
 const designSseStore = useDesignSseStore()
 let didInitDesignSse = false
+
+// NEW (Chunk 1, Task 1.3 of design-element-drag-and-drop plan).
+// Extracted handlers so they're directly unit-testable. Reads the
+// active page id from workspacesStore (mirrored by DesignView in
+// Task 1.2) and routes patches to the geometry endpoint vs the
+// full-update endpoint based on which keys are present.
+const designHandlers = useDesignHandlers()
 watch(activeWorkspaceId, async (newId) => {
   if (!newId) return
   if (!didInitDesignSse) {
@@ -1126,35 +1134,21 @@ const handleDesignOpenChat = async (): Promise<void> => {
   }
 }
 
-const handleDesignUpdateElement = async (elementId: string, patch: unknown) => {
+const handleDesignUpdateElement = async (
+  elementId: string,
+  patch: Partial<{ x: number; y: number; width: number; height: number; rotation: number; [k: string]: unknown }>,
+): Promise<void> => {
   const ws = activeWorkspace.value
   const item = activeWorkspaceItem.value
   if (!ws || !item) return
-  // TODO: pageId is tracked in DesignView's local ref; pass it here.
-  // Until then, this handler is a noop on the wire (the call would
-  // 404 on the backend). The geometry-update path inside DesignView
-  // already calls workspacesStore.updateDesignElementGeometry
-  // directly with the right pageId, so drag/resize still works.
-  void elementId
-  void patch
-  console.warn(
-    '[handleDesignUpdateElement] pageId not yet tracked in workspacesStore — using direct DesignView paths',
-  )
+  await designHandlers.updateElement(ws.id, item.id, elementId, patch)
 }
 
-const handleDesignDeleteElement = async (elementId: string) => {
-  // Confirmation prompt mirrors KanbanView's column-delete pattern.
-  // The browser's native `confirm` is fine here; the dialog is rare
-  // enough that a custom modal would be overkill.
-  if (!confirm('Delete this element?')) return
+const handleDesignDeleteElement = async (elementId: string): Promise<void> => {
   const ws = activeWorkspace.value
   const item = activeWorkspaceItem.value
   if (!ws || !item) return
-  // TODO (v2): pass pageId once the store tracks the active page.
-  console.warn(
-    '[handleDesignDeleteElement] pageId not yet tracked in workspacesStore — pass via store ref',
-  )
-  void elementId
+  await designHandlers.deleteElement(ws.id, item.id, elementId)
 }
 
 // Right sidebar cwd - show when chat is open OR task is active

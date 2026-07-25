@@ -17,9 +17,11 @@ const SOURCE_PATH = path.resolve(__dirname, '../components/design/DesignElement.
 const source = fs.readFileSync(SOURCE_PATH, 'utf-8')
 
 describe('DesignElement.vue static contract', () => {
-  it('emits select, update, htmlChanged, delete', () => {
+  it('emits select, update, groupDrag, dragEnd, htmlChanged, delete', () => {
     expect(source).toContain("select:")
     expect(source).toContain("update:")
+    expect(source).toContain("groupDrag:")
+    expect(source).toContain("dragEnd:")
     expect(source).toContain("htmlChanged:")
     expect(source).toContain("delete:")
   })
@@ -28,6 +30,15 @@ describe('DesignElement.vue static contract', () => {
     expect(source).toContain("element:")
     expect(source).toContain("selected:")
     expect(source).toContain("readonly:")
+  })
+
+  // Chunk 2: multi-select (Figma-style). The parent DesignView owns
+  // the selection Set and passes it down as `selectedIds` so the
+  // wrapper renders the violet outline + resize handles for every
+  // element in the set, not just the single `selected` one.
+  it('declares selectedIds prop for multi-select (Chunk 2)', () => {
+    expect(source).toContain("selectedIds:")
+    expect(source).toContain("selectedIds: () => []")
   })
 
   it('uses pointerdown + setPointerCapture for drag', () => {

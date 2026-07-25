@@ -33,7 +33,8 @@ import type { DesignElement } from '../../api'
 const props = withDefaults(
   defineProps<{
     elements: DesignElement[]
-    selectedElementId: string | null
+    // Multi-aware; a row highlights if its id is in the set.
+    selectedIds: string[]
     readonly?: boolean
   }>(),
   {
@@ -42,7 +43,10 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{
-  select: [elementId: string]
+  // Structured payload so the parent can distinguish Shift+click
+  // (additive = true) from a plain click (additive = false). The
+  // parent handles the actual Set vs replace logic.
+  select: [payload: { elementId: string; additive: boolean }]
   reorder: [orderedElementIds: string[]]
   delete: [elementId: string]
 }>()
@@ -96,8 +100,8 @@ const handleMoveDown = (elementId: string): void => {
   emit('reorder', next.map((e) => e.id))
 }
 
-const handleSelect = (elementId: string): void => {
-  emit('select', elementId)
+const handleSelect = (elementId: string, event: MouseEvent): void => {
+  emit('select', { elementId, additive: event.shiftKey })
 }
 
 const handleDelete = (elementId: string, event: MouseEvent): void => {
@@ -149,12 +153,12 @@ const typeIcon = (type: DesignElement['type']): string => {
         v-for="(element, idx) in layers"
         :key="element.id"
         class="flex items-center gap-2 px-2 py-1.5 text-sm cursor-pointer transition-colors"
-        :style="element.id === selectedElementId
+        :style="selectedIds.includes(element.id)
           ? 'background-color: var(--semantic-active-bg); color: var(--semantic-text);'
           : 'color: var(--semantic-text-dim);'"
         :data-testid="`design-layer-${element.id}`"
         :data-layer-index="idx"
-        @click="handleSelect(element.id)"
+        @click="(e) => handleSelect(element.id, e)"
       >
         <span
           class="text-base font-mono w-4 text-center shrink-0"

@@ -49,7 +49,17 @@ import DesignElementPreview from './DesignElementPreview.vue'
 const props = withDefaults(
   defineProps<{
     element: DesignElement
+    // Single-element shortcut (kept for backward compat with tests +
+    // simple use cases). True iff `selectedIds` has exactly this
+    // element and nothing else. The wrapper's `.selected` class is
+    // applied iff this is true OR the element is in a multi-selection
+    // that includes it.
     selected?: boolean
+    // The full selection set (Figma multi-select model). When non-empty
+    // AND this element's id is in it, render the violet outline + resize
+    // handles. When only `selected === true` (no multi-selection context),
+    // the wrapper renders the legacy single-selection chrome.
+    selectedIds?: string[]
     readonly?: boolean
     // Current canvas zoom level (1.0 = 100%). When the canvas is
     // CSS-scaled via `transform: scale(zoom)`, the cursor delta
@@ -75,6 +85,7 @@ const props = withDefaults(
   }>(),
   {
     selected: false,
+    selectedIds: () => [] as string[],
     readonly: false,
     zoom: 1.0,
     workspaceId: '',
@@ -87,6 +98,17 @@ const props = withDefaults(
 const emit = defineEmits<{
   select: [elementId: string]
   update: [patch: Partial<DesignElement>]
+  // Chunk 2: when the user drags an element that's part of a
+  // multi-selection, the WHOLE selection moves. The parent
+  // (DesignView) applies the dx/dy to every selected element's
+  // start position; this component only reports the cursor delta.
+  // The parent calls workspacesStore.updateDesignElementGeometry
+  // (or the AppLayout handler) on each element.
+  groupDrag: [delta: { dx: number; dy: number }]
+  // Chunk 3: emit on drag-end (pointerup or pointercancel) so the
+  // parent can clear its snap guides. Fires after both the single-
+  // element drag and the multi-selection group drag paths.
+  dragEnd: []
   htmlChanged: [html: string]
   delete: [elementId: string]
 }>()
@@ -125,16 +147,65 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // on element bodies are absorbed by the inner iframe (typed text,
   // button activations). Don't start a drag, don't emit select.
   if (props.previewMode) return
-  // Always emit select on pointerdown so clicking an element selects
-  // it even if the user just clicks without dragging.
-  emit('select', props.element.id)
-
   // Don't initiate a drag if the click was on an interactive child
   // (e.g. the iframe content) — pointer-events:none on the iframe
   // already prevents that, but we double-check.
   if (event.button !== 0) return
+  emit('select', props.element.id)
 
+  // Group drag (Chunk 2): when this element is part of a multi-selection,
+  // dragging moves the ENTIRE selection. The parent applies the same
+  // dx/dy to every selected element's start position. Resize is
+  // per-element only (no group resize makes sense — the user would
+  // expect to resize only the element under the cursor).
+  if (
+    props.selectedIds.length > 1 &&
+    props.selectedIds.includes(props.element.id) &&
+    mode === 'move'
+  ) {
+    event.preventDefault()
+    const target = event.currentTarget as HTMLElement | null
+    if (!target) return
+    target.setPointerCapture(event.pointerId)
+    isDragging.value = true
+    const startClientX = event.clientX
+    const startClientY = event.clientY
+    let pendingDx = 0
+    let pendingDy = 0
+    let lastEmitMs = 0
+    const THROTTLE_MS = 50
+    const onMove = (e: PointerEvent): void => {
+      const inv = 1 / Math.max(0.01, props.zoom)
+      pendingDx = (e.clientX - startClientX) * inv
+      pendingDy = (e.clientY - startClientY) * inv
+      const now = performance.now()
+      if (now - lastEmitMs >= THROTTLE_MS) {
+        emit('groupDrag', { dx: pendingDx, dy: pendingDy })
+        lastEmitMs = now
+      }
+    }
+    const onUp = (e: PointerEvent): void => {
+      if (target.hasPointerCapture(e.pointerId)) {
+        target.releasePointerCapture(e.pointerId)
+      }
+      isDragging.value = false
+      // Trailing emit: capture the final position regardless of throttle.
+      emit('groupDrag', { dx: pendingDx, dy: pendingDy })
+      // Chunk 3: tell the parent to clear its snap guides.
+      emit('dragEnd')
+      target.removeEventListener('pointermove', onMove)
+      target.removeEventListener('pointerup', onUp)
+      target.removeEventListener('pointercancel', onUp)
+    }
+    target.addEventListener('pointermove', onMove)
+    target.addEventListener('pointerup', onUp)
+    target.addEventListener('pointercancel', onUp)
+    return
+  }
+
+  // Single-element drag (existing throttled-emit logic from Chunk 1).
   event.preventDefault()
+
   const target = event.currentTarget as HTMLElement | null
   if (!target) return
   target.setPointerCapture(event.pointerId)
@@ -143,44 +214,56 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   const startX = event.clientX
   const startY = event.clientY
   const start = {
-    x: props.element.x,
-    y: props.element.y,
-    width: props.element.width,
-    height: props.element.height,
+    x: props.element.x, y: props.element.y,
+    width: props.element.width, height: props.element.height,
+  }
+
+  // The latest patch we intend to emit. Throttled: we only emit when
+  // either (a) 50ms has elapsed since the last emit, or (b) pointerup
+  // fires (the trailing emit captures the final position even if the
+  // throttle window hasn't elapsed).
+  let pendingPatch: Partial<DesignElement> | null = null
+  let lastEmitMs = 0
+  const THROTTLE_MS = 50
+
+  const flushEmit = (): void => {
+    if (pendingPatch) {
+      emit('update', pendingPatch)
+      pendingPatch = null
+      lastEmitMs = performance.now()
+    }
+  }
+
+  const computePatch = (dx: number, dy: number): Partial<DesignElement> => {
+    if (mode === 'move') {
+      return {
+        x: Math.round(start.x + dx),
+        y: Math.round(start.y + dy),
+      }
+    }
+    const patch: Partial<DesignElement> = {}
+    const h = mode.resize
+    if (h.includes('e')) patch.width = Math.max(10, Math.round(start.width + dx))
+    if (h.includes('s')) patch.height = Math.max(10, Math.round(start.height + dy))
+    if (h.includes('w')) {
+      patch.width = Math.max(10, Math.round(start.width - dx))
+      patch.x = Math.round(start.x + (start.width - (patch.width ?? start.width)))
+    }
+    if (h.includes('n')) {
+      patch.height = Math.max(10, Math.round(start.height - dy))
+      patch.y = Math.round(start.y + (start.height - (patch.height ?? start.height)))
+    }
+    return patch
   }
 
   const onMove = (e: PointerEvent): void => {
-    // Under zoom != 1.0 the canvas is CSS-scaled — cursor delta is
-    // in screen-px, but the model stores design-px. Divide by zoom
-    // so a 10-screen-px move at 50% zoom produces a 5-design-px
-    // move (the visible element glides 1:1 with the cursor).
     const inv = 1 / Math.max(0.01, props.zoom)
     const dx = (e.clientX - startX) * inv
     const dy = (e.clientY - startY) * inv
-    if (mode === 'move') {
-      // Move: apply delta to x/y.
-      emit('update', {
-        x: Math.round(start.x + dx),
-        y: Math.round(start.y + dy),
-      })
-    } else {
-      // Resize: apply delta to width/height per the handle.
-      const patch: Partial<DesignElement> = {}
-      const h = mode.resize
-      // East / south edges grow with positive delta; north / west
-      // edges grow with negative delta (top-left handle drags
-      // up-left to make the element bigger).
-      if (h.includes('e')) patch.width = Math.max(10, Math.round(start.width + dx))
-      if (h.includes('s')) patch.height = Math.max(10, Math.round(start.height + dy))
-      if (h.includes('w')) {
-        patch.width = Math.max(10, Math.round(start.width - dx))
-        patch.x = Math.round(start.x + (start.width - (patch.width ?? start.width)))
-      }
-      if (h.includes('n')) {
-        patch.height = Math.max(10, Math.round(start.height - dy))
-        patch.y = Math.round(start.y + (start.height - (patch.height ?? start.height)))
-      }
-      emit('update', patch)
+    pendingPatch = computePatch(dx, dy)
+    const now = performance.now()
+    if (now - lastEmitMs >= THROTTLE_MS) {
+      flushEmit()
     }
   }
 
@@ -189,6 +272,10 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
       target.releasePointerCapture(e.pointerId)
     }
     isDragging.value = false
+    // Trailing emit: capture the final position regardless of throttle.
+    flushEmit()
+    // Chunk 3: tell the parent to clear its snap guides.
+    emit('dragEnd')
     target.removeEventListener('pointermove', onMove)
     target.removeEventListener('pointerup', onUp)
     target.removeEventListener('pointercancel', onUp)
@@ -289,7 +376,11 @@ const handleHtmlChanged = (html: string): void => {
 import { onUnmounted } from 'vue'
 
 const handleKeydown = (e: KeyboardEvent): void => {
-  if (!props.selected) return
+  // Chunk 2: gate on the full selection set, not just this element's
+  // `selected` flag. When the user has multi-selected several elements
+  // via Shift+click, hitting Delete should remove ALL of them — even
+  // though only ONE of them is the "active" one with `selected: true`.
+  if (props.selectedIds.length === 0 && !props.selected) return
   if (props.readonly) return
   if (e.key !== 'Delete' && e.key !== 'Backspace') return
   // Don't intercept Delete when the user is typing in a form input.
@@ -298,7 +389,12 @@ const handleKeydown = (e: KeyboardEvent): void => {
     return
   }
   e.preventDefault()
-  emit('delete', props.element.id)
+  // Emit one `delete` per selected id. When only the legacy `selected`
+  // flag is set (no multi-selection context), fall back to deleting
+  // just this element so the back-compat path still works.
+  for (const id of (props.selectedIds.length > 0 ? props.selectedIds : [props.element.id])) {
+    emit('delete', id)
+  }
 }
 
 onMounted(() => {
@@ -313,7 +409,7 @@ onUnmounted(() => {
   <div
     class="design-element absolute"
     :class="[
-      selected ? 'selected' : '',
+      (selected || selectedIds.includes(element.id)) ? 'selected' : '',
       readonly ? 'cursor-default' : 'cursor-move',
       isDragging ? 'dragging' : '',
     ]"

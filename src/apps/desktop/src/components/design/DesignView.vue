@@ -54,6 +54,7 @@ import AddDesignElementDialog from './AddDesignElementDialog.vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import { useNotificationStore } from '../../stores/notifications'
 import { listDesignPages, type DesignElement as DesignElementApi } from '../../api'
+import { computeSnapDelta, type SnapGuide } from './useSnapGuides'
 
 const props = withDefaults(
   defineProps<{
@@ -114,12 +115,47 @@ const elements = computed<DesignElementApi[]>(() => {
 })
 
 // ─── Selection state ───────────────────────────────────────────────────
+//
+// Multi-select (Figma model). Empty Set = nothing selected. Plain
+// click = exclusive select (replaces the selection); Shift+click =
+// toggle membership (adds/removes without affecting the rest); Escape
+// = clear all. The PropertiesPanel and LayersPanel use the same Set so
+// the right rail stays in sync with the canvas outline.
+const selectedIds = ref<Set<string>>(new Set())
 
-const selectedElementId = ref<string | null>(null)
-const activeElement = computed<DesignElementApi | null>(() => {
-  if (!selectedElementId.value) return null
-  return elements.value.find((e) => e.id === selectedElementId.value) ?? null
+// Per-element nudge offset accumulator. The keyboard handler reads
+// `el.x + offset[id].x` instead of `el.x` so consecutive ArrowLeft
+// presses compose (the second press starts where the first one ended).
+// `updateDesignElementGeometry` is a fire-and-forget PATCH that does
+// NOT mirror the response back into `elements.value` (see the
+// performance comment in stores/workspaces.ts around the function),
+// so without this accumulator the element would only move on the
+// FIRST press and stay frozen on every subsequent press.
+//
+// Reset on page change (different elements scope).
+const nudgeOffsets = new Map<string, { x: number; y: number }>()
+
+const activeElements = computed<DesignElementApi[]>(() => {
+  return elements.value.filter((e) => selectedIds.value.has(e.id))
 })
+
+const isSingleSelect = computed(() => selectedIds.value.size === 1)
+// PropertiesPanel only renders its single-element form when exactly one
+// element is selected. Otherwise it shows a "N elements selected" banner
+// (multi-aware) or the empty state.
+const activeElement = computed<DesignElementApi | null>(() =>
+  isSingleSelect.value ? activeElements.value[0] ?? null : null,
+)
+
+// ─── Snap guides state ────────────────────────────────────────────────
+//
+// While a drag is in progress, snap math (computeSnapDelta) emits the
+// 1px violet alignment guides the user should see. Rendered as an
+// SVG overlay INSIDE the canvas div (above the elements but below the
+// resize handles). Cleared on drag-end (DesignElement emits `dragEnd`
+// on pointerup; the parent listens via @drag-end on the canvas's
+// <DesignElement> invocation).
+const snapGuides = ref<SnapGuide[]>([])
 
 // ─── Preview/Edit mode ──────────────────────────────────────────────────
 //
@@ -147,7 +183,7 @@ const exitPreviewMode = (): void => {
 // preview. Doing this in a watcher keeps the prop drill minimal — we
 // only need to react to the toggle, not poll for it.
 watch(isPreviewMode, (now) => {
-  if (!now) selectedElementId.value = null
+  if (!now) selectedIds.value = new Set()
 })
 
 // ─── Right sidebar width (drag-resize handle) ──────────────────────────
@@ -311,7 +347,16 @@ watch(
 // watch(activePageId) → fetch elements for the new page (mirrors
 // KanbanView's loadColumns pattern).
 watch(activePageId, (pageId) => {
-  selectedElementId.value = null
+  // Mirror to the store FIRST so AppLayout's design handlers
+  // (handleDesignUpdateElement / handleDesignDeleteElement) always
+  // see the latest selection, even if the early-return below fires
+  // (no item, no workspace, empty page). The store ref starts at ''
+  // and clears in onUnmounted (below).
+  workspacesStore.setActiveDesignPage(pageId ?? '')
+  selectedIds.value = new Set()
+  // Nudge offsets are per-element; fresh page means every cached
+  // offset is for an element that no longer exists.
+  nudgeOffsets.clear()
   if (!pageId) return
   if (!props.workspaceId || !effectiveItemId.value) return
   void workspacesStore.fetchDesignElements(
@@ -369,7 +414,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
       isPreviewMode.value = false
       return
     }
-    selectedElementId.value = null
+    selectedIds.value = new Set()
     // Also close the add-element dialog if it's open.
     if (showAddElementDialog.value) {
       showAddElementDialog.value = false
@@ -405,6 +450,56 @@ const handleKeydown = (event: KeyboardEvent): void => {
     event.preventDefault()
     zoomFit()
   }
+
+  // Arrow keys nudge the selection by 1 design-px; Shift+arrow by 10.
+  // Gated on `selectedIds.size > 0` (Figma-style: arrows do nothing
+  // when there's nothing to nudge).
+  if (selectedIds.value.size > 0 && (
+    event.key === 'ArrowLeft' || event.key === 'ArrowRight' ||
+    event.key === 'ArrowUp' || event.key === 'ArrowDown'
+  )) {
+    event.preventDefault()
+    const step = event.shiftKey ? 10 : 1
+    const dx =
+      event.key === 'ArrowLeft' ? -step :
+      event.key === 'ArrowRight' ? step : 0
+    const dy =
+      event.key === 'ArrowUp' ? -step :
+      event.key === 'ArrowDown' ? step : 0
+    for (const id of selectedIds.value) {
+      const el = elements.value.find((e) => e.id === id)
+      if (!el) continue
+      // The element's "effective" position is the cached `el.x`
+      // plus the accumulated nudge delta (since the last time
+      // `elements.value` was fresh). Without this, the second
+      // arrow press would read the stale `el.x` and re-emit
+      // the same x, freezing the element.
+      const off = nudgeOffsets.get(id) ?? { x: 0, y: 0 }
+      const baseX = el.x + off.x
+      const baseY = el.y + off.y
+      // Clamp so the element stays visible on the canvas. We
+      // allow a 10px sliver off-canvas (matches the resize min
+      // size — partial overlap is fine, but the element must
+      // not disappear entirely).
+      let ndx = dx
+      let ndy = dy
+      if (baseX + ndx < -el.width + 10) ndx = -el.width + 10 - baseX
+      if (baseX + ndx > canvasWidth.value - 10) ndx = canvasWidth.value - 10 - baseX
+      if (baseY + ndy < -el.height + 10) ndy = -el.height + 10 - baseY
+      if (baseY + ndy > canvasHeight.value - 10) ndy = canvasHeight.value - 10 - baseY
+      const newX = baseX + ndx
+      const newY = baseY + ndy
+      nudgeOffsets.set(id, { x: newX - el.x, y: newY - el.y })
+      void workspacesStore.updateDesignElementGeometry(
+        props.workspaceId,
+        effectiveItemId.value,
+        activePageId.value,
+        id,
+        { x: newX, y: newY },
+      )
+    }
+    return
+  }
 }
 
 const handleKeyup = (event: KeyboardEvent): void => {
@@ -437,6 +532,10 @@ onUnmounted(() => {
   window.removeEventListener('blur', handleWindowBlur)
   // Defensive: clear body cursor if we unmount mid-press.
   document.body.style.cursor = ''
+  // Clear the mirrored active page id so AppLayout's design handlers
+  // don't try to route PATCH/PUT/DELETE to a page whose view has
+  // unmounted. Task 1.2 of the design-element-drag-and-drop plan.
+  workspacesStore.setActiveDesignPage('')
 })
 
 // ─── Handlers ──────────────────────────────────────────────────────────
@@ -461,7 +560,7 @@ const handleCanvasClick = (event: MouseEvent): void => {
   if ((event.target as HTMLElement | null)?.closest('[data-design-element]')) {
     return
   }
-  selectedElementId.value = null
+  selectedIds.value = new Set()
 }
 
 // True while the user is mid-drag with Space held. Gates the
@@ -545,28 +644,179 @@ const handleDeletePage = (pageId: string): void => {
   emit('deletePage', pageId)
 }
 
-const handleElementSelect = (elementId: string): void => {
-  selectedElementId.value = elementId
+// Figma-style multi-select toggle. Plain click (additive=false)
+// replaces the selection with just this element. Shift+click
+// (additive=true) adds or removes membership without disturbing the
+// rest of the selection.
+const handleElementToggle = (elementId: string, additive: boolean): void => {
+  if (additive) {
+    const next = new Set(selectedIds.value)
+    if (next.has(elementId)) next.delete(elementId)
+    else next.add(elementId)
+    selectedIds.value = next
+  } else {
+    selectedIds.value = new Set([elementId])
+  }
   emit('selectElement', elementId)
 }
 
+// Keep the legacy handler name around as an alias so LayersPanel's
+// `@select="handleElementSelect"` (which emits a plain elementId with
+// no additive flag) still works — LayersPanel gets the additive flag
+// from the Shift state on the row click and emits a structured
+// payload instead.
+const handleElementSelect = (elementId: string): void => {
+  handleElementToggle(elementId, false)
+}
+
 const handleElementUpdate = (patch: Partial<DesignElementApi>): void => {
-  if (!selectedElementId.value) return
-  emit('updateElement', selectedElementId.value, patch)
+  if (selectedIds.value.size === 0) return
+  // When multiple elements are selected, apply the patch to every one
+  // of them (Figma semantics — editing the X/Y in the PropertiesPanel
+  // moves the whole selection together).
+  if (selectedIds.value.size === 1) {
+    const id = selectedIds.value.values().next().value as string
+    emit('updateElement', id, patch)
+    return
+  }
+  for (const id of selectedIds.value) {
+    emit('updateElement', id, patch)
+  }
 }
 
 const handleElementHtmlChanged = (html: string): void => {
-  if (!selectedElementId.value) return
-  emit('htmlChanged', selectedElementId.value, html)
+  if (selectedIds.value.size !== 1) return
+  // HTML body editing only applies to a single selected element —
+  // there's no sensible "merge HTML across 3 elements" semantic.
+  const id = selectedIds.value.values().next().value as string
+  emit('htmlChanged', id, html)
 }
 
 const handleElementDelete = (elementId: string): void => {
   emit('deleteElement', elementId)
-  selectedElementId.value = null
+  // Remove the deleted id from the selection Set (don't clear the
+  // whole selection — if the user multi-selected and deleted one,
+  // the others should remain selected for further action).
+  if (selectedIds.value.has(elementId)) {
+    const next = new Set(selectedIds.value)
+    next.delete(elementId)
+    selectedIds.value = next
+  }
 }
 
 const handleReorderElements = (orderedElementIds: string[]): void => {
   emit('reorderElements', orderedElementIds)
+}
+
+// LayersPanel emits a structured payload so Shift+click can be
+// distinguished from a plain click. Both call into handleElementToggle.
+const handleLayerSelect = (payload: { elementId: string; additive: boolean }): void => {
+  handleElementToggle(payload.elementId, payload.additive)
+}
+
+// Chunk 2: group drag. When the user drags any element that's part of
+// a multi-selection, DesignElement emits `groupDrag` with the cursor
+// delta (design-px, zoom-adjusted). We translate that into N individual
+// `updateDesignElementGeometry` calls — one per selected id — using
+// the LOCAL element list as the source of truth (it's already filtered
+// to the active page, so no need to re-query).
+//
+// The direct-store path bypasses the AppLayout round-trip on purpose:
+// a 3-element drag would otherwise generate 3 emits per pointermove ×
+// the store's throttle. Direct calls keep latency at one round-trip
+// per 50ms for the WHOLE selection.
+const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
+  if (selectedIds.value.size === 0) return
+  if (!props.workspaceId || !effectiveItemId.value) return
+  if (!activePageId.value) return
+  const pageId = activePageId.value
+  const itemId = effectiveItemId.value
+  const workspaceId = props.workspaceId
+
+  // ─── Snap (Chunk 3) ───────────────────────────────────────────────
+  // Compute the union bbox of the selection at the cursor's current
+  // position. computeSnapDelta treats the union as a single moving
+  // bbox; elements NOT in the selection are the snap targets.
+  // The function returns the snap correction + the guides to render.
+  const selected = elements.value.filter((e) => selectedIds.value.has(e.id))
+  if (selected.length > 0) {
+    const minX = Math.min(...selected.map((e) => e.x + delta.dx))
+    const minY = Math.min(...selected.map((e) => e.y + delta.dy))
+    const maxX = Math.max(...selected.map((e) => e.x + delta.dx + e.width))
+    const maxY = Math.max(...selected.map((e) => e.y + delta.dy + e.height))
+    const unionBbox = {
+      id: '__union__',
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY,
+    }
+    const others = elements.value.filter((e) => !selectedIds.value.has(e.id))
+    const snapResult = computeSnapDelta(
+      [unionBbox, ...others],
+      '__union__',
+      0,
+      0,
+      { width: canvasWidth.value, height: canvasHeight.value },
+    )
+    snapGuides.value = snapResult.guides
+    const finalDx = delta.dx + snapResult.dx
+    const finalDy = delta.dy + snapResult.dy
+    // Clamp so elements can't be dragged entirely off-canvas. Allow
+    // a 10px sliver off-canvas (matches the resize min size) but
+    // prevent the element from disappearing entirely.
+    const clampX = (el: typeof selected[number], dx: number): number => {
+      const newX = el.x + dx
+      if (newX < -el.width + 10) return -el.width + 10 - el.x
+      if (newX > canvasWidth.value - 10) return canvasWidth.value - 10 - el.x
+      return dx
+    }
+    const clampY = (el: typeof selected[number], dy: number): number => {
+      const newY = el.y + dy
+      if (newY < -el.height + 10) return -el.height + 10 - el.y
+      if (newY > canvasHeight.value - 10) return canvasHeight.value - 10 - el.y
+      return dy
+    }
+    for (const el of selected) {
+      const clampedDx = clampX(el, finalDx)
+      const clampedDy = clampY(el, finalDy)
+      void workspacesStore.updateDesignElementGeometry(
+        workspaceId,
+        itemId,
+        pageId,
+        el.id,
+        {
+          x: Math.round(el.x + clampedDx),
+          y: Math.round(el.y + clampedDy),
+        },
+      )
+    }
+    return
+  }
+
+  // No selection (shouldn't normally reach here given the size check
+  // above, but defensive).
+  for (const id of selectedIds.value) {
+    const el = elements.value.find((e) => e.id === id)
+    if (!el) continue
+    void workspacesStore.updateDesignElementGeometry(
+      workspaceId,
+      itemId,
+      pageId,
+      id,
+      {
+        x: Math.round(el.x + delta.dx),
+        y: Math.round(el.y + delta.dy),
+      },
+    )
+  }
+}
+
+// Clear snap guides when the drag ends. DesignElement emits `dragEnd`
+// on pointerup; we listen via @drag-end on each <DesignElement>. This
+// is a no-op if no drag is in flight.
+const clearSnapGuides = (): void => {
+  snapGuides.value = []
 }
 
 const handleCreateElement = (
@@ -1061,18 +1311,62 @@ onUnmounted(() => {
               v-for="element in elements"
               :key="element.id"
               :element="element"
-              :selected="selectedElementId === element.id"
+              :selected="isSingleSelect && activeElements[0]?.id === element.id"
+              :selected-ids="Array.from(selectedIds)"
               :readonly="false"
               :zoom="zoom"
               :workspace-id="workspaceId"
               :item-id="itemId || item.id"
               :page-id="activePageId"
               :preview-mode="isPreviewMode"
-              @select="handleElementSelect"
+              @select="(id) => handleElementToggle(id, false)"
               @update="handleElementUpdate"
+              @group-drag="handleGroupDrag"
+              @drag-end="clearSnapGuides"
               @html-changed="handleElementHtmlChanged"
               @delete="handleElementDelete"
             />
+            <!--
+              Snap guides (Chunk 3): SVG overlay rendered ABOVE the
+              elements (z-index higher in DOM order) but BELOW the
+              resize handles (which are inside each DesignElement).
+              `pointer-events-none` so the SVG never intercepts the
+              cursor — the canvas's own pointer handlers stay alive.
+              1px violet lines: vertical = x-axis guides at a fixed
+              position, full canvas height; horizontal = y-axis guides,
+              full canvas width. The SVG is sized to the canvas
+              (canvasWidth × canvasHeight) so we can draw the lines
+              in design-px coordinates without scaling math.
+            -->
+            <svg
+              v-if="snapGuides.length > 0"
+              class="absolute inset-0 pointer-events-none"
+              :width="canvasWidth"
+              :height="canvasHeight"
+              data-testid="design-snap-guides"
+              aria-hidden="true"
+            >
+              <line
+                v-for="(guide, idx) in snapGuides.filter((g) => g.axis === 'x')"
+                :key="`x-${idx}`"
+                :x1="guide.position"
+                :y1="0"
+                :x2="guide.position"
+                :y2="canvasHeight"
+                stroke="var(--color-violet)"
+                stroke-width="1"
+              />
+              <line
+                v-for="(guide, idx) in snapGuides.filter((g) => g.axis === 'y')"
+                :key="`y-${idx}`"
+                :x1="0"
+                :y1="guide.position"
+                :x2="canvasWidth"
+                :y2="guide.position"
+                stroke="var(--color-violet)"
+                stroke-width="1"
+              />
+            </svg>
             <div
               v-if="elements.length === 0"
               class="absolute inset-0 flex items-center justify-center text-sm pointer-events-none"
@@ -1127,9 +1421,9 @@ onUnmounted(() => {
         >
           <LayersPanel
             :elements="elements"
-            :selected-element-id="selectedElementId"
+            :selected-ids="Array.from(selectedIds)"
             :readonly="isPreviewMode"
-            @select="handleElementSelect"
+            @select="handleLayerSelect"
             @reorder="handleReorderElements"
             @delete="handleElementDelete"
           />
@@ -1151,7 +1445,7 @@ onUnmounted(() => {
         <!-- Properties (bottom, fills remaining height) -->
         <div class="flex-1 min-h-0 overflow-hidden">
           <PropertiesPanel
-            :element="activeElement"
+            :elements="activeElements"
             :readonly="false"
             :preview-mode="isPreviewMode"
             @update="handlePropertiesUpdate"
