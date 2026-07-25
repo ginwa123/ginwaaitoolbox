@@ -1757,3 +1757,85 @@ test "build_agent_prompt omits Workspace Context when section is empty" {
     // No self-marker text either.
     try std.testing.expect(!contains(prompt, "*(this task)*"));
 }
+
+// ---------------------------------------------------------------------------
+// build_agent_prompt — Search Tool Preference (MANDATORY) section.
+//
+// Added to enforce `search` tool usage over `bash rg`/`grep`/`find` for
+// code/text search. The section is unconditional (no `requires_tool` gate),
+// so it appears in every agent's prompt regardless of tool list.
+// ---------------------------------------------------------------------------
+
+test "build_agent_prompt always renders Search Tool Preference (unconditional)" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Empty tool list — proves the section has no `requires_tool` gate.
+    const tools = [_]AgentTool{};
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "",
+        "",
+        "",
+        "",
+    );
+    defer alloc.free(prompt);
+
+    // Header is rendered.
+    try std.testing.expect(contains(prompt, "## Search Tool Preference (MANDATORY)"));
+    // Hard-rule language is preserved.
+    try std.testing.expect(contains(prompt, "always use the `search` tool"));
+    try std.testing.expect(contains(prompt, "Do NOT use `bash`"));
+    // Mapping examples survived into the rendered prompt.
+    try std.testing.expect(contains(prompt, "search(pattern=\"pattern\""));
+    try std.testing.expect(contains(prompt, "group_by_file: false"));
+    try std.testing.expect(contains(prompt, "word_boundary: true"));
+    try std.testing.expect(contains(prompt, "literal: true"));
+    // The opt-in rg fallback list is also present so agents know when bash rg is OK.
+    try std.testing.expect(contains(prompt, "When `bash rg` IS allowed"));
+    try std.testing.expect(contains(prompt, "rg -C N"));
+    try std.testing.expect(contains(prompt, "rg --json"));
+    // Self-check is the closing reinforcement.
+    try std.testing.expect(contains(prompt, "code/text search"));
+}
+
+test "build_agent_prompt Search Tool Preference appears even with non-empty tool list" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Realistic tool list — the search rule must still appear.
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+        makeTool("bash", "Run a bash command"),
+        makeTool("search", "Search tool"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "",
+        "",
+        "",
+        "",
+    );
+    defer alloc.free(prompt);
+
+    try std.testing.expect(contains(prompt, "## Search Tool Preference (MANDATORY)"));
+    try std.testing.expect(contains(prompt, "always use the `search` tool"));
+}

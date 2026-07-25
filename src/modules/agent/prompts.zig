@@ -38,6 +38,7 @@ pub const CompactionAgent = prompts.CompactionAgent;
 pub const GenerateSessionNameAgent = prompts.GenerateSessionNameAgent;
 pub const ResponseFormatting = prompts.ResponseFormatting;
 pub const UpdateActivityRule = prompts.UpdateActivityRule;
+pub const SearchToolRule = prompts.SearchToolRule;
 
 // =============================================================================
 // PROMPT BUILDERS
@@ -85,6 +86,7 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
     // === LEAD: Orchestrator narrative (Philosophy B) ===
     .{ .name = "universal_rules", .content = UniversalRules },
     .{ .name = "prompt_auto_fix", .content = PromptAutoFix },
+    .{ .name = "search_tool_rule", .content = SearchToolRule },
     .{ .name = "agent_directive", .content = Agent },
     .{ .name = "parallel_work", .content = ParallelWork },
 
