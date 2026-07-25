@@ -63,3 +63,13 @@ Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 3
 - Canvas-center + canvas-edge fallback targets (snaps to page center when no other element is nearby).
 - 1px violet SVG alignment guides render during drag and clear on pointerup.
 - Group drag applies snap to the selection's union bbox (the whole group snaps together).
+
+## 2026-07-25: Design mode keyboard nudge
+
+Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 4)
+
+### What landed
+- Arrow keys move the selection by 1 design-px: ←/→ for x, ↑/↓ for y.
+- Shift+arrow moves by 10 design-px (Figma's "big step").
+- Input-focus guard preserved (PropertiesPanel X/Y inputs still get their arrow keys for cursor navigation).
+- No-op when nothing is selected (no escape route from the canvas for stray arrows).
