@@ -316,6 +316,51 @@ jobs:
             || { echo "✗ expected 'smoke:' log line missing"; cat /tmp/desktop-smoke.log; exit 1; }
           echo "✓ nalar-desktop --smoke-test passed"
 
+      - name: "Functional tests: real-data isolation suites"
+        # 8 functional test suites exercising the real nalar HTTP API
+        # against non-trivial data shapes. Each test boots a fresh
+        # nalar binary against an isolated tmpdir HOME (mktemp),
+        # drives the API, and rmtree's the tempdir on teardown.
+        # The Python harness enforces the "never delete real $HOME"
+        # invariant via is_safe_tmp() — see tests/functional/harness.py
+        # for the safety guards.
+        #
+        # Test count: 8 suites × ~9 tests each = ~55 tests.
+        # Wall-clock: ~5 min total (each test = ~10s including
+        # boot + teardown).
+        #
+        # Same gate as the existing smoke tests: only the
+        # Linux-native and macOS-native cells (matrix.target.step
+        # != '__SKIP__'). The cross-compile cells don't have a
+        # runnable nalar binary on the runner.
+        if: matrix.target.step != '__SKIP__'
+        shell: bash
+        run: |
+          set -u
+          echo "→ functional-test: starting"
+          date +%s > /tmp/functional-test-start.$$ 2>/dev/null || true
+          # zig build functional-test creates a venv at .venv-func,
+          # installs requirements, and runs the suite. The venv
+          # cleanup is handled by `zig build` itself (the venv dir
+          # is gitignored).
+          zig build functional-test --summary all 2>&1 | tee /tmp/functional-test.log | tail -n 50
+          rc=${PIPESTATUS[0]}
+          echo "→ functional-test: exit code $rc"
+          if [ "$rc" -ne 0 ]; then
+            echo "✗ functional-test: failed (see /tmp/functional-test.log)"
+            # Surface the last 100 lines for debugging.
+            tail -n 100 /tmp/functional-test.log
+            exit 1
+          fi
+          echo "✓ functional-test: passed"
+          # Time taken.
+          END=$(date +%s)
+          START=$(cat /tmp/functional-test-start.$$ 2>/dev/null || echo 0)
+          if [ "$START" -gt 0 ]; then
+            echo "→ functional-test: $((END - START))s elapsed"
+          fi
+          rm -f /tmp/functional-test-start.$$
+
       - name: Upload nalar + nalar-desktop binaries
         # Both binaries need to ship to the user — install-nalar-desktop.sh
         # installs both. The `nalar` service binary is also useful as a
