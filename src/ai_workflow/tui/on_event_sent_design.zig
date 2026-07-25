@@ -141,3 +141,30 @@ pub fn onEventSendDesignElementDeleted(
     const di = nalarcore.getSingleton() catch return;
     di.event_bus.emit(SseEvent, "design_element", event);
 }
+
+/// Emit a `design_page_deleted` SSE event. Called from
+/// `design_model.deletePage` on every successful page delete. The
+/// frontend listener (see `designSse.ts`) removes the page from the
+/// tabs strip + clears `activeDesignPageId` if it was the active
+/// page. Routing key `"design_page"` (parallel to `"design_element"`
+/// — see project memory `browser-eventsource-named-events.md`).
+pub fn onEventSendDesignPageDeleted(
+    allocator: std.mem.Allocator,
+    payload: on_event_design.DesignPageDeletedData,
+) !void {
+    const json_payload = try std.json.Stringify.valueAlloc(
+        allocator,
+        payload,
+        .{},
+    );
+    defer allocator.free(json_payload);
+
+    const event = SseEvent{
+        .session_id = "design_page",
+        .data = json_payload,
+        .event_type = "design_page_deleted",
+    };
+
+    const di = nalarcore.getSingleton() catch return;
+    di.event_bus.emit(SseEvent, "design_page", event);
+}

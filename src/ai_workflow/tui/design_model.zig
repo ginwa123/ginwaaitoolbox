@@ -1193,6 +1193,102 @@ pub fn deleteElement(
     return true;
 }
 
+// ─── deletePage ────────────────────────────────────────────────────────────
+//
+// Delete a design page and everything under it:
+//   1. The `design_pages` SQL row.
+//   2. Every `design_page_elements` row with matching `page_id` (via FK
+//      `ON DELETE CASCADE` — see migrations 055/056).
+//   3. The on-disk `<item_path>/.nalar/design/<sanitized_page_name>/`
+//      directory containing each element's HTML file.
+//
+// Returns `true` on a successful delete, `false` if no such page_id
+// exists (idempotent — caller treats 404 as success).
+//
+// Like `deleteElement`, this is a UI-only operation — no LLM tool
+// exposes it, only the DesignView tab-strip × button. See plan
+// `docs/superpowers/plans/2026-07-25-design-page-delete-button.md`
+// (Chunk 1).
+pub fn deletePage(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    page_id: []const u8,
+) anyerror!bool {
+    // Look up workspace_id + workspace_item_id + item_path + page_name
+    // BEFORE the SQL DELETE so we can both emit the SSE event AND
+    // rmdir the on-disk page folder. Single JOIN query that returns
+    // all four pieces of context — mirrors `deleteElement`'s lookup.
+    const Lookup = struct {
+        workspace_id: []u8,
+        item_id: []u8,
+        item_path: []u8,
+        page_name: []u8,
+    };
+    const lookup: Lookup = blk: {
+        var q = try db.query(allocator,
+            \\SELECT wi.workspace_id, dp.workspace_item_id, wi.path, dp.name
+            \\FROM design_pages dp
+            \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
+            \\WHERE dp.id = ?
+        , &.{page_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return false;
+        defer row.deinit(allocator);
+        break :blk .{
+            .workspace_id = try allocator.dupe(u8, row.values[0]),
+            .item_id = try allocator.dupe(u8, row.values[1]),
+            .item_path = try allocator.dupe(u8, row.values[2]),
+            .page_name = try allocator.dupe(u8, row.values[3]),
+        };
+    };
+    defer allocator.free(lookup.workspace_id);
+    defer allocator.free(lookup.item_id);
+    defer allocator.free(lookup.item_path);
+    defer allocator.free(lookup.page_name);
+
+    // Delete the row first. The FK `ON DELETE CASCADE` on
+    // `design_page_elements.page_id` handles the element rows in the
+    // same transaction — but their on-disk HTML files live in the
+    // page directory, so we need a single recursive rmdir to clean
+    // them all up below.
+    try db.exec(allocator,
+        "DELETE FROM design_pages WHERE id = ?",
+        &.{page_id});
+
+    // Defer-pattern: rmdir the page directory AFTER the SQL DELETE
+    // succeeded. Swallow errors (folder may already be missing, or
+    // the user has no `path` on their workspace_item).
+    if (lookup.item_path.len > 0 and lookup.page_name.len > 0) {
+        const sanitized_page = design_io.sanitizeFilename(allocator, lookup.page_name) catch null;
+        if (sanitized_page) |sp| {
+            defer allocator.free(sp);
+            var page_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const page_dir = std.fmt.bufPrint(
+                &page_dir_buf,
+                "{s}/.nalar/design/{s}",
+                .{ lookup.item_path, sp },
+            ) catch null;
+            if (page_dir) |pd| {
+                design_io.deleteDirectoryRecursively(allocator, io, pd) catch {};
+            }
+        }
+    }
+
+    // Emit SSE event AFTER the SQL DELETE succeeded. Best-effort: if
+    // the event_bus is not initialized or the JSON serialization
+    // fails, the caller still gets a successful return value — SSE
+    // is a hint, not a hard contract. The lookup slices are still
+    // alive at this point; the function-level defers haven't fired.
+    on_event_sent_design.onEventSendDesignPageDeleted(allocator, .{
+        .action = "deleted",
+        .workspace_id = lookup.workspace_id,
+        .item_id = lookup.item_id,
+        .page_id = page_id,
+    }) catch {};
+    return true;
+}
+
 // ─── loadElementHtml ──────────────────────────────────────────────────────
 
 /// Read the on-disk HTML body for an element. Returns

@@ -416,6 +416,8 @@ pub fn main(init: std.process.Init) !void {
     //   GET    /design/pages                                — list pages
     //   POST   /design/pages                                — create page
     //   GET    /design/pages/:pid                           — get page + elements
+    //   PATCH  /design/pages/:pid                           — update page (resize)
+    //   DELETE /design/pages/:pid                           — delete page + on-disk folder
     //   POST   /design/pages/:pid/elements                  — add element
     //   PUT    /design/pages/:pid/elements/:eid             — update element
     //   DELETE /design/pages/:pid/elements/:eid             — delete element
@@ -427,6 +429,7 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages", ai_mod.http_handlers.designPagesCreateHandler);
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id", ai_mod.http_handlers.designPagesGetHandler);
     try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id", ai_mod.http_handlers.designPagesUpdateHandler);
+    try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id", ai_mod.http_handlers.designPagesDeleteHandler); // 2026-07-25-design-page-delete-button (Chunk 1)
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements", ai_mod.http_handlers.designElementsCreateHandler);
     try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id", ai_mod.http_handlers.designElementsUpdateHandler);
     try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id", ai_mod.http_handlers.designElementsDeleteHandler);

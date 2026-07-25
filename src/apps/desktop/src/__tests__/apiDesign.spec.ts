@@ -22,6 +22,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import {
   listDesignPages,
   createDesignPage,
+  deleteDesignPage,
   getDesignPage,
   addDesignElement,
   updateDesignElement,
@@ -408,6 +409,27 @@ describe('api.design', () => {
       await expect(
         deleteDesignElement('ws_1', 'item_1', 'p1', 'e1'),
       ).rejects.toMatchObject({ status: 500 })
+    })
+  })
+
+  describe('deleteDesignPage', () => {
+    it('DELETEs the page and returns {success: true}', async () => {
+      mockFetchOnce(200, { success: true })
+
+      const result = await deleteDesignPage('ws_1', 'item_1', 'p1')
+
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+      expect(url).toContain('/api/workspaces/ws_1/items/item_1/design/pages/p1')
+      expect(init.method).toBe('DELETE')
+      expect(result.success).toBe(true)
+    })
+
+    it('throws ApiError on 404 (page already gone)', async () => {
+      mockFetchOnce(404, { error: 'Page not found' })
+
+      await expect(
+        deleteDesignPage('ws_1', 'item_1', 'p_missing'),
+      ).rejects.toMatchObject({ status: 404 })
     })
   })
 

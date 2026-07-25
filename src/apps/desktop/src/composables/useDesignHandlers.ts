@@ -57,5 +57,22 @@ export function useDesignHandlers() {
     }
   }
 
-  return { updateElement, deleteElement }
+  // Delete a design page (DesignView tab-strip × button). Safety
+  // guard matches `deleteElement`: native `confirm()` dialog before
+  // the destructive op, with a clear message about what gets
+  // removed (the page + its elements + their on-disk HTML files).
+  // The store action handles the local `activeDesignPageId` reset
+  // + the SSE-driven re-fetch that drops the page from sibling
+  // tabs.
+  async function deletePage(workspaceId: string, itemId: string, pageId: string): Promise<void> {
+    if (!confirm('Delete this page? This removes the page, its elements, and their on-disk HTML files.')) return
+    try {
+      await workspacesStore.deleteDesignPage(workspaceId, itemId, pageId)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      notificationStore.notifyError('Failed to delete page', message)
+    }
+  }
+
+  return { updateElement, deleteElement, deletePage }
 }

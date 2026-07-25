@@ -1537,6 +1537,32 @@ export async function deleteDesignElement(
 }
 
 /**
+ * DELETE /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId
+ *
+ * Delete a design page. The backend (design_model.deletePage) handles
+ * the SQL DELETE on design_pages (FK ON DELETE CASCADE cleans up the
+ * child design_page_elements rows) and recursively rmdirs the
+ * on-disk `<item_path>/.nalar/design/<sanitized_page_name>/` folder.
+ *
+ * UI-only — no LLM tool exposes this endpoint, only the DesignView
+ * tab-strip × button. Returns 200 with `{success:true}`. 404 if the
+ * page didn't exist (idempotent — caller treats 404 as success).
+ *
+ * Plan: docs/superpowers/plans/2026-07-25-design-page-delete-button.md
+ *   (Chunk 2)
+ */
+export async function deleteDesignPage(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+): Promise<{ success: boolean }> {
+  return await apiFetch<{ success: boolean }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}`,
+    { method: 'DELETE' },
+  )
+}
+
+/**
  * GET /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId/html
  *
  * Lazy-load a single element's HTML body. Used by the iframe preview
