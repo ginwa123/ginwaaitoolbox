@@ -56,3 +56,22 @@ pub const DesignElementDeletedData = struct {
     page_id: []const u8,
     element_id: []const u8,
 };
+
+// ─── Page-level events (2026-07-25-design-page-delete-button) ───────────
+//
+// Page-level events share the SSE wire envelope shape with the element
+// events above (action discriminator + the three parent ids), but
+// omit `element_id` because the granularity is the page itself. The
+// frontend listener subscribes on the `design_page` event_bus key
+// (parallel to `design_element`) and uses these payloads to keep
+// the tabs strip + active-page state in sync across multiple
+// clients / tabs.
+
+/// JSON payload for the `design_page_deleted` SSE event.
+pub const DesignPageDeletedData = struct {
+    /// "deleted"
+    action: []const u8,
+    workspace_id: []const u8,
+    item_id: []const u8,
+    page_id: []const u8,
+};

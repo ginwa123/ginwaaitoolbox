@@ -137,6 +137,7 @@ pub const designPagesListHandler = @import("design_pages_list.zig").designPagesL
 pub const designPagesCreateHandler = @import("design_pages_create.zig").designPagesCreateHandler;
 pub const designPagesGetHandler = @import("design_pages_get.zig").designPagesGetHandler;
 pub const designPagesUpdateHandler = @import("design_pages_update.zig").designPagesUpdateHandler;
+pub const designPagesDeleteHandler = @import("design_pages_delete.zig").designPagesDeleteHandler; // 2026-07-25-design-page-delete-button (Chunk 1)
 pub const designElementsCreateHandler = @import("design_elements_create.zig").designElementsCreateHandler;
 pub const designElementsUpdateHandler = @import("design_elements_update.zig").designElementsUpdateHandler;
 pub const designElementsDeleteHandler = @import("design_elements_delete.zig").designElementsDeleteHandler;
