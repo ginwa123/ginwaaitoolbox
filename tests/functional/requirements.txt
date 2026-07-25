@@ -1,0 +1,9 @@
+# Pinned to keep CI reproducible. Bump deliberately, not by drift.
+#
+# pytest:  test framework + fixtures + parametrize
+# pytest-xdist: optional parallel runner (invoke with `pytest -n auto`)
+# sseclient-py: SSE EventSource for the SSE end-to-end suite (Chunk 8)
+
+pytest>=7.4,<9
+pytest-xdist>=3.3,<4
+sseclient-py>=1.8,<2

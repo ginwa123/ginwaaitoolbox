@@ -34,11 +34,17 @@ def shared_harness():
     to a fresh workspace/item/etc.
     """
     nalar_bin = os.environ.get("NALAR_BIN")
-    if not nalar_bin:
-        pytest.skip("NALAR_BIN env var not set; skipping smoke boot test")
-    nalar_bin_path = Path(nalar_bin)
-    if not nalar_bin_path.exists():
-        pytest.skip(f"NALAR_BIN does not exist: {nalar_bin_path}")
+    if nalar_bin:
+        nalar_bin_path = Path(nalar_bin)
+        if not nalar_bin_path.exists():
+            pytest.skip(f"NALAR_BIN does not exist: {nalar_bin_path}")
+    else:
+        # Fall back to the default resolution logic (checks
+        # zig-out/bin/nalar etc.). Replicates conftest.default_nalar_bin
+        # without requiring the harness fixture (so module-scoped
+        # boot works).
+        from conftest import _resolve_nalar_bin
+        nalar_bin_path = _resolve_nalar_bin()
     h = FunctionalHarness.boot(nalar_bin_path)
     try:
         yield h

@@ -27,3 +27,7 @@ test_logger_*.log
 test_logger_nested_dir/
 test_diff_view_*.txt
 test_*.log
+
+# Functional test venv + cache (created by `zig build functional-test`)
+.venv-func/
+.pytest_cache/
