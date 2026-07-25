@@ -44,10 +44,42 @@ each produces the artifact native to its host platform:
    - `./zig-out/bin/nalar-desktop --smoke-test` — exercises desktop binary's
      webapp-asset extraction path (no GTK init, no display server needed
      on either platform).
+   - `zig build functional-test` — runs `tests/functional/` (8 suites,
+     ~55 tests, ~5 min). Each test boots a fresh `nalar` against an
+     isolated `mktemp` HOME; the Python harness enforces
+     `is_safe_tmp()` so the real `$HOME` is never touched. See
+     `tests/functional/README.md` for details.
 9. Artifacts upload — `nalar-${matrix.target.zig}-<sha>` per cell, each
    containing both `nalar` and `nalar-desktop` (14-day retention). On a
    single commit you'll see e.g. `nalar-x86_64-linux-gnu-<sha>` AND
    `nalar-aarch64-macos-<sha>` listed on the run page.
+
+## Functional tests
+
+`zig build functional-test` is the systematic-functional-coverage step.
+It runs `pytest tests/functional/` (8 suites, ~55 tests, ~5 min wall-clock).
+
+The harness enforces a **"never delete real `$HOME`"** invariant via
+three defensive layers (see `tests/functional/harness.py` for the
+banner comment):
+
+1. **`is_safe_tmp(path, orig_home)` allow-list validator** — runs before
+   every `shutil.rmtree`. Returns True only if the path starts with
+   `/tmp/`, `/private/tmp/`, `/private/var/folders/`, or
+   `tempfile.gettempdir() + "/"`, AND contains `nalar-func-`, AND
+   doesn't resolve to the real `$HOME`.
+2. **Captured `Path` attribute** — `temp_dir` is set once at boot;
+   `teardown()` rmtree's THIS attribute, never `os.environ["HOME"]`.
+3. **`ORIG_HOME` snapshot + restore** — captured before
+   `os.environ["HOME"]` is shadowed, restored as the first step of
+   teardown.
+
+`NALAR_FUNCTIONAL_DRY_RUN=1` skips the rmtree and prints what would
+have been deleted — useful for paranoia-debugging.
+
+If a CI run ever deletes the runner's real `$HOME`, that's a P0
+incident in the harness, not a bug to fix in the test. The 12
+negative tests in `harness_safety_test.py` guard the invariants.
 
 ## What does NOT run
 

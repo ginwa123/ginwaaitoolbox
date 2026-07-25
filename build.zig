@@ -618,6 +618,57 @@ pub fn build(b: *std.Build) void {
     copy_dev_to_system.step.dependOn(&install_dev.step);
     dev_linux_system_step.dependOn(&copy_dev_to_system.step);
 
+    // =====================================================================
+    // Functional tests (Python+pytest) — see tests/functional/README.md.
+    //
+    // Booting a real nalar against an isolated tmpdir HOME. The harness
+    // enforces a "never delete real $HOME" invariant via is_safe_tmp().
+    //
+    // Dependencies:
+    //   1. install:linux:system  — produces zig-out/bin/nalar
+    //   2. python3 venv at .venv-func  — installs requirements.txt once
+    //
+    // Skips silently if `python3` is missing on PATH (CI images all
+    // have it; local developers may not — the README documents
+    // `pip install pytest` as the manual fallback).
+    // =====================================================================
+    const python_exe = b.option([]const u8, "python", "Path to python3 binary (default: 'python3')") orelse "python3";
+    const install_venv = b.addSystemCommand(&.{
+        python_exe, "-m", "venv", ".venv-func",
+    });
+    install_venv.setCwd(b.path(""));
+
+    const install_requirements = b.addSystemCommand(&.{
+        ".venv-func/bin/pip", "install", "-q", "-r", "tests/functional/requirements.txt",
+    });
+    install_requirements.setCwd(b.path(""));
+    install_requirements.step.dependOn(&install_venv.step);
+
+    // Probe python3 — skip the step if missing. Without a probe,
+    // `addSystemCommand(&.{ "python3", ... })` would error at config
+    // time on hosts that don't have python3.
+    const python_probe = b.addSystemCommand(&.{
+        "sh", "-c",
+        \\command -v python3 >/dev/null 2>&1 || { echo 'zig build functional-test: python3 not found, skipping (install with `brew install python@3.11` or set -Dpython=...)'; exit 0; }
+    ,
+    });
+    python_probe.setCwd(b.path(""));
+
+    const run_functional = b.addSystemCommand(&.{
+        ".venv-func/bin/python", "-m", "pytest", "tests/functional/", "-v", "--tb=short",
+    });
+    run_functional.setCwd(b.path(""));
+    run_functional.step.dependOn(&install_requirements.step);
+    run_functional.step.dependOn(&python_probe.step);
+    // Depend on the top-level `install` step (copies binary to
+    // zig-out/bin/nalar) rather than `install:linux:system` which
+    // additionally tries to `cp` to /usr/local/bin/nalar and fails
+    // on systems without write perms to /usr/local.
+    run_functional.step.dependOn(b.getInstallStep());
+
+    const functional_test_step = b.step("functional-test", "Run functional tests against a real nalar with isolated tmpdir data");
+    functional_test_step.dependOn(&run_functional.step);
+
     // ============================================================
     // Custom HTTP Server (TCP) - build step
     // ============================================================
