@@ -77,6 +77,7 @@ vi.mock('vue-router', async () => {
 
 const WS_ID = 'ws_test'
 const KANBAN_ID = 'item_kanban_url'
+const DESIGN_ID = 'item_design_url'
 const OTHER_WS_ID = 'ws_other'
 
 const makeColumn = (overrides: Partial<KanbanColumn> = {}): KanbanColumn => ({
@@ -96,6 +97,15 @@ const makeKanbanItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem =
     makeColumn({ id: 'col_todo', name: 'todo', position: 0 }),
     makeColumn({ id: 'col_inprogress', name: 'in progress', position: 1 }),
   ],
+  tasks: [],
+  ...overrides,
+})
+
+const makeDesignItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
+  id: DESIGN_ID,
+  name: 'Design Mockup',
+  item_type: 'design',
+  path: '/tmp/design',
   tasks: [],
   ...overrides,
 })
@@ -121,6 +131,7 @@ function mountAppLayout(workspaces: Workspace[] = [], routeQuery: Record<string,
         ChatView: true,
         CodeEditor: true,
         KanbanView: { template: '<div data-kanban-view="stub" :data-item-id="item.id" />', props: ['item', 'workspaceId', 'itemId'] },
+        DesignView: { template: '<div data-design-view="stub" :data-item-id="item.id" />', props: ['item', 'workspaceId', 'itemId'] },
       },
     },
   })
@@ -259,6 +270,230 @@ describe('AppLayout — page reload of ?view=workspace&workspaceId=X&itemId=Y re
     expect(ws.activeWorkspaceItemId).toBeNull()
     const view = wrapper.find('[data-kanban-view="stub"]')
     expect(view.exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
+
+describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persistence plan)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    installBusForTests()
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: makeLocalStorageStub(),
+      writable: true,
+      configurable: true,
+    })
+    vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
+    vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
+    vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
+    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
+      entries: [],
+      path: '/',
+      absolute: '/',
+      home: '/',
+    })
+    vi.spyOn(api, 'listKanbanColumns').mockResolvedValue({ columns: [], count: 0 })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('handleNavigate("workspace", wsId, designId) pushes workspaceId + designId into the URL', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {})
+    const layout = wrapper.vm as any
+    layout.handleNavigate('workspace', undefined, undefined, WS_ID, DESIGN_ID)
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: '/app',
+      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+    })
+    wrapper.unmount()
+  })
+
+  it('mounting with ?view=workspace&workspaceId=X&itemId=designId restores the design view', async () => {
+    const ws = useWorkspacesStore()
+    const design = makeDesignItem()
+    const wrapper = mountAppLayout(
+      [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [design] } as Workspace],
+      { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+    )
+    await nextTick()
+    await nextTick()
+    expect(ws.activeWorkspaceItemId).toBe(DESIGN_ID)
+    const view = wrapper.find('[data-design-view="stub"]')
+    expect(view.exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('activeWorkspaceItem → URL watcher fires when activeWorkspaceItemId changes externally', async () => {
+    const replaceMock = vi.fn()
+    useRouteMock.mockReturnValue({
+      query: { view: 'workspace' },
+      path: '/app',
+      fullPath: '/app?view=workspace',
+    } as any)
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, { view: 'workspace' })
+    await nextTick()
+    await nextTick()
+    // AppLayout.onMounted calls initializeFromSystemFolder() which
+    // calls init() which overwrites `workspaces.value` with the
+    // (empty) API mock result. Re-set workspaces so the URL
+    // watcher's lookup of activeWorkspace succeeds.
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    await nextTick()
+    replaceMock.mockClear()
+    // Externally set activeWorkspaceItemId — the watcher should fire
+    // and call router.replace with the new URL.
+    ws.setActiveWorkspaceItem(DESIGN_ID)
+    await nextTick()
+    await nextTick()
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: '/app',
+      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+    })
+    wrapper.unmount()
+  })
+
+  it('activeWorkspaceItem → URL watcher does NOT overwrite the URL when on view=task', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    // URL is on view=task — the watcher must NOT clobber it.
+    const wrapper = mountAppLayout(ws.workspaces, { view: 'task', task: 'task_xyz' })
+    await nextTick()
+    await nextTick()
+    replaceMock.mockClear()
+    ws.setActiveWorkspaceItem(DESIGN_ID)
+    await nextTick()
+    await nextTick()
+    expect(replaceMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('handleCloseTaskView preserves workspaceId + itemId when the active task belongs to a design', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    const design = makeDesignItem()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [design] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {})
+    const layout = wrapper.vm as any
+    await nextTick()
+    await nextTick()
+    // Re-set workspaces after init() overwrites them.
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [design] } as Workspace,
+    ]
+    // Simulate the user opening a task chat on the design item.
+    ws.setActiveWorkspaceItem(DESIGN_ID)
+    ws.setActiveTask('task_design_chat')
+    await nextTick()
+    await nextTick()
+    replaceMock.mockClear()
+    layout.handleCloseTaskView()
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: '/app',
+      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+    })
+    wrapper.unmount()
+  })
+
+  it('closeGitViewer preserves workspaceId + itemId when on a design item', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {})
+    const layout = wrapper.vm as any
+    await nextTick()
+    await nextTick()
+    // Re-set workspaces after init() overwrites them.
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    ws.setActiveWorkspaceItem(DESIGN_ID)
+    await nextTick()
+    await nextTick()
+    replaceMock.mockClear()
+    layout.closeGitViewer()
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: '/app',
+      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+    })
+    wrapper.unmount()
+  })
+
+  it('closeSkillViewer preserves workspaceId + itemId when on a design item', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {})
+    const layout = wrapper.vm as any
+    await nextTick()
+    await nextTick()
+    // Re-set workspaces after init() overwrites them.
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    ws.setActiveWorkspaceItem(DESIGN_ID)
+    await nextTick()
+    await nextTick()
+    replaceMock.mockClear()
+    layout.closeSkillViewer()
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: '/app',
+      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+    })
+    wrapper.unmount()
+  })
+
+  it('closeCodeEditor preserves workspaceId + itemId when on a design item', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {})
+    const layout = wrapper.vm as any
+    await nextTick()
+    await nextTick()
+    // Re-set workspaces after init() overwrites them.
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    ws.setActiveWorkspaceItem(DESIGN_ID)
+    await nextTick()
+    await nextTick()
+    replaceMock.mockClear()
+    layout.closeCodeEditor()
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: '/app',
+      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+    })
     wrapper.unmount()
   })
 })

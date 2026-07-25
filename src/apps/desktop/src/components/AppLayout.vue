@@ -181,6 +181,48 @@ watch(
   { immediate: true },
 )
 
+// ─── activeWorkspaceItem → URL mirror (reverse sync) ───────────────────
+//
+// The forward direction (sidebar click → URL) is wired through
+// Sidebar.handleSelectItem → emit('navigate', 'workspace', …, wsId, itemId)
+// → AppLayout.handleNavigate → router.replace. The reverse direction
+// (activeWorkspaceItemId changes from ANY source → URL) is needed
+// for resilience: if the URL restore watcher above sets
+// activeWorkspaceItemId, the URL is already correct (it was the
+// source), but if any future code path sets activeWorkspaceItemId
+// programmatically (e.g., keyboard shortcut, deep link, restored
+// from localStorage), the URL would NOT update and a refresh
+// would lose the context. This watcher fills that gap.
+//
+// We guard against two footguns:
+//   1. The watcher must NOT overwrite the URL while the user is
+//      on a route like view=task / view=chat / view=settings /
+//      view=gitfile / view=skill / view=code-editor — those views
+//      have their own URL contract and should be preserved.
+//   2. The watcher must NOT call router.replace when the URL
+//      already matches the active state (would push redundant
+//      history entries).
+watch(
+  () => workspacesStore.activeWorkspaceItemId,
+  (itemId) => {
+    const wsId = workspacesStore.activeWorkspace?.id ?? ''
+    const currentView = route.query.view as string | undefined
+    // Only sync when we're on the workspace view — all other views
+    // (chat, task, settings, gitfile, skill, code-editor) have their
+    // own URL contract and should not be overwritten.
+    if (currentView !== 'workspace' && currentView !== undefined) return
+    const urlWsId = route.query.workspaceId as string | undefined
+    const urlItemId = route.query.itemId as string | undefined
+    if (urlWsId === wsId && urlItemId === itemId) return
+    const query: Record<string, string> = { view: 'workspace' }
+    if (wsId && itemId) {
+      query.workspaceId = wsId
+      query.itemId = itemId
+    }
+    router.replace({ path: '/app', query })
+  },
+)
+
 // ─── Design SSE — mirror the kanban pattern ─────────────────────────────
 //
 // Bus-backed design-event subscription (Chunk 6 of
@@ -310,8 +352,20 @@ const handleRightSidebarFileClick = (file: api.GitFileChange, staged: boolean) =
 const closeGitViewer = () => {
   gitViewerFile.value = null
   gitViewerStaged.value = false
-  // Navigate back to previous view based on state
-  if (activeTask.value) {
+  // Navigate back to previous view based on state. If the user
+  // opened the file viewer while on a workspace item (folder /
+  // kanban / design), preserve the active item IDs in the URL so
+  // a page reload restores the design/kanban/folder — otherwise the
+  // URL was being stripped to ?view=task or ?view=chat, losing the
+  // workspace context.
+  if (workspacesStore.activeWorkspaceItemId) {
+    const wsId = activeWorkspaceId.value
+    const itemId = workspacesStore.activeWorkspaceItemId
+    router.replace({
+      path: '/app',
+      query: { view: 'workspace', workspaceId: wsId, itemId },
+    })
+  } else if (activeTask.value) {
     router.replace({ path: '/app', query: { view: 'task', task: activeTask.value.id } })
   } else if (activeChatId.value.startsWith('chat-')) {
     const sessionId = activeChatId.value.replace(/^chat-/, '')
@@ -364,8 +418,18 @@ const handleRightSidebarSkillClick = (skill: api.Skill) => {
 
 const closeSkillViewer = () => {
   skillViewerSkill.value = null
-  // Navigate back to previous view based on state
-  if (activeTask.value) {
+  // Navigate back to previous view based on state. Preserve the
+  // workspace item (folder / kanban / design) IDs when the user
+  // opened the skill view while on a workspace item — see
+  // closeGitViewer for the same pattern.
+  if (workspacesStore.activeWorkspaceItemId) {
+    const wsId = activeWorkspaceId.value
+    const itemId = workspacesStore.activeWorkspaceItemId
+    router.replace({
+      path: '/app',
+      query: { view: 'workspace', workspaceId: wsId, itemId },
+    })
+  } else if (activeTask.value) {
     router.replace({ path: '/app', query: { view: 'task', task: activeTask.value.id } })
   } else if (activeChatId.value.startsWith('chat-')) {
     const sessionId = activeChatId.value.replace(/^chat-/, '')
@@ -453,8 +517,18 @@ const closeCodeEditor = () => {
   codeEditorContent.value = ''
   codeEditorError.value = null
   codeEditorRequestedLine.value = null
-  // Navigate back to previous view
-  if (activeTask.value) {
+  // Navigate back to previous view. Preserve the workspace item
+  // (folder / kanban / design) IDs when the user opened the code
+  // editor while on a workspace item — see closeGitViewer for the
+  // same pattern.
+  if (workspacesStore.activeWorkspaceItemId) {
+    const wsId = activeWorkspaceId.value
+    const itemId = workspacesStore.activeWorkspaceItemId
+    router.replace({
+      path: '/app',
+      query: { view: 'workspace', workspaceId: wsId, itemId },
+    })
+  } else if (activeTask.value) {
     router.replace({ path: '/app', query: { view: 'task', task: activeTask.value.id } })
   } else if (activeChatId.value.startsWith('chat-')) {
     const sessionId = activeChatId.value.replace(/^chat-/, '')
@@ -609,7 +683,22 @@ const handleCloseTaskView = () => {
   // into a chat they thought they had closed.
   workspacesStore.setActiveTask(null)
   navigationStore.clearActiveChat()
-  router.replace({ path: '/app', query: { view: 'workspace' } })
+  // Preserve (workspaceId, itemId) when navigating back to the
+  // workspace view — the active kanban/design item should survive
+  // a page reload. Without this, the URL would be stripped to
+  // just ?view=workspace and a refresh would land on the empty
+  // state. The 3-column layout already implies the user is on a
+  // workspace item (design or kanban), so activeWorkspaceItemId is
+  // guaranteed truthy here — but we guard anyway in case the
+  // chatview branch wins for an unrelated chat session.
+  const wsId = activeWorkspaceId.value
+  const itemId = workspacesStore.activeWorkspaceItemId
+  const query: Record<string, string> = { view: 'workspace' }
+  if (wsId && itemId) {
+    query.workspaceId = wsId
+    query.itemId = itemId
+  }
+  router.replace({ path: '/app', query })
 }
 
 // ─── Kanban column resize (3-column layout: sidebar | kanban | chatview) ──
