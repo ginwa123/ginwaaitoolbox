@@ -75,11 +75,24 @@ describe('MarkdownDescription', () => {
     expect(wrapper.html()).not.toContain('md-file-chip')
   })
 
-  it('does NOT match /path/without/at-prefix (no @)', () => {
+  it('does NOT match /path/without/at-prefix when wrapped in backticks', () => {
+    // Backticks are the new opt-out (replacing the `@` requirement).
+    // The path inside backticks renders as inline code, not a chip.
+    const wrapper = mount(MarkdownDescription, {
+      props: { source: 'edit `/src/main.zig` to add the new route' },
+    })
+    expect(wrapper.html()).not.toContain('md-file-chip')
+  })
+
+  it('matches /path/without/at-prefix (no @ required anymore)', () => {
+    // The new (rich editor) convention: file paths are just `/path`
+    // — no `@` prefix. The legacy `@/path` form is also still
+    // supported for backward compatibility (see other tests).
     const wrapper = mount(MarkdownDescription, {
       props: { source: 'edit /src/main.zig to add the new route' },
     })
-    expect(wrapper.html()).not.toContain('md-file-chip')
+    expect(wrapper.html()).toContain('md-file-chip')
+    expect(wrapper.html()).toContain('data-file-path="/src/main.zig"')
   })
 
   it('matches multiple @/path tokens in the same source', () => {
@@ -147,5 +160,24 @@ describe('MarkdownDescription', () => {
       props: { source: 'hello' },
     })
     expect(wrapper.html()).toContain('markdown-content')
+  })
+
+  it('emits file-click when a chip is clicked', async () => {
+    const wrapper = mount(MarkdownDescription, {
+      props: { source: 'see /CLAUDE.md for details' },
+    })
+    const chip = wrapper.find('.md-file-chip')
+    expect(chip.exists()).toBe(true)
+    await chip.trigger('click')
+    expect(wrapper.emitted('file-click')).toBeTruthy()
+    expect(wrapper.emitted('file-click')?.[0]?.[0]).toBe('/CLAUDE.md')
+  })
+
+  it('does NOT emit file-click when a non-chip element is clicked', async () => {
+    const wrapper = mount(MarkdownDescription, {
+      props: { source: 'plain text without any chip' },
+    })
+    await wrapper.find('.markdown-content').trigger('click')
+    expect(wrapper.emitted('file-click')).toBeFalsy()
   })
 })

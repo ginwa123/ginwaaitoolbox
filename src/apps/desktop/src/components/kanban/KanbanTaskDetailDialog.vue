@@ -74,6 +74,7 @@ import { ref, computed, watch, nextTick } from 'vue'
 import type { Task, KanbanColumn } from '../../stores/workspaces'
 import KanbanDescriptionEditor from './KanbanDescriptionEditor.vue'
 import MarkdownDescription from './MarkdownDescription.vue'
+import FilePreviewModal from './FilePreviewModal.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -145,6 +146,17 @@ const DESCRIPTION_MAX = 5000
 //   - A "Preview" toggle flips to <MarkdownDescription> for a rendered
 //     view without leaving the form.
 const isPreviewingDescription = ref(false)
+
+// File preview modal state. Opened when the user clicks a file-path
+// chip in either the inline MarkdownDescription (display mode) or the
+// editor's preview.
+const previewFilePath = ref<string | null>(null)
+const openFilePreview = (path: string) => {
+  previewFilePath.value = path
+}
+const closeFilePreview = () => {
+  previewFilePath.value = null
+}
 
 // True when the dialog is rendering the create flow (rather than
 // edit-in-place). Drives header copy / icon, save-button text, the
@@ -462,6 +474,7 @@ const columnLabel = computed<string | null>(() => {
                   :source="description"
                   :cwd="cwd"
                   :test-id="`kanban-task-detail-description-preview-rendered`"
+                  @file-click="openFilePreview"
                 />
               </div>
 
@@ -570,6 +583,18 @@ const columnLabel = computed<string | null>(() => {
       </div>
     </Transition>
   </Teleport>
+
+  <!-- File preview modal. Mounted at the dialog root so it's not
+       affected by the parent transition. The path comes from the
+       chip click; cwd comes from props (the kanban's filesystem
+       root, threaded in from KanbanView.item.path). -->
+  <FilePreviewModal
+    v-if="previewFilePath"
+    :show="previewFilePath !== null"
+    :cwd="cwd"
+    :file-path="previewFilePath"
+    @close="closeFilePreview"
+  />
 </template>
 
 <style scoped>

@@ -46,10 +46,21 @@ const props = withDefaults(
   },
 )
 
-// Matches `@/path/to/file` where path is the sequence of non-whitespace
-// and non-markdown-delimiter characters. Captures the path (group 1).
-// Does NOT match `@username` (no leading slash after `@`).
-const AT_PATH_REGEX = /@(\/[^\s)\]}>,"'<`]+)/g
+// Matches `/path/to/file` (group 1) with an optional leading `@`.
+// The `@` is supported for backward compatibility with descriptions
+// authored before the rich editor change — both `@/path` and `/path`
+// render as chips. The stored chip path INCLUDES the leading `/` (the
+// leading `@` is stripped) so consumers don't need to special-case.
+//
+// Character class restrictions keep false positives low:
+//   - Must start with `/` (matches file paths, not URLs with schemes)
+//   - Allows word chars, dots, slashes, hyphens
+//   - Excludes whitespace, closing brackets, quotes, backticks
+//   - Excludes `<` to prevent capturing across HTML tag boundaries
+//
+// To opt out of chip rendering for a specific `/path`, wrap it in
+// backticks — the inline-code styling takes over.
+const FILE_PATH_REGEX = /@?(\/[^\s)\]}>,"'<`]+)/g
 
 // Private-use Unicode char used as a sentinel in the source before it
 // is fed to marked. Marked treats unknown chars as plain text and
@@ -60,41 +71,66 @@ const AT_PATH_REGEX = /@(\/[^\s)\]}>,"'<`]+)/g
 const PLACEHOLDER_PREFIX = '\uE000_FILECHIP_'
 const PLACEHOLDER_SUFFIX = '_\uE000'
 
-// Render the source through marked, then splice `@/path` tokens into
+const emit = defineEmits<{
+  /** Fires when the user clicks a file-path chip. The path is
+   *  resolved against the consumer's `cwd` prop (e.g. the kanban's
+   *  `item.path`) — the chip itself stores the path verbatim, the
+   *  consumer decides what to do with it. */
+  'file-click': [path: string]
+}>()
+
+// Render the source through marked, then splice `/path` tokens into
 // clickable chip spans.
 //
-// Two-phase approach (placeholder substitution):
-//   1. Pre-process: replace each `@/path` with `\uE000_FILECHIP_<i>_\uE000`
-//      and stash the path in an array. Marked never sees the `@`, so it
-//      can't try to autolink the path or wrap it in `<a>` / `<code>`.
-//   2. Run marked.parse() on the placeholder-bearing source.
-//   3. Post-process: substitute each placeholder with a chip span.
-//
-// Why not just regex on the rendered HTML?
-//   Fragile — the regex character class must perfectly exclude every
-//   char marked might emit adjacent to the path. Earlier revision let
-//   `<` through, which caused `/lib/util/d.ts</p>` to be captured as
-//   the "path" when the third token in a sentence sat just before
-//   marked's closing `</p>`. The placeholder approach is immune to
-//   marked's wrapping behavior — it operates on a string we control.
+// Three-phase approach (placeholder substitution):
+//   1. Protect data: URLs from the file-path regex. A `data:image/...`
+//      URL contains `/png` (the MIME extension) which would
+//      otherwise match FILE_PATH_REGEX and corrupt the img src.
+//   2. Replace each `/path` (or `@/path`) with
+//      `\uE000_FILECHIP_<i>_\uE000` and stash the path in an array.
+//      Marked never sees the path so it can't try to autolink or
+//      wrap it in `<a>`.
+//   3. Run marked.parse() on the placeholder-bearing source.
+//   4. Post-process: substitute each placeholder with a chip span,
+//      then restore the data: URLs.
 const renderedHtml = computed<string>(() => {
   if (!props.source) return ''
 
-  // Phase 1 — collect chips and substitute placeholders.
-  const chips: string[] = []
-  const preProcessed = props.source.replace(AT_PATH_REGEX, (_match, path: string) => {
-    const idx = chips.length
-    chips.push(path)
-    return `${PLACEHOLDER_PREFIX}${idx}${PLACEHOLDER_SUFFIX}`
+  // Phase 1 — protect data: URLs from the file-path regex. We stash
+  // the original URL bytes and put a placeholder that the regex
+  // can't match (the .sqlite-style dot prefix).
+  const dataUrls: string[] = []
+  let working = props.source.replace(/data:[^\s)]+/g, (match) => {
+    const idx = dataUrls.length
+    dataUrls.push(match)
+    return `_DATA_URL_${idx}_END_`
   })
 
-  // Phase 2 — marked.parse on the safe input.
+  // Phase 2 — collect chips and substitute placeholders.
+  const chips: string[] = []
+  working = working.replace(
+    FILE_PATH_REGEX,
+    (_match, pathWithSlash, offset, fullString) => {
+      // Skip matches inside backticks (inline code) — the user has
+      // explicitly opted out of chip rendering by wrapping in code.
+      const prefix = fullString.slice(0, offset)
+      const backticks = (prefix.match(/`/g) ?? []).length
+      if (backticks % 2 === 1) return _match
+      // Skip matches inside our data: URL placeholders (the regex
+      // couldn't match any of those because we replaced them with
+      // non-path-like text, but be defensive).
+      if (pathWithSlash.length < 2) return _match
+      const idx = chips.length
+      chips.push(pathWithSlash)
+      return `${PLACEHOLDER_PREFIX}${idx}${PLACEHOLDER_SUFFIX}`
+    },
+  )
+
+  // Phase 3 — marked.parse on the safe input.
   let html: string
   try {
-    html = marked.parse(preProcessed, { async: false }) as string
+    html = marked.parse(working, { async: false }) as string
   } catch {
-    // Fallback to escaped pre block on parse error — same convention as
-    // PreviewSidePanel.vue:203.
     const escaped = props.source
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -102,16 +138,32 @@ const renderedHtml = computed<string>(() => {
     return `<pre>${escaped}</pre>`
   }
 
-  // Phase 3 — substitute placeholders with chip spans.
+  // Phase 4 — substitute placeholders with chip spans, then restore
+  // the data: URLs.
   for (let i = 0; i < chips.length; i++) {
     const placeholder = `${PLACEHOLDER_PREFIX}${i}${PLACEHOLDER_SUFFIX}`
     const path = chips[i] ?? ''
     const chip = `<span class="md-file-chip" data-file-path="${path}">📄 ${path}</span>`
     html = html.split(placeholder).join(chip)
   }
+  for (let i = 0; i < dataUrls.length; i++) {
+    html = html.split(`_DATA_URL_${i}_END_`).join(dataUrls[i] ?? '')
+  }
 
   return html
 })
+
+// Event-delegated click handler: catches clicks on `.md-file-chip`
+// spans (v-html content can't bind listeners per-element). Emits
+// `file-click` with the chip's data-file-path attribute.
+const onChipClick = (event: MouseEvent) => {
+  const target = event.target as HTMLElement | null
+  if (!target) return
+  const chip = target.closest('.md-file-chip') as HTMLElement | null
+  if (!chip) return
+  const path = chip.dataset.filePath
+  if (path) emit('file-click', path)
+}
 
 const hostStyle = computed<string>(() => {
   if (!props.maxHeight) return ''
@@ -125,6 +177,7 @@ const hostStyle = computed<string>(() => {
     :data-testid="testId"
     :style="hostStyle || undefined"
     v-html="renderedHtml"
+    @click="onChipClick"
   />
 </template>
 

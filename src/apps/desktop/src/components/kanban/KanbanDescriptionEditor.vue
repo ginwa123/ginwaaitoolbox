@@ -183,17 +183,22 @@ const selectFile = (file: FileEntry) => {
   const pos = textareaRef.value.selectionStart ?? 0
   const before = text.value.slice(0, pos)
   const after = text.value.slice(pos)
+  // Strip the `@` trigger token but keep the file path verbatim
+  // (e.g. `/src/main.zig` inserts as-is — no `@` prefix). The path
+  // chip detector in <MarkdownDescription> matches `/path/to/file`
+  // directly, so a leading `@` is unnecessary noise.
   const atMatch = before.match(/@([\w./\\:-]*)$/)
+  const insertText = file.path
   if (atMatch && atMatch.index !== undefined) {
-    text.value = before.slice(0, atMatch.index) + '@' + file.path + after
+    text.value = before.slice(0, atMatch.index) + insertText + after
   } else {
-    text.value = before + '@' + file.path + after
+    text.value = before + insertText + after
   }
   showFilePicker.value = false
   fileQuery.value = ''
   nextTick(() => {
     if (!textareaRef.value) return
-    const newPos = (before.match(/@([\w./\\:-]*)$/)?.index ?? before.length) + 1 + file.path.length
+    const newPos = (atMatch?.index ?? before.length) + insertText.length
     textareaRef.value.setSelectionRange(newPos, newPos)
     textareaRef.value.focus()
   })

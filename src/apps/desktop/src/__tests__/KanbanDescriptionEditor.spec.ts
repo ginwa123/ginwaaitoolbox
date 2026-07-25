@@ -138,7 +138,7 @@ describe('KanbanDescriptionEditor', () => {
     expect(cls).toContain('hidden')
   })
 
-  it('opens the file picker dropdown when the user types @ and inserts @/path on selection', async () => {
+  it('opens the file picker dropdown when the user types @ and inserts /path on selection', async () => {
     mockFolderTree({
       '/home/user': [
         {
@@ -172,9 +172,12 @@ describe('KanbanDescriptionEditor', () => {
     await fileButtons[1]!.trigger('click')
     await flushPromises()
     const updatedTextarea = wrapper.find('textarea').element as HTMLTextAreaElement
-    // The path is stored RELATIVE to the cwd (mirrors FileInput.vue's
-    // behavior — `entry.path.replace(rootPath, '')` strips the prefix).
-    expect(updatedTextarea.value).toContain('@/main.zig')
+    // The path is inserted WITHOUT the leading `@` (the user dropped
+    // the `@` prefix per the latest UX feedback; the chip detector
+    // matches `/path` directly). The path is RELATIVE to the cwd
+    // (mirrors FileInput.vue's `entry.path.replace(rootPath, '')`).
+    expect(updatedTextarea.value).toContain('/main.zig')
+    expect(updatedTextarea.value).not.toContain('@/main.zig')
   })
 
   it('removes an image preview when the user clicks the remove button', async () => {
