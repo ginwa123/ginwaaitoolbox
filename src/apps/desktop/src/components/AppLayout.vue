@@ -1151,6 +1151,17 @@ const handleDesignDeleteElement = async (elementId: string): Promise<void> => {
   await designHandlers.deleteElement(ws.id, item.id, elementId)
 }
 
+// Tab-strip × button — delegates to the designHandlers composable
+// (which owns the confirm() dialog + error toast, matching the
+// existing deleteElement flow). The store action handles the local
+// activeDesignPageId reset + the SSE-driven re-fetch.
+const handleDesignDeletePage = async (pageId: string): Promise<void> => {
+  const ws = activeWorkspace.value
+  const item = activeWorkspaceItem.value
+  if (!ws || !item) return
+  await designHandlers.deletePage(ws.id, item.id, pageId)
+}
+
 // Right sidebar cwd - show when chat is open OR task is active
 const rightSidebarCwd = computed(() => {
   if (activeTask.value && activeWorkspaceItem.value?.path) {
@@ -1621,6 +1632,7 @@ watch(chatSessionCwd, (newCwd) => {
             :item-id="activeWorkspaceItem.id"
             @select-page="handleDesignSelectPage"
             @add-page="handleDesignAddPage"
+            @delete-page="handleDesignDeletePage"
             @select-element="handleDesignSelectElement"
             @update-element="handleDesignUpdateElement"
             @delete-element="handleDesignDeleteElement"
@@ -1671,6 +1683,7 @@ watch(chatSessionCwd, (newCwd) => {
         :item-id="activeWorkspaceItem.id"
         @select-page="handleDesignSelectPage"
         @add-page="handleDesignAddPage"
+        @delete-page="handleDesignDeletePage"
         @select-element="handleDesignSelectElement"
         @update-element="handleDesignUpdateElement"
         @delete-element="handleDesignDeleteElement"
