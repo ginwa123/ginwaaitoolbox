@@ -105,6 +105,10 @@ const emit = defineEmits<{
   // The parent calls workspacesStore.updateDesignElementGeometry
   // (or the AppLayout handler) on each element.
   groupDrag: [delta: { dx: number; dy: number }]
+  // Chunk 3: emit on drag-end (pointerup or pointercancel) so the
+  // parent can clear its snap guides. Fires after both the single-
+  // element drag and the multi-selection group drag paths.
+  dragEnd: []
   htmlChanged: [html: string]
   delete: [elementId: string]
 }>()
@@ -187,6 +191,8 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
       isDragging.value = false
       // Trailing emit: capture the final position regardless of throttle.
       emit('groupDrag', { dx: pendingDx, dy: pendingDy })
+      // Chunk 3: tell the parent to clear its snap guides.
+      emit('dragEnd')
       target.removeEventListener('pointermove', onMove)
       target.removeEventListener('pointerup', onUp)
       target.removeEventListener('pointercancel', onUp)
@@ -268,6 +274,8 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     isDragging.value = false
     // Trailing emit: capture the final position regardless of throttle.
     flushEmit()
+    // Chunk 3: tell the parent to clear its snap guides.
+    emit('dragEnd')
     target.removeEventListener('pointermove', onMove)
     target.removeEventListener('pointerup', onUp)
     target.removeEventListener('pointercancel', onUp)

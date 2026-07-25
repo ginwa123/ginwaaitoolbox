@@ -17,10 +17,11 @@ const SOURCE_PATH = path.resolve(__dirname, '../components/design/DesignElement.
 const source = fs.readFileSync(SOURCE_PATH, 'utf-8')
 
 describe('DesignElement.vue static contract', () => {
-  it('emits select, update, groupDrag, htmlChanged, delete', () => {
+  it('emits select, update, groupDrag, dragEnd, htmlChanged, delete', () => {
     expect(source).toContain("select:")
     expect(source).toContain("update:")
     expect(source).toContain("groupDrag:")
+    expect(source).toContain("dragEnd:")
     expect(source).toContain("htmlChanged:")
     expect(source).toContain("delete:")
   })

@@ -54,6 +54,7 @@ import AddDesignElementDialog from './AddDesignElementDialog.vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import { useNotificationStore } from '../../stores/notifications'
 import { listDesignPages, type DesignElement as DesignElementApi } from '../../api'
+import { computeSnapDelta, type SnapGuide } from './useSnapGuides'
 
 const props = withDefaults(
   defineProps<{
@@ -133,6 +134,16 @@ const isSingleSelect = computed(() => selectedIds.value.size === 1)
 const activeElement = computed<DesignElementApi | null>(() =>
   isSingleSelect.value ? activeElements.value[0] ?? null : null,
 )
+
+// ─── Snap guides state ────────────────────────────────────────────────
+//
+// While a drag is in progress, snap math (computeSnapDelta) emits the
+// 1px violet alignment guides the user should see. Rendered as an
+// SVG overlay INSIDE the canvas div (above the elements but below the
+// resize handles). Cleared on drag-end (DesignElement emits `dragEnd`
+// on pointerup; the parent listens via @drag-end on the canvas's
+// <DesignElement> invocation).
+const snapGuides = ref<SnapGuide[]>([])
 
 // ─── Preview/Edit mode ──────────────────────────────────────────────────
 //
@@ -656,6 +667,53 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
   const pageId = activePageId.value
   const itemId = effectiveItemId.value
   const workspaceId = props.workspaceId
+
+  // ─── Snap (Chunk 3) ───────────────────────────────────────────────
+  // Compute the union bbox of the selection at the cursor's current
+  // position. computeSnapDelta treats the union as a single moving
+  // bbox; elements NOT in the selection are the snap targets.
+  // The function returns the snap correction + the guides to render.
+  const selected = elements.value.filter((e) => selectedIds.value.has(e.id))
+  if (selected.length > 0) {
+    const minX = Math.min(...selected.map((e) => e.x + delta.dx))
+    const minY = Math.min(...selected.map((e) => e.y + delta.dy))
+    const maxX = Math.max(...selected.map((e) => e.x + delta.dx + e.width))
+    const maxY = Math.max(...selected.map((e) => e.y + delta.dy + e.height))
+    const unionBbox = {
+      id: '__union__',
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY,
+    }
+    const others = elements.value.filter((e) => !selectedIds.value.has(e.id))
+    const snapResult = computeSnapDelta(
+      [unionBbox, ...others],
+      '__union__',
+      0,
+      0,
+      { width: canvasWidth.value, height: canvasHeight.value },
+    )
+    snapGuides.value = snapResult.guides
+    const finalDx = delta.dx + snapResult.dx
+    const finalDy = delta.dy + snapResult.dy
+    for (const el of selected) {
+      void workspacesStore.updateDesignElementGeometry(
+        workspaceId,
+        itemId,
+        pageId,
+        el.id,
+        {
+          x: Math.round(el.x + finalDx),
+          y: Math.round(el.y + finalDy),
+        },
+      )
+    }
+    return
+  }
+
+  // No selection (shouldn't normally reach here given the size check
+  // above, but defensive).
   for (const id of selectedIds.value) {
     const el = elements.value.find((e) => e.id === id)
     if (!el) continue
@@ -670,6 +728,13 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
       },
     )
   }
+}
+
+// Clear snap guides when the drag ends. DesignElement emits `dragEnd`
+// on pointerup; we listen via @drag-end on each <DesignElement>. This
+// is a no-op if no drag is in flight.
+const clearSnapGuides = (): void => {
+  snapGuides.value = []
 }
 
 const handleCreateElement = (
@@ -1175,9 +1240,51 @@ onUnmounted(() => {
               @select="(id) => handleElementToggle(id, false)"
               @update="handleElementUpdate"
               @group-drag="handleGroupDrag"
+              @drag-end="clearSnapGuides"
               @html-changed="handleElementHtmlChanged"
               @delete="handleElementDelete"
             />
+            <!--
+              Snap guides (Chunk 3): SVG overlay rendered ABOVE the
+              elements (z-index higher in DOM order) but BELOW the
+              resize handles (which are inside each DesignElement).
+              `pointer-events-none` so the SVG never intercepts the
+              cursor — the canvas's own pointer handlers stay alive.
+              1px violet lines: vertical = x-axis guides at a fixed
+              position, full canvas height; horizontal = y-axis guides,
+              full canvas width. The SVG is sized to the canvas
+              (canvasWidth × canvasHeight) so we can draw the lines
+              in design-px coordinates without scaling math.
+            -->
+            <svg
+              v-if="snapGuides.length > 0"
+              class="absolute inset-0 pointer-events-none"
+              :width="canvasWidth"
+              :height="canvasHeight"
+              data-testid="design-snap-guides"
+              aria-hidden="true"
+            >
+              <line
+                v-for="(guide, idx) in snapGuides.filter((g) => g.axis === 'x')"
+                :key="`x-${idx}`"
+                :x1="guide.position"
+                :y1="0"
+                :x2="guide.position"
+                :y2="canvasHeight"
+                stroke="var(--color-violet)"
+                stroke-width="1"
+              />
+              <line
+                v-for="(guide, idx) in snapGuides.filter((g) => g.axis === 'y')"
+                :key="`y-${idx}`"
+                :x1="0"
+                :y1="guide.position"
+                :x2="canvasWidth"
+                :y2="guide.position"
+                stroke="var(--color-violet)"
+                stroke-width="1"
+              />
+            </svg>
             <div
               v-if="elements.length === 0"
               class="absolute inset-0 flex items-center justify-center text-sm pointer-events-none"
