@@ -53,3 +53,13 @@ Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 2
 - Delete/Backspace removes every selected element (one keystroke).
 - Escape clears the entire selection.
 - PropertiesPanel renders a "N elements selected" banner when multiple are selected; the single-element form only shows for exactly one.
+
+## 2026-07-25: Design mode snap-to-edges + alignment guides
+
+Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 3)
+
+### What landed
+- Pure-function `computeSnapDelta` snaps within 6 design-px of any other element's edge/center.
+- Canvas-center + canvas-edge fallback targets (snaps to page center when no other element is nearby).
+- 1px violet SVG alignment guides render during drag and clear on pointerup.
+- Group drag applies snap to the selection's union bbox (the whole group snaps together).
