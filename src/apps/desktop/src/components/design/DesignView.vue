@@ -317,8 +317,22 @@ const loadPages = async (): Promise<void> => {
       effectiveItemId.value,
     )
     pages.value = fetched
-    // Default activePageId to the first page; preserve if it still exists.
+    // Pick the active page in this priority:
+    //   1. The store's activeDesignPageId (set by AppLayout's URL restore
+    //      watcher when the page reloads with ?pageId=Z) — wins over
+    //      the local activePageId so the reload restores the user's
+    //      last-clicked tab even if the component instance is fresh.
+    //   2. The local activePageId (preserved across re-renders within
+    //      the same item switch via the watch below).
+    //   3. The first fetched page (default for new users).
+    const storePageId = workspacesStore.activeDesignPageId
     if (
+      storePageId &&
+      fetched.some((p) => p.id === storePageId) &&
+      storePageId !== activePageId.value
+    ) {
+      activePageId.value = storePageId
+    } else if (
       !activePageId.value ||
       !fetched.some((p) => p.id === activePageId.value)
     ) {

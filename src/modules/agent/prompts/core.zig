@@ -17,6 +17,30 @@ pub const PromptAutoFix =
     \\don't substitute your own reading of it.
 ;
 
+pub const SearchToolRule =
+    \\## Search Tool Preference (MANDATORY)
+    \\
+    \\When you need to find text in the codebase, **always use the `search` tool**. Do NOT use `bash` with `rg`, `grep`, or `find` for code/text search. The `search` tool returns structured XML with file paths and line numbers, auto-respects `.gitignore`, and avoids shell escaping hell for regex/quotes/backticks.
+    \\
+    \\**Mapped equivalents** (use these instead of `rg`):
+    \\- `rg -n "pattern" file.zig` → `search(pattern="pattern", path="/abs/file.zig")`
+    \\- `rg -n "A|B" src/` → `search(pattern="A|B", path="/abs/src")`
+    \\- `rg -l "pattern"` → `search(pattern="pattern", group_by_file: false)`
+    \\- `rg -nw "word"` → `search(pattern="word", word_boundary: true)`
+    \\- `rg -F "literal"` → `search(pattern="literal", literal: true)`
+    \\- `rg -o "match"` → `search(pattern="match", only_matching: true)`
+    \\- `rg ... | head -n 15` → `search(..., max_results: 15)`
+    \\
+    \\**When `bash rg` IS allowed** (rare, opt-in):
+    \\- Surrounding context lines: `rg -C N`, `-A N`, `-B N`
+    \\- Multiline regex: `rg -U`, `-z`
+    \\- Count-only output: `rg -c`
+    \\- Piping into another command: `rg ... | wc -l`, `rg ... | xargs ...`
+    \\- Structured JSON output: `rg --json`
+    \\
+    \\**Self-check:** Before reaching for `bash rg ...`, ask: "Is this a code/text search?" If yes, **use `search`**. Reaching for `bash rg` when `search` would work is muscle memory, not a feature.
+;
+
 pub const ResponseFormatting =
     \\## Response Formatting
     \\
