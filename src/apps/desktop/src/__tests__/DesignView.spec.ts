@@ -204,4 +204,36 @@ describeRuntime('DesignView → workspacesStore active page id', () => {
     wrapper.unmount()
     expectRuntime(useWorkspacesStore().activeDesignPageId).toBe('')
   })
+
+  itRuntime('picks the active page from the store when it exists in the loaded pages (URL restore)', async () => {
+    // AppLayout's URL restore watcher sets activeDesignPageId from
+    // the ?pageId=Z query before DesignView mounts. DesignView must
+    // honor the store value (not always default to the first page)
+    // so a page reload restores the user's last-clicked tab.
+    fetchMock.mockResolvedValue({
+      ok: true, status: 200,
+      json: () => Promise.resolve({
+        pages: [
+          { id: 'page_first', workspace_item_id: ITEM_ID, name: 'A', width: 1440, height: 1024, position: 0, created_at: '', updated_at: '' },
+          { id: 'page_second', workspace_item_id: ITEM_ID, name: 'B', width: 1440, height: 1024, position: 1, created_at: '', updated_at: '' },
+        ],
+        count: 2,
+      }),
+      text: () => Promise.resolve(''),
+    } as Response)
+    global.fetch = fetchMock as unknown as typeof fetch
+    const ws = useWorkspacesStore()
+    // Simulate AppLayout's pendingUrlRestore watcher having fired.
+    ws.setActiveDesignPage('page_second')
+    const wrapper = mount(DesignView, {
+      props: { item: makeItem(), workspaceId: WS_ID, itemId: ITEM_ID },
+    })
+    await flushPromises()
+    // The internal activePageId should be page_second (from the store),
+    // not page_first (the first page default).
+    expectRuntime((wrapper.vm as unknown as { activePageId: string }).activePageId).toBe('page_second')
+    // The store value is still page_second (unchanged by the load).
+    expectRuntime(ws.activeDesignPageId).toBe('page_second')
+    wrapper.unmount()
+  })
 })

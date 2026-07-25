@@ -497,3 +497,159 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     wrapper.unmount()
   })
 })
+
+describe('AppLayout — design page URL persistence (pageId in URL)', () => {
+  const PAGE_ID_1 = 'page_first'
+  const PAGE_ID_2 = 'page_second'
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    installBusForTests()
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: makeLocalStorageStub(),
+      writable: true,
+      configurable: true,
+    })
+    vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
+    vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
+    vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
+    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
+      entries: [],
+      path: '/',
+      absolute: '/',
+      home: '/',
+    })
+    vi.spyOn(api, 'listKanbanColumns').mockResolvedValue({ columns: [], count: 0 })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('activeDesignPage → URL watcher fires when activeDesignPageId changes externally', async () => {
+    const replaceMock = vi.fn()
+    useRouteMock.mockReturnValue({
+      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+      path: '/app',
+      fullPath: '/app?view=workspace',
+    } as any)
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: DESIGN_ID,
+    })
+    await nextTick()
+    await nextTick()
+    // Re-set workspaces after init() overwrites them.
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    await nextTick()
+    replaceMock.mockClear()
+    // Externally set activeDesignPageId — the watcher should fire
+    // and call router.replace with the new URL including pageId.
+    ws.setActiveDesignPage(PAGE_ID_2)
+    await nextTick()
+    await nextTick()
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: '/app',
+      query: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: DESIGN_ID,
+        pageId: PAGE_ID_2,
+      },
+    })
+    wrapper.unmount()
+  })
+
+  it('URL mirror does NOT include pageId when activeDesignPageId is empty', async () => {
+    const replaceMock = vi.fn()
+    useRouteMock.mockReturnValue({
+      query: { view: 'workspace' },
+      path: '/app',
+      fullPath: '/app?view=workspace',
+    } as any)
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, { view: 'workspace' })
+    await nextTick()
+    await nextTick()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    await nextTick()
+    replaceMock.mockClear()
+    // Set the active workspace item (with no pageId).
+    ws.setActiveWorkspaceItem(DESIGN_ID)
+    await nextTick()
+    await nextTick()
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: '/app',
+      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+    })
+    // Ensure pageId is NOT in the query.
+    const calls = replaceMock.mock.calls
+    const lastCall = calls[calls.length - 1]
+    expect(lastCall![0].query.pageId).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('URL mirror does NOT overwrite non-workspace views (view=task) when activeDesignPageId changes', async () => {
+    const replaceMock = vi.fn()
+    useRouteMock.mockReturnValue({
+      query: { view: 'task', task: 'task_xyz' },
+      path: '/app',
+      fullPath: '/app?view=task&task=task_xyz',
+    } as any)
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, { view: 'task', task: 'task_xyz' })
+    await nextTick()
+    await nextTick()
+    replaceMock.mockClear()
+    ws.setActiveDesignPage(PAGE_ID_1)
+    await nextTick()
+    await nextTick()
+    expect(replaceMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('mounting with ?view=workspace&pageId=Z restores activeDesignPageId in the store', async () => {
+    const ws = useWorkspacesStore()
+    const design = makeDesignItem()
+    const wrapper = mountAppLayout(
+      [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [design] } as Workspace],
+      { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID, pageId: PAGE_ID_2 },
+    )
+    await nextTick()
+    await nextTick()
+    expect(ws.activeWorkspaceItemId).toBe(DESIGN_ID)
+    expect(ws.activeDesignPageId).toBe(PAGE_ID_2)
+    wrapper.unmount()
+  })
+
+  it('mounting without pageId does NOT auto-select any design page', async () => {
+    const ws = useWorkspacesStore()
+    const wrapper = mountAppLayout(
+      [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace],
+      { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+    )
+    await nextTick()
+    await nextTick()
+    expect(ws.activeWorkspaceItemId).toBe(DESIGN_ID)
+    expect(ws.activeDesignPageId).toBe('')
+    wrapper.unmount()
+  })
+})

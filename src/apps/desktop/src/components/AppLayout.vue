@@ -133,27 +133,37 @@ watch(activeWorkspaceId, async (newId) => {
   }
 }, { immediate: true })
 
-// ─── URL → activeWorkspaceItemId restoration (page reload) ──────────────
+// ─── URL → activeWorkspaceItemId / activeDesignPageId restoration ─────
 //
-// When the user reloads `/app?view=workspace&workspaceId=X&itemId=Y`,
-// the in-memory `activeWorkspaceItemId` is null. We need to set it
-// from the URL params, but only AFTER the workspaces array has loaded
-// (so we can validate the (workspaceId, itemId) pair actually exists).
+// When the user reloads `/app?view=workspace&workspaceId=X&itemId=Y[&pageId=Z]`,
+// the in-memory `activeWorkspaceItemId` (and `activeDesignPageId`) is null.
+// We need to set them from the URL params, but only AFTER the workspaces
+// array has loaded (so we can validate the (workspaceId, itemId) pair
+// actually exists). The pageId restoration happens at the DesignView
+// layer (it loads pages and reads `activeDesignPageId` from the store
+// before falling back to the first page) — we just stash the URL value
+// into the store here so DesignView can pick it up.
 //
 // Setup reads the URL synchronously (it runs before any async API
 // calls) and stashes the params into `pendingUrlRestore`. The
 // `workspaces` watcher fires the moment initializeFromSystemFolder
 // populates the array (or in tests, the moment the test sets
 // ws.workspaces = [...] before mount), validates the pair, calls
-// setActiveWorkspaceItem, and clears the pending slot. If the pair
-// no longer exists (deleted), we just leave the kanban blank.
-const pendingUrlRestore = ref<{ workspaceId: string; itemId: string } | null>(
+// setActiveWorkspaceItem (+ setActiveDesignPage if pageId is set), and
+// clears the pending slot. If the pair no longer exists (deleted), we
+// just leave the kanban blank.
+const pendingUrlRestore = ref<{
+  workspaceId: string
+  itemId: string
+  pageId: string
+} | null>(
   (() => {
     const view = route.query.view as string | undefined
     const wsId = route.query.workspaceId as string | undefined
     const itemId = route.query.itemId as string | undefined
+    const pageId = route.query.pageId as string | undefined
     if (view === 'workspace' && wsId && itemId) {
-      return { workspaceId: wsId, itemId }
+      return { workspaceId: wsId, itemId, pageId: pageId ?? '' }
     }
     return null
   })(),
@@ -170,6 +180,12 @@ watch(
     )
     if (wsExists && itemExists) {
       workspacesStore.setActiveWorkspaceItem(pending.itemId)
+      // Restore the active design page (if any) so DesignView picks
+      // it up after its pages-load watcher fires. Empty pageId means
+      // "use the first page" — the default behavior.
+      if (pending.pageId) {
+        workspacesStore.setActiveDesignPage(pending.pageId)
+      }
       pendingUrlRestore.value = null
     } else {
       // Stale URL — clear it so we don't try again on every workspace
@@ -181,18 +197,21 @@ watch(
   { immediate: true },
 )
 
-// ─── activeWorkspaceItem → URL mirror (reverse sync) ───────────────────
+// ─── activeWorkspaceItem / activeDesignPage → URL mirror (reverse sync) ──
 //
 // The forward direction (sidebar click → URL) is wired through
 // Sidebar.handleSelectItem → emit('navigate', 'workspace', …, wsId, itemId)
 // → AppLayout.handleNavigate → router.replace. The reverse direction
-// (activeWorkspaceItemId changes from ANY source → URL) is needed
-// for resilience: if the URL restore watcher above sets
+// (activeWorkspaceItemId / activeDesignPageId changes from ANY source →
+// URL) is needed for resilience: if the URL restore watcher above sets
 // activeWorkspaceItemId, the URL is already correct (it was the
 // source), but if any future code path sets activeWorkspaceItemId
 // programmatically (e.g., keyboard shortcut, deep link, restored
 // from localStorage), the URL would NOT update and a refresh
-// would lose the context. This watcher fills that gap.
+// would lose the context. This watcher fills that gap. Also covers
+// the active design page (DesignView emits selectPage → no URL
+// update; DesignView's watch(activePageId) writes to the store,
+// this watcher mirrors the store back to the URL).
 //
 // We guard against two footguns:
 //   1. The watcher must NOT overwrite the URL while the user is
@@ -203,8 +222,11 @@ watch(
 //      already matches the active state (would push redundant
 //      history entries).
 watch(
-  () => workspacesStore.activeWorkspaceItemId,
-  (itemId) => {
+  () => [
+    workspacesStore.activeWorkspaceItemId,
+    workspacesStore.activeDesignPageId,
+  ] as const,
+  ([itemId, pageId]) => {
     const wsId = workspacesStore.activeWorkspace?.id ?? ''
     const currentView = route.query.view as string | undefined
     // Only sync when we're on the workspace view — all other views
@@ -213,11 +235,16 @@ watch(
     if (currentView !== 'workspace' && currentView !== undefined) return
     const urlWsId = route.query.workspaceId as string | undefined
     const urlItemId = route.query.itemId as string | undefined
-    if (urlWsId === wsId && urlItemId === itemId) return
+    const urlPageId = route.query.pageId as string | undefined
+    if (urlWsId === wsId && urlItemId === itemId && urlPageId === pageId) return
     const query: Record<string, string> = { view: 'workspace' }
     if (wsId && itemId) {
       query.workspaceId = wsId
       query.itemId = itemId
+      // pageId is design-item-scoped — only include it when we're on
+      // a design item. Empty pageId means "default to first page" and
+      // is omitted from the URL to keep the URL clean.
+      if (pageId) query.pageId = pageId
     }
     router.replace({ path: '/app', query })
   },
