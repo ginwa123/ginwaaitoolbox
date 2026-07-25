@@ -42,3 +42,14 @@ silently discarded them.
 - Replaced the no-op with a real handler that routes geometry-only patches to
   `PATCH /geometry` and full patches to `PUT /elements/:id` (Task 1.3).
 - Throttled the drag stream to 50ms with a trailing emit on pointerup (Task 1.4).
+
+## 2026-07-25: Design mode multi-select + group drag
+
+Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 2)
+
+### What landed
+- Selection is now `Set<string>` instead of `string | null`. Shift+click toggles membership; plain click is exclusive.
+- Dragging one element in a multi-selection moves the entire selection (same dx/dy applied to all).
+- Delete/Backspace removes every selected element (one keystroke).
+- Escape clears the entire selection.
+- PropertiesPanel renders a "N elements selected" banner when multiple are selected; the single-element form only shows for exactly one.
