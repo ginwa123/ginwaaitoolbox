@@ -73,3 +73,25 @@ Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 4
 - Shift+arrow moves by 10 design-px (Figma's "big step").
 - Input-focus guard preserved (PropertiesPanel X/Y inputs still get their arrow keys for cursor navigation).
 - No-op when nothing is selected (no escape route from the canvas for stray arrows).
+
+## 2026-07-25: Design mode element drag-and-drop (Figma-style) — COMPLETE
+
+Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md
+
+### What landed (all 5 chunks)
+- **Drag-to-move works** (was a TODO no-op in AppLayout.handleDesignUpdateElement).
+- **Multi-select** via Shift+click; group drag; multi-delete with one Delete key.
+- **Snap-to-edges** with 1px violet alignment guides (6px threshold; canvas-center fallback).
+- **Keyboard nudge** — arrow keys = 1px, Shift+arrow = 10px.
+- **Constrain-to-canvas** — drag and nudge that would push an element entirely off-canvas clamp at 10px sliver.
+
+### Bug fix at the heart
+`AppLayout.handleDesignUpdateElement` was a TODO no-op (`void elementId; void patch`). The drag handler in DesignElement emitted `update` patches on every pointermove, but the parent silently discarded them. Now the wire is alive: the composable `useDesignHandlers` routes geometry-only patches to `PATCH /geometry` (60+/sec safe) and full patches to `PUT /elements/:id`.
+
+### What was deferred (out of scope for this plan)
+- Marquee drag-select (draw a rectangle to select everything inside). Lower priority — Shift+click is enough for the common 1-5-element case.
+- Smart-spacing/distribute-horizontal/vertical (would need a server endpoint for batch geometry updates).
+- Snap-to-grid (Figma toggle; can be added once snap-to-edges is comfortable).
+- Drag-from-layers-panel to canvas (next plan if requested).
+- Lock/hide (needs schema migration).
+- Group containers — dragging elements INTO a frame (out of scope; `frame`/`group` element types exist but UI doesn't support drag-into yet).
