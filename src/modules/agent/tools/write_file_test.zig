@@ -18,17 +18,25 @@ fn deleteFile(path: []const u8) void {
     std.Io.Dir.cwd().deleteFile(testing.io, path) catch {};
 }
 
-// Best-effort cleanup for test directories. The Zig 0.16 Io runtime
-// has flakiness with openDir().iterate() in test contexts (the cwd
-// Dir handle can return BADF after a create_with_dir=true syscall),
-// so we deliberately do NOT recursively walk directories. Tests
-// should use distinct path prefixes so leftover empty dirs from a
-// previous run do not interfere with siblings. The downside: tests
-// that create deeply nested dirs will leave the dirs behind after
-// the test completes; the next run will see them as already existing
-// and continue (this is harmless because createDirPath is idempotent).
-fn deleteTestArtifacts(leaf_path: []const u8) void {
-    deleteFile(leaf_path);
+fn deleteDir(path: []const u8) void {
+    std.Io.Dir.cwd().deleteDir(testing.io, path) catch {};
+}
+
+// Best-effort cleanup for a test's full directory tree. Deletes the
+// leaf file, then each parent directory in DEEPEST-FIRST order so each
+// rmdir sees an empty directory.
+//
+// Why no `openDir().iterate()` walk: the Zig 0.16 Io runtime is flaky
+// when iterating from the cwd Dir handle after a createDir/createDirPath
+// syscall (it can return BADF). Since the test is the SOLE creator of
+// the tree, we can hardcode the parent list at comptime and avoid the
+// iteration. All errors are swallowed — the goal is "leave no residue",
+// not "assert cleanup succeeded".
+fn deleteTestTree(comptime parents_deep_first: []const []const u8, leaf_file: []const u8) void {
+    deleteFile(leaf_file);
+    inline for (parents_deep_first) |dir| {
+        deleteDir(dir);
+    }
 }
 
 /// Read back a file's full contents into a freshly allocated slice.
@@ -179,7 +187,12 @@ test "writeFile - create_with_dir=true creates missing parent directory" {
 
 test "writeFile - create_with_dir=true creates deeply nested parent dirs" {
     const path = "test_wf_deeply_nested/a/b/c/deep.txt";
-    defer deleteTestArtifacts("test_wf_deeply_nested/a/b/c/deep.txt");
+    defer deleteTestTree(&.{
+        "test_wf_deeply_nested/a/b/c",
+        "test_wf_deeply_nested/a/b",
+        "test_wf_deeply_nested/a",
+        "test_wf_deeply_nested",
+    }, path);
 
     var result = try write_file.writeFile(testing.allocator, testing.io, .{
         .path = path,
@@ -244,7 +257,12 @@ test "writeFile - create_with_dir=false auto-creates parent on FileNotFound fall
 
 test "writeFile - create_with_dir=false auto-creates deeply nested missing parents" {
     const path = "test_wf_fallback_deep/x/y/z/deep.txt";
-    defer deleteTestArtifacts("test_wf_fallback_deep/x/y/z/deep.txt");
+    defer deleteTestTree(&.{
+        "test_wf_fallback_deep/x/y/z",
+        "test_wf_fallback_deep/x/y",
+        "test_wf_fallback_deep/x",
+        "test_wf_fallback_deep",
+    }, path);
 
     var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
         .path = path,
@@ -467,7 +485,7 @@ test "writeFile - path with directory containing spaces" {
     const path = "test_wf dir with spaces/file.txt";
     defer {
         deleteFile(path);
-        // parent dir cleanup skipped: Io runtime iterate() is flaky in tests
+        deleteDir("test_wf dir with spaces");
     }
 
     var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -490,7 +508,7 @@ test "writeFile - path with .. segments resolves relative to cwd" {
     const path = "test_wf_dotdot_target/../test_wf_dotdot_target/inside.txt";
     defer {
         deleteFile("test_wf_dotdot_target/inside.txt");
-        // parent dir cleanup skipped: Io runtime iterate() is flaky in tests
+        deleteDir("test_wf_dotdot_target");
     }
 
     std.Io.Dir.cwd().createDir(testing.io, dir, .default_dir) catch {};  // idempotent
@@ -794,6 +812,7 @@ test "writeFile - 5 sequential writes to files in same dir all succeed" {
             defer testing.allocator.free(full);
             deleteFile(full);
         }
+        deleteDir(dir);
     }
 
     const names_buf: [5][]const u8 = .{ "f1.txt", "f2.txt", "f3.txt", "f4.txt", "f5.txt" };
