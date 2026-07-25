@@ -20,6 +20,9 @@ const design_model = @import("../../../ai_workflow/tui/design_model.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/set_design_page.zig";
 const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/tool_registry.zig";
+/// The exec function was migrated from `tool_registry.zig` to
+/// `src/ai_workflow/tui/agentic_loop/tools_exec_set_design_page.zig`.
+const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_set_design_page.zig";
 /// The comptime tool list moved out of `tool_registry.zig` into
 /// `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` (which
 /// `agentic_loop.tools.all_agent_tools` re-exports as `equips`).
@@ -140,12 +143,15 @@ test "tool_registry.zig imports set_design_page module" {
     }
 }
 
-test "tool_registry.zig defines execSetDesignPage" {
+test "agentic_loop defines execSetDesignPage" {
+    // After the migration, the exec function lives in
+    // `tools_exec_set_design_page.zig` (re-exported via
+    // `agentic_loop_mod.tools.execSetDesignPage`).
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOL_EXEC_PATH);
     defer allocator.free(source);
     if (!contains(source, "pub fn execSetDesignPage(")) {
-        std.debug.print("!! tool_registry.zig does not define pub fn execSetDesignPage !!\n", .{});
+        std.debug.print("!! tools_exec_set_design_page.zig does not define pub fn execSetDesignPage !!\n", .{});
         return error.ExecSetDesignPageMissing;
     }
 }
@@ -158,8 +164,8 @@ test "UNIFIED_TOOL_REGISTRY contains set_design_page entry" {
         std.debug.print("!! UNIFIED_TOOL_REGISTRY is missing the set_design_page entry !!\n", .{});
         return error.RegistryEntryMissing;
     }
-    if (!contains(source, ".exec = execSetDesignPage")) {
-        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = execSetDesignPage !!\n", .{});
+    if (!contains(source, ".exec = agentic_loop_mod.tools.execSetDesignPage")) {
+        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = agentic_loop_mod.tools.execSetDesignPage !!\n", .{});
         return error.RegistryExecBindingMissing;
     }
     if (!contains(source, ".tool_def = set_design_page_mod.set_design_page_tool")) {

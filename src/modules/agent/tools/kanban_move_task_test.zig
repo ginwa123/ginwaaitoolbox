@@ -8,6 +8,9 @@ const text_normalize = nalarcore.helpers.text_normalize;
 
 const TOOL_PATH = "src/modules/agent/tools/kanban_move_task.zig";
 const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/tool_registry.zig";
+/// The exec function was migrated from `tool_registry.zig` to
+/// `src/ai_workflow/tui/agentic_loop/tools_exec_kanban_move_task.zig`.
+const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_kanban_move_task.zig";
 /// The comptime tool list moved out of `tool_registry.zig` into
 /// `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` (which
 /// `agentic_loop.tools.all_agent_tools` re-exports as `equips`).
@@ -203,12 +206,15 @@ test "tool_registry.zig imports kanban_move_task module" {
     }
 }
 
-test "tool_registry.zig defines execKanbanMoveTask" {
+test "agentic_loop defines execKanbanMoveTask" {
+    // After the migration, the exec function lives in
+    // `tools_exec_kanban_move_task.zig` (re-exported via
+    // `agentic_loop_mod.tools.execKanbanMoveTask`).
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOL_EXEC_PATH);
     defer allocator.free(source);
     if (!contains(source, "pub fn execKanbanMoveTask(")) {
-        std.debug.print("!! tool_registry.zig does not define pub fn execKanbanMoveTask !!\n", .{});
+        std.debug.print("!! tools_exec_kanban_move_task.zig does not define pub fn execKanbanMoveTask !!\n", .{});
         return error.ExecKanbanMoveTaskMissing;
     }
 }
@@ -221,8 +227,8 @@ test "UNIFIED_TOOL_REGISTRY contains kanban_move_task entry" {
         std.debug.print("!! UNIFIED_TOOL_REGISTRY is missing the kanban_move_task name entry !!\n", .{});
         return error.RegistryNameEntryMissing;
     }
-    if (!contains(source, ".exec = execKanbanMoveTask")) {
-        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = execKanbanMoveTask !!\n", .{});
+    if (!contains(source, ".exec = agentic_loop_mod.tools.execKanbanMoveTask")) {
+        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = agentic_loop_mod.tools.execKanbanMoveTask !!\n", .{});
         return error.RegistryExecBindingMissing;
     }
     if (!contains(source, ".tool_def = kanban_move_task_mod.kanban_move_task_tool")) {

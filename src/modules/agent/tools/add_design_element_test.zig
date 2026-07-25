@@ -18,6 +18,9 @@ const design_model = @import("../../../ai_workflow/tui/design_model.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/add_design_element.zig";
 const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/tool_registry.zig";
+/// The exec function was migrated from `tool_registry.zig` to
+/// `src/ai_workflow/tui/agentic_loop/tools_exec_add_element.zig`.
+const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_add_element.zig";
 /// The comptime tool list moved out of `tool_registry.zig` into
 /// `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` (which
 /// `agentic_loop.tools.all_agent_tools` re-exports as `equips`).
@@ -137,12 +140,15 @@ test "tool_registry.zig imports add_design_element module" {
     }
 }
 
-test "tool_registry.zig defines execAddElement" {
+test "agentic_loop defines execAddElement" {
+    // After the migration, the exec function lives in
+    // `tools_exec_add_element.zig` (re-exported via
+    // `agentic_loop_mod.tools.execAddElement`).
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOL_EXEC_PATH);
     defer allocator.free(source);
     if (!contains(source, "pub fn execAddElement(")) {
-        std.debug.print("!! tool_registry.zig does not define pub fn execAddElement !!\n", .{});
+        std.debug.print("!! tools_exec_add_element.zig does not define pub fn execAddElement !!\n", .{});
         return error.ExecAddElementMissing;
     }
 }
@@ -155,8 +161,8 @@ test "UNIFIED_TOOL_REGISTRY contains add_element entry" {
         std.debug.print("!! UNIFIED_TOOL_REGISTRY is missing the add_element entry !!\n", .{});
         return error.RegistryEntryMissing;
     }
-    if (!contains(source, ".exec = execAddElement")) {
-        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = execAddElement !!\n", .{});
+    if (!contains(source, ".exec = agentic_loop_mod.tools.execAddElement")) {
+        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = agentic_loop_mod.tools.execAddElement !!\n", .{});
         return error.RegistryExecBindingMissing;
     }
     if (!contains(source, ".tool_def = add_design_element_mod.add_design_element_tool")) {

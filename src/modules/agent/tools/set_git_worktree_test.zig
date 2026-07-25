@@ -194,6 +194,14 @@ test "deriveBranchFromPath returns worktree/<basename>" {
 // ─── Static wiring tests (Chunk 3) ───────────────────────────────────────
 
 const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/tool_registry.zig";
+/// The exec function was migrated from `tool_registry.zig` to
+/// `src/ai_workflow/tui/agentic_loop/tools_exec_set_git_worktree.zig`
+/// (re-exported as `agentic_loop_mod.tools.execSetGitWorktree`).
+const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_set_git_worktree.zig";
+/// The cwd_override field moved with the rest of ToolExecContext to
+/// `src/ai_workflow/tui/agentic_loop/tools.zig`. This is the new
+/// canonical home of the struct declaration.
+const TOOL_EXEC_CONTEXT_PATH = "src/ai_workflow/tui/agentic_loop/tools.zig";
 /// The comptime tool list moved out of `tool_registry.zig` into
 /// `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` (which
 /// `agentic_loop.tools.all_agent_tools` re-exports as `equips`).
@@ -215,12 +223,16 @@ test "tool_registry.zig imports set_git_worktree module" {
     }
 }
 
-test "tool_registry.zig defines execSetGitWorktree" {
+test "agentic_loop defines execSetGitWorktree" {
+    // After the migration, the exec function lives in
+    // `tools_exec_set_git_worktree.zig` (re-exported via
+    // `agentic_loop_mod.tools.execSetGitWorktree`). The DB
+    // persistence call (`updateSessionGitWorktreeCwd`) moved with it.
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOL_EXEC_PATH);
     defer allocator.free(source);
     if (std.mem.indexOf(u8, source, "pub fn execSetGitWorktree(") == null) {
-        std.debug.print("!! tool_registry.zig does not define pub fn execSetGitWorktree !!\n", .{});
+        std.debug.print("!! tools_exec_set_git_worktree.zig does not define pub fn execSetGitWorktree !!\n", .{});
         return error.ExecSetGitWorktreeMissing;
     }
     if (std.mem.indexOf(u8, source, "updateSessionGitWorktreeCwd") == null) {
@@ -239,8 +251,10 @@ test "UNIFIED_TOOL_REGISTRY contains set_git_worktree entry" {
         std.debug.print("!! UNIFIED_TOOL_REGISTRY is missing the set_git_worktree name entry !!\n", .{});
         return error.RegistryNameEntryMissing;
     }
-    if (std.mem.indexOf(u8, source, ".exec = execSetGitWorktree") == null) {
-        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = execSetGitWorktree !!\n", .{});
+    // After migration, the registry entry references the re-exported
+    // function via `agentic_loop_mod.tools.execSetGitWorktree`.
+    if (std.mem.indexOf(u8, source, ".exec = agentic_loop_mod.tools.execSetGitWorktree") == null) {
+        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = agentic_loop_mod.tools.execSetGitWorktree !!\n", .{});
         return error.RegistryExecBindingMissing;
     }
     if (std.mem.indexOf(u8, source, ".tool_def = set_git_worktree_mod.set_git_worktree_tool") == null) {
@@ -260,8 +274,10 @@ test "allAgentTools comptime list contains set_git_worktree tool def" {
 }
 
 test "ToolExecContext has cwd_override field (Plan B forward-compat)" {
+    // After migration, the canonical ToolExecContext struct lives in
+    // `agentic_loop/tools.zig` (re-exported from tool_registry.zig).
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOL_EXEC_CONTEXT_PATH);
     defer allocator.free(source);
     // Plan B (conservative) for the CWD override: add the field as
     // future-proofing. Mutating it from a tool exec is currently

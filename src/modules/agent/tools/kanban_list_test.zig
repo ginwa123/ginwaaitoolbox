@@ -8,6 +8,12 @@ const text_normalize = nalarcore.helpers.text_normalize;
 
 const TOOL_PATH = "src/modules/agent/tools/kanban_list.zig";
 const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/tool_registry.zig";
+/// The exec function was migrated from `tool_registry.zig` to
+/// `src/ai_workflow/tui/agentic_loop/tools_exec_kanban_list.zig`
+/// (re-exported as `agentic_loop_mod.tools.execKanbanList`).
+/// This path is where the static-contract tests now look for
+/// `pub fn execKanbanList(`.
+const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_kanban_list.zig";
 /// The comptime tool list moved out of `tool_registry.zig` into
 /// `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` (which
 /// `agentic_loop.tools.all_agent_tools` re-exports as `equips`).
@@ -127,12 +133,16 @@ test "tool_registry.zig imports kanban_list module" {
     }
 }
 
-test "tool_registry.zig defines execKanbanList" {
+test "agentic_loop defines execKanbanList" {
+    // After the migration to `agentic_loop/`, the exec function lives
+    // in `tools_exec_kanban_list.zig` (re-exported via
+    // `agentic_loop_mod.tools.execKanbanList`). The test points at
+    // the new canonical home.
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOL_EXEC_PATH);
     defer allocator.free(source);
     if (!contains(source, "pub fn execKanbanList(")) {
-        std.debug.print("!! tool_registry.zig does not define pub fn execKanbanList !!\n", .{});
+        std.debug.print("!! tools_exec_kanban_list.zig does not define pub fn execKanbanList !!\n", .{});
         return error.ExecKanbanListMissing;
     }
 }
@@ -145,8 +155,10 @@ test "UNIFIED_TOOL_REGISTRY contains kanban_list entry" {
         std.debug.print("!! UNIFIED_TOOL_REGISTRY is missing the kanban_list name entry !!\n", .{});
         return error.RegistryNameEntryMissing;
     }
-    if (!contains(source, ".exec = execKanbanList")) {
-        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = execKanbanList !!\n", .{});
+    // After migration, the registry entry references the re-exported
+    // function via `agentic_loop_mod.tools.execKanbanList`.
+    if (!contains(source, ".exec = agentic_loop_mod.tools.execKanbanList")) {
+        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = agentic_loop_mod.tools.execKanbanList !!\n", .{});
         return error.RegistryExecBindingMissing;
     }
     if (!contains(source, ".tool_def = kanban_list_mod.kanban_list_tool")) {

@@ -316,10 +316,11 @@ pub fn getToolNames() []const []const u8 {
 // SPECIAL TOOL DISPATCHERS - Tools that need extended context
 // ============================================================================
 
-/// set_agent_properties returns temperature/is_thinking changes
+/// set_agent_properties returns temperature/is_thinking changes.
+/// The exec function lives in `agentic_loop/tools_exec_set_agent_properties.zig`
+/// (re-exported as `agentic_loop_mod.tools.execSetAgentProperties`).
 fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const tool_registry_mod = @import("tool_registry.zig");
-    const ctx_exec = tool_registry_mod.ToolExecContext{
+    const ctx_exec = agentic_loop_mod.tools.ToolExecContext{
         .allocator = ctx.allocator,
         .io = ctx.io,
         .db = ctx.db,
@@ -336,7 +337,7 @@ fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !Tool
         .active_loops = ctx.active_loops,
         .selected_profile_model = ctx.selected_profile_model,
     };
-    const result = try tool_registry_mod.execSetAgentProperties(ctx_exec, tool_call);
+    const result = try agentic_loop_mod.tools.execSetAgentProperties(ctx_exec, tool_call);
 
     return ToolResult{
         .output = result.output,

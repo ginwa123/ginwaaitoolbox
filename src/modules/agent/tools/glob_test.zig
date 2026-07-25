@@ -802,8 +802,11 @@ test "glob.zig sets truncated_by_size=true in byte-cap branch" {
     try std.testing.expect(std.mem.indexOf(u8, source, "truncated_by_size=\\\"{c}\\\"") != null);
 }
 
-test "tool_registry.zig maps new GlobErrors to LLM-friendly messages" {
-    const source = try readSource(std.testing.allocator, "src/ai_workflow/tui/tool_registry.zig");
+test "agentic_loop/tools_exec_glob.zig maps new GlobErrors to LLM-friendly messages" {
+    // After the migration, the glob exec function lives in
+    // `src/ai_workflow/tui/agentic_loop/tools_exec_glob.zig` (re-exported
+    // via `agentic_loop_mod.tools.execGlob`).
+    const source = try readSource(std.testing.allocator, "src/ai_workflow/tui/agentic_loop/tools_exec_glob.zig");
     defer std.testing.allocator.free(source);
 
     // Each new error variant must be mapped (grep — the actual mapping
