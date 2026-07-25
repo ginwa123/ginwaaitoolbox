@@ -227,12 +227,18 @@ class FunctionalHarness:
         if not os.access(bin_path, os.X_OK):
             raise FunctionalHarnessError(f"nalar binary not executable: {bin_path}")
 
-        # 7. Spawn. start_new_session=True so we can kill the whole process
-        #    group later (defends against children that ignore SIGTERM).
+        # 7. Spawn. Cross-platform: on POSIX, start_new_session=True
+        #    puts the child in its own process group (so killpg kills
+        #    any subprocess the binary spawned). On Windows,
+        #    start_new_session maps to CREATE_NEW_PROCESS_GROUP and
+        #    killpg is unavailable — we use kill-by-pid instead.
         log_path = temp_dir / "nalar.log"
         env = os.environ.copy()
         env["HOME"] = str(temp_dir)
         log_file = log_path.open("wb")
+        # `start_new_session=True` is a keyword arg accepted on
+        # Python 3.2+ for both POSIX (setsid) and Windows
+        # (CREATE_NEW_PROCESS_GROUP). Pass it unconditionally.
         proc = subprocess.Popen(
             [str(bin_path), "--port", str(chosen_port)],
             stdout=log_file,
@@ -399,6 +405,16 @@ class FunctionalHarness:
         PermissionError, and ESRCH) — the process can die between any
         of these calls, and the OS may not let us signal a pgid that's
         been recycled. Either way, our job is done.
+
+        Cross-platform notes:
+          - POSIX: subprocess.Popen(..., start_new_session=True) puts
+            the child in its own process group; os.killpg() signals
+            the whole group (defends against children that ignore
+            SIGTERM).
+          - Windows: there are no process groups. start_new_session
+            maps to CREATE_NEW_PROCESS_GROUP, and TerminateProcess is
+            the only way to kill a child we don't own. We skip the
+            pgid dance and kill by pid directly.
         """
         assert self.pid is not None
         # Use /test/shutdown for graceful exit; tolerate any failure.
@@ -419,16 +435,23 @@ class FunctionalHarness:
             except OSError:
                 return  # process is gone
             time.sleep(0.1)
-        # Resolve the pgid; if we can't, kill by pid directly.
-        try:
-            pgid = os.getpgid(self.pid)
-        except OSError:
-            pgid = self.pid
-        # SIGTERM the whole group (or pid).
-        try:
-            os.killpg(pgid, signal.SIGTERM)
-        except OSError:
-            pass
+        # SIGTERM the whole group on POSIX, or TerminateProcess on Windows.
+        if hasattr(os, "killpg"):
+            try:
+                pgid = os.getpgid(self.pid)
+            except OSError:
+                pgid = self.pid
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+            except OSError:
+                pass
+        else:
+            # Windows: no killpg. Best effort — SIGTERM (which
+            # Python maps to TerminateProcess for the child).
+            try:
+                os.kill(self.pid, signal.SIGTERM)
+            except OSError:
+                pass
         # Fall back to SIGKILL after another 5s.
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
@@ -437,10 +460,16 @@ class FunctionalHarness:
             except OSError:
                 return
             time.sleep(0.1)
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except OSError:
-            pass
+        if hasattr(os, "killpg"):
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except OSError:
+                pass
+        else:
+            try:
+                os.kill(self.pid, signal.SIGKILL)
+            except OSError:
+                pass
 
 
 # ============================================================================
