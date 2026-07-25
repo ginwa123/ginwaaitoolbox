@@ -34,7 +34,7 @@
 import WorkspaceItemTaskCard from '../workspace/WorkspaceItemTaskCard.vue'
 import type { Task, WorkspaceItem } from '../../stores/workspaces'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   task: Task
   workspaceId: string
   itemId: string
@@ -43,7 +43,15 @@ const props = defineProps<{
   // currently unused, but accepted for forward compatibility if a
   // future routine-task action needs the item.path).
   item?: WorkspaceItem
-}>()
+  // Absolute path used as the root for `@`-trigger file pickers in
+  // the descendant <WorkspaceItemTaskCard>'s description preview +
+  // any future editor embedded directly on the card. Optional —
+  // falls back to '' (no @path resolution) when the kanban has no
+  // path set (legacy kanbans).
+  cwd?: string
+}>(), {
+  cwd: '',
+})
 
 const emit = defineEmits<{
   dragstart: [taskId: string]
@@ -90,6 +98,7 @@ const handleDragEnd = () => {
       :task="task"
       :workspace-id="workspaceId"
       :item-id="itemId"
+      :cwd="cwd"
       @select-task="(id) => emit('selectTask', id)"
       @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
       @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"

@@ -75,6 +75,11 @@ pub const deleteTaskUseCase = @import("task_delete.zig").deleteTaskUseCase;
 pub const TaskDeleteOutcome = @import("task_delete.zig").TaskDeleteOutcome;
 pub const taskPinHandler = @import("task_pin.zig").taskPinHandler;
 pub const tasksReorderPinnedHandler = @import("tasks_reorder_pinned.zig").tasksReorderPinnedHandler;
+// Task attachment upload/download handlers (Option C of the rich
+// description plan). Files live under the kanban's filesystem root;
+// see docs/superpowers/plans/2026-07-25-kanban-description-rich-editor.md.
+pub const taskAttachmentPostHandler = @import("task_attachment_post.zig").taskAttachmentPostHandler;
+pub const taskAttachmentGetHandler = @import("task_attachment_get.zig").taskAttachmentGetHandler;
 pub const routinesRunHandler = @import("routines_run.zig").routinesRunHandler;
 pub const routinesListHandler = @import("routines_list.zig").routinesListHandler;
 

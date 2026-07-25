@@ -399,6 +399,12 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksListHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksCreateHandler);
     try gs.router.put("/api/workspaces/tasks/:task_id", ai_mod.http_handlers.tasksUpdateByIdHandler);
+    // Kanban task attachment upload (POST) + download (GET wildcard).
+    // Both routes share the same DB lookup chain (task -> item -> path)
+    // and resolve the on-disk path to
+    // <workspace_item.path>/.nalar/attachments/<task_id>/.
+    try gs.router.post("/api/workspaces/tasks/:task_id/attachments", ai_mod.http_handlers.taskAttachmentPostHandler);
+    try gs.router.get("/api/workspaces/tasks/:task_id/attachments/*", ai_mod.http_handlers.taskAttachmentGetHandler);
     try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksUpdateHandler);
     try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksDeleteHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/run", ai_mod.http_handlers.routinesRunHandler);

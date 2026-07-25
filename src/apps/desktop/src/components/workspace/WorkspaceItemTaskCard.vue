@@ -29,6 +29,7 @@
 import { inject, ref, computed, type Ref } from 'vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useTaskActions, type TaskComponentProps } from '../../composables/useTaskActions'
+import MarkdownDescription from '../kanban/MarkdownDescription.vue'
 
 // Re-inject processingState from App.vue (same key WorkspaceItem and
 // ChatsList consume). Keyed by task.id == session_id.
@@ -39,7 +40,9 @@ const processingState = inject<Ref<Record<string, boolean>>>(
 
 const workspacesStore = useWorkspacesStore()
 
-const props = defineProps<TaskComponentProps>()
+const props = withDefaults(defineProps<TaskComponentProps>(), {
+  cwd: '',
+})
 
 const emit = defineEmits<{
   selectTask: [taskId: string]
@@ -435,25 +438,26 @@ const typeBadge = computed<string | null>(() => {
         </button>
       </template>
     </div>
-    <!-- Description preview. line-clamp-2 for a more minimalist
-         feel, text-xs, leading-relaxed for better breathing room.
-         Color uses --semantic-text-muted for a softer, less
-         attention-grabbing tone.
-
-         The `w-full text-left` pair counteracts a quirk of `line-clamp-2`:
-         the `-webkit-box` display it sets makes the <p> shrink-to-fit its
-         content width; inside the `flex flex-col` parent the resulting
-         auto-width element appears center-aligned. Forcing
-         `width: 100%` + `text-align: left` keeps the description on the
-         card's left edge, matching the title row's alignment. -->
-    <p
+    <!-- Description preview. Renders the markdown via <MarkdownDescription>
+         (which handles bold/italic/headings/images/@path chips). The
+         container caps the height at ~3rem + line-clamp-2 so long
+         descriptions don't bloat the card. The `w-full text-left` pair
+         is preserved from the previous plain-text version to keep the
+         description left-aligned within the flex-col parent (line-clamp
+         display quirk). -->
+    <div
       v-if="task.description"
-      class="text-[11px] leading-relaxed pr-1 line-clamp-2 w-full text-left"
-      style="color: var(--semantic-text-muted);"
+      class="text-[11px] leading-relaxed pr-1 w-full text-left line-clamp-2"
+      style="color: var(--semantic-text-muted); max-height: 3rem; overflow: hidden;"
       data-testid="task-description"
     >
-      {{ task.description }}
-    </p>
+      <MarkdownDescription
+        :source="task.description"
+        :cwd="cwd"
+        max-height="3rem"
+        :test-id="`task-description-rendered`"
+      />
+    </div>
     <!-- Meta row. Just the last-updated time + a single subtle type
          label when relevant. The row gets a hairline top border with
          extra top padding for clear visual separation. `self-start`

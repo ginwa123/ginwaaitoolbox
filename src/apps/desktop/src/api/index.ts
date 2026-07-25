@@ -2650,3 +2650,35 @@ export async function unstageGitFiles(cwd: string, files: string[]): Promise<Git
     { method: 'POST' },
   )
 }
+
+/**
+ * Upload an image attachment for a kanban task. The server writes the
+ * file to `<workspace_item.path>/.nalar/attachments/<task_id>/<n>.<ext>`
+ * and returns a URL the frontend embeds in the markdown description as
+ * `![name](<url>)`.
+ *
+ * Plan: docs/superpowers/plans/2026-07-25-kanban-description-rich-editor.md
+ * (Option C: filesystem-backed attachments).
+ */
+export async function uploadTaskAttachment(
+  taskId: string,
+  file: File,
+): Promise<{ url: string; size: number }> {
+  const url = `${API_BASE}/workspaces/tasks/${encodeURIComponent(taskId)}/attachments?filename=${encodeURIComponent(file.name)}`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type || 'application/octet-stream',
+    },
+    body: file,
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`Attachment upload failed (${response.status}): ${text}`)
+  }
+  const json = (await response.json()) as { success: boolean; url: string; size: number }
+  if (!json.success || !json.url) {
+    throw new Error('Attachment upload returned invalid response')
+  }
+  return { url: json.url, size: json.size }
+}
