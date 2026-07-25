@@ -30,6 +30,15 @@ describe('DesignElement.vue static contract', () => {
     expect(source).toContain("readonly:")
   })
 
+  // Chunk 2: multi-select (Figma-style). The parent DesignView owns
+  // the selection Set and passes it down as `selectedIds` so the
+  // wrapper renders the violet outline + resize handles for every
+  // element in the set, not just the single `selected` one.
+  it('declares selectedIds prop for multi-select (Chunk 2)', () => {
+    expect(source).toContain("selectedIds:")
+    expect(source).toContain("selectedIds: () => []")
+  })
+
   it('uses pointerdown + setPointerCapture for drag', () => {
     // setPointerCapture is the trick that makes the drag survive a
     // fast mouse that outruns the handle.

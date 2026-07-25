@@ -222,4 +222,36 @@ describe('DesignElement drag', () => {
     const lastUpdate = updates[updates.length - 1]?.[0] as any
     expect(lastUpdate).toMatchObject({ x: 130, y: 130 })
   })
+
+  // ─── Chunk 2: multi-select ────────────────────────────────────────
+
+  it('emits select with the element id on pointerdown', async () => {
+    const wrapper = mount(DesignElement, {
+      props: { element: ELEMENT, selectedIds: [], zoom: 1.0 },
+    })
+    const root = wrapper.find('[data-design-element]').element as HTMLElement
+    root.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true }))
+    expect(wrapper.emitted('select')?.[0]).toEqual(['el_1'])
+  })
+
+  it('Delete key emits delete for every selected element', async () => {
+    const wrapper = mount(DesignElement, {
+      props: { element: ELEMENT, selectedIds: ['el_1', 'el_2', 'el_3'], zoom: 1.0 },
+    })
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete' }))
+    const deletes = wrapper.emitted('delete') ?? []
+    expect(deletes.map((d) => d[0])).toEqual(['el_1', 'el_2', 'el_3'])
+  })
+
+  it('Delete inside an input does NOT fire delete', async () => {
+    const wrapper = mount(DesignElement, {
+      props: { element: ELEMENT, selectedIds: ['el_1'], zoom: 1.0 },
+    })
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
+    document.body.removeChild(input)
+    expect(wrapper.emitted('delete')).toBeUndefined()
+  })
 })

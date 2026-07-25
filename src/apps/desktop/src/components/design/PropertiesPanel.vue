@@ -49,7 +49,14 @@ import type { DesignElement } from '../../api'
 
 const props = withDefaults(
   defineProps<{
-    element: DesignElement | null
+    // Pass the full selection set (not just the "active" one). The
+    // panel renders one of three states based on `elements.length`:
+    //   0 → empty state
+    //   1 → single-element form
+    //   >1 → multi-select banner
+    // The parent owns the selection logic; this component just formats
+    // the current selection into the right UI.
+    elements: DesignElement[]
     readonly?: boolean
     // When true, the parent canvas is in Preview mode (toggle in the
     // canvas header bar). The form fields are hidden and replaced
@@ -61,6 +68,12 @@ const props = withDefaults(
     readonly: false,
     previewMode: false,
   },
+)
+
+// Computed convenience: the single element when exactly one is selected.
+// Templates can use this instead of `elements[0] ?? null` everywhere.
+const singleElement = computed<DesignElement | null>(() =>
+  props.elements.length === 1 ? (props.elements[0] ?? null) : null,
 )
 
 const emit = defineEmits<{
@@ -93,13 +106,13 @@ const showDeleteConfirm = ref(false)
 
 const handleDeleteClick = (): void => {
   if (props.readonly) return
-  if (!props.element) return
+  if (!singleElement.value) return
   showDeleteConfirm.value = true
 }
 
 const handleDeleteConfirm = (): void => {
-  if (!props.element) return
-  emit('delete', props.element.id)
+  if (!singleElement.value) return
+  emit('delete', singleElement.value.id)
   showDeleteConfirm.value = false
 }
 
@@ -121,19 +134,19 @@ const monacoLoadError = ref<string | null>(null)
 // Instead, we pull on (a) first expand and (b) explicit element
 // change while collapsed.
 watch(
-  () => props.element?.id,
+  () => singleElement.value?.id,
   () => {
-    if (!htmlExpanded.value && props.element) {
-      htmlDraft.value = props.element.text_content || ''
+    if (!htmlExpanded.value && singleElement.value) {
+      htmlDraft.value = singleElement.value.text_content || ''
     }
   },
 )
 
 watch(htmlExpanded, async (expanded) => {
   if (!expanded) return
-  if (!props.element) return
+  if (!singleElement.value) return
   // Seed the draft on first expand.
-  htmlDraft.value = props.element.text_content || ''
+  htmlDraft.value = singleElement.value.text_content || ''
 
   // Lazy-load Monaco on first expand. Dynamic import is the only way
   // to defer the ~3 MB bundle; bundlers will code-split at this
@@ -187,7 +200,7 @@ const handleHtmlSave = (): void => {
 }
 
 const handleHtmlCancel = (): void => {
-  htmlDraft.value = props.element?.text_content || ''
+  htmlDraft.value = singleElement.value?.text_content || ''
   if (monacoEditor.value) {
     monacoEditor.value.setValue(htmlDraft.value)
   }
@@ -204,10 +217,10 @@ onBeforeUnmount(() => {
 
 // ─── Computed helpers ──────────────────────────────────────────────────
 
-const isTextElement = computed(() => props.element?.type === 'text')
-const isImageElement = computed(() => props.element?.type === 'image')
-const showGeometrySection = computed(() => props.element !== null)
-const showStyleSection = computed(() => props.element !== null)
+const isTextElement = computed(() => singleElement.value?.type === 'text')
+const isImageElement = computed(() => singleElement.value?.type === 'image')
+const showGeometrySection = computed(() => singleElement.value !== null)
+const showStyleSection = computed(() => singleElement.value !== null)
 const showTypeSpecificSection = computed(
   () => isTextElement.value || isImageElement.value,
 )
@@ -242,9 +255,31 @@ const showTypeSpecificSection = computed(
       </div>
     </div>
 
+    <!-- ─── Multi-select banner (Chunk 2) ──────────────────────────── -->
+    <!--
+      When 2+ elements are selected, the PropertiesPanel hides the
+      single-element form and shows a banner. Future enhancements
+      (align/distribute batch actions) will live here. For now, the
+      banner tells the user how many are selected and how to clear.
+    -->
+    <div
+      v-else-if="elements.length > 1"
+      class="flex-1 flex items-center justify-center p-6 text-sm"
+      style="color: var(--semantic-text-dim);"
+      data-testid="properties-panel-multi"
+    >
+      <div class="text-center">
+        <div class="text-3xl mb-2" aria-hidden="true">▦</div>
+        <div>{{ elements.length }} elements selected</div>
+        <div class="text-xs mt-1" style="opacity: 0.7;">
+          Press Esc to deselect all
+        </div>
+      </div>
+    </div>
+
     <!-- ─── Empty state ────────────────────────────────────────────── -->
     <div
-      v-if="!element && !previewMode"
+      v-else-if="elements.length === 0"
       class="flex-1 flex items-center justify-center p-6 text-sm"
       style="color: var(--semantic-text-dim);"
       data-testid="properties-panel-empty"
@@ -255,18 +290,18 @@ const showTypeSpecificSection = computed(
       </div>
     </div>
 
-    <template v-if="element && !previewMode">
+    <template v-if="singleElement && !previewMode">
       <!-- ─── Header ───────────────────────────────────────────────── -->
       <div
         class="px-4 py-3 shrink-0"
         style="border-bottom: 1px solid var(--color-border);"
       >
         <div class="text-xs" style="color: var(--semantic-text-dim);">
-          {{ element.type }}
+          {{ singleElement.type }}
         </div>
         <input
           type="text"
-          :value="element.name"
+          :value="singleElement.name"
           :disabled="readonly"
           data-testid="properties-input-name"
           class="w-full bg-transparent text-base font-semibold outline-none mt-1"
@@ -291,7 +326,7 @@ const showTypeSpecificSection = computed(
             X
             <input
               type="number"
-              :value="element.x"
+              :value="singleElement.x"
               :disabled="readonly"
               data-testid="properties-input-x"
               class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
@@ -303,7 +338,7 @@ const showTypeSpecificSection = computed(
             Y
             <input
               type="number"
-              :value="element.y"
+              :value="singleElement.y"
               :disabled="readonly"
               data-testid="properties-input-y"
               class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
@@ -315,7 +350,7 @@ const showTypeSpecificSection = computed(
             W
             <input
               type="number"
-              :value="element.width"
+              :value="singleElement.width"
               :disabled="readonly"
               data-testid="properties-input-width"
               class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
@@ -327,7 +362,7 @@ const showTypeSpecificSection = computed(
             H
             <input
               type="number"
-              :value="element.height"
+              :value="singleElement.height"
               :disabled="readonly"
               data-testid="properties-input-height"
               class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
@@ -339,7 +374,7 @@ const showTypeSpecificSection = computed(
             Rotation (deg)
             <input
               type="number"
-              :value="element.rotation"
+              :value="singleElement.rotation"
               :disabled="readonly"
               data-testid="properties-input-rotation"
               class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
@@ -365,7 +400,7 @@ const showTypeSpecificSection = computed(
             Fill color
             <input
               type="text"
-              :value="element.fill"
+              :value="singleElement.fill"
               :disabled="readonly"
               placeholder="(none)"
               data-testid="properties-input-fill"
@@ -379,7 +414,7 @@ const showTypeSpecificSection = computed(
               Stroke
               <input
                 type="text"
-                :value="element.stroke"
+                :value="singleElement.stroke"
                 :disabled="readonly"
                 placeholder="(none)"
                 data-testid="properties-input-stroke"
@@ -392,7 +427,7 @@ const showTypeSpecificSection = computed(
               Width
               <input
                 type="number"
-                :value="element.stroke_width"
+                :value="singleElement.stroke_width"
                 :disabled="readonly"
                 data-testid="properties-input-stroke-width"
                 class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
@@ -406,7 +441,7 @@ const showTypeSpecificSection = computed(
               Corner radius
               <input
                 type="number"
-                :value="element.corner_radius"
+                :value="singleElement.corner_radius"
                 :disabled="readonly"
                 data-testid="properties-input-corner-radius"
                 class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
@@ -421,7 +456,7 @@ const showTypeSpecificSection = computed(
                 step="0.05"
                 min="0"
                 max="1"
-                :value="element.opacity"
+                :value="singleElement.opacity"
                 :disabled="readonly"
                 data-testid="properties-input-opacity"
                 class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
@@ -441,13 +476,13 @@ const showTypeSpecificSection = computed(
         data-testid="properties-section-type"
       >
         <div class="text-xs font-semibold mb-2" style="color: var(--semantic-text-dim);">
-          {{ element.type === 'text' ? 'Text' : 'Image' }}
+          {{ singleElement.type === 'text' ? 'Text' : 'Image' }}
         </div>
         <template v-if="isTextElement">
           <label class="block text-xs mb-2" style="color: var(--semantic-text-dim);">
             Text content
             <textarea
-              :value="element.text_content"
+              :value="singleElement.text_content"
               :disabled="readonly"
               rows="3"
               data-testid="properties-input-text-content"
@@ -460,7 +495,7 @@ const showTypeSpecificSection = computed(
             Text style (font-family)
             <input
               type="text"
-              :value="element.text_style"
+              :value="singleElement.text_style"
               :disabled="readonly"
               placeholder="sans-serif"
               data-testid="properties-input-text-style"
@@ -475,7 +510,7 @@ const showTypeSpecificSection = computed(
             Image URL
             <input
               type="text"
-              :value="element.image_url"
+              :value="singleElement.image_url"
               :disabled="readonly"
               placeholder="https://..."
               data-testid="properties-input-image-url"
@@ -574,7 +609,7 @@ const showTypeSpecificSection = computed(
           data-testid="properties-delete-confirm"
         >
           <div class="text-xs" style="color: var(--semantic-text);">
-            Delete "{{ element.name }}"? This cannot be undone.
+            Delete "{{ singleElement.name }}"? This cannot be undone.
           </div>
           <div class="flex gap-2">
             <button

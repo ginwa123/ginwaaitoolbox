@@ -26,9 +26,9 @@ describe('LayersPanel.vue static contract', () => {
     expect(source).toContain("delete:")
   })
 
-  it('declares elements, selectedElementId, and readonly props', () => {
+  it('declares elements, selectedIds, and readonly props (multi-aware: array, not nullable single id)', () => {
     expect(source).toContain("elements:")
-    expect(source).toContain("selectedElementId:")
+    expect(source).toContain("selectedIds:")
     expect(source).toContain("readonly:")
   })
 

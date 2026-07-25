@@ -49,7 +49,17 @@ import DesignElementPreview from './DesignElementPreview.vue'
 const props = withDefaults(
   defineProps<{
     element: DesignElement
+    // Single-element shortcut (kept for backward compat with tests +
+    // simple use cases). True iff `selectedIds` has exactly this
+    // element and nothing else. The wrapper's `.selected` class is
+    // applied iff this is true OR the element is in a multi-selection
+    // that includes it.
     selected?: boolean
+    // The full selection set (Figma multi-select model). When non-empty
+    // AND this element's id is in it, render the violet outline + resize
+    // handles. When only `selected === true` (no multi-selection context),
+    // the wrapper renders the legacy single-selection chrome.
+    selectedIds?: string[]
     readonly?: boolean
     // Current canvas zoom level (1.0 = 100%). When the canvas is
     // CSS-scaled via `transform: scale(zoom)`, the cursor delta
@@ -75,6 +85,7 @@ const props = withDefaults(
   }>(),
   {
     selected: false,
+    selectedIds: () => [] as string[],
     readonly: false,
     zoom: 1.0,
     workspaceId: '',
@@ -300,7 +311,11 @@ const handleHtmlChanged = (html: string): void => {
 import { onUnmounted } from 'vue'
 
 const handleKeydown = (e: KeyboardEvent): void => {
-  if (!props.selected) return
+  // Chunk 2: gate on the full selection set, not just this element's
+  // `selected` flag. When the user has multi-selected several elements
+  // via Shift+click, hitting Delete should remove ALL of them — even
+  // though only ONE of them is the "active" one with `selected: true`.
+  if (props.selectedIds.length === 0 && !props.selected) return
   if (props.readonly) return
   if (e.key !== 'Delete' && e.key !== 'Backspace') return
   // Don't intercept Delete when the user is typing in a form input.
@@ -309,7 +324,12 @@ const handleKeydown = (e: KeyboardEvent): void => {
     return
   }
   e.preventDefault()
-  emit('delete', props.element.id)
+  // Emit one `delete` per selected id. When only the legacy `selected`
+  // flag is set (no multi-selection context), fall back to deleting
+  // just this element so the back-compat path still works.
+  for (const id of (props.selectedIds.length > 0 ? props.selectedIds : [props.element.id])) {
+    emit('delete', id)
+  }
 }
 
 onMounted(() => {
@@ -324,7 +344,7 @@ onUnmounted(() => {
   <div
     class="design-element absolute"
     :class="[
-      selected ? 'selected' : '',
+      (selected || selectedIds.includes(element.id)) ? 'selected' : '',
       readonly ? 'cursor-default' : 'cursor-move',
       isDragging ? 'dragging' : '',
     ]"

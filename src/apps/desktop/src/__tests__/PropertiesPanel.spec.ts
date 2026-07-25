@@ -29,8 +29,8 @@ describe('PropertiesPanel.vue static contract', () => {
     expect(source).toContain("delete:")
   })
 
-  it('declares element and readonly props', () => {
-    expect(source).toContain("element:")
+  it('declares elements and readonly props (multi-aware: elements array, not element | null)', () => {
+    expect(source).toContain("elements:")
     expect(source).toContain("readonly:")
   })
 
