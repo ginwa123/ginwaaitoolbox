@@ -141,4 +141,47 @@ describe('DesignView keyboard nudge', () => {
       wrapper.unmount()
     }
   })
+
+  it('arrow nudge clamps element to canvas bounds', async () => {
+    const store = useWorkspacesStore()
+    store.setActiveDesignPage('page_1')
+    // Element close to the left edge so a short burst of ArrowLeft
+    // presses actually triggers the clamp. Starting at x=-150 with
+    // width=200, after 50 presses (-50 design-px) the element's
+    // left edge would be at -200 — the clamp should pin it at
+    // -190 (a 10px sliver remains visible).
+    const clampedElement = { ...ELEMENT, x: -150, y: 5 }
+    const wrapper = mount(DesignView, {
+      props: {
+        item: { ...ITEM, design_elements: [clampedElement] },
+        workspaceId: 'ws_1',
+        itemId: 'item_1',
+      },
+    })
+    await flushPromises()
+    // Use native dispatchEvent (NOT wrapper.trigger) — jsdom 29 makes
+    // MouseEvent.button a readonly getter, which @vue/test-utils
+    // tries to assign post-construction (same workaround as the
+    // other tests in this file).
+    const elementEl = wrapper.find('[data-design-element]').element as HTMLElement
+    elementEl.setPointerCapture = () => {}
+    elementEl.releasePointerCapture = () => {}
+    elementEl.hasPointerCapture = (): boolean => true
+    elementEl.dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true,
+    }))
+    await flushPromises()
+    updateDesignElementGeometrySpy.mockClear()
+    // Press left arrow many times — should clamp at x = -width + 10 = -190.
+    for (let i = 0; i < 50; i++) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }))
+    }
+    await flushPromises()
+    const calls = updateDesignElementGeometrySpy.mock.calls
+    // Find the LAST call's x — should be clamped to -190 (the
+    // unclamped position would be -200 = -150 - 50).
+    const lastCall = calls[calls.length - 1]
+    expect(lastCall?.[4]?.x).toBe(-190)
+    wrapper.unmount()
+  })
 })

@@ -123,6 +123,18 @@ const elements = computed<DesignElementApi[]>(() => {
 // the right rail stays in sync with the canvas outline.
 const selectedIds = ref<Set<string>>(new Set())
 
+// Per-element nudge offset accumulator. The keyboard handler reads
+// `el.x + offset[id].x` instead of `el.x` so consecutive ArrowLeft
+// presses compose (the second press starts where the first one ended).
+// `updateDesignElementGeometry` is a fire-and-forget PATCH that does
+// NOT mirror the response back into `elements.value` (see the
+// performance comment in stores/workspaces.ts around the function),
+// so without this accumulator the element would only move on the
+// FIRST press and stay frozen on every subsequent press.
+//
+// Reset on page change (different elements scope).
+const nudgeOffsets = new Map<string, { x: number; y: number }>()
+
 const activeElements = computed<DesignElementApi[]>(() => {
   return elements.value.filter((e) => selectedIds.value.has(e.id))
 })
@@ -342,6 +354,9 @@ watch(activePageId, (pageId) => {
   // and clears in onUnmounted (below).
   workspacesStore.setActiveDesignPage(pageId ?? '')
   selectedIds.value = new Set()
+  // Nudge offsets are per-element; fresh page means every cached
+  // offset is for an element that no longer exists.
+  nudgeOffsets.clear()
   if (!pageId) return
   if (!props.workspaceId || !effectiveItemId.value) return
   void workspacesStore.fetchDesignElements(
@@ -454,12 +469,33 @@ const handleKeydown = (event: KeyboardEvent): void => {
     for (const id of selectedIds.value) {
       const el = elements.value.find((e) => e.id === id)
       if (!el) continue
+      // The element's "effective" position is the cached `el.x`
+      // plus the accumulated nudge delta (since the last time
+      // `elements.value` was fresh). Without this, the second
+      // arrow press would read the stale `el.x` and re-emit
+      // the same x, freezing the element.
+      const off = nudgeOffsets.get(id) ?? { x: 0, y: 0 }
+      const baseX = el.x + off.x
+      const baseY = el.y + off.y
+      // Clamp so the element stays visible on the canvas. We
+      // allow a 10px sliver off-canvas (matches the resize min
+      // size — partial overlap is fine, but the element must
+      // not disappear entirely).
+      let ndx = dx
+      let ndy = dy
+      if (baseX + ndx < -el.width + 10) ndx = -el.width + 10 - baseX
+      if (baseX + ndx > canvasWidth.value - 10) ndx = canvasWidth.value - 10 - baseX
+      if (baseY + ndy < -el.height + 10) ndy = -el.height + 10 - baseY
+      if (baseY + ndy > canvasHeight.value - 10) ndy = canvasHeight.value - 10 - baseY
+      const newX = baseX + ndx
+      const newY = baseY + ndy
+      nudgeOffsets.set(id, { x: newX - el.x, y: newY - el.y })
       void workspacesStore.updateDesignElementGeometry(
         props.workspaceId,
         effectiveItemId.value,
         activePageId.value,
         id,
-        { x: el.x + dx, y: el.y + dy },
+        { x: newX, y: newY },
       )
     }
     return
@@ -726,15 +762,32 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
     snapGuides.value = snapResult.guides
     const finalDx = delta.dx + snapResult.dx
     const finalDy = delta.dy + snapResult.dy
+    // Clamp so elements can't be dragged entirely off-canvas. Allow
+    // a 10px sliver off-canvas (matches the resize min size) but
+    // prevent the element from disappearing entirely.
+    const clampX = (el: typeof selected[number], dx: number): number => {
+      const newX = el.x + dx
+      if (newX < -el.width + 10) return -el.width + 10 - el.x
+      if (newX > canvasWidth.value - 10) return canvasWidth.value - 10 - el.x
+      return dx
+    }
+    const clampY = (el: typeof selected[number], dy: number): number => {
+      const newY = el.y + dy
+      if (newY < -el.height + 10) return -el.height + 10 - el.y
+      if (newY > canvasHeight.value - 10) return canvasHeight.value - 10 - el.y
+      return dy
+    }
     for (const el of selected) {
+      const clampedDx = clampX(el, finalDx)
+      const clampedDy = clampY(el, finalDy)
       void workspacesStore.updateDesignElementGeometry(
         workspaceId,
         itemId,
         pageId,
         el.id,
         {
-          x: Math.round(el.x + finalDx),
-          y: Math.round(el.y + finalDy),
+          x: Math.round(el.x + clampedDx),
+          y: Math.round(el.y + clampedDy),
         },
       )
     }
