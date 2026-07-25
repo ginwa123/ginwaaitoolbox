@@ -254,4 +254,64 @@ describe('DesignElement drag', () => {
     document.body.removeChild(input)
     expect(wrapper.emitted('delete')).toBeUndefined()
   })
+
+  // Chunk 2: group drag. When this element is part of a multi-selection
+  // and the user drags the body, the component emits `groupDrag` events
+  // (NOT single-element `update` events) so the parent can apply the
+  // same dx/dy to every selected element.
+  it('drag on a multi-selected element emits groupDrag, not update', async () => {
+    const wrapper = mount(DesignElement, {
+      props: { element: ELEMENT, selectedIds: ['el_1', 'el_2'], zoom: 1.0 },
+    })
+    const root = wrapper.find('[data-design-element]').element as HTMLElement
+    let moveHandler: any, upHandler: any
+    ;(root as any).addEventListener = (type: string, cb: any) => {
+      if (type === 'pointermove') moveHandler = cb
+      if (type === 'pointerup') upHandler = cb
+    }
+    ;(root as any).removeEventListener = () => {}
+
+    root.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true }))
+    // Move +50, +30 within the throttle window → only the trailing
+    // pointerup emit will fire, carrying the final delta.
+    moveHandler(new PointerEvent('pointermove', { clientX: 150, clientY: 130, pointerId: 1 }))
+    upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
+
+    // The trailing emit must include the final delta.
+    const groupDrags = wrapper.emitted('groupDrag') ?? []
+    const last = groupDrags[groupDrags.length - 1]?.[0] as any
+    expect(last).toMatchObject({ dx: 50, dy: 30 })
+
+    // Critically: this is a GROUP drag, so no `update` should fire.
+    // The parent decides where to route the per-element updates.
+    expect(wrapper.emitted('update')).toBeUndefined()
+  })
+
+  // Counterpart: a single-element drag (no multi-selection context)
+  // emits `update` as before — the existing Chunk 1 behavior is
+  // preserved for backward compat.
+  it('drag with empty selectedIds still emits update (single-element path)', async () => {
+    const wrapper = mount(DesignElement, {
+      props: { element: ELEMENT, selectedIds: [], selected: true, zoom: 1.0 },
+    })
+    const root = wrapper.find('[data-design-element]').element as HTMLElement
+    let moveHandler: any, upHandler: any
+    ;(root as any).addEventListener = (type: string, cb: any) => {
+      if (type === 'pointermove') moveHandler = cb
+      if (type === 'pointerup') upHandler = cb
+    }
+    ;(root as any).removeEventListener = () => {}
+
+    root.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true }))
+    moveHandler(new PointerEvent('pointermove', { clientX: 150, clientY: 130, pointerId: 1 }))
+    upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
+
+    // Empty selectedIds means no group-drag — the single-element
+    // throttled path runs, emitting `update` with x/y patch.
+    const updates = wrapper.emitted('update') ?? []
+    const lastUpdate = updates[updates.length - 1]?.[0] as any
+    expect(lastUpdate).toMatchObject({ x: 150, y: 130 })
+    // groupDrag should NOT fire in single-element mode.
+    expect(wrapper.emitted('groupDrag')).toBeUndefined()
+  })
 })

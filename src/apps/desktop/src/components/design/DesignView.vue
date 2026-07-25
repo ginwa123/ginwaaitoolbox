@@ -638,6 +638,40 @@ const handleLayerSelect = (payload: { elementId: string; additive: boolean }): v
   handleElementToggle(payload.elementId, payload.additive)
 }
 
+// Chunk 2: group drag. When the user drags any element that's part of
+// a multi-selection, DesignElement emits `groupDrag` with the cursor
+// delta (design-px, zoom-adjusted). We translate that into N individual
+// `updateDesignElementGeometry` calls — one per selected id — using
+// the LOCAL element list as the source of truth (it's already filtered
+// to the active page, so no need to re-query).
+//
+// The direct-store path bypasses the AppLayout round-trip on purpose:
+// a 3-element drag would otherwise generate 3 emits per pointermove ×
+// the store's throttle. Direct calls keep latency at one round-trip
+// per 50ms for the WHOLE selection.
+const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
+  if (selectedIds.value.size === 0) return
+  if (!props.workspaceId || !effectiveItemId.value) return
+  if (!activePageId.value) return
+  const pageId = activePageId.value
+  const itemId = effectiveItemId.value
+  const workspaceId = props.workspaceId
+  for (const id of selectedIds.value) {
+    const el = elements.value.find((e) => e.id === id)
+    if (!el) continue
+    void workspacesStore.updateDesignElementGeometry(
+      workspaceId,
+      itemId,
+      pageId,
+      id,
+      {
+        x: Math.round(el.x + delta.dx),
+        y: Math.round(el.y + delta.dy),
+      },
+    )
+  }
+}
+
 const handleCreateElement = (
   body: { name: string; type: DesignElementApi['type']; html: string },
 ): void => {
@@ -1140,6 +1174,7 @@ onUnmounted(() => {
               :preview-mode="isPreviewMode"
               @select="(id) => handleElementToggle(id, false)"
               @update="handleElementUpdate"
+              @group-drag="handleGroupDrag"
               @html-changed="handleElementHtmlChanged"
               @delete="handleElementDelete"
             />

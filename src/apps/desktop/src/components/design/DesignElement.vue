@@ -98,6 +98,13 @@ const props = withDefaults(
 const emit = defineEmits<{
   select: [elementId: string]
   update: [patch: Partial<DesignElement>]
+  // Chunk 2: when the user drags an element that's part of a
+  // multi-selection, the WHOLE selection moves. The parent
+  // (DesignView) applies the dx/dy to every selected element's
+  // start position; this component only reports the cursor delta.
+  // The parent calls workspacesStore.updateDesignElementGeometry
+  // (or the AppLayout handler) on each element.
+  groupDrag: [delta: { dx: number; dy: number }]
   htmlChanged: [html: string]
   delete: [elementId: string]
 }>()
@@ -141,6 +148,56 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // already prevents that, but we double-check.
   if (event.button !== 0) return
   emit('select', props.element.id)
+
+  // Group drag (Chunk 2): when this element is part of a multi-selection,
+  // dragging moves the ENTIRE selection. The parent applies the same
+  // dx/dy to every selected element's start position. Resize is
+  // per-element only (no group resize makes sense — the user would
+  // expect to resize only the element under the cursor).
+  if (
+    props.selectedIds.length > 1 &&
+    props.selectedIds.includes(props.element.id) &&
+    mode === 'move'
+  ) {
+    event.preventDefault()
+    const target = event.currentTarget as HTMLElement | null
+    if (!target) return
+    target.setPointerCapture(event.pointerId)
+    isDragging.value = true
+    const startClientX = event.clientX
+    const startClientY = event.clientY
+    let pendingDx = 0
+    let pendingDy = 0
+    let lastEmitMs = 0
+    const THROTTLE_MS = 50
+    const onMove = (e: PointerEvent): void => {
+      const inv = 1 / Math.max(0.01, props.zoom)
+      pendingDx = (e.clientX - startClientX) * inv
+      pendingDy = (e.clientY - startClientY) * inv
+      const now = performance.now()
+      if (now - lastEmitMs >= THROTTLE_MS) {
+        emit('groupDrag', { dx: pendingDx, dy: pendingDy })
+        lastEmitMs = now
+      }
+    }
+    const onUp = (e: PointerEvent): void => {
+      if (target.hasPointerCapture(e.pointerId)) {
+        target.releasePointerCapture(e.pointerId)
+      }
+      isDragging.value = false
+      // Trailing emit: capture the final position regardless of throttle.
+      emit('groupDrag', { dx: pendingDx, dy: pendingDy })
+      target.removeEventListener('pointermove', onMove)
+      target.removeEventListener('pointerup', onUp)
+      target.removeEventListener('pointercancel', onUp)
+    }
+    target.addEventListener('pointermove', onMove)
+    target.addEventListener('pointerup', onUp)
+    target.addEventListener('pointercancel', onUp)
+    return
+  }
+
+  // Single-element drag (existing throttled-emit logic from Chunk 1).
   event.preventDefault()
 
   const target = event.currentTarget as HTMLElement | null
