@@ -435,6 +435,35 @@ const handleKeydown = (event: KeyboardEvent): void => {
     event.preventDefault()
     zoomFit()
   }
+
+  // Arrow keys nudge the selection by 1 design-px; Shift+arrow by 10.
+  // Gated on `selectedIds.size > 0` (Figma-style: arrows do nothing
+  // when there's nothing to nudge).
+  if (selectedIds.value.size > 0 && (
+    event.key === 'ArrowLeft' || event.key === 'ArrowRight' ||
+    event.key === 'ArrowUp' || event.key === 'ArrowDown'
+  )) {
+    event.preventDefault()
+    const step = event.shiftKey ? 10 : 1
+    const dx =
+      event.key === 'ArrowLeft' ? -step :
+      event.key === 'ArrowRight' ? step : 0
+    const dy =
+      event.key === 'ArrowUp' ? -step :
+      event.key === 'ArrowDown' ? step : 0
+    for (const id of selectedIds.value) {
+      const el = elements.value.find((e) => e.id === id)
+      if (!el) continue
+      void workspacesStore.updateDesignElementGeometry(
+        props.workspaceId,
+        effectiveItemId.value,
+        activePageId.value,
+        id,
+        { x: el.x + dx, y: el.y + dy },
+      )
+    }
+    return
+  }
 }
 
 const handleKeyup = (event: KeyboardEvent): void => {
