@@ -678,7 +678,20 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       if (ws) {
         ws.items.push({
           ...item,
-          kanban_columns: columns,
+          // Defensive merge: mirror the `addDesignItem` pattern
+          // (workspaces.ts:721-748). If the backend ever regresses
+          // to a bare `{id, success}` envelope or omits the
+          // `name` field, the sidebar would render the
+          // `{{ item.name || 'Untitled project' }}` fallback
+          // (WorkspaceItem.vue:401-408) until reload. Falling back
+          // to the form's `name` / `path` (the source of truth on
+          // the client side) keeps the UI correct regardless of
+          // what the server returns. Locked in by the
+          // `kanbanStoreAddNameFallback` regression test.
+          name: item.name ?? name,
+          item_type: item.item_type ?? 'kanban',
+          path: item.path ?? path,
+          kanban_columns: columns || [],
           tasks: [],
         })
         // Auto-expand the workspace to surface the new kanban and
@@ -730,7 +743,15 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         // the source of truth on the client side) so the UI is
         // always correct, regardless of what the backend returns.
         // The kanban flow has the same pattern via `addKanbanItem`
-        // (line ~595) — mirrors the same defense-in-depth.
+        // (line ~670) — mirrors the same defense-in-depth. (Bug
+        // history: kanban originally did NOT have this fallback
+        // and the backend returned a flat `CreateKanbanResponse`
+        // without the `item` wrapper, so `const { item, columns }
+        // = await api.createKanban(...)` got both as undefined and
+        // every newly-created kanban displayed as "Untitled
+        // project" until reload. The backend now wraps the
+        // response in `{item, columns}` and both store actions
+        // have the defensive fallback.)
         ws.items.push({
           ...item,
           // WorkspaceItem interface fields — fall back to the form

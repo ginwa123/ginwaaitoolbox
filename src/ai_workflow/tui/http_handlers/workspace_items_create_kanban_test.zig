@@ -12,7 +12,17 @@
 //!   3. INSERTs the row with `item_type='kanban'` and a fresh position.
 //!   4. Calls `kanban_model.seedDefaultColumns` to add the canonical
 //!      3-column default flow (`todo / in progress / done`).
-//!   5. Returns 201 with `{id, workspace_id, item_type, name, position}`.
+//!   5. Returns 201 with `{item: {id, workspace_id, item_type, name,
+//!      path, position}, columns: [...]}` — the wrapped envelope the
+//!      frontend's `api.createKanban` destructures.
+//
+//! Why the wrapped envelope (not the flat `{id, name, ...}` shape):
+//!   See `workspace_items_create_kanban.zig::CreateKanbanResponseFull`.
+//!   The old flat shape caused `const { item, columns } = await
+//!   api.createKanban(...)` to yield undefined for both, and the
+//!   sidebar rendered the `{{ item.name || 'Untitled project' }}`
+//!   fallback until reload. Tests passed because the API mocks
+//!   returned the wrapped shape — the real backend never matched it.
 //!
 //! These contracts are enforced by static substring checks (matching
 //! the project's `routines_run_test.zig` / `task_create_routines_test.zig`
@@ -130,5 +140,40 @@ test "create_kanban handler returns 201 on success" {
             .{HANDLER_PATH},
         );
         return error.Status201Missing;
+    }
+}
+
+// ─── Contract 4: response envelope is {item, columns} (NOT flat) ───────────
+
+test "create_kanban handler returns wrapped {item, columns} envelope" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The frontend's `api.createKanban` (src/apps/desktop/src/api/index.ts)
+    // destructures `const { item, columns } = await api.createKanban(...)`.
+    // If the response is the flat `CreateKanbanResponse` shape (just
+    // {id, name, position, ...}), both `item` and `columns` come back
+    // undefined and the sidebar renders the
+    // `{{ item.name || 'Untitled project' }}` fallback until reload.
+    //
+    // The handler must serialize a `CreateKanbanResponseFull` envelope
+    // (struct with `item` + `columns` fields). We assert the type
+    // name appears in the source so the regression catches both:
+    //   1. someone reverting to the flat `CreateKanbanResponse` shape
+    //   2. someone moving the envelope shape to a different name and
+    //      breaking the frontend's destructure
+    if (std.mem.indexOf(u8, source, "CreateKanbanResponseFull") == null) {
+        std.debug.print(
+            "\n!! {s} does not return the {{item, columns}} envelope !!\n" ++
+                "   The frontend's api.createKanban destructures {{item, columns}}.\n" ++
+                "   If the handler returns the flat CreateKanbanResponse (no wrapper),\n" ++
+                "   `item` and `columns` both come back undefined and the sidebar\n" ++
+                "   renders the 'Untitled project' fallback until reload. Serialize\n" ++
+                "   the response via `CreateKanbanResponseFull{{.item=..., .columns=...}}`.\n" ++
+                "   See docs/superpowers/plans/2026-07-25-kanban-untitled-bug.md.\n",
+            .{HANDLER_PATH},
+        );
+        return error.WireEnvelopeMissing;
     }
 }
