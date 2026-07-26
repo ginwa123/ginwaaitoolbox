@@ -463,23 +463,38 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Plain rectangle / shape fill (always shown). Rendered behind
-         the iframe so it acts as a graceful fallback when (a) the
-         element has no file_path, (b) the HTML fetch is still in
-         flight, or (c) the HTML fetch failed. Provides the dashed
-         outline the user needs to see where the element is before
-         the iframe content arrives.
+    <!-- Plain rectangle / shape fill. Acts as the dashed-outline
+         fallback when there's no iframe to show: (a) the element
+         has no file_path (legacy), (b) the HTML fetch failed.
 
-         `pointer-events-none` is CRITICAL: this div is rendered
-         after the iframe wrapper in DOM order, which puts it ON
-         TOP in the stacking context. Without `pointer-events-none`,
-         it would capture clicks instead of the iframe — which
-         silently breaks Preview mode (user can't click inputs /
-         buttons inside the rendered HTML). With it, clicks pass
-         through to the iframe below, and Edit-mode drag still
-         works because clicks bubble up to the outer wrapper's
-         `@pointerdown` handler. -->
+         BUG FIX (2026-07-26): the previous version rendered this
+         div unconditionally. Because both this div and the iframe
+         wrapper above use `position: absolute; inset: 0` (and there
+         is no `z-index`), the DOM order wins for stacking — this
+         div is ON TOP of the iframe wrapper. Its `backgroundColor:
+         element.fill` (e.g. `#ffffff` for chat-area.html) covered
+         the rendered iframe content, making the canvas appear blank
+         white even when the API had returned real HTML.
+
+         The author had added `pointer-events-none` (so clicks pass
+         through), but `pointer-events` only affects pointer events —
+         NOT visual rendering. The bug was silent: the user only
+         saw the iframe's bg color (often white) and concluded
+         "design mode is white".
+
+         The `v-if` gate below hides the rectangle whenever an
+         iframe is rendering (loaded OR loading). `!htmlBody` covers
+         the loaded case; `!isLoadingHtml` keeps the "loading…"
+         text inside the wrapper visible (the wrapper is BELOW this
+         div in DOM order, so a solid-bg rectangle would otherwise
+         cover the loading text too).
+
+         `pointer-events-none` is still needed when this div IS
+         rendered (the legacy / failed cases) — without it, the
+         dashed-outline div would capture drag/resize/select clicks
+         that should reach the parent DesignElement wrapper. -->
     <div
+      v-if="!htmlBody && !isLoadingHtml"
       class="absolute inset-0 pointer-events-none"
       :style="{
         backgroundColor: element.fill || 'rgba(127, 127, 127, 0.05)',

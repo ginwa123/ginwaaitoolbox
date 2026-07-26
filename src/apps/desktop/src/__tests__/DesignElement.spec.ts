@@ -136,4 +136,31 @@ describe('DesignElement.vue static contract', () => {
     // data-preview-mode attribute exposes the mode for E2E tests:
     expect(source).toContain(':data-preview-mode="previewMode"')
   })
+
+  // Regression test for the 2026-07-26 "design mode is white" bug:
+  // the plain-rectangle fallback div (which provides bg color +
+  // dashed outline for legacy / failed loads) was rendered
+  // UNCONDITIONALLY after the iframe wrapper in DOM order. With
+  // both divs using `position: absolute; inset: 0` and no z-index,
+  // the plain rectangle stacked ON TOP of the iframe and its
+  // solid `backgroundColor: element.fill` (typically `#ffffff`)
+  // completely covered the rendered chat / top-bar / input-area
+  // HTML. The author had added `pointer-events-none` so clicks
+  // passed through, but `pointer-events` only affects pointer
+  // events — NOT visual rendering — so the bug was silent and
+  // looked like "design mode is white".
+  //
+  // The fix: gate the plain rectangle on `!htmlBody && !isLoadingHtml`
+  // so it only renders when there's NO iframe to cover (legacy
+  // elements with no file_path, or HTML fetch failures). The
+  // `!isLoadingHtml` half is required too — otherwise the
+  // rectangle would cover the "loading…" text rendered inside
+  // the iframe wrapper below it.
+  it('hides the plain-rectangle fallback when iframe is rendering', () => {
+    expect(source).toContain('v-if="!htmlBody && !isLoadingHtml"')
+    // Sanity: the wrapper's bg-color style is still applied
+    // unconditionally (it provides the bg color for the iframe
+    // wrapper itself).
+    expect(source).toContain("backgroundColor: element.fill || 'transparent'")
+  })
 })
