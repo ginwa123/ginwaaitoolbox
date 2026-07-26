@@ -164,7 +164,7 @@ The handler is now ~80 lines: 9 numbered phases, each a single named call to a s
 ## System note
 Multiple parallel subagent dispatches triggered LLM API `TooManyRetries` errors. Two consecutive dispatcher failures. Consider switching to me executing the remaining chunks directly (the plan is detailed enough that I can do the implementation myself with text_replace + bash, no need for another subagent round).
 
-## [active] 20260727_141500 — reorganize code (move 11 service files into src/service/)
+## [done] 20260727_141500 — reorganize code (move 11 service files into src/service/)
 
 Scope: minimal-change option A. Move 11 top-level files in src/ that all
 serve the "nalar service {start,stop,status,restart}" lifecycle + crash
