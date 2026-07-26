@@ -1,4 +1,4 @@
-// src/signal_handlers.zig
+// src/service/signal_handlers.zig
 //
 // Signal handlers for the nalar service daemon.
 //

@@ -23,6 +23,39 @@ Detailed patterns live in:
 - If you want to test use process port 8080 and process nalar !!!
 - When create a test make sure its work on platform linux, mac and windows
 
+## 2026-07-27: Reorganize `src/` — 11 service files moved into `src/service/`
+
+The 11 top-level files in `src/` that all serve the `nalar service
+{start,stop,status,restart}` lifecycle + crash reporting are now grouped
+under a new `src/service/` subdirectory. Follows the same pattern as the
+existing `helpers/`, `modules/`, `migrations/`, `apps/`, `ai_workflow/`
+subdirectories.
+
+**What landed.**
+- 11 files moved via `git mv` (history preserved):
+  - `src/service/crash_handler.zig` + `_test.zig` + `_smoke.zig`
+  - `src/service/daemon.zig` + `_test.zig`
+  - `src/service/signal_handlers.zig` + `_test.zig`
+  - `src/service/state_file.zig` + `_test.zig`
+  - `src/service/main_service.zig` + `_test.zig`
+- New `src/service/mod.zig` re-exports all 5 modules
+- `src/root.zig` re-exports via `nalarcore.service.*` AND keeps the
+  backward-compat top-level aliases (`nalarcore.state_file`,
+  `nalarcore.daemon`, etc.) — existing call sites untouched.
+- `src/service/main_service.zig` updated `helpers/mod.zig` →
+  `../helpers/mod.zig` (going up one dir).
+- `scripts/crash_handler_smoke.sh` updated `SMOKE_SRC` path.
+- Doc-comment paths updated across moved files + `src/main.zig` +
+  `src/service/daemon.zig` call-site list.
+
+**What was NOT done (out of scope).**
+- `startup.zig` is still dead code (its `pub fn startup()` is never
+  called; the actual startup is `ai_mod.startup.start()`). Left for a
+  follow-up.
+- `main.zig` is still 763 lines. The `dispatchServiceSubcommand` (~115
+  lines) and the static-file handler duplication (~140 lines) are still
+  inline. Left for a follow-up.
+
 ## 2026-07-25: Design element drag-and-drop wire repaired
 
 ### Symptom (pre-fix)
@@ -115,9 +148,9 @@ pipe leak, `Agent.httpClient` pool leak, `session_to_client_ids` race) all
 manifested as SIGSEGV — and left no entry in `/tmp/agentic_coding.log`.
 
 **What landed.**
-- `src/crash_handler.zig` (312 lines): POSIX `sigaction` for SEGV/BUS/ABRT/ILL/FPE; Windows `SetUnhandledExceptionFilter` via Win32 extern.
-- `src/crash_handler_test.zig`: 10 static-contract tests (TDD red→green).
-- `src/crash_handler_smoke.zig` + `scripts/crash_handler_smoke.sh`: end-to-end smoke (5/5 PASS on Linux).
+- `src/service/crash_handler.zig` (312 lines): POSIX `sigaction` for SEGV/BUS/ABRT/ILL/FPE; Windows `SetUnhandledExceptionFilter` via Win32 extern.
+- `src/service/crash_handler_test.zig`: 10 static-contract tests (TDD red→green).
+- `src/service/crash_handler_smoke.zig` + `scripts/crash_handler_smoke.sh`: end-to-end smoke (5/5 PASS on Linux).
 - `src/main.zig`: `installCrashHandlers()` called after `setPanicLogPath()`.
 - `src/root.zig`: re-export `crash_handler` as `nalarcore.crash_handler`.
 

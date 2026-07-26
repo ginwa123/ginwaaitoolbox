@@ -1,6 +1,6 @@
-// src/state_file_test.zig
+// src/service/state_file_test.zig
 //
-// Tests for src/state_file.zig. Verifies:
+// Tests for src/service/state_file.zig. Verifies:
 //   - readStateFile returns null when the file does not exist
 //   - writeStateFile + readStateFile round-trip a State value
 //   - defaultStatePath returns an XDG-aware path on Linux/macOS

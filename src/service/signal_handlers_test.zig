@@ -1,6 +1,6 @@
-// src/signal_handlers_test.zig
+// src/service/signal_handlers_test.zig
 //
-// Tests for src/signal_handlers.zig.
+// Tests for src/service/signal_handlers.zig.
 //
 // ## POSIX test
 //

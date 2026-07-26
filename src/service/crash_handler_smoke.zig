@@ -1,7 +1,8 @@
-// src/crash_handler_smoke.zig
+// src/service/crash_handler_smoke.zig
 //
-// Tiny standalone binary that exercises src/crash_handler.zig end-to-end.
-// Used by scripts/crash_handler_smoke.sh to verify the production crash
+// Tiny standalone binary that exercises src/service/crash_handler.zig
+// end-to-end. Used by scripts/crash_handler_smoke.sh to verify the
+// production crash
 // handler actually runs when a SIGSEGV is delivered.
 //
 // NOT compiled into the production nalar binary — it's a sibling that

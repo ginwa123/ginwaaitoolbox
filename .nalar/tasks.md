@@ -163,3 +163,29 @@ The handler is now ~80 lines: 9 numbered phases, each a single named call to a s
 
 ## System note
 Multiple parallel subagent dispatches triggered LLM API `TooManyRetries` errors. Two consecutive dispatcher failures. Consider switching to me executing the remaining chunks directly (the plan is detailed enough that I can do the implementation myself with text_replace + bash, no need for another subagent round).
+
+## [active] 20260727_141500 — reorganize code (move 11 service files into src/service/)
+
+Scope: minimal-change option A. Move 11 top-level files in src/ that all
+serve the "nalar service {start,stop,status,restart}" lifecycle + crash
+reporting into a new src/service/ subdirectory. Create service/mod.zig
+that re-exports. Update internal sibling imports. Update root.zig to
+import via service/mod.zig. Update scripts/crash_handler_smoke.sh path.
+Update doc-comment references. Verify with zig build test + zig build.
+
+Files moved:
+- crash_handler.zig / _test.zig / _smoke.zig
+- daemon.zig / _test.zig
+- main_service.zig / _test.zig
+- signal_handlers.zig / _test.zig
+- state_file.zig / _test.zig
+
+Modifications:
+- src/root.zig — re-export paths + test block
+- src/main_service.zig — `helpers/mod.zig` → `../helpers/mod.zig`
+- scripts/crash_handler_smoke.sh — SMOKE_SRC path + doc comments
+- src/main.zig:96 — docstring "See src/crash_handler.zig"
+- src/daemon.zig:613-616 — list of call-site paths
+- All moved files — file-header `// src/FOO.zig` → `// src/service/FOO.zig`
+
+[x] pre-move audit complete (no build.zig refs; 1 script path; 6 doc references)

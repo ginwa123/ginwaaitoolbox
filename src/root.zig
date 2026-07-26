@@ -409,11 +409,16 @@ pub const cronjob = @import("modules/cronjob/mod.zig");
 
 // Decoupled nalar-service (Chunk 3) — re-export the service plumbing so
 // main.zig and other internal callers can `@import("nalarcore").service_*`.
-pub const state_file = @import("state_file.zig");
-pub const daemon = @import("daemon.zig");
-pub const signal_handlers = @import("signal_handlers.zig");
-pub const crash_handler = @import("crash_handler.zig");
-pub const main_service = @import("main_service.zig");
+// Each of these is the same module surfaced under `nalarcore.service.*`
+// (see `src/service/mod.zig`); the top-level aliases here are kept for
+// backward compat with existing call sites that reach through
+// `nalarcore.state_file`, etc. directly.
+pub const service = @import("service/mod.zig");
+pub const state_file = service.state_file;
+pub const daemon = service.daemon;
+pub const signal_handlers = service.signal_handlers;
+pub const crash_handler = service.crash_handler;
+pub const main_service = service.main_service;
 pub const helpers = @import("helpers/mod.zig");
 pub const kerjabot_get_session = @import("ai_workflow/tui/llm_history.zig");
 pub const kerjabot_create_session = @import("ai_workflow/tui/llm_history.zig");
@@ -450,5 +455,5 @@ test {
     _ = @import("modules/test_runner.zig");
     _ = @import("modules/notification/test_runner.zig");
     _ = @import("migrations/test_runner.zig");
-    _ = @import("crash_handler_test.zig"); // crash signal/exception handler contracts
+    _ = @import("service/crash_handler_test.zig"); // crash signal/exception handler contracts
 }

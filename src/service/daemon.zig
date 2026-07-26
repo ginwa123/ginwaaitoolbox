@@ -1,4 +1,4 @@
-// src/daemon.zig
+// src/service/daemon.zig
 //
 // Cross-platform daemonization for the nalar service.
 //
@@ -610,10 +610,10 @@ fn buildEnvBlock(buf: []u16) ![:0]u16 {
 // `*anyopaque`).
 //
 // Previous call sites (now routed via the helper):
-//   src/main_service.zig::serviceStart  (1 site)
-//   src/main_service.zig::serviceStop   (3 sites)
-//   src/main_service.zig::serviceStatus (1 site)
-//   src/daemon_test.zig                 (4 tests, renamed)
+//   src/service/main_service.zig::serviceStart  (1 site)
+//   src/service/main_service.zig::serviceStop   (3 sites)
+//   src/service/main_service.zig::serviceStatus (1 site)
+//   src/service/daemon_test.zig                 (4 tests, renamed)
 //
 // Do NOT re-add `pub fn pidAlive(...)` here — it would re-introduce the
 // Windows compile blocker.

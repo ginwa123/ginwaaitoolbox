@@ -1,4 +1,4 @@
-// src/main_service.zig
+// src/service/main_service.zig
 //
 // Implements the `nalar service {start,stop,status,restart}` subcommand.
 // The CLI dispatch lives in src/main.zig — when argv[1] == "service",
@@ -19,7 +19,8 @@ const builtin = @import("builtin");
 const state_file = @import("state_file.zig");
 const daemon = @import("daemon.zig");
 const signal_handlers = @import("signal_handlers.zig");
-const helpers = @import("helpers/mod.zig");
+// helpers/ lives at src/helpers/, one directory up from src/service/.
+const helpers = @import("../helpers/mod.zig");
 
 pub const Subcommand = union(enum) {
     start: struct {

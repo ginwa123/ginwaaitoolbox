@@ -1,4 +1,4 @@
-// src/state_file.zig
+// src/service/state_file.zig
 //
 // Reads and writes the nalar service state file (state.json).
 //
