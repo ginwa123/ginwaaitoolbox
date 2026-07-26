@@ -45,7 +45,7 @@ silently discarded them.
 
 ## 2026-07-25: Design mode multi-select + group drag
 
-Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 2)
+Plan: docs/SPEC.md §3.8 (Chunk 2)
 
 ### What landed
 - Selection is now `Set<string>` instead of `string | null`. Shift+click toggles membership; plain click is exclusive.
@@ -56,7 +56,7 @@ Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 2
 
 ## 2026-07-25: Design mode snap-to-edges + alignment guides
 
-Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 3)
+Plan: docs/SPEC.md §3.8 (Chunk 3)
 
 ### What landed
 - Pure-function `computeSnapDelta` snaps within 6 design-px of any other element's edge/center.
@@ -66,7 +66,7 @@ Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 3
 
 ## 2026-07-25: Design mode keyboard nudge
 
-Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 4)
+Plan: docs/SPEC.md §3.8 (Chunk 4)
 
 ### What landed
 - Arrow keys move the selection by 1 design-px: ←/→ for x, ↑/↓ for y.
@@ -76,7 +76,7 @@ Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md (Chunk 4
 
 ## 2026-07-25: Design mode element drag-and-drop (Figma-style) — COMPLETE
 
-Plan: docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md
+Plan: docs/SPEC.md §3.8
 
 ### What landed (all 5 chunks)
 - **Drag-to-move works** (was a TODO no-op in AppLayout.handleDesignUpdateElement).
@@ -138,6 +138,7 @@ $ zig build test: 1850/1859 pass (3 pre-existing workflow_retry_delay_test failu
 
 **Pre-existing bug surfaced but NOT fixed here.** `root.zig::panicHandler` calls `std.c.fopen(path, "a")` with `path` being `[]const u8` (NOT null-terminated). On Linux+glibc this accidentally works, but Zig 0.16 should reject it at compile time. It escapes type-checking only because lazy analysis never instantiates `panicHandler`'s body for the test target's module graph. The new `crash_handler.zig` works around it by writing the NUL sentinel explicitly into a stack buffer.
 
-Plan: docs/superpowers/plans/2026-07-26-crash-signal-handler.md (TBD)
+Plan: docs/SPEC.md §3.1 (Backend — Core HTTP / Crash Handler)
 Branch: worktree/crash-handler
 Commit: 0418bc07
+PR: (see SPEC.md §10.1)

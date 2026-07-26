@@ -56,7 +56,7 @@ Both routes reuse the existing `loadMoreTasks` store action (no new store change
 
 ## Related
 
-- `docs/superpowers/plans/2026-07-24-kanban-lazy-load-tasks.md` — the full plan
+- `docs/SPEC.md` §3.7 (Frontend — Kanban, lazy-load tasks entry) — the full plan was consolidated into the spec
 - `src/ai_workflow/tui/http_handlers/tasks_list.zig:24-27` — backend's `DEFAULT_PAGE_SIZE=20` and `MAX_PAGE_SIZE=100` (the source of truth for the cap)
 - `src/apps/desktop/src/stores/workspaces.ts:846-863` — `fetchKanbanTasks` (the fix)
 - `src/apps/desktop/src/stores/workspaces.ts:1420-1452` — `loadMoreTasks` (the existing primitive the kanban now reuses)

@@ -30,6 +30,23 @@ Nalar AI agent backend (Zig 0.16) with Vue 3 desktop app. This file is the
 **canonical source of project conventions**. See `.nalar/memories/` for
 detailed patterns and `~/.config/nalar/memories/` for cross-project lessons.
 
+### 📋 Read `docs/SPEC.md` first — single source of truth
+
+Before starting any non-trivial task, read **`docs/SPEC.md`** — it is the
+consolidated project specification (compiled from all 178 historical plan
+files in `docs/superpowers/plans/` and `docs/plans/`, which have been
+deleted). The spec covers:
+
+- Current tech stack, repo layout, operating conventions (Linux/macOS/Windows)
+- Status of every feature domain (✅ Implemented / 🟡 In Progress / ⏳ Pending / ❌ Superseded / 🗑️ Not Relevant)
+- Pending items that still need work (start there for new contributor onboarding)
+- Superseded plans and what replaced them
+- PR index for landed features
+
+**The plan/spec/tree rule of thumb**: when starting a new feature, look in
+`docs/SPEC.md` §3 ("Plans by Domain") for the closest architectural neighbor,
+then check `§5 Pending` to make sure you are not duplicating existing work.
+
 ### Where memories live
 
 Detailed patterns live in:
@@ -406,8 +423,8 @@ but the parent silently discarded them.
 
 ### 2026-07-25: Design mode multi-select + group drag
 
-Plan: `docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md`
-(Chunk 2)
+Plan: `docs/SPEC.md` §3.8 (Frontend — Design Canvas) — chunk 2 of the
+design-element-drag-and-drop feature.
 
 **What landed.**
 
@@ -422,8 +439,8 @@ Plan: `docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md`
 
 ### 2026-07-25: Design mode snap-to-edges + alignment guides
 
-Plan: `docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md`
-(Chunk 3)
+Plan: `docs/SPEC.md` §3.8 (Frontend — Design Canvas) — chunk 3 of the
+design-element-drag-and-drop feature.
 
 **What landed.**
 
@@ -438,8 +455,8 @@ Plan: `docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md`
 
 ### 2026-07-25: Design mode keyboard nudge
 
-Plan: `docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md`
-(Chunk 4)
+Plan: `docs/SPEC.md` §3.8 (Frontend — Design Canvas) — chunk 4 of the
+design-element-drag-and-drop feature.
 
 **What landed.**
 
@@ -452,7 +469,7 @@ Plan: `docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md`
 
 ### 2026-07-25: Design mode element drag-and-drop (Figma-style) — COMPLETE
 
-Plan: `docs/superpowers/plans/2026-07-25-design-element-drag-and-drop.md`
+Plan: `docs/SPEC.md` §3.8 (Frontend — Design Canvas).
 
 **What landed (all 5 chunks).**
 

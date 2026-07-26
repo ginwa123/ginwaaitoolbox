@@ -253,7 +253,7 @@ The bash tool's foreground path uses `waitPidBounded` (raw libc `waitpid`) inste
 
 **Root cause**: `bash.zig` foreground path (`src/modules/agent/tools/bash.zig:404-770`) has TWO switch statements, each with `.reaped`, `.no_child`, `.grace_period_expired`, and `.unexpected_error` arms. The `.grace_period_expired`/`.unexpected_error` arms DID close pipes inline (defending against D-state). The `.reaped`/`.no_child` arms (the happy path) broke out of the loop WITHOUT closing pipes. After the 2026-07-15 IO.Select→waitPidBounded refactor, nobody noticed the contract was broken.
 
-**Fix** (commit `2f873dbc`, plan `docs/superpowers/plans/2026-07-24-bash-tool-pipe-leak.md`): add a single post-loop pipe close AFTER `child_term = blk: { ... };` exits, BEFORE `stdout_thread.join()`. The block runs once for every code path that exits the loop, removing the per-arm duplication.
+**Fix** (commit `2f873dbc`, plan `docs/SPEC.md` §3.5 — bash-tool-pipe-leak): add a single post-loop pipe close AFTER `child_term = blk: { ... };` exits, BEFORE `stdout_thread.join()`. The block runs once for every code path that exits the loop, removing the per-arm duplication.
 
 ```zig
 // After: child_term = blk: { ... };

@@ -27,7 +27,7 @@
 
 Branch: `feature/memories-settings-menu`
 Baseline: backend 467/470 pass, frontend type-check clean, vitest 238/238
-Plan: `docs/plans/2026-06-17-add-memories-settings-menu.md`
+Plan: `docs/SPEC.md` §3.9 (Settings — Memories tab)
 Expected backend delta: +~17 (9 helper tests + 8 handler tests)
 Expected frontend delta: +~2 spec files
 
@@ -95,8 +95,8 @@ Expected frontend delta: +~2 spec files
 ## [done] 20260618_102200 — set_git_worktree tool + sessions.git_worktree_cwd plan (v1 — runtime CWD override deferred to follow-up)
 
 Branch: `feature/set-git-worktree` (worktree at `.worktrees/feature-set-git-worktree`)
-Plan: `docs/plans/2026-06-18-set-git-worktree-tool.md` (executed)
-Follow-up: `docs/plans/2026-06-18-set-git-worktree-cwd-override.md` (deferred — see "Runtime CWD override" below)
+Plan: `docs/SPEC.md` §3.5 (Backend — Git ops) — set-git-worktree-tool (executed)
+Follow-up: `docs/SPEC.md` §5 Pending — set-git-worktree-cwd-override (deferred — see "Runtime CWD override" below)
 Status: All 4 chunks shipped. v1.0 complete; runtime CWD-override deliberately deferred to a tracked follow-up (not orphaned — see NALAR.md entry for the `cwd_override` dead-letter field warning).
 
 ### Commits (in order)
@@ -109,14 +109,14 @@ Status: All 4 chunks shipped. v1.0 complete; runtime CWD-override deliberately d
 - The `cwd_override: ?[]const u8 = null` field on `ToolExecContext` is declared and accepted by `execSetGitWorktree`'s input struct, but is **never read, never populated, and never mutated anywhere in the dispatch path** — it is dead-letter code as of v1.0.
 - Effect: calling `set_git_worktree` with `path=/abs/.worktrees/foo` persists the binding to the DB, but the next `execBash` / `execReadFile` / `execWriteFile` / `execTextReplace` / `execGlob` / `execSearch` call still runs in `ctx.cwd` (the session's original cwd), not the worktree path.
 - Workaround for the LLM today: re-call `set_git_worktree` to refresh; or pass absolute paths in every `bash` invocation.
-- Follow-up plan `docs/plans/2026-06-18-set-git-worktree-cwd-override.md` (307 lines, 5 chunks) implements the runtime override by switching `ToolExecFunc` to `fn (ctx: *ToolExecContext, tc) !R` (pointer-pass) and reading `ctx.cwd_override ?? ctx.cwd` in the 5 filesystem tools.
+- Follow-up plan `docs/SPEC.md` §5 Pending (set-git-worktree-cwd-override) implements the runtime override by switching `ToolExecFunc` to `fn (ctx: *ToolExecContext, tc) !R` (pointer-pass) and reading `ctx.cwd_override ?? ctx.cwd` in the 5 filesystem tools.
 - NALAR.md has a dedicated "DEAD-LETTER FIELD" entry warning future agents not to remove the field and not to assume it's populated at runtime.
 
 ### Final verification
 - [x] Backend: `zig build test` clean (534 tests, +20 from baseline 514)
 - [x] Frontend: `bun run build` clean, `bunx vitest run` 351/351 pass (+4)
 - [x] 4 commits on `feature/set-git-worktree` branch, no uncommitted changes in worktree
-- [x] Follow-up plan filed at `docs/plans/2026-06-18-set-git-worktree-cwd-override.md` (gitignored via `/docs`)
+- [x] Follow-up plan filed at `docs/SPEC.md` §5 Pending (set-git-worktree-cwd-override)
 - [x] NALAR.md updated with the `cwd_override` dead-letter warning
 - [x] .nalar/tasks.md updated (this block)
 - [ ] Manual smoke test (cannot run — no headless browser in this env; HTTP-level path proven by the static wiring tests)
@@ -151,7 +151,7 @@ The handler is now ~80 lines: 9 numbered phases, each a single named call to a s
 - [x] Pre-existing `install:linux:system` failure unchanged (separate, pre-existing issue per `nalar-build-cross-compile-blocked.md`)
 
 ## [active] 2026-07-16 — search_history rewrite plan
-- [x] Plan written to docs/superpowers/plans/2026-07-16-search-history-rewrite.md (1731 lines)
+- [x] Plan written to `docs/SPEC.md` §3.2 (search-history-rewrite) — the original plan was 1731 lines, now consolidated into SPEC.md
 - [x] Plan revision: mode="session" returns ALL is_feed_to_llm values (added include_all field)
 - [x] Worktree created at .worktrees/search-history-rewrite on branch worktree/search-history-rewrite
 - [x] Baseline verified: 1566/1569 tests pass (3 skipped, 0 failures)

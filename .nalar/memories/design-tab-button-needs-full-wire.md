@@ -157,7 +157,7 @@ unrelated to this change).
 
 ## Reference
 
-- Plan: `docs/superpowers/plans/2026-07-25-design-page-delete-button.md`
+- Plan: `docs/SPEC.md` §3.8 (Design Canvas — page delete button)
 - Branch: `worktree/design-page-delete-button`
 - Worktree: `/home/ginwa/agentic_coding_zig/ginwaaitoolbox_worktrees/design-page-delete-button`
 - Mirror: every layer pattern matches the existing `deleteElement`

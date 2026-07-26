@@ -1,6 +1,6 @@
 # nalar — `unify-frontend-sse` plan: `KanbanEvent`/`LlmChunkEvent` type-name mismatch
 
-The unify-frontend-sse plan (`docs/superpowers/plans/2026-06-30-unify-frontend-sse.md`,
+The unify-frontend-sse plan (`docs/SPEC.md` §3.2 — superseded by §3.6 single-sse-all-sessions,
 Chunk 1, lines 184-190) imports two type names from `../api` that **do not exist**
 in `src/apps/desktop/src/api/index.ts`:
 
