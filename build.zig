@@ -162,6 +162,46 @@ pub fn build(b: *std.Build) void {
 
     const webapp_dir = "src/apps/desktop";
 
+    // === Pre-flight: vue-tsc needs Node, not just bun ===
+    //
+    // `bun run build` invokes `vue-tsc --build` (via the type-check npm
+    // script) + `vite build` in parallel. vue-tsc 3.x relies on
+    // @volar/typescript monkey-patching `fs.readFileSync` to register
+    // `.vue` as a TypeScript source-file extension and inject the Vue
+    // language plugin. **Bun's native CJS loader bypasses `fs.readFileSync`
+    // silently** — the patch is a no-op, no `.vue` extension gets
+    // registered, and `vue-tsc --build` exits with hundreds of
+    // `TS2307: Cannot find module '.../*.vue'` errors that vite never sees.
+    // The bundling step succeeds, but `run-p` propagates the type-check
+    // exit code and the whole `bun run build` fails.
+    //
+    // node + npm must be on PATH so the developer (or CI) can invoke
+    // vue-tsc via Node's real CJS loader. We fail fast with a clear
+    // error rather than letting vue-tsc's cryptic TS2307 noise leak out.
+    const check_webapp_node = b.addSystemCommand(&.{
+        "sh", "-c",
+        \\
+        \\for tool in node npm; do
+        \\    command -v "$tool" >/dev/null 2>&1 || {
+        \\        echo "" >&2
+        \\        echo "ERROR: '$tool' was not found on PATH." >&2
+        \\        echo "  vue-tsc (which runs inside 'bun run build' via the type-check" >&2
+        \\        echo "  npm script) patches tsc's source via fs.readFileSync to" >&2
+        \\        echo "  register .vue as a TypeScript source extension. Bun's native" >&2
+        \\        echo "  CJS loader bypasses that patching silently, so" >&2
+        \\        echo "  'bun run type-check' fails with hundreds of TS2307 errors." >&2
+        \\        echo "" >&2
+        \\        echo "  Install nodejs + npm for your platform:" >&2
+        \\        echo "    Arch Linux:   sudo pacman -S --needed nodejs npm" >&2
+        \\        echo "    Debian/Ubnt:  sudo apt install nodejs npm" >&2
+        \\        echo "    macOS:        brew install node" >&2
+        \\        echo "    Alpine:       apk add nodejs npm" >&2
+        \\        echo "" >&2
+        \\        exit 1
+        \\    }
+        \\done
+    });
+
     // Check if node_modules exists — if so, skip `bun install` (saves 1-2s
     // per build). Uses platform-specific syscalls: faccessat(2) on Linux,
     // std.fs.cwd().openDir on other platforms (the build runner doesn't
@@ -188,6 +228,7 @@ pub fn build(b: *std.Build) void {
 
     const bun_build = b.addSystemCommand(&.{ "bun", "run", "build" });
     bun_build.setCwd(b.path(webapp_dir));
+    bun_build.step.dependOn(&check_webapp_node.step);
     build_webapp_step.dependOn(&bun_build.step);
 
     // === Webapp rebuild workflow ===
@@ -244,6 +285,7 @@ pub fn build(b: *std.Build) void {
     const webapp_rebuild_bun = b.addSystemCommand(&.{ "bun", "run", "build" });
     webapp_rebuild_bun.setCwd(b.path(webapp_dir));
     webapp_rebuild_bun.step.dependOn(&webapp_rebuild_clean.step);
+    webapp_rebuild_bun.step.dependOn(&check_webapp_node.step);
     webapp_rebuild_step.dependOn(&webapp_rebuild_bun.step);
 
     // The codegen step is shared with the cached path — its output
