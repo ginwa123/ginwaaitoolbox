@@ -412,6 +412,7 @@ pub const cronjob = @import("modules/cronjob/mod.zig");
 pub const state_file = @import("state_file.zig");
 pub const daemon = @import("daemon.zig");
 pub const signal_handlers = @import("signal_handlers.zig");
+pub const crash_handler = @import("crash_handler.zig");
 pub const main_service = @import("main_service.zig");
 pub const helpers = @import("helpers/mod.zig");
 pub const kerjabot_get_session = @import("ai_workflow/tui/llm_history.zig");
@@ -449,4 +450,5 @@ test {
     _ = @import("modules/test_runner.zig");
     _ = @import("modules/notification/test_runner.zig");
     _ = @import("migrations/test_runner.zig");
+    _ = @import("crash_handler_test.zig"); // crash signal/exception handler contracts
 }

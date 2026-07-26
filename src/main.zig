@@ -89,6 +89,13 @@ pub fn main(init: std.process.Init) !void {
     defer allocator.free(log_file_path);
 
     nalarcore.setPanicLogPath(log_file_path);
+    // Install OS-level crash handlers (SIGSEGV / SIGBUS / SIGABRT /
+    // SIGILL / SIGFPE on POSIX; EXCEPTION_ACCESS_VIOLATION / etc on
+    // Windows) BEFORE we start the HTTP server. The handler writes a
+    // backtrace to the same log_file_path that panicHandler uses.
+    // See src/crash_handler.zig for the contract.
+    nalarcore.crash_handler.setCrashLogPath(log_file_path);
+    nalarcore.crash_handler.installCrashHandlers();
 
     nalarcore.loggermod.initGlobalColor(allocator, io, .{
         .min_level = .debug,
