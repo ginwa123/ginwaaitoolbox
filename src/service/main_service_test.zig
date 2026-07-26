@@ -1,4 +1,4 @@
-// src/main_service_test.zig
+// src/service/main_service_test.zig
 //
 // Tests for the `nalar service` subcommand parser + idempotent stop.
 

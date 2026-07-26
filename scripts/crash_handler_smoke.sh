@@ -2,9 +2,9 @@
 #
 # scripts/crash_handler_smoke.sh
 #
-# End-to-end smoke test for src/crash_handler.zig.
+# End-to-end smoke test for src/service/crash_handler.zig.
 #
-# Compiles src/crash_handler_smoke.zig as a standalone binary that uses
+# Compiles src/service/crash_handler_smoke.zig as a standalone binary that uses
 # the production crash_handler module, invokes it with a known log path
 # + signal name, and asserts the log file ends up with a "=== CRASH:"
 # header. Each signal is tested separately so a regression on one signal
@@ -29,10 +29,15 @@
 
 set -uo pipefail
 
-WORKTREE="/home/ginwa/agentic_coding_zig/ginwaaitoolbox_worktrees/crash-handler"
+# Auto-detect the worktree root from the script's own location so this
+# script works regardless of which worktree is checked out. The
+# hardcoded path that lived here previously was tied to the original
+# crash-handler PR worktree and broke the moment any other worktree
+# tried to run the smoke test.
+WORKTREE="$(git -C "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" rev-parse --show-toplevel)"
 LOG_FILE="/tmp/crash_handler_smoke.log"
 SMOKE_BIN="/tmp/crash_handler_smoke"
-SMOKE_SRC="${WORKTREE}/src/crash_handler_smoke.zig"
+SMOKE_SRC="${WORKTREE}/src/service/crash_handler_smoke.zig"
 SMOKE_DEPS="${WORKTREE}/src/root.zig"
 SMOKE_DEPS_DIR="${WORKTREE}/src"
 

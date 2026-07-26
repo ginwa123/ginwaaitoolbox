@@ -1,6 +1,6 @@
-// src/daemon_test.zig
+// src/service/daemon_test.zig
 //
-// Tests for src/daemon.zig (cross-platform daemonization).
+// Tests for src/service/daemon.zig (cross-platform daemonization).
 //
 // ## POSIX daemonize
 //
@@ -37,7 +37,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const testing = std.testing;
-const helpers = @import("helpers/mod.zig");
+// helpers/ lives at src/helpers/, one directory up from src/service/.
+const helpers = @import("../helpers/mod.zig");
 const daemon = @import("daemon.zig");
 
 test "isProcessRunning returns false for pid 0" {

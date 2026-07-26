@@ -93,7 +93,7 @@ pub fn main(init: std.process.Init) !void {
     // SIGILL / SIGFPE on POSIX; EXCEPTION_ACCESS_VIOLATION / etc on
     // Windows) BEFORE we start the HTTP server. The handler writes a
     // backtrace to the same log_file_path that panicHandler uses.
-    // See src/crash_handler.zig for the contract.
+    // See src/service/crash_handler.zig for the contract.
     nalarcore.crash_handler.setCrashLogPath(log_file_path);
     nalarcore.crash_handler.installCrashHandlers();
 

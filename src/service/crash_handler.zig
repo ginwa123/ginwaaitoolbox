@@ -1,4 +1,4 @@
-// src/crash_handler.zig
+// src/service/crash_handler.zig
 //
 // Crash signal/exception handler — the missing sibling to root.zig's
 // `panicHandler`. The panic handler catches Zig-level panics (unreachable,

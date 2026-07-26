@@ -1,6 +1,6 @@
-// src/crash_handler_test.zig
+// src/service/crash_handler_test.zig
 //
-// Tests for src/crash_handler.zig (crash signal/exception handler).
+// Tests for src/service/crash_handler.zig (crash signal/exception handler).
 //
 // ## Behavioural test strategy
 //
