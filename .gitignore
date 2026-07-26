@@ -31,3 +31,4 @@ test_*.log
 # Functional test venv + cache (created by `zig build functional-test`)
 .venv-func/
 .pytest_cache/
+tests/functional/__pycache__/
