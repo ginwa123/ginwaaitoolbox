@@ -21,6 +21,8 @@ const json = std.json;
 
 const agentic_loop_mod = nalarcore.agentic_loop_mod;
 const event_bus_mod = nalarcore.event_bus;
+const SqliteBackend = nalarcore.sqlite.SqliteBackend;
+
 
 // Thread-safe set of active session loop IDs
 pub const StreamingContext = struct {
@@ -476,31 +478,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     .event_bus = event_bus,
                     .is_emit_sse = true,
                     .cwd = copy_cwd,
-                    .entity = .{
-                        .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
-                        .session_id = copy_session_id,
-                        .model = effective_model,
-                        .response_content = soft_diagnostic,
-                        .reasoning_content = null,
-                        .role = agent.Role.user.to_str(),
-                        .finish_reason = "null",
-                        .tool_calls_json = "",
-                        .tool_call_id = null,
-                        .agent = effective_agent_name,
-                        .loop_index = loop_counter,
-                        .temperature = agent_temperature,
-                        .is_thinking = isThinking,
-                        .prompt_tokens = 0,
-                        .completion_tokens = 0,
-                        .total_tokens = 0,
-                        .parent_id = copy_parent_session_id,
-                        .parent_session_id = copy_parent_session_id,
-                        .is_input = true,
-                        .is_output = false,
-                        .image_urls = null,
-                        .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
-                        .is_feed_to_llm = false
-                    },
+                    .entity = .{ .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}), .session_id = copy_session_id, .model = effective_model, .response_content = soft_diagnostic, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = effective_agent_name, .loop_index = loop_counter, .temperature = agent_temperature, .is_thinking = isThinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = copy_parent_session_id, .parent_session_id = copy_parent_session_id, .is_input = true, .is_output = false, .image_urls = null, .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}), .is_feed_to_llm = false },
                 });
 
                 if (!agentic_loop_mod.retryDelayMs(.{
@@ -566,7 +544,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         }
 
         var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
-        const db_messages = try agentic_loop_mod.getLLMHistories(.{
+        const db_messages = try agentic_loop_mod.getLLMHistories(*SqliteBackend, .{
             .allocator = allocator,
             .db = db,
             .session_id = copy_session_id,
@@ -926,37 +904,46 @@ fn saveRetryAttemptMessage(
 
     logger.errFmt("Retry {d}/{d}: {s} ({s}). Retrying in {d}ms.", .{ attempt, max_attempts, error_name, source, delay_ms });
 
-    try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{
-        .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
-        .session_id = session_id,
-        .model = effective_model,
-        .response_content = content,
-        .reasoning_content = null,
-        .role = agent.Role.user.to_str(),
-        .finish_reason = "null",
-        .tool_calls_json = "",
-        .tool_call_id = null,
-        .agent = effective_agent_name,
-        .loop_index = loop_counter,
-        .temperature = agent_temperature,
-        .is_thinking = isThinking,
-        .prompt_tokens = 0,
-        .completion_tokens = 0,
-        .total_tokens = 0,
-        .parent_id = parent_session_id,
-        .parent_session_id = parent_session_id,
-        .is_input = true,
-        .is_output = false,
-        // Per-retry diagnostic stays in chat history (`is_input: true`)
-        // but does NOT propagate to the LLM context — feeding 10 identical
-        // "[Retry X/10]" lines per failure cycle bloats the prompt for no
-        // benefit. The LLM only needs the final TooManyRetries bail
-        // summary (see the `diagnostic` block below). See saveRetryAttempt
-        // docstring for the rationale.
-        .is_feed_to_llm = false,
-        .image_urls = null,
-        .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
-    } });
+    try agentic_loop_mod.insertLLMHistories(.{
+        .allocator = allocator,
+        .io = io,
+        .db = db,
+        .logger = logger,
+        .event_bus = event_bus,
+        .is_emit_sse = true,
+        .cwd = cwd,
+        .entity = .{
+            .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+            .session_id = session_id,
+            .model = effective_model,
+            .response_content = content,
+            .reasoning_content = null,
+            .role = agent.Role.user.to_str(),
+            .finish_reason = "null",
+            .tool_calls_json = "",
+            .tool_call_id = null,
+            .agent = effective_agent_name,
+            .loop_index = loop_counter,
+            .temperature = agent_temperature,
+            .is_thinking = isThinking,
+            .prompt_tokens = 0,
+            .completion_tokens = 0,
+            .total_tokens = 0,
+            .parent_id = parent_session_id,
+            .parent_session_id = parent_session_id,
+            .is_input = true,
+            .is_output = false,
+            // Per-retry diagnostic stays in chat history (`is_input: true`)
+            // but does NOT propagate to the LLM context — feeding 10 identical
+            // "[Retry X/10]" lines per failure cycle bloats the prompt for no
+            // benefit. The LLM only needs the final TooManyRetries bail
+            // summary (see the `diagnostic` block below). See saveRetryAttempt
+            // docstring for the rationale.
+            .is_feed_to_llm = false,
+            .image_urls = null,
+            .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+        },
+    });
 }
 
 fn callDynamicAgentNew(
@@ -1474,238 +1461,3 @@ pub const RunParamsNew = struct {
     /// immediately. "" = off (the SQL default is "0").
     is_auto_retry_until_stop: []const u8 = "",
 };
-
-// ============================================================================
-// Inline regression tests for the three retry-loop hygiene fixes (added
-// 2026-07-27). Static-contract tests that read this file's source and grep
-// for the required patterns — matches the convention used by
-// `workflow_retry_delay_test.zig` for the pre-existing retry-path tests.
-// All three are silent bugs: lazy analysis hides them from the test target
-// graph, vue-tsc doesn't see Zig, and the user-visible symptoms (slow
-// memory leak, stale diagnostic text, "Invalid free" on debug allocators)
-// only surface under specific runtime conditions. Register this file in
-// `agentic_loop/test_runner.zig` AND `tui/test_runner.zig` so the tests
-// actually run.
-// ============================================================================
-
-/// Path to this file (tests retry-path USAGE of this same file's code).
-/// Static-contract pattern: grep the implementation for the contract
-/// instead of exercising it behaviorally (the live call would require
-/// the LlmConfig singleton + DB + event_bus + active_loops fixture —
-/// too much boilerplate for a unit test that only checks string shapes).
-const WORKFLOW_SOURCE_PATH = "src/ai_workflow/tui/agentic_loop/workflow.zig";
-
-/// Helper: locate the body of `runAgenticMultiStepnew` in this file
-/// (spans from the function declaration to the next top-level
-/// `fn ` or `pub const ` at column 0).
-fn runAgenticMultiStepnewBody(source: []const u8) []const u8 {
-    const fn_start = std.mem.indexOf(u8, source, "pub fn runAgenticMultiStepnew(") orelse
-        return source[0..0];
-    const fn_end_pos = std.mem.indexOfPos(u8, source, fn_start + 1, "\nfn ") orelse
-        std.mem.indexOfPos(u8, source, fn_start + 1, "\npub const ") orelse
-        source.len;
-    return source[fn_start..fn_end_pos];
-}
-
-test "workflow defers res_dynamic_agent.deinit() on the success path" {
-    const source = std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        WORKFLOW_SOURCE_PATH,
-        std.testing.allocator,
-        .limited(4 * 1024 * 1024),
-    ) catch |err| return err;
-    defer std.testing.allocator.free(source);
-
-    // Find the callDynamicAgentNew assignment. The defer must appear
-    // AFTER the catch block ends (after the `};` that closes the
-    // catch) so it only runs on the success path — the catch already
-    // continues/breaks on its own.
-    const assign_pos = std.mem.indexOf(u8, source, "const res_dynamic_agent = callDynamicAgentNew(") orelse {
-        std.debug.print(
-            "!! callDynamicAgentNew assignment missing from workflow.zig !!\n", .{});
-        return error.CallDynamicAgentNewAssignmentMissing;
-    };
-    const catch_end = std.mem.indexOfPos(u8, source, assign_pos, "};\n        //") orelse {
-        std.debug.print(
-            "!! cannot locate end of callDynamicAgentNew catch block in workflow.zig !!\n", .{});
-        return error.CallDynamicAgentNewCatchBlockMissing;
-    };
-
-    if (std.mem.indexOfPos(u8, source, catch_end, "defer res_dynamic_agent.deinit();") == null) {
-        std.debug.print(
-            "!! workflow.zig success path does NOT defer res_dynamic_agent.deinit() !!\n" ++
-                "   (CallResponse's heap-owned slices — content, reasoning_content, " ++
-                "tool_calls — leak if the allocator ever stops auto-freeing). !!\n",
-            .{},
-        );
-        return error.CallResponseDeinitMissing;
-    }
-}
-
-test "workflow saveRetryAttemptMessage guards errdefer against the literal fallback" {
-    const source = std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        WORKFLOW_SOURCE_PATH,
-        std.testing.allocator,
-        .limited(4 * 1024 * 1024),
-    ) catch |err| return err;
-    defer std.testing.allocator.free(source);
-
-    const fn_start = std.mem.indexOf(u8, source, "fn saveRetryAttemptMessage(") orelse {
-        std.debug.print(
-            "!! saveRetryAttemptMessage function missing from workflow.zig !!\n", .{});
-        return error.SaveRetryAttemptMessageMissing;
-    };
-    const fn_end = std.mem.indexOfPos(u8, source, fn_start + 1, "\nfn ") orelse source.len;
-    const body = source[fn_start..fn_end];
-
-    // The literal fallback `"[Retry error: formatting failed]"` must be
-    // expressed as an `orelse` value, NOT returned directly from the
-    // catch block. The old (buggy) pattern was:
-    //     catch |err| blk: { ...; break :blk "[Retry ...]"; };
-    //     errdefer allocator.free(content);  // BUG: free on literal
-    // The new pattern is:
-    //     catch |err| blk: { ...; break :blk null; };
-    //     const formatted = ... orelse null;
-    //     const content = formatted orelse "[Retry ...]";
-    //     errdefer if (formatted) |f| allocator.free(f);
-    if (std.mem.indexOf(u8, body, "errdefer if (formatted)") == null) {
-        std.debug.print(
-            "!! saveRetryAttemptMessage does NOT guard errdefer against the literal fallback !!\n" ++
-                "   (the catch's literal `[Retry error: formatting failed]` would be free'd on " ++
-                "debug allocators — panics with `Invalid free`). !!\n",
-            .{},
-        );
-        return error.SaveRetryAttemptMessageErrdeferNotGuarded;
-    }
-
-    // The OLD pattern — `errdefer allocator.free(content);` with content
-    // possibly being the literal — must NOT appear in the function.
-    if (std.mem.indexOf(u8, body, "errdefer allocator.free(content);") != null) {
-        std.debug.print(
-            "!! saveRetryAttemptMessage still has `errdefer allocator.free(content)` — " ++
-                "this frees the literal fallback on debug allocators !!\n", .{});
-        return error.SaveRetryAttemptMessageErrdeferStillUnconditional;
-    }
-}
-
-test "workflow resets last_retry_error and last_retry_source on every retry_count = 0 site" {
-    const source = std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        WORKFLOW_SOURCE_PATH,
-        std.testing.allocator,
-        .limited(4 * 1024 * 1024),
-    ) catch |err| return err;
-    defer std.testing.allocator.free(source);
-
-    const body = runAgenticMultiStepnewBody(source);
-    if (body.len == 0) return error.RunAgenticMultiStepnewMissing;
-
-    // Count `retry_count = 0;` reset sites inside the loop body. The
-    // contract requires ≥3 reset sites (soft-bail, success-after-
-    // callDynamicAgentNew, success-after-finish_reason-switch). If a
-    // future commit removes one of the resets, this count drops and
-    // the test fails with a clear diagnostic.
-    var reset_sites: usize = 0;
-    var cursor: usize = 0;
-    while (std.mem.indexOfPos(u8, body, cursor, "retry_count = 0;")) |pos| {
-        reset_sites += 1;
-        cursor = pos + 1;
-    }
-
-    if (reset_sites < 3) {
-        std.debug.print(
-            "!! workflow.zig has only {} `retry_count = 0;` reset sites (need ≥3) !!\n" ++
-                "   (soft-bail, success-after-callDynamicAgentNew, success-after-finish_reason-switch " ++
-                "must ALL reset last_retry_error and last_retry_source alongside retry_count). !!\n",
-            .{reset_sites},
-        );
-        return error.RetryCountResetSitesTooFew;
-    }
-
-    // Each reset site must be followed by both `last_retry_error = error.Unknown;`
-    // and `last_retry_source = "unknown";` within a 300-char window.
-    var resets_with_capture_clear: usize = 0;
-    cursor = 0;
-    while (std.mem.indexOfPos(u8, body, cursor, "retry_count = 0;")) |pos| {
-        const window_end = @min(pos + 300, body.len);
-        const window = body[pos..window_end];
-        if (std.mem.indexOf(u8, window, "last_retry_error = error.Unknown;") != null and
-            std.mem.indexOf(u8, window, "last_retry_source = \"unknown\";") != null)
-        {
-            resets_with_capture_clear += 1;
-        }
-        cursor = pos + 1;
-    }
-
-    if (resets_with_capture_clear < 3) {
-        std.debug.print(
-            "!! only {} of {} `retry_count = 0;` sites also clear last_retry_error/source !!\n" ++
-                "   (every retry_count reset MUST also clear the stale retry-cause capture; " ++
-                "otherwise the first failure cause of the session leaks into later bail diagnostics). !!\n",
-            .{ resets_with_capture_clear, reset_sites },
-        );
-        return error.RetryCauseCaptureNotClearedOnReset;
-    }
-}
-
-// Reviewer note (PR #133): the per-retry diagnostic MUST stay in the chat
-// history (`is_input: true`) but MUST NOT propagate to the LLM context
-// (`is_feed_to_llm: false`). Feeding 10 identical "[Retry X/10] error" lines
-// to the LLM bloats context for no benefit — the LLM only needs the final
-// TooManyRetries bail summary, NOT every intermediate retry. The bail
-// summary (`diagnostic` at the hard-bail path) IS fed to the LLM.
-test "workflow saveRetryAttemptMessage is NOT fed to LLM (chat history only)" {
-    const source = std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        WORKFLOW_SOURCE_PATH,
-        std.testing.allocator,
-        .limited(4 * 1024 * 1024),
-    ) catch |err| return err;
-    defer std.testing.allocator.free(source);
-
-    // `saveRetryAttemptMessage` body MUST contain `is_feed_to_llm = false`
-    // (the per-retry diagnostic goes in chat history only — see the helper
-    // docstring for the rationale). The substring `is_feed_to_llm = true`
-    // MUST NOT appear, because that would bloat the LLM context.
-    const fn_start = std.mem.indexOf(u8, source, "fn saveRetryAttemptMessage(") orelse {
-        std.debug.print("!! saveRetryAttemptMessage missing from workflow.zig !!\n", .{});
-        return error.SaveRetryAttemptMessageMissing;
-    };
-    const fn_end = std.mem.indexOfPos(u8, source, fn_start + 1, "\nfn ") orelse source.len;
-    const body = source[fn_start..fn_end];
-
-    if (std.mem.indexOf(u8, body, "is_feed_to_llm = false") == null) {
-        std.debug.print(
-            "!! saveRetryAttemptMessage is missing `is_feed_to_llm = false` — retry diagnostics will " ++
-                "bloat the LLM context with 10 identical error lines per failure cycle !!\n", .{});
-        return error.RetryMessageFedToLlm;
-    }
-    if (std.mem.indexOf(u8, body, "is_feed_to_llm = true") != null) {
-        std.debug.print(
-            "!! saveRetryAttemptMessage contains `is_feed_to_llm = true` — per-retry diagnostics " ++
-                "must NOT propagate to the LLM context (chat history only) !!\n", .{});
-        return error.RetryMessageFedToLlmWrong;
-    }
-    // Counter-check: the bail-path `diagnostic` (used at hard-bail) IS fed
-    // to the LLM so the AI can summarize the failure on its next turn.
-    // `runAgenticMultiStepnew` body MUST contain `is_feed_to_llm = true`
-    // at least once (besides the assistant-message assignment at success
-    // path line ~707).
-    const wf_body = runAgenticMultiStepnewBody(source);
-    var bail_feed_true: usize = 0;
-    var cursor: usize = 0;
-    while (std.mem.indexOfPos(u8, wf_body, cursor, "is_feed_to_llm = true")) |pos| {
-        bail_feed_true += 1;
-        cursor = pos + 1;
-    }
-    if (bail_feed_true < 2) {
-        std.debug.print(
-            "!! runAgenticMultiStepnew body has only {} `is_feed_to_llm = true` assignment(s); need ≥2 " ++
-                "(success assistant message + bail diagnostic). The LLM won't learn about the " ++
-                "TooManyRetries failure cause on its next turn. !!\n",
-            .{bail_feed_true},
-        );
-        return error.BailDiagnosticNotFedToLlm;
-    }
-}

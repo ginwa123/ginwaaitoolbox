@@ -4,15 +4,19 @@ const LLMHistory = mod.LLMHistory;
 const nalarcore = mod.nalarcore;
 const sqlite = nalarcore.sqlite;
 const testing = std.testing;
+const SqliteBackend = sqlite.SqliteBackend;
 
-pub const GetLLMHistoriesInput = struct {
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-};
+pub fn GetLLMHistoriesInput(comptime DB: type) type {
+    return struct {
+        allocator: std.mem.Allocator,
+        db: DB,
+        session_id: []const u8,
+    };
+}
 
 pub fn getLLMHistories(
-    obj: GetLLMHistoriesInput,
+    comptime DB: type,
+    obj: GetLLMHistoriesInput(DB),
 ) ![]LLMHistory {
     const allocator = obj.allocator;
     const db = obj.db;
@@ -198,10 +202,8 @@ fn seedRow(
     session_id: []const u8,
     created_at: []const u8,
 ) !void {
-    try db.exec(testing.allocator,
-        "INSERT INTO llm_history (id, session_id, created_at, response_content, role, is_feed_to_llm) " ++
-        "VALUES (?, ?, ?, '', 'assistant', 1)",
-        &.{ id, session_id, created_at });
+    try db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, response_content, role, is_feed_to_llm) " ++
+        "VALUES (?, ?, ?, '', 'assistant', 1)", &.{ id, session_id, created_at });
 }
 
 /// Free every `LLMHistory` returned by `getLLMHistories` — the caller
@@ -275,10 +277,8 @@ test "getLLMHistories parses numeric fields (loop_index, tokens, temperature)" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator,
-        "INSERT INTO llm_history (id, session_id, created_at, loop_index, prompt_tokens, completion_tokens, total_tokens, temperature) " ++
-        "VALUES ('h', 's', '2025-01-01', 7, 100, 50, 150, 0.7)",
-        &.{});
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, loop_index, prompt_tokens, completion_tokens, total_tokens, temperature) " ++
+        "VALUES ('h', 's', '2025-01-01', 7, 100, 50, 150, 0.7)", &.{});
 
     const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
     defer {
@@ -296,10 +296,8 @@ test "getLLMHistories parses bool flags (is_input, is_output, is_thinking)" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator,
-        "INSERT INTO llm_history (id, session_id, created_at, is_input, is_output, is_thinking) " ++
-        "VALUES ('h', 's', '2025-01-01', 1, 0, 1)",
-        &.{});
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, is_input, is_output, is_thinking) " ++
+        "VALUES ('h', 's', '2025-01-01', 1, 0, 1)", &.{});
 
     const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
     defer {
@@ -315,14 +313,10 @@ test "getLLMHistories filters out rows where is_feed_to_llm = 0" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator,
-        "INSERT INTO llm_history (id, session_id, created_at, is_feed_to_llm) " ++
-        "VALUES ('h_yes', 's', '2025-01-01', 1)",
-        &.{});
-    try s.db.exec(testing.allocator,
-        "INSERT INTO llm_history (id, session_id, created_at, is_feed_to_llm) " ++
-        "VALUES ('h_no',  's', '2025-01-02', 0)",
-        &.{});
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, is_feed_to_llm) " ++
+        "VALUES ('h_yes', 's', '2025-01-01', 1)", &.{});
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, is_feed_to_llm) " ++
+        "VALUES ('h_no',  's', '2025-01-02', 0)", &.{});
 
     const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
     defer {
@@ -337,10 +331,8 @@ test "getLLMHistories includes rows where is_feed_to_llm is NULL (treats NULL as
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator,
-        "INSERT INTO llm_history (id, session_id, created_at, is_feed_to_llm) " ++
-        "VALUES ('h_null', 's', '2025-01-01', NULL)",
-        &.{});
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, is_feed_to_llm) " ++
+        "VALUES ('h_null', 's', '2025-01-01', NULL)", &.{});
 
     const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
     defer {
@@ -355,10 +347,8 @@ test "getLLMHistories splits pipe-separated image_url into image_urls array" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator,
-        "INSERT INTO llm_history (id, session_id, created_at, image_url) " ++
-        "VALUES ('h', 's', '2025-01-01', 'url1||url2||url3')",
-        &.{});
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, image_url) " ++
+        "VALUES ('h', 's', '2025-01-01', 'url1||url2||url3')", &.{});
 
     const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
     defer {
@@ -375,10 +365,8 @@ test "getLLMHistories image_urls is null when image_url column is empty" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator,
-        "INSERT INTO llm_history (id, session_id, created_at, image_url) " ++
-        "VALUES ('h', 's', '2025-01-01', '')",
-        &.{});
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, image_url) " ++
+        "VALUES ('h', 's', '2025-01-01', '')", &.{});
 
     const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
     defer {
@@ -392,10 +380,8 @@ test "getLLMHistories keeps a single image_url as a one-element array (no leadin
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator,
-        "INSERT INTO llm_history (id, session_id, created_at, image_url) " ++
-        "VALUES ('h', 's', '2025-01-01', 'only-one')",
-        &.{});
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, image_url) " ++
+        "VALUES ('h', 's', '2025-01-01', 'only-one')", &.{});
 
     const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
     defer {
@@ -430,11 +416,9 @@ test "getLLMHistories populates nullable fields when DB has content" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator,
-        "INSERT INTO llm_history (id, session_id, created_at, reasoning_content, parent_session_id, " ++
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, reasoning_content, parent_session_id, " ++
         "diffview_before, diffview_after, tool_call_id) " ++
-        "VALUES ('h', 's', '2025-01-01', 'r', 'p', 'b', 'a', 't')",
-        &.{});
+        "VALUES ('h', 's', '2025-01-01', 'r', 'p', 'b', 'a', 't')", &.{});
 
     const result = try getLLMHistories(.{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
     defer {
