@@ -464,7 +464,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     "UNATTENDED SOFT-BAIL: retry_count={} exceeded 10 (last error={s} source={s}) — continuing per is_auto_retry_until_stop=1",
                     .{ retry_count, reason_error, reason_source },
                 );
-                const soft_diagnostic = std.fmt.allocPrint(parent_allocator,
+                const soft_diagnostic = std.fmt.allocPrint(allocator,
                     \\[Agent Nalar System info] unattended-mode soft-bail after {} consecutive retries.
                     \\Reason for last retry: {s} (source: {s}). The session keeps running.
                 , .{ retry_count, reason_error, reason_source }) catch "unattended soft-bail snapshot";
@@ -519,7 +519,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             }
 
             // Existing hard-bail (preserved verbatim).
-            const diagnostic = std.fmt.allocPrint(parent_allocator,
+            const diagnostic = std.fmt.allocPrint(allocator,
                 \\[Agent Nalar System error] workflow halted after {} consecutive retries.
                 \\Reason for last retry: {s} (source: {s}).
             , .{ retry_count, reason_error, reason_source }) catch "workflow halted after too many retries";
