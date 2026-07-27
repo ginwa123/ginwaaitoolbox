@@ -239,9 +239,56 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-07-23-preserve-kanban-horizontal-scroll.md` | ✅ | `useKanbanScrollRestore` composable |
 | `2026-07-24-kanban-lazy-load-tasks.md` | ✅ | Initial fetch to 100 + scroll-triggered auto-load (#111) |
 | `2026-07-25-kanban-description-rich-editor.md` | ✅ | Rich editor + image paste + @path picker (#124) |
+| `2026-07-26-kanban-task-notification-icon.md` | ✅ | **Orange "AI finished — awaiting review" dot + green "reviewed" checkmark** on each standard task card. See §3.7.1 below. |
 | `2026-07-04-copy-kanban-spec.md` | ✅ | `POST /kanban/copy_spec_from` + `CopyKanbanSpecDialog.vue` |
 | `2026-07-01-change-task-to-card-kanban.md` | ✅ | `WorkspaceItemTask` `variant: 'row' \| 'card'` (#57) |
 | `2026-06-27-kanban-status-prompt.md` | ✅ | "Kanban Status Tracking" section in agent prompt |
+
+#### 3.7.1 Kanban task "AI finished — awaiting review" notification icon (2026-07-26)
+
+A small affordance on each **standard** kanban task card (routine and memory cards use their own status affordances) that tells the user at a glance which cards the AI is done with and which the user has already engaged with.
+
+**Three terminal states** (mutually exclusive, computed by the SQL `CASE` below):
+
+| State | Trigger | Card UI |
+|---|---|---|
+| **AI running** | `processingState[task.id] === true` (existing) | Yellow spinner |
+| **AI finished, awaiting review** *(new)* | `sessions.last_finish_reason = 'stop'` AND no human action since | 8px **orange dot** (`rgb(251, 146, 60)`) with a 4-pulse ripple animation, then a steady glow. Tooltip: "AI finished — awaiting your review" |
+| **AI finished, reviewed** *(new)* | `sessions.last_finish_reason = 'stop'` AND human has touched since | Small **green checkmark** (lucide `check-circle-2`). Tooltip: "Reviewed" |
+| **AI never ran** | No `sessions` row for this task, OR no `last_finish_reason = 'stop'` | No icon |
+
+**The "human touch" semantic** matches GitHub's "conversation resolved" model: ANY user action (drag, rename, edit description, pin, send a chat message, open the chat) counts as a review. The icon turns green the moment the user does *anything* with the card. An explicit "Mark as reviewed" button is out of scope (matches the plan, deferred).
+
+**Data model** — minimal, no new session columns:
+
+- One new column on `workspace_item_tasks` (Migration 065): `last_human_touched_at INTEGER` (unix ms, NULL = never).
+- AI state reuses `sessions.last_finish_reason` + `sessions.updated_at` (both already on the sessions table from Migration 063 — no new session columns).
+- The kanban-list `CASE` predicate (new column 20 in `listWorkspaceItemTasksWithCursor`):
+
+  ```sql
+  CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop'
+            AND (t.last_human_touched_at IS NULL
+                 OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000)
+       THEN 1 ELSE 0 END
+  ```
+
+  The `* 1000` is the seconds→unix-ms conversion (sessions.updated_at is TEXT in `YYYY-MM-DD HH:MM:SS`; `last_human_touched_at` is INTEGER unix-ms).
+
+**SSE wire** — extends the existing `kanban_task` event with a new `human_touched` action + `needs_human_review: bool` payload. The frontend `kanbanSse` store already handles `'task_id' in event` to trigger `fetchKanbanTasks` — no consumer change needed.
+
+**Stamp call sites** (every HTTP handler that mutates a task on behalf of a human user fire-and-forget `updateTaskLastHumanTouchedAt(null)`):
+
+| Handler | Action stamped |
+|---|---|
+| `task_update.zig` | Rename, description edit, pin/unpin |
+| `task_create.zig` | Any new task (user owns the empty slot) |
+| `tasks_move.zig` | Drag to another column |
+| `session_create.zig` | Sending a chat message (POST `/api/llm/session`; `task.id == session.id` per project convention) |
+| `task_mark_human_touched.zig` (new) | `PUT /api/workspaces/:w/items/:i/tasks/:t/touched` — fired by the frontend the moment the user opens a task's chat |
+
+**Frontend wiring** — `workspacesStore.setActiveTask` (canonical entry point for every "user opens a task" call) fires-and-forgets `api.markTaskHumanTouched(workspaceId, itemId, taskId)` so opening a card to "just read" the AI's output also counts as a review.
+
+**Out of scope** — Routine/memory cards (existing routine status dot / memory accent stripe already cover AI state). Per-column "X awaiting review" aggregate badge. Sidebar notification badge. Explicit "Mark as reviewed" button.
 
 ### 3.8 Frontend — Design Canvas (Workspace Item Type)
 
@@ -612,6 +659,7 @@ The 107 implementation plans once held here have been consolidated into this SPE
 2026-07-25-kanban-description-rich-editor      ✅ landed (#124)
 2026-07-25-llm-user-identifier                 ✅ landed (#114)
 2026-07-26-functional-tests-with-real-data     ✅ landed (PR #128)
+2026-07-26-kanban-task-notification-icon        ✅ landed (PR #129)
 ```
 
 #### 10.2.2 `docs/plans/` (71 files — design docs) — **DELETED 2026-07-26**
