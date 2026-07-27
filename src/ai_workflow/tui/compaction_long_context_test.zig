@@ -5,6 +5,7 @@ const agent = @import("nalarcore").agent;
 const sqlite = @import("nalarcore").sqlite;
 const llm_history = @import("llm_history.zig");
 const logger_mod = @import("nalarcore").loggermod;
+const compactMessageInMemoryNew = @import("agentic_loop/workflow_commpact_message.zig").compactMessageInMemoryNew;
 
 fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     const alloc = testing.allocator;
@@ -109,7 +110,7 @@ test "end-to-end: compaction envelope is queryable via getCompactedMessages" {
     var lg = logger_mod.Logger.init(alloc, std.testing.io, .{});
     defer lg.deinit();
 
-    const new_messages = try workflow.compactMessageInMemoryNew(
+    const new_messages = try compactMessageInMemoryNew(
         alloc, messages, "GOAL: ship the fix\nNEXT: deploy",
         session_id, "gpt-4o", "/tmp", &s.db, s.threaded.io(), &lg,
     );

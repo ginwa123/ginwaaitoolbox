@@ -30,6 +30,6 @@ test {
     _ = @import("parsing.zig");
     _ = @import("parsing_test.zig");
     _ = @import("workflow.zig");
-    _ = @import("workflow_maybe_compact_mock_test.zig");
     _ = @import("tools_wrap_output.zig");
+    _ = @import("workflow_commpact_message.zig");
 }
