@@ -24,7 +24,7 @@ const wrapToolOutput = agentic_loop_mod.tools.wrapToolOutput;
 // ============================================================================
 
 /// Re-export from unified registry for backwards compatibility
-pub const TOOL_REGISTRY = tool_registry.MAIN_AGENT_TOOL_REGISTRY;
+pub const TOOL_REGISTRY = tool_registry.UNIFIED_TOOL_REGISTRY;
 
 /// Context passed to all tool handlers
 const ToolContext = struct {
@@ -218,7 +218,7 @@ const MainAgentToolResult = struct {
 fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const tool_name = tool_call.function.name;
 
-    inline for (tool_registry.MAIN_AGENT_TOOL_REGISTRY) |entry| {
+    for (tool_registry.UNIFIED_TOOL_REGISTRY()) |entry| {
         if (std.mem.eql(u8, tool_name, entry.name)) {
             return dispatchFromRegistry(ctx, tool_call, entry.exec);
         }
