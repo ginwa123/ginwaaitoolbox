@@ -68,7 +68,7 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     const io = ctx.io;
     const di = try nalarcore.getSingleton();
 
-    std.debug.print("DEBUG_HANDLER: req.body.len={}, body_start_20={}\n", .{req.body.len, req.body.len});
+    std.debug.print("DEBUG_HANDLER: req.body.len={}, body_start_20={}\n", .{ req.body.len, req.body.len });
 
     const parsed = std.json.parseFromSliceLeaky(RequestSession, allocator, req.body, .{
         .ignore_unknown_fields = true,
@@ -180,8 +180,8 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
                 bmsg: []u8,
                 atools: []u8,
                 iurls: []u8,
-                spm: []u8, // NEW: selected_profile_model
-                iaur: []u8, // Migration 063 — is_auto_retry_until_stop
+                spm: []u8, 
+                iaur: []u8, 
             ) void {
                 // Task owns these slices — free them when done
                 defer di_inner.allocator.free(sid);
@@ -190,8 +190,8 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
                 defer di_inner.allocator.free(bmsg);
                 defer di_inner.allocator.free(atools);
                 defer di_inner.allocator.free(iurls);
-                defer di_inner.allocator.free(spm); // NEW
-                defer di_inner.allocator.free(iaur); // Migration 063
+                defer di_inner.allocator.free(spm); 
+                defer di_inner.allocator.free(iaur); 
 
                 const event_bus = di_inner.event_bus;
                 event_bus.emit(ai_workflow.ai_workflow.RunParamsNew, "ai_worker_flow", .{
@@ -203,11 +203,7 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
                     .allowed_tools = atools,
                     .is_sub_agent = false,
                     .image_urls = iurls,
-                    .selected_profile_model = spm, // NEW
-                    // Migration 063 — pass the flag through. The workflow
-                    // re-reads the column on entry (so emit lag is OK);
-                    // but we pass it here too for forward-compat with
-                    // runParamsNew consumers that read the field.
+                    .selected_profile_model = spm, 
                     .is_auto_retry_until_stop = iaur,
                 });
             }
@@ -227,7 +223,6 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
 }
 
 fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBackend, parsed: RequestSession, image_urls: []const u8) !void {
-
     _ = image_urls;
     const session_id = parsed.session_id;
     const session_name = parsed.session_name;
