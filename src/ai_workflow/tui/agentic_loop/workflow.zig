@@ -583,7 +583,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
         try messagesLists.appendSlice(allocator, initialMessages);
 
-        const is_do_compaction = try maybeCompactMessagesNew(allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger, config);
+        const is_do_compaction = try maybeCompactMessagesNew(defaultCompactDeps, allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger, config);
         if (is_do_compaction) {
             continue;
         }
@@ -1011,15 +1011,80 @@ fn callDynamicAgentNew(
     };
 }
 
-/// Conditionally compact `messages` in place. When `force` is false, compaction
-/// happens only when `total_tokens` is at/above 80% of the model's context window;
-/// pass `force=true` to bypass the threshold (e.g. for an explicit "compact now"
-/// HTTP endpoint). The compact-agent call is best-effort — if it returns null, the
-/// message list is left untouched and the caller continues with the original
-/// messages. Returns `true` if compaction was performed (caller should re-enter
-/// the loop with the now-compacted list), `false` if no compaction was done.
-/// Errors from `compactMessageInMemoryNew` propagate to the caller.
+/// Bundle of inputs to `shouldCompactDefault` — the threshold decision that
+/// tests can swap via `CompactDeps.should_compact`. Carries enough context that
+/// a test can assert on what the production decision actually saw (force flag,
+/// total_tokens, model, llm_config).
+pub const ThresholdCtx = struct {
+    force: bool,
+    total_tokens: u32,
+    model: []const u8,
+    llm_config: *const config_mod.LlmConfig,
+};
+
+/// All non-std-lib function dependencies of `maybeCompactMessagesNew`. Bundled
+/// into one struct so the function signature stays manageable. Each field is a
+/// `comptime fn` so tests can swap in stubs without touching production.
+/// Production callers should pass `defaultCompactDeps` (defined below).
+pub const CompactDeps = struct {
+    /// Decide whether compaction should run. Return `true` to compact, `false`
+    /// to skip the function early. Production: `shouldCompactDefault`.
+    should_compact: fn (ThresholdCtx) bool,
+
+    /// Call the compaction LLM to produce compacted XML. Production:
+    /// `agentic_loop_mod.callCompactAgent`.
+    call_compact_agent: fn (agentic_loop_mod.CallCompactAgentInput) ?[]const u8,
+
+    /// Persist the compacted state to DB + return the new in-memory list.
+    /// Production: `compactMessageInMemoryNew`. Error set is widened to
+    /// `anyerror` so the comptime fn pointer matches every caller's signature.
+    compact_messages_in_memory: fn (
+        allocator: std.mem.Allocator,
+        messages: std.ArrayList(agent.AgentMessage),
+        compacted_xml: []const u8,
+        session_id: []const u8,
+        model: []const u8,
+        cwd: []const u8,
+        db: *sqlite.SqliteBackend,
+        io: std.Io,
+        logger: *logger_mod.Logger,
+    ) anyerror!std.ArrayList(agent.AgentMessage),
+};
+
+/// Production default for `CompactDeps.should_compact`. Forces a compaction
+/// when `force=true` (manual endpoint), otherwise defers to the threshold
+/// check (`agent.LLMModels.shouldCompact` over the model's effective context
+/// window and the per-profile threshold percent).
+pub fn shouldCompactDefault(ctx: ThresholdCtx) bool {
+    if (ctx.force) return true;
+    return agent.LLMModels.shouldCompact(
+        ctx.total_tokens,
+        ctx.llm_config.maxCapacityForModel(null, null, ctx.llm_config, ctx.model),
+        ctx.llm_config.compactionThresholdPercent(null, null, ctx.llm_config),
+    );
+}
+
+/// All production dependencies wired into one bundle. Pass this as the first
+/// argument to `maybeCompactMessagesNew` from production call sites; tests
+/// construct their own `CompactDeps` with mock fns.
+pub const defaultCompactDeps: CompactDeps = .{
+    .should_compact = shouldCompactDefault,
+    .call_compact_agent = agentic_loop_mod.callCompactAgent,
+    .compact_messages_in_memory = compactMessageInMemoryNew,
+};
+
+/// Conditionally compact `messages` in place. The compact-agent call is
+/// best-effort — if it returns null, the message list is left untouched and
+/// the caller continues with the original messages. Returns `true` if
+/// compaction was performed (caller should re-enter the loop with the now-
+/// compacted list), `false` if no compaction was done. Errors from
+/// `deps.compact_messages_in_memory` propagate to the caller.
+///
+/// `deps` is passed as a comptime value (a struct of comptime fn pointers) so
+/// tests can swap in stubs for every non-std-lib function call without
+/// touching this body. Production callers should pass `defaultCompactDeps`.
 pub fn maybeCompactMessagesNew(
+    comptime deps: CompactDeps,
     allocator: std.mem.Allocator,
     total_tokens: u32,
     model: []const u8,
@@ -1034,20 +1099,25 @@ pub fn maybeCompactMessagesNew(
     logger: *logger_mod.Logger,
     llm_config: *const config_mod.LlmConfig,
 ) !bool {
-    if (!force and !agent.LLMModels.shouldCompact(
-        total_tokens,
-        llm_config.maxCapacityForModel(null, null, llm_config, model),
-        llm_config.compactionThresholdPercent(null, null, llm_config),
-    )) {
+    if (!deps.should_compact(.{
+        .force = force,
+        .total_tokens = total_tokens,
+        .model = model,
+        .llm_config = llm_config,
+    })) {
         return false;
     }
 
     const copy_messages = try allocator.dupe(agent.AgentMessage, messages.items);
-    defer allocator.free(copy_messages);
+    // `fromOwnedSlice` transferred ownership of `copy_messages` to `copy_list`,
+    // so its `deinit` is the sole owner of the free. Adding `defer
+    // allocator.free(copy_messages)` here would double-free (the prior code did
+    // and crashed under `testing.allocator`; the production allocator simply
+    // didn't detect the corruption).
     var copy_list = std.ArrayList(agent.AgentMessage).fromOwnedSlice(copy_messages);
     defer copy_list.deinit(allocator);
 
-    const compacted_xml = agentic_loop_mod.callCompactAgent(
+    const compacted_xml = deps.call_compact_agent(
         .{
             .allocator = allocator,
             .io = io,
@@ -1061,7 +1131,17 @@ pub fn maybeCompactMessagesNew(
         return false;
     };
 
-    _ = try compactMessageInMemoryNew(allocator, messages.*, compacted_xml, session_id, model, cwd, db, io, logger);
+    _ = try deps.compact_messages_in_memory(
+        allocator,
+        messages.*,
+        compacted_xml,
+        session_id,
+        model,
+        cwd,
+        db,
+        io,
+        logger,
+    );
     return true;
 }
 
