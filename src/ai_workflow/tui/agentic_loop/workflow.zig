@@ -22,7 +22,7 @@ const json = std.json;
 const agentic_loop_mod = nalarcore.agentic_loop_mod;
 const event_bus_mod = nalarcore.event_bus;
 const SqliteBackend = nalarcore.sqlite.SqliteBackend;
-
+const callCompactAgent = agentic_loop_mod.callCompactAgent;
 
 // Thread-safe set of active session loop IDs
 pub const StreamingContext = struct {
@@ -1069,7 +1069,7 @@ pub fn shouldCompactDefault(ctx: ThresholdCtx) bool {
 /// construct their own `CompactDeps` with mock fns.
 pub const defaultCompactDeps: CompactDeps = .{
     .should_compact = shouldCompactDefault,
-    .call_compact_agent = agentic_loop_mod.callCompactAgent,
+    .call_compact_agent = callCompactAgent,
     .compact_messages_in_memory = compactMessageInMemoryNew,
 };
 
