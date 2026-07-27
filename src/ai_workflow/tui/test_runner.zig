@@ -13,6 +13,10 @@ test {
     _ = @import("agentic_loop/tool_registry_test.zig"); // NEW
     _ = @import("agentic_loop/workflow_compaction_envelope_test.zig");
     _ = @import("agentic_loop/workflow_retry_delay_test.zig");
+    // Inline retry-loop hygiene tests (CallResponse deinit, literal-free
+    // errdefer, stale retry-cause capture) live in workflow.zig itself —
+    // registered here so zig build test actually runs them.
+    _ = @import("agentic_loop/workflow.zig");
     _ = @import("compaction_config_threshold_test.zig");
     _ = @import("http_handlers/nalar_config_put_test.zig");
     _ = @import("http_handlers/nalar_config_put_parse_test.zig");

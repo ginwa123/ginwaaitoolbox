@@ -17,4 +17,5 @@ test {
     _ = @import("test_session_lifecycle.zig");
     _ = @import("complex_cases_test.zig");
     _ = @import("complex_cases_extra_test.zig");
+    _ = @import("main_static_html_test.zig");
 }

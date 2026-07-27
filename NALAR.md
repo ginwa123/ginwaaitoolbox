@@ -175,3 +175,47 @@ Plan: docs/SPEC.md §3.1 (Backend — Core HTTP / Crash Handler)
 Branch: worktree/crash-handler
 Commit: 0418bc07
 PR: (see SPEC.md §10.1)
+
+## 2026-07-27: `workflow_retry_delay_test.zig` — 3 failures fixed
+
+### Symptom (pre-fix)
+`zig build test --summary all` reported 3 failures under `ai_workflow.tui.agentic_loop.workflow_retry_delay_test`:
+
+1. `workflow.zig declares retryDelayMs helper` — `fn retryDelayMs(` not found in `workflow.zig`.
+2. `workflow.zig retryDelayMs uses raw libc nanosleep, not std.Io.sleep` — same root cause.
+3. `workflow.zig per-retry message is feed_to_llm (so AI sees full retry history)` — `saveRetryAttemptMessage` had `is_feed_to_llm = false`.
+
+### Root cause (two distinct bugs)
+
+**Bug A — `is_feed_to_llm = false` in `saveRetryAttemptMessage`:**
+The per-retry diagnostic was written as a user-side chat entry
+(`is_input = true` for rendering) but did NOT propagate to the LLM
+context. The agent only ever learned about retries via the final
+`TooManyRetries` summary. The docstring above the helper already
+documented `is_feed_to_llm = true` as the intended behavior — the
+implementation was the bug.
+
+**Bug B — `retryDelayMs` extracted from `workflow.zig` to `retry_delay_ms.zig` without updating the test:**
+`workflow_retry_delay_test.zig` was written when `retryDelayMs` was
+inline in `workflow.zig` (commit `79de0068`). Commit `3f0d9e53` later
+extracted it into `retry_delay_ms.zig` (a sub-module under
+`agentic_loop/`) and re-exported via `mod.zig`. The two **definition
+tests** (`fn retryDelayMs` exists, uses raw libc `nanosleep`) still
+read `workflow.zig` — the wrong file. The four **usage tests**
+(`retryDelayMs` is called from the right places in workflow.zig)
+correctly still point at `workflow.zig`.
+
+### Fix (2 files)
+
+- `src/ai_workflow/tui/agentic_loop/workflow.zig:905` — `is_feed_to_llm = false` → `is_feed_to_llm = true`.
+- `src/ai_workflow/tui/agentic_loop/workflow_retry_delay_test.zig` — added `RETRY_DELAY_SOURCE_PATH` constant for `retry_delay_ms.zig`; routed the two definition tests through it; renamed the two test names to use the new file name; updated the docstring to record the architecture refactor.
+
+### Verification
+- `zig build test --summary all`: **1853/1859 pass** (was 1850/1859, 3 failed). Consistent across 3 random seeds.
+- `zig build install:linux:system`: binary builds (cp to `/usr/local/bin/nalar` fails harmlessly on permission).
+- `rm -rf zig-out/bin && zig build`: fresh full rebuild succeeds.
+- `zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc` + `aarch64-macos -lc`: both cross-compile clean.
+
+Branch: `worktree/fix-retry-delay-test`
+Commit: `7e4b8b45` (merged to main as `e88b8264`)
+

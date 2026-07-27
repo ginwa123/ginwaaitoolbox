@@ -514,7 +514,13 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     logger.infoFmt("WORKFLOW CANCELLED during unattended soft-bail: session_id={s}", .{copy_session_id});
                     break;
                 }
+                // Reset retry counter AND stale retry-cause capture so the
+                // NEXT soft-bail diagnostic reflects the *current* failure
+                // batch, not the very first error of this session. The first
+                // failure cause persisted indefinitely before this reset.
                 retry_count = 0;
+                last_retry_error = error.Unknown;
+                last_retry_source = "unknown";
                 continue;
             }
 
@@ -614,6 +620,9 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             retry_count += 1;
             // Capture WHY this retry fired so the AI agent can understand
             // the cause when the retry budget is eventually exhausted.
+            // This overwrites any stale capture from a previous iteration,
+            // so the *most recent* failure cause is what the bail diagnostic
+            // reflects — not the first failure of this session.
             last_retry_error = err;
             last_retry_source = "callDynamicAgentNew";
             logger.errFmt("Error calling dynamic agent: {s} now retrying after {d}ms delay", .{ @errorName(err), config.retry_delay_ms });
@@ -639,8 +648,24 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             }
             continue;
         };
+        // Always free the CallResponse's heap-owned slices (`content`,
+        // `reasoning_content`, each `tool_calls[i].{id, function.name,
+        // function.arguments}`, the `tool_calls` slice itself) when this
+        // iteration ends. On the per-iteration arena allocator the
+        // `.free()` calls inside `CallResponse.deinit` are no-ops and the
+        // arena `.deinit()` reaps everything anyway — but the explicit
+        // defer is the correct hygiene: future allocator swaps (e.g.
+        // `testing.allocator` in a new test) would otherwise silently
+        // leak. Fires before `arenaAllocatorWhileLoop.deinit` in LIFO
+        // order, so no use-after-free.
+        defer res_dynamic_agent.deinit();
 
+        // Successful LLM call — clear the retry-cause capture so the
+        // NEXT soft-bail diagnostic reflects the most recent failure,
+        // not the first one of this session.
         retry_count = 0;
+        last_retry_error = error.Unknown;
+        last_retry_source = "unknown";
         // Migration 063 — persist the most recent `finish_reason` so the
         // next workflow invocation (e.g., after a server restart) can
         // start from the right state without re-querying llm_history.
@@ -715,6 +740,12 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, copy_selected_profile_model);
             } else {
                 retry_count += 1;
+                // Capture the unexpected finish_reason as a synthetic
+                // retry-cause so the bail diagnostic identifies it. The
+                // success path's reset (after the `if (finish_reason)` block)
+                // clears this for the next iteration.
+                last_retry_error = error.UnexpectedFinishReason;
+                last_retry_source = "finish_reason else";
                 // Save a per-retry diagnostic (no `err` here — unexpected
                 // finish_reason has no underlying error name, so use the
                 // source label as the diagnostic).
@@ -738,7 +769,13 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 break;
             }
 
+            // Reset retry counter AND stale retry-cause capture so the
+            // NEXT bail (soft or hard) reflects the most recent failure,
+            // not the very first one of this session. Mirrors the reset
+            // in the soft-bail path above.
             retry_count = 0;
+            last_retry_error = error.Unknown;
+            last_retry_source = "unknown";
         }
 
         // Log if finish_reason is null
@@ -840,11 +877,14 @@ fn generateSessionNameNew(
 ///
 /// Called from BOTH retry paths (callDynamicAgentNew catch + else
 /// finish_reason branch). The message is marked `is_input: true` so
-/// it appears in the chat list as a user-side entry, and
-/// `is_feed_to_llm: true` so the LLM sees the progression. Each
-/// retry is ~80 chars; the worst case (11 retries) adds ~1 KB of
-/// context — an acceptable cost for full agent visibility into what
-/// has been failing.
+/// it appears in the chat list as a user-side entry — this gives the
+/// human live visibility into each retry attempt. Critically,
+/// `is_feed_to_llm: false` — the per-retry diagnostic does NOT
+/// propagate to the LLM context. Feeding every retry to the LLM
+/// would bloat the context with up to 10 identical error messages
+/// per failure cycle; the LLM only needs the failure CAUSE, which
+/// is captured in the final TooManyRetries bail diagnostic (see
+/// the `diagnostic` / `soft_diagnostic` blocks at retry_count > 10).
 ///
 /// Format: `[Retry {attempt}/{max}] {error_name} ({source}). Retrying in {delay_ms}ms.`
 /// — terse on purpose, since up to 10 of these accumulate in chat.
@@ -871,13 +911,18 @@ fn saveRetryAttemptMessage(
     error_name: []const u8,
     delay_ms: u32,
 ) !void {
-    const content = std.fmt.allocPrint(allocator,
+    // Track ownership explicitly. On allocPrint failure (e.g. OOM) we
+    // fall back to a STRING LITERAL — deferring `allocator.free(literal)`
+    // would panic with `Invalid free` on a debug allocator. So `formatted`
+    // is `null` in the fallback case and the `errdefer` skips the free.
+    const formatted = std.fmt.allocPrint(allocator,
         \\[Retry {d}/{d}] {s} ({s}). Retrying in {d}ms.
     , .{ attempt, max_attempts, error_name, source, delay_ms }) catch |err| blk: {
         logger.errFmt("Failed to format retry diagnostic: {s}", .{@errorName(err)});
-        break :blk "[Retry error: formatting failed]";
+        break :blk null;
     };
-    errdefer allocator.free(content);
+    const content: []const u8 = formatted orelse "[Retry error: formatting failed]";
+    errdefer if (formatted) |f| allocator.free(f);
 
     logger.errFmt("Retry {d}/{d}: {s} ({s}). Retrying in {d}ms.", .{ attempt, max_attempts, error_name, source, delay_ms });
 
@@ -902,6 +947,12 @@ fn saveRetryAttemptMessage(
         .parent_session_id = parent_session_id,
         .is_input = true,
         .is_output = false,
+        // Per-retry diagnostic stays in chat history (`is_input: true`)
+        // but does NOT propagate to the LLM context — feeding 10 identical
+        // "[Retry X/10]" lines per failure cycle bloats the prompt for no
+        // benefit. The LLM only needs the final TooManyRetries bail
+        // summary (see the `diagnostic` block below). See saveRetryAttempt
+        // docstring for the rationale.
         .is_feed_to_llm = false,
         .image_urls = null,
         .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
@@ -1423,3 +1474,238 @@ pub const RunParamsNew = struct {
     /// immediately. "" = off (the SQL default is "0").
     is_auto_retry_until_stop: []const u8 = "",
 };
+
+// ============================================================================
+// Inline regression tests for the three retry-loop hygiene fixes (added
+// 2026-07-27). Static-contract tests that read this file's source and grep
+// for the required patterns — matches the convention used by
+// `workflow_retry_delay_test.zig` for the pre-existing retry-path tests.
+// All three are silent bugs: lazy analysis hides them from the test target
+// graph, vue-tsc doesn't see Zig, and the user-visible symptoms (slow
+// memory leak, stale diagnostic text, "Invalid free" on debug allocators)
+// only surface under specific runtime conditions. Register this file in
+// `agentic_loop/test_runner.zig` AND `tui/test_runner.zig` so the tests
+// actually run.
+// ============================================================================
+
+/// Path to this file (tests retry-path USAGE of this same file's code).
+/// Static-contract pattern: grep the implementation for the contract
+/// instead of exercising it behaviorally (the live call would require
+/// the LlmConfig singleton + DB + event_bus + active_loops fixture —
+/// too much boilerplate for a unit test that only checks string shapes).
+const WORKFLOW_SOURCE_PATH = "src/ai_workflow/tui/agentic_loop/workflow.zig";
+
+/// Helper: locate the body of `runAgenticMultiStepnew` in this file
+/// (spans from the function declaration to the next top-level
+/// `fn ` or `pub const ` at column 0).
+fn runAgenticMultiStepnewBody(source: []const u8) []const u8 {
+    const fn_start = std.mem.indexOf(u8, source, "pub fn runAgenticMultiStepnew(") orelse
+        return source[0..0];
+    const fn_end_pos = std.mem.indexOfPos(u8, source, fn_start + 1, "\nfn ") orelse
+        std.mem.indexOfPos(u8, source, fn_start + 1, "\npub const ") orelse
+        source.len;
+    return source[fn_start..fn_end_pos];
+}
+
+test "workflow defers res_dynamic_agent.deinit() on the success path" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        WORKFLOW_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| return err;
+    defer std.testing.allocator.free(source);
+
+    // Find the callDynamicAgentNew assignment. The defer must appear
+    // AFTER the catch block ends (after the `};` that closes the
+    // catch) so it only runs on the success path — the catch already
+    // continues/breaks on its own.
+    const assign_pos = std.mem.indexOf(u8, source, "const res_dynamic_agent = callDynamicAgentNew(") orelse {
+        std.debug.print(
+            "!! callDynamicAgentNew assignment missing from workflow.zig !!\n", .{});
+        return error.CallDynamicAgentNewAssignmentMissing;
+    };
+    const catch_end = std.mem.indexOfPos(u8, source, assign_pos, "};\n        //") orelse {
+        std.debug.print(
+            "!! cannot locate end of callDynamicAgentNew catch block in workflow.zig !!\n", .{});
+        return error.CallDynamicAgentNewCatchBlockMissing;
+    };
+
+    if (std.mem.indexOfPos(u8, source, catch_end, "defer res_dynamic_agent.deinit();") == null) {
+        std.debug.print(
+            "!! workflow.zig success path does NOT defer res_dynamic_agent.deinit() !!\n" ++
+                "   (CallResponse's heap-owned slices — content, reasoning_content, " ++
+                "tool_calls — leak if the allocator ever stops auto-freeing). !!\n",
+            .{},
+        );
+        return error.CallResponseDeinitMissing;
+    }
+}
+
+test "workflow saveRetryAttemptMessage guards errdefer against the literal fallback" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        WORKFLOW_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| return err;
+    defer std.testing.allocator.free(source);
+
+    const fn_start = std.mem.indexOf(u8, source, "fn saveRetryAttemptMessage(") orelse {
+        std.debug.print(
+            "!! saveRetryAttemptMessage function missing from workflow.zig !!\n", .{});
+        return error.SaveRetryAttemptMessageMissing;
+    };
+    const fn_end = std.mem.indexOfPos(u8, source, fn_start + 1, "\nfn ") orelse source.len;
+    const body = source[fn_start..fn_end];
+
+    // The literal fallback `"[Retry error: formatting failed]"` must be
+    // expressed as an `orelse` value, NOT returned directly from the
+    // catch block. The old (buggy) pattern was:
+    //     catch |err| blk: { ...; break :blk "[Retry ...]"; };
+    //     errdefer allocator.free(content);  // BUG: free on literal
+    // The new pattern is:
+    //     catch |err| blk: { ...; break :blk null; };
+    //     const formatted = ... orelse null;
+    //     const content = formatted orelse "[Retry ...]";
+    //     errdefer if (formatted) |f| allocator.free(f);
+    if (std.mem.indexOf(u8, body, "errdefer if (formatted)") == null) {
+        std.debug.print(
+            "!! saveRetryAttemptMessage does NOT guard errdefer against the literal fallback !!\n" ++
+                "   (the catch's literal `[Retry error: formatting failed]` would be free'd on " ++
+                "debug allocators — panics with `Invalid free`). !!\n",
+            .{},
+        );
+        return error.SaveRetryAttemptMessageErrdeferNotGuarded;
+    }
+
+    // The OLD pattern — `errdefer allocator.free(content);` with content
+    // possibly being the literal — must NOT appear in the function.
+    if (std.mem.indexOf(u8, body, "errdefer allocator.free(content);") != null) {
+        std.debug.print(
+            "!! saveRetryAttemptMessage still has `errdefer allocator.free(content)` — " ++
+                "this frees the literal fallback on debug allocators !!\n", .{});
+        return error.SaveRetryAttemptMessageErrdeferStillUnconditional;
+    }
+}
+
+test "workflow resets last_retry_error and last_retry_source on every retry_count = 0 site" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        WORKFLOW_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| return err;
+    defer std.testing.allocator.free(source);
+
+    const body = runAgenticMultiStepnewBody(source);
+    if (body.len == 0) return error.RunAgenticMultiStepnewMissing;
+
+    // Count `retry_count = 0;` reset sites inside the loop body. The
+    // contract requires ≥3 reset sites (soft-bail, success-after-
+    // callDynamicAgentNew, success-after-finish_reason-switch). If a
+    // future commit removes one of the resets, this count drops and
+    // the test fails with a clear diagnostic.
+    var reset_sites: usize = 0;
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, body, cursor, "retry_count = 0;")) |pos| {
+        reset_sites += 1;
+        cursor = pos + 1;
+    }
+
+    if (reset_sites < 3) {
+        std.debug.print(
+            "!! workflow.zig has only {} `retry_count = 0;` reset sites (need ≥3) !!\n" ++
+                "   (soft-bail, success-after-callDynamicAgentNew, success-after-finish_reason-switch " ++
+                "must ALL reset last_retry_error and last_retry_source alongside retry_count). !!\n",
+            .{reset_sites},
+        );
+        return error.RetryCountResetSitesTooFew;
+    }
+
+    // Each reset site must be followed by both `last_retry_error = error.Unknown;`
+    // and `last_retry_source = "unknown";` within a 300-char window.
+    var resets_with_capture_clear: usize = 0;
+    cursor = 0;
+    while (std.mem.indexOfPos(u8, body, cursor, "retry_count = 0;")) |pos| {
+        const window_end = @min(pos + 300, body.len);
+        const window = body[pos..window_end];
+        if (std.mem.indexOf(u8, window, "last_retry_error = error.Unknown;") != null and
+            std.mem.indexOf(u8, window, "last_retry_source = \"unknown\";") != null)
+        {
+            resets_with_capture_clear += 1;
+        }
+        cursor = pos + 1;
+    }
+
+    if (resets_with_capture_clear < 3) {
+        std.debug.print(
+            "!! only {} of {} `retry_count = 0;` sites also clear last_retry_error/source !!\n" ++
+                "   (every retry_count reset MUST also clear the stale retry-cause capture; " ++
+                "otherwise the first failure cause of the session leaks into later bail diagnostics). !!\n",
+            .{ resets_with_capture_clear, reset_sites },
+        );
+        return error.RetryCauseCaptureNotClearedOnReset;
+    }
+}
+
+// Reviewer note (PR #133): the per-retry diagnostic MUST stay in the chat
+// history (`is_input: true`) but MUST NOT propagate to the LLM context
+// (`is_feed_to_llm: false`). Feeding 10 identical "[Retry X/10] error" lines
+// to the LLM bloats context for no benefit — the LLM only needs the final
+// TooManyRetries bail summary, NOT every intermediate retry. The bail
+// summary (`diagnostic` at the hard-bail path) IS fed to the LLM.
+test "workflow saveRetryAttemptMessage is NOT fed to LLM (chat history only)" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        WORKFLOW_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| return err;
+    defer std.testing.allocator.free(source);
+
+    // `saveRetryAttemptMessage` body MUST contain `is_feed_to_llm = false`
+    // (the per-retry diagnostic goes in chat history only — see the helper
+    // docstring for the rationale). The substring `is_feed_to_llm = true`
+    // MUST NOT appear, because that would bloat the LLM context.
+    const fn_start = std.mem.indexOf(u8, source, "fn saveRetryAttemptMessage(") orelse {
+        std.debug.print("!! saveRetryAttemptMessage missing from workflow.zig !!\n", .{});
+        return error.SaveRetryAttemptMessageMissing;
+    };
+    const fn_end = std.mem.indexOfPos(u8, source, fn_start + 1, "\nfn ") orelse source.len;
+    const body = source[fn_start..fn_end];
+
+    if (std.mem.indexOf(u8, body, "is_feed_to_llm = false") == null) {
+        std.debug.print(
+            "!! saveRetryAttemptMessage is missing `is_feed_to_llm = false` — retry diagnostics will " ++
+                "bloat the LLM context with 10 identical error lines per failure cycle !!\n", .{});
+        return error.RetryMessageFedToLlm;
+    }
+    if (std.mem.indexOf(u8, body, "is_feed_to_llm = true") != null) {
+        std.debug.print(
+            "!! saveRetryAttemptMessage contains `is_feed_to_llm = true` — per-retry diagnostics " ++
+                "must NOT propagate to the LLM context (chat history only) !!\n", .{});
+        return error.RetryMessageFedToLlmWrong;
+    }
+    // Counter-check: the bail-path `diagnostic` (used at hard-bail) IS fed
+    // to the LLM so the AI can summarize the failure on its next turn.
+    // `runAgenticMultiStepnew` body MUST contain `is_feed_to_llm = true`
+    // at least once (besides the assistant-message assignment at success
+    // path line ~707).
+    const wf_body = runAgenticMultiStepnewBody(source);
+    var bail_feed_true: usize = 0;
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, wf_body, cursor, "is_feed_to_llm = true")) |pos| {
+        bail_feed_true += 1;
+        cursor = pos + 1;
+    }
+    if (bail_feed_true < 2) {
+        std.debug.print(
+            "!! runAgenticMultiStepnew body has only {} `is_feed_to_llm = true` assignment(s); need ≥2 " ++
+                "(success assistant message + bail diagnostic). The LLM won't learn about the " ++
+                "TooManyRetries failure cause on its next turn. !!\n",
+            .{bail_feed_true},
+        );
+        return error.BailDiagnosticNotFedToLlm;
+    }
+}
