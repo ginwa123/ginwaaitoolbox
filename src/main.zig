@@ -416,6 +416,12 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksDeleteHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/run", ai_mod.http_handlers.routinesRunHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/pin", ai_mod.http_handlers.taskPinHandler);
+    // Chunk 3 of kanban-task-notification-icon: stamp the
+    // `last_human_touched_at` column so the kanban card UI flips the
+    // "AI finished — awaiting review" dot to the green "reviewed"
+    // checkmark the moment a user opens the task. PUT (idempotent
+    // re-stamp is harmless — see plan docs/plans/2026-07-26-kanban-task-notification-icon.md).
+    try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/touched", ai_mod.http_handlers.taskMarkHumanTouchedHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/reorder_pinned", ai_mod.http_handlers.tasksReorderPinnedHandler);
     try gs.router.get("/api/routines", ai_mod.http_handlers.routinesListHandler);
 

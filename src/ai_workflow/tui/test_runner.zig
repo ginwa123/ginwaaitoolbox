@@ -21,6 +21,7 @@ test {
     _ = @import("http_handlers/sse_handshake_test.zig");
     _ = @import("http_handlers/task_update_test.zig");
     _ = @import("http_handlers/task_delete_test.zig");
+    _ = @import("http_handlers/task_mark_human_touched_test.zig"); // Chunk 3 — PUT /tasks/:id/touched + Chunk 4 SSE wire
     _ = @import("http_handlers/tasks_list_test.zig");
     _ = @import("http_handlers/task_create_routines_test.zig");
     _ = @import("http_handlers/task_create_memory_test.zig");
