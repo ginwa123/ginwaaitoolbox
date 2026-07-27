@@ -74,6 +74,10 @@ pub const tasksDeleteHandler = @import("task_delete.zig").tasksDeleteHandler;
 pub const deleteTaskUseCase = @import("task_delete.zig").deleteTaskUseCase;
 pub const TaskDeleteOutcome = @import("task_delete.zig").TaskDeleteOutcome;
 pub const taskPinHandler = @import("task_pin.zig").taskPinHandler;
+// Chunk 3 of kanban-task-notification-icon: thin handler that stamps
+// `last_human_touched_at` and emits the `kanban_task.human_touched`
+// SSE event. See docs/plans/2026-07-26-kanban-task-notification-icon.md.
+pub const taskMarkHumanTouchedHandler = @import("task_mark_human_touched.zig").taskMarkHumanTouchedHandler;
 pub const tasksReorderPinnedHandler = @import("tasks_reorder_pinned.zig").tasksReorderPinnedHandler;
 // Task attachment upload/download handlers (Option C of the rich
 // description plan). Files live under the kanban's filesystem root;

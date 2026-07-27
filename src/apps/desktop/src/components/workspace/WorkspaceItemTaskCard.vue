@@ -371,6 +371,49 @@ const typeBadge = computed<string | null>(() => {
             style="border-color: var(--color-yellow); border-top-color: transparent"
           ></div>
         </span>
+        <!-- Kanban notification icon (Chunk 6 of
+             docs/plans/2026-07-26-kanban-task-notification-icon.md).
+             8px orange-400 dot with a 4-pulse glow when the AI has
+             finished a turn (finish_reason=stop) and the user
+             hasn't engaged with the task since. Rendered AFTER
+             the spinner slot (so v-if precedence: spinner wins
+             when the worker is active, even mid-repaint during a
+             state transition) and BEFORE the pin indicator (so
+             the reading order is "current activity → awaiting
+             review → pinned state → name"). Tooltip explains the
+             state for screen-reader / hover users.
+
+             The pulse keyframe lives in the scoped <style> block
+             below — see `needs-review-pulse`. animation-iteration-
+             count: 4 means the dot pulses 4 times then settles to
+             a steady glow; iteration-fill-mode: forwards keeps the
+             final 0% state (steady, no glow) so the user has a
+             consistent "always visible" affordance. -->
+        <span
+          v-else-if="task.needs_human_review && task.last_finish_reason === 'stop'"
+          class="w-2 h-2 rounded-full shrink-0"
+          style="background-color: rgb(251, 146, 60); box-shadow: 0 0 0 0 rgba(251, 146, 60, 0.6); animation: needs-review-pulse 2.4s ease-out 4 forwards;"
+          title="AI finished — awaiting your review"
+          data-testid="task-needs-review"
+        />
+        <!-- Kanban notification icon (Chunk 6) — green "reviewed"
+             checkmark. Shown when last_finish_reason='stop' AND
+             needs_human_review=false (i.e. user has touched the
+             task since the AI finished). Defensive: we also gate
+             on last_finish_reason==='stop' so a stale
+             needs_human_review=false + finish_reason='tool_calls'
+             state doesn't paint a phantom "reviewed" checkmark
+             during a session-status flip. -->
+        <span
+          v-else-if="task.last_finish_reason === 'stop'"
+          class="shrink-0 text-green-500"
+          title="Reviewed"
+          data-testid="task-reviewed"
+        >
+          <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </span>
         <!-- Card variant: bullet is HIDDEN (the card itself signals
              a task — the dot is visual noise in the modern-
              minimalist design). The v-else-if is mutually exclusive
@@ -499,3 +542,33 @@ const typeBadge = computed<string | null>(() => {
     </div>
   </button>
 </template>
+
+<style scoped>
+/* Chunk 6 of kanban-task-notification-icon: orange "awaiting review"
+   dot pulse. 4 short pulses (~10s total) when the icon first
+   appears, then settles to a steady orange dot. Each cycle:
+     - 0%:   box-shadow radius 0px,   opacity 0.6 (steady, ready)
+     - 70%:  box-shadow radius 12px,  opacity 0 (ripple dissipates)
+   The animation: shorthand on the element pairs:
+     animation-iteration-count: 4     (4 pulses then stop)
+     animation-fill-mode: forwards    (keep the final 0% state
+                                       so the user has a consistent
+                                       "always visible" affordance
+                                       afterwards — no glow, just
+                                       the steady dot)
+     animation-timing-function: ease-out  (ripple starts fast,
+                                          dissipates slowly —
+                                          organic, not mechanical)
+*/
+@keyframes needs-review-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(251, 146, 60, 0.6);
+  }
+  70% {
+    box-shadow: 0 0 0 12px rgba(251, 146, 60, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(251, 146, 60, 0);
+  }
+}
+</style>

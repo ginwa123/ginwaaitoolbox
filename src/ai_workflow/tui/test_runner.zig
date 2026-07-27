@@ -25,6 +25,8 @@ test {
     _ = @import("http_handlers/sse_handshake_test.zig");
     _ = @import("http_handlers/task_update_test.zig");
     _ = @import("http_handlers/task_delete_test.zig");
+    _ = @import("http_handlers/task_mark_human_touched_test.zig"); // Chunk 3 — PUT /tasks/:id/touched + Chunk 4 SSE wire
+    _ = @import("http_handlers/task_touch_propagation_test.zig"); // Chunk 5 — stamp last_human_touched_at from existing mutating handlers
     _ = @import("http_handlers/tasks_list_test.zig");
     _ = @import("http_handlers/task_create_routines_test.zig");
     _ = @import("http_handlers/task_create_memory_test.zig");
@@ -42,6 +44,7 @@ test {
     _ = @import("llm_history_search_messages_fts_test.zig"); // search_history rewrite (Chunk 2)
     _ = @import("llm_history_worker_info_test.zig"); // NEW: sprint 2 "git worktree cwd, worker"
     _ = @import("llm_history_description_test.zig"); // Migration 062 description propagation
+    _ = @import("llm_history_notification_test.zig"); // Migration 065 — kanban needs_human_review + updateTaskLastHumanTouchedAt
     _ = @import("compaction_long_context_test.zig");
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     _ = @import("http_handlers/workspace_items_reorder_test.zig");

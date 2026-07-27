@@ -86,6 +86,29 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
         });
     };
 
+    // Chunk 5 of kanban-task-notification-icon: the user just sent a
+    // chat message. Per the project convention task.id == session.id,
+    // so stamping the session's matching task flips the kanban card
+    // from the orange "awaiting review" dot to the green "reviewed"
+    // checkmark. Fire-and-forget: a failed stamp doesn't fail the
+    // session create.
+    //
+    // The session id is the new task id (per task.id == session.id
+    // project convention). For standard tasks this stamps the
+    // corresponding workspace_item_tasks row. For routine tasks it
+    // does too — the routine's kanban card uses the same column.
+    ai_workflow.llm_history.updateTaskLastHumanTouchedAt(
+        allocator,
+        di.db,
+        usecase.id,
+        null,
+    ) catch |stamp_err| {
+        std.log.warn(
+            "session_create: stamp last_human_touched_at failed (non-fatal): {s}",
+            .{@errorName(stamp_err)},
+        );
+    };
+
     const data = try http_response.makeSessionCreateResponse(allocator, .{
         .id = usecase.id,
         .name = usecase.name,

@@ -475,6 +475,32 @@ export async function getTasks(
 }
 
 /**
+ * Stamp `workspace_item_tasks.last_human_touched_at` so the kanban
+ * card flips from the orange "AI finished — awaiting review" dot
+ * to the green "reviewed" checkmark. Fire-and-forget: the caller
+ * does NOT await this — failures log a warning but don't surface
+ * as toasts (the user's primary action has already succeeded).
+ *
+ * Idempotent on the server side (re-stamping is harmless — the
+ * column is just a monotonic timestamp). The backend also emits
+ * a `kanban_task.human_touched` SSE event so other connected
+ * clients refresh without a manual round-trip.
+ *
+ * Plan: docs/plans/2026-07-26-kanban-task-notification-icon.md
+ *   (Chunk 7 — frontend open-task stamp).
+ */
+export async function markTaskHumanTouched(
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+): Promise<{ success: boolean }> {
+  return apiFetch<{ success: boolean }>(
+    `/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}/touched`,
+    { method: 'PUT' },
+  )
+}
+
+/**
  * Create a task under a workspace item.
  *
  * The third arg is a single params object. For a standard task

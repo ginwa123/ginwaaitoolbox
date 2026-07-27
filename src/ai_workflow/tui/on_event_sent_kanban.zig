@@ -109,20 +109,33 @@ pub const KanbanTaskAction = enum {
     assigned,
     moved,
     unassigned,
+    /// Human interaction stamp — fired by the new
+    /// `PUT /api/.../tasks/:id/touched` endpoint and by every existing
+    /// task-mutating handler (`task_update`, `task_create`, `tasks_move`,
+    /// `sessions_send_message`). The kanban card UI listens for this
+    /// and re-fetches the task list so the orange "AI finished —
+    /// awaiting review" dot flips to the green "reviewed" checkmark
+    /// the moment a user does anything with the card.
+    human_touched,
 };
 
 /// JSON payload for a `kanban_task` SSE event. Field names match
 /// the frontend's `KanbanTaskEvent` interface.
 pub const KanbanTaskEventPayload = struct {
-    /// "assigned" | "moved" | "unassigned"
+    /// "assigned" | "moved" | "unassigned" | "human_touched"
     action: []const u8,
     workspace_id: []const u8,
     item_id: []const u8,
     task_id: []const u8,
-    /// New kanban_column_id (null for "unassigned").
+    /// New kanban_column_id (null for "unassigned" / "human_touched").
     new_column_id: ?[]const u8 = null,
-    /// New kanban_position (null for "unassigned").
+    /// New kanban_position (null for "unassigned" / "human_touched").
     new_position: ?i64 = null,
+    /// After-action `needs_human_review` state. Present only on
+    /// `human_touched` events so the frontend can confirm the mark
+    /// without re-querying; null on `assigned`/`moved`/`unassigned`
+    /// (those handlers don't touch the AI-state predicate).
+    needs_human_review: ?bool = null,
 };
 
 /// Emit a `kanban_task` SSE event. Called from `tasks_move.zig` on

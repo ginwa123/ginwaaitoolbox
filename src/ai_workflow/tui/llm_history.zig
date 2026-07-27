@@ -2441,6 +2441,78 @@ pub fn updateSessionLastFinishReason(
     try db.exec(allocator, sql, &.{ finish_reason, id });
 }
 
+/// Stamp `last_human_touched_at = <unix_ms>` on a task. Called by
+/// every HTTP handler that mutates a task or its chat session on
+/// behalf of a human user (drag, rename, edit description, pin, send
+/// message, open chat). The kanban card query then compares against
+/// `sessions.updated_at` (denormalized by `updateSessionLastFinishReason`)
+/// to decide whether to show the "AI finished — awaiting review" dot
+/// or the "reviewed" checkmark.
+///
+/// Cheaper than per-action auditing — we just need a monotonic
+/// timestamp. Idempotent: a second call overwrites the first.
+///
+/// Schema: `workspace_item_tasks.last_human_touched_at INTEGER NULL`
+/// (Migration 065). We format the unix-ms integer to a string and
+/// bind via `?` per the project's SqliteBackend convention
+/// (`db.exec` only binds TEXT; see memory
+/// `sqlite-backend-exec-binds-text-only`).
+///
+/// The `now_unix_ms` arg lets callers override the stamp time (useful
+/// for tests). When null, we read the real current time via libc
+/// `gettimeofday` (Zig 0.16 removed `std.time.timestamp` per project
+/// memory `zig-0.16-stdlib-changes`).
+pub fn updateTaskLastHumanTouchedAt(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    task_id: []const u8,
+    now_unix_ms: ?i64,
+) !void {
+    const now_ms = now_unix_ms orelse unixMillisNow();
+    const touched_at_str = try std.fmt.allocPrint(
+        allocator,
+        "{d}",
+        .{now_ms},
+    );
+    defer allocator.free(touched_at_str);
+
+    const sql =
+        "UPDATE workspace_item_tasks SET last_human_touched_at = ? WHERE id = ?";
+    try db.exec(allocator, sql, &.{ touched_at_str, task_id });
+}
+
+/// Current Unix epoch time in milliseconds. Used by
+/// `updateTaskLastHumanTouchedAt` as the default timestamp; can also
+/// be called directly by handlers that need a unix-ms stamp.
+///
+/// Replaces Zig 0.16-removed `std.time.timestamp()`. We use libc
+/// `gettimeofday` directly — matches the pattern in
+/// `src/helpers/...` and avoids the Zig 0.16 `std.Io` runtime
+/// dependency for a one-shot monotonic stamp.
+///
+/// `extern "c"` MUST be at module scope in Zig 0.16 (per project
+/// memory `zig-language-quirks` §"extern c declarations — symbol
+/// name rules"). `c_long` is platform-sized — use the project's
+/// `Clong` alias pattern (LP64 vs LLP64).
+const builtin = @import("builtin");
+const Clong = if (@bitSizeOf(usize) == 64 and builtin.os.tag != .windows)
+    i64
+else
+    i32;
+
+extern "c" fn gettimeofday(tv: ?*PosixTimeval, tz: ?*anyopaque) c_int;
+
+const PosixTimeval = extern struct {
+    sec: Clong,
+    usec: Clong,
+};
+
+pub fn unixMillisNow() i64 {
+    var tv: PosixTimeval = undefined;
+    _ = gettimeofday(&tv, null);
+    return @as(i64, tv.sec) * 1000 + @divFloor(@as(i64, tv.usec), 1000);
+}
+
 /// Update session selected_profile_model (the name of a profile in
 /// LlmConfig.profiles_models). Pass empty string or null to clear.
 pub fn updateSessionSelectedProfileModel(
@@ -3220,6 +3292,28 @@ pub const WorkspaceItemTaskInfo = struct {
     /// the current state. Owned by the lister; freed by `deinit`.
     is_auto_retry_until_stop: []u8 = &.{},
 
+    /// Last `finish_reason` reported by the workflow (joined from
+    /// `sessions`). Empty string when no session row exists for this
+    /// task (LEFT JOIN NULL → COALESCE ''). The kanban card UI reads
+    /// this to decide whether to show the "reviewed" green checkmark
+    /// when `needs_human_review` is false. Owned by the lister;
+    /// freed by `deinit`.
+    ///
+    /// Plan: docs/plans/2026-07-26-kanban-task-notification-icon.md
+    /// (Chunk 2 — backend reader).
+    last_finish_reason: []u8 = &.{},
+
+    /// Computed boolean for the kanban card "AI finished — awaiting
+    /// review" orange dot. SQL `CASE` produces 1 when:
+    ///   - `sessions.last_finish_reason == 'stop'` AND
+    ///   - either `tasks.last_human_touched_at IS NULL` or it's
+    ///     strictly older than the session's `updated_at` (in
+    ///     unix-ms — we multiply SQLite's seconds by 1000).
+    /// Otherwise 0. Frontend renders orange dot when true, green
+    /// checkmark when false (and finish_reason was 'stop'). Used by
+    /// every kanban-card query path.
+    needs_human_review: bool = false,
+
     pub fn deinit(self: WorkspaceItemTaskInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.name);
@@ -3237,6 +3331,7 @@ pub const WorkspaceItemTaskInfo = struct {
         if (self.updated_at) |ua| allocator.free(ua);
         if (self.kanban_column_id) |kc| allocator.free(kc);
         if (self.is_auto_retry_until_stop.len > 0) allocator.free(self.is_auto_retry_until_stop);
+        if (self.last_finish_reason.len > 0) allocator.free(self.last_finish_reason);
     }
 };
 
@@ -3674,7 +3769,20 @@ pub fn listWorkspaceItemTasksWithCursor(
         // nullable per Migration 048). s.is_auto_retry_until_stop
         // appends as column 18, shifting nothing because routines
         // fields are already past it (still 11-17).
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0') FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s} {s} LIMIT {s}",
+        //
+        // Kanban notification icon (Migration 065, plan:
+        // docs/plans/2026-07-26-kanban-task-notification-icon.md
+        // Chunk 2): appends 2 derived columns at indices 19 + 20:
+        //   19: COALESCE(s.last_finish_reason, '') — the AI's
+        //       most-recent finish_reason for this task's session,
+        //       or '' if no session row exists (LEFT JOIN NULL).
+        //   20: CASE … needs_human_review — 1 when the AI has
+        //       finished (last_finish_reason = 'stop') and the
+        //       human has not touched the task since
+        //       (last_human_touched_at IS NULL OR older than
+        //       sessions.updated_at, in unix-ms — we multiply
+        //       SQLite's strftime('%s', updated_at) by 1000).
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at IS NULL OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s} {s} LIMIT {s}",
         .{ cursor_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -3689,12 +3797,15 @@ pub fn listWorkspaceItemTasksWithCursor(
     }
 
     while (try rows.next()) |row| {
-        // Row indices (post-Migration-063-attended-toggle JOIN):
+        // Row indices (post-Migration-063-attended-toggle JOIN,
+        // post-Migration-065-notification-icon JOIN):
         //   0: id, 1: name, 2: workspace_item_id, 3: description,
         //   4: created_at, 5: updated_at, 6: task_type,
         //   7: is_pinned, 8: pinned_position, 9: kanban_column_id,
         //   10: kanban_position, 11-17: routine fields,
-        //   18: is_auto_retry_until_stop (joined from sessions).
+        //   18: is_auto_retry_until_stop (joined from sessions),
+        //   19: last_finish_reason (joined from sessions),
+        //   20: needs_human_review (CASE derived).
         const task_type = if (row.values[6].len > 0)
             try allocator.dupe(u8, row.values[6])
         else
@@ -3734,6 +3845,12 @@ pub fn listWorkspaceItemTasksWithCursor(
             // Auto-retry-until-stop: index 18 (joined from sessions).
             // COALESCE'd to '0' in the SQL so this is always non-empty.
             .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[18]),
+            // Kanban notification icon (Migration 065): index 19.
+            // COALESCE'd to '' in the SQL so this is always non-empty.
+            .last_finish_reason = try allocator.dupe(u8, row.values[19]),
+            // Kanban notification icon (Migration 065): index 20.
+            // SQL CASE produces '1' or '0'; parse to bool.
+            .needs_human_review = std.mem.eql(u8, row.values[20], "1"),
         };
         try tasks.append(allocator, task);
         row.deinit(allocator);

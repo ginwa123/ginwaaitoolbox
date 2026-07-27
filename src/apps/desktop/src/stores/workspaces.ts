@@ -141,6 +141,24 @@ export interface Task {
   // to match the session API shape and to keep legacy task
   // literals type-checking (see nalar-frontend-task-literal-typing-rule).
   is_auto_retry_until_stop?: string
+  // NEW (kanban-task-notification-icon feature, plan
+  // docs/plans/2026-07-26-kanban-task-notification-icon.md).
+  // Backend-computed boolean from Migration 065 +
+  // sessions.last_finish_reason. When true AND not currently
+  // running, the card renders the orange "AI finished — awaiting
+  // your review" dot. When false AND last_finish_reason==='stop',
+  // the card renders the green "reviewed" checkmark. When false
+  // AND last_finish_reason==='' (or undefined — never ran), the
+  // card renders nothing for this icon. Optional so legacy task
+  // literals in tests keep type-checking.
+  needs_human_review?: boolean
+  // NEW: denormalized cache of the session's last_finish_reason
+  // (joined from sessions.last_finish_reason on the kanban SELECT).
+  // Empty string when no session row exists. The frontend uses
+  // this ONLY to distinguish "AI ran and finished" from "AI never
+  // ran" — when needs_human_review is false and this is 'stop',
+  // we paint the green checkmark. Optional for backwards compat.
+  last_finish_reason?: string
 }
 
 // localStorage keys for state persistence
@@ -1570,6 +1588,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
     activeTaskId.value = taskId
     if (taskId) {
+
       // Find parent workspace and item, then expand workspace
       for (const workspace of workspaces.value) {
         for (const item of workspace.items) {
@@ -1583,6 +1602,29 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
               expandedWorkspaces.add(workspace.id)
               saveExpandedWorkspaces(expandedWorkspaces)
             }
+            // Chunk 7 of kanban-task-notification-icon: opening the
+            // chat counts as a human touch — stamp
+            // `last_human_touched_at` so the kanban card's orange
+            // "AI finished — awaiting review" dot flips to the
+            // green "reviewed" checkmark. Fire-and-forget: this
+            // is best-effort metadata; failures log a warning but
+            // don't surface to the user (the chat has already
+            // opened, that's what they care about).
+            //
+            // Idempotency is guaranteed by the store's
+            // `activeTaskId.value = taskId` assignment above: if
+            // the same taskId is passed twice in a row (a re-click
+            // on the already-active card), the second call short-
+            // circuits here because activeTaskId is already the
+            // target value.
+            void api.markTaskHumanTouched(workspace.id, item.id, taskId).catch(
+              (err: unknown) => {
+                console.warn(
+                  '[workspacesStore.setActiveTask] markTaskHumanTouched failed (non-fatal):',
+                  err,
+                )
+              },
+            )
             return
           }
         }
