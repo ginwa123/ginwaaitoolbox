@@ -902,7 +902,7 @@ fn saveRetryAttemptMessage(
         .parent_session_id = parent_session_id,
         .is_input = true,
         .is_output = false,
-        .is_feed_to_llm = false,
+        .is_feed_to_llm = true,
         .image_urls = null,
         .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
     } });
