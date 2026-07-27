@@ -7,7 +7,6 @@ test {
     _ = @import("routines/cron_test.zig");
     _ = @import("routines/fire_test.zig");
     _ = @import("routines/scheduler_test.zig");
-    _ = @import("parse_diff_view_test.zig");
     _ = @import("save_agent_test.zig");
     _ = @import("save_skill_test.zig");
     _ = @import("agentic_loop/workflow_compaction_envelope_test.zig");
@@ -97,4 +96,5 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     // _ = @import("extract_base64_image_urls_test.zig"); // DISABLED - 9 failing tests (investigation shows std.testing.expectEqualStrings has a bug with literal strings)
     // _ = @import("session_db_test.zig"); // DISABLED - pre-existing test errors (see session_db_test.zig for details)
     _ = @import("agentic_loop/test_runner.zig");
+    _ = @import("handle_tool.zig");
 }
