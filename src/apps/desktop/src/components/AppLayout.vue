@@ -1309,38 +1309,28 @@ const handleKanbanPinTask = (
 //
 // <DesignView> emits these when the user interacts with the canvas:
 // tabs, layers, properties panel, Monaco editor. We forward them to
-// the workspaces store (and, for page add, the api layer directly
-// because there's no store action for that yet).
+// the workspaces store + useDesignHandlers composable.
 //
 // pageId note: DesignView keeps the active page id in a LOCAL ref
 // (its `activePageId`); the workspaces store does not yet track the
 // active page. The selectPage/selectElement emits are currently
 // noops — the parent doesn't need the info, the child already
-// owns the state. Element mutations need pageId, so we pass '' as
-// a TODO placeholder until the store grows a `activeDesignPageId`
-// ref. For now the user only mutates the page they already have
-// open in DesignView, so passing the empty string would silently
-// fail at the backend — guarded by a console.warn for visibility
-// during development.
+// owns the state. Element mutations need pageId, which the store's
+// `activeDesignPageId` (mirrored by DesignView's `watch(activePageId,
+// ...)`) provides.
+//
+// Page CRUD (add / delete) used to live here too — we would bounce
+// the click event up from DesignView, call the API, and trust that
+// DesignView would re-fetch its pages list. It didn't, leaving the
+// user staring at stale tabs until they reloaded the page. The
+// fix moved the page CRUD into DesignView itself (which owns the
+// `pages` state), so AppLayout no longer needs addPage /
+// deletePage handlers.
 const handleDesignSelectPage = (_pageId: string) => {
   // TODO (v2): workspacesStore.setActiveDesignPage(_pageId) once the
   // store tracks the active page. For now DesignView owns the page
   // state internally; the parent doesn't need to mirror it.
   void _pageId
-}
-
-const handleDesignAddPage = async () => {
-  const ws = activeWorkspace.value
-  const item = activeWorkspaceItem.value
-  if (!ws || !item) return
-  try {
-    // Name is a placeholder; DesignView's DesignPageTabs will refresh
-    // via the page-list re-fetch on its next mount / page-add emit.
-    // A future iteration can open a rename dialog immediately after.
-    await api.createDesignPage(ws.id, item.id, 'Untitled')
-  } catch (e) {
-    console.error('[handleDesignAddPage] failed:', e)
-  }
 }
 
 const handleDesignSelectElement = (_elementId: string) => {
@@ -1467,17 +1457,6 @@ const handleDesignDeleteElement = async (elementId: string): Promise<void> => {
   const item = activeWorkspaceItem.value
   if (!ws || !item) return
   await designHandlers.deleteElement(ws.id, item.id, elementId)
-}
-
-// Tab-strip × button — delegates to the designHandlers composable
-// (which owns the confirm() dialog + error toast, matching the
-// existing deleteElement flow). The store action handles the local
-// activeDesignPageId reset + the SSE-driven re-fetch.
-const handleDesignDeletePage = async (pageId: string): Promise<void> => {
-  const ws = activeWorkspace.value
-  const item = activeWorkspaceItem.value
-  if (!ws || !item) return
-  await designHandlers.deletePage(ws.id, item.id, pageId)
 }
 
 // Right sidebar cwd - show when chat is open OR task is active
@@ -1949,8 +1928,6 @@ watch(chatSessionCwd, (newCwd) => {
             :workspace-id="activeWorkspace?.id ?? ''"
             :item-id="activeWorkspaceItem.id"
             @select-page="handleDesignSelectPage"
-            @add-page="handleDesignAddPage"
-            @delete-page="handleDesignDeletePage"
             @select-element="handleDesignSelectElement"
             @update-element="handleDesignUpdateElement"
             @delete-element="handleDesignDeleteElement"
@@ -2049,8 +2026,6 @@ watch(chatSessionCwd, (newCwd) => {
         :workspace-id="activeWorkspace?.id ?? ''"
         :item-id="activeWorkspaceItem.id"
         @select-page="handleDesignSelectPage"
-        @add-page="handleDesignAddPage"
-        @delete-page="handleDesignDeletePage"
         @select-element="handleDesignSelectElement"
         @update-element="handleDesignUpdateElement"
         @delete-element="handleDesignDeleteElement"

@@ -37,12 +37,19 @@
       workspaceId string            parent workspace id
       itemId      string            parent design item id (overrides item.id)
     emits:
-      selectPage, addPage, deletePage         (tabs)
-      selectElement, reorderElements          (layers)
+      selectPage                          (tab change)
+      selectElement, reorderElements      (layers)
       createElement, updateElement, deleteElement, htmlChanged  (mutations)
+      openChat                            (top-right chat toggle)
 
-  Chunk 8 (AppLayout wiring) wires these to the workspaces store +
-  designSse store. For now the internal handlers just emit them.
+  Page CRUD (add/delete) is OWNED by DesignView — the click handler
+  calls the API directly and mutates `pages.value` so the tab strip
+  updates without a re-fetch. This is the same pattern as the
+  page-size resize handler (`commitPageSize` below) which also calls
+  the API directly + mutates `pages.value`. The previous design
+  bounced addPage/deletePage through AppLayout's handlers, which
+  called the API but never told DesignView to refresh — leaving the
+  user staring at stale tabs until they reloaded the page.
 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -53,7 +60,12 @@ import PropertiesPanel from './PropertiesPanel.vue'
 import AddDesignElementDialog from './AddDesignElementDialog.vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import { useNotificationStore } from '../../stores/notifications'
-import { listDesignPages, type DesignElement as DesignElementApi } from '../../api'
+import {
+  listDesignPages,
+  createDesignPage as createDesignPageApi,
+  deleteDesignPage as deleteDesignPageApi,
+  type DesignElement as DesignElementApi,
+} from '../../api'
 import { computeSnapDelta, type SnapGuide } from './useSnapGuides'
 
 const props = withDefaults(
@@ -70,8 +82,6 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   selectPage: [pageId: string]
-  addPage: []
-  deletePage: [pageId: string]
   selectElement: [elementId: string]
   reorderElements: [orderedElementIds: string[]]
   createElement: [body: { name: string; type: DesignElementApi['type']; html: string }]
@@ -643,9 +653,93 @@ const handleOpenChat = (): void => {
   emit('openChat')
 }
 
-const handleAddPage = (): void => {
-  emit('addPage')
+// Compute the next available placeholder name for a new design
+// page. Mirrors the macOS / Figma convention: the very first
+// untitled page is `"Untitled"` (no suffix), every subsequent one is
+// `"Untitled N"` where `N` is `max(existing numbers) + 1`.
+//
+// Why high-water-mark + 1 and NOT "smallest unused slot"? If the
+// user already has pages named "Untitled 5" and "Untitled 9",
+// picking "Untitled 1" would feel arbitrary and out of sequence
+// when they scan the tab strip — they'd expect the next number to
+// be 10, not 1. macOS Finder behaves the same way: opening
+// multiple new documents produces "Untitled", "Untitled 2",
+// "Untitled 3" (skipping 1) when 1 is already taken by an older
+// session.
+//
+// The `UNIQUE(workspace_item_id, name)` constraint on `design_pages`
+// means we MUST never collide with an existing name. Tracking the
+// unnumbered `"Untitled"` separately is necessary because that
+// row occupies "slot 0" — if we ignored it, a second click would
+// try to POST another `"Untitled"` and the backend would 409.
+const UNTITLEDBASE_NAME = 'Untitled'
+const UNTITLEDPATTERN = /^Untitled (\d+)$/
+const computeNextUntitledName = (
+  existingPages: ReadonlyArray<{ name: string }>,
+): string => {
+  let hasUnnumbered = false
+  let maxNumbered = 0
+  for (const p of existingPages) {
+    if (p.name === UNTITLEDBASE_NAME) {
+      hasUnnumbered = true
+      continue
+    }
+    const match = UNTITLEDPATTERN.exec(p.name)
+    if (match && match[1]) {
+      const n = Number.parseInt(match[1], 10)
+      if (Number.isFinite(n) && n > 0 && n > maxNumbered) {
+        maxNumbered = n
+      }
+    }
+  }
+  // Very first page: no unnumbered, no numbered → "Untitled".
+  // Everything else: take maxNumbered + 1. If only an unnumbered
+  // "Untitled" exists (maxNumbered === 0), return "Untitled 1"
+  // because we can't collide with the existing literal.
+  if (!hasUnnumbered && maxNumbered === 0) return UNTITLEDBASE_NAME
+  return `${UNTITLEDBASE_NAME} ${maxNumbered + 1}`
 }
+
+// Add a new design page.
+//
+// Owns the API call + local state mutation directly (NOT a bounce
+// through AppLayout). The previous design emitted `addPage` upward,
+// AppLayout called api.createDesignPage, and DesignView's local
+// `pages.value` was never updated — the new tab silently didn't
+// appear until the user refreshed the page. Same fix pattern as
+// `commitPageSize` below: call the API, mutate the local array,
+// surface errors via the notification store.
+//
+// Returns the new page id for test convenience.
+const handleAddPage = async (): Promise<string | undefined> => {
+  if (!props.workspaceId || !effectiveItemId.value) return undefined
+  if (addPageInFlight.value) return undefined
+  addPageInFlight.value = true
+  try {
+    const newPage = await createDesignPageApi(
+      props.workspaceId,
+      effectiveItemId.value,
+      computeNextUntitledName(pages.value),
+    )
+    pages.value = [...pages.value, newPage]
+    // New page becomes active so the user immediately sees the empty
+    // canvas they can start populating.
+    activePageId.value = newPage.id
+    return newPage.id
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    useNotificationStore().notifyError('Failed to add page', message)
+    return undefined
+  } finally {
+    addPageInFlight.value = false
+  }
+}
+
+// In-flight guard for the + Page button. Prevents a double-click from
+// POSTing two duplicate pages back-to-back while the first request is
+// still in flight. The disabled state is exposed via the + Page
+// button's `:disabled` attribute so the user sees the lock.
+const addPageInFlight = ref<boolean>(false)
 
 const handleSelectPage = (pageId: string): void => {
   if (pageId !== activePageId.value) {
@@ -654,9 +748,67 @@ const handleSelectPage = (pageId: string): void => {
   emit('selectPage', pageId)
 }
 
-const handleDeletePage = (pageId: string): void => {
-  emit('deletePage', pageId)
+// Delete a design page.
+//
+// Owns the API call + local state mutation directly (NOT a bounce
+// through AppLayout). The previous design emitted `deletePage`
+// upward, AppLayout called api.deleteDesignPage, and DesignView's
+// local `pages.value` was never updated — the deleted tab silently
+// stayed in place until the user refreshed the page.
+//
+// Active-page fallback: if the user deletes the page they're
+// currently viewing, switch to a sensible next page. We pick the
+// page BEFORE the deleted one in the current order; if there is no
+// such page, fall back to the new first page; if there are no pages
+// left, leave `activePageId` empty (the empty-state UI handles
+// this). Native `confirm()` dialog matches the existing
+// deleteElement flow in `useDesignHandlers.ts`.
+const handleDeletePage = async (pageId: string): Promise<void> => {
+  if (!props.workspaceId || !effectiveItemId.value) return
+  if (deletePageInFlight.value) return
+  if (
+    !confirm(
+      'Delete this page? This removes the page, its elements, and their on-disk HTML files.',
+    )
+  ) {
+    return
+  }
+  deletePageInFlight.value = true
+  const wasActive = activePageId.value === pageId
+  try {
+    await deleteDesignPageApi(
+      props.workspaceId,
+      effectiveItemId.value,
+      pageId,
+    )
+    const idx = pages.value.findIndex((p) => p.id === pageId)
+    pages.value = pages.value.filter((p) => p.id !== pageId)
+    if (wasActive) {
+      // Prefer the page that was at the same index before deletion
+      // (i.e. the next page in the old order), falling back to the
+      // previous page if we deleted the last tab. This mirrors how
+      // VS Code / Figma behave when closing a tab.
+      const remaining = pages.value
+      if (remaining.length === 0) {
+        activePageId.value = ''
+      } else {
+        const nextIdx = idx >= remaining.length ? remaining.length - 1 : idx
+        activePageId.value = remaining[nextIdx]?.id ?? ''
+      }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    useNotificationStore().notifyError('Failed to delete page', message)
+  } finally {
+    deletePageInFlight.value = false
+  }
 }
+
+// In-flight guard for the per-page × button. Prevents a double-click
+// from issuing two DELETE calls back-to-back while the first is in
+// flight (which could fire two confirm dialogs in quick succession
+// and confuse the user).
+const deletePageInFlight = ref<boolean>(false)
 
 // Figma-style multi-select toggle. Plain click (additive=false)
 // replaces the selection with just this element. Shift+click

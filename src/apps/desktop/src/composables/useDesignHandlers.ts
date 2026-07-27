@@ -7,6 +7,15 @@ import { useWorkspacesStore } from '../stores/workspaces'
  * importable as named exports). The composable owns NO state — it
  * reads the active workspace/item/page from the store and dispatches
  * to the store actions. Errors surface via the notification store.
+ *
+ * Page CRUD (add / delete) used to live here too — AppLayout would
+ * call the API and trust that DesignView would re-fetch its pages
+ * list. It didn't, leaving the user staring at stale tabs until they
+ * reloaded the page. The fix moved the page CRUD into DesignView
+ * itself (which owns the `pages` state), so this composable no
+ * longer exposes page-level handlers. The store action
+ * `workspacesStore.deleteDesignPage` still exists for direct callers
+ * (and is covered by `workspacesStoreDeleteDesignPage.spec.ts`).
  */
 export function useDesignHandlers() {
   const workspacesStore = useWorkspacesStore()
@@ -57,22 +66,5 @@ export function useDesignHandlers() {
     }
   }
 
-  // Delete a design page (DesignView tab-strip × button). Safety
-  // guard matches `deleteElement`: native `confirm()` dialog before
-  // the destructive op, with a clear message about what gets
-  // removed (the page + its elements + their on-disk HTML files).
-  // The store action handles the local `activeDesignPageId` reset
-  // + the SSE-driven re-fetch that drops the page from sibling
-  // tabs.
-  async function deletePage(workspaceId: string, itemId: string, pageId: string): Promise<void> {
-    if (!confirm('Delete this page? This removes the page, its elements, and their on-disk HTML files.')) return
-    try {
-      await workspacesStore.deleteDesignPage(workspaceId, itemId, pageId)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      notificationStore.notifyError('Failed to delete page', message)
-    }
-  }
-
-  return { updateElement, deleteElement, deletePage }
+  return { updateElement, deleteElement }
 }

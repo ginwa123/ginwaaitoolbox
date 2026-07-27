@@ -27,16 +27,25 @@ describe('DesignView.vue static contract', () => {
     expect(source).toContain("itemId:")
   })
 
-  it('emits all 8 parent events (selectPage, addPage, deletePage, selectElement, reorderElements, createElement, updateElement, deleteElement, htmlChanged)', () => {
+  it('emits the 7 parent events (page CRUD is owned by DesignView itself, not emitted upward)', () => {
+    // Page CRUD (add / delete) is owned by DesignView since the 2026-07-27
+    // fix that moved the API call into the component itself — see the
+    // file header doc-comment. The parent no longer needs to mediate
+    // these clicks because DesignView already updates its own `pages`
+    // local state. The remaining events are what AppLayout actually
+    // listens for (selectPage is informational; the others drive
+    // store mutations for elements / chat toggle).
     expect(source).toContain("selectPage:")
-    expect(source).toContain("addPage:")
-    expect(source).toContain("deletePage:")
     expect(source).toContain("selectElement:")
     expect(source).toContain("reorderElements:")
     expect(source).toContain("createElement:")
     expect(source).toContain("updateElement:")
     expect(source).toContain("deleteElement:")
     expect(source).toContain("htmlChanged:")
+    // addPage / deletePage emits no longer exist (DesignView handles
+    // the API + local mutation directly).
+    expect(source).not.toMatch(/^\s*addPage:\s*\[/m)
+    expect(source).not.toMatch(/^\s*deletePage:\s*\[/m)
   })
 
   it('renders the page tabs, canvas, and right sidebar with Layers + Properties', () => {
@@ -234,6 +243,334 @@ describeRuntime('DesignView → workspacesStore active page id', () => {
     expectRuntime((wrapper.vm as unknown as { activePageId: string }).activePageId).toBe('page_second')
     // The store value is still page_second (unchanged by the load).
     expectRuntime(ws.activeDesignPageId).toBe('page_second')
+    wrapper.unmount()
+  })
+})
+
+// ─── Behavioral tests: page CRUD (add/delete) owned by DesignView ─────────
+//
+// Regression tests for the 2026-07-27 bug where clicking + or × in
+// the page tab strip silently did nothing visible until the user
+// reloaded the page. The root cause was an architectural bounce
+// through AppLayout: DesignView emitted addPage/deletePage upward,
+// AppLayout called api.createDesignPage/deleteDesignPage, but
+// DesignView's local `pages.value` was never updated, so the new
+// tab never appeared and the deleted tab stayed in place.
+//
+// The fix moved the API calls into DesignView itself, which mutates
+// `pages.value` directly (same pattern as `commitPageSize` below).
+// These tests verify the new behavior end-to-end via fetch mocks.
+
+describeRuntime('DesignView page CRUD (add / delete)', () => {
+  const originalFetch = global.fetch
+  const fetchMock = vi.fn()
+  const originalConfirm = global.confirm
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    // Auto-accept the delete confirm() so the test exercises the
+    // happy path. Tests that want to verify the cancel branch stub
+    // this explicitly.
+    global.confirm = (() => true) as unknown as typeof global.confirm
+  })
+
+  afterEach(() => {
+    fetchMock.mockReset()
+    global.fetch = originalFetch
+    global.confirm = originalConfirm
+  })
+
+  function mockListPages(pages: Array<Record<string, unknown>>): void {
+    fetchMock.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: () => Promise.resolve({ pages, count: pages.length }),
+      text: () => Promise.resolve(''),
+    } as Response)
+  }
+
+  function makeTwoPages(): Array<Record<string, unknown>> {
+    return [
+      { id: 'page_a', workspace_item_id: ITEM_ID, name: 'A', width: 1440, height: 1024, position: 0, created_at: '', updated_at: '' },
+      { id: 'page_b', workspace_item_id: ITEM_ID, name: 'B', width: 1440, height: 1024, position: 1, created_at: '', updated_at: '' },
+    ]
+  }
+
+  itRuntime('adding a page appends it to pages.value and sets it active (UI updates without refresh)', async () => {
+    mockListPages(makeTwoPages())
+    global.fetch = fetchMock as unknown as typeof fetch
+    const wrapper = mount(DesignView, {
+      props: { item: makeItem(), workspaceId: WS_ID, itemId: ITEM_ID },
+    })
+    await flushPromises()
+    expectRuntime((wrapper.vm as unknown as { pages: unknown[] }).pages.length).toBe(2)
+    expectRuntime((wrapper.vm as unknown as { activePageId: string }).activePageId).toBe('page_a')
+
+    // Server returns the new page on POST /design/pages.
+    fetchMock.mockResolvedValueOnce({
+      ok: true, status: 201,
+      json: () => Promise.resolve({
+        id: 'page_new',
+        workspace_item_id: ITEM_ID,
+        name: 'Untitled',
+        width: 1440,
+        height: 1024,
+        position: 2,
+        created_at: '',
+        updated_at: '',
+      }),
+      text: () => Promise.resolve(''),
+    } as Response)
+
+    await wrapper.find('[data-testid="design-add-page"]').trigger('click')
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as {
+      pages: Array<{ id: string; name: string }>
+      activePageId: string
+    }
+    // Regression: the bug was that `pages.value` was NOT updated
+    // (the new tab never appeared). After the fix, the new page is
+    // appended AND becomes active so the user immediately sees the
+    // empty canvas they can start populating.
+    expectRuntime(vm.pages.length).toBe(3)
+    expectRuntime(vm.pages[2]?.id).toBe('page_new')
+    expectRuntime(vm.activePageId).toBe('page_new')
+
+    // Auto-increment placeholder name: the user reported that all
+    // new pages get the literal name "Untitled" and stack up
+    // indistinguishable in the tab strip. The fix uses sequential
+    // names ("Untitled", "Untitled 1", "Untitled 2", ...) so the
+    // tabs are at least visually distinct out of the box.
+    expectRuntime(vm.pages[2]?.name).toBe('Untitled')
+    wrapper.unmount()
+  })
+
+  itRuntime('consecutive adds auto-increment the placeholder name (Untitled → Untitled 1 → Untitled 2)', async () => {
+    // No existing pages — the first add uses "Untitled" (no suffix;
+    // see the computeNextUntitledName contract), subsequent adds
+    // use "Untitled 1", "Untitled 2", etc.
+    mockListPages([])
+    global.fetch = fetchMock as unknown as typeof fetch
+    const wrapper = mount(DesignView, {
+      props: { item: makeItem(), workspaceId: WS_ID, itemId: ITEM_ID },
+    })
+    await flushPromises()
+
+    // Capture the name sent on each POST so we can assert the
+    // auto-increment pattern independent of the backend's echo.
+    const nameBodies: Array<string> = []
+    const allCalls: Array<{ url: string; method?: string }> = []
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      const u = typeof url === 'string' ? url : String(url)
+      allCalls.push({ url: u, method: init?.method })
+      if (u.includes('/design/pages') && init?.method === 'POST') {
+        try {
+          const body = JSON.parse(String(init.body)) as { name?: string }
+          if (body.name) nameBodies.push(body.name)
+        } catch {
+          /* ignore */
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: () =>
+            Promise.resolve({
+              id: `page_${nameBodies.length}`,
+              workspace_item_id: ITEM_ID,
+              name: nameBodies[nameBodies.length - 1] ?? 'Untitled',
+              width: 1440,
+              height: 1024,
+              position: nameBodies.length,
+              created_at: '',
+              updated_at: '',
+            }),
+          text: () => Promise.resolve(''),
+        } as Response)
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ pages: [], elements: [] }),
+        text: () => Promise.resolve(''),
+      } as Response)
+    })
+
+    // Three + Page clicks. Each one should compute a fresh,
+    // non-colliding name BEFORE the POST goes out, even though the
+    // previous POST hasn't yet updated `pages.value` (race-safety:
+    // the names are based on the snapshot at click time, not the
+    // post-response state).
+    await wrapper.find('[data-testid="design-add-page"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="design-add-page"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="design-add-page"]').trigger('click')
+    await flushPromises()
+
+    // Debug aid: if the test fails, this prints what was actually
+    // sent so the next person doesn't have to re-derive the
+    // suspicion.
+    if (nameBodies.length === 0 || nameBodies[0] !== 'Untitled' || nameBodies[1] !== 'Untitled 1' || nameBodies[2] !== 'Untitled 2') {
+      throw new Error(`expected ['Untitled', 'Untitled 1', 'Untitled 2'] but got ${JSON.stringify(nameBodies)}; calls=${JSON.stringify(allCalls.map((c) => `${c.method} ${c.url}`))}`)
+    }
+    expectRuntime(nameBodies).toEqual(['Untitled', 'Untitled 1', 'Untitled 2'])
+    wrapper.unmount()
+  })
+
+  itRuntime('auto-increment respects user-named "Untitled N" pages already present', async () => {
+    // User has pages named "Untitled 5", "Untitled 9", and a
+    // manually-named "My Landing". The next add should pick 10
+    // (the smallest unused gap > 0), NOT 1 (which would collide
+    // with nothing here but is conceptually wrong — re-using low
+    // numbers is what confuses users).
+    mockListPages([
+      { id: 'page_a', workspace_item_id: ITEM_ID, name: 'Untitled 5', width: 1440, height: 1024, position: 0, created_at: '', updated_at: '' },
+      { id: 'page_b', workspace_item_id: ITEM_ID, name: 'Untitled 9', width: 1440, height: 1024, position: 1, created_at: '', updated_at: '' },
+      { id: 'page_c', workspace_item_id: ITEM_ID, name: 'My Landing', width: 1440, height: 1024, position: 2, created_at: '', updated_at: '' },
+    ])
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    let capturedName = ''
+    const origMock = fetchMock.getMockImplementation()
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (
+        typeof url === 'string' &&
+        url.includes('/design/pages') &&
+        init?.method === 'POST'
+      ) {
+        const body = JSON.parse(String(init.body)) as { name: string }
+        capturedName = body.name
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: () => Promise.resolve({
+            id: 'page_new',
+            workspace_item_id: ITEM_ID,
+            name: body.name,
+            width: 1440,
+            height: 1024,
+            position: 3,
+            created_at: '',
+            updated_at: '',
+          }),
+          text: () => Promise.resolve(''),
+        } as Response)
+      }
+      if (origMock) return origMock(url, init)
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        json: () => Promise.resolve({ error: 'no mock' }),
+        text: () => Promise.resolve(''),
+      } as Response)
+    })
+
+    const wrapper = mount(DesignView, {
+      props: { item: makeItem(), workspaceId: WS_ID, itemId: ITEM_ID },
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="design-add-page"]').trigger('click')
+    await flushPromises()
+
+    // 10 = max(5, 9) + 1. The user-named "My Landing" doesn't
+    // contribute a number (doesn't match the regex), so it's
+    // ignored — but the high-water mark of 9 forces the next name
+    // to 10, not 1.
+    expectRuntime(capturedName).toBe('Untitled 10')
+    wrapper.unmount()
+  })
+
+  itRuntime('deleting the active page switches to the next page in the original order', async () => {
+    mockListPages(makeTwoPages())
+    global.fetch = fetchMock as unknown as typeof fetch
+    const wrapper = mount(DesignView, {
+      props: { item: makeItem(), workspaceId: WS_ID, itemId: ITEM_ID },
+    })
+    await flushPromises()
+    expectRuntime((wrapper.vm as unknown as { activePageId: string }).activePageId).toBe('page_a')
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: () => Promise.resolve({ success: true }),
+      text: () => Promise.resolve(''),
+    } as Response)
+
+    // Delete the currently-active page (page_a); the next page in the
+    // old order is page_b — VS Code / Figma style.
+    await wrapper.find('[data-testid="design-delete-page-page_a"]').trigger('click')
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as {
+      pages: Array<{ id: string }>
+      activePageId: string
+    }
+    // Regression: the bug was that `pages.value` still contained the
+    // deleted page after the API call, leaving a stale tab in the
+    // strip. After the fix, the page is removed AND the active page
+    // switches to page_b (the next one in the original order).
+    expectRuntime(vm.pages.length).toBe(1)
+    expectRuntime(vm.pages[0]?.id).toBe('page_b')
+    expectRuntime(vm.activePageId).toBe('page_b')
+    wrapper.unmount()
+  })
+
+  itRuntime('deleting the LAST page leaves activePageId empty (empty-state UI handles it)', async () => {
+    // Only one page exists. The tab strip hides the × button when
+    // pages.length <= 1 (DesignPageTabs.vue), so this branch isn't
+    // reachable via the UI today. The test still pins the contract:
+    // if the guard ever changes, the deletion must clear
+    // activePageId so the empty-state UI can render.
+    mockListPages([
+      { id: 'page_only', workspace_item_id: ITEM_ID, name: 'Solo', width: 1440, height: 1024, position: 0, created_at: '', updated_at: '' },
+    ])
+    global.fetch = fetchMock as unknown as typeof fetch
+    const wrapper = mount(DesignView, {
+      props: { item: makeItem(), workspaceId: WS_ID, itemId: ITEM_ID },
+    })
+    await flushPromises()
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: () => Promise.resolve({ success: true }),
+      text: () => Promise.resolve(''),
+    } as Response)
+
+    // Bypass the DesignPageTabs length guard by invoking the
+    // handler directly. (Same call site the tab × uses internally.)
+    const vm = wrapper.vm as unknown as {
+      handleDeletePage: (id: string) => Promise<void>
+      pages: Array<{ id: string }>
+      activePageId: string
+    }
+    await vm.handleDeletePage('page_only')
+    await flushPromises()
+
+    expectRuntime(vm.pages.length).toBe(0)
+    expectRuntime(vm.activePageId).toBe('')
+    wrapper.unmount()
+  })
+
+  itRuntime('cancelling the confirm() dialog leaves pages.value untouched', async () => {
+    mockListPages(makeTwoPages())
+    global.fetch = fetchMock as unknown as typeof fetch
+    // User clicks Cancel on the delete confirm dialog.
+    global.confirm = (() => false) as unknown as typeof global.confirm
+    const wrapper = mount(DesignView, {
+      props: { item: makeItem(), workspaceId: WS_ID, itemId: ITEM_ID },
+    })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="design-delete-page-page_a"]').trigger('click')
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as {
+      pages: Array<{ id: string }>
+      activePageId: string
+    }
+    // No fetch call should have been issued beyond the initial list.
+    expectRuntime(vm.pages.length).toBe(2)
+    expectRuntime(vm.activePageId).toBe('page_a')
+    expectRuntime(fetchMock).toHaveBeenCalledTimes(1) // only the initial list
     wrapper.unmount()
   })
 })
