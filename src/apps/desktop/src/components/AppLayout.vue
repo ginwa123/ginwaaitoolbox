@@ -197,6 +197,18 @@ watch(
   { immediate: true },
 )
 
+// IMPORTANT (2026-07-28 per-page chat scoping):
+// When the user switches design pages (activeDesignPageId changes
+// in the store, mirrored from DesignView's `watch(activePageId)`),
+// we DO NOT swap the active chat task. The chat is bound to the
+// page that opened it (via `handleDesignOpenChat`'s per-page
+// lookup); switching tabs leaves that conversation alone. Closing
+// the chat and reopening on a new page binds to the new page's
+// chat predictably via `handleDesignOpenChat`. Any future "smart
+// chat that follows the page" behavior must be opt-in, NOT
+// implicit, to avoid disorienting users mid-conversation.
+// Plan: docs/superpowers/plans/2026-07-28-design-per-page-chat-sessions.md
+
 // ─── activeWorkspaceItem / activeDesignPage → URL mirror (reverse sync) ──
 //
 // The forward direction (sidebar click → URL) is wired through

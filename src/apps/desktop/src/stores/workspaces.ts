@@ -198,10 +198,14 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // active design page id, set by DesignView on mount / tab switch and
   // cleared on unmount. Read by AppLayout's design handlers
   // (handleDesignUpdateElement / handleDesignDeleteElement) so they can
-  // route PATCH/PUT/DELETE to the correct page. Empty string means
-  // "no active design page" (DesignView is not mounted, or no page is
-  // selected yet). Using empty string (not null) keeps the type as
-  // string and makes the "no active page" check a single `!pageId`.
+  // route PATCH/PUT/DELETE to the correct page. Also read by
+  // handleDesignOpenChat to scope the chat task per-page (each page
+  // gets a disjoint "Design Chat: <pageName>" task — switching pages
+  // does NOT swap the active chat, which is intentional). Empty
+  // string means "no active design page" (DesignView is not mounted,
+  // or no page is selected yet). Using empty string (not null) keeps
+  // the type as string and makes the "no active page" check a single
+  // `!pageId`.
   const activeDesignPageId = ref<string>('')
   function setActiveDesignPage(pageId: string): void {
     activeDesignPageId.value = pageId
