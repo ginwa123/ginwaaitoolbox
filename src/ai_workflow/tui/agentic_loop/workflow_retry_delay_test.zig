@@ -1,4 +1,17 @@
-//! Static-contract tests for the `retryDelayMs` helper in `workflow.zig`.
+//! Static-contract tests for the `retryDelayMs` helper and the
+//! per-retry diagnostic in `workflow.zig`'s retry paths.
+//!
+//! ## Architecture note (added 2026-07-27)
+//!
+//! `retryDelayMs` was originally inlined in `workflow.zig` (commit
+//! `79de0068`). It was later extracted into `retry_delay_ms.zig`
+//! (commit `3f0d9e53`) and re-exported via `mod.zig`. The contract
+//! we test is unchanged: the helper sleeps for `delay_ms` milliseconds
+//! using **raw libc `nanosleep`**, NOT `std.Io.sleep`, because
+//! `std.Io.Threaded` parks worker threads in kernel `recv()` and
+//! `std.Io.sleep` would deadlock the Io.Group when called from a
+//! non-Io context (see `src/modules/agent/tools/bash.zig:4-17` for
+//! the deadlock pattern that motivates this rule).
 //!
 //! Why static-contract instead of behavioral:
 //! 1. workflow.zig is 1162 lines and `runAgenticMultiStepnew` requires a
@@ -9,44 +22,51 @@
 //! 3. The CRITICAL invariant (use nanosleep, NOT std.Io.sleep) is
 //!    source-greppable. Behavioral tests can't see this distinction.
 //!
-//! The tests below read workflow.zig and grep for the contract strings.
-//! If the helper is missing or wrong, they fail with a clear diagnostic.
+//! The definition tests below read `retry_delay_ms.zig` (where the
+//! helper actually lives post-refactor). The usage tests in this file
+//! read `workflow.zig` (where the helper is called from the retry
+//! paths). If the helper is missing or wrong, they fail with a clear
+//! diagnostic.
 
 const std = @import("std");
 const testing = std.testing;
 
-/// Path to the source file under test.
+/// Path to `workflow.zig` (tests retry-path USAGE).
 const WORKFLOW_SOURCE_PATH = "src/ai_workflow/tui/agentic_loop/workflow.zig";
 
-test "workflow.zig declares retryDelayMs helper" {
+/// Path to `retry_delay_ms.zig` (tests helper DEFINITION + the
+/// libc `nanosleep` extern declaration).
+const RETRY_DELAY_SOURCE_PATH = "src/ai_workflow/tui/agentic_loop/retry_delay_ms.zig";
+
+test "retry_delay_ms.zig declares retryDelayMs helper" {
     const source = std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
-        WORKFLOW_SOURCE_PATH,
+        RETRY_DELAY_SOURCE_PATH,
         std.testing.allocator,
         .limited(4 * 1024 * 1024),
     ) catch |err| {
-        std.debug.print("!! cannot read {s}: {{}} !!\n", .{WORKFLOW_SOURCE_PATH});
+        std.debug.print("!! cannot read {s}: {{}} !!\n", .{RETRY_DELAY_SOURCE_PATH});
         return err;
     };
     defer std.testing.allocator.free(source);
 
     if (std.mem.indexOf(u8, source, "fn retryDelayMs(") == null) {
         std.debug.print(
-            "!! workflow.zig does not declare retryDelayMs helper !!\n",
+            "!! retry_delay_ms.zig does not declare retryDelayMs helper !!\n",
             .{},
         );
         return error.RetryDelayMsMissing;
     }
 }
 
-test "workflow.zig retryDelayMs uses raw libc nanosleep, not std.Io.sleep" {
+test "retry_delay_ms.zig retryDelayMs uses raw libc nanosleep, not std.Io.sleep" {
     const source = std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
-        WORKFLOW_SOURCE_PATH,
+        RETRY_DELAY_SOURCE_PATH,
         std.testing.allocator,
         .limited(4 * 1024 * 1024),
     ) catch |err| {
-        std.debug.print("!! cannot read {s}: {{}} !!\n", .{WORKFLOW_SOURCE_PATH});
+        std.debug.print("!! cannot read {s}: {{}} !!\n", .{RETRY_DELAY_SOURCE_PATH});
         return err;
     };
     defer std.testing.allocator.free(source);
@@ -58,7 +78,7 @@ test "workflow.zig retryDelayMs uses raw libc nanosleep, not std.Io.sleep" {
     // functions.
     const fn_start = std.mem.indexOf(u8, source, "fn retryDelayMs(") orelse {
         std.debug.print(
-            "!! retryDelayMs function not found in workflow.zig !!\n",
+            "!! retryDelayMs function not found in retry_delay_ms.zig !!\n",
             .{},
         );
         return error.RetryDelayMsMissing;
