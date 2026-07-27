@@ -106,17 +106,24 @@ describe('DesignView.vue static contract', () => {
 
   // NEW (2026-07-14): top-right chat-toggle. The 💬 button in the
   // canvas header bar emits `openChat` upward; AppLayout's
-  // handleDesignOpenChat handler finds or creates a "Design Chat"
-  // task on the design item and switches to the 3-column
-  // (DesignView | resize-handle | ChatView) layout. Without this
-  // contract, a future refactor could silently drop the chat
-  // toggle and the user would lose the primary way to interact
-  // with the LLM about the design.
+  // handleDesignOpenChat handler finds or creates a per-page
+  // "Design Chat: <pageName>" task on the design item and
+  // switches to the 3-column (DesignView | resize-handle |
+  // ChatView) layout. Without this contract, a future refactor
+  // could silently drop the chat toggle and the user would lose
+  // the primary way to interact with the LLM about the design.
+  //
+  // UPDATED (2026-07-28 per-page chat scoping, plan
+  // docs/superpowers/plans/2026-07-28-design-per-page-chat-sessions.md):
+  // the emit now carries the active page's {pageId, pageName} so
+  // AppLayout can scope the chat task to this page only. Each
+  // design page gets a disjoint chat; switching pages does NOT
+  // swap the active chat.
   it('declares openChat in defineEmits (top-right chat toggle)', () => {
-    // Vue 3 typed-emits syntax allows either `openChat: []` or
-    // `openChat: [] | null` — match either. The event must be
-    // present in the defineEmits<{...}>() type literal.
-    expect(source).toMatch(/openChat:\s*\[\s*\][^,}]*/)
+    // Per-page payload: `[payload: { pageId: string; pageName: string }]`.
+    // The pre-fix shape `openChat: []` is the single-canonical
+    // pattern and is no longer used here.
+    expect(source).toMatch(/openChat:\s*\[\s*payload:\s*\{\s*pageId:[^}]*pageName:[^}]*\}\s*\]/)
   })
 
   it('renders the design-open-chat-button in the top-level toolbar', () => {
@@ -146,8 +153,12 @@ describe('DesignView.vue static contract', () => {
     expect(toolbarIdx).toBeLessThan(lastTabsIdx)
   })
 
-  it('handleOpenChat emits the openChat event', () => {
-    expect(source).toMatch(/handleOpenChat\s*=\s*\([^)]*\)\s*:\s*void\s*=>\s*\{[^}]*emit\('openChat'\)/)
+  it('handleOpenChat emits the openChat event with the active page payload', () => {
+    // The handler must call emit('openChat', { pageId, pageName })
+    // — NOT a bare emit('openChat'). Verify both the literal
+    // emit-name AND the object-shaped payload appear on the same
+    // emit call.
+    expect(source).toMatch(/emit\(\s*['"]openChat['"]\s*,\s*\{[\s\S]*?pageId[\s\S]*?pageName[\s\S]*?\}\s*\)/)
   })
 })
 

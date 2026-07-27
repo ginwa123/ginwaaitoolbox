@@ -36,6 +36,7 @@ const tool_models = nalarcore.tool_models;
 const buildMessages = @import("../build_messages_for_agent_prompt.zig").buildMessages;
 
 const agentic_loop = @import("../agentic_loop/mod.zig");
+const SqliteBackend = nalarcore.sqlite.SqliteBackend;
 
 /// JSON response struct. `size_bytes` is the byte length of the rendered
 /// `system_prompt` so callers can sanity-check they got a non-empty prompt
@@ -89,7 +90,7 @@ pub fn systemPromptGetHandler(
     // before calling buildMessages). An empty history is fine — buildMessages
     // still emits the system message alone.
     // const db_messages = llm_history.getMessages(allocator, sqlite_db, session_id) catch {
-    const db_messages = agentic_loop.getLLMHistories(agentic_loop.GetLLMHistoriesInput{
+    const db_messages = agentic_loop.getLLMHistories(*SqliteBackend, .{
         .allocator = allocator,
         .db = sqlite_db,
         .session_id = session_id,
@@ -154,4 +155,3 @@ pub fn systemPromptGetHandler(
 
     return res.jsonResponse(.{ .status_code = 200, .data = json_str });
 }
-

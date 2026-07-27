@@ -1,21 +1,31 @@
 /**
  * DesignChatToggle.spec.ts — static-contract regression tests for
  * the top-right chat toggle in DesignView + its handler in
- * AppLayout (2026-07-14 user feedback).
+ * AppLayout.
  *
  * The chat toggle has no behavioural test infra (no fake
  * workspacesStore + fake API + full DesignView harness). Static
  * contract checks are sufficient to lock in the wiring:
- *  - DesignView declares `openChat` in defineEmits
+ *  - DesignView declares `openChat` in defineEmits with the
+ *    per-page { pageId, pageName } payload
  *  - DesignView renders the button (data-testid + aria-label)
- *  - DesignView handleOpenChat emits the event
+ *  - DesignView handleOpenChat emits the event with the active
+ *    page's id + name (NOT a bare emit)
  *  - AppLayout's <DesignView> listener forwards open-chat
- *  - AppLayout's handleDesignOpenChat creates / reuses a chat
- *    task on the design item
+ *  - AppLayout's handleDesignOpenChat accepts (pageId, pageName)
+ *    and looks up the per-page task by name "Design Chat: <page>"
+ *  - When a legacy "Design Chat" task exists with messages, the
+ *    handler renames it via api.updateTask (NOT a fresh create)
+ *  - When no per-page task exists, the handler creates one via
+ *    workspacesStore.addTask with name "Design Chat: <page>"
+ *  - The N+1 message-probe fallback loop is GONE (replaced by the
+ *    deterministic per-page lookup)
  *  - AppLayout's template has a 3-column branch for design +
  *    activeTask (mirrors the existing kanban+chat branch)
  *  - The new branch mounts <ChatView> with the design task id
  *    as the chat-id
+ *
+ * Plan: docs/superpowers/plans/2026-07-28-design-per-page-chat-sessions.md
  */
 
 import { describe, it, expect } from 'vitest'
@@ -32,8 +42,10 @@ function readSource(filePath: string): string {
 describe('DesignView chat toggle (button + emit)', () => {
   const source = readSource(DESIGN_VIEW)
 
-  it('declares openChat in defineEmits', () => {
-    expect(source).toMatch(/openChat:\s*\[\s*\][^,}]*/)
+  it('declares openChat in defineEmits with the per-page payload', () => {
+    // After 2026-07-28, the emit type is `[payload: { pageId: string; pageName: string }]`
+    // (NOT the old bare `[]` — that's the single-canonical shape).
+    expect(source).toMatch(/openChat:\s*\[\s*payload:\s*\{\s*pageId:[^}]*pageName:[^}]*\}\s*\]/)
   })
 
   it('renders the chat button with data-testid + aria-label', () => {
@@ -45,81 +57,135 @@ describe('DesignView chat toggle (button + emit)', () => {
     expect(source).toContain('💬')
   })
 
-  it('handleOpenChat emits openChat', () => {
-    // The handler must call emit('openChat') so AppLayout's
-    // @open-chat listener fires.
-    expect(source).toMatch(/handleOpenChat\s*=\s*\([^)]*\)\s*:\s*void\s*=>\s*\{[^}]*emit\('openChat'\)/)
+  it('handleOpenChat emits openChat with the active page payload', () => {
+    // The handler must call emit('openChat', { pageId, pageName })
+    // — NOT a bare emit('openChat'). Verify both the literal
+    // emit-name AND the object-shaped payload appear on the same
+    // emit call.
+    expect(source).toMatch(/emit\(\s*['"]openChat['"]\s*,\s*\{[\s\S]*?pageId[\s\S]*?pageName[\s\S]*?\}\s*\)/)
   })
 })
 
 describe('AppLayout design chat handler (handleDesignOpenChat)', () => {
   const source = readSource(APP_LAYOUT)
 
-  it('forwards @open-chat to handleDesignOpenChat on <DesignView>', () => {
-    // Find every <DesignView ...> tag and verify at least one
-    // contains @open-chat="handleDesignOpenChat". The component
-    // is mounted in two places (the new 3-col v-if branch AND
-    // the single-col v-else-if branch); only one of them needs
-    // the listener (the v-if branch is the one that renders when
-    // chat is open, but the v-else-if is the "fall back to canvas
-    // only" branch that ALSO receives the event for the case
-    // where the user closes the chat and reopens it).
-    const tagRegex = /<DesignView[\s\S]*?\/>/g
+  it('forwards @open-chat to handleDesignOpenChat on every <DesignView>', () => {
+    // 2026-07-28: both <DesignView> invocations now have the
+    // @open-chat listener (the v-else-if branch too, so closing +
+    // reopening the chat on the canvas-only branch still binds to
+    // the active page).
+    //
+    // Match real Vue self-closing tags by requiring a `\n` right
+    // after `<DesignView` (real tags open on their own line) AND
+    // a `:workspace-id=` binding (only real tags carry this).
+    // The previous regex accidentally captured `// <DesignView>`
+    // comments, which don't have real attributes.
+    const tagRegex = /<DesignView\n[\s\S]*?:workspace-id="activeWorkspace\?\.id \?\? ''"[\s\S]*?\/>/g
     const tags = source.match(tagRegex) ?? []
-    expect(tags.length).toBeGreaterThan(0)
-    const anyHasOpenChat = tags.some((tag) =>
+    expect(tags.length).toBeGreaterThanOrEqual(2)
+    const tagsWithListener = tags.filter((tag) =>
       tag.includes('@open-chat="handleDesignOpenChat"'),
     )
-    expect(anyHasOpenChat).toBe(true)
+    expect(tagsWithListener.length).toBe(tags.length)
   })
 
-  it('handleDesignOpenChat finds an existing "Design Chat" task', () => {
-    // Look for the find-by-name branch: `t.name === 'Design Chat'`
-    // OR `name === DESIGN_CHAT_TASK_NAME`. Either is acceptable.
-    expect(source).toMatch(/name\s*===?\s*['"]Design Chat['"]|DESIGN_CHAT_TASK_NAME/)
+  it('handleDesignOpenChat accepts a (pageId, pageName) payload', () => {
+    // The handler signature must accept the per-page payload
+    // destructured object — NOT zero args (the pre-2026-07-28
+    // shape) or a single string id (a different mistake).
+    expect(source).toMatch(
+      /handleDesignOpenChat\s*=\s*async\s*\(\s*payload:\s*\{\s*pageId:[^}]*pageName:[^}]*\}\s*\)/,
+    )
   })
 
-  it('handleDesignOpenChat creates a task via workspacesStore.addTask', () => {
-    expect(source).toMatch(/workspacesStore\.addTask\(/)
+  it('handleDesignOpenChat looks up the per-page canonical "Design Chat: <pageName>"', () => {
+    // Look for the per-page name construction. The current handler
+    // builds it via a PER_PAGE_CHAT_PREFIX constant + template
+    // literal: `${PER_PAGE_CHAT_PREFIX}${payload.pageName}`. Match
+    // EITHER that constant-prefix form OR the direct template
+    // literal form (`Design Chat: ${payload.pageName}` /
+    // 'Design Chat: ' + payload.pageName). What is NOT acceptable
+    // is a bare `Design Chat` constant used as the task lookup
+    // name (the pre-fix single-canonical shape).
+    const perPageConstantForm =
+      /\$\{PER_PAGE_CHAT_PREFIX\}\$\{payload\.pageName\}/
+    const perPageTemplateLiteral =
+      /[`'"]Design Chat: [`'"][^`'"]*\$\{payload\.pageName\}/
+    const perPageConcat =
+      /[`'"]Design Chat: [`'"]\s*\+\s*payload\.pageName/
+    const perPageNameAssigned =
+      /const\s+perPageName\s*=\s*[`'"][^`'"]*payload\.pageName/
+    expect(
+      perPageConstantForm.test(source) ||
+        perPageTemplateLiteral.test(source) ||
+        perPageConcat.test(source) ||
+        perPageNameAssigned.test(source),
+    ).toBe(true)
+  })
+
+  it('handleDesignOpenChat retains DESIGN_CHAT_TASK_NAME constant for legacy migration', () => {
+    // The legacy constant must still exist — it's used by Step 2
+    // (legacy rename) to find the pre-fix "Design Chat" canonical.
+    expect(source).toMatch(/DESIGN_CHAT_TASK_NAME\s*=\s*['"]Design Chat['"]/)
+  })
+
+  it('handleDesignOpenChat renames the legacy task via api.updateTask', () => {
+    // The migration path calls api.updateTask with the legacy
+    // task's id and a `name: perPageName` patch. This preserves
+    // the task id (and llm_history rows keyed on it) — only the
+    // name changes.
+    expect(source).toMatch(/api\.updateTask\([^)]*name:\s*perPageName/m)
+  })
+
+  it('handleDesignOpenChat does NOT iterate all item.tasks for the message-probe fallback', () => {
+    // The 2026-07-26 N+1 message-probe fallback loop is GONE.
+    // The per-page lookup is deterministic; no need to scan all
+    // tasks. A regex-negative: the source must not contain
+    // `for (const t of item.tasks)` inside the handler.
+    // We check the global source minus the constant declaration
+    // for the legacy-migration loop (which is intentional and
+    // doesn't probe messages).
+    //
+    // Note: a `for...of item.tasks` inside `item.tasks?.find(...)`
+    // calls or `for await` loops is fine; only the
+    //   `for (const t of item.tasks) { ... taskHasMessages ... }`
+    // shape is forbidden.
+    const messageProbeLoop =
+      /for\s*\(\s*const\s+t\s+of\s+item\.tasks\s*\)\s*\{[^}]*taskHasMessages/
+    expect(source).not.toMatch(messageProbeLoop)
+  })
+
+  it('handleDesignOpenChat creates a per-page task via workspacesStore.addTask', () => {
+    // When no per-page task exists and no legacy-to-migrate, the
+    // handler creates a fresh task via the existing addTask path
+    // with the per-page name (NOT the legacy "Design Chat" name).
+    expect(source).toMatch(/workspacesStore\.addTask\([^)]*name:\s*perPageName/m)
   })
 
   it('handleDesignOpenChat sets activeTaskId via setActiveTask', () => {
     expect(source).toMatch(/workspacesStore\.setActiveTask\(/)
   })
 
-  // 2026-07-26: regression test for the "Design Chat shows empty"
-  // bug. The canonical-name lookup alone is broken when a user has
-  // prior chats under a different-named task on the same design
-  // item — the empty canonical always wins. The fix probes
-  // `api.getChatHistory` to detect a real chat and falls back to
-  // any other task on the design item that has messages.
-  it('handleDesignOpenChat probes messages via api.getChatHistory', () => {
-    // The handler must call into the chat history endpoint to
-    // decide whether the canonical "Design Chat" task is empty
-    // (and thus a side-effect of a prior broken click) versus a
-    // real chat.
-    expect(source).toMatch(/api\.getChatHistory\(/)
-  })
-
-  it('handleDesignOpenChat skips the canonical task when it is empty and falls back to a task with messages', () => {
-    // Search for the canonical-find → fallback pattern. The
-    // handler must NOT just call `setActiveTask(canonicalTask.id)`
-    // right after the canonical lookup; it must check the
-    // messages first and skip past the empty canonical when only
-    // a sibling task has messages.
+  it('handleDesignOpenChat probes legacy task messages via api.getChatHistory', () => {
+    // The migration path still uses the cheap `getChatHistory`
+    // probe (via the `taskHasMessages` helper) to decide whether
+    // the legacy "Design Chat" task has messages (and is thus
+    // worth migrating) vs. is empty (a prior-broken-click
+    // artifact to skip).
     //
-    // The cheap structural check: the source must contain a
-    // branch that continues past the canonical find when the
-    // canonical is empty (the `if (hasMessages)` guards the
-    // early return; the fallback loop iterates item.tasks).
-    expect(source).toMatch(/if\s*\(hasMessages\)/)
-    // The fallback loop scans NON-canonical tasks.
-    expect(source).toMatch(/if\s*\(\s*t\.name\s*===\s*DESIGN_CHAT_TASK_NAME\s*\)\s*continue/)
+    // We accept EITHER a direct `api.getChatHistory(legacyTask.id)`
+    // call OR the indirect `taskHasMessages(legacyTask.id)` call
+    // (which calls `api.getChatHistory` internally).
+    const direct = /api\.getChatHistory\([^)]*legacyTask\.id/
+    const indirect = /taskHasMessages\(\s*legacyTask\.id\s*\)/
+    expect(direct.test(source) || indirect.test(source)).toBe(true)
   })
 
-  it('declares the "Design Chat" task-name constant', () => {
-    // Either a const declaration OR a literal in the handler body.
-    expect(source).toMatch(/DESIGN_CHAT_TASK_NAME|['"]Design Chat['"]/)
+  it('handleDesignOpenChat short-circuits when payload.pageId or payload.pageName is empty', () => {
+    // DesignView emits empty values when the active page isn't
+    // loaded yet; the handler must NOT create a chat task with an
+    // empty name (would orphan future migrations).
+    expect(source).toMatch(/if\s*\(\s*!payload\.pageId\s*\|\|\s*!payload\.pageName\s*\)\s*return/)
   })
 })
 

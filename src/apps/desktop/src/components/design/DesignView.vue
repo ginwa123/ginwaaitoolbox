@@ -94,7 +94,14 @@ const emit = defineEmits<{
   // resize-handle | ChatView) renders alongside the canvas.
   // Plan: docs/superpowers/plans/2026-06-13-design-mode.md
   // (chat integration, added 2026-07-14 after user feedback).
-  openChat: []
+  //
+  // 2026-07-28 per-page scoping (plan:
+  // docs/superpowers/plans/2026-07-28-design-per-page-chat-sessions.md):
+  // the emit now carries the active page's {pageId, pageName} so
+  // AppLayout can look up the chat task for THIS page only.
+  // Empty values (page not loaded yet) → AppLayout short-circuits
+  // and does NOT create a chat task with an empty name.
+  openChat: [payload: { pageId: string; pageName: string }]
 }>()
 
 const workspacesStore = useWorkspacesStore()
@@ -643,14 +650,26 @@ const startCanvasPan = (event: PointerEvent): void => {
 }
 
 // NEW: chat-toggle click handler (top-right 💬 button in the
-// canvas header bar). Emits the openChat event upward —
-// AppLayout (the only listener) finds or creates the design's
-// chat task and switches to the 3-column layout. The button
-// itself has no local state; the chat panel's visibility is
-// owned by AppLayout (it shows when activeTaskId is set for
-// this design item, hides when activeTaskId is cleared).
+// canvas header bar). Emits the openChat event upward with the
+// active page's {pageId, pageName} — AppLayout (the only
+// listener) finds or creates the per-page chat task
+// (named "Design Chat: <pageName>") and switches to the
+// 3-column layout. The button itself has no local state; the
+// chat panel's visibility is owned by AppLayout (it shows when
+// activeTaskId is set for this design item, hides when
+// activeTaskId is cleared).
+//
+// 2026-07-28 per-page scoping: the active page drives the chat
+// lookup. When `activePage.value` is null (pages not loaded yet
+// or no page selected), we emit empty values and AppLayout will
+// short-circuit — better to skip than to create a chat task
+// with an empty name that would orphan future migrations.
 const handleOpenChat = (): void => {
-  emit('openChat')
+  const page = activePage.value
+  emit('openChat', {
+    pageId: page?.id ?? '',
+    pageName: page?.name ?? '',
+  })
 }
 
 // Compute the next available placeholder name for a new design
