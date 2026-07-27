@@ -248,7 +248,7 @@ test "workflow.zig declares saveRetryAttemptMessage helper" {
     }
 }
 
-test "workflow.zig per-retry message is feed_to_llm (so AI sees full retry history)" {
+test "workflow.zig per-retry message stays in chat history (NOT fed to LLM — avoids context bloat)" {
     const source = std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         WORKFLOW_SOURCE_PATH,
@@ -261,17 +261,25 @@ test "workflow.zig per-retry message is feed_to_llm (so AI sees full retry histo
     defer std.testing.allocator.free(source);
 
     // The saveRetryAttemptMessage helper must call insertLLMHistories
-    // with `is_feed_to_llm: true` so the AI agent has the full retry
-    // history in context on its next turn.
+    // with `is_input: true` (renders as user-side chat entry — the
+    // human sees live retry visibility) AND `is_feed_to_llm: false`
+    // (does NOT propagate to the LLM context — feeding 10 identical
+    // retry messages per failure cycle bloats context for no benefit;
+    // the LLM only needs the final TooManyRetries summary, which
+    // lives in the bail diagnostic).
     const fn_start = std.mem.indexOf(u8, source, "fn saveRetryAttemptMessage(") orelse
         return error.SaveRetryAttemptMessageMissing;
     const fn_end = std.mem.indexOfPos(u8, source, fn_start + 1, "\nfn ") orelse source.len;
     const body = source[fn_start..fn_end];
 
-    if (std.mem.indexOf(u8, body, "is_feed_to_llm = true") == null) {
+    if (std.mem.indexOf(u8, body, "is_feed_to_llm = false") == null) {
         std.debug.print(
-            "!! saveRetryAttemptMessage uses is_feed_to_llm: false — AI won't see retry history !!\n", .{});
-        return error.RetryMessageNotFedToLlm;
+            "!! saveRetryAttemptMessage uses is_feed_to_llm: true — retry history will bloat LLM context !!\n" ++
+                "   (the LLM only needs the final TooManyRetries summary, not 10 identical \"[Retry X/10]\" " ++
+                "lines in its prompt). !!\n",
+            .{},
+        );
+        return error.RetryMessageFedToLlm;
     }
     if (std.mem.indexOf(u8, body, "is_input = true") == null) {
         std.debug.print(
