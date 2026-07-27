@@ -1780,6 +1780,14 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration062AddTaskDescription.version, .name = Migration062AddTaskDescription.name, .up = Migration062AddTaskDescription.up },
     .{ .version = Migration063AddSessionAutoRetry.version, .name = Migration063AddSessionAutoRetry.name, .up = Migration063AddSessionAutoRetry.up },
     .{ .version = Migration064AddFrontendLogs.version, .name = Migration064AddFrontendLogs.name, .up = Migration064AddFrontendLogs.up },
+    // Chunk 1 of kanban-task-notification-icon plan: stamps
+    // `last_human_touched_at` on tasks the user has interacted
+    // with (drag, rename, edit desc, pin, send message, open chat).
+    // Used by the kanban card UI to decide whether to show the
+    // orange "awaiting review" dot or the green "reviewed"
+    // checkmark alongside `sessions.last_finish_reason` (Migration
+    // 063). See docs/plans/2026-07-26-kanban-task-notification-icon.md.
+    .{ .version = Migration065AddTaskHumanTouchedAt.version, .name = Migration065AddTaskHumanTouchedAt.name, .up = Migration065AddTaskHumanTouchedAt.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
