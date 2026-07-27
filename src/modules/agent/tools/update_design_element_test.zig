@@ -17,7 +17,7 @@ const text_normalize = nalarcore.helpers.text_normalize;
 const design_model = @import("../../../ai_workflow/tui/design_model.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/update_design_element.zig";
-const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/tool_registry.zig";
+const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tool_registry.zig";
 /// The exec function was migrated from `tool_registry.zig` to
 /// `src/ai_workflow/tui/agentic_loop/tools_exec_update_element.zig`.
 const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_update_element.zig";

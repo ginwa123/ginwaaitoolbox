@@ -7,7 +7,7 @@ const kanban_model = nalarcore.ai_mod.kanban_model;
 const text_normalize = nalarcore.helpers.text_normalize;
 
 const TOOL_PATH = "src/modules/agent/tools/kanban_list.zig";
-const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/tool_registry.zig";
+const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tool_registry.zig";
 /// The exec function was migrated from `tool_registry.zig` to
 /// `src/ai_workflow/tui/agentic_loop/tools_exec_kanban_list.zig`
 /// (re-exported as `agentic_loop_mod.tools.execKanbanList`).

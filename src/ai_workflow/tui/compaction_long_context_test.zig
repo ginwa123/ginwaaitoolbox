@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const workflow = @import("workflow.zig");
+const workflow = @import("agentic_loop/workflow.zig");
 const agent = @import("nalarcore").agent;
 const sqlite = @import("nalarcore").sqlite;
 const llm_history = @import("llm_history.zig");

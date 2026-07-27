@@ -16,7 +16,7 @@ const std = @import("std");
 const testing = std.testing;
 
 /// Path to the source file under test.
-const WORKFLOW_SOURCE_PATH = "src/ai_workflow/tui/workflow.zig";
+const WORKFLOW_SOURCE_PATH = "src/ai_workflow/tui/agentic_loop/workflow.zig";
 
 test "workflow.zig declares retryDelayMs helper" {
     const source = std.Io.Dir.cwd().readFileAlloc(

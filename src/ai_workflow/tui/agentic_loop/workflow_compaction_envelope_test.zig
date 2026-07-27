@@ -3,7 +3,7 @@ const testing = std.testing;
 const workflow = @import("workflow.zig");
 const agent = @import("nalarcore").agent;
 const sqlite = @import("nalarcore").sqlite;
-const llm_history = @import("llm_history.zig");
+const llm_history = @import("../llm_history.zig");
 const logger_mod = @import("nalarcore").loggermod;
 
 /// Build a minimal in-memory SQLite DB with the tables that

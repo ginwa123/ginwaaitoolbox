@@ -2,7 +2,7 @@
 pub const nalarcore = @import("nalarcore");
 pub const models = @import("models.zig");
 pub const http_handlers = @import("http_handlers/mod.zig");
-pub const ai_workflow = @import("workflow.zig");
+pub const ai_workflow = @import("agentic_loop/workflow.zig");
 pub const llm_history = @import("llm_history.zig");
 pub const on_event_sent = @import("on_event_sent.zig");
 pub const on_event_sent_kanban = @import("on_event_sent_kanban.zig");

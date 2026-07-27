@@ -1,14 +1,13 @@
-const mod = @import("mod.zig");
 const std = @import("std");
 
-const nalarcore = mod.nalarcore;
+const nalarcore = @import("nalarcore");
 
-const llm_history = @import("llm_history.zig");
-const build_msg_prompt = @import("build_messages_for_agent_prompt.zig");
-const models = @import("models.zig");
-const on_event_sent = @import("on_event_sent.zig");
+const llm_history = @import("../llm_history.zig");
+const build_msg_prompt = @import("../build_messages_for_agent_prompt.zig");
+const models = @import("../models.zig");
+const on_event_sent = @import("../on_event_sent.zig");
 const tool_registry = @import("tool_registry.zig");
-const handle_tool = @import("handle_tool.zig").handle_tool;
+const handle_tool = @import("../handle_tool.zig").handle_tool;
 const notifications = nalarcore.notifications_mod;
 
 const sqlite = nalarcore.sqlite;

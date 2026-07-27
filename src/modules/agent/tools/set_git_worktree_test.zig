@@ -193,7 +193,7 @@ test "deriveBranchFromPath returns worktree/<basename>" {
 
 // ─── Static wiring tests (Chunk 3) ───────────────────────────────────────
 
-const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/tool_registry.zig";
+const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tool_registry.zig";
 /// The exec function was migrated from `tool_registry.zig` to
 /// `src/ai_workflow/tui/agentic_loop/tools_exec_set_git_worktree.zig`
 /// (re-exported as `agentic_loop_mod.tools.execSetGitWorktree`).

@@ -1,6 +1,6 @@
 const std = @import("std");
 const nalar_mod = @import("nalarcore");
-const models = @import("models.zig");
+const models = @import("../models.zig");
 const helpers = nalar_mod.helpers;
 const agent = nalar_mod.agent;
 const tool_models = nalar_mod.tool_models;
