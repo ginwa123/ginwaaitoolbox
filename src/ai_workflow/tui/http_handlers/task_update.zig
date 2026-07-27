@@ -93,6 +93,7 @@ fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
         .db = sqlite_db,
         .io = ctx.io,
     }) catch |err| {
+        // (unchanged error-mapping block — collapsed for the diff)
         const status: u16 = switch (err) {
             error.InvalidCronExpression => 400,
             error.MissingRoutineSchedule => 400,
@@ -121,6 +122,23 @@ fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
             .status_code = status,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
         });
+    };
+
+    // Chunk 5 of kanban-task-notification-icon: every rename/edit/pin
+    // counts as a human touch — stamp last_human_touched_at so the
+    // kanban card flips from the orange "awaiting review" dot to the
+    // green "reviewed" checkmark. Fire-and-forget: a failed stamp
+    // doesn't fail the rename (the rename is already committed).
+    ai_mod.llm_history.updateTaskLastHumanTouchedAt(
+        allocator,
+        sqlite_db,
+        task_id,
+        null,
+    ) catch |err| {
+        std.log.warn(
+            "task_update: stamp last_human_touched_at failed (non-fatal): {s}",
+            .{@errorName(err)},
+        );
     };
 
     return res.jsonResponse(.{ .status_code = 200, .data = try std.fmt.allocPrint(allocator, "{{\"success\":true,\"id\":\"{s}\"}}", .{result.task_id}) });

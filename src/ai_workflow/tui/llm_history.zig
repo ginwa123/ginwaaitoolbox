@@ -2457,22 +2457,60 @@ pub fn updateSessionLastFinishReason(
 /// bind via `?` per the project's SqliteBackend convention
 /// (`db.exec` only binds TEXT; see memory
 /// `sqlite-backend-exec-binds-text-only`).
+///
+/// The `now_unix_ms` arg lets callers override the stamp time (useful
+/// for tests). When null, we read the real current time via libc
+/// `gettimeofday` (Zig 0.16 removed `std.time.timestamp` per project
+/// memory `zig-0.16-stdlib-changes`).
 pub fn updateTaskLastHumanTouchedAt(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     task_id: []const u8,
-    touched_at_unix_ms: i64,
+    now_unix_ms: ?i64,
 ) !void {
+    const now_ms = now_unix_ms orelse unixMillisNow();
     const touched_at_str = try std.fmt.allocPrint(
         allocator,
         "{d}",
-        .{touched_at_unix_ms},
+        .{now_ms},
     );
     defer allocator.free(touched_at_str);
 
     const sql =
         "UPDATE workspace_item_tasks SET last_human_touched_at = ? WHERE id = ?";
     try db.exec(allocator, sql, &.{ touched_at_str, task_id });
+}
+
+/// Current Unix epoch time in milliseconds. Used by
+/// `updateTaskLastHumanTouchedAt` as the default timestamp; can also
+/// be called directly by handlers that need a unix-ms stamp.
+///
+/// Replaces Zig 0.16-removed `std.time.timestamp()`. We use libc
+/// `gettimeofday` directly — matches the pattern in
+/// `src/helpers/...` and avoids the Zig 0.16 `std.Io` runtime
+/// dependency for a one-shot monotonic stamp.
+///
+/// `extern "c"` MUST be at module scope in Zig 0.16 (per project
+/// memory `zig-language-quirks` §"extern c declarations — symbol
+/// name rules"). `c_long` is platform-sized — use the project's
+/// `Clong` alias pattern (LP64 vs LLP64).
+const builtin = @import("builtin");
+const Clong = if (@bitSizeOf(usize) == 64 and builtin.os.tag != .windows)
+    i64
+else
+    i32;
+
+extern "c" fn gettimeofday(tv: ?*PosixTimeval, tz: ?*anyopaque) c_int;
+
+const PosixTimeval = extern struct {
+    sec: Clong,
+    usec: Clong,
+};
+
+pub fn unixMillisNow() i64 {
+    var tv: PosixTimeval = undefined;
+    _ = gettimeofday(&tv, null);
+    return @as(i64, tv.sec) * 1000 + @divFloor(@as(i64, tv.usec), 1000);
 }
 
 /// Update session selected_profile_model (the name of a profile in

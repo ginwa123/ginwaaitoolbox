@@ -349,6 +349,16 @@ fn createStandardTask(
         "standard",
         input.body.description,
     ) catch return error.StandardTaskCreateFailed;
+
+    // Chunk 5 of kanban-task-notification-icon: creating a card is
+    // a human touch. Stamp last_human_touched_at so the kanban card
+    // never shows the orange "awaiting review" dot for a card the
+    // user just made (even if the AI subsequently finishes a turn on
+    // it — the user's first-interaction is the review). Fire-and-
+    // forget: a failed stamp doesn't fail the create.
+    ai_mod.llm_history.updateTaskLastHumanTouchedAt(allocator, db, task_id, null) catch |err| {
+        std.log.warn("task_create: stamp last_human_touched_at failed (non-fatal): {s}", .{@errorName(err)});
+    };
     // NOTE: do NOT `defer task.deinit(allocator)` here. The slices
     // task.id, task.name, task.workspace_item_id, and task.task_type
     // are duped by createWorkspaceItemTask on the per-request arena

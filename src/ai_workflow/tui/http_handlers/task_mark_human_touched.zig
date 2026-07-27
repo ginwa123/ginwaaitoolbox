@@ -29,7 +29,6 @@
 //!   (Chunks 3 + 4).
 
 const std = @import("std");
-const builtin = @import("builtin");
 const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
@@ -46,42 +45,6 @@ pub const MarkTouchedError = error{
 };
 
 pub const MarkTouchedResult = []const u8; // pre-serialized JSON
-
-// =====================================================================
-// Time helpers
-// =====================================================================
-//
-// Zig 0.16 removed `std.time.timestamp()`. We use libc's gettimeofday
-// directly — matches the pattern in `src/helpers/...` and avoids the
-// Zig 0.16 `std.Io` runtime dependency for a one-shot monotonic stamp.
-//
-// `extern "c"` declarations MUST be at module scope in Zig 0.16 (per
-// project memory `zig-language-quirks` §"extern c declarations —
-// symbol name rules"). `c_long` is platform-sized — use the project's
-// `Clong` alias pattern (LP64 vs LLP64).
-
-/// `c_long` is platform-sized: 64-bit on Linux/macOS 64-bit, 32-bit on
-/// Windows 64-bit (LP64 vs LLP64).
-const Clong = if (@bitSizeOf(usize) == 64 and builtin.os.tag != .windows)
-    i64
-else
-    i32;
-
-extern "c" fn gettimeofday(tv: ?*PosixTimeval, tz: ?*anyopaque) c_int;
-
-const PosixTimeval = extern struct {
-    sec: Clong,
-    usec: Clong,
-};
-
-/// Return the current Unix epoch time in milliseconds. Replaces the
-/// Zig 0.16-removed `std.time.timestamp()` (see project memory
-/// `zig-0.16-stdlib-changes`).
-fn unixMillisNow() i64 {
-    var tv: PosixTimeval = undefined;
-    _ = gettimeofday(&tv, null);
-    return @as(i64, tv.sec) * 1000 + @divFloor(@as(i64, tv.usec), 1000);
-}
 
 // =====================================================================
 // Use case
@@ -102,8 +65,9 @@ fn useCase(
     if (task_id.len == 0) return error.TaskIdRequired;
 
     // 1. Stamp the column. Idempotent — re-stamping is harmless.
-    const now_ms = unixMillisNow();
-    llm_history.updateTaskLastHumanTouchedAt(allocator, db, task_id, now_ms) catch {
+    //    The writer reads current time via libc gettimeofday
+    //    internally (now_unix_ms=null → auto-now).
+    llm_history.updateTaskLastHumanTouchedAt(allocator, db, task_id, null) catch {
         // Collapse writer errors to a single caller-handled variant
         // (matches the project's pattern of narrow use-case error sets;
         // see memory `zig-language-quirks` §"catch narrows the

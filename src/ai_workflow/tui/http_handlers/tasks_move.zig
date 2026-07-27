@@ -102,6 +102,24 @@ fn useCase(
         );
     };
 
+    // Chunk 5 of kanban-task-notification-icon: dragging a card to
+    // another column is the most visible "human touch" — stamp
+    // last_human_touched_at so the kanban card flips from the
+    // orange "awaiting review" dot to the green "reviewed" checkmark
+    // the moment the drop fires. Fire-and-forget: a failed stamp
+    // doesn't fail the move (the move is already committed).
+    nalarcore.ai_mod.llm_history.updateTaskLastHumanTouchedAt(
+        allocator,
+        db,
+        input.task_id,
+        null,
+    ) catch |err| {
+        std.log.warn(
+            "tasks_move: stamp last_human_touched_at failed (non-fatal): {s}",
+            .{@errorName(err)},
+        );
+    };
+
     return try std.json.Stringify.valueAlloc(allocator, MoveTaskResponse{
         .task_id = input.task_id,
         .column_id = input.body.column_id,
