@@ -303,6 +303,7 @@ A small affordance on each **standard** kanban task card (routine and memory car
 | `2026-07-19-design-hand-pan-mode.md` | ✅ | Hold Space + drag to pan |
 | `2026-07-25-design-element-drag-and-drop.md` | ✅ | Drag-wire + multi-select + snap + nudge + constrain (#125) |
 | `2026-07-25-design-page-delete-button.md` | ✅ | Wire tab-strip × button delete end-to-end (#126) |
+| `2026-07-28-design-per-page-chat-sessions.md` | ✅ | Per-page chat scoping (each design page gets a disjoint "Design Chat: <pageName>" task) + one-shot legacy migration |
 
 ### 3.9 Frontend — Settings / Profiles / Nalar
 
