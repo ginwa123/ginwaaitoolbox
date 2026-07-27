@@ -19,7 +19,7 @@ indication. Users couldn't tell at a glance which cards needed
 review vs. which the AI was still working on.
 
 ## Status (2026-07-26)
-Feature landed (PR #129, branch `worktree/kanban-task-notification-icon`).
+Feature landed (PR #132, branch `worktree/kanban-task-notification-icon`).
 Docs in `docs/SPEC.md` §3.7.1. Plan file deleted (per project
 convention — content rolled into SPEC).
 
@@ -231,6 +231,6 @@ curl ... GET .../tasks
 ## Reference
 - Plan (deleted): `docs/plans/2026-07-26-kanban-task-notification-icon.md`
 - Spec section: `docs/SPEC.md` §3.7.1
-- PR #129 (committed as 8 chunks on branch `worktree/kanban-task-notification-icon`)
+- PR #132 (committed as 8 chunks on branch `worktree/kanban-task-notification-icon`)
 - Migration reference: `last_human_touched_at` column 65
   (Migration 063 added the AI-state side: sessions.last_finish_reason)

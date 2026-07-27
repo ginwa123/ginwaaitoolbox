@@ -659,7 +659,7 @@ The 107 implementation plans once held here have been consolidated into this SPE
 2026-07-25-kanban-description-rich-editor      ✅ landed (#124)
 2026-07-25-llm-user-identifier                 ✅ landed (#114)
 2026-07-26-functional-tests-with-real-data     ✅ landed (PR #128)
-2026-07-26-kanban-task-notification-icon        ✅ landed (PR #129)
+2026-07-26-kanban-task-notification-icon        ✅ landed (PR #132)
 ```
 
 #### 10.2.2 `docs/plans/` (71 files — design docs) — **DELETED 2026-07-26**
