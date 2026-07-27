@@ -903,6 +903,44 @@ pub fn BuildDesignCanvasPrompt(
         \\requires real persistence, surface it as an explicit ask
         \\(e.g. "save to backend") — don't promise it works in Preview.
         \\
+        \\**Styling scrollbars inside the iframe** — the design preview
+        \\renders each element inside a sandboxed `<iframe
+        \\sandbox="allow-scripts">` (no `allow-same-origin`). That makes
+        \\the iframe a **separate document**: parent-page CSS does NOT
+        \\propagate in, so the host's `::-webkit-scrollbar` rules in
+        \\`style.css` are ignored inside the preview. If your element
+        \\uses `overflow-x: auto`, `overflow-y: auto`, `overflow: auto`,
+        \\or `overflow: scroll` on any container, the user will see a
+        \\**default light-gray webkit scrollbar** that looks out of
+        \\place against the dark nalar theme.
+        \\
+        \\To keep designs on-brand, embed a `<style>` block at the top
+        \\of the element's `html` body that styles scrollbars using the
+        \\nalar color tokens. Template (paste at the very top of the
+        \\`html` string you pass to `add_element` / `update_element`):
+        \\
+        \\```html
+        \\<style>
+        \\  ::-webkit-scrollbar { width: 6px; height: 6px; }
+        \\  ::-webkit-scrollbar-track { background: transparent; }
+        \\  ::-webkit-scrollbar-thumb {
+        \\    background: #393836;
+        \\    border-radius: 3px;
+        \\  }
+        \\  ::-webkit-scrollbar-thumb:hover { background: #625e5a; }
+        \\  /* Firefox */
+        \\  * { scrollbar-width: thin;
+        \\        scrollbar-color: #393836 transparent; }
+        \\</style>
+        \\```
+        \\
+        \\Use the same template for both `overflow-x` and `overflow-y`
+        \\(the `::-webkit-scrollbar` rule covers both axes). Drop it in
+        \\unconditionally for any element with a scrolling container —
+        \\the cost is ~6 CSS rules and it prevents the "ugly default
+        \\scrollbar" regression users hit when they don't see scrollbar
+        \\styling in the host app.
+        \\
     );
 
     // 3. Page listing (cap: MAX_DESIGN_PAGES, with footer).
