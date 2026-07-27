@@ -110,9 +110,15 @@ describe('AppLayout design+chat 3-column layout branch', () => {
 
   it('mounts <DesignView> AND <ChatView> inside the 3-column', () => {
     // The 3-column branch must contain BOTH components in
-    // close proximity (within 3000 chars) — otherwise it's not
-    // really a side-by-side layout.
-    const designBranchIdx = source.indexOf("data-design-three-column")
+    // close proximity (within 4000 chars) — otherwise it's not
+    // really a side-by-side layout. Find the SECOND occurrence of
+    // `data-design-three-column` (the first match is a
+    // `document.querySelector('[data-design-three-column] > :first-child')`
+    // call in the startDesignResize handler — we want the
+    // template attribute that marks the 3-column <div>).
+    const firstIdx = source.indexOf('data-design-three-column')
+    expect(firstIdx).toBeGreaterThan(-1)
+    const designBranchIdx = source.indexOf('data-design-three-column', firstIdx + 1)
     expect(designBranchIdx).toBeGreaterThan(-1)
     const slice = source.slice(
       designBranchIdx,
@@ -123,22 +129,23 @@ describe('AppLayout design+chat 3-column layout branch', () => {
   })
 
   it('passes the active task id to ChatView as chat-id', () => {
+    const firstIdx = source.indexOf('data-design-three-column')
+    const designBranchIdx = source.indexOf('data-design-three-column', firstIdx + 1)
     const slice = source.slice(
-      source.indexOf('data-design-three-column'),
-      Math.min(source.indexOf('data-design-three-column') + 4000, source.length),
+      designBranchIdx,
+      Math.min(designBranchIdx + 4000, source.length),
     )
     expect(slice).toMatch(/:chat-id="activeTask\.id"/)
   })
 
-  it('shares the resize handle component pattern with the kanban branch', () => {
-    // Same data-testid prefix? Actually the kanban one is
-    // 'kanban-resize-handle' and the design one is
-    // 'design-resize-handle' (different ids to avoid selector
-    // collisions in E2E tests). What we DO want: both branches
-    // use the same SVG dot pattern + the same @mousedown handler.
-    const handleRegex = /data-(?:kanban|design)-resize-handle[^>]*@mousedown="startKanbanResize"/g
-    const matches = source.match(handleRegex) ?? []
-    // At least 2 hits (one for kanban, one for design).
-    expect(matches.length).toBeGreaterThanOrEqual(2)
+  it('uses separate resize handlers for kanban vs design columns', () => {
+    // The kanban 3-column branch binds @mousedown="startKanbanResize".
+    // The design 3-column branch binds @mousedown="startDesignResize"
+    // (NEW, 2026-07-25 — the design column needs different bounds,
+    // 360-1100px instead of 0-720px, so it gets its own handler).
+    const kanbanRegex = /data-kanban-resize-handle[^>]*@mousedown="startKanbanResize"/g
+    const designRegex = /data-design-resize-handle[^>]*@mousedown="startDesignResize"/g
+    expect((source.match(kanbanRegex) ?? []).length).toBeGreaterThanOrEqual(1)
+    expect((source.match(designRegex) ?? []).length).toBeGreaterThanOrEqual(1)
   })
 })

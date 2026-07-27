@@ -854,6 +854,158 @@ const kanbanColumnStyle = computed(() => {
   }
 })
 
+// ─── Design 3-column resize (separate from kanban) ─────────────────────
+//
+// Design canvases need significantly more horizontal room than
+// kanbans — a typical Figma-style page is 1440px wide, and
+// DesignView itself contains its own 320px Layers+Properties
+// sidebar at full width. The chat panel was eating the canvas
+// because the old KANBAN constants (default 40%, max 720px) were
+// reused for design (commit d0a05eb0, 2026-07-14) — 40% of the
+// main area minus 320px internal sidebar left the canvas viewport
+// visibly cramped (the user reported this 2026-07-25).
+//
+// Design uses its own constants + a SEPARATE localStorage key
+// (kanban-column-width is also used by kanban view, so reusing it
+// would bleed prefs across modes). State and handlers mirror the
+// kanban block above but reference DESIGN_*.
+//
+// Bounds rationale:
+//   - MIN 360px: design canvas + internal Layers/Properties
+//     sidebar need at least ~360px total to render the page tabs,
+//     toolbar, canvas header, and a usable canvas strip. Going
+//     below 360px forces horizontal scroll on every chrome row.
+//   - MAX 1100px: above this the chat panel collapses to <30% on
+//     typical 1080p+ screens. Chat needs ~480px to be usable.
+//   - DEFAULT 65% (% of main area, when no persisted px): gives
+//     the canvas ~65% of the area, leaving the chat ~35% which
+//     is more than enough for streaming text + input. This is
+//     the dominant fix for the "chat takes too much space"
+//     complaint.
+const DESIGN_MIN_WIDTH = 360
+const DESIGN_MAX_WIDTH = 1100
+const DESIGN_DEFAULT_WIDTH = 65 // % of main area, used when no localStorage value exists
+const DESIGN_WIDTH_STORAGE_KEY = 'design-column-width'
+
+const loadDesignColumnWidth = (): number | null => {
+  if (typeof localStorage === 'undefined') return null
+  const saved = localStorage.getItem(DESIGN_WIDTH_STORAGE_KEY)
+  if (saved === null) return null
+  const parsed = parseInt(saved, 10)
+  if (isNaN(parsed) || parsed <= 0) return null
+  return parsed
+}
+
+const designColumnWidth = ref<number | null>(loadDesignColumnWidth())
+const isDesignResizing = ref(false)
+const designResizeStartX = ref(0)
+const designResizeStartWidth = ref(0)
+
+const startDesignResize = (e: MouseEvent | TouchEvent) => {
+  isDesignResizing.value = true
+  const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
+  designResizeStartX.value = clientX
+  // If the design column is currently percentage-sized (no
+  // persisted width yet), measure the rendered column width as
+  // the drag start point. Same fix as startKanbanResize.
+  const rendered = designResizeStartWidth.value
+  if (rendered <= 0) {
+    const el = document.querySelector(
+      '[data-design-three-column] > :first-child',
+    ) as HTMLElement | null
+    designResizeStartWidth.value = el?.getBoundingClientRect().width ?? 800
+  }
+  document.addEventListener('mousemove', handleDesignResize)
+  document.addEventListener('mouseup', stopDesignResize)
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'col-resize'
+  e.preventDefault()
+}
+
+const handleDesignResize = (e: MouseEvent | TouchEvent) => {
+  if (!isDesignResizing.value) return
+  const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
+  const deltaX = clientX - designResizeStartX.value
+  const newWidth = Math.max(
+    DESIGN_MIN_WIDTH,
+    Math.min(DESIGN_MAX_WIDTH, designResizeStartWidth.value + deltaX),
+  )
+  designColumnWidth.value = newWidth
+}
+
+const stopDesignResize = () => {
+  if (!isDesignResizing.value) return
+  isDesignResizing.value = false
+  document.removeEventListener('mousemove', handleDesignResize)
+  document.removeEventListener('mouseup', stopDesignResize)
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+  if (designColumnWidth.value !== null) {
+    try {
+      localStorage.setItem(DESIGN_WIDTH_STORAGE_KEY, String(designColumnWidth.value))
+    } catch {
+      // localStorage may throw in private-mode / quota-exceeded;
+      // silently ignore so the in-memory drag still works.
+    }
+  }
+}
+
+// Inline style for the design column. Mirrors kanbanColumnStyle
+// but uses the design-specific bounds + default. Returning the
+// shared kebab-case shape works because the design 3-column
+// branch just substitutes this computed where kanbanColumnStyle
+// was used.
+const designColumnStyle = computed(() => {
+  if (designColumnWidth.value !== null) {
+    return {
+      width: `${designColumnWidth.value}px`,
+      'min-width': `${DESIGN_MIN_WIDTH}px`,
+      'max-width': `${DESIGN_MAX_WIDTH}px`,
+      'flex-shrink': '0',
+    }
+  }
+  return {
+    flex: `0 1 ${DESIGN_DEFAULT_WIDTH}%`,
+    'min-width': `${DESIGN_MIN_WIDTH}px`,
+    'max-width': `${DESIGN_MAX_WIDTH}px`,
+  }
+})
+
+// ─── Design chat panel collapse (NEW, 2026-07-25) ────────────────────
+//
+// Fix for: "when open chat design, its take many space" — the
+// 3-column design+chat layout defaults the design column to
+// ~40% (KANBAN_MAX_WIDTH=720), which leaves very little canvas
+// room. Bumping the default to 65% (above) is the dominant fix,
+// but the user may still want ONE-CLICK collapse to focus on the
+// canvas without losing chat access (close = lose; collapse =
+// keep). This ref persists across reloads and renders a thin
+// vertical strip with a re-open button when collapsed.
+//
+// The collapsed state is intentionally LOCAL to AppLayout (not in
+// Pinia) — only this component renders the 3-column branch, and
+// keeping it here avoids coupling a UI affordance to a shared
+// store.
+const DESIGN_CHAT_COLLAPSED_KEY = 'design-chat-collapsed'
+
+const loadDesignChatCollapsed = (): boolean => {
+  if (typeof localStorage === 'undefined') return false
+  const saved = localStorage.getItem(DESIGN_CHAT_COLLAPSED_KEY)
+  if (saved === null) return false
+  return saved === '1' || saved === 'true'
+}
+
+const designChatCollapsed = ref<boolean>(loadDesignChatCollapsed())
+
+const toggleDesignChat = () => {
+  designChatCollapsed.value = !designChatCollapsed.value
+  try {
+    localStorage.setItem(DESIGN_CHAT_COLLAPSED_KEY, designChatCollapsed.value ? '1' : '0')
+  } catch {
+    // localStorage may throw; the toggle still works for this session.
+  }
+}
+
 // ─── Kanban main-content view (was inline in WorkspaceItem.vue;
 // now mounted here so the board lives in the main content area, not
 // in the sidebar). KanbanView consumes every event locally — the
@@ -1738,7 +1890,7 @@ watch(chatSessionCwd, (newCwd) => {
       >
         <div
           class="flex flex-col h-full min-h-0"
-          :style="kanbanColumnStyle"
+          :style="designColumnStyle"
           style="border-right: 1px solid var(--color-border)"
         >
           <DesignView
@@ -1757,11 +1909,11 @@ watch(chatSessionCwd, (newCwd) => {
         </div>
         <div
           class="shrink-0 w-2 cursor-col-resize relative flex items-center justify-center bg-[var(--color-violet)]/15 hover:bg-[var(--color-violet)]/40 transition-colors"
-          :class="isKanbanResizing ? '!bg-[var(--color-violet)]/60' : ''"
+          :class="isDesignResizing ? '!bg-[var(--color-violet)]/60' : ''"
           data-design-resize-handle
           data-testid="design-resize-handle"
           title="Drag to resize"
-          @mousedown="startKanbanResize"
+          @mousedown="startDesignResize"
         >
           <svg
             width="14"
@@ -1776,7 +1928,20 @@ watch(chatSessionCwd, (newCwd) => {
             <circle cx="11" cy="1" r="1" />
           </svg>
         </div>
-        <div class="flex-1 flex flex-col h-full min-w-0 min-h-0">
+        <!--
+          Chat column. When the user collapses the chat
+          (`designChatCollapsed === true`), hide the ChatView and
+          show a thin vertical strip with a re-open button — the
+          user keeps the chat accessible without it eating canvas
+          room. Default state is un-collapsed (the design column
+          is now sized 65% of main area, which is enough for both
+          to coexist comfortably).
+        -->
+        <div
+          v-if="!designChatCollapsed"
+          class="flex-1 flex flex-col h-full min-w-0 min-h-0 relative"
+          data-design-chat-column
+        >
           <ChatView
             :key="'task-' + activeTask.id"
             :chat-id="activeTask.id"
@@ -1789,6 +1954,42 @@ watch(chatSessionCwd, (newCwd) => {
             :show-header="true"
             @close="handleCloseTaskView"
           />
+          <!--
+            Floating collapse button — pinned to the top-right of
+            the chat column. Lets the user collapse the chat
+            without going through the existing ✕ (which closes the
+            chat entirely). Sits below the SSE status pill
+            (top-3 right-12) so the two don't overlap.
+          -->
+          <button
+            type="button"
+            class="absolute top-2 right-12 z-30 w-7 h-7 rounded flex items-center justify-center text-sm hover:opacity-80 transition-opacity shadow"
+            style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-dim); border: 1px solid var(--color-border);"
+            title="Hide chat (collapse to icon)"
+            aria-label="Hide chat"
+            data-testid="design-chat-collapse-button"
+            @click="toggleDesignChat"
+          >
+            <span aria-hidden="true">»</span>
+          </button>
+        </div>
+        <div
+          v-else
+          class="shrink-0 w-10 flex flex-col items-center pt-2"
+          style="background-color: var(--semantic-sidebar-bg); border-left: 1px solid var(--color-border);"
+          data-design-chat-collapsed-strip
+        >
+          <button
+            type="button"
+            class="w-8 h-8 rounded flex items-center justify-center hover:opacity-80 transition-opacity"
+            style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
+            title="Expand chat"
+            aria-label="Expand chat"
+            data-testid="design-chat-expand-button"
+            @click="toggleDesignChat"
+          >
+            <span aria-hidden="true">💬</span>
+          </button>
         </div>
       </div>
       <DesignView
