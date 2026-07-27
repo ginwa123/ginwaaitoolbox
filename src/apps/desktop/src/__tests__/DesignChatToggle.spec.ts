@@ -87,6 +87,36 @@ describe('AppLayout design chat handler (handleDesignOpenChat)', () => {
     expect(source).toMatch(/workspacesStore\.setActiveTask\(/)
   })
 
+  // 2026-07-26: regression test for the "Design Chat shows empty"
+  // bug. The canonical-name lookup alone is broken when a user has
+  // prior chats under a different-named task on the same design
+  // item — the empty canonical always wins. The fix probes
+  // `api.getChatHistory` to detect a real chat and falls back to
+  // any other task on the design item that has messages.
+  it('handleDesignOpenChat probes messages via api.getChatHistory', () => {
+    // The handler must call into the chat history endpoint to
+    // decide whether the canonical "Design Chat" task is empty
+    // (and thus a side-effect of a prior broken click) versus a
+    // real chat.
+    expect(source).toMatch(/api\.getChatHistory\(/)
+  })
+
+  it('handleDesignOpenChat skips the canonical task when it is empty and falls back to a task with messages', () => {
+    // Search for the canonical-find → fallback pattern. The
+    // handler must NOT just call `setActiveTask(canonicalTask.id)`
+    // right after the canonical lookup; it must check the
+    // messages first and skip past the empty canonical when only
+    // a sibling task has messages.
+    //
+    // The cheap structural check: the source must contain a
+    // branch that continues past the canonical find when the
+    // canonical is empty (the `if (hasMessages)` guards the
+    // early return; the fallback loop iterates item.tasks).
+    expect(source).toMatch(/if\s*\(hasMessages\)/)
+    // The fallback loop scans NON-canonical tasks.
+    expect(source).toMatch(/if\s*\(\s*t\.name\s*===\s*DESIGN_CHAT_TASK_NAME\s*\)\s*continue/)
+  })
+
   it('declares the "Design Chat" task-name constant', () => {
     // Either a const declaration OR a literal in the handler body.
     expect(source).toMatch(/DESIGN_CHAT_TASK_NAME|['"]Design Chat['"]/)

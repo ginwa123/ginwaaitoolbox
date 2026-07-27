@@ -504,6 +504,45 @@ parent silently discarded them. Now the wire is alive: the composable
   `frame`/`group` element types exist but UI doesn't support drag-into
   yet).
 
+### 2026-07-26: design chat 💬 button — canonical-name lookup orphaned prior chats
+
+**Symptom (pre-fix).** User with existing chat history on a design
+item (e.g. task `ai-chat-view-design` with 17 messages) clicked the
+top-right 💬 button in DesignView. Expected to see their existing
+chat. Instead saw "How can I help you?" — empty.
+
+**Root cause.** `AppLayout.handleDesignOpenChat` (the design chat
+toggle handler) looked up the chat by **exact name match** against
+`'Design Chat'`. When no canonical task existed, the first click
+**created** an empty `"Design Chat"` task alongside the user's
+existing chat. Subsequent clicks found the empty canonical and
+"reused" it (forever empty), orphaning the user's 17 messages.
+
+**Fix.** Added a `taskHasMessages(taskId)` helper that probes
+`api.getChatHistory(taskId, 1)` (limit=1, fast SQL). The handler now:
+
+1. Prefer canonical `"Design Chat"` IF it has messages.
+2. Otherwise iterate non-canonical tasks and pick the first with
+   messages (N+1 API calls; typical designs have 1-5 tasks; only on
+   user click).
+3. Otherwise keep the empty canonical (don't keep auto-creating) or
+   create a fresh `"Design Chat"` for new design items.
+
+**Verified end-to-end.**
+
+- `api.getChatHistory(task_1785079182914, 1)` → 0 messages (skip)
+- `api.getChatHistory(task_1785078944040, 1)` → 1 message, total 17
+  (use this one)
+
+Regression tests added in `DesignChatToggle.spec.ts`. 15/15 pass.
+vue-tsc clean.
+
+**Pitfalls.** Don't trust `item.tasks[0]` (most-recently-created due
+to `addTask`'s unshift — that's often the empty canonical itself);
+iterate ALL non-canonical tasks. Don't pick "oldest task" as a
+heuristic — it works for the user's current state but breaks if the
+user manually creates an empty task before the canonical.
+
 ---
 
 ## 📖 Related documentation

@@ -1367,32 +1367,82 @@ const handleDesignSelectElement = (_elementId: string) => {
 // task_type already gives us everything we need (no kanban auto-
 // assign fires because the parent is not a kanban — see the
 // parent_is_kanban check in createStandardTask at task_create.zig
-// ~line 294) and adding a new task_type is a migration. The
-// name-based filter is sufficient for the MVP; if a user renames
-// the task they lose the chat — acceptable for the first cut.
+// ~line 294) and adding a new task_type is a migration.
+//
+// 2026-07-26 fix: the canonical-name lookup alone was broken when
+// a user had ALREADY been chatting in a different-named task on
+// the same design item (e.g., they created "ai-chat-view-design"
+// first, chatted there for 17 messages, then clicked 💬 — which
+// created an empty "Design Chat" task alongside it). The empty
+// canonical always wins the exact-name lookup, so the user's
+// real chat was orphaned. Fix: when the canonical "Design Chat"
+// task is empty (0 messages), fall back to any other task on the
+// design item that has messages. This is the N+1 API-call shape
+// (limit=1 history fetch per task) — acceptable because design
+// items rarely have > 5 tasks, and this only runs on user click.
 const DESIGN_CHAT_TASK_NAME = 'Design Chat'
+
+// Cheap probe — checks whether the given task has any messages
+// in `llm_history` without loading them. Wrapped in /api prefix
+// silently: an offline nalar (e.g. user just closed their
+// laptop) returns 404/5xx and we fall back to the no-messages
+// branch instead of toasting.
+const taskHasMessages = async (taskId: string): Promise<boolean> => {
+  try {
+    const history = await api.getChatHistory(taskId, 1)
+    return Array.isArray(history.messages) && history.messages.length > 0
+  } catch {
+    return false
+  }
+}
 
 const handleDesignOpenChat = async (): Promise<void> => {
   const ws = activeWorkspace.value
   const item = activeWorkspaceItem.value
   if (!ws || !item || item.item_type !== 'design') return
 
-  // Find an existing "Design Chat" task on this design item. The
-  // task may be in `item.tasks` (loaded by the store) or not yet
-  // loaded (e.g. user just created the design). We optimistically
-  // use the store's local view; if not found, we always POST a
-  // new one and the server's UNIQUE-by-id insert wins (no
-  // duplicates possible because we always pick a fresh task id).
-  const existingTask = item.tasks?.find((t) => t.name === DESIGN_CHAT_TASK_NAME)
-  if (existingTask) {
-    workspacesStore.setActiveTask(existingTask.id)
-    return
+  // Step 1: prefer the canonical "Design Chat" task IF it has
+  // messages.  If the canonical exists but is empty (e.g., a
+  // prior broken click auto-created it), don't open it — the
+  // user will see a blank "How can I help you?" pane and think
+  // their existing chat was lost.  The probe in step 2 finds
+  // the real chat.
+  const canonicalTask = item.tasks?.find((t) => t.name === DESIGN_CHAT_TASK_NAME)
+  if (canonicalTask) {
+    const hasMessages = await taskHasMessages(canonicalTask.id)
+    if (hasMessages) {
+      workspacesStore.setActiveTask(canonicalTask.id)
+      return
+    }
   }
 
-  // Create a fresh standard task. The backend's createStandardTask
-  // is item_type-agnostic for non-kanban parents (the kanban auto-
-  // assign block is gated on parent_is_kanban), so the same
-  // endpoint works for design items with no schema change.
+  // Step 2: fall back to any OTHER task on the design item that
+  // has messages. The user has been doing design-related work in
+  // some task — find that task and reuse it as the design chat.
+  // Scan ALL non-canonical tasks (not just the first one) because
+  // the user's primary chat may not be `items.tasks[0]` (which is
+  // the most recently created thanks to `addTask`'s unshift —
+  // and the most recent one is often the empty canonical itself).
+  if (item.tasks && item.tasks.length > 0) {
+    for (const t of item.tasks) {
+      if (t.name === DESIGN_CHAT_TASK_NAME) continue
+      const hasMessages = await taskHasMessages(t.id)
+      if (hasMessages) {
+        workspacesStore.setActiveTask(t.id)
+        return
+      }
+    }
+  }
+
+  // Step 3: no task on this design item has messages. Either we
+  // have an empty canonical "Design Chat" (the prior-broken-click
+  // case — reuse it so the user's history of sending messages
+  // continues accumulating in the same place), or there are no
+  // tasks at all and we create a fresh one.
+  if (canonicalTask) {
+    workspacesStore.setActiveTask(canonicalTask.id)
+    return
+  }
   const newTaskId = await workspacesStore.addTask(ws.id, item.id, {
     name: DESIGN_CHAT_TASK_NAME,
     taskType: 'standard',
