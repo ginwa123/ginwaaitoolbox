@@ -1341,16 +1341,26 @@ const handleDesignSelectElement = (_elementId: string) => {
 }
 
 // NEW: design-mode chat toggle (top-right 💬 button in DesignView).
-// Finds or creates a "Design Chat" standard task on the active
-// design item and sets it as the active task, which triggers the
-// 3-column "DesignView | resize-handle | ChatView" template
-// below. Reuses the same chat task across reopens (so history
-// persists) — the look-up is by workspace_item_id + name =
-// 'Design Chat'. The kanban flow uses per-task chat (each task
-// gets its own chat row); design mode uses per-design-item chat
-// (one chat per design, simpler mental model — every page lives
-// under the same chat context, which matches "ask the LLM about
-// the whole design" rather than "ask the LLM about one card").
+// Finds or creates a per-page "Design Chat: <pageName>" standard
+// task on the active design item and sets it as the active task,
+// which triggers the 3-column "DesignView | resize-handle |
+// ChatView" template below. Reuses the same per-page chat task
+// across reopens (so history persists) — the look-up is by
+// workspace_item_id + name = "Design Chat: <pageName>". Each
+// design page gets a DISJOINT chat task; switching pages while a
+// chat is open does NOT swap the active chat (the chat stays
+// bound to the page that opened it; closing + reopening binds
+// to the current page).
+//
+// Plan: docs/superpowers/plans/2026-07-28-design-per-page-chat-sessions.md
+//
+// Migration of legacy data: users created before this fix have a
+// single "Design Chat" canonical task (the pre-fix behavior). On
+// the first 💬 click on any page, that legacy task is RENAMED in
+// place to "Design Chat: <activePageName>" via `api.updateTask`.
+// The task id is preserved, so all existing `llm_history` rows
+// stay attached. New pages the user visits later get fresh tasks
+// via the existing `addTask` path.
 //
 // We could mark the task with a dedicated task_type (e.g.
 // 'design_chat') and filter on that, but the existing standard
@@ -1358,19 +1368,8 @@ const handleDesignSelectElement = (_elementId: string) => {
 // assign fires because the parent is not a kanban — see the
 // parent_is_kanban check in createStandardTask at task_create.zig
 // ~line 294) and adding a new task_type is a migration.
-//
-// 2026-07-26 fix: the canonical-name lookup alone was broken when
-// a user had ALREADY been chatting in a different-named task on
-// the same design item (e.g., they created "ai-chat-view-design"
-// first, chatted there for 17 messages, then clicked 💬 — which
-// created an empty "Design Chat" task alongside it). The empty
-// canonical always wins the exact-name lookup, so the user's
-// real chat was orphaned. Fix: when the canonical "Design Chat"
-// task is empty (0 messages), fall back to any other task on the
-// design item that has messages. This is the N+1 API-call shape
-// (limit=1 history fetch per task) — acceptable because design
-// items rarely have > 5 tasks, and this only runs on user click.
 const DESIGN_CHAT_TASK_NAME = 'Design Chat'
+const PER_PAGE_CHAT_PREFIX = 'Design Chat: '
 
 // Cheap probe — checks whether the given task has any messages
 // in `llm_history` without loading them. Wrapped in /api prefix
@@ -1386,55 +1385,77 @@ const taskHasMessages = async (taskId: string): Promise<boolean> => {
   }
 }
 
-const handleDesignOpenChat = async (): Promise<void> => {
+const handleDesignOpenChat = async (payload: {
+  pageId: string
+  pageName: string
+}): Promise<void> => {
   const ws = activeWorkspace.value
   const item = activeWorkspaceItem.value
   if (!ws || !item || item.item_type !== 'design') return
+  if (!payload.pageId || !payload.pageName) return
 
-  // Step 1: prefer the canonical "Design Chat" task IF it has
-  // messages.  If the canonical exists but is empty (e.g., a
-  // prior broken click auto-created it), don't open it — the
-  // user will see a blank "How can I help you?" pane and think
-  // their existing chat was lost.  The probe in step 2 finds
-  // the real chat.
-  const canonicalTask = item.tasks?.find((t) => t.name === DESIGN_CHAT_TASK_NAME)
-  if (canonicalTask) {
-    const hasMessages = await taskHasMessages(canonicalTask.id)
+  const perPageName = `${PER_PAGE_CHAT_PREFIX}${payload.pageName}`
+  const tasks = item.tasks ?? []
+
+  // Step 1: prefer an existing per-page task. Reuse it regardless
+  // of whether it has messages — empty per-page chats are NOT
+  // orphans (they belong to this page by construction). The
+  // previous 2026-07-26 message-probe was a workaround for the
+  // single-canonical bug; per-page lookup is deterministic now.
+  const perPageTask = tasks.find((t) => t.name === perPageName)
+  if (perPageTask) {
+    workspacesStore.setActiveTask(perPageTask.id)
+    return
+  }
+
+  // Step 2: legacy "Design Chat" task migration. If the user has
+  // a legacy canonical task with messages, rename it in place via
+  // `api.updateTask` to attach the existing message history to
+  // the current page. Preserve the task id (and `llm_history`
+  // rows keyed on it). An empty legacy task is NOT migrated —
+  // it was a side-effect of the 2026-07-26 bug, not a
+  // user-owned conversation; we create a fresh per-page task
+  // for the active page instead.
+  const legacyTask = tasks.find((t) => t.name === DESIGN_CHAT_TASK_NAME)
+  if (legacyTask) {
+    const hasMessages = await taskHasMessages(legacyTask.id)
     if (hasMessages) {
-      workspacesStore.setActiveTask(canonicalTask.id)
+      try {
+        await api.updateTask(ws.id, item.id, legacyTask.id, {
+          name: perPageName,
+        })
+        // Mirror the rename into the local store so subsequent
+        // opens (and the sidebar) see the new name without an
+        // extra GET.
+        legacyTask.name = perPageName
+      } catch (err) {
+        // Migration failed (offline nalar, 4xx/5xx). Fall through
+        // to creating a fresh per-page task — better to have two
+        // disjoint chats than to block the user from opening one.
+        console.error(
+          '[handleDesignOpenChat] failed to rename legacy "Design Chat" task — creating fresh per-page task instead',
+          err,
+        )
+        const newTaskId = await workspacesStore.addTask(ws.id, item.id, {
+          name: perPageName,
+          taskType: 'standard',
+        })
+        if (newTaskId) {
+          workspacesStore.setActiveTask(newTaskId)
+        }
+        return
+      }
+      workspacesStore.setActiveTask(legacyTask.id)
       return
     }
   }
 
-  // Step 2: fall back to any OTHER task on the design item that
-  // has messages. The user has been doing design-related work in
-  // some task — find that task and reuse it as the design chat.
-  // Scan ALL non-canonical tasks (not just the first one) because
-  // the user's primary chat may not be `items.tasks[0]` (which is
-  // the most recently created thanks to `addTask`'s unshift —
-  // and the most recent one is often the empty canonical itself).
-  if (item.tasks && item.tasks.length > 0) {
-    for (const t of item.tasks) {
-      if (t.name === DESIGN_CHAT_TASK_NAME) continue
-      const hasMessages = await taskHasMessages(t.id)
-      if (hasMessages) {
-        workspacesStore.setActiveTask(t.id)
-        return
-      }
-    }
-  }
-
-  // Step 3: no task on this design item has messages. Either we
-  // have an empty canonical "Design Chat" (the prior-broken-click
-  // case — reuse it so the user's history of sending messages
-  // continues accumulating in the same place), or there are no
-  // tasks at all and we create a fresh one.
-  if (canonicalTask) {
-    workspacesStore.setActiveTask(canonicalTask.id)
-    return
-  }
+  // Step 3: no per-page task and no legacy-with-messages to
+  // migrate. Either the legacy exists but is empty (prior-broken-
+  // click artifact — don't reuse it) or there are no tasks at
+  // all. Create a fresh per-page task.
   const newTaskId = await workspacesStore.addTask(ws.id, item.id, {
-    name: DESIGN_CHAT_TASK_NAME,
+    name: perPageName,
     taskType: 'standard',
   })
   if (newTaskId) {
