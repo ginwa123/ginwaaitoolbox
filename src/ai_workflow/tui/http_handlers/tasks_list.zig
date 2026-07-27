@@ -155,6 +155,13 @@ fn useCase(
             // carries this to the frontend's KanbanTaskDetailDialog
             // toggle so it shows the live state on dialog open.
             .is_auto_retry_until_stop = task.is_auto_retry_until_stop,
+            // Kanban notification icon (Migration 065 / plan
+            // docs/plans/2026-07-26-kanban-task-notification-icon.md):
+            // last_finish_reason comes from the LEFT JOIN on sessions,
+            // COALESCE'd to '' in the SQL when no session row exists.
+            // needs_human_review is the SQL CASE derived boolean.
+            .last_finish_reason = task.last_finish_reason,
+            .needs_human_review = task.needs_human_review,
         });
     }
 

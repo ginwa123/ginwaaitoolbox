@@ -435,6 +435,22 @@ pub const WorkspaceItemTaskResponse = struct {
     /// frontend's KanbanTaskDetailDialog defaults to off in that
     /// case.
     is_auto_retry_until_stop: []const u8 = "",
+
+    /// Last `finish_reason` from the joined `sessions` row (Migration
+    /// 065 / kanban notification icon feature). Empty string when
+    /// the LEFT JOIN found no session row — the frontend treats this
+    /// as "AI never ran on this task". Drives the green checkmark
+    /// vs no-icon decision in the kanban card.
+    last_finish_reason: []const u8 = "",
+
+    /// Computed boolean for the kanban card "AI finished — awaiting
+    /// review" orange dot. SQL CASE produces 1 when the AI has
+    /// finished (last_finish_reason='stop') and no human has touched
+    /// the task since. The kanban card UI uses this directly:
+    ///   - true  → orange pulsing dot
+    ///   - false AND last_finish_reason==='stop' → green checkmark
+    ///   - false AND last_finish_reason==='' → no icon (never ran)
+    needs_human_review: bool = false,
 };
 
 pub const WorkspaceItemTaskListResponse = struct {
