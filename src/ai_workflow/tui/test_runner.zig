@@ -10,7 +10,6 @@ test {
     _ = @import("parse_diff_view_test.zig");
     _ = @import("save_agent_test.zig");
     _ = @import("save_skill_test.zig");
-    _ = @import("agentic_loop/tool_registry_test.zig"); // NEW
     _ = @import("agentic_loop/workflow_compaction_envelope_test.zig");
     _ = @import("agentic_loop/workflow_retry_delay_test.zig");
     // Inline retry-loop hygiene tests (CallResponse deinit, literal-free

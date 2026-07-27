@@ -29,8 +29,6 @@ test {
     _ = @import("sse_on_event_send_llm_history.zig");
     _ = @import("parsing.zig");
     _ = @import("parsing_test.zig");
-    // Inline tests for retry-loop hygiene fixes (CallResponse deinit,
-    // literal-free errdefer, stale retry-cause capture). Live in workflow.zig
-    // because the static-contract tests grep the implementation file itself.
     _ = @import("workflow.zig");
+    _ = @import("tools_wrap_output.zig");
 }
