@@ -1469,6 +1469,15 @@ pub fn deleteElement(
     defer allocator.free(lookup.workspace_id);
     defer allocator.free(lookup.item_id);
 
+    // NULL-back step: if this element is itself a parent (group/frame),
+    // orphan its children first so they become top-level again.
+    // Otherwise the children would silently reference a non-existent
+    // parent (SQLite FK enforcement is OFF by default — see
+    // `docs/superpowers/plans/2026-07-28-grouped-layers.md` Chunk 4).
+    try db.exec(allocator,
+        "UPDATE design_page_elements SET parent_id = NULL WHERE parent_id = ?",
+        &.{element_id});
+
     // Delete the row first.
     try db.exec(allocator,
         "DELETE FROM design_page_elements WHERE id = ?",
