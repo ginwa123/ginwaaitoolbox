@@ -51,6 +51,7 @@ test {
     _ = @import("design_io_test.zig");
     _ = @import("design_model_test.zig");
     _ = @import("design_model_parent_id_test.zig"); // 2026-07-28-grouped-layers (Chunk 1) — parent_id round-trip
+    _ = @import("design_model_group_test.zig"); // 2026-07-28-grouped-layers (Chunk 2) — groupElements + updateElement parent_id
     _ = @import("migration_057_test.zig");  // stays at this path; imported by src/migrations/test_runner.zig via relative path
     _ = @import("migration_063_runtime_test.zig");  // Chunk 1 — sessions auto_retry + finish_reason runtime CRUD
     _ = @import("http_handlers/session_create_migration_063_test.zig");  // Chunk 3 Task 3.1 — POST /api/session static-contract
