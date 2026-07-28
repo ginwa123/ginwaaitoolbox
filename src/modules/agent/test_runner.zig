@@ -33,6 +33,7 @@ test {
     _ = @import("tools/search_history_test.zig");
     _ = @import("tools/kanban_list_test.zig");
     _ = @import("tools/kanban_move_task_test.zig");
+    _ = @import("tools/create_kanban_task_test.zig");
     _ = @import("tools/set_design_page_test.zig");
     _ = @import("tools/add_design_element_test.zig");
     _ = @import("tools/update_design_element_test.zig");
