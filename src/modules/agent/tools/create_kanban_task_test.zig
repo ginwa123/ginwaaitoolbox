@@ -15,6 +15,8 @@ const create_kanban_task = @import("create_kanban_task.zig");
 const text_normalize = nalarcore.helpers.text_normalize;
 
 const TOOL_PATH = "src/modules/agent/tools/create_kanban_task.zig";
+const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tool_registry.zig";
+const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_create_kanban_task.zig";
 
 /// Read a source file from disk, relative to the project root.
 /// Normalizes CRLF → LF so multi-line literal needles match even when
@@ -490,4 +492,90 @@ test "executeCreateKanbanTaskToString rejects column_id that does not belong to 
     try testing.expect(contains(xml, "<success>false</success>"));
     try testing.expect(contains(xml, "<error>"));
     try testing.expect(contains(xml, "column") or contains(xml, "Column"));
+}
+
+// ─── Registration static-contract tests (Task 7) ────────────────────────
+//
+// Pin the registration contract: a future refactor that drops
+// `create_kanban_task` from any of the registry / re-export /
+// tools_equipped surfaces would silently disable the tool. These
+// tests catch that.
+
+test "tool_registry imports create_kanban_task module" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    defer allocator.free(source);
+    if (!contains(source, "const create_kanban_task_mod = nalar_mod.create_kanban_task;")) {
+        std.debug.print(
+            "\n!! tool_registry.zig does not bind create_kanban_task_mod = nalar_mod.create_kanban_task !!\n",
+            .{},
+        );
+        return error.CreateKanbanTaskModBindingMissing;
+    }
+}
+
+test "agentic_loop defines execCreateKanbanTask" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_EXEC_PATH);
+    defer allocator.free(source);
+    if (!contains(source, "pub fn execCreateKanbanTask(")) {
+        std.debug.print(
+            "\n!! tools_exec_create_kanban_task.zig does not define pub fn execCreateKanbanTask !!\n",
+            .{},
+        );
+        return error.ExecCreateKanbanTaskMissing;
+    }
+}
+
+test "UNIFIED_TOOL_REGISTRY contains create_kanban_task entry" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    defer allocator.free(source);
+    if (!contains(source, ".name = \"create_kanban_task\"")) {
+        std.debug.print(
+            "\n!! UNIFIED_TOOL_REGISTRY is missing the create_kanban_task name entry !!\n",
+            .{},
+        );
+        return error.RegistryNameEntryMissing;
+    }
+    if (!contains(source, ".exec = agentic_loop_mod.tools.execCreateKanbanTask")) {
+        std.debug.print(
+            "\n!! UNIFIED_TOOL_REGISTRY entry is missing .exec = agentic_loop_mod.tools.execCreateKanbanTask !!\n",
+            .{},
+        );
+        return error.RegistryExecBindingMissing;
+    }
+    if (!contains(source, ".tool_def = create_kanban_task_mod.create_kanban_task_tool")) {
+        std.debug.print(
+            "\n!! UNIFIED_TOOL_REGISTRY entry is missing .tool_def = create_kanban_task_mod.create_kanban_task_tool !!\n",
+            .{},
+        );
+        return error.RegistryToolDefBindingMissing;
+    }
+}
+
+test "nalarcore root.zig exposes create_kanban_task module" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, "src/root.zig");
+    defer allocator.free(source);
+    if (!contains(source, "pub const create_kanban_task = @import(\"modules/agent/tools/create_kanban_task.zig\");")) {
+        std.debug.print(
+            "\n!! root.zig does not expose create_kanban_task as a top-level module !!\n",
+            .{},
+        );
+        return error.NalarcoreExportMissing;
+    }
+}
+
+test "agentic_loop tools.zig re-exports execCreateKanbanTask" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, "src/ai_workflow/tui/agentic_loop/tools.zig");
+    defer allocator.free(source);
+    if (!contains(source, "execCreateKanbanTask")) {
+        std.debug.print(
+            "\n!! agentic_loop/tools.zig does not re-export execCreateKanbanTask !!\n",
+            .{},
+        );
+        return error.ToolsReexportMissing;
+    }
 }
