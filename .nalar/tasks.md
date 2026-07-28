@@ -1,4 +1,4 @@
-## [active] 20260728_102500 — design-pages.workspace_item_task_id FK
+## [done] 20260728_102500 — design-pages.workspace_item_task_id FK
 
 Plan: docs/superpowers/plans/2026-07-28-design-page-workspace-item-task-fk.md
 Worktree: /home/ginwa/ginwaaitoolbox_worktrees/design-page-task-fk
