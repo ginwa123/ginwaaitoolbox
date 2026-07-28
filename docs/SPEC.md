@@ -304,6 +304,7 @@ A small affordance on each **standard** kanban task card (routine and memory car
 | `2026-07-25-design-element-drag-and-drop.md` | ✅ | Drag-wire + multi-select + snap + nudge + constrain (#125) |
 | `2026-07-25-design-page-delete-button.md` | ✅ | Wire tab-strip × button delete end-to-end (#126) |
 | `2026-07-28-design-per-page-chat-sessions.md` | ✅ | Per-page chat scoping (each design page gets a disjoint "Design Chat: <pageName>" task) + one-shot legacy migration |
+| `2026-07-28-design-page-workspace-item-task-fk.md` | ✅ | 1:1 FK design_pages.workspace_item_task_id → workspace_item_tasks.id (replaces the brittle name-based lookup) |
 
 ### 3.9 Frontend — Settings / Profiles / Nalar
 
