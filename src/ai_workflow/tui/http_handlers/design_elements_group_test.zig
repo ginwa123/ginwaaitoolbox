@@ -61,15 +61,9 @@ test "design_elements_group handler requires at least 2 child ids" {
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);
 
-    if (std.mem.indexOf(u8, source, "child_ids.len < 2") == null and
-        std.mem.indexOf(u8, source, "child_ids.len == 0") == null and
-        std.mem.indexOf(u8, source, "child_ids.len <\\ 2") == null)
-    {
-        std.debug.print(
-            "\n!! {s} does not validate child_ids length !!\n" ++
-                "   A single-element group is not meaningful — reject < 2 ids.\n",
-            .{HANDLER_PATH},
-        );
+    // The handler must reject child_ids.len < 2 — a single-element
+    // group is not useful. See design_elements_group.zig:190.
+    if (std.mem.indexOf(u8, source, "child_ids.len < 2") == null) {
         return error.ChildIdsLengthMissing;
     }
 }
