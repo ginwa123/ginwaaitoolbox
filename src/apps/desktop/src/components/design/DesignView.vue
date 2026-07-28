@@ -6,7 +6,11 @@
     1. <DesignPageTabs> — page tab strip
     2. Main split (horizontal):
        - Canvas (flex-1, on the left): renders <DesignElement v-for>
-         over a fixed-size viewport (the page's width × height).
+         over an auto-grow viewport (the canvas div wraps the union
+         bbox of all elements). The canvas-background feature (a fixed
+         W × H page rectangle with drag/nudge clamps + snap-to-canvas-
+         edges) has been removed; elements can be placed at any
+         coordinates.
        - Right sidebar split (vertical):
          - <LayersPanel> on top
          - Resize handle (drag to resize)
@@ -44,12 +48,18 @@
 
   Page CRUD (add/delete) is OWNED by DesignView — the click handler
   calls the API directly and mutates `pages.value` so the tab strip
-  updates without a re-fetch. This is the same pattern as the
-  page-size resize handler (`commitPageSize` below) which also calls
-  the API directly + mutates `pages.value`. The previous design
-  bounced addPage/deletePage through AppLayout's handlers, which
-  called the API but never told DesignView to refresh — leaving the
-  user staring at stale tabs until they reloaded the page.
+  updates without a re-fetch. The previous design bounced
+  addPage/deletePage through AppLayout's handlers, which called the
+  API but never told DesignView to refresh — leaving the user
+  staring at stale tabs until they reloaded the page.
+
+  Note: the canvas background feature has been removed (plan
+  docs/superpowers/plans/2026-07-29-remove-canvas-background.md), so
+  pages no longer have a visible W × H rectangle / enforced boundary
+  in the canvas UI. The `design_pages.width` / `height` columns
+  remain in the DB for backward compat; `setDesignPage` /
+  `updateDesignPage` LLM tools still accept them as a "preferred
+  export size".
 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -553,21 +563,14 @@ const handleKeydown = (event: KeyboardEvent): void => {
       // `elements.value` was fresh). Without this, the second
       // arrow press would read the stale `el.x` and re-emit
       // the same x, freezing the element.
+      //
+      // The canvas background feature has been removed, so arrow
+      // keys move freely — no clamp against page bounds.
       const off = nudgeOffsets.get(id) ?? { x: 0, y: 0 }
       const baseX = el.x + off.x
       const baseY = el.y + off.y
-      // Clamp so the element stays visible on the canvas. We
-      // allow a 10px sliver off-canvas (matches the resize min
-      // size — partial overlap is fine, but the element must
-      // not disappear entirely).
-      let ndx = dx
-      let ndy = dy
-      if (baseX + ndx < -el.width + 10) ndx = -el.width + 10 - baseX
-      if (baseX + ndx > canvasWidth.value - 10) ndx = canvasWidth.value - 10 - baseX
-      if (baseY + ndy < -el.height + 10) ndy = -el.height + 10 - baseY
-      if (baseY + ndy > canvasHeight.value - 10) ndy = canvasHeight.value - 10 - baseY
-      const newX = baseX + ndx
-      const newY = baseY + ndy
+      const newX = baseX + dx
+      const newY = baseY + dy
       nudgeOffsets.set(id, { x: newX - el.x, y: newY - el.y })
       void workspacesStore.updateDesignElementGeometry(
         props.workspaceId,
@@ -802,9 +805,8 @@ const computeNextUntitledName = (
 // through AppLayout). The previous design emitted `addPage` upward,
 // AppLayout called api.createDesignPage, and DesignView's local
 // `pages.value` was never updated — the new tab silently didn't
-// appear until the user refreshed the page. Same fix pattern as
-// `commitPageSize` below: call the API, mutate the local array,
-// surface errors via the notification store.
+// appear until the user refreshed the page. Fix: call the API,
+// mutate the local array, surface errors via the notification store.
 //
 // Returns the new page id for test convenience.
 const handleAddPage = async (): Promise<string | undefined> => {
@@ -1014,42 +1016,28 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
       height: maxY - minY,
     }
     const others = elements.value.filter((e) => !selectedIds.value.has(e.id))
+    // Canvas background feature has been removed — no canvas-edge
+    // snap targets and no canvas-edge clamp. The third argument to
+    // computeSnapDelta is now omitted; snap-to-element-edges is the
+    // only remaining snap target.
     const snapResult = computeSnapDelta(
       [unionBbox, ...others],
       '__union__',
       0,
       0,
-      { width: canvasWidth.value, height: canvasHeight.value },
     )
     snapGuides.value = snapResult.guides
     const finalDx = delta.dx + snapResult.dx
     const finalDy = delta.dy + snapResult.dy
-    // Clamp so elements can't be dragged entirely off-canvas. Allow
-    // a 10px sliver off-canvas (matches the resize min size) but
-    // prevent the element from disappearing entirely.
-    const clampX = (el: typeof selected[number], dx: number): number => {
-      const newX = el.x + dx
-      if (newX < -el.width + 10) return -el.width + 10 - el.x
-      if (newX > canvasWidth.value - 10) return canvasWidth.value - 10 - el.x
-      return dx
-    }
-    const clampY = (el: typeof selected[number], dy: number): number => {
-      const newY = el.y + dy
-      if (newY < -el.height + 10) return -el.height + 10 - el.y
-      if (newY > canvasHeight.value - 10) return canvasHeight.value - 10 - el.y
-      return dy
-    }
     for (const el of selected) {
-      const clampedDx = clampX(el, finalDx)
-      const clampedDy = clampY(el, finalDy)
       void workspacesStore.updateDesignElementGeometry(
         workspaceId,
         itemId,
         pageId,
         el.id,
         {
-          x: Math.round(el.x + clampedDx),
-          y: Math.round(el.y + clampedDy),
+          x: Math.round(el.x + finalDx),
+          y: Math.round(el.y + finalDy),
         },
       )
     }
@@ -1099,11 +1087,6 @@ const handlePropertiesHtmlChanged = (html: string): void => {
   handleElementHtmlChanged(html)
 }
 
-// ─── Canvas viewport size (from active page) ───────────────────────────
-
-const canvasWidth = computed(() => activePage.value?.width ?? 1440)
-const canvasHeight = computed(() => activePage.value?.height ?? 1024)
-
 // ─── Zoom (transform: scale on the canvas wrapper) ────────────────────
 //
 // Pure-view state; doesn't change page dimensions or element
@@ -1149,13 +1132,22 @@ const zoomIn = (): void => setZoom(zoom.value + ZOOM_STEP)
 const zoomOut = (): void => setZoom(zoom.value - ZOOM_STEP)
 const zoomReset = (): void => setZoom(1.0)
 
-// Fit-to-viewport: compute the zoom level that makes the entire page
-// fit inside the scroll container with a small margin, then scroll
-// the container so the page is centered. Mirrors Figma's Shift+1
-// ("Zoom to fit"). Picked up by the keyboard shortcut (F / Shift+1)
-// and the toolbar button. Reads the live DOM dimensions so resizing
-// the window refits.
+// Fit-to-viewport: compute the zoom level that makes the union bbox
+// of all elements fit inside the scroll container with a small margin,
+// then scroll the container so the elements appear centered. Mirrors
+// Figma's Shift+1 ("Zoom to fit"). Picked up by the keyboard shortcut
+// (F / Shift+1) and the toolbar button. Reads the live DOM dimensions
+// so resizing the window refits.
+//
+// The canvas background feature has been removed (plan:
+// docs/superpowers/plans/2026-07-29-remove-canvas-background.md), so
+// there is no longer a fixed 1440×1024 page rectangle to fit. We now
+// fit to the union bbox of the elements on the active page. If there
+// are no elements, we fall back to a 1440×1024 default (matches the
+// legacy view the user saw before this plan).
 const ZOOM_FIT_MARGIN = 48 // px of padding around the fitted canvas
+const ZOOM_FIT_DEFAULT_W = 1440
+const ZOOM_FIT_DEFAULT_H = 1024
 
 const zoomFit = (): void => {
   if (!activePage.value) return
@@ -1166,17 +1158,34 @@ const zoomFit = (): void => {
   const cw = container.clientWidth - ZOOM_FIT_MARGIN
   const ch = container.clientHeight - ZOOM_FIT_MARGIN
   if (cw <= 0 || ch <= 0) return
-  const zoomX = cw / canvasWidth.value
-  const zoomY = ch / canvasHeight.value
+
+  // Union bbox of elements (or default if none).
+  let minX = 0
+  let minY = 0
+  let contentW = ZOOM_FIT_DEFAULT_W
+  let contentH = ZOOM_FIT_DEFAULT_H
+  if (elements.value.length > 0) {
+    minX = Math.min(...elements.value.map((e) => e.x))
+    minY = Math.min(...elements.value.map((e) => e.y))
+    const maxX = Math.max(...elements.value.map((e) => e.x + e.width))
+    const maxY = Math.max(...elements.value.map((e) => e.y + e.height))
+    contentW = maxX - minX
+    contentH = maxY - minY
+  }
+
+  const zoomX = cw / contentW
+  const zoomY = ch / contentH
   const fit = Math.min(zoomX, zoomY)
   setZoom(fit)
-  // Center after the scale change so the page appears centered.
-  // The scroll math mirrors the Ctrl+wheel handler.
+  // Center after the scale change so the elements appear centered.
+  // The scroll math mirrors the Ctrl+wheel handler, but offset by
+  // the elements' minX/minY (the canvas div is auto-grown to wrap
+  // elements, so the scroll origin is the bbox top-left, not 0,0).
   requestAnimationFrame(() => {
-    const scaledW = canvasWidth.value * zoom.value
-    const scaledH = canvasHeight.value * zoom.value
-    container.scrollLeft = (scaledW - container.clientWidth) / 2
-    container.scrollTop = (scaledH - container.clientHeight) / 2
+    const scaledW = contentW * zoom.value
+    const scaledH = contentH * zoom.value
+    container.scrollLeft = minX * zoom.value + (scaledW - container.clientWidth) / 2
+    container.scrollTop = minY * zoom.value + (scaledH - container.clientHeight) / 2
   })
 }
 
@@ -1222,84 +1231,15 @@ watch(
   { immediate: true },
 )
 
-// ─── Page-size inputs (debounced 600ms) ─────────────────────────────────
+// ─── Page-size inputs were removed ──────────────────────────────────────
 //
-// Two `<input type="number">` fields in the canvas header let the
-// user resize the active page. The backend validates the ranges
-// (width 320-4096, height 240-4096); out-of-range is rejected
-// with 400. Inputs share a single 600ms debounce so changing both
-// then pausing issues exactly one PATCH request.
-
-// String forms for the `<input type="number">`. Use empty string
-// when no page is active so the input is blank (not "0").
-const pageWidthInput = computed(() =>
-  activePage.value ? String(activePage.value.width) : '',
-)
-const pageHeightInput = computed(() =>
-  activePage.value ? String(activePage.value.height) : '',
-)
-
-let pageSizeDebounceTimer: number | null = null
-
-const handlePageSizeChange = (): void => {
-  if (!activePage.value) return
-  if (!props.workspaceId || !effectiveItemId.value) return
-  if (pageSizeDebounceTimer !== null) {
-    clearTimeout(pageSizeDebounceTimer)
-  }
-  pageSizeDebounceTimer = window.setTimeout(() => {
-    pageSizeDebounceTimer = null
-    void commitPageSize()
-  }, 600)
-}
-
-const commitPageSize = async (): Promise<void> => {
-  if (!activePage.value) return
-  const widthInput = document.querySelector<HTMLInputElement>(
-    '[data-testid="design-page-width-input"]',
-  )
-  const heightInput = document.querySelector<HTMLInputElement>(
-    '[data-testid="design-page-height-input"]',
-  )
-  if (!widthInput || !heightInput) return
-  const width = Number(widthInput.value)
-  const height = Number(heightInput.value)
-  if (!Number.isFinite(width) || !Number.isFinite(height)) return
-  if (width < 320 || width > 4096 || height < 240 || height > 4096) {
-    useNotificationStore().notifyError(
-      'Invalid page size',
-      `Width must be 320-4096, height 240-4096 (got ${width}×${height})`,
-    )
-    // Reset the inputs to the current valid page size.
-    widthInput.value = String(activePage.value.width)
-    heightInput.value = String(activePage.value.height)
-    return
-  }
-  try {
-    const updated = await workspacesStore.updateDesignPage(
-      props.workspaceId,
-      effectiveItemId.value,
-      activePage.value.id,
-      { width, height },
-    )
-    // Mutate the pages array in-place so the canvasWidth/Height
-    // computeds re-derive and the canvas div re-renders.
-    const idx = pages.value.findIndex((p) => p.id === updated.id)
-    if (idx !== -1) pages.value[idx] = updated
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    useNotificationStore().notifyError('Failed to resize page', message)
-    // Reset the inputs to the current (unchanged) page size.
-    widthInput.value = String(activePage.value.width)
-    heightInput.value = String(activePage.value.height)
-  }
-}
-
-onUnmounted(() => {
-  if (pageSizeDebounceTimer !== null) {
-    clearTimeout(pageSizeDebounceTimer)
-  }
-})
+// The W × H header inputs have been removed (plan
+// docs/superpowers/plans/2026-07-29-remove-canvas-background.md):
+// pages no longer have a visible rectangle / enforced boundary. The
+// `design_pages.width` + `height` columns remain in the DB for
+// backward compat (and the `setDesignPage` / `updateDesignPage`
+// LLM tools still accept W × H as a "preferred export size"), but
+// the canvas UI no longer exposes them.
 </script>
 
 <template>
@@ -1445,38 +1385,6 @@ onUnmounted(() => {
           >
             (no page selected)
           </div>
-          <div
-            v-if="activePage && !isPreviewMode"
-            class="flex items-center gap-1 text-xs shrink-0"
-            style="color: var(--semantic-text-dim);"
-            data-testid="design-page-size"
-          >
-            <input
-              type="number"
-              min="320"
-              max="4096"
-              step="10"
-              class="w-16 px-1.5 py-0.5 rounded text-xs"
-              style="background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border);"
-              :value="pageWidthInput"
-              aria-label="Page width"
-              data-testid="design-page-width-input"
-              @change="handlePageSizeChange"
-            />
-            <span aria-hidden="true">×</span>
-            <input
-              type="number"
-              min="240"
-              max="4096"
-              step="10"
-              class="w-16 px-1.5 py-0.5 rounded text-xs"
-              style="background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border);"
-              :value="pageHeightInput"
-              aria-label="Page height"
-              data-testid="design-page-height-input"
-              @change="handlePageSizeChange"
-            />
-          </div>
           <div class="text-xs" style="color: var(--semantic-text-dim);">
             {{ elements.length }} element{{ elements.length === 1 ? '' : 's' }}
           </div>
@@ -1556,15 +1464,9 @@ onUnmounted(() => {
           <div
             class="relative mx-auto my-6 origin-top-left"
             :style="{
-              width: `${canvasWidth}px`,
-              height: `${canvasHeight}px`,
+              minWidth: '1440px',
+              minHeight: '1024px',
               transform: `scale(${zoom})`,
-              backgroundColor: 'var(--semantic-card-bg)',
-              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)',
-              backgroundImage:
-                'linear-gradient(45deg, rgba(127,127,127,0.04) 25%, transparent 25%, transparent 75%, rgba(127,127,127,0.04) 75%), linear-gradient(45deg, rgba(127,127,127,0.04) 25%, transparent 25%, transparent 75%, rgba(127,127,127,0.04) 75%)',
-              backgroundSize: '20px 20px',
-              backgroundPosition: '0 0, 10px 10px',
             }"
             data-testid="design-canvas"
             @click.stop
@@ -1596,15 +1498,18 @@ onUnmounted(() => {
               cursor — the canvas's own pointer handlers stay alive.
               1px violet lines: vertical = x-axis guides at a fixed
               position, full canvas height; horizontal = y-axis guides,
-              full canvas width. The SVG is sized to the canvas
-              (canvasWidth × canvasHeight) so we can draw the lines
-              in design-px coordinates without scaling math.
+              full canvas width.
+
+              The SVG fills the canvas div (which is now auto-grow,
+              wrapping all elements). Guide line endpoints use `100%`
+              so the lines span the full canvas div height/width
+              regardless of the actual element positions.
             -->
             <svg
               v-if="snapGuides.length > 0"
               class="absolute inset-0 pointer-events-none"
-              :width="canvasWidth"
-              :height="canvasHeight"
+              width="100%"
+              height="100%"
               data-testid="design-snap-guides"
               aria-hidden="true"
             >
@@ -1614,7 +1519,7 @@ onUnmounted(() => {
                 :x1="guide.position"
                 :y1="0"
                 :x2="guide.position"
-                :y2="canvasHeight"
+                y2="100%"
                 stroke="var(--color-violet)"
                 stroke-width="1"
               />
@@ -1623,7 +1528,7 @@ onUnmounted(() => {
                 :key="`y-${idx}`"
                 :x1="0"
                 :y1="guide.position"
-                :x2="canvasWidth"
+                x2="100%"
                 :y2="guide.position"
                 stroke="var(--color-violet)"
                 stroke-width="1"
