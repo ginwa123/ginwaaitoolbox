@@ -779,6 +779,11 @@ pub const DesignElementResponse = struct {
     text_content: []const u8,
     text_style: []const u8,
     image_url: []const u8,
+    /// FK to a `group`/`frame` element on the same page (empty string
+    /// for top-level elements). Empty-slice convention matches the
+    /// data-layer (NULL parent_id round-trips to `""`). See the
+    /// 2026-07-28-grouped-layers plan (Chunk 1).
+    parent_id: []const u8,
     z_index: i64,
     position: i64,
     created_at: []const u8,
@@ -809,6 +814,7 @@ pub fn makeDesignElementResponse(elem: anytype) DesignElementResponse {
         .text_content = elem.text_content,
         .text_style = elem.text_style,
         .image_url = elem.image_url,
+        .parent_id = elem.parent_id,
         .z_index = elem.z_index,
         .position = elem.position,
         .created_at = elem.created_at,

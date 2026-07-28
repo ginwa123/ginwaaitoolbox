@@ -268,6 +268,7 @@ test "toXml renders element attributes with v6 fields" {
         .text_content = try alloc.dupe(u8, ""),
         .text_style = try alloc.dupe(u8, ""),
         .image_url = try alloc.dupe(u8, ""),
+        .parent_id = try alloc.dupe(u8, ""),
         .created_at = try alloc.dupe(u8, ""),
         .updated_at = try alloc.dupe(u8, ""),
     };

@@ -387,6 +387,10 @@ pub const DesignElement = struct {
     text_content: []u8,
     text_style: []u8,
     image_url: []u8,
+    /// FK to a `group`/`frame` element on the same page (NULL for
+    /// top-level). Migration 057 introduced the column; the read-back
+    /// path is exposed in the 2026-07-28-grouped-layers plan (Chunk 1).
+    parent_id: []u8,
     created_at: []u8,
     updated_at: []u8,
 };
@@ -404,6 +408,7 @@ pub fn freeElements(allocator: std.mem.Allocator, elements: []DesignElement) voi
         allocator.free(e.text_content);
         allocator.free(e.text_style);
         allocator.free(e.image_url);
+        allocator.free(e.parent_id);
         allocator.free(e.created_at);
         allocator.free(e.updated_at);
     }
@@ -849,6 +854,7 @@ pub fn listElements(
         \\       de.type, de.rotation, de.fill, de.stroke, de.stroke_width,
         \\       de.corner_radius, de.opacity,
         \\       de.text_content, de.text_style, de.image_url,
+        \\       COALESCE(de.parent_id, ''),
         \\       COALESCE(de.created_at, ''), COALESCE(de.updated_at, '')
         \\FROM design_page_elements de
         \\WHERE de.page_id = ?
@@ -869,6 +875,7 @@ pub fn listElements(
             allocator.free(e.text_content);
             allocator.free(e.text_style);
             allocator.free(e.image_url);
+            allocator.free(e.parent_id);
             allocator.free(e.created_at);
             allocator.free(e.updated_at);
         }
@@ -897,8 +904,9 @@ pub fn listElements(
             .text_content = try allocator.dupe(u8, row.values[17]),
             .text_style = try allocator.dupe(u8, row.values[18]),
             .image_url = try allocator.dupe(u8, row.values[19]),
-            .created_at = try allocator.dupe(u8, row.values[20]),
-            .updated_at = try allocator.dupe(u8, row.values[21]),
+            .parent_id = try allocator.dupe(u8, row.values[20]),
+            .created_at = try allocator.dupe(u8, row.values[21]),
+            .updated_at = try allocator.dupe(u8, row.values[22]),
         });
     }
     return rows.toOwnedSlice(allocator);
@@ -917,6 +925,7 @@ pub fn getElement(
         \\       de.type, de.rotation, de.fill, de.stroke, de.stroke_width,
         \\       de.corner_radius, de.opacity,
         \\       de.text_content, de.text_style, de.image_url,
+        \\       COALESCE(de.parent_id, ''),
         \\       COALESCE(de.created_at, ''), COALESCE(de.updated_at, '')
         \\FROM design_page_elements de
         \\WHERE de.id = ?
@@ -945,8 +954,9 @@ pub fn getElement(
         .text_content = try allocator.dupe(u8, row.values[17]),
         .text_style = try allocator.dupe(u8, row.values[18]),
         .image_url = try allocator.dupe(u8, row.values[19]),
-        .created_at = try allocator.dupe(u8, row.values[20]),
-        .updated_at = try allocator.dupe(u8, row.values[21]),
+        .parent_id = try allocator.dupe(u8, row.values[20]),
+        .created_at = try allocator.dupe(u8, row.values[21]),
+        .updated_at = try allocator.dupe(u8, row.values[22]),
     };
 }
 
@@ -962,6 +972,7 @@ pub fn freeElement(allocator: std.mem.Allocator, e: DesignElement) void {
     allocator.free(e.text_content);
     allocator.free(e.text_style);
     allocator.free(e.image_url);
+    allocator.free(e.parent_id);
     allocator.free(e.created_at);
     allocator.free(e.updated_at);
 }
