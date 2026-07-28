@@ -69,6 +69,15 @@ pub const DesignPage = struct {
     id: []u8,
     workspace_item_id: []u8,
     name: []u8,
+    /// 1:1 FK to `workspace_item_tasks.id`. Set atomically by
+    /// `setDesignPage` at create time (each new page gets a fresh
+    /// `task_<unix_nanoseconds>` row whose name is
+    /// `"Design Chat: <page_name>"`). Empty string `""` for legacy
+    /// pre-Migration-066 rows that the backfill didn't catch (no row
+    /// in current data — the migration's backfill is exhaustive —
+    /// but defensive: `SELECT COALESCE(...)` keeps the field
+    /// non-empty on the wire even if a future DB state slips a NULL).
+    workspace_item_task_id: []u8,
     width: i64,
     height: i64,
     position: i64,
@@ -82,6 +91,7 @@ pub fn freePages(allocator: std.mem.Allocator, pages: []DesignPage) void {
         allocator.free(p.id);
         allocator.free(p.workspace_item_id);
         allocator.free(p.name);
+        allocator.free(p.workspace_item_task_id);
         allocator.free(p.created_at);
         allocator.free(p.updated_at);
     }
@@ -176,17 +186,58 @@ pub fn setDesignPage(
     const height_str = try std.fmt.allocPrint(allocator, "{d}", .{input.height});
     defer allocator.free(height_str);
 
+    // Generate the per-page chat task id (paired with the page so the
+    // 1:1 FK is always populated on INSERT). Uses the same
+    // `task_<unix_nanoseconds>` scheme as
+    // `llm_history.createWorkspaceItemTask` so existing code that
+    // looks up tasks by id prefix keeps working.
+    var task_id_buf: [64]u8 = undefined;
+    const task_id = std.fmt.bufPrint(
+        task_id_buf[0..],
+        "task_{d}",
+        .{helpers.unixTimestampNanos()},
+    ) catch return error.BufferTooSmall;
+
+    // The task's user-visible name matches the per-page naming
+    // convention (`"Design Chat: <page_name>"`) introduced by the
+    // 2026-07-28 per-page chat plan. Keeping the naming stable across
+    // the migration means a user with a legacy
+    // `"Design Chat: <pageName>"` task (created by the 2026-07-28
+    // frontend-only plan) will see its new design-page task reuse
+    // that name rather than getting a parallel
+    // `"Design Chat: <pageName> (2)"`-style artifact.
+    var task_name_buf: [512]u8 = undefined;
+    const task_name = std.fmt.bufPrint(
+        task_name_buf[0..],
+        "Design Chat: {s}",
+        .{input.page_name},
+    ) catch return error.BufferTooSmall;
+
+    // Insert the per-page chat task FIRST so the workspace_item_tasks
+    // row exists when design_pages INSERT fires (the application-level
+    // "FK" we maintain via the UNIQUE index would otherwise allow a
+    // dangling reference). task_type='standard' matches the existing
+    // per-page chat tasks (no kanban auto-assign — the parent isn't a
+    // kanban). description='' is a SQL '' literal so it doesn't trip
+    // the empty-slice-binds-as-NULL trap.
+    try db.exec(allocator,
+        "INSERT INTO workspace_item_tasks " ++
+            "(id, name, workspace_item_id, task_type, description) " ++
+            "VALUES (?, ?, ?, 'standard', '')",
+        &.{ task_id, task_name, input.item_id });
+
     try db.exec(allocator,
         \\INSERT INTO design_pages (
-        \\    id, workspace_item_id, name, width, height, position,
+        \\    id, workspace_item_id, name, workspace_item_task_id,
+        \\    width, height, position,
         \\    created_at, updated_at
         \\) VALUES (
-        \\    ?, ?, ?, ?, ?,
+        \\    ?, ?, ?, ?, ?, ?,
         \\    COALESCE((SELECT MAX(dp.position) FROM design_pages dp
         \\        WHERE dp.workspace_item_id = ?), -1) + 1,
         \\    datetime('now'), datetime('now')
         \\)
-    , &.{ id, input.item_id, input.page_name, width_str, height_str, input.item_id });
+    , &.{ id, input.item_id, input.page_name, task_id, width_str, height_str, input.item_id });
 
     return allocator.dupe(u8, id);
 }
@@ -279,18 +330,21 @@ pub fn updateDesignPage(
         var duped_id: ?[]u8 = null;
         var duped_workspace_item_id: ?[]u8 = null;
         var duped_name: ?[]u8 = null;
+        var duped_workspace_item_task_id: ?[]u8 = null;
         var duped_created_at: ?[]u8 = null;
         var duped_updated_at: ?[]u8 = null;
         errdefer {
             if (duped_id) |v| allocator.free(v);
             if (duped_workspace_item_id) |v| allocator.free(v);
             if (duped_name) |v| allocator.free(v);
+            if (duped_workspace_item_task_id) |v| allocator.free(v);
             if (duped_created_at) |v| allocator.free(v);
             if (duped_updated_at) |v| allocator.free(v);
         }
         duped_id = try allocator.dupe(u8, p.id);
         duped_workspace_item_id = try allocator.dupe(u8, p.workspace_item_id);
         duped_name = try allocator.dupe(u8, p.name);
+        duped_workspace_item_task_id = try allocator.dupe(u8, p.workspace_item_task_id);
         duped_created_at = try allocator.dupe(u8, p.created_at);
         duped_updated_at = try allocator.dupe(u8, p.updated_at);
 
@@ -298,6 +352,7 @@ pub fn updateDesignPage(
             .id = duped_id.?,
             .workspace_item_id = duped_workspace_item_id.?,
             .name = duped_name.?,
+            .workspace_item_task_id = duped_workspace_item_task_id.?,
             .width = p.width,
             .height = p.height,
             .position = p.position,
@@ -326,8 +381,10 @@ pub fn listPages(
     item_id: []const u8,
 ) (sqlite.Error || std.mem.Allocator.Error)![]DesignPage {
     var q = try db.query(allocator,
-        \\SELECT dp.id, dp.workspace_item_id, dp.name, dp.width, dp.height,
-        \\       dp.position, COALESCE(dp.created_at, ''), COALESCE(dp.updated_at, '')
+        \\SELECT dp.id, dp.workspace_item_id, dp.name,
+        \\       COALESCE(dp.workspace_item_task_id, ''),
+        \\       dp.width, dp.height, dp.position,
+        \\       COALESCE(dp.created_at, ''), COALESCE(dp.updated_at, '')
         \\FROM design_pages dp
         \\WHERE dp.workspace_item_id = ?
         \\ORDER BY dp.position ASC
@@ -340,6 +397,7 @@ pub fn listPages(
             allocator.free(p.id);
             allocator.free(p.workspace_item_id);
             allocator.free(p.name);
+            allocator.free(p.workspace_item_task_id);
             allocator.free(p.created_at);
             allocator.free(p.updated_at);
         }
@@ -351,11 +409,12 @@ pub fn listPages(
             .id = try allocator.dupe(u8, row.values[0]),
             .workspace_item_id = try allocator.dupe(u8, row.values[1]),
             .name = try allocator.dupe(u8, row.values[2]),
-            .width = std.fmt.parseInt(i64, row.values[3], 10) catch 0,
-            .height = std.fmt.parseInt(i64, row.values[4], 10) catch 0,
-            .position = std.fmt.parseInt(i64, row.values[5], 10) catch 0,
-            .created_at = try allocator.dupe(u8, row.values[6]),
-            .updated_at = try allocator.dupe(u8, row.values[7]),
+            .workspace_item_task_id = try allocator.dupe(u8, row.values[3]),
+            .width = std.fmt.parseInt(i64, row.values[4], 10) catch 0,
+            .height = std.fmt.parseInt(i64, row.values[5], 10) catch 0,
+            .position = std.fmt.parseInt(i64, row.values[6], 10) catch 0,
+            .created_at = try allocator.dupe(u8, row.values[7]),
+            .updated_at = try allocator.dupe(u8, row.values[8]),
         });
     }
     return rows.toOwnedSlice(allocator);
@@ -1283,6 +1342,7 @@ pub const PageWithElements = struct {
         allocator.free(self.page.id);
         allocator.free(self.page.workspace_item_id);
         allocator.free(self.page.name);
+        allocator.free(self.page.workspace_item_task_id);
         allocator.free(self.page.created_at);
         allocator.free(self.page.updated_at);
         freeElements(allocator, self.elements);
@@ -1303,8 +1363,10 @@ pub fn getPageWithElements(
 ) anyerror!PageWithElements {
     // 1. Fetch the page row.
     var q = try db.query(allocator,
-        \\SELECT dp.id, dp.workspace_item_id, dp.name, dp.width, dp.height,
-        \\       dp.position, COALESCE(dp.created_at, ''), COALESCE(dp.updated_at, '')
+        \\SELECT dp.id, dp.workspace_item_id, dp.name,
+        \\       COALESCE(dp.workspace_item_task_id, ''),
+        \\       dp.width, dp.height, dp.position,
+        \\       COALESCE(dp.created_at, ''), COALESCE(dp.updated_at, '')
         \\FROM design_pages dp
         \\WHERE dp.id = ?
     , &.{page_id});
@@ -1322,11 +1384,12 @@ pub fn getPageWithElements(
             .id = try allocator.dupe(u8, page.values[0]),
             .workspace_item_id = try allocator.dupe(u8, page.values[1]),
             .name = try allocator.dupe(u8, page.values[2]),
-            .width = std.fmt.parseInt(i64, page.values[3], 10) catch 0,
-            .height = std.fmt.parseInt(i64, page.values[4], 10) catch 0,
-            .position = std.fmt.parseInt(i64, page.values[5], 10) catch 0,
-            .created_at = try allocator.dupe(u8, page.values[6]),
-            .updated_at = try allocator.dupe(u8, page.values[7]),
+            .workspace_item_task_id = try allocator.dupe(u8, page.values[3]),
+            .width = std.fmt.parseInt(i64, page.values[4], 10) catch 0,
+            .height = std.fmt.parseInt(i64, page.values[5], 10) catch 0,
+            .position = std.fmt.parseInt(i64, page.values[6], 10) catch 0,
+            .created_at = try allocator.dupe(u8, page.values[7]),
+            .updated_at = try allocator.dupe(u8, page.values[8]),
         };
     }
 
@@ -1527,18 +1590,23 @@ pub fn deletePage(
     page_id: []const u8,
 ) anyerror!bool {
     // Look up workspace_id + workspace_item_id + item_path + page_name
-    // BEFORE the SQL DELETE so we can both emit the SSE event AND
-    // rmdir the on-disk page folder. Single JOIN query that returns
-    // all four pieces of context — mirrors `deleteElement`'s lookup.
+    // + workspace_item_task_id BEFORE the SQL DELETE so we can both
+    // emit the SSE event, rmdir the on-disk page folder, AND clean
+    // up the paired workspace_item_tasks row. The application-level
+    // "FK" we maintain via the UNIQUE index has no SQL cascade, so we
+    // do the cascade by hand here. Single JOIN query that returns
+    // all five pieces of context — mirrors `deleteElement`'s lookup.
     const Lookup = struct {
         workspace_id: []u8,
         item_id: []u8,
         item_path: []u8,
         page_name: []u8,
+        workspace_item_task_id: []u8,
     };
     const lookup: Lookup = blk: {
         var q = try db.query(allocator,
-            \\SELECT wi.workspace_id, dp.workspace_item_id, wi.path, dp.name
+            \\SELECT wi.workspace_id, dp.workspace_item_id, wi.path, dp.name,
+            \\       COALESCE(dp.workspace_item_task_id, '')
             \\FROM design_pages dp
             \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
             \\WHERE dp.id = ?
@@ -1551,12 +1619,14 @@ pub fn deletePage(
             .item_id = try allocator.dupe(u8, row.values[1]),
             .item_path = try allocator.dupe(u8, row.values[2]),
             .page_name = try allocator.dupe(u8, row.values[3]),
+            .workspace_item_task_id = try allocator.dupe(u8, row.values[4]),
         };
     };
     defer allocator.free(lookup.workspace_id);
     defer allocator.free(lookup.item_id);
     defer allocator.free(lookup.item_path);
     defer allocator.free(lookup.page_name);
+    defer allocator.free(lookup.workspace_item_task_id);
 
     // Delete the row first. The FK `ON DELETE CASCADE` on
     // `design_page_elements.page_id` handles the element rows in the
@@ -1566,6 +1636,18 @@ pub fn deletePage(
     try db.exec(allocator,
         "DELETE FROM design_pages WHERE id = ?",
         &.{page_id});
+
+    // Cascade-delete the paired workspace_item_tasks row. The
+    // application-level "FK" we maintain via the UNIQUE index has no
+    // SQL cascade, so we do this by hand. Best-effort: a failure to
+    // delete the task row leaves it as an orphan (visible in the
+    // sidebar until the user manually cleans it up), but the page
+    // itself is gone — the user's primary action succeeded.
+    if (lookup.workspace_item_task_id.len > 0) {
+        db.exec(allocator,
+            "DELETE FROM workspace_item_tasks WHERE id = ?",
+            &.{lookup.workspace_item_task_id}) catch {};
+    }
 
     // Defer-pattern: rmdir the page directory AFTER the SQL DELETE
     // succeeded. Swallow errors (folder may already be missing, or

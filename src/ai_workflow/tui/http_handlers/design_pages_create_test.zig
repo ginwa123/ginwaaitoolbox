@@ -20,6 +20,9 @@ const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const text_normalize = nalarcore.helpers.text_normalize;
 
+const design_model = nalarcore.ai_mod.design_model;
+const http_response = @import("http_response.zig");
+
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/design_pages_create.zig";
 
 /// Read a source file from disk, relative to the project root.
@@ -133,5 +136,79 @@ test "design_pages_create handler uses std.json.Stringify.valueAlloc" {
             .{HANDLER_PATH},
         );
         return error.ValueAllocMissing;
+    }
+}
+
+// ─── Contract 6: response includes workspace_item_task_id FK field ───────
+//
+// Behavioural unit test (NOT a static grep — see the project rule in
+// `.nalar/memories/static-contract-test-when-to-prefer-behavioural.md`).
+//
+// The wire contract requires `workspace_item_task_id` to appear on
+// every page response. We exercise the actual production code path:
+//   `design_model.DesignPage` → `makeDesignPageResponse(page)` (in
+//   http_response.zig) → `std.json.Stringify.valueAlloc(...)` (in
+//   design_pages_create.zig).
+//
+// Asserting on the serialized JSON proves that:
+//   1. The DesignPage struct has the field (model layer).
+//   2. The makeDesignPageResponse helper copies the field (wire layer).
+//   3. std.json.Stringify emits it with the expected key (serialization).
+// All three are real code paths; a regression in any of them surfaces.
+//
+// A static grep would only prove that the source mentions the field
+// name — which is true even if the field is dead code or shadowed by
+// a different field at runtime. This test fails if the field goes
+// missing at any layer.
+test "makeDesignPageResponse serializes workspace_item_task_id on the wire" {
+    const allocator = testing.allocator;
+
+    // Build the canonical page row that setDesignPage produces. The
+    // `workspace_item_task_id` is the FK we care about.
+    const page = design_model.DesignPage{
+        .id = try allocator.dupe(u8, "page_test_abc"),
+        .workspace_item_id = try allocator.dupe(u8, "item_test_xyz"),
+        .name = try allocator.dupe(u8, "Login"),
+        .workspace_item_task_id = try allocator.dupe(u8, "task_test_123"),
+        .width = 1440,
+        .height = 1024,
+        .position = 0,
+        .created_at = try allocator.dupe(u8, ""),
+        .updated_at = try allocator.dupe(u8, ""),
+    };
+    defer {
+        allocator.free(page.id);
+        allocator.free(page.workspace_item_id);
+        allocator.free(page.name);
+        allocator.free(page.workspace_item_task_id);
+        allocator.free(page.created_at);
+        allocator.free(page.updated_at);
+    }
+
+    // Map the model struct into the wire response struct (the same
+    // helper the handler calls).
+    const response = http_response.makeDesignPageResponse(page);
+
+    // Serialize via std.json.Stringify.valueAlloc — the exact code
+    // path design_pages_create.zig uses for the 201 response body.
+    const json = try std.json.Stringify.valueAlloc(allocator, response, .{});
+    defer allocator.free(json);
+
+    // The FK MUST be present in the wire payload (the whole point of
+    // the design-page-task-fk migration). Assert the JSON key +
+    // value round-trip cleanly. A static grep can't catch a regression
+    // where the field is declared but dropped by the serializer or
+    // shadowed by a different name.
+    const expected_key_value =
+        "\"workspace_item_task_id\":\"task_test_123\"";
+    if (std.mem.indexOf(u8, json, expected_key_value) == null) {
+        std.debug.print(
+            "\n!! Wire payload missing workspace_item_task_id !!\n" ++
+                "   JSON body did not contain the expected FK key/value pair.\n" ++
+                "   Actual body:\n{s}\n" ++
+                "   Expected substring: {s}\n",
+            .{ json, expected_key_value },
+        );
+        return error.WorkspaceItemTaskIdWireFieldMissing;
     }
 }

@@ -1400,99 +1400,37 @@ const handleDesignSelectElement = (_elementId: string) => {
 // assign fires because the parent is not a kanban — see the
 // parent_is_kanban check in createStandardTask at task_create.zig
 // ~line 294) and adding a new task_type is a migration.
-const DESIGN_CHAT_TASK_NAME = 'Design Chat'
-const PER_PAGE_CHAT_PREFIX = 'Design Chat: '
-
-// Cheap probe — checks whether the given task has any messages
-// in `llm_history` without loading them. Wrapped in /api prefix
-// silently: an offline nalar (e.g. user just closed their
-// laptop) returns 404/5xx and we fall back to the no-messages
-// branch instead of toasting.
-const taskHasMessages = async (taskId: string): Promise<boolean> => {
-  try {
-    const history = await api.getChatHistory(taskId, 1)
-    return Array.isArray(history.messages) && history.messages.length > 0
-  } catch {
-    return false
-  }
-}
+//
+// 2026-07-28 FK rewrite (plan:
+// docs/superpowers/plans/2026-07-28-design-page-workspace-item-task-fk.md):
+// DESIGN_CHAT_TASK_NAME and PER_PAGE_CHAT_PREFIX are no longer used
+// for chat lookup — the FK is the source of truth. `taskHasMessages`
+// is gone too (no need to probe whether a task has messages — the
+// FK is always populated at page-create time). The legacy
+// pre-FK code that lived here (name matching, N+1 message probe,
+// one-shot legacy migration) is removed; see the plan for the
+// historical context.
 
 const handleDesignOpenChat = async (payload: {
   pageId: string
   pageName: string
+  workspaceItemTaskId: string
 }): Promise<void> => {
   const ws = activeWorkspace.value
   const item = activeWorkspaceItem.value
   if (!ws || !item || item.item_type !== 'design') return
   if (!payload.pageId || !payload.pageName) return
+  if (!payload.workspaceItemTaskId) return
 
-  const perPageName = `${PER_PAGE_CHAT_PREFIX}${payload.pageName}`
-  const tasks = item.tasks ?? []
-
-  // Step 1: prefer an existing per-page task. Reuse it regardless
-  // of whether it has messages — empty per-page chats are NOT
-  // orphans (they belong to this page by construction). The
-  // previous 2026-07-26 message-probe was a workaround for the
-  // single-canonical bug; per-page lookup is deterministic now.
-  const perPageTask = tasks.find((t) => t.name === perPageName)
-  if (perPageTask) {
-    workspacesStore.setActiveTask(perPageTask.id)
-    return
-  }
-
-  // Step 2: legacy "Design Chat" task migration. If the user has
-  // a legacy canonical task with messages, rename it in place via
-  // `api.updateTask` to attach the existing message history to
-  // the current page. Preserve the task id (and `llm_history`
-  // rows keyed on it). An empty legacy task is NOT migrated —
-  // it was a side-effect of the 2026-07-26 bug, not a
-  // user-owned conversation; we create a fresh per-page task
-  // for the active page instead.
-  const legacyTask = tasks.find((t) => t.name === DESIGN_CHAT_TASK_NAME)
-  if (legacyTask) {
-    const hasMessages = await taskHasMessages(legacyTask.id)
-    if (hasMessages) {
-      try {
-        await api.updateTask(ws.id, item.id, legacyTask.id, {
-          name: perPageName,
-        })
-        // Mirror the rename into the local store so subsequent
-        // opens (and the sidebar) see the new name without an
-        // extra GET.
-        legacyTask.name = perPageName
-      } catch (err) {
-        // Migration failed (offline nalar, 4xx/5xx). Fall through
-        // to creating a fresh per-page task — better to have two
-        // disjoint chats than to block the user from opening one.
-        console.error(
-          '[handleDesignOpenChat] failed to rename legacy "Design Chat" task — creating fresh per-page task instead',
-          err,
-        )
-        const newTaskId = await workspacesStore.addTask(ws.id, item.id, {
-          name: perPageName,
-          taskType: 'standard',
-        })
-        if (newTaskId) {
-          workspacesStore.setActiveTask(newTaskId)
-        }
-        return
-      }
-      workspacesStore.setActiveTask(legacyTask.id)
-      return
-    }
-  }
-
-  // Step 3: no per-page task and no legacy-with-messages to
-  // migrate. Either the legacy exists but is empty (prior-broken-
-  // click artifact — don't reuse it) or there are no tasks at
-  // all. Create a fresh per-page task.
-  const newTaskId = await workspacesStore.addTask(ws.id, item.id, {
-    name: perPageName,
-    taskType: 'standard',
-  })
-  if (newTaskId) {
-    workspacesStore.setActiveTask(newTaskId)
-  }
+  // 2026-07-28 FK rewrite (plan:
+  // docs/superpowers/plans/2026-07-28-design-page-workspace-item-task-fk.md):
+  // resolve the chat task via the FK directly. Each design page is
+  // paired 1:1 with a workspace_item_tasks row at create time (see
+  // design_model.setDesignPage) — the page row carries the task id
+  // on the wire. No name matching, no legacy migration, no
+  // `taskHasMessages` probe. The previous 2026-07-28 per-page
+  // naming-convention implementation has been replaced.
+  workspacesStore.setActiveTask(payload.workspaceItemTaskId)
 }
 
 const handleDesignUpdateElement = async (

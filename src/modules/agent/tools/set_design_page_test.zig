@@ -202,6 +202,7 @@ test "toXml on page with no elements produces <page .../>...</page>" {
         .id = try alloc.dupe(u8, "page_abc"),
         .workspace_item_id = try alloc.dupe(u8, "item_test"),
         .name = try alloc.dupe(u8, "Login"),
+        .workspace_item_task_id = try alloc.dupe(u8, "task_test"),
         .width = 1440,
         .height = 1024,
         .position = 0,
@@ -212,6 +213,7 @@ test "toXml on page with no elements produces <page .../>...</page>" {
         alloc.free(page.id);
         alloc.free(page.workspace_item_id);
         alloc.free(page.name);
+        alloc.free(page.workspace_item_task_id);
         alloc.free(page.created_at);
         alloc.free(page.updated_at);
     }
@@ -234,6 +236,7 @@ test "toXml renders element attributes with v6 fields" {
         .id = try alloc.dupe(u8, "page_abc"),
         .workspace_item_id = try alloc.dupe(u8, "item_test"),
         .name = try alloc.dupe(u8, "Login"),
+        .workspace_item_task_id = try alloc.dupe(u8, "task_test"),
         .width = 1440,
         .height = 1024,
         .position = 0,
@@ -244,6 +247,7 @@ test "toXml renders element attributes with v6 fields" {
         alloc.free(page.id);
         alloc.free(page.workspace_item_id);
         alloc.free(page.name);
+        alloc.free(page.workspace_item_task_id);
         alloc.free(page.created_at);
         alloc.free(page.updated_at);
     }
@@ -326,12 +330,21 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded, item
         \\    created_at DATETIME, updated_at DATETIME)
     , &.{});
 
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '')
+    , &.{});
+
     // design_pages (v6 schema).
     try db.exec(alloc,
         \\CREATE TABLE design_pages (
         \\    id TEXT PRIMARY KEY,
         \\    workspace_item_id TEXT NOT NULL,
         \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
         \\    width INTEGER NOT NULL DEFAULT 1440,
         \\    height INTEGER NOT NULL DEFAULT 1024,
         \\    x INTEGER NOT NULL DEFAULT 0,

@@ -102,7 +102,17 @@ const emit = defineEmits<{
   // AppLayout can look up the chat task for THIS page only.
   // Empty values (page not loaded yet) → AppLayout short-circuits
   // and does NOT create a chat task with an empty name.
-  openChat: [payload: { pageId: string; pageName: string }]
+  //
+  // 2026-07-28 FK rewrite (plan:
+  // docs/superpowers/plans/2026-07-28-design-page-workspace-item-task-fk.md):
+  // the payload now also carries `workspaceItemTaskId` from the page
+  // row. AppLayout uses this directly as the chat task id — no name
+  // matching, no legacy migration, no `taskHasMessages` probe.
+  openChat: [payload: {
+    pageId: string
+    pageName: string
+    workspaceItemTaskId: string
+  }]
 }>()
 
 const workspacesStore = useWorkspacesStore()
@@ -735,6 +745,7 @@ const handleOpenChat = (): void => {
   emit('openChat', {
     pageId: page?.id ?? '',
     pageName: page?.name ?? '',
+    workspaceItemTaskId: page?.workspace_item_task_id ?? '',
   })
 }
 

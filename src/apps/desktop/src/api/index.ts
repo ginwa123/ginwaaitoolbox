@@ -149,6 +149,20 @@ export interface DesignPage {
   id: string
   workspace_item_id: string
   name: string
+  /**
+   * 1:1 FK to `workspace_item_tasks.id`. Set at page-create time
+   * by the backend; the frontend uses this directly to resolve the
+   * page's chat task via `workspacesStore.setActiveTask(page.workspace_item_task_id)`
+   * — no name matching, no legacy migration, no `taskHasMessages` probe.
+   *
+   * Story: introduced 2026-07-28 (plan:
+   * docs/superpowers/plans/2026-07-28-design-page-workspace-item-task-fk.md).
+   * The previous design pattern-matched `"Design Chat: <page_name>"` against
+   * `item.tasks` — fragile, silently broke on page renames, and left
+   * orphan chat tasks when a page was deleted. The FK is the row-level
+   * binding we're after.
+   */
+  workspace_item_task_id: string
   width: number
   height: number
   position: number

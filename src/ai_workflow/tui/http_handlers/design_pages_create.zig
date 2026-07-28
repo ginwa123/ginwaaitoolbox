@@ -157,18 +157,21 @@ fn useCase(
         var duped_id: ?[]u8 = null;
         var duped_workspace_item_id: ?[]u8 = null;
         var duped_name: ?[]u8 = null;
+        var duped_workspace_item_task_id: ?[]u8 = null;
         var duped_created_at: ?[]u8 = null;
         var duped_updated_at: ?[]u8 = null;
         errdefer {
             if (duped_id) |v| allocator.free(v);
             if (duped_workspace_item_id) |v| allocator.free(v);
             if (duped_name) |v| allocator.free(v);
+            if (duped_workspace_item_task_id) |v| allocator.free(v);
             if (duped_created_at) |v| allocator.free(v);
             if (duped_updated_at) |v| allocator.free(v);
         }
         duped_id = try allocator.dupe(u8, p.id);
         duped_workspace_item_id = try allocator.dupe(u8, p.workspace_item_id);
         duped_name = try allocator.dupe(u8, p.name);
+        duped_workspace_item_task_id = try allocator.dupe(u8, p.workspace_item_task_id);
         duped_created_at = try allocator.dupe(u8, p.created_at);
         duped_updated_at = try allocator.dupe(u8, p.updated_at);
 
@@ -176,6 +179,7 @@ fn useCase(
             .id = duped_id.?,
             .workspace_item_id = duped_workspace_item_id.?,
             .name = duped_name.?,
+            .workspace_item_task_id = duped_workspace_item_task_id.?,
             .width = p.width,
             .height = p.height,
             .position = p.position,

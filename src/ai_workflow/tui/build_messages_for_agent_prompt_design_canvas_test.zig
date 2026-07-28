@@ -92,6 +92,7 @@ fn setupDb() !struct {
         \\    id TEXT PRIMARY KEY,
         \\    workspace_item_id TEXT NOT NULL,
         \\    name TEXT NOT NULL,
+        \\    workspace_item_task_id TEXT,
         \\    width INTEGER NOT NULL DEFAULT 1440,
         \\    height INTEGER NOT NULL DEFAULT 1024,
         \\    position INTEGER NOT NULL DEFAULT 0,

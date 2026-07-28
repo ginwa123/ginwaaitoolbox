@@ -236,10 +236,19 @@ fn setupDbWithThreeElements() !struct {
     , &.{});
 
     try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '')
+    , &.{});
+
+    try db.exec(alloc,
         \\CREATE TABLE design_pages (
         \\    id TEXT PRIMARY KEY,
         \\    workspace_item_id TEXT NOT NULL,
         \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
         \\    width INTEGER NOT NULL DEFAULT 1440,
         \\    height INTEGER NOT NULL DEFAULT 1024,
         \\    x INTEGER NOT NULL DEFAULT 0,
