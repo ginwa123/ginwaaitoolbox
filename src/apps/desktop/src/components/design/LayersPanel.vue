@@ -10,6 +10,12 @@
   the page, used to navigate a design with many elements where the
   canvas alone becomes hard to manage.
 
+  Chunk 7 (grouped-layers plan): elements are now a TREE, not a flat
+  list. Elements with `parent_id` set are nested under their parent.
+  Tree render happens via the recursive `<LayerRow>` component; the
+  panel itself owns the `layerTree` computed + `collapsedIds` state
+  + per-parent move-up/move-down logic.
+
   Public API:
     props:
       elements           DesignElement[]   all elements on the active page
@@ -21,14 +27,17 @@
       delete    [elementId: string]
 
   Test contract:
-    data-testid="design-layer-${elementId}" on each row
+    data-testid="design-layer-${elementId}" on each row (delegated
+    to LayerRow)
+    data-testid="design-layer-toggle-${elementId}" on each chevron
     data-testid="design-layer-reorder-up-${elementId}" on each up button
     data-testid="design-layer-reorder-down-${elementId}" on each down button
     data-testid="design-layer-delete-${elementId}" on each × button
 -->
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { DesignElement } from '../../api'
+import LayerRow, { type LayerTreeNode } from './LayerRow.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -51,77 +60,160 @@ const emit = defineEmits<{
   delete: [elementId: string]
 }>()
 
-// Layers are sorted top-to-bottom by z_index DESCENDING (highest z
-// first), then by position ASCENDING (stable order for ties). The
-// backend stores z_index explicitly; elements without a z_index
-// default to 0 on the server, so a stable secondary sort avoids
-// jitter on first-load.
-const layers = computed<DesignElement[]>(() => {
-  return props.elements
-    .slice()
-    .sort((a, b) => {
-      if (b.z_index !== a.z_index) return b.z_index - a.z_index
-      return a.position - b.position
+/**
+ * Build a tree of nested `LayerTreeNode`s from a flat `DesignElement[]`.
+ *
+ * Algorithm:
+ *   1. Walk all elements; create a `LayerTreeNode` for each.
+ *   2. Bucket them by `parent_id` (or `null` for top-level).
+ *   3. For each node, look up its children by its own id and assign.
+ *   4. Sort each bucket by z_index DESC then position ASC (matches
+ *      the legacy flat sort).
+ *   5. Return the top-level bucket (parent_id === null).
+ *
+ * Why a fresh Map<string, LayerTreeNode> for each pass instead of
+ * mutating `elements` directly: each `LayerTreeNode.children` must
+ * reference the SAME `LayerTreeNode` instance that the loop just
+ * created (not a fresh one), otherwise the tree would lose the
+ * upward link to the parent.
+ */
+const layerTree = computed<LayerTreeNode[]>(() => {
+  const byParent = new Map<string | null, LayerTreeNode[]>()
+  const nodes = new Map<string, LayerTreeNode>()
+  for (const e of props.elements) {
+    const node: LayerTreeNode = { element: e, children: [] }
+    nodes.set(e.id, node)
+    const pid = e.parent_id ?? null
+    if (!byParent.has(pid)) byParent.set(pid, [])
+    byParent.get(pid)!.push(node)
+  }
+  for (const node of nodes.values()) {
+    node.children = byParent.get(node.element.id) ?? []
+  }
+  for (const [, children] of byParent) {
+    children.sort((a, b) => {
+      if (b.element.z_index !== a.element.z_index) {
+        return b.element.z_index - a.element.z_index
+      }
+      return a.element.position - b.element.position
     })
+  }
+  return byParent.get(null) ?? []
 })
 
-const indexOf = (elementId: string): number => {
-  return layers.value.findIndex((e) => e.id === elementId)
+/**
+ * Per-element collapse state. A `Set` because collapse is binary
+ * per-id. Held as `ref(new Set)` so a replacement (not a mutation)
+ * triggers Vue 3 reactivity. The Set is passed DOWN to `<LayerRow>`
+ * by reference (read-only in the child).
+ */
+const collapsedIds = ref<Set<string>>(new Set())
+
+const toggleCollapse = (elementId: string): void => {
+  // Replace the Set so downstream consumers see the change. Mutating
+  // in place would NOT trigger the row's `isCollapsed` computed to
+  // re-evaluate because Vue 3 doesn't observe Set mutations.
+  const next = new Set(collapsedIds.value)
+  if (next.has(elementId)) next.delete(elementId)
+  else next.add(elementId)
+  collapsedIds.value = next
 }
 
-// Move the element at the given current index up by one (toward the
-// top of the layers panel, which is higher z-index). Swaps with the
-// element at index - 1 and emits the new ordered list.
+/**
+ * Walk the tree to find a node by id. Returns the node + its
+ * sibling array (the parent's children) + the node's index within
+ * that array. Used by `handleMoveUp` / `handleMoveDown` to swap
+ * with the previous / next sibling.
+ *
+ * For a top-level element, `siblings` is `layerTree` (the top-level
+ * array) and `parent` is `null`. For a nested element, `siblings`
+ * is the parent's `children` array.
+ */
+function findNode(
+  nodes: LayerTreeNode[],
+  elementId: string,
+): { node: LayerTreeNode; siblings: LayerTreeNode[]; index: number } | null {
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodes[i]!.element.id === elementId) {
+      return { node: nodes[i]!, siblings: nodes, index: i }
+    }
+    const found = findNode(nodes[i]!.children, elementId)
+    if (found) return found
+  }
+  return null
+}
+
+/**
+ * Deep-clone the tree so we can swap siblings without mutating the
+ * `layerTree` computed (which is owned by Vue's reactivity and
+ * should be treated as immutable). The clone preserves `element`
+ * references (no need to copy those — only the tree structure
+ * mutates).
+ */
+function cloneTree(nodes: LayerTreeNode[]): LayerTreeNode[] {
+  return nodes.map((n) => ({
+    element: n.element,
+    children: cloneTree(n.children),
+  }))
+}
+
+/**
+ * Flatten the tree depth-first (parent before its children, then
+ * move to the next sibling) into a top-to-bottom id list. This is
+ * the wire shape `reorder` emits — the parent re-orders its
+ * `elements` array by these ids (or applies z_index deltas, depending
+ * on the eventual `PATCH /reorder` endpoint — currently the wire is
+ * the same as the pre-Chunk-7 flat wire).
+ */
+function flattenTopDown(nodes: LayerTreeNode[]): string[] {
+  const ids: string[] = []
+  for (const n of nodes) {
+    ids.push(n.element.id)
+    if (n.children.length > 0) ids.push(...flattenTopDown(n.children))
+  }
+  return ids
+}
+
+/**
+ * Move the element at `elementId` up by one (toward the top of the
+ * panel). In a tree, "up" means swapping with the previous SIBLING
+ * within the same parent's children array. For top-level elements,
+ * the parent is the panel itself (the top-level `layerTree`).
+ *
+ * Emits `reorder` with the new top-to-bottom depth-first id list.
+ */
 const handleMoveUp = (elementId: string): void => {
   if (props.readonly) return
-  const idx = indexOf(elementId)
-  if (idx <= 0) return // already at top
-  const next = layers.value.slice()
-  // Bounds-checked above (idx >= 1), so non-null assertions are safe.
-  const above = next[idx - 1]!
-  const current = next[idx]!
-  next[idx - 1] = current
-  next[idx] = above
-  // Emit top-to-bottom order; the parent will re-order the elements
-  // array (preserving the bottom-to-top order of the layers panel).
-  emit('reorder', next.map((e) => e.id))
+  const found = findNode(layerTree.value, elementId)
+  if (!found) return
+  if (found.index <= 0) return // already first sibling
+  const cloned = cloneTree(layerTree.value)
+  const clonedFound = findNode(cloned, elementId)
+  if (!clonedFound) return
+  const siblings = clonedFound.siblings
+  const idx = clonedFound.index
+  const above = siblings[idx - 1]!
+  const current = siblings[idx]!
+  siblings[idx - 1] = current
+  siblings[idx] = above
+  emit('reorder', flattenTopDown(cloned))
 }
 
 const handleMoveDown = (elementId: string): void => {
   if (props.readonly) return
-  const idx = indexOf(elementId)
-  if (idx === -1 || idx >= layers.value.length - 1) return // already at bottom
-  const next = layers.value.slice()
-  // Bounds-checked above (idx < layers.length - 1), so non-null assertions are safe.
-  const current = next[idx]!
-  const below = next[idx + 1]!
-  next[idx + 1] = current
-  next[idx] = below
-  emit('reorder', next.map((e) => e.id))
-}
-
-const handleSelect = (elementId: string, event: MouseEvent): void => {
-  emit('select', { elementId, additive: event.shiftKey })
-}
-
-const handleDelete = (elementId: string, event: MouseEvent): void => {
-  event.stopPropagation()
-  if (props.readonly) return
-  emit('delete', elementId)
-}
-
-// Type icon emoji — small visual cue for the type. Falls back to a
-// generic shape icon for unknown types.
-const typeIcon = (type: DesignElement['type']): string => {
-  switch (type) {
-    case 'rectangle': return '▭'
-    case 'ellipse':   return '◯'
-    case 'text':      return 'T'
-    case 'image':     return '🖼'
-    case 'frame':     return '◳'
-    case 'group':     return '◫'
-    default:          return '◇'
-  }
+  const found = findNode(layerTree.value, elementId)
+  if (!found) return
+  if (found.index >= found.siblings.length - 1) return // already last sibling
+  const cloned = cloneTree(layerTree.value)
+  const clonedFound = findNode(cloned, elementId)
+  if (!clonedFound) return
+  const siblings = clonedFound.siblings
+  const idx = clonedFound.index
+  const below = siblings[idx + 1]!
+  const current = siblings[idx]!
+  siblings[idx + 1] = current
+  siblings[idx] = below
+  emit('reorder', flattenTopDown(cloned))
 }
 </script>
 
@@ -149,53 +241,20 @@ const typeIcon = (type: DesignElement['type']): string => {
       class="flex-1 overflow-y-auto"
       style="scrollbar-width: thin;"
     >
-      <div
-        v-for="(element, idx) in layers"
-        :key="element.id"
-        class="flex items-center gap-2 px-2 py-1.5 text-sm cursor-pointer transition-colors"
-        :style="selectedIds.includes(element.id)
-          ? 'background-color: var(--semantic-active-bg); color: var(--semantic-text);'
-          : 'color: var(--semantic-text-dim);'"
-        :data-testid="`design-layer-${element.id}`"
-        :data-layer-index="idx"
-        @click="(e) => handleSelect(element.id, e)"
-      >
-        <span
-          class="text-base font-mono w-4 text-center shrink-0"
-          aria-hidden="true"
-          style="color: var(--color-violet);"
-        >{{ typeIcon(element.type) }}</span>
-        <span class="flex-1 truncate">{{ element.name || '(unnamed)' }}</span>
-        <div
-          v-if="!readonly"
-          class="flex items-center gap-0.5 shrink-0"
-          @click.stop
-        >
-          <button
-            type="button"
-            class="w-5 h-5 flex items-center justify-center text-xs rounded hover:bg-[var(--color-violet)]/30 disabled:opacity-30 disabled:cursor-not-allowed"
-            :disabled="idx === 0"
-            :data-testid="`design-layer-reorder-up-${element.id}`"
-            :aria-label="`Move ${element.name} up`"
-            @click="handleMoveUp(element.id)"
-          >▲</button>
-          <button
-            type="button"
-            class="w-5 h-5 flex items-center justify-center text-xs rounded hover:bg-[var(--color-violet)]/30 disabled:opacity-30 disabled:cursor-not-allowed"
-            :disabled="idx === layers.length - 1"
-            :data-testid="`design-layer-reorder-down-${element.id}`"
-            :aria-label="`Move ${element.name} down`"
-            @click="handleMoveDown(element.id)"
-          >▼</button>
-          <button
-            type="button"
-            class="w-5 h-5 flex items-center justify-center text-xs rounded hover:bg-[var(--color-violet)]/30"
-            :data-testid="`design-layer-delete-${element.id}`"
-            :aria-label="`Delete ${element.name}`"
-            @click="(e) => handleDelete(element.id, e)"
-          >×</button>
-        </div>
-      </div>
+      <LayerRow
+        v-for="node in layerTree"
+        :key="node.element.id"
+        :node="node"
+        :depth="0"
+        :selected-ids="selectedIds"
+        :collapsed-ids="collapsedIds"
+        :readonly="readonly"
+        @select="(p) => emit('select', p)"
+        @delete="(id) => emit('delete', id)"
+        @toggle-collapse="toggleCollapse"
+        @move-up="handleMoveUp"
+        @move-down="handleMoveDown"
+      />
     </div>
   </div>
 </template>
