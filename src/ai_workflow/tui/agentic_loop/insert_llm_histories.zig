@@ -21,6 +21,14 @@ pub const InsertLLMHistoriesInput = struct {
     event_bus: ?*event_bus_mod.EventBus,
     cwd: []const u8,
     entity: LLMHistory,
+    /// When true, skip the `INSERT INTO llm_history` and
+    /// `UPDATE sessions SET cwd = ?` writes — the SSE branch still
+    /// runs when `is_emit_sse = true` and `event_bus != null`. Used by
+    /// error-path diagnostics (TooManyRetries + unattended-mode
+    /// soft-bail) that should surface in the live chat stream without
+    /// polluting the persistent chat history. Defaults to false so all
+    /// existing call sites stay DB-writing unchanged.
+    is_skip_db: bool = false,
 };
 
 pub fn inserLLMHistories(
@@ -70,6 +78,7 @@ pub fn inserLLMHistories(
     const agentStr = input.agent;
 
     const is_emit_sse = obj.is_emit_sse;
+    const is_skip_db = obj.is_skip_db;
 
     // tool_calls_json holds ONLY the serialized tool_calls array (assistant message wire format).
     // For tool result messages, the tool_call_id lives in the dedicated tool_call_id column —
@@ -175,12 +184,14 @@ pub fn inserLLMHistories(
 
     const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
 
-    try db.exec(allocator, sql, sqlArgs);
+    if (!is_skip_db) {
+        try db.exec(allocator, sql, sqlArgs);
 
-    // Update the session's cwd in the sessions table
-    const copy_cwd = try allocator.dupe(u8, cwd);
-    defer allocator.free(copy_cwd);
-    try db.exec(allocator, "UPDATE sessions SET cwd = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", &.{ copy_cwd, copy_session_id });
+        // Update the session's cwd in the sessions table
+        const copy_cwd = try allocator.dupe(u8, cwd);
+        defer allocator.free(copy_cwd);
+        try db.exec(allocator, "UPDATE sessions SET cwd = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", &.{ copy_cwd, copy_session_id });
+    }
 
     if (is_emit_sse) {
         if (event_bus) |ev| {
@@ -736,4 +747,103 @@ test "inserLLMHistories: is_emit_sse=false short-circuits before any event_bus a
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
+}
+
+// ─── is_skip_db — error-path SSE-only mode (workflow.zig retry_count > 10) ───
+//
+// When `is_skip_db = true` is set by the caller, the function must skip the
+// `INSERT INTO llm_history` and the `UPDATE sessions SET cwd = ?` writes but
+// STILL run the SSE emit branch (when `is_emit_sse = true` and
+// `event_bus != null`). This is used by error-path diagnostics (the
+// unattached soft-bail + TooManyRetries hard-bail in workflow.zig's
+// `if (retry_count > 10)` block) so the user sees the diagnostic live in
+// their chat stream without it accumulating in the persistent chat history
+// (and without re-feeding it to the LLM context on the next turn).
+
+test "inserLLMHistories: is_skip_db=true inserts ZERO rows into llm_history" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    try inserLLMHistories(.{
+        .allocator = testing.allocator,
+        .io = s.threaded.io(),
+        .db = &s.db,
+        .logger = null,
+        .is_emit_sse = false,
+        .event_bus = null,
+        .cwd = "/tmp",
+        .entity = makeEntity(),
+        .is_skip_db = true,
+    });
+
+    var q = try s.db.query(testing.allocator,
+        "SELECT COUNT(*) FROM llm_history WHERE session_id = 's1'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(testing.allocator);
+    try testing.expectEqualStrings("0", row.values[0]);
+}
+
+test "inserLLMHistories: is_skip_db=true leaves sessions.cwd untouched even when a matching row exists" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    try s.db.exec(testing.allocator,
+        "INSERT INTO sessions (id, cwd) VALUES ('s1', '/original/dir')",
+        &.{});
+
+    try inserLLMHistories(.{
+        .allocator = testing.allocator,
+        .io = s.threaded.io(),
+        .db = &s.db,
+        .logger = null,
+        .is_emit_sse = false,
+        .event_bus = null,
+        .cwd = "/should/not/win",
+        .entity = makeEntity(),
+        .is_skip_db = true,
+    });
+
+    var q = try s.db.query(testing.allocator,
+        "SELECT cwd FROM sessions WHERE id = 's1'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.SessionRowMissing;
+    defer row.deinit(testing.allocator);
+    try testing.expectEqualStrings("/original/dir", row.values[0]);
+}
+
+test "inserLLMHistories: is_skip_db=false (default) preserves the existing DB-write behavior" {
+    // Regression guard: the new `is_skip_db` field defaults to false and
+    // existing call sites without the field must continue to INSERT into
+    // llm_history. This is the same DB-state assertion as the original
+    // "inserts exactly one row into llm_history for the given session_id"
+    // test but with the explicit `.is_skip_db = false` spelling to lock in
+    // that the default is honored.
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    try inserLLMHistories(.{
+        .allocator = testing.allocator,
+        .io = s.threaded.io(),
+        .db = &s.db,
+        .logger = null,
+        .is_emit_sse = false,
+        .event_bus = null,
+        .cwd = "/tmp",
+        .entity = makeEntity(),
+        .is_skip_db = false,
+    });
+
+    var q = try s.db.query(testing.allocator,
+        "SELECT COUNT(*) FROM llm_history WHERE session_id = 's1'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(testing.allocator);
+    try testing.expectEqualStrings("1", row.values[0]);
 }
