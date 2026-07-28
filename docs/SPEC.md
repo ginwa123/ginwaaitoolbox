@@ -540,6 +540,7 @@ For each plan file in the 178-file input set:
 #125 feat(design): element drag-and-drop (Figma-style)
 #126 feat(design): wire tab-strip × button delete
 #128 feat(tests): functional tests with real data
+#136 feat(design): grouped layers (frame/group nesting) on design canvas
 ```
 
 ### 10.2 Plan file inventory (all 178 files)
