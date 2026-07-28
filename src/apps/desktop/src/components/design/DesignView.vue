@@ -563,10 +563,38 @@ onUnmounted(() => {
   window.removeEventListener('blur', handleWindowBlur)
   // Defensive: clear body cursor if we unmount mid-press.
   document.body.style.cursor = ''
-  // Clear the mirrored active page id so AppLayout's design handlers
-  // don't try to route PATCH/PUT/DELETE to a page whose view has
-  // unmounted. Task 1.2 of the design-element-drag-and-drop plan.
-  workspacesStore.setActiveDesignPage('')
+  // NOTE: we intentionally do NOT clear `activeDesignPageId` here.
+  //
+  // Why: AppLayout's main-content v-else-if chain renders TWO
+  // <DesignView> instances for the same design item — one in the
+  // single-column branch (no chat open) and one inside the
+  // 3-column branch (chat open). Both use the same
+  // `:key="'design-' + activeWorkspaceItem.id"`, but Vue treats them
+  // as distinct components because they're at different v-else-if
+  // positions. Toggling the 💬 chat button swaps branches and
+  // triggers an unmount → mount cycle on every chat toggle.
+  //
+  // Pre-fix behavior: the unmount hook cleared `activeDesignPageId`
+  // to ''. The freshly-mounted DesignView then ran `loadPages()`,
+  // saw the empty store value, and fell back to `fetched[0]?.id` —
+  // the FIRST page. Result: clicking 💬 while on (say) "Kanban
+  // Mode" visually jumped back to "AI Chat View", the first tab.
+  //
+  // The clear was originally added (Task 1.2 of design-element-
+  // drag-and-drop) to defend against `useDesignHandlers` routing
+  // PATCH/PUT/DELETE to a stale page after navigating away from
+  // the design view. But `useDesignHandlers` only fires from
+  // DesignView's own mutations — when no DesignView is mounted, no
+  // patch can be triggered, so the stale value is harmless. And
+  // cross-item navigation is already handled correctly inside
+  // `loadPages()`: if the store page id doesn't match any page in
+  // the freshly-fetched list, the second branch defaults to
+  // `fetched[0]?.id` (the new item's first page).
+  //
+  // Leaving the value alone is strictly an improvement: the chat
+  // toggle now preserves the user's last-clicked tab, AND
+  // navigating away and back to the same design item restores the
+  // last-clicked tab instead of resetting to the first page.
 })
 
 // ─── Handlers ──────────────────────────────────────────────────────────

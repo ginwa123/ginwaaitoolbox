@@ -160,6 +160,32 @@ describe('DesignView.vue static contract', () => {
     // emit call.
     expect(source).toMatch(/emit\(\s*['"]openChat['"]\s*,\s*\{[\s\S]*?pageId[\s\S]*?pageName[\s\S]*?\}\s*\)/)
   })
+
+  it('onUnmounted does NOT clear activeDesignPageId (chat-toggle regression)', () => {
+    // Regression (2026-07-29): pre-fix, onUnmounted contained
+    // `workspacesStore.setActiveDesignPage('')`. That wiped the
+    // active page id whenever DesignView unmounted — including the
+    // unmount→mount cycle triggered by AppLayout's v-else-if swap
+    // when the user toggles the 💬 chat button. The freshly mounted
+    // DesignView then fell back to fetched[0]?.id (the first page),
+    // visually jumping the user's selected tab back to "AI Chat
+    // View" every chat toggle. The clear is now removed; this
+    // test locks the contract so a future "defensive" refactor
+    // can't silently regress it.
+    //
+    // Match the `onUnmounted(() => { ... })` block and assert it
+    // does NOT contain a setActiveDesignPage('') call.
+    const unmountMatch = source.match(/onUnmounted\(\(\)\s*=>\s*\{([\s\S]*?)\n\}\)/)
+    if (!unmountMatch || !unmountMatch[1]) {
+      throw new Error('onUnmounted(() => { ... }) block not found in DesignView.vue')
+    }
+    const body = unmountMatch[1]
+    if (/setActiveDesignPage\(\s*['"]['"]\s*\)/.test(body)) {
+      throw new Error(
+        'DesignView.vue onUnmounted clears activeDesignPageId to "" — this regresses the chat-toggle flow. Remove the setActiveDesignPage("") call.',
+      )
+    }
+  })
 })
 
 // ─── Behavioral tests: mirror activePageId to workspacesStore ─────────────
@@ -222,7 +248,124 @@ describeRuntime('DesignView → workspacesStore active page id', () => {
     await flushPromises()
     expectRuntime(useWorkspacesStore().activeDesignPageId).toBe('page_first')
     wrapper.unmount()
-    expectRuntime(useWorkspacesStore().activeDesignPageId).toBe('')
+    // Regression (2026-07-29): pre-fix unmount cleared
+    // activeDesignPageId to ''. That broke the chat-toggle flow:
+    // AppLayout's v-else-if chain renders TWO <DesignView>
+    // instances for the same item (single-column + 3-column), and
+    // clicking 💬 swaps them. Clearing on unmount meant the new
+    // DesignView's loadPages() saw '' and fell back to
+    // fetched[0]?.id — visually jumping back to the first tab.
+    // The clear is now removed (see DesignView.vue onUnmounted
+    // comment); the value stays for the next mount to pick up.
+    expectRuntime(useWorkspacesStore().activeDesignPageId).toBe('page_first')
+  })
+
+  itRuntime('preserves activeDesignPageId across unmount/remount (chat-toggle regression)', async () => {
+    // Direct reproduction of the user's reported bug: open the
+    // design on a NON-default page (Kanban Mode, page_third),
+    // then unmount + remount (which is exactly what happens when
+    // the user clicks 💬 in AppLayout's v-else-if chain — the
+    // single-column branch unmounts and the 3-column branch
+    // mounts). The activeDesignPageId must NOT be wiped to ''.
+    fetchMock.mockResolvedValue({
+      ok: true, status: 200,
+      json: () => Promise.resolve({
+        pages: [
+          { id: 'page_first', workspace_item_id: ITEM_ID, name: 'AI Chat View', width: 1440, height: 1024, position: 0, created_at: '', updated_at: '' },
+          { id: 'page_second', workspace_item_id: ITEM_ID, name: 'Settings', width: 1440, height: 1024, position: 1, created_at: '', updated_at: '' },
+          { id: 'page_third', workspace_item_id: ITEM_ID, name: 'Kanban Mode', width: 1440, height: 1024, position: 2, created_at: '', updated_at: '' },
+        ],
+        count: 3,
+      }),
+      text: () => Promise.resolve(''),
+    } as Response)
+    global.fetch = fetchMock as unknown as typeof fetch
+    const ws = useWorkspacesStore()
+
+    // First mount: user lands on first page (no URL restore).
+    const wrapper1 = mount(DesignView, {
+      props: { item: makeItem(), workspaceId: WS_ID, itemId: ITEM_ID },
+    })
+    await flushPromises()
+    expectRuntime(ws.activeDesignPageId).toBe('page_first')
+
+    // User clicks the "Kanban Mode" tab.
+    const vm1 = wrapper1.vm as unknown as {
+      activePageId: string
+      pages: Array<{ id: string }>
+    }
+    vm1.activePageId = 'page_third'
+    await flushPromises()
+    expectRuntime(ws.activeDesignPageId).toBe('page_third')
+
+    // Simulate the chat-toggle unmount/remount cycle that
+    // AppLayout's v-else-if chain performs when the user clicks 💬.
+    wrapper1.unmount()
+    await flushPromises()
+
+    // Regression assertion: the store value must still be
+    // 'page_third', NOT ''. Pre-fix, this was ''.
+    expectRuntime(ws.activeDesignPageId).toBe('page_third')
+
+    // Now remount (this is the 3-column DesignView).
+    const wrapper2 = mount(DesignView, {
+      props: { item: makeItem(), workspaceId: WS_ID, itemId: ITEM_ID },
+    })
+    await flushPromises()
+
+    // The user's last-clicked tab must be restored.
+    const vm2 = wrapper2.vm as unknown as { activePageId: string }
+    expectRuntime(vm2.activePageId).toBe('page_third')
+    expectRuntime(ws.activeDesignPageId).toBe('page_third')
+
+    wrapper2.unmount()
+  })
+
+  itRuntime('cross-item navigation: stale activeDesignPageId does not bleed across design items', async () => {
+    // When the user navigates from designItem A (page PA) to
+    // designItem B, the DesignView unmounts. The store still
+    // holds PA's id. When DesignView B mounts and loads its
+    // pages, loadPages() validates `fetched.some((p) => p.id ===
+    // storePageId)` — if false, it falls back to fetched[0]?.id.
+    // This test pins that contract.
+    const ws = useWorkspacesStore()
+
+    // Pre-seed the store with a stale page id from item A.
+    ws.setActiveDesignPage('page_from_item_A')
+
+    // Now mock fetch for item B (no overlap with item A's pages).
+    fetchMock.mockResolvedValue({
+      ok: true, status: 200,
+      json: () => Promise.resolve({
+        pages: [
+          { id: 'page_B1', workspace_item_id: 'item_B', name: 'B-first', width: 1440, height: 1024, position: 0, created_at: '', updated_at: '' },
+          { id: 'page_B2', workspace_item_id: 'item_B', name: 'B-second', width: 1440, height: 1024, position: 1, created_at: '', updated_at: '' },
+        ],
+        count: 2,
+      }),
+      text: () => Promise.resolve(''),
+    } as Response)
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    const itemB: WorkspaceItem = {
+      id: 'item_B',
+      name: 'Design B',
+      item_type: 'design',
+      path: '/tmp/test',
+      design_elements: [],
+    }
+    const wrapper = mount(DesignView, {
+      props: { item: itemB, workspaceId: WS_ID, itemId: 'item_B' },
+    })
+    await flushPromises()
+
+    // loadPages must have validated that 'page_from_item_A' is NOT
+    // in item B's pages and fallen back to 'page_B1' (the first).
+    const vm = wrapper.vm as unknown as { activePageId: string }
+    expectRuntime(vm.activePageId).toBe('page_B1')
+    expectRuntime(ws.activeDesignPageId).toBe('page_B1')
+
+    wrapper.unmount()
   })
 
   itRuntime('picks the active page from the store when it exists in the loaded pages (URL restore)', async () => {
