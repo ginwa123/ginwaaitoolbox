@@ -1,73 +1,159 @@
-//! Static-contract + behavioural tests for the `POST .../elements/group`
-//! HTTP handler (2026-07-28-grouped-layers Chunk 3).
+//! Behavioural unit tests for the `POST .../elements/group` HTTP
+//! handler (2026-07-28-grouped-layers Chunk 3).
 //!
-//! What this file locks in
-//! ───────────────────────
-//!   1. Handler parses body with `parseFromSliceLeaky`.
-//!   2. useCase requires `child_ids.length >= 2` (BEHAVIOURAL — calls
-//!      useCase with crafted inputs, asserts error.TooFewChildren).
-//!   3. Handler defaults `name` to "Group" when null.
-//!   4. Handler defaults `type` to "group" when null.
-//!   5. Handler validates the `type` enum ("group" or "frame" only).
-//!   6. Handler calls `design_model.groupElements`.
-//!   7. Handler returns 201 with `{parent, children}` envelope.
-//!   8. Handler maps `ChildAlreadyParented` to 409.
-//!   9. Handler maps `PageNotFound` to 404.
-//!  10. Handler maps `BadChildId` to 400.
-//!  11. main.zig registers the POST route.
-//!  12. mod.zig re-exports `design_elements_group`.
+//! Per PR #136 review feedback, ALL previous static-contract grep tests
+//! in this file were deleted. The static-grep pattern (read the source
+//! from disk, grep for a substring, assert the substring exists) is
+//! brittle and tests implementation details rather than behaviour — a
+//! test that grepped for `"child_ids.len < 2"` passed even when the
+//! validation was removed because the variable name still appeared in
+//! a comment somewhere in the file.
 //!
-//! Per PR #136 review feedback, contract 2 was rewritten as a behavioural
-//! unit test that calls `useCase` directly. The static-grep approach was
-//! redundant + brittle (it grepped the source for the substring
-//! `child_ids.len < 2` instead of exercising the actual logic). Tests
-//! of pure validation paths should CALL the function, not grep for
-//! its source. Behavioural coverage of the model side-effects lives
-//! in `design_model_group_test.zig`.
+//! Replacement strategy:
+//!   - For each contract that's exercised via `useCase`, write a
+//!     behavioural test that calls `useCase` with crafted inputs and
+//!     asserts on the return value.
+//!   - For contracts that live ONLY in the handler (parseFromSliceLeaky,
+//!     defaults for name/type, status code mapping) or in module
+//!     wiring (route registration in `main.zig`, `mod.zig` re-export),
+//!     there's no behavioural path without HTTP framework mocking —
+//!     so the test was deleted (not converted).
+//!
+//! Plan: docs/superpowers/plans/2026-07-28-grouped-layers.md (Chunk 3)
 
 const std = @import("std");
 const testing = std.testing;
 const design_elements_group = @import("design_elements_group.zig");
+const design_model = @import("../design_model.zig");
+const nalarcore = @import("nalarcore");
+const sqlite = nalarcore.sqlite;
 
-const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/design_elements_group.zig";
-const MAIN_PATH = "src/main.zig";
-const MOD_PATH = "src/ai_workflow/tui/http_handlers/mod.zig";
+// ─── Test fixtures (mirrors `design_model_group_test.zig`) ─────────────────
 
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        path,
-        allocator,
-        .limited(256 * 1024),
-    );
+/// Open a fresh in-memory sqlite DB with the minimum tables needed for
+/// the design SQL, plus a workspace_item with a tmpdir-backed path so
+/// `design_model.groupElements` can write the new group's HTML file.
+const TestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_id: []const u8,
+    item_path: []u8,
+};
+
+fn setupDbAndItem() !TestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    UNIQUE (workspace_item_id, name),
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 375, height INTEGER NOT NULL DEFAULT 667,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle', rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '', stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0, opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '', text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '', parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    var tmp = testing.tmpDir(.{});
+    var tmpdir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_len = try tmp.dir.realPath(testing.io, &tmpdir_buf);
+    const tmpdir_path = try testing.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
+
+    const item_id_const = "item_test";
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+            "VALUES (?, 'ws_test', 'design', ?)",
+        &.{ item_id_const, tmpdir_path });
+
+    const item_id_slice = try alloc.dupe(u8, item_id_const);
+    return .{
+        .db = db,
+        .threaded = threaded,
+        .item_id = item_id_slice,
+        .item_path = tmpdir_path,
+    };
 }
 
-// ─── Contract 1: handler uses parseFromSliceLeaky ─────────────────────────
-
-test "design_elements_group handler parses body with parseFromSliceLeaky" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    if (std.mem.indexOf(u8, source, "parseFromSliceLeaky") == null) {
-        std.debug.print(
-            "\n!! {s} does not use parseFromSliceLeaky !!\n" ++
-                "   The group-body contract is broken. Switch from `parseFromSlice`\n" ++
-                "   to `parseFromSliceLeaky` (the per-request arena reaps strings).\n",
-            .{HANDLER_PATH},
-        );
-        return error.ParseFromSliceLeakyMissing;
-    }
+/// Insert one design element with explicit (x, y, width, height).
+/// Returns the generated id (heap-owned; caller frees).
+fn insertChild(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    page_id: []const u8,
+    name: []const u8,
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
+) ![]u8 {
+    // db.exec binds only TEXT — stringify the integer columns.
+    const x_str = try std.fmt.allocPrint(alloc, "{d}", .{x});
+    defer alloc.free(x_str);
+    const y_str = try std.fmt.allocPrint(alloc, "{d}", .{y});
+    defer alloc.free(y_str);
+    const w_str = try std.fmt.allocPrint(alloc, "{d}", .{w});
+    defer alloc.free(w_str);
+    const h_str = try std.fmt.allocPrint(alloc, "{d}", .{h});
+    defer alloc.free(h_str);
+    try db.exec(alloc,
+        \\INSERT INTO design_page_elements
+        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at)
+        \\VALUES
+        \\   (?, ?, ?, '', ?, ?, ?, ?, 0, 0,
+        \\    'rectangle', 0.0, '#ffffff', '', 0, 0, 1.0,
+        \\    '', '', '', NULL, datetime('now'), datetime('now'))
+    , &.{ name, page_id, name, x_str, y_str, w_str, h_str });
+    return alloc.dupe(u8, name);
 }
 
-// ─── Contract 2: requires child_ids.length >= 2 (BEHAVIOURAL) ────────────
+// ─── useCase validation: child_ids.length >= 2 ────────────────────────────
 
 test "useCase rejects empty child_ids with TooFewChildren" {
-    // We pass `undefined` for the db pointer because the validation
-    // runs BEFORE any DB access. If the validation regresses and
-    // falls through to `design_model.groupElements`, the undefined
-    // pointer deref will crash loudly in debug builds — pointing
-    // directly at the regression site.
+    // The validation runs BEFORE any DB access, so we pass
+    // `undefined` for the db pointer. If the validation regresses
+    // and falls through to design_model.groupElements, the
+    // undefined pointer deref crashes loudly in debug builds —
+    // pointing directly at the regression site.
     const result = design_elements_group.useCase(testing.allocator, undefined, .{
         .page_id = "page_test",
         .workspace_id = "ws_test",
@@ -89,186 +175,153 @@ test "useCase rejects single-element child_ids with TooFewChildren" {
     try testing.expectError(error.TooFewChildren, result);
 }
 
-// ─── Contract 3: defaults name to "Group" ─────────────────────────────────
+// ─── useCase delegation: success path (delegates to design_model) ──────────
 
-test "design_elements_group handler defaults name to 'Group' when null" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
+test "useCase delegates to design_model.groupElements and returns parent + children" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
 
-    if (std.mem.indexOf(u8, source, "\"Group\"") == null) {
-        std.debug.print(
-            "\n!! {s} does not default name to \"Group\" !!\n" ++
-                "   When parsed.name is null, the handler must fall back to\n" ++
-                "   the Figma-style canonical name \"Group\".\n",
-            .{HANDLER_PATH},
-        );
-        return error.GroupNameDefaultMissing;
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const child_a = try insertChild(alloc, &ctx.db, page_id, "elem_a", 0, 0, 100, 50);
+    defer alloc.free(child_a);
+    const child_b = try insertChild(alloc, &ctx.db, page_id, "elem_b", 50, 100, 100, 50);
+    defer alloc.free(child_b);
+
+    const output = try design_elements_group.useCase(alloc, &ctx.db, .{
+        .page_id = page_id,
+        .workspace_id = "ws_test",
+        .child_ids = &.{ child_a, child_b },
+        .name = "My Group",
+        .elem_type = .group,
+    });
+    defer {
+        design_model.freeElement(alloc, output.parent);
+        for (output.children) |c| design_model.freeElement(alloc, c);
+        alloc.free(output.children);
+    }
+
+    // The parent is the new top-level group at the union bbox.
+    try testing.expectEqualStrings("My Group", output.parent.name);
+    try testing.expectEqualStrings("group", output.parent.elem_type);
+    try testing.expectEqualStrings("", output.parent.parent_id); // top-level
+
+    // Children are returned with parent_id set to the new parent's id.
+    try testing.expectEqual(@as(usize, 2), output.children.len);
+    for (output.children) |c| {
+        try testing.expectEqualStrings(output.parent.id, c.parent_id);
     }
 }
 
-// ─── Contract 4: defaults type to "group" ────────────────────────────────
+// ─── useCase error translation: PageNotFound → 404 at handler ─────────────
 
-test "design_elements_group handler defaults type to 'group' when null" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
+test "useCase returns PageNotFound when page_id does not exist" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
 
-    if (std.mem.indexOf(u8, source, "\"group\"") == null) {
-        std.debug.print(
-            "\n!! {s} does not default type to \"group\" !!\n" ++
-                "   When parsed.type is null, the handler must fall back to\n" ++
-                "   the non-clipping default (group, not frame).\n",
-            .{HANDLER_PATH},
-        );
-        return error.GroupTypeDefaultMissing;
-    }
+    // No page seeded — the page_id is unknown.
+    const result = design_elements_group.useCase(alloc, &ctx.db, .{
+        .page_id = "page_does_not_exist",
+        .workspace_id = "ws_test",
+        .child_ids = &.{ "elem_a", "elem_b" },
+        .name = "My Group",
+        .elem_type = .group,
+    });
+    try testing.expectError(error.PageNotFound, result);
 }
 
-// ─── Contract 5: validates type ("group" or "frame") ──────────────────────
+// ─── useCase error translation: BadChildId → 400 at handler ───────────────
 
-test "design_elements_group handler validates type (group or frame only)" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
+test "useCase returns BadChildId when a child_id does not exist" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
 
-    // The handler must call std.meta.stringToEnum or otherwise reject
-    // invalid type strings.
-    if (std.mem.indexOf(u8, source, "stringToEnum") == null and
-        std.mem.indexOf(u8, source, "InvalidType") == null)
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const child_a = try insertChild(alloc, &ctx.db, page_id, "elem_a", 0, 0, 100, 50);
+    defer alloc.free(child_a);
+
+    // elem_b does not exist; the model's SELECT returns 1 row but
+    // input.child_ids.len == 2, triggering BadChildId.
+    const result = design_elements_group.useCase(alloc, &ctx.db, .{
+        .page_id = page_id,
+        .workspace_id = "ws_test",
+        .child_ids = &.{ child_a, "elem_b_does_not_exist" },
+        .name = "My Group",
+        .elem_type = .group,
+    });
+    try testing.expectError(error.BadChildId, result);
+}
+
+// ─── useCase error translation: ChildAlreadyParented → 409 at handler ──────
+
+test "useCase returns ChildAlreadyParented when children already have a parent" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const child_a = try insertChild(alloc, &ctx.db, page_id, "elem_a", 0, 0, 100, 50);
+    defer alloc.free(child_a);
+    const child_b = try insertChild(alloc, &ctx.db, page_id, "elem_b", 50, 100, 100, 50);
+    defer alloc.free(child_b);
+
+    // First call: succeeds and reparents child_a + child_b.
     {
-        std.debug.print(
-            "\n!! {s} does not validate the type field !!\n" ++
-                "   Acceptable values: \"group\" | \"frame\". Invalid → 400.\n",
-            .{HANDLER_PATH},
-        );
-        return error.TypeValidationMissing;
+        const output = try design_elements_group.useCase(alloc, &ctx.db, .{
+            .page_id = page_id,
+            .workspace_id = "ws_test",
+            .child_ids = &.{ child_a, child_b },
+            .name = "First Group",
+            .elem_type = .group,
+        });
+        design_model.freeElement(alloc, output.parent);
+        for (output.children) |c| design_model.freeElement(alloc, c);
+        alloc.free(output.children);
     }
-}
 
-// ─── Contract 6: handler calls design_model.groupElements ────────────────
-
-test "design_elements_group handler calls design_model.groupElements" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    if (std.mem.indexOf(u8, source, "design_model.groupElements") == null) {
-        std.debug.print(
-            "\n!! {s} does not call design_model.groupElements !!\n" ++
-                "   The handler must delegate the actual work to the model.\n",
-            .{HANDLER_PATH},
-        );
-        return error.GroupElementsCallMissing;
-    }
-}
-
-// ─── Contract 7: returns 201 with {parent, children} envelope ────────────
-
-test "design_elements_group handler returns 201 with parent + children envelope" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    const has_201 = std.mem.indexOf(u8, source, ".status_code = 201") != null;
-    const has_parent = std.mem.indexOf(u8, source, "parent") != null;
-    const has_children = std.mem.indexOf(u8, source, "children") != null;
-
-    if (!has_201 or !has_parent or !has_children) {
-        std.debug.print(
-            "\n!! {s} does not return the expected 201 envelope !!\n" ++
-                "   Expected: status_code=201, body contains `parent` and `children` keys.\n" ++
-                "   Found: 201={}, parent={}, children={}\n",
-            .{ HANDLER_PATH, has_201, has_parent, has_children },
-        );
-        return error.EnvelopeMissing;
-    }
-}
-
-// ─── Contract 8: maps ChildAlreadyParented to 409 ────────────────────────
-
-test "design_elements_group handler maps ChildAlreadyParented to 409" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    if (std.mem.indexOf(u8, source, "error.ChildAlreadyParented => 409") == null) {
-        std.debug.print(
-            "\n!! {s} does not map ChildAlreadyParented to 409 !!\n" ++
-                "   Conflict on already-parented children must be 409 (not 400).\n",
-            .{HANDLER_PATH},
-        );
-        return error.AlreadyParentedStatusMissing;
-    }
-}
-
-// ─── Contract 9: maps PageNotFound to 404 ─────────────────────────────────
-
-test "design_elements_group handler maps PageNotFound to 404" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    if (std.mem.indexOf(u8, source, "error.PageNotFound => 404") == null) {
-        std.debug.print(
-            "\n!! {s} does not map PageNotFound to 404 !!\n",
-            .{HANDLER_PATH},
-        );
-        return error.PageNotFoundStatusMissing;
-    }
-}
-
-// ─── Contract 10: maps BadChildId to 400 ──────────────────────────────────
-
-test "design_elements_group handler maps BadChildId to 400" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    if (std.mem.indexOf(u8, source, "error.BadChildId => 400") == null) {
-        std.debug.print(
-            "\n!! {s} does not map BadChildId to 400 !!\n",
-            .{HANDLER_PATH},
-        );
-        return error.BadChildIdStatusMissing;
-    }
-}
-
-// ─── Contract 11: main.zig registers the POST route ──────────────────────
-
-test "main.zig registers POST /elements/group route" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, MAIN_PATH);
-    defer allocator.free(source);
-
-    // Match the route registration pattern.
-    const has_post = std.mem.indexOf(u8, source, "post(") != null;
-    const has_route_suffix = std.mem.indexOf(u8, source, "/elements/group") != null;
-    const has_design_elements_group = std.mem.indexOf(u8, source, "designElementsGroupHandler") != null;
-
-    if (!has_post or !has_route_suffix or !has_design_elements_group) {
-        std.debug.print(
-            "\n!! {s} does not register POST .../elements/group !!\n" ++
-                "   post={}, route_suffix={}, handler={}\n",
-            .{ HANDLER_PATH, has_post, has_route_suffix, has_design_elements_group },
-        );
-        return error.RouteMissing;
-    }
-}
-
-// ─── Contract 12: mod.zig re-exports design_elements_group ───────────────
-
-test "http_handlers/mod.zig re-exports design_elements_group" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, MOD_PATH);
-    defer allocator.free(source);
-
-    if (std.mem.indexOf(u8, source, "design_elements_group") == null) {
-        std.debug.print(
-            "\n!! {s} does not re-export design_elements_group !!\n" ++
-                "   Add `pub const design_elements_group = @import(\"design_elements_group.zig\");`.\n",
-            .{MOD_PATH},
-        );
-        return error.ReExportMissing;
-    }
+    // Second call with the same children: model rejects because
+    // both children already have a parent_id != NULL.
+    const result = design_elements_group.useCase(alloc, &ctx.db, .{
+        .page_id = page_id,
+        .workspace_id = "ws_test",
+        .child_ids = &.{ child_a, child_b },
+        .name = "Second Group",
+        .elem_type = .group,
+    });
+    try testing.expectError(error.ChildAlreadyParented, result);
 }
