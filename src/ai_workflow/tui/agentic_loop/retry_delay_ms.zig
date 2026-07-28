@@ -56,8 +56,9 @@ pub fn retryDelayMs(
         if (std.Io.Clock.now(.real, io).nanoseconds >= deadline_ns) return true;
 
         const now_ns = std.Io.Clock.now(.real, io).nanoseconds;
+        const remaining_ns: i96 = @max(deadline_ns - now_ns, 0);
         const remaining_ms: u32 = @intCast(@divFloor(
-            deadline_ns - now_ns,
+            remaining_ns,
             std.time.ns_per_ms,
         ));
         const chunk_ms: u32 = if (remaining_ms > 50) 50 else remaining_ms;
