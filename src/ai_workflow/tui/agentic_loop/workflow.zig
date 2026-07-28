@@ -519,6 +519,11 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     .logger = logger,
                     .event_bus = event_bus,
                     .is_emit_sse = true,
+                    // Soft-bail diagnostic should surface in the live chat
+                    // stream but NOT pollute the persistent chat history —
+                    // the AI's next turn shouldn't see 10+ retry snapshots
+                    // accumulated across unattended-mode cycles.
+                    .is_skip_db = true,
                     .cwd = copy_cwd,
                     .entity = .{ .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}), .session_id = copy_session_id, .model = effective_model, .response_content = soft_diagnostic, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = effective_agent_name, .loop_index = loop_counter, .temperature = agent_temperature, .is_thinking = isThinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = copy_parent_session_id, .parent_session_id = copy_parent_session_id, .is_input = true, .is_output = false, .image_urls = null, .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}), .is_feed_to_llm = false },
                 });
@@ -556,7 +561,14 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // its next turn. Mirror the pattern the outer catch uses for generic
             // errors so the message shape is consistent.
 
-            try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
+            try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true,
+                // Hard-bail diagnostic should surface in the live chat
+                // stream but NOT pollute the persistent chat history —
+                // the workflow halts immediately after this call so the
+                // diagnostic is purely a UX message, not a follow-up
+                // prompt for the next turn.
+                .is_skip_db = true,
+                .cwd = copy_cwd, .entity = .{
                 .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                 .session_id = copy_session_id,
                 .model = effective_model,
@@ -1257,3 +1269,134 @@ pub const RunParamsNew = struct {
     /// immediately. "" = off (the SQL default is "0").
     is_auto_retry_until_stop: []const u8 = "",
 };
+
+// ─── Static-contract tests: error-path diagnostics skip DB writes ───────────
+//
+// The workflow's `if (retry_count > 10)` block (TooManyRetries hard-bail
+// + unattended-mode soft-bail) writes diagnostic messages to the user's
+// chat stream via SSE but must NOT pollute the persistent `llm_history`
+// table — the diagnostic is a UX message, not a follow-up prompt for
+// the next LLM turn. The `is_skip_db = true` field on
+// `InsertLLMHistoriesInput` makes the function skip the INSERT into
+// `llm_history` + the UPDATE of `sessions.cwd` while still emitting the
+// SSE event when `is_emit_sse = true` and `event_bus != null`.
+//
+// Why static-contract (not behavioral): `runAgenticMultiStepnew`
+// requires a live singleton (LlmConfig, db, event_bus, active_loops);
+// standing up that fixture for a one-field contract check is too much
+// boilerplate. The behavioral side (DB-write IS skipped when
+// `is_skip_db = true`) is covered by the inline tests at the bottom of
+// `insert_llm_histories.zig`. Here we just pin the workflow-side
+// invariant: "the right call sites pass the right flag value".
+
+const WORKFLOW_SELF_SOURCE_PATH = "src/ai_workflow/tui/agentic_loop/workflow.zig";
+
+fn readWorkflowSelfSource() ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        WORKFLOW_SELF_SOURCE_PATH,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    );
+}
+
+test "workflow.zig soft-bail branch (is_auto_retry_until_stop) sets is_skip_db = true on its insertLLMHistories call" {
+    const source = try readWorkflowSelfSource();
+    defer std.testing.allocator.free(source);
+
+    const marker = std.mem.indexOf(u8, source, "if (is_auto_retry_until_stop)") orelse {
+        std.debug.print("!! workflow.zig soft-bail branch not found !!\n", .{});
+        return error.SoftBailBranchNotFound;
+    };
+    // Anchor on the NEXT insertLLMHistories call after the marker, then
+    // walk forward to that call's closing `})`. The intervening `})`s
+    // (e.g. from `std.fmt.allocPrint(...)` closers in comments) are
+    // uninteresting.
+    const insert_pos = std.mem.indexOfPos(u8, source, marker, "insertLLMHistories(") orelse {
+        std.debug.print("!! no insertLLMHistories call after the soft-bail branch marker !!\n", .{});
+        return error.SoftBailInsertMissing;
+    };
+    const end = std.mem.indexOfPos(u8, source, insert_pos, "})") orelse source.len;
+    const branch = source[marker..end];
+
+    if (std.mem.indexOf(u8, branch, ".is_skip_db = true") == null) {
+        std.debug.print(
+            "!! soft-bail branch calls insertLLMHistories WITHOUT .is_skip_db = true !!\n" ++
+                "   Error-path diagnostic will pollute llm_history and re-feed the AI on next turn. !!\n",
+            .{},
+        );
+        return error.SoftBailSkipDbMissing;
+    }
+}
+
+test "workflow.zig hard-bail branch (workflow halted after {} consecutive retries) sets is_skip_db = true on its insertLLMHistories call" {
+    const source = try readWorkflowSelfSource();
+    defer std.testing.allocator.free(source);
+
+    const retry_marker = std.mem.indexOf(u8, source, "if (retry_count > 10)") orelse {
+        std.debug.print("!! retry_count > 10 block not found in workflow.zig !!\n", .{});
+        return error.RetryCountBlockNotFound;
+    };
+    const marker = std.mem.indexOfPos(u8, source, retry_marker + 1, "workflow halted after {} consecutive retries") orelse {
+        std.debug.print("!! hard-bail diagnostic string not found in retry_count > 10 block !!\n", .{});
+        return error.HardBailBranchNotFound;
+    };
+    // Anchor on the NEXT insertLLMHistories call after the marker, then
+    // walk forward to that call's closing `})`. The intervening `})`s
+    // are uninteresting (diagnostic `std.fmt.allocPrint` closer, etc.).
+    const insert_pos = std.mem.indexOfPos(u8, source, marker, "insertLLMHistories(") orelse {
+        std.debug.print("!! no insertLLMHistories call after the hard-bail diagnostic string !!\n", .{});
+        return error.HardBailInsertMissing;
+    };
+    const end = std.mem.indexOfPos(u8, source, insert_pos, "})") orelse source.len;
+    const branch = source[marker..end];
+
+    if (std.mem.indexOf(u8, branch, ".is_skip_db = true") == null) {
+        std.debug.print(
+            "!! hard-bail branch calls insertLLMHistories WITHOUT .is_skip_db = true !!\n" ++
+                "   Error-path diagnostic will pollute llm_history even though the workflow halts immediately. !!\n",
+            .{},
+        );
+        return error.HardBailSkipDbMissing;
+    }
+}
+
+test "workflow.zig queued-message replay call does NOT set is_skip_db = true" {
+    const source = try readWorkflowSelfSource();
+    defer std.testing.allocator.free(source);
+
+    // Anchor: the queued-message replay site has `queued.message` in its
+    // entity payload — uniquely identifies this call.
+    const marker = std.mem.indexOf(u8, source, ".response_content = queued.message") orelse {
+        std.debug.print("!! queued-message replay call not found in workflow.zig !!\n", .{});
+        return error.QueuedMessageCallNotFound;
+    };
+    const end = std.mem.indexOfPos(u8, source, marker + 1, "})") orelse source.len;
+    const window = source[marker..end];
+
+    if (std.mem.indexOf(u8, window, ".is_skip_db = true") != null) {
+        std.debug.print(
+            "!! queued-message replay call sets .is_skip_db = true — the user's queued chat message will be silently dropped from llm_history !!\n", .{});
+        return error.QueuedMessageSkipDbShouldBeFalse;
+    }
+}
+
+test "workflow.zig finish_reason=stop success-save call does NOT set is_skip_db = true" {
+    const source = try readWorkflowSelfSource();
+    defer std.testing.allocator.free(source);
+
+    // Anchor: the success-save call uses `Role.assistant.to_str()` and
+    // `res_dynamic_agent.content` — uniquely identifies this call.
+    const marker = std.mem.indexOf(u8, source, ".role = agent.Role.assistant.to_str()") orelse {
+        std.debug.print("!! success-save (assistant role) call not found in workflow.zig !!\n", .{});
+        return error.AssistantCallNotFound;
+    };
+    const end = std.mem.indexOfPos(u8, source, marker + 1, "})") orelse source.len;
+    const window = source[marker..end];
+
+    if (std.mem.indexOf(u8, window, ".is_skip_db = true") != null) {
+        std.debug.print(
+            "!! assistant finish_reason=stop success-save call sets .is_skip_db = true — the agent's response will be silently dropped from llm_history !!\n", .{});
+        return error.AssistantCallSkipDbShouldBeFalse;
+    }
+}
