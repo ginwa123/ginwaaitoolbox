@@ -79,6 +79,8 @@ const WS_ID = 'ws_test'
 const KANBAN_ID = 'item_kanban_url'
 const DESIGN_ID = 'item_design_url'
 const OTHER_WS_ID = 'ws_other'
+const PAGE_ID_1 = 'page_first'
+const PAGE_ID_2 = 'page_second'
 
 const makeColumn = (overrides: Partial<KanbanColumn> = {}): KanbanColumn => ({
   id: 'col_test',
@@ -402,8 +404,11 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     ws.workspaces = [
       { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [design] } as Workspace,
     ]
-    // Simulate the user opening a task chat on the design item.
+    // Simulate the user opening a task chat on the design item, with
+    // an active design page (the typical workflow — design canvas +
+    // page tabs + chat panel).
     ws.setActiveWorkspaceItem(DESIGN_ID)
+    ws.setActiveDesignPage(PAGE_ID_2)
     ws.setActiveTask('task_design_chat')
     await nextTick()
     await nextTick()
@@ -411,12 +416,46 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     layout.handleCloseTaskView()
     expect(replaceMock).toHaveBeenCalledWith({
       path: '/app',
-      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+      query: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: DESIGN_ID,
+        pageId: PAGE_ID_2,
+      },
     })
     wrapper.unmount()
   })
 
-  it('closeGitViewer preserves workspaceId + itemId when on a design item', async () => {
+  it('handleCloseTaskView omits pageId when no design page is active', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeKanbanItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {})
+    const layout = wrapper.vm as any
+    await nextTick()
+    await nextTick()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeKanbanItem()] } as Workspace,
+    ]
+    ws.setActiveWorkspaceItem(KANBAN_ID)
+    ws.setActiveTask('task_kanban_chat')
+    await nextTick()
+    await nextTick()
+    replaceMock.mockClear()
+    layout.handleCloseTaskView()
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: '/app',
+      query: { view: 'workspace', workspaceId: WS_ID, itemId: KANBAN_ID },
+    })
+    const lastQuery = replaceMock.mock.calls[replaceMock.mock.calls.length - 1]![0].query
+    expect(lastQuery.pageId).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('closeGitViewer preserves workspaceId + itemId + pageId when on a design item', async () => {
     const replaceMock = vi.fn()
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
     const ws = useWorkspacesStore()
@@ -432,18 +471,24 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
       { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
     ]
     ws.setActiveWorkspaceItem(DESIGN_ID)
+    ws.setActiveDesignPage(PAGE_ID_2)
     await nextTick()
     await nextTick()
     replaceMock.mockClear()
     layout.closeGitViewer()
     expect(replaceMock).toHaveBeenCalledWith({
       path: '/app',
-      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+      query: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: DESIGN_ID,
+        pageId: PAGE_ID_2,
+      },
     })
     wrapper.unmount()
   })
 
-  it('closeSkillViewer preserves workspaceId + itemId when on a design item', async () => {
+  it('closeSkillViewer preserves workspaceId + itemId + pageId when on a design item', async () => {
     const replaceMock = vi.fn()
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
     const ws = useWorkspacesStore()
@@ -459,18 +504,24 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
       { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
     ]
     ws.setActiveWorkspaceItem(DESIGN_ID)
+    ws.setActiveDesignPage(PAGE_ID_2)
     await nextTick()
     await nextTick()
     replaceMock.mockClear()
     layout.closeSkillViewer()
     expect(replaceMock).toHaveBeenCalledWith({
       path: '/app',
-      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+      query: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: DESIGN_ID,
+        pageId: PAGE_ID_2,
+      },
     })
     wrapper.unmount()
   })
 
-  it('closeCodeEditor preserves workspaceId + itemId when on a design item', async () => {
+  it('closeCodeEditor preserves workspaceId + itemId + pageId when on a design item', async () => {
     const replaceMock = vi.fn()
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
     const ws = useWorkspacesStore()
@@ -486,22 +537,25 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
       { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
     ]
     ws.setActiveWorkspaceItem(DESIGN_ID)
+    ws.setActiveDesignPage(PAGE_ID_2)
     await nextTick()
     await nextTick()
     replaceMock.mockClear()
     layout.closeCodeEditor()
     expect(replaceMock).toHaveBeenCalledWith({
       path: '/app',
-      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+      query: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: DESIGN_ID,
+        pageId: PAGE_ID_2,
+      },
     })
     wrapper.unmount()
   })
 })
 
 describe('AppLayout — design page URL persistence (pageId in URL)', () => {
-  const PAGE_ID_1 = 'page_first'
-  const PAGE_ID_2 = 'page_second'
-
   beforeEach(() => {
     setActivePinia(createPinia())
     installBusForTests()

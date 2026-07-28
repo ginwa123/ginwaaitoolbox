@@ -219,3 +219,55 @@ correctly still point at `workflow.zig`.
 Branch: `worktree/fix-retry-delay-test`
 Commit: `7e4b8b45` (merged to main as `e88b8264`)
 
+## 2026-07-28: AppLayout close handlers strip pageId from URL on design items
+
+### Symptom (pre-fix)
+Closing the chatview (✕ button) while on a design item with multiple
+pages silently stripped `pageId` from the URL. A page reload then
+restored the design item but landed on the FIRST design page instead
+of the page the user had been editing.
+
+### Root cause
+Four close handlers in `AppLayout.vue` navigated back to
+`view=workspace` with `workspaceId + itemId` but never included
+`pageId`:
+
+| Handler | Trigger |
+|---|---|
+| `handleCloseTaskView` | ChatView ✕ button |
+| `closeGitViewer` | GitFileViewer ✕ button |
+| `closeSkillViewer` | SkillDetail ✕ button |
+| `closeCodeEditor` | CodeEditor ✕ button |
+
+The reverse-sync watcher at lines 236-263 watches
+`[activeWorkspaceItemId, activeDesignPageId]` and mirrors them back to
+the URL — but it ONLY fires when EITHER value changes. Closing
+chat/git/skill/code doesn't change either value, so the watcher doesn't
+run to restore pageId either.
+
+### Fix
+In all 4 close handlers, read `activeDesignPageId` from the store and
+include `pageId` in the `router.replace` query when set:
+
+```js
+const pageId = workspacesStore.activeDesignPageId
+const query: Record<string, string> = { view: 'workspace', workspaceId: wsId, itemId }
+if (pageId) query.pageId = pageId
+router.replace({ path: '/app', query })
+```
+
+`pageId` is design-item-scoped and empty for kanban/folder items, so
+the URL stays clean for non-design items.
+
+### Verification
+- 19/19 AppLayout.urlPersist.spec.ts pass (was 16)
+- 41/41 AppLayout test files pass
+- 1522/1522 full vitest suite passes
+- `vue-tsc --build` clean
+- `bun run build` clean
+
+### Related
+- Memory: `.nalar/memories/applayout-close-handlers-strip-url-params.md`
+- Branch: `worktree/close-chatview-keep-pageid`
+- Commit: `e5897530`
+
