@@ -57,6 +57,7 @@ pub fn makeKanbanContext(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
+    tools: []const nalarcore.tool_models.AgentTool,
 ) ![]const u8 {
     if (session_id.len == 0) return allocator.dupe(u8, "");
 
@@ -72,6 +73,10 @@ pub fn makeKanbanContext(
     if (!std.mem.eql(u8, ctx.self_item_type, "kanban")) {
         return allocator.dupe(u8, "");
     }
+
+    // Capture the equipped-tool check up front so step 4d can use
+    // it. Avoids re-scanning the tools slice in the hot path.
+    const follow_up_tool_equipped = hasToolByName(tools, "create_kanban_task");
 
     // 2. Read the columns. Same graceful-skip pattern as
     //    BuildWorkspaceContext — any DB failure returns "".
@@ -193,6 +198,36 @@ pub fn makeKanbanContext(
         \\  resolves the blocker or you find a way forward.
         \\
     );
+
+    // 4d. Optional follow-up suggestion. Only rendered when the
+    // `create_kanban_task` agent tool is equipped for this session.
+    // The agent should suggest creating a new task on this kanban
+    // when it discovers follow-up work — bugs found during
+    // implementation, dependencies on other teams, multi-step
+    // follow-ups, etc. Without this hint, the agent often
+    // completes the current task and "forgets" the follow-ups.
+    if (follow_up_tool_equipped) {
+        try out.appendSlice(allocator,
+            \\
+            \\## Follow-up Tasks
+            \\
+            \\When you discover follow-up work that should be tracked on this kanban
+            \\(a bug found while implementing this task, a dependency on another
+            \\team, a multi-step follow-up that should happen after the current work
+            \\ships, or anything else the user would want to see in their board),
+            \\**suggest creating a new task on this kanban** so the user can see it.
+            \\
+            \\Use the `create_kanban_task` tool. It requires only a card title
+            \\(`name`); all other fields (`workspace_id`, `item_id` for this kanban)
+            \\come from the `## Workspace Context` section above. The optional
+            \\`column_id` defaults to the first column by `position ASC` — pass it
+            \\only when the user explicitly names a column.
+            \\
+            \\Skip this suggestion only when the user is actively making a quick
+            \\atomic change with no follow-up implications.
+            \\
+        );
+    }
 
     return out.toOwnedSlice(allocator);
 }
@@ -533,4 +568,16 @@ fn freeColumns(allocator: std.mem.Allocator, cols: []KanbanColumn) void {
         allocator.free(c.created_at);
     }
     allocator.free(cols);
+}
+
+/// Look up a tool by its `function.name` in the equipped-tool list.
+/// Returns true if the tool is equipped, false otherwise. Linear scan
+/// (tools lists are typically small — under 50 entries — so the
+/// constant factor is irrelevant). Matches the convention used by
+/// the static-section `.requires_tool` gate in `prompts.zig`.
+fn hasToolByName(tools: []const nalarcore.tool_models.AgentTool, name: []const u8) bool {
+    for (tools) |t| {
+        if (std.mem.eql(u8, t.function.name, name)) return true;
+    }
+    return false;
 }

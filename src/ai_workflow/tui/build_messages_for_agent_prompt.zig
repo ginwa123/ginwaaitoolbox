@@ -101,8 +101,10 @@ pub fn buildMessages(
     // the session's parent item has item_type === 'kanban' (the
     // helper silently returns "" otherwise). Rendered right after
     // the Workspace Context section so the agent sees the workflow
-    // expectations before the tool listing.
-    const kanbanStatusContent = try agentic_loop.prompts_mod.makeKanbanContext(allocator, db, session_id);
+    // expectations before the tool listing. Pass `tools` so the
+    // helper can append the optional "Follow-up Tasks" hint when
+    // the create_kanban_task tool is equipped.
+    const kanbanStatusContent = try agentic_loop.prompts_mod.makeKanbanContext(allocator, db, session_id, tools);
     defer allocator.free(kanbanStatusContent);
 
     // Build the "Design Canvas" status section (v6 — 3 LLM tools).
