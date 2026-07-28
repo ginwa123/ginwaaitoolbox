@@ -178,6 +178,8 @@ import {
   deleteDesignPage as deleteDesignPageApi,
   updateDesignElementGeometry as updateDesignElementGeometryApi,
   updateDesignPage as updateDesignPageApi,
+  groupDesignElements as groupDesignElementsApi,
+  type GroupDesignElementsRequest,
 } from '../api'
 
 export const useWorkspacesStore = defineStore('workspaces', () => {
@@ -1248,6 +1250,41 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Wrap 2+ elements into a new `group` (or `frame`) parent at the
+  // union bbox. The backend returns the full new parent + the
+  // updated children (with `parent_id` set). Mirrors both rows into
+  // the local `design_elements` array:
+  //   - the new parent is appended (so the layers panel picks it up);
+  //   - each returned child replaces its previous copy in place
+  //     (preserves z_index / position sort stability).
+  //
+  // Errors propagate via the apiFetch ApiError (4xx throws, network
+  // failures throw, surface via the composable's notification toast).
+  async function groupDesignElements(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    body: GroupDesignElementsRequest,
+  ): Promise<{ parent: DesignElement; children: DesignElement[] }> {
+    const result = await groupDesignElementsApi(workspaceId, itemId, pageId, body)
+    const item = findItem(workspaceId, itemId)
+    if (item) {
+      if (!item.design_elements) item.design_elements = []
+      // Append the new parent (preserves backend ordering: highest
+      // position last).
+      item.design_elements.push(result.parent)
+      // Replace each child in place. We don't filter the array first
+      // because the backend's returned children are already updated
+      // versions; the originals are still useful for comparison in
+      // tests but the in-place replace keeps the array length stable.
+      for (const updated of result.children) {
+        const idx = item.design_elements.findIndex((e) => e.id === updated.id)
+        if (idx !== -1) item.design_elements[idx] = updated
+      }
+    }
+    return result
+  }
+
   // Delete a page. Idempotent on the backend (404 = already gone).
   // Note: DesignView manages its own local `pages` array (fetched
   // via `listDesignPages`); there is no `design_pages` field on the
@@ -2269,6 +2306,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     deleteDesignElement,
     deleteDesignPage,
     updateDesignPage,
+    groupDesignElements,
     initializeFromSystemFolder,
     onSessionEvent,
     fetchSystemFolder,

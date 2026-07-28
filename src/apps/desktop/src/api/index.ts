@@ -206,6 +206,13 @@ export interface DesignElement {
   text_style: string
   image_url: string
   file_path: string
+  // NEW (Chunk 5 of grouped-layers plan): FK to a `group`/`frame`
+  // element on the same page. Empty string `""` (NOT `null`) is the
+  // wire form for NULL (matches the backend's empty-slice convention).
+  // Optional because legacy elements returned by the API before this
+  // field existed won't have it; the LayersPanel tree builder treats
+  // `undefined` the same as `""` (top-level).
+  parent_id?: string | null
   z_index: number
   position: number
   created_at: string
@@ -1539,6 +1546,47 @@ export async function updateDesignElement(
   return await apiFetch<DesignElement>(
     `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/${elementId}`,
     { method: 'PUT', body: patch },
+  )
+}
+
+/**
+ * Wire shape for `POST .../design/pages/:pageId/elements/group`.
+ * NEW (Chunk 5 of grouped-layers plan). Body fields:
+ *   - `child_ids`: required, 2+ element ids on the SAME page. The
+ *     backend rejects cross-page children with 400 (ChildAcrossDifferentPages)
+ *     and already-parented children with 409 (ChildAlreadyParented).
+ *   - `name`: optional, default `"Group"`. The new parent element's
+ *     `name` field.
+ *   - `type`: optional, default `'group'`. Valid values: `'group'`
+ *     (non-clipping logical bundle) or `'frame'` (clipping container).
+ */
+export interface GroupDesignElementsRequest {
+  child_ids: string[]
+  name?: string
+  type?: 'group' | 'frame'
+}
+
+/**
+ * POST /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/group
+ *
+ * NEW (Chunk 5 of grouped-layers plan). Wraps 2+ elements into a new
+ * `group` (or `frame`) parent at the union bbox of the children. The
+ * backend sets `parent_id` on each child to the new group's id in a
+ * single transaction.
+ *
+ * Response 201: `{ parent: DesignElement, children: DesignElement[] }`.
+ * Error shape: 400 (BadChildId / ChildAcrossDifferentPages), 404
+ * (PageNotFound), 409 (ChildAlreadyParented).
+ */
+export async function groupDesignElements(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  body: GroupDesignElementsRequest,
+): Promise<{ parent: DesignElement; children: DesignElement[] }> {
+  return await apiFetch<{ parent: DesignElement; children: DesignElement[] }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/group`,
+    { method: 'POST', body },
   )
 }
 
