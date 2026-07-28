@@ -1590,18 +1590,23 @@ pub fn deletePage(
     page_id: []const u8,
 ) anyerror!bool {
     // Look up workspace_id + workspace_item_id + item_path + page_name
-    // BEFORE the SQL DELETE so we can both emit the SSE event AND
-    // rmdir the on-disk page folder. Single JOIN query that returns
-    // all four pieces of context — mirrors `deleteElement`'s lookup.
+    // + workspace_item_task_id BEFORE the SQL DELETE so we can both
+    // emit the SSE event, rmdir the on-disk page folder, AND clean
+    // up the paired workspace_item_tasks row. The application-level
+    // "FK" we maintain via the UNIQUE index has no SQL cascade, so we
+    // do the cascade by hand here. Single JOIN query that returns
+    // all five pieces of context — mirrors `deleteElement`'s lookup.
     const Lookup = struct {
         workspace_id: []u8,
         item_id: []u8,
         item_path: []u8,
         page_name: []u8,
+        workspace_item_task_id: []u8,
     };
     const lookup: Lookup = blk: {
         var q = try db.query(allocator,
-            \\SELECT wi.workspace_id, dp.workspace_item_id, wi.path, dp.name
+            \\SELECT wi.workspace_id, dp.workspace_item_id, wi.path, dp.name,
+            \\       COALESCE(dp.workspace_item_task_id, '')
             \\FROM design_pages dp
             \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
             \\WHERE dp.id = ?
@@ -1614,12 +1619,14 @@ pub fn deletePage(
             .item_id = try allocator.dupe(u8, row.values[1]),
             .item_path = try allocator.dupe(u8, row.values[2]),
             .page_name = try allocator.dupe(u8, row.values[3]),
+            .workspace_item_task_id = try allocator.dupe(u8, row.values[4]),
         };
     };
     defer allocator.free(lookup.workspace_id);
     defer allocator.free(lookup.item_id);
     defer allocator.free(lookup.item_path);
     defer allocator.free(lookup.page_name);
+    defer allocator.free(lookup.workspace_item_task_id);
 
     // Delete the row first. The FK `ON DELETE CASCADE` on
     // `design_page_elements.page_id` handles the element rows in the
@@ -1629,6 +1636,18 @@ pub fn deletePage(
     try db.exec(allocator,
         "DELETE FROM design_pages WHERE id = ?",
         &.{page_id});
+
+    // Cascade-delete the paired workspace_item_tasks row. The
+    // application-level "FK" we maintain via the UNIQUE index has no
+    // SQL cascade, so we do this by hand. Best-effort: a failure to
+    // delete the task row leaves it as an orphan (visible in the
+    // sidebar until the user manually cleans it up), but the page
+    // itself is gone — the user's primary action succeeded.
+    if (lookup.workspace_item_task_id.len > 0) {
+        db.exec(allocator,
+            "DELETE FROM workspace_item_tasks WHERE id = ?",
+            &.{lookup.workspace_item_task_id}) catch {};
+    }
 
     // Defer-pattern: rmdir the page directory AFTER the SQL DELETE
     // succeeded. Swallow errors (folder may already be missing, or

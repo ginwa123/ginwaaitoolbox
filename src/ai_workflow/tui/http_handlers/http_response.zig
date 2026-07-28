@@ -710,6 +710,12 @@ pub const DesignPageResponse = struct {
     id: []const u8,
     workspace_item_id: []const u8,
     name: []const u8,
+    /// 1:1 FK to `workspace_item_tasks.id`. Set atomically by
+    /// `design_model.setDesignPage` at create time. The frontend
+    /// uses this directly to resolve the page's chat task via
+    /// `workspacesStore.setActiveTask(page.workspace_item_task_id)`
+    /// — no name matching, no legacy migration.
+    workspace_item_task_id: []const u8,
     width: i64,
     height: i64,
     position: i64,
@@ -726,6 +732,7 @@ pub fn makeDesignPageResponse(page: anytype) DesignPageResponse {
         .id = page.id,
         .workspace_item_id = page.workspace_item_id,
         .name = page.name,
+        .workspace_item_task_id = page.workspace_item_task_id,
         .width = page.width,
         .height = page.height,
         .position = page.position,

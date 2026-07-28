@@ -135,3 +135,34 @@ test "design_pages_create handler uses std.json.Stringify.valueAlloc" {
         return error.ValueAllocMissing;
     }
 }
+
+// ─── Contract 6: response includes workspace_item_task_id FK field ───────
+
+const RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
+
+test "design_pages_create response includes workspace_item_task_id field" {
+    const allocator = testing.allocator;
+
+    // The handler delegates to `makeDesignPageResponse` in
+    // `http_response.zig`, so the field-name assertion lives there.
+    // We check BOTH files: the handler file (in case the field is
+    // referenced inline) and the response file (where the struct
+    // field is declared).
+    const handler_src = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(handler_src);
+    const response_src = try readSource(allocator, RESPONSE_PATH);
+    defer allocator.free(response_src);
+
+    if (std.mem.indexOf(u8, handler_src, "workspace_item_task_id") == null and
+        std.mem.indexOf(u8, response_src, "workspace_item_task_id") == null)
+    {
+        std.debug.print(
+            "\n!! Neither {s} nor {s} references workspace_item_task_id !!\n" ++
+                "   The wire contract requires the FK on every page create response\n" ++
+                "   so the frontend can resolve the chat task via the FK directly\n" ++
+                "   (no name matching, no legacy migration).\n",
+            .{ HANDLER_PATH, RESPONSE_PATH },
+        );
+        return error.WorkspaceItemTaskIdFieldMissing;
+    }
+}
