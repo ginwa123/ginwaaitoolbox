@@ -600,7 +600,7 @@ test "BuildKanbanStatusPrompt returns empty string for non-kanban parent" {
         "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES ('sess_chat', 'chat task', 'wi_chat', 'standard')",
         &.{});
 
-    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_chat");
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_chat", &[_]nalarcore.tool_models.AgentTool{});
     defer alloc.free(result);
 
     try testing.expectEqualStrings("", result);
@@ -617,7 +617,7 @@ test "BuildKanbanStatusPrompt returns empty string for unbound session" {
         "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_kanban', 'ws_x', 'kanban')",
         &.{});
 
-    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_unbound");
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_unbound", &[_]nalarcore.tool_models.AgentTool{});
     defer alloc.free(result);
 
     try testing.expectEqualStrings("", result);
@@ -644,7 +644,7 @@ test "BuildKanbanStatusPrompt renders mandatory rule + columns for kanban parent
             "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'col_a', 'standard')",
         &.{});
 
-    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_kanban");
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_kanban", &[_]nalarcore.tool_models.AgentTool{});
     defer alloc.free(result);
 
     // Mandatory rule is present (imperative wording — matches the
@@ -702,7 +702,7 @@ test "BuildKanbanStatusPrompt renders unassigned note when task has no column" {
             "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'standard')",
         &.{});
 
-    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_kanban");
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_kanban", &[_]nalarcore.tool_models.AgentTool{});
     defer alloc.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "Current column:** _unassigned_") != null);
@@ -724,7 +724,7 @@ test "BuildKanbanStatusPrompt renders empty-board hint when kanban has no column
             "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'standard')",
         &.{});
 
-    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_kanban");
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_kanban", &[_]nalarcore.tool_models.AgentTool{});
     defer alloc.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "_No columns configured yet._") != null);
@@ -737,7 +737,139 @@ test "BuildKanbanStatusPrompt returns empty string for empty session_id" {
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
-    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "");
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "", &[_]nalarcore.tool_models.AgentTool{});
+    defer alloc.free(result);
+
+    try testing.expectEqualStrings("", result);
+}
+
+// ─── Tests for the Follow-up Tasks hint (gated on create_kanban_task) ──
+//
+// Plan: docs/superpowers/plans/2026-07-29-create-kanban-task-tool.md
+// (post-PR feature: conditional system prompt in kanban mode that
+// tells the AI to suggest creating a kanban task when it discovers
+// follow-up work).
+
+test "BuildKanbanStatusPrompt renders Follow-up Tasks hint when create_kanban_task is equipped" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Seed: a kanban item with 1 task.
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_kanban', 'ws_x', 'kanban')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO kanban_columns (id, workspace_item_id, name, description, position) VALUES " ++
+            "('col_a', 'wi_kanban', 'todo', '', 0)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, kanban_column_id, task_type) " ++
+            "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'col_a', 'standard')",
+        &.{});
+
+    // Equip the create_kanban_task tool.
+    const tools = [_]nalarcore.tool_models.AgentTool{
+        .{
+            .type = "function",
+            .function = .{
+                .name = "create_kanban_task",
+                .description = "stub",
+                .parameters = .{
+                    .type = "object",
+                    .properties = &.{},
+                    .required = &.{},
+                },
+            },
+        },
+    };
+
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_kanban", &tools);
+    defer alloc.free(result);
+
+    // The Follow-up Tasks header is present (verifies the gate fires).
+    try testing.expect(std.mem.indexOf(u8, result, "## Follow-up Tasks") != null);
+
+    // The hint tells the AI to suggest creating tasks on this kanban
+    // (verifies the prompt content matches the spec).
+    try testing.expect(std.mem.indexOf(u8, result, "suggest creating a new task on this kanban") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "create_kanban_task") != null);
+}
+
+test "BuildKanbanStatusPrompt omits Follow-up Tasks hint when create_kanban_task is NOT equipped" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_kanban', 'ws_x', 'kanban')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO kanban_columns (id, workspace_item_id, name, description, position) VALUES " ++
+            "('col_a', 'wi_kanban', 'todo', '', 0)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, kanban_column_id, task_type) " ++
+            "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'col_a', 'standard')",
+        &.{});
+
+    // Equip a different (unrelated) tool. The gate should NOT fire.
+    const tools = [_]nalarcore.tool_models.AgentTool{
+        .{
+            .type = "function",
+            .function = .{
+                .name = "kanban_list",
+                .description = "stub",
+                .parameters = .{
+                    .type = "object",
+                    .properties = &.{},
+                    .required = &.{},
+                },
+            },
+        },
+    };
+
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_kanban", &tools);
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "## Follow-up Tasks") == null);
+}
+
+test "BuildKanbanStatusPrompt omits Follow-up Tasks hint for non-kanban parent even when tool is equipped" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Parent is a CHAT item, not a kanban. The whole kanban section
+    // is silently skipped (returns ""), so the conditional hint
+    // never renders.
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_chat', 'ws_x', 'chat')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) " ++
+            "VALUES ('sess_chat', 'chat task', 'wi_chat', 'standard')",
+        &.{});
+
+    const tools = [_]nalarcore.tool_models.AgentTool{
+        .{
+            .type = "function",
+            .function = .{
+                .name = "create_kanban_task",
+                .description = "stub",
+                .parameters = .{
+                    .type = "object",
+                    .properties = &.{},
+                    .required = &.{},
+                },
+            },
+        },
+    };
+
+    const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_chat", &tools);
     defer alloc.free(result);
 
     try testing.expectEqualStrings("", result);

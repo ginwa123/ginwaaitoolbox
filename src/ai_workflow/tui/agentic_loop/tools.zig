@@ -29,6 +29,7 @@ pub const execChangeAgent = @import("tools_exec_change_agent.zig").execChangeAge
 pub const execSetGitWorktree = @import("tools_exec_set_git_worktree.zig").execSetGitWorktree;
 pub const execKanbanList = @import("tools_exec_kanban_list.zig").execKanbanList;
 pub const execKanbanMoveTask = @import("tools_exec_kanban_move_task.zig").execKanbanMoveTask;
+pub const execCreateKanbanTask = @import("tools_exec_create_kanban_task.zig").execCreateKanbanTask;
 pub const execSetDesignPage = @import("tools_exec_set_design_page.zig").execSetDesignPage;
 pub const execAddElement = @import("tools_exec_add_element.zig").execAddElement;
 pub const execUpdateElement = @import("tools_exec_update_element.zig").execUpdateElement;

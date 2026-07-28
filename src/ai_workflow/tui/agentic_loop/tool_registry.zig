@@ -29,6 +29,7 @@ const edit_skill_mod = nalar_mod.edit_skill;
 const set_git_worktree_mod = nalar_mod.set_git_worktree;
 const kanban_list_mod = nalar_mod.kanban_list;
 const kanban_move_task_mod = nalar_mod.kanban_move_task;
+const create_kanban_task_mod = nalar_mod.create_kanban_task;
 const set_design_page_mod = nalar_mod.set_design_page;
 const add_design_element_mod = nalar_mod.add_design_element;
 const update_design_element_mod = nalar_mod.update_design_element;
@@ -157,6 +158,7 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // situation).
         .{ .name = "kanban_list", .exec = agentic_loop_mod.tools.execKanbanList, .tool_def = kanban_list_mod.kanban_list_tool },
         .{ .name = "kanban_move_task", .exec = agentic_loop_mod.tools.execKanbanMoveTask, .tool_def = kanban_move_task_mod.kanban_move_task_tool },
+        .{ .name = "create_kanban_task", .exec = agentic_loop_mod.tools.execCreateKanbanTask, .tool_def = create_kanban_task_mod.create_kanban_task_tool },
 
         // === DESIGN TOOLS ===
         // Three tools cover the v6 design mode LLM surface:
