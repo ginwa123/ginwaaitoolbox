@@ -116,5 +116,24 @@ pub const create_kanban_task_tool = AgentTool{
 };
 
 // =====================================================================
-// Implementation (added in Tasks 3 + 4)
+// Stub (replaced in Task 4)
 // =====================================================================
+//
+// PLACEHOLDER — does nothing yet. Compiles so Task 3's behavioral
+// tests can be written and run (RED phase). Replaced by the real
+// implementation in Task 4 (GREEN phase).
+//
+// The stub returns a deliberately wrong XML so every behavioral test
+// fails for the right reason: the tool is not implemented, not for
+// an unrelated reason (DB error, missing field, etc.). This is the
+// TDD RED-state discipline.
+
+pub fn executeCreateKanbanTaskToString(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: CreateKanbanTaskInput,
+) ![]u8 {
+    _ = db;
+    _ = input;
+    return try allocator.dupe(u8, "<kanban_task><success>false</success><error>NOT_IMPLEMENTED</error></kanban_task>");
+}
