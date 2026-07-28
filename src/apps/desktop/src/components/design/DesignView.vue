@@ -60,6 +60,7 @@ import PropertiesPanel from './PropertiesPanel.vue'
 import AddDesignElementDialog from './AddDesignElementDialog.vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import { useNotificationStore } from '../../stores/notifications'
+import { useDesignHandlers } from '../../composables/useDesignHandlers'
 import {
   listDesignPages,
   createDesignPage as createDesignPageApi,
@@ -163,6 +164,20 @@ const isSingleSelect = computed(() => selectedIds.value.size === 1)
 const activeElement = computed<DesignElementApi | null>(() =>
   isSingleSelect.value ? activeElements.value[0] ?? null : null,
 )
+
+// NEW (Chunk 6 of grouped-layers plan): useDesignHandlers composable
+// providing `groupSelection` for the Cmd+G shortcut. We pass the
+// args this component owns (`selectedIds` is local; the ids come
+// from props + activePageId). AppLayout uses a SEPARATE
+// `useDesignHandlers()` invocation (no args) for updateElement /
+// deleteElement — those handlers re-read activeDesignPageId from
+// the store on each call so they don't need DesignView-local refs.
+const designHandlers = useDesignHandlers({
+  workspaceId: computed(() => props.workspaceId),
+  itemId: computed(() => effectiveItemId.value),
+  pageId: computed(() => activePageId.value),
+  selectedIds,
+})
 
 // ─── Snap guides state ────────────────────────────────────────────────
 //
@@ -466,6 +481,29 @@ const handleKeydown = (event: KeyboardEvent): void => {
   ) {
     event.preventDefault()
     togglePreviewMode()
+    return
+  }
+
+  // NEW (Chunk 6 of grouped-layers plan): Cmd/Ctrl+G groups the
+  // current selection into a new `group` at the union bbox. Figma
+  // convention. The composable enforces the 2+ selection rule
+  // silently (mirrors Figma's Cmd+G). Cmd+Shift+G is reserved for
+  // the deferred Chunk 9 "ungroup" feature — bound to a no-op for
+  // now so the future handler isn't accidentally consumed by
+  // browser/OS shortcuts.
+  if (
+    (event.key === 'g' || event.key === 'G') &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.altKey
+  ) {
+    event.preventDefault()
+    if (event.shiftKey) {
+      // TODO: implement ungroupSelection in Chunk 9 of the
+      // grouped-layers plan. For now: silent no-op so users don't
+      // get a silent failure if they try it.
+      return
+    }
+    void designHandlers.groupSelection()
     return
   }
 
