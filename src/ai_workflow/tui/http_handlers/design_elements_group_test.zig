@@ -1,10 +1,11 @@
-//! Static-contract tests for the `POST .../elements/group` HTTP
-//! handler (2026-07-28-grouped-layers Chunk 3).
+//! Static-contract + behavioural tests for the `POST .../elements/group`
+//! HTTP handler (2026-07-28-grouped-layers Chunk 3).
 //!
 //! What this file locks in
 //! ───────────────────────
 //!   1. Handler parses body with `parseFromSliceLeaky`.
-//!   2. Handler requires `child_ids.length >= 2`.
+//!   2. useCase requires `child_ids.length >= 2` (BEHAVIOURAL — calls
+//!      useCase with crafted inputs, asserts error.TooFewChildren).
 //!   3. Handler defaults `name` to "Group" when null.
 //!   4. Handler defaults `type` to "group" when null.
 //!   5. Handler validates the `type` enum ("group" or "frame" only).
@@ -16,12 +17,17 @@
 //!  11. main.zig registers the POST route.
 //!  12. mod.zig re-exports `design_elements_group`.
 //!
-//! Behavioural coverage lives in `design_model_group_test.zig`
-//! (the model fn is the one with side-effects; the handler is a
-//! thin orchestrator).
+//! Per PR #136 review feedback, contract 2 was rewritten as a behavioural
+//! unit test that calls `useCase` directly. The static-grep approach was
+//! redundant + brittle (it grepped the source for the substring
+//! `child_ids.len < 2` instead of exercising the actual logic). Tests
+//! of pure validation paths should CALL the function, not grep for
+//! its source. Behavioural coverage of the model side-effects lives
+//! in `design_model_group_test.zig`.
 
 const std = @import("std");
 const testing = std.testing;
+const design_elements_group = @import("design_elements_group.zig");
 
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/design_elements_group.zig";
 const MAIN_PATH = "src/main.zig";
@@ -54,18 +60,33 @@ test "design_elements_group handler parses body with parseFromSliceLeaky" {
     }
 }
 
-// ─── Contract 2: requires child_ids.length >= 2 ──────────────────────────
+// ─── Contract 2: requires child_ids.length >= 2 (BEHAVIOURAL) ────────────
 
-test "design_elements_group handler requires at least 2 child ids" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
+test "useCase rejects empty child_ids with TooFewChildren" {
+    // We pass `undefined` for the db pointer because the validation
+    // runs BEFORE any DB access. If the validation regresses and
+    // falls through to `design_model.groupElements`, the undefined
+    // pointer deref will crash loudly in debug builds — pointing
+    // directly at the regression site.
+    const result = design_elements_group.useCase(testing.allocator, undefined, .{
+        .page_id = "page_test",
+        .workspace_id = "ws_test",
+        .child_ids = &.{},
+        .name = "My Group",
+        .elem_type = .group,
+    });
+    try testing.expectError(error.TooFewChildren, result);
+}
 
-    // The handler must reject child_ids.len < 2 — a single-element
-    // group is not useful. See design_elements_group.zig:190.
-    if (std.mem.indexOf(u8, source, "child_ids.len < 2") == null) {
-        return error.ChildIdsLengthMissing;
-    }
+test "useCase rejects single-element child_ids with TooFewChildren" {
+    const result = design_elements_group.useCase(testing.allocator, undefined, .{
+        .page_id = "page_test",
+        .workspace_id = "ws_test",
+        .child_ids = &.{"elem_1"},
+        .name = "My Group",
+        .elem_type = .group,
+    });
+    try testing.expectError(error.TooFewChildren, result);
 }
 
 // ─── Contract 3: defaults name to "Group" ─────────────────────────────────

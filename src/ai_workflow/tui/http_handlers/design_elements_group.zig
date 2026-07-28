@@ -95,13 +95,23 @@ pub const GroupElementsOutput = struct {
 // =====================================================================
 
 /// Group 2+ elements into a new parent.
-fn useCase(
+///
+/// `pub` so `design_elements_group_test.zig` can call this directly
+/// with crafted inputs (per PR #136 review: prefer behavioural unit
+/// tests over static-contract grep tests when feasible).
+pub fn useCase(
     allocator: std.mem.Allocator,
     db: *nalarcore.sqlite.SqliteBackend,
     input: GroupElementsInput,
 ) DesignElementsGroupError!GroupElementsOutput {
     if (input.page_id.len == 0) return error.PageIdRequired;
     if (input.name.len == 0) return error.BadName;
+
+    // Figma convention: a single-element group is not meaningful. The
+    // check lives in useCase (not just the handler) so the validation
+    // is exerciseable via direct unit tests without spinning up the
+    // full HTTP framework.
+    if (input.child_ids.len < 2) return error.TooFewChildren;
 
     // Delegate to the model. The model owns the transaction + on-disk
     // HTML + SSE emit; we just translate the error set.
@@ -186,7 +196,10 @@ pub fn designElementsGroupHandler(
         });
     };
 
-    // 2. Validate child_ids length. Figma convention: 2+ required.
+    // 2. Validate child_ids length (Figma convention: 2+ required).
+    //    The check itself runs in useCase so it's testable directly;
+    //    we re-check here as a defence-in-depth gate that fires
+    //    BEFORE we waste cycles on enum-string parsing + DB lookup.
     if (parsed.child_ids.len < 2) {
         return res.jsonResponse(.{
             .status_code = 400,
