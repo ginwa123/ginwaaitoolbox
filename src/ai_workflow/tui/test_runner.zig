@@ -79,6 +79,7 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     _ = @import("http_handlers/design_elements_create_test.zig");
     _ = @import("http_handlers/design_elements_update_test.zig");
     _ = @import("http_handlers/design_elements_delete_test.zig");
+    _ = @import("http_handlers/design_elements_group_test.zig"); // 2026-07-28-grouped-layers (Chunk 3) — POST /group static-contract
     _ = @import("http_handlers/design_elements_html_get_test.zig");
     _ = @import("http_handlers/design_elements_html_update_test.zig");
     _ = @import("http_handlers/design_elements_geometry_update_test.zig");
