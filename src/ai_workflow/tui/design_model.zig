@@ -387,6 +387,10 @@ pub const DesignElement = struct {
     text_content: []u8,
     text_style: []u8,
     image_url: []u8,
+    /// FK to a `group`/`frame` element on the same page (NULL for
+    /// top-level). Migration 057 introduced the column; the read-back
+    /// path is exposed in the 2026-07-28-grouped-layers plan (Chunk 1).
+    parent_id: []u8,
     created_at: []u8,
     updated_at: []u8,
 };
@@ -404,6 +408,7 @@ pub fn freeElements(allocator: std.mem.Allocator, elements: []DesignElement) voi
         allocator.free(e.text_content);
         allocator.free(e.text_style);
         allocator.free(e.image_url);
+        allocator.free(e.parent_id);
         allocator.free(e.created_at);
         allocator.free(e.updated_at);
     }
@@ -618,6 +623,11 @@ pub const UpdateElementInput = struct {
     text_content: ?[]const u8 = null,
     text_style: ?[]const u8 = null,
     image_url: ?[]const u8 = null,
+    /// FK to a `group`/`frame` element on the same page. `null` =
+    /// leave unchanged. Pass `""` (empty string) to clear the
+    /// parent (reparent to top-level). See
+    /// `docs/superpowers/plans/2026-07-28-grouped-layers.md` Chunk 2.
+    parent_id: ?[]const u8 = null,
 };
 
 /// Update an element. Each non-null field is SET in the SQL UPDATE;
@@ -724,6 +734,7 @@ pub fn updateElement(
     if (input.text_content) |v| { try sets.append(allocator, "text_content = ?"); try args.append(allocator, v); }
     if (input.text_style) |v| { try sets.append(allocator, "text_style = ?"); try args.append(allocator, v); }
     if (input.image_url) |v| { try sets.append(allocator, "image_url = ?"); try args.append(allocator, v); }
+    if (input.parent_id) |v| { try sets.append(allocator, "parent_id = ?"); try args.append(allocator, v); }
 
     // If html changed, look up file_path, atomic-rewrite the file,
     // and record that we need to UPDATE file_path too if the file
@@ -832,6 +843,291 @@ pub fn updateElement(
     return allocator.dupe(u8, input.element_id);
 }
 
+// ─── groupElements ────────────────────────────────────────────────────────
+
+pub const GroupElementsInput = struct {
+    page_id: []const u8,
+    child_ids: []const []const u8,
+    parent_name: []const u8,
+    parent_type: ElementType, // .group or .frame
+};
+
+pub const GroupElementsError = error{
+    PageNotFound,
+    ItemPathMissing,
+    BadChildId,
+    ChildAlreadyParented,
+    ChildAcrossDifferentPages,
+    FileWriteFailed,
+    DbError,
+    OutOfMemory,
+};
+
+/// Create a new `group` (or `frame`) parent element at the UNION
+/// bounding box of the given `child_ids`, and reparent every child
+/// to the new parent. Single transaction — all-or-nothing.
+///
+/// Behaviour:
+///   1. Validate children are all on the requested page
+///      (`SELECT page_id FROM design_page_elements WHERE id IN (...)`).
+///   2. Reject if any child is already parented
+///      (`parent_id IS NOT NULL`) — first-cut safety. Future
+///      enhancement: support "re-parent" by passing through.
+///   3. Compute the union bbox: `min_x = min(child.x)`,
+///      `min_y = min(child.y)`, `max_x = max(child.x + child.width)`,
+///      `max_y = max(child.y + child.height)`.
+///   4. INSERT a new element row with `parent_id = NULL`,
+///      `z_index = MAX(child.z_index) + 1`,
+///      `position = MAX(child.position) + 1`,
+///      `fill = "transparent"` (so it doesn't visually obscure
+///      children — frames with `fill = ""` would render as
+///      white-on-white if the canvas background is also white).
+///   5. UPDATE children in one statement to set `parent_id` to the
+///      new parent's id.
+///   6. Emit `design_element_created` SSE for the parent + one
+///      `design_element_updated` SSE per child.
+///   7. Atomically write an empty `<div>` to
+///      `<item_path>/.nalar/design/<page>/<group_name>.html`.
+///
+/// Returns the new parent's element_id (heap-owned; caller frees).
+///
+/// Plan: docs/superpowers/plans/2026-07-28-grouped-layers.md (Chunk 2)
+pub fn groupElements(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: GroupElementsInput,
+) anyerror![]u8 {
+    if (input.child_ids.len < 2) return error.BadChildId;
+    if (input.parent_name.len == 0) return error.BadChildId;
+
+    // 1. Look up the page JOIN: workspace_id, item_id, page_name,
+    //    item_path. Needed for the on-disk HTML write + the SSE
+    //    event payload.
+    const Lookup = struct {
+        workspace_id: []u8,
+        item_id: []u8,
+        page_name: []u8,
+        item_path: []u8,
+    };
+    const lookup: Lookup = blk: {
+        var q = try db.query(allocator,
+            \\SELECT wi.workspace_id, dp.workspace_item_id, dp.name, wi.path
+            \\FROM design_pages dp
+            \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
+            \\WHERE dp.id = ?
+        , &.{input.page_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.PageNotFound;
+        defer row.deinit(allocator);
+        break :blk .{
+            .workspace_id = try allocator.dupe(u8, row.values[0]),
+            .item_id = try allocator.dupe(u8, row.values[1]),
+            .page_name = try allocator.dupe(u8, row.values[2]),
+            .item_path = try allocator.dupe(u8, row.values[3]),
+        };
+    };
+    defer allocator.free(lookup.workspace_id);
+    defer allocator.free(lookup.item_id);
+    defer allocator.free(lookup.page_name);
+    defer allocator.free(lookup.item_path);
+    if (lookup.item_path.len == 0) return error.ItemPathMissing;
+
+    // 2. Validate children: all on the same page, none already parented.
+    //    Build a parameterized IN-list dynamically.
+    var in_list_sql: std.ArrayList(u8) = .empty;
+    defer in_list_sql.deinit(allocator);
+    try in_list_sql.appendSlice(allocator, "SELECT id, page_id, parent_id, x, y, width, height, z_index, position, name FROM design_page_elements WHERE id IN (");
+    var args: std.ArrayList([]const u8) = .empty;
+    defer args.deinit(allocator);
+    for (input.child_ids, 0..) |cid, i| {
+        if (i > 0) try in_list_sql.append(allocator, ',');
+        try in_list_sql.append(allocator, '?');
+        try args.append(allocator, cid);
+    }
+    try in_list_sql.append(allocator, ')');
+
+    const ChildRow = struct {
+        id: []u8,
+        page_id: []u8,
+        parent_id: []u8,
+        x: i64,
+        y: i64,
+        width: i64,
+        height: i64,
+        z_index: i64,
+        position: i64,
+        name: []u8,
+    };
+    var children: std.ArrayList(ChildRow) = .empty;
+    defer {
+        for (children.items) |c| {
+            allocator.free(c.id);
+            allocator.free(c.page_id);
+            allocator.free(c.parent_id);
+            allocator.free(c.name);
+        }
+        children.deinit(allocator);
+    }
+
+    {
+        var q = try db.query(allocator, in_list_sql.items, args.items);
+        defer q.deinit();
+        while (try q.next()) |row| {
+            defer row.deinit(allocator);
+            try children.append(allocator, .{
+                .id = try allocator.dupe(u8, row.values[0]),
+                .page_id = try allocator.dupe(u8, row.values[1]),
+                .parent_id = try allocator.dupe(u8, row.values[2]),
+                .x = std.fmt.parseInt(i64, row.values[3], 10) catch 0,
+                .y = std.fmt.parseInt(i64, row.values[4], 10) catch 0,
+                .width = std.fmt.parseInt(i64, row.values[5], 10) catch 0,
+                .height = std.fmt.parseInt(i64, row.values[6], 10) catch 0,
+                .z_index = std.fmt.parseInt(i64, row.values[7], 10) catch 0,
+                .position = std.fmt.parseInt(i64, row.values[8], 10) catch 0,
+                .name = try allocator.dupe(u8, row.values[9]),
+            });
+        }
+    }
+
+    // Reject if any child is missing OR on a different page OR already parented.
+    if (children.items.len != input.child_ids.len) return error.BadChildId;
+    for (children.items) |c| {
+        if (!std.mem.eql(u8, c.page_id, input.page_id)) return error.ChildAcrossDifferentPages;
+        if (c.parent_id.len > 0) return error.ChildAlreadyParented;
+    }
+
+    // 3. Compute the union bbox.
+    var min_x: i64 = std.math.maxInt(i64);
+    var min_y: i64 = std.math.maxInt(i64);
+    var max_x: i64 = std.math.minInt(i64);
+    var max_y: i64 = std.math.minInt(i64);
+    var max_z: i64 = 0;
+    var max_pos: i64 = -1;
+    for (children.items) |c| {
+        if (c.x < min_x) min_x = c.x;
+        if (c.y < min_y) min_y = c.y;
+        if (c.x + c.width > max_x) max_x = c.x + c.width;
+        if (c.y + c.height > max_y) max_y = c.y + c.height;
+        if (c.z_index > max_z) max_z = c.z_index;
+        if (c.position > max_pos) max_pos = c.position;
+    }
+    const group_width = max_x - min_x;
+    const group_height = max_y - min_y;
+
+    // 4. Build the on-disk HTML path for the new parent.
+    const sanitized_page = try design_io.sanitizeFilename(allocator, lookup.page_name);
+    defer allocator.free(sanitized_page);
+    const sanitized_elem = try design_io.sanitizeFilename(allocator, input.parent_name);
+    defer allocator.free(sanitized_elem);
+    const page_dir = try std.fmt.allocPrint(allocator, "{s}/.nalar/design/{s}", .{ lookup.item_path, sanitized_page });
+    defer allocator.free(page_dir);
+    const file_path = try std.fmt.allocPrint(allocator, "{s}/{s}.html", .{ page_dir, sanitized_elem });
+    defer allocator.free(file_path);
+
+    // mkdir -p the page directory (createDirPath is Io's mkdir-p).
+    // Use the SqliteBackend's io — we don't take io as a parameter
+    // because the LLM tool path (set_design_page) passes db without
+    // an io handle.
+    std.Io.Dir.cwd().createDirPath(db.io, page_dir) catch return error.FileWriteFailed;
+
+    // Atomic-write an empty wrapper. The group's HTML body is a
+    // transparent container — children render themselves inside
+    // their own (separate) iframes via the design-mode iframe
+    // convention.
+    const empty_html = "<div style=\"width:100%;height:100%;\"></div>";
+    design_io.atomicWriteFile(allocator, file_path, empty_html) catch return error.FileWriteFailed;
+
+    // 5. Start the transaction (mutex-held for the whole operation).
+    // Use the explicit commit-then-mark pattern: any failure below
+    // the commit fires the deferred rollback (since `tx.completed`
+    // is false). On the success path, the commit runs and we
+    // explicitly mark the defer a no-op via the `committed` flag.
+    var tx = try db.begin();
+    var committed = false;
+    defer if (!committed) tx.rollback() catch {};
+
+    // 6. INSERT the new group element inside the transaction.
+    const new_id = try generateElementId(allocator);
+    defer allocator.free(new_id);
+
+    const x_str = try std.fmt.allocPrint(allocator, "{d}", .{min_x});
+    defer allocator.free(x_str);
+    const y_str = try std.fmt.allocPrint(allocator, "{d}", .{min_y});
+    defer allocator.free(y_str);
+    const width_str = try std.fmt.allocPrint(allocator, "{d}", .{group_width});
+    defer allocator.free(width_str);
+    const height_str = try std.fmt.allocPrint(allocator, "{d}", .{group_height});
+    defer allocator.free(height_str);
+    const z_index_str = try std.fmt.allocPrint(allocator, "{d}", .{max_z + 1});
+    defer allocator.free(z_index_str);
+    const position_str = try std.fmt.allocPrint(allocator, "{d}", .{max_pos + 1});
+    defer allocator.free(position_str);
+    const elem_type_str = @tagName(input.parent_type);
+
+    try tx.exec(allocator,
+        \\INSERT INTO design_page_elements (
+        \\    id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at
+        \\) VALUES (
+        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        \\    ?, 0, ?, '', 0, 0, 1.0,
+        \\    '', '', '', NULL,
+        \\    datetime('now'), datetime('now')
+        \\)
+    , &.{
+        new_id, input.page_id, input.parent_name, file_path,
+        x_str, y_str, width_str, height_str, z_index_str, position_str,
+        elem_type_str, "transparent",
+    });
+
+    // 7. UPDATE each child to set parent_id (within the same tx).
+    var update_in_list: std.ArrayList(u8) = .empty;
+    defer update_in_list.deinit(allocator);
+    try update_in_list.appendSlice(allocator,
+        "UPDATE design_page_elements SET parent_id = ? WHERE id IN (");
+    var update_args: std.ArrayList([]const u8) = .empty;
+    defer update_args.deinit(allocator);
+    try update_args.append(allocator, new_id);
+    for (input.child_ids, 0..) |cid, i| {
+        if (i > 0) try update_in_list.append(allocator, ',');
+        try update_in_list.append(allocator, '?');
+        try update_args.append(allocator, cid);
+    }
+    try update_in_list.append(allocator, ')');
+
+    try tx.exec(allocator, update_in_list.items, update_args.items);
+
+    // 8. Commit. If commit fails the parent INSERT + child UPDATEs
+    //    roll back atomically — partial-failure leaves no orphans.
+    try tx.commit();
+    committed = true;
+
+    // 9. Emit SSE events AFTER commit so multi-tab listeners only
+    //    see state that's already committed. Best-effort: failures
+    //    log but don't fail the request.
+    on_event_sent_design.onEventSendDesignElementCreated(allocator, .{
+        .action = "created",
+        .workspace_id = lookup.workspace_id,
+        .item_id = lookup.item_id,
+        .page_id = input.page_id,
+        .element_id = new_id,
+    }) catch {};
+
+    for (input.child_ids) |cid| {
+        on_event_sent_design.onEventSendDesignElementUpdated(allocator, .{
+            .action = "updated",
+            .workspace_id = lookup.workspace_id,
+            .item_id = lookup.item_id,
+            .page_id = input.page_id,
+            .element_id = cid,
+        }) catch {};
+    }
+
+    return allocator.dupe(u8, new_id);
+}
+
 // ─── listElements / getElement ─────────────────────────────────────────────
 
 /// List all elements of a design page in (z_index, position) order.
@@ -849,6 +1145,7 @@ pub fn listElements(
         \\       de.type, de.rotation, de.fill, de.stroke, de.stroke_width,
         \\       de.corner_radius, de.opacity,
         \\       de.text_content, de.text_style, de.image_url,
+        \\       COALESCE(de.parent_id, ''),
         \\       COALESCE(de.created_at, ''), COALESCE(de.updated_at, '')
         \\FROM design_page_elements de
         \\WHERE de.page_id = ?
@@ -869,6 +1166,7 @@ pub fn listElements(
             allocator.free(e.text_content);
             allocator.free(e.text_style);
             allocator.free(e.image_url);
+            allocator.free(e.parent_id);
             allocator.free(e.created_at);
             allocator.free(e.updated_at);
         }
@@ -897,8 +1195,9 @@ pub fn listElements(
             .text_content = try allocator.dupe(u8, row.values[17]),
             .text_style = try allocator.dupe(u8, row.values[18]),
             .image_url = try allocator.dupe(u8, row.values[19]),
-            .created_at = try allocator.dupe(u8, row.values[20]),
-            .updated_at = try allocator.dupe(u8, row.values[21]),
+            .parent_id = try allocator.dupe(u8, row.values[20]),
+            .created_at = try allocator.dupe(u8, row.values[21]),
+            .updated_at = try allocator.dupe(u8, row.values[22]),
         });
     }
     return rows.toOwnedSlice(allocator);
@@ -917,6 +1216,7 @@ pub fn getElement(
         \\       de.type, de.rotation, de.fill, de.stroke, de.stroke_width,
         \\       de.corner_radius, de.opacity,
         \\       de.text_content, de.text_style, de.image_url,
+        \\       COALESCE(de.parent_id, ''),
         \\       COALESCE(de.created_at, ''), COALESCE(de.updated_at, '')
         \\FROM design_page_elements de
         \\WHERE de.id = ?
@@ -945,8 +1245,9 @@ pub fn getElement(
         .text_content = try allocator.dupe(u8, row.values[17]),
         .text_style = try allocator.dupe(u8, row.values[18]),
         .image_url = try allocator.dupe(u8, row.values[19]),
-        .created_at = try allocator.dupe(u8, row.values[20]),
-        .updated_at = try allocator.dupe(u8, row.values[21]),
+        .parent_id = try allocator.dupe(u8, row.values[20]),
+        .created_at = try allocator.dupe(u8, row.values[21]),
+        .updated_at = try allocator.dupe(u8, row.values[22]),
     };
 }
 
@@ -962,6 +1263,7 @@ pub fn freeElement(allocator: std.mem.Allocator, e: DesignElement) void {
     allocator.free(e.text_content);
     allocator.free(e.text_style);
     allocator.free(e.image_url);
+    allocator.free(e.parent_id);
     allocator.free(e.created_at);
     allocator.free(e.updated_at);
 }
@@ -1166,6 +1468,15 @@ pub fn deleteElement(
     defer allocator.free(lookup.page_id);
     defer allocator.free(lookup.workspace_id);
     defer allocator.free(lookup.item_id);
+
+    // NULL-back step: if this element is itself a parent (group/frame),
+    // orphan its children first so they become top-level again.
+    // Otherwise the children would silently reference a non-existent
+    // parent (SQLite FK enforcement is OFF by default — see
+    // `docs/superpowers/plans/2026-07-28-grouped-layers.md` Chunk 4).
+    try db.exec(allocator,
+        "UPDATE design_page_elements SET parent_id = NULL WHERE parent_id = ?",
+        &.{element_id});
 
     // Delete the row first.
     try db.exec(allocator,

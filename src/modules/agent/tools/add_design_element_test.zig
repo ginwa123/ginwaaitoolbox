@@ -235,6 +235,7 @@ test "elementToXml renders element with all v6 attributes" {
         .text_content = try alloc.dupe(u8, ""),
         .text_style = try alloc.dupe(u8, ""),
         .image_url = try alloc.dupe(u8, ""),
+        .parent_id = try alloc.dupe(u8, ""),
         .created_at = try alloc.dupe(u8, "2026-07-08 10:00:00"),
         .updated_at = try alloc.dupe(u8, "2026-07-08 10:00:00"),
     };
@@ -284,6 +285,7 @@ test "elementToXml omits empty optional fields" {
         .text_content = try alloc.dupe(u8, ""),
         .text_style = try alloc.dupe(u8, ""),
         .image_url = try alloc.dupe(u8, ""),
+        .parent_id = try alloc.dupe(u8, ""),
         .created_at = try alloc.dupe(u8, ""),
         .updated_at = try alloc.dupe(u8, ""),
     };

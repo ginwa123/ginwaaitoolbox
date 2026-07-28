@@ -186,6 +186,80 @@ describe('DesignView.vue static contract', () => {
       )
     }
   })
+
+  // NEW (Chunk 6 of grouped-layers plan): Cmd+G shortcut for
+  // grouping the current selection. The handler MUST:
+  //   - bind to key === 'g' / 'G' with ctrlKey || metaKey
+  //   - silent no-op when shiftKey is held (deferred to Chunk 9)
+  //   - call designHandlers.groupSelection() on plain Cmd+G
+  //   - skip when the keystroke target is INPUT/TEXTAREA/contenteditable
+  //     (already covered by the existing top-of-handler guard, but
+  //     we explicitly assert the guard exists for the G key path)
+  it('binds Cmd/Ctrl+G to designHandlers.groupSelection', () => {
+    // Both `event.key === 'g'` AND `event.key === 'G'` must be
+    // accepted (Shift modifier in the browser capitalizes key).
+    expect(source).toMatch(/event\.key\s*===\s*['"]g['"][\s\S]{0,80}event\.key\s*===\s*['"]G['"]/)
+  })
+
+  it('Cmd+G branch checks both ctrlKey and metaKey (mac + win/linux)', () => {
+    // The Cmd+G branch must accept BOTH modifiers — Cmd on macOS,
+    // Ctrl on Linux/Windows. The original Cmd+P branch above is
+    // the proven template.
+    const gBranchMatch = source.match(/event\.key\s*===\s*['"]g['"][\s\S]{0,400}/)
+    expect(gBranchMatch).not.toBeNull()
+    const branch = gBranchMatch ? gBranchMatch[0] : ''
+    expect(branch).toMatch(/\.ctrlKey/)
+    expect(branch).toMatch(/\.metaKey/)
+  })
+
+  it('Cmd+G branch calls designHandlers.groupSelection()', () => {
+    // Capture the entire Cmd+G branch — from the G-key check through
+    // the closing brace. The branch has an inner `if (event.shiftKey)
+    // return` so a naive `[\s\S]*?return\s*\n\s*\}` would match the
+    // inner `return` and miss the call after it. Anchor on the next
+    // branch's comment (`// Fit-to-viewport`) instead — that's the
+    // known marker that comes after the outer brace.
+    const branchMatch = source.match(/event\.key\s*===\s*['"]g['"][\s\S]*?(?=\/\/ Fit-to-viewport)/)
+    expect(branchMatch).not.toBeNull()
+    const branch = branchMatch ? branchMatch[0] : ''
+    expect(branch).toMatch(/designHandlers\.groupSelection\(\)/)
+  })
+
+  it('Cmd+Shift+G is a no-op (ungroup reserved for Chunk 9)', () => {
+    // The keycode for the deferred Ungroup is Cmd+Shift+G. The
+    // handler MUST recognize the shiftKey path and return early
+    // so the placeholder isn't accidentally consumed by a future
+    // ungroup shortcut. Verify both the inner `if (event.shiftKey)`
+    // guard AND the deferred-feature TODO comment are present.
+    // Same anchor-on-next-comment trick as above — the inner
+    // `return` would otherwise win the non-greedy match.
+    const branchMatch = source.match(/event\.key\s*===\s*['"]g['"][\s\S]*?(?=\/\/ Fit-to-viewport)/)
+    expect(branchMatch).not.toBeNull()
+    const branch = branchMatch ? branchMatch[0] : ''
+    expect(branch).toMatch(/event\.shiftKey/)
+    expect(branch).toMatch(/ungroupSelection|TODO:\s*implement\s*ungroupSelection/)
+  })
+
+  it('handleKeydown top-of-handler target guard covers INPUT/TEXTAREA/contenteditable', () => {
+    // The Cmd+G branch inherits the early-return guard at the top
+    // of handleKeydown (matching existing handlers like Cmd+P).
+    // If the guard is removed, the X/Y inputs in PropertiesPanel
+    // would steal the G keystroke on focus. Assert the guard
+    // exists by pattern-matching the standard 3-tag check.
+    expect(source).toMatch(/INPUT/)
+    expect(source).toMatch(/TEXTAREA/)
+    expect(source).toMatch(/isContentEditable/)
+  })
+
+  it('imports useDesignHandlers composable + uses it in script setup', () => {
+    // The composable is the wiring point — without this import the
+    // Cmd+G handler has no destination. (Already covered by
+    // bun run build type-check, but a static test pins the contract
+    // without requiring a full compile run.)
+    expect(source).toMatch(/import\s*\{[^}]*useDesignHandlers[^}]*\}\s*from\s*['"]\.\.\/\.\.\/composables\/useDesignHandlers['"]/)
+    // The composable invocation must be present in <script setup>.
+    expect(source).toMatch(/useDesignHandlers\s*\(\s*\{/)
+  })
 })
 
 // ─── Behavioral tests: mirror activePageId to workspacesStore ─────────────

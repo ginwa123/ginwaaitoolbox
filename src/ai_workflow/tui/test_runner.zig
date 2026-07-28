@@ -50,6 +50,9 @@ test {
     _ = @import("http_handlers/task_pin_test.zig");
     _ = @import("design_io_test.zig");
     _ = @import("design_model_test.zig");
+    _ = @import("design_model_parent_id_test.zig"); // 2026-07-28-grouped-layers (Chunk 1) — parent_id round-trip
+    _ = @import("design_model_group_test.zig"); // 2026-07-28-grouped-layers (Chunk 2) — groupElements + updateElement parent_id
+    _ = @import("design_model_delete_parent_test.zig"); // 2026-07-28-grouped-layers (Chunk 4) — deleteElement NULLs children
     _ = @import("migration_057_test.zig");  // stays at this path; imported by src/migrations/test_runner.zig via relative path
     _ = @import("migration_063_runtime_test.zig");  // Chunk 1 — sessions auto_retry + finish_reason runtime CRUD
     _ = @import("http_handlers/session_create_migration_063_test.zig");  // Chunk 3 Task 3.1 — POST /api/session static-contract
@@ -77,6 +80,7 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     _ = @import("http_handlers/design_elements_create_test.zig");
     _ = @import("http_handlers/design_elements_update_test.zig");
     _ = @import("http_handlers/design_elements_delete_test.zig");
+    _ = @import("http_handlers/design_elements_group_test.zig"); // 2026-07-28-grouped-layers (Chunk 3) — POST /group static-contract
     _ = @import("http_handlers/design_elements_html_get_test.zig");
     _ = @import("http_handlers/design_elements_html_update_test.zig");
     _ = @import("http_handlers/design_elements_geometry_update_test.zig");
