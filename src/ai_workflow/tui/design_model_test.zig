@@ -55,12 +55,28 @@ fn setupDbAndItem() !struct {
         \\    created_at DATETIME, updated_at DATETIME)
     , &.{});
 
-    // design_pages (v6 schema).
+    // workspace_item_tasks (required by setDesignPage since the FK
+    // work — each new page is paired with a chat task row in the
+    // same transaction).
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '',
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME)
+    , &.{});
+
+    // design_pages (v6 schema + post-Migration-066
+    // workspace_item_task_id column).
     try db.exec(alloc,
         \\CREATE TABLE design_pages (
         \\    id TEXT PRIMARY KEY,
         \\    workspace_item_id TEXT NOT NULL,
         \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
         \\    width INTEGER NOT NULL DEFAULT 1440,
         \\    height INTEGER NOT NULL DEFAULT 1024,
         \\    x INTEGER NOT NULL DEFAULT 0,
@@ -69,6 +85,7 @@ fn setupDbAndItem() !struct {
         \\    created_at DATETIME,
         \\    updated_at DATETIME,
         \\    UNIQUE (workspace_item_id, name),
+        \\    UNIQUE (workspace_item_task_id),
         \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
     , &.{});
 

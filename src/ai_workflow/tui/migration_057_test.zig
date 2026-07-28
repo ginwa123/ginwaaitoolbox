@@ -57,11 +57,16 @@ fn setupDb() !struct {
     try db.exec(alloc,
         "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
         &.{});
+    // workspace_item_tasks: required for Migration 066 FK from design_pages
+    try db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT NOT NULL, workspace_item_id TEXT NOT NULL, task_type TEXT NOT NULL DEFAULT 'standard')",
+        &.{});
     // design_pages v1 schema (Migration 055 — pre-upgrade, includes html)
     try db.exec(alloc,
         \\CREATE TABLE design_pages (
         \\    id TEXT PRIMARY KEY, workspace_item_id TEXT NOT NULL,
         \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
         \\    html TEXT NOT NULL DEFAULT '',
         \\    position INTEGER NOT NULL DEFAULT 0,
         \\    created_at DATETIME, updated_at DATETIME,
