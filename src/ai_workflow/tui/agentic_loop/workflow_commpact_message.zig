@@ -32,16 +32,16 @@ pub const ThresholdCtx = struct {
 pub const CompactDeps = struct {
     /// Decide whether compaction should run. Return `true` to compact, `false`
     /// to skip the function early. Production: `shouldCompactDefault`.
-    should_compact: fn (ThresholdCtx) bool,
+    shouldCompact: fn (ThresholdCtx) bool,
 
     /// Call the compaction LLM to produce compacted XML. Production:
     /// `agentic_loop_mod.callCompactAgent`.
-    call_compact_agent: fn (CallCompactAgentInput) ?[]const u8,
+    callCompactAgent: fn (CallCompactAgentInput) ?[]const u8,
 
     /// Persist the compacted state to DB + return the new in-memory list.
     /// Production: `compactMessageInMemoryNew`. Error set is widened to
     /// `anyerror` so the comptime fn pointer matches every caller's signature.
-    compact_messages_in_memory: fn (
+    compactMessagesInMemory: fn (
         allocator: std.mem.Allocator,
         messages: std.ArrayList(agent.AgentMessage),
         compacted_xml: []const u8,
@@ -70,9 +70,9 @@ pub fn shouldCompactDefault(ctx: ThresholdCtx) bool {
 /// argument to `maybeCompactMessagesNew` from production call sites; tests
 /// construct their own `CompactDeps` with mock fns.
 pub const defaultCompactDeps: CompactDeps = .{
-    .should_compact = shouldCompactDefault,
-    .call_compact_agent = callCompactAgent,
-    .compact_messages_in_memory = compactMessageInMemoryNew,
+    .shouldCompact = shouldCompactDefault,
+    .callCompactAgent = callCompactAgent,
+    .compactMessagesInMemory = compactMessageInMemoryNew,
 };
 /// Conditionally compact `messages` in place. The compact-agent call is
 /// best-effort — if it returns null, the message list is left untouched and
@@ -100,7 +100,7 @@ pub fn maybeCompactMessagesNew(
     logger: *Logger,
     llm_config: *const LlmConfig,
 ) !bool {
-    if (!deps.should_compact(.{
+    if (!deps.shouldCompact(.{
         .force = force,
         .total_tokens = total_tokens,
         .model = model,
@@ -118,7 +118,7 @@ pub fn maybeCompactMessagesNew(
     var copy_list = std.ArrayList(agent.AgentMessage).fromOwnedSlice(copy_messages);
     defer copy_list.deinit(allocator);
 
-    const compacted_xml = deps.call_compact_agent(
+    const compacted_xml = deps.callCompactAgent(
         .{
             .allocator = allocator,
             .io = io,
@@ -132,7 +132,7 @@ pub fn maybeCompactMessagesNew(
         return false;
     };
 
-    _ = try deps.compact_messages_in_memory(
+    _ = try deps.compactMessagesInMemory(
         allocator,
         messages.*,
         compacted_xml,
@@ -479,9 +479,9 @@ fn mockCompactMessagesInMemory(
 /// The mock bundle wired into a `CompactDeps`. Pass this as the first arg
 /// to `maybeCompactMessagesNew` from any test in this file.
 const mockCompactDeps: CompactDeps = .{
-    .should_compact = mockShouldCompact,
-    .call_compact_agent = mockCallCompactAgent,
-    .compact_messages_in_memory = mockCompactMessagesInMemory,
+    .shouldCompact = mockShouldCompact,
+    .callCompactAgent = mockCallCompactAgent,
+    .compactMessagesInMemory = mockCompactMessagesInMemory,
 };
 
 // ─── Test fixtures ──────────────────────────────────────────────────────────

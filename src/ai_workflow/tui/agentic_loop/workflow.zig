@@ -132,6 +132,11 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const config = di.llm_config;
     const environment = di.environment;
 
+    logger.infoFmt(
+        "[CHECKPOINT] entry runAgenticMultiStepnew session_id={s} parent_session_id={s} is_sub_agent={} msg_len={d} allowed_tools_len={d} cwd={s}",
+        .{ params.session_id, params.parent_session_id, params.is_sub_agent, params.message.len, params.allowed_tools.len, params.cwd },
+    );
+
     // ─── Resolve the effective LLM profile (selected_profile_model) ──────
     // Fallback chain:
     //   1. params.selected_profile_model (from POST body) if non-empty AND profile exists
@@ -171,6 +176,11 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         }
         break :blk config.url_style;
     };
+
+    logger.infoFmt(
+        "[CHECKPOINT] profile selected_profile_model='{s}' effective_model={s} effective_base_url={s} effective_url_style={s}",
+        .{ params.selected_profile_model, effective_model, effective_base_url, effective_url_style },
+    );
 
     const copy_parent_session_id = try parent_allocator.dupe(u8, params.parent_session_id);
     const copy_session_id = try parent_allocator.dupe(u8, params.session_id);
@@ -220,6 +230,10 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     // Check if session is already running (exists in worker table)
     const is_worker_running = agentic_loop_mod.isWorkerRunning(parent_allocator, db, copy_session_id);
     if (is_worker_running and active_loops.contains(io, copy_session_id)) {
+        logger.infoFmt(
+            "[CHECKPOINT] worker busy, queueing message session_id={s} msg_len={d} image_urls_len={d}",
+            .{ copy_session_id, copy_message.len, copy_image_urls.len },
+        );
         // Session is already running, queue the message
         try agentic_loop_mod.insertQueueMessage(agentic_loop_mod.InsertQueueMessageInput{
             .allocator = parent_allocator,
@@ -234,6 +248,10 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         is_have_queue_message = true;
         return;
     }
+    logger.infoFmt(
+        "[CHECKPOINT] new worker slot acquired session_id={s} cwd={s}",
+        .{ copy_session_id, copy_cwd },
+    );
     defer {
         agentic_loop_mod.deleteWorker(.{
             .allocator = parent_allocator,
@@ -272,6 +290,11 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         .is_emit_sse = true,
     });
 
+    logger.infoFmt(
+        "[CHECKPOINT] initial message queued session_id={s} retry_budget=10",
+        .{copy_session_id},
+    );
+
     var retry_count: u32 = 0;
     // Track the most recent retry error so the AI agent can understand WHY
     // retries were happening when the budget is exhausted. Without this,
@@ -283,6 +306,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     var last_retry_source: []const u8 = "unknown";
     var current_max_tokens: usize = 20000;
     var loop_counter: u32 = 0;
+    var last_iter_start_ns: i128 = 0;
 
     // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
     const mcp_tools_fetched = (build_msg_prompt.buildMCPToolsRun(parent_allocator, io, config.mcpServers() orelse .null) catch |err| blk: {
@@ -294,11 +318,22 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     // Filter and merge tools based on allowed_tools setting
     const merged_tools = try filterAndMergeTools(parent_allocator, mcp_tools_fetched, copy_allowed_tools, copy_is_sub_agent);
 
+    logger.infoFmt(
+        "[CHECKPOINT] tools resolved mcp_count={d} merged_count={d} allowed_tools_len={d} is_sub_agent={}",
+        .{ mcp_tools_fetched.len, merged_tools.len, copy_allowed_tools.len, copy_is_sub_agent },
+    );
+
     while (true) {
         _ = active_loops.tryInsert(io, copy_session_id);
         var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(parent_allocator);
         defer arenaAllocatorWhileLoop.deinit();
         const allocator = arenaAllocatorWhileLoop.allocator();
+
+        last_iter_start_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+        logger.infoFmt(
+            "[CHECKPOINT] loop iter start session_id={s} loop_counter={d} retry_count={d}",
+            .{ copy_session_id, loop_counter, retry_count },
+        );
 
         // Check cancellation using DB
         if (agentic_loop_mod.isWorkerCancelled(agentic_loop_mod.IsWorkerCancelledInput{
@@ -317,6 +352,10 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             .session_id = copy_session_id,
         });
         if (queued_messages) |*messages| {
+            logger.infoFmt(
+                "[CHECKPOINT] queued messages drained session_id={s} count={d}",
+                .{ copy_session_id, messages.items.len },
+            );
             for (messages.items) |queued| {
                 // Use image_url from database if present, otherwise try to extract from message
                 var image_urls: ?[][]const u8 = null;
@@ -588,10 +627,20 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
         const is_do_compaction = try maybeCompactMessagesNew(defaultCompactDeps, allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, copy_cwd, copy_session_id, db, io, logger, config);
         if (is_do_compaction) {
+            logger.infoFmt(
+                "[CHECKPOINT] compaction triggered session_id={s} loop_counter={d} total_tokens={d} prompt_msg_count={d}",
+                .{ copy_session_id, loop_counter, total_tokens, messagesLists.items.len },
+            );
             continue;
         }
 
         logger.debugFmt("[WORKFLOW-debug-system-prompt] system_prompt={s}", .{messagesLists.items[0].content.?});
+
+        const checkpoint_llm_start_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+        logger.infoFmt(
+            "[CHECKPOINT] calling LLM session_id={s} model={s} loop_counter={d} prompt_msg_count={d} max_tokens={d} retry_count={d}",
+            .{ copy_session_id, effective_model, loop_counter, messagesLists.items.len, current_max_tokens, retry_count },
+        );
 
         const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, effective_api_key, effective_model, effective_base_url, effective_url_style, copy_session_id, merged_tools) catch |err| {
             if (err == error.Cancelled) {
@@ -641,6 +690,20 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         // order, so no use-after-free.
         defer res_dynamic_agent.deinit();
 
+        const llm_duration_ms = @divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds - checkpoint_llm_start_ns, std.time.ns_per_ms);
+        logger.infoFmt(
+            "[CHECKPOINT] LLM responded session_id={s} loop_counter={d} finish_reason={s} duration_ms={d} prompt_tokens={d} completion_tokens={d} total_tokens={d}",
+            .{
+                copy_session_id,
+                loop_counter,
+                if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else "null",
+                llm_duration_ms,
+                res_dynamic_agent.usage.prompt_tokens,
+                res_dynamic_agent.usage.completion_tokens,
+                res_dynamic_agent.usage.total_tokens,
+            },
+        );
+
         // Successful LLM call — clear the retry-cause capture so the
         // NEXT soft-bail diagnostic reflects the most recent failure,
         // not the first one of this session.
@@ -662,6 +725,10 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         }
         if (res_dynamic_agent.finish_reason) |finish_reason| {
             if (finish_reason == .stop) {
+                logger.infoFmt(
+                    "[CHECKPOINT] finish_reason=stop session_id={s} loop_counter={d} content_len={d}",
+                    .{ copy_session_id, loop_counter, if (res_dynamic_agent.content) |c| c.len else 0 },
+                );
                 try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
                     .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     .session_id = copy_session_id,
@@ -690,6 +757,10 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
                 const isHaveQueueMessage = agentic_loop_mod.hasQueuedMessages(allocator, db, copy_session_id);
                 if (isHaveQueueMessage) {
+                    logger.infoFmt(
+                        "[CHECKPOINT] finish_reason=stop but queue has more messages, looping session_id={s}",
+                        .{copy_session_id},
+                    );
                     continue;
                 }
 
@@ -713,11 +784,23 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     .is_emit_sse = true,
                 });
 
+                logger.infoFmt(
+                    "[CHECKPOINT] worker done session_id={s} loop_counter={d}",
+                    .{ copy_session_id, loop_counter },
+                );
                 break;
             } else if (finish_reason == .length) {
+                logger.infoFmt(
+                    "[CHECKPOINT] finish_reason=length session_id={s} loop_counter={d} max_tokens {d} -> {d}",
+                    .{ copy_session_id, loop_counter, current_max_tokens, current_max_tokens + 4096 },
+                );
                 current_max_tokens += 4096;
                 continue;
             } else if (finish_reason == .tool_calls) {
+                logger.infoFmt(
+                    "[CHECKPOINT] finish_reason=tool_calls session_id={s} loop_counter={d} tool_count={d}",
+                    .{ copy_session_id, loop_counter, if (res_dynamic_agent.tool_calls) |tc| tc.len else 0 },
+                );
                 try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, copy_selected_profile_model);
             } else {
                 retry_count += 1;
@@ -765,6 +848,14 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         }
     }
 
+    const last_iter_total_ms = if (last_iter_start_ns > 0)
+        @divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds - last_iter_start_ns, std.time.ns_per_ms)
+    else
+        @as(i128, 0);
+    logger.infoFmt(
+        "[CHECKPOINT] exit session_id={s} loop_counter={d} retry_count={d} last_iter_total_ms={d}",
+        .{ copy_session_id, loop_counter, retry_count, last_iter_total_ms },
+    );
     logger.debugFmt("WORKFLOW: exiting while loop for session_id {s}", .{copy_session_id});
 }
 
