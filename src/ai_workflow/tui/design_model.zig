@@ -1227,7 +1227,7 @@ pub fn reorderElements(
 ) ReorderError![]DesignElement {
     if (input.element_ids.len == 0) return error.BadElementId;
 
-    var all: []DesignElement = listElements(allocator, db, input.page_id) catch |err| return switch (err) {
+    var all = listElements(allocator, db, input.page_id) catch |err| return switch (err) {
         error.PageNotFound => error.PageNotFound,
         else => error.DbError,
     };

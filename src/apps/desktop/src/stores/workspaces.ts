@@ -1269,17 +1269,22 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     mode: ReorderMode,
     elementIds: string[],
   ): Promise<DesignElement[]> {
-    // Backend ships in a follow-up; until then the menu + shortcut
-    // wired through this action are no-ops with a console warning.
-    // The model function exists (design_model.reorderElements) and
-    // compiles; the HTTP handler + route registration are pending.
-    console.warn(
-      `[workspacesStore.reorderDesignElements] backend lands in a follow-up; mode=${mode}, ids=${elementIds.length}`,
-    )
-    // Return the existing local elements unchanged so the caller
-    // doesn't crash on a missing return value.
+    const result = await reorderDesignElementsApi(workspaceId, itemId, pageId, {
+      mode,
+      element_ids: elementIds,
+    })
+    // Mirror the server's `reordered` rows into the local
+    // design_elements array so the layers panel + canvas re-render
+    // immediately. We replace matching ids in place (preserves the
+    // local array's ordering for any ids NOT in the response).
     const item = findItem(workspaceId, itemId)
-    return (item?.design_elements ?? []).filter((e) => elementIds.includes(e.id))
+    if (item?.design_elements) {
+      for (const updated of result.reordered) {
+        const idx = item.design_elements.findIndex((e) => e.id === updated.id)
+        if (idx !== -1) item.design_elements[idx] = updated
+      }
+    }
+    return result.reordered
   }
 
   async function groupDesignElements(

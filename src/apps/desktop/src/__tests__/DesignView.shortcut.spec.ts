@@ -99,9 +99,10 @@ describe('DesignView keyboard shortcuts (Chunk 4)', () => {
     const _store = useWorkspacesStore()
     _store.setActiveDesignPage('page_1')
     vi.spyOn(_store, 'deleteDesignElement').mockImplementation(deleteDesignElementSpy)
-    // Chunk 5 added this store action; spy on it too so the Cmd+[/]
-    // shortcut tests can assert it's called with the right args.
-    vi.spyOn(_store, 'reorderDesignElements').mockImplementation(reorderDesignElementsSpy)
+    // NOTE: do NOT mock `store.reorderDesignElements` — that would
+    // short-circuit the real store action before it can call the
+    // (mocked) api function. The api spy alone catches the call
+    // and records the api-level args (4-tuple, not 5-tuple).
     const wrapper = mount(DesignView, {
       props: { item: { ...ITEM, design_elements: elements }, workspaceId: 'ws_1', itemId: 'item_1' },
     })
@@ -149,7 +150,7 @@ describe('DesignView keyboard shortcuts (Chunk 4)', () => {
     }
   })
 
-  it('Cmd+Shift+] calls the reorder store action with bring_to_front + selectedIds', async () => {
+  it('Cmd+Shift+] calls the reorder API with bring_to_front + selectedIds', async () => {
     const wrapper = await mountWith([
       makeEl({ id: 'el_a', z_index: 2 }),
     ])
@@ -161,12 +162,11 @@ describe('DesignView keyboard shortcuts (Chunk 4)', () => {
         new KeyboardEvent('keydown', { key: ']', metaKey: true, shiftKey: true, bubbles: true }),
       )
       await flushPromises()
-      // The store action is called with the mode + the selected ids.
-      // (The action's body is currently a console.warn stub for the
-      // backend; the wire is the thing we're verifying here.)
+      // The store action calls the api function with mode + ids.
       expect(reorderDesignElementsSpy).toHaveBeenCalledTimes(1)
       expect(reorderDesignElementsSpy).toHaveBeenCalledWith(
-        'ws_1', 'item_1', 'page_1', 'bring_to_front', ['el_a'],
+        'ws_1', 'item_1', 'page_1',
+        { mode: 'bring_to_front', element_ids: ['el_a'] },
       )
     } finally {
       wrapper.unmount()
