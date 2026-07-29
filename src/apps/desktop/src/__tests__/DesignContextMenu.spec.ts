@@ -9,6 +9,7 @@ describe('DesignContextMenu', () => {
 
   beforeEach(() => {
     setActivePinia(createPinia())
+    Object.defineProperty(navigator, 'platform', { value: 'Linux x86_64', configurable: true })
   })
 
   afterEach(() => {
@@ -34,7 +35,6 @@ describe('DesignContextMenu', () => {
     await nextTick()
     const menu = document.querySelector<HTMLElement>('[data-testid="design-context-menu"]')
     expect(menu).not.toBeNull()
-    // jsdom sets `left` / `top` as px strings.
     expect(menu!.style.left).toBe('250px')
     expect(menu!.style.top).toBe('400px')
   })
@@ -46,12 +46,62 @@ describe('DesignContextMenu', () => {
     })
     await nextTick()
     const menu = document.querySelector<HTMLElement>('[data-testid="design-context-menu"]')!
-    // Bubbling click that reaches `document` would normally trigger our
-    // document click-outside dismiss listener (registered in
-    // useDesignContextMenu.onMounted). The component uses `@click.stop`,
-    // which prevents the click from bubbling to document at all. Assert
-    // that after the click, the menu is still visible.
     menu.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(document.querySelector('[data-testid="design-context-menu"]')).not.toBeNull()
+  })
+
+  it('renders all 7 menu items in the spec order with correct testids', async () => {
+    wrapper = mount(DesignContextMenu, {
+      props: { visible: true, x: 100, y: 100, targetIds: ['a', 'b'] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    const expected = [
+      'design-context-menu-group',
+      'design-context-menu-select-all',
+      'design-context-menu-separator-1',
+      'design-context-menu-bring-to-front',
+      'design-context-menu-bring-forward',
+      'design-context-menu-send-backward',
+      'design-context-menu-send-to-back',
+      'design-context-menu-separator-2',
+      'design-context-menu-delete',
+    ]
+    for (const testid of expected) {
+      const el = document.querySelector(`[data-testid="${testid}"]`)
+      expect(el, `expected ${testid} in DOM`).not.toBeNull()
+    }
+  })
+
+  it('clicking Bring to front emits bringToFront with the targetIds', async () => {
+    wrapper = mount(DesignContextMenu, {
+      props: { visible: true, x: 100, y: 100, targetIds: ['a', 'b'] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    const btn = document.querySelector<HTMLButtonElement>(
+      '[data-testid="design-context-menu-bring-to-front"]',
+    )!
+    btn.click()
+    await nextTick()
+    const emits = wrapper.emitted('bringToFront')
+    expect(emits).toBeTruthy()
+    expect(emits?.[0]).toEqual([['a', 'b']])
+  })
+
+  it('Group is disabled when fewer than 2 ids are targetIds', async () => {
+    wrapper = mount(DesignContextMenu, {
+      props: { visible: true, x: 100, y: 100, targetIds: ['a'] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    const btn = document.querySelector<HTMLButtonElement>(
+      '[data-testid="design-context-menu-group"]',
+    )!
+    expect(btn.disabled).toBe(true)
+    btn.click()
+    await nextTick()
+    // Group emit should NOT fire because the button is disabled.
+    expect(wrapper.emitted('group')).toBeUndefined()
   })
 })

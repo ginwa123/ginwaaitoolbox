@@ -98,11 +98,10 @@ describe('DesignView keyboard shortcuts (Chunk 4)', () => {
   async function mountWith(elements: any[]): Promise<any> {
     const _store = useWorkspacesStore()
     _store.setActiveDesignPage('page_1')
-    // Spy on the EXISTING store action (deleteDesignElement is
-    // pre-existing; reorderDesignElements lands in Chunk 5 — until
-    // then it doesn't exist on the store, so the Cmd+Shift+] tests
-    // assert on the stub's no-op behaviour via console warnings).
     vi.spyOn(_store, 'deleteDesignElement').mockImplementation(deleteDesignElementSpy)
+    // Chunk 5 added this store action; spy on it too so the Cmd+[/]
+    // shortcut tests can assert it's called with the right args.
+    vi.spyOn(_store, 'reorderDesignElements').mockImplementation(reorderDesignElementsSpy)
     const wrapper = mount(DesignView, {
       props: { item: { ...ITEM, design_elements: elements }, workspaceId: 'ws_1', itemId: 'item_1' },
     })
@@ -150,7 +149,7 @@ describe('DesignView keyboard shortcuts (Chunk 4)', () => {
     }
   })
 
-  it('Cmd+Shift+] calls the reorder store action (chunk 5 swap target)', async () => {
+  it('Cmd+Shift+] calls the reorder store action with bring_to_front + selectedIds', async () => {
     const wrapper = await mountWith([
       makeEl({ id: 'el_a', z_index: 2 }),
     ])
@@ -162,12 +161,13 @@ describe('DesignView keyboard shortcuts (Chunk 4)', () => {
         new KeyboardEvent('keydown', { key: ']', metaKey: true, shiftKey: true, bubbles: true }),
       )
       await flushPromises()
-      // Chunk 4's dispatchReorder is a stub for now. Chunk 5 replaces
-      // it with a real call; once that lands the assertion below
-      // becomes the source of truth. Until then, the stub uses
-      // console.warn so the spy should NOT have been called yet.
-      // We assert this to make the test meaningful AFTER Chunk 5.
-      expect(reorderDesignElementsSpy).not.toHaveBeenCalled()
+      // The store action is called with the mode + the selected ids.
+      // (The action's body is currently a console.warn stub for the
+      // backend; the wire is the thing we're verifying here.)
+      expect(reorderDesignElementsSpy).toHaveBeenCalledTimes(1)
+      expect(reorderDesignElementsSpy).toHaveBeenCalledWith(
+        'ws_1', 'item_1', 'page_1', 'bring_to_front', ['el_a'],
+      )
     } finally {
       wrapper.unmount()
     }

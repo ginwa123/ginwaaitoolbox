@@ -293,6 +293,12 @@ const handleMoveDown = (elementId: string): void => {
       :y="contextMenu.state.value.y"
       :target-ids="contextMenu.state.value.targetIds"
       @group="(ids) => emit('group', ids)"
+      @select-all="emit('selectAll')"
+      @bring-to-front="(ids) => emit('bringToFront', ids)"
+      @bring-forward="(ids) => emit('bringForward', ids)"
+      @send-backward="(ids) => emit('sendBackward', ids)"
+      @send-to-back="(ids) => emit('sendToBack', ids)"
+      @delete="(ids) => emit('contextMenuDelete', ids)"
       @close="contextMenu.close()"
     />
   </div>

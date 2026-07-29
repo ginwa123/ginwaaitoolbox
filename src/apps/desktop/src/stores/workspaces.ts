@@ -179,7 +179,9 @@ import {
   updateDesignElementGeometry as updateDesignElementGeometryApi,
   updateDesignPage as updateDesignPageApi,
   groupDesignElements as groupDesignElementsApi,
+  reorderDesignElements as reorderDesignElementsApi,
   type GroupDesignElementsRequest,
+  type ReorderMode,
 } from '../api'
 
 export const useWorkspacesStore = defineStore('workspaces', () => {
@@ -1260,6 +1262,26 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   //
   // Errors propagate via the apiFetch ApiError (4xx throws, network
   // failures throw, surface via the composable's notification toast).
+  async function reorderDesignElements(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    mode: ReorderMode,
+    elementIds: string[],
+  ): Promise<DesignElement[]> {
+    // Backend ships in a follow-up; until then the menu + shortcut
+    // wired through this action are no-ops with a console warning.
+    // The model function exists (design_model.reorderElements) and
+    // compiles; the HTTP handler + route registration are pending.
+    console.warn(
+      `[workspacesStore.reorderDesignElements] backend lands in a follow-up; mode=${mode}, ids=${elementIds.length}`,
+    )
+    // Return the existing local elements unchanged so the caller
+    // doesn't crash on a missing return value.
+    const item = findItem(workspaceId, itemId)
+    return (item?.design_elements ?? []).filter((e) => elementIds.includes(e.id))
+  }
+
   async function groupDesignElements(
     workspaceId: string,
     itemId: string,
@@ -2307,6 +2329,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     deleteDesignPage,
     updateDesignPage,
     groupDesignElements,
+  reorderDesignElements,
     initializeFromSystemFolder,
     onSessionEvent,
     fetchSystemFolder,

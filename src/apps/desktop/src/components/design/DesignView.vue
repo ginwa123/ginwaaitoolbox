@@ -129,16 +129,58 @@ const emit = defineEmits<{
 
 const workspacesStore = useWorkspacesStore()
 
-// Chunk 4 stub — Chunk 5 replaces with the real
-// workspacesStore.reorderDesignElements call once the backend lands.
+// Chunk 5: reorder dispatch. Calls the workspace store's
+// reorderDesignElements action (which is itself a stub for now —
+// the backend endpoint lands in a follow-up; the model function is
+// already implemented in design_model.zig).
 async function dispatchReorder(
   mode: 'bring_to_front' | 'send_to_back' | 'bring_forward' | 'send_backward',
 ): Promise<void> {
   if (!props.workspaceId || !effectiveItemId.value || !activePageId.value) return
   if (selectedIds.value.size === 0) return
-  console.warn(
-    `[DesignView] Cmd+[/] shortcut (mode=${mode}) pressed — backend lands in Chunk 5.`,
-  )
+  try {
+    await workspacesStore.reorderDesignElements(
+      props.workspaceId,
+      effectiveItemId.value,
+      activePageId.value,
+      mode,
+      Array.from(selectedIds.value),
+    )
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    useNotificationStore().notifyError(`Failed to reorder (${mode}): ${message}`)
+  }
+}
+
+// Chunk 5: handlers for the 4 reorder + select-all + delete events
+// emitted by the LayersPanel context menu (and the canvas's own
+// DesignContextMenu). The reorder handlers reuse dispatchReorder;
+// select-all replaces selectedIds with the full element list;
+// delete mirrors the existing Backspace shortcut.
+function handleDesignSelectAll(): void {
+  selectedIds.value = new Set(elements.value.map((e) => e.id))
+}
+
+async function handleDesignContextMenuDelete(targetIds: string[]): Promise<void> {
+  if (!props.workspaceId || !effectiveItemId.value || !activePageId.value) return
+  if (targetIds.length === 0) return
+  if (!confirm(`Delete ${targetIds.length} element${targetIds.length === 1 ? '' : 's'}?`)) return
+  for (const id of targetIds) {
+    void workspacesStore.deleteDesignElement(
+      props.workspaceId,
+      effectiveItemId.value,
+      activePageId.value,
+      id,
+    )
+  }
+  // Drop any deleted ids from the local selection Set so the
+  // remaining selection (if any) stays intact.
+  const deleted = new Set(targetIds)
+  const next = new Set<string>()
+  for (const id of selectedIds.value) {
+    if (!deleted.has(id)) next.add(id)
+  }
+  selectedIds.value = next
 }
 
 // ─── Effective ids ─────────────────────────────────────────────────────
@@ -1827,6 +1869,12 @@ watch(
             @reorder="handleReorderElements"
             @delete="handleElementDelete"
             @group="handleDesignGroupFromContextMenu"
+            @select-all="handleDesignSelectAll"
+            @bring-to-front="() => dispatchReorder('bring_to_front')"
+            @bring-forward="() => dispatchReorder('bring_forward')"
+            @send-backward="() => dispatchReorder('send_backward')"
+            @send-to-back="() => dispatchReorder('send_to_back')"
+            @context-menu-delete="handleDesignContextMenuDelete"
           />
         </div>
 
@@ -1866,7 +1914,7 @@ watch(
       @close="showAddElementDialog = false"
     />
 
-    <!-- ─── Canvas right-click context menu (Chunk 3) ─────────────
+    <!-- ─── Canvas right-click context menu (Chunk 3+5) ────────────
          Disabled in Preview mode (the canvasContextMenu composable
          keeps `visible: false` because handleCanvasContextMenu
          short-circuits there). -->
@@ -1875,6 +1923,13 @@ watch(
       :x="canvasContextMenu.state.value.x"
       :y="canvasContextMenu.state.value.y"
       :target-ids="canvasContextMenu.state.value.targetIds"
+      @group="handleDesignGroupFromContextMenu"
+      @select-all="handleDesignSelectAll"
+      @bring-to-front="() => dispatchReorder('bring_to_front')"
+      @bring-forward="() => dispatchReorder('bring_forward')"
+      @send-backward="() => dispatchReorder('send_backward')"
+      @send-to-back="() => dispatchReorder('send_to_back')"
+      @delete="handleDesignContextMenuDelete"
       @close="canvasContextMenu.close()"
     />
   </section>
