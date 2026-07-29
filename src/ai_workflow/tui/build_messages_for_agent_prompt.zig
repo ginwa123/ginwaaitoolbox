@@ -375,7 +375,7 @@ fn fetchToolsFromServer(
 
     std.log.warn("MCP response from {s}: {d} bytes", .{ server_name, body_to_parse.len });
 
-    var parse_arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    var parse_arena = std.heap.ArenaAllocator.init(allocator);
     defer parse_arena.deinit();
 
     const parsed = json.parseFromSlice(json.Value, parse_arena.allocator(), body_to_parse, .{

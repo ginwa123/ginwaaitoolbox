@@ -146,10 +146,7 @@ pub fn handle_mcp_tool_run(
     const is_copy = @intFromPtr(clean_body.ptr) != @intFromPtr(result.body.ptr);
     errdefer if (is_copy) allocator.free(clean_body);
 
-    // Parse the response and extract content
-    // IMPORTANT: Use a separate ArenaAllocator with c_allocator to avoid nested arena
-    // alignment issues. We create it here and deinit immediately after extracting strings.
-    var parse_arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    var parse_arena = std.heap.ArenaAllocator.init(allocator);
     defer parse_arena.deinit();
     const parse_alloc = parse_arena.allocator();
 

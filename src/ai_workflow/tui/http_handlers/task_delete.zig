@@ -111,7 +111,7 @@ pub fn deleteTaskUseCase(
         //
         //    We do this BEFORE any cleanup so a refused delete leaves
         //    the task (and its routines / .md file) exactly as it was.
-        if (ai_mod.llm_history.isTaskRunning(db, task_id)) {
+        if (ai_mod.llm_history.isTaskRunning(allocator, db, task_id)) {
             // Look up the running worker's id so the 409 response
             // can include it (helpful for debugging — the frontend
             // can map worker_id back to its SSE stream).
@@ -145,7 +145,8 @@ pub fn deleteTaskUseCase(
         // 3b. Routine-task cleanup: delete the routines row.
         //     Standard tasks have no extra table.
         if (std.mem.eql(u8, task.task_type, "routine")) {
-            db.exec(allocator,
+            db.exec(
+                allocator,
                 "DELETE FROM routines WHERE task_id = ?",
                 &[_][]const u8{task_id},
             ) catch {

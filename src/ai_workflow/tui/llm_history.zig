@@ -986,8 +986,8 @@ pub fn createSession(
 
     // Insert into sessions table first (for JOIN queries)
     const session_sql = "INSERT INTO sessions (id, name, status) VALUES (?, ?, 'active')";
-    const copy_session_name = try std.heap.c_allocator.dupe(u8, session_name);
-    defer std.heap.c_allocator.free(copy_session_name);
+    const copy_session_name = try allocator.dupe(u8, session_name);
+    defer allocator.free(copy_session_name);
     try db.exec(allocator, session_sql, &.{ session_id, copy_session_name });
 
     // Insert session into llm_history table
@@ -2096,11 +2096,12 @@ pub fn getWorkerBySessionId(
 /// key. They are intentionally separate so callers that already have
 /// one or the other can pick the cheap query.
 pub fn isTaskRunning(
+    allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     task_id: []const u8,
 ) bool {
     const sql = "SELECT 1 FROM worker WHERE session_id = ? LIMIT 1";
-    var rows = db.query(std.heap.c_allocator, sql, &.{task_id}) catch return false;
+    var rows = db.query(allocator, sql, &.{task_id}) catch return false;
     defer rows.deinit();
     return (rows.next() catch return false) != null;
 }

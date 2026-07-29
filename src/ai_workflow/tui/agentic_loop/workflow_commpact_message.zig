@@ -110,11 +110,6 @@ pub fn maybeCompactMessagesNew(
     }
 
     const copy_messages = try allocator.dupe(agent.AgentMessage, messages.items);
-    // `fromOwnedSlice` transferred ownership of `copy_messages` to `copy_list`,
-    // so its `deinit` is the sole owner of the free. Adding `defer
-    // allocator.free(copy_messages)` here would double-free (the prior code did
-    // and crashed under `testing.allocator`; the production allocator simply
-    // didn't detect the corruption).
     var copy_list = std.ArrayList(agent.AgentMessage).fromOwnedSlice(copy_messages);
     defer copy_list.deinit(allocator);
 
@@ -188,7 +183,7 @@ pub fn compactMessageInMemoryNew(
         .cwd = cwd,
         .content = summary_content,
         .reasoning_content = null,
-        .role = "user",
+        .role = agent.Role.user.to_str(),
         .finish_reason = "stop",
         .tool_calls = null,
         .tool_call_id = null,
@@ -202,8 +197,8 @@ pub fn compactMessageInMemoryNew(
     });
 
     // Update the session's cwd in the sessions table
-    const copy_cwd = try std.heap.c_allocator.dupe(u8, cwd);
-    defer std.heap.c_allocator.free(copy_cwd);
+    const copy_cwd = try allocator.dupe(u8, cwd);
+    defer allocator.free(copy_cwd);
     try db.exec(allocator, "UPDATE sessions SET cwd = ? WHERE id = ?", &.{ copy_cwd, session_id });
 
     // Build new in-memory message list: system message + compacted summary
