@@ -1144,6 +1144,36 @@ const handleDesignGroupFromContextMenu = (targetIds: string[]): void => {
   void designHandlers.groupSelection()
 }
 
+// Expand a selection to include the transitive children of any group /
+// frame in the selection. When a user selects just the group (not its
+// children), this lets them drag the group AND every descendant in one
+// motion — matching Figma's behaviour. The expansion is per-call (does
+// NOT mutate `selectedIds`) so the layers panel / context menu still
+// show the user-selected set.
+function expandSelectionWithDescendants(
+  ids: ReadonlySet<string>,
+  all: ReadonlyArray<DesignElementApi>,
+): Set<string> {
+  const out = new Set<string>(ids)
+  // Iterate to a fixed point so deeply-nested groups (group inside
+  // group inside group) all expand.
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const e of all) {
+      if (out.has(e.id) && e.parent_id && out.has(e.parent_id)) {
+        // Already reachable via an expanded ancestor.
+        continue
+      }
+      if (e.parent_id && out.has(e.parent_id) && !out.has(e.id)) {
+        out.add(e.id)
+        changed = true
+      }
+    }
+  }
+  return out
+}
+
 // Chunk 2: group drag. When the user drags any element that's part of
 // a multi-selection, DesignElement emits `groupDrag` with the cursor
 // delta (design-px, zoom-adjusted). We translate that into N individual
@@ -1168,7 +1198,17 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
   // position. computeSnapDelta treats the union as a single moving
   // bbox; elements NOT in the selection are the snap targets.
   // The function returns the snap correction + the guides to render.
-  const selected = elements.value.filter((e) => selectedIds.value.has(e.id))
+  //
+  // NEW (group-drag fix): when the selection includes a `group` /
+  // `frame`, also move all of its transitive descendants so dragging
+  // the group's bbox moves the whole subtree (Figma parity). The
+  // expansion is local to this drag — the layers panel still shows
+  // only the user-selected set.
+  const dragIds = expandSelectionWithDescendants(
+    selectedIds.value,
+    elements.value,
+  )
+  const selected = elements.value.filter((e) => dragIds.has(e.id))
   if (selected.length > 0) {
     const minX = Math.min(...selected.map((e) => e.x + delta.dx))
     const minY = Math.min(...selected.map((e) => e.y + delta.dy))

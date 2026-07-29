@@ -164,11 +164,20 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // dx/dy to every selected element's start position. Resize is
   // per-element only (no group resize makes sense — the user would
   // expect to resize only the element under the cursor).
-  if (
+  //
+  // NEW (group-drag fix): also fire groupDrag when the element is
+  // a `group` or `frame` AND the user is dragging just the group (not
+  // a multi-selection that contains it). The parent expands groups
+  // transitively (drag-moves the whole subtree — Figma parity).
+  // For non-group elements in a single-element selection, the drag
+  // stays per-element (no behavioural change).
+  const isGroupLike =
+    props.element.type === 'group' || props.element.type === 'frame'
+  const inMultiselect =
     props.selectedIds.length > 1 &&
-    props.selectedIds.includes(props.element.id) &&
-    mode === 'move'
-  ) {
+    props.selectedIds.includes(props.element.id)
+  const triggerGroupDrag = (inMultiselect || isGroupLike) && mode === 'move'
+  if (triggerGroupDrag) {
     event.preventDefault()
     const target = event.currentTarget as HTMLElement | null
     if (!target) return
