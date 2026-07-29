@@ -1187,6 +1187,181 @@ pub fn groupElements(
     return allocator.dupe(u8, new_id);
 }
 
+// ─── reorderElements (Chunk 5 — right-click bring/send z-order) ──────────
+
+pub const ReorderMode = enum {
+    bring_to_front,
+    send_to_back,
+    bring_forward,
+    send_backward,
+};
+
+pub const ReorderInput = struct {
+    page_id: []const u8,
+    mode: ReorderMode,
+    element_ids: []const []const u8,
+};
+
+pub const ReorderError = error{
+    PageNotFound,
+    BadElementId,
+    CrossPageIds,
+    DbError,
+    OutOfMemory,
+};
+
+/// Reorder 1+ elements on a page. Returns the updated rows in their
+/// new top-to-bottom z-order. Caveats:
+///   - All ids must resolve to rows on the same `page_id`.
+///   - For `bring_to_front` / `send_to_back`, multiple ids are
+///     processed in (or reverse-of) input order; users get explicit
+///     control of the final relative order via the order they list
+///     the ids.
+///   - For `bring_forward` / `send_backward`, only the first
+///     (resp. last) selected id swaps with its next sibling; if the
+///     selection contains more ids, only the boundary id moves.
+pub fn reorderElements(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: ReorderInput,
+) ReorderError![]DesignElement {
+    if (input.element_ids.len == 0) return error.BadElementId;
+
+    var all: []DesignElement = listElements(allocator, db, input.page_id) catch |err| return switch (err) {
+        error.PageNotFound => error.PageNotFound,
+        else => error.DbError,
+    };
+    var free_all = true;
+    defer if (free_all) {
+        for (all) |e| freeElement(allocator, e);
+        allocator.free(all);
+    };
+
+    // 2. Validate every requested id resolves to a row on this page.
+    //    Build an id -> index map. Duplicates in input.element_ids are
+    //    tolerated (the second occurrence skips the DB lookup).
+    var id_to_idx = std.StringHashMap(usize).init(allocator);
+    defer id_to_idx.deinit();
+    for (all, 0..) |e, i| try id_to_idx.put(e.id, i);
+
+    var indexes: std.ArrayList(usize) = .empty;
+    defer indexes.deinit(allocator);
+    {
+        var seen = std.StringHashMap(void).init(allocator);
+        defer seen.deinit();
+        for (input.element_ids) |cid| {
+            const gop = try seen.getOrPut(cid);
+            if (gop.found_existing) continue;
+            const idx = id_to_idx.get(cid) orelse return error.BadElementId;
+            try indexes.append(allocator, idx);
+        }
+    }
+
+    // Helper for the two "single-step" modes: is `i` in the indexes set?
+    const InSet = struct {
+        fn check(items: []const usize, i: usize) bool {
+            for (items) |x| if (x == i) return true;
+            return false;
+        }
+    };
+
+    // 3. Apply the mode.
+    switch (input.mode) {
+        .bring_to_front => {
+            var max_z: i64 = std.math.minInt(i64);
+            for (all) |e| {
+                if (e.z_index > max_z) max_z = e.z_index;
+            }
+            var next_z: i64 = max_z + 1;
+            for (indexes.items) |idx| {
+                all[idx].z_index = next_z;
+                next_z += 1;
+            }
+        },
+        .send_to_back => {
+            var min_z: i64 = std.math.maxInt(i64);
+            for (all) |e| {
+                if (e.z_index < min_z) min_z = e.z_index;
+            }
+            var next_z: i64 = min_z - 1;
+            var i: usize = indexes.items.len;
+            while (i > 0) {
+                i -= 1;
+                all[indexes.items[i]].z_index = next_z;
+                next_z -= 1;
+            }
+        },
+        .bring_forward => {
+            // For each selected (in INPUT order), swap with the
+            // next-sibling above (the FIRST non-selected element
+            // with a HIGHER z_index). Iterating forward means the
+            // highest-of-the-selected swaps first, then the next, etc.
+            // — collectively the multi-selection moves up by one slot.
+            for (indexes.items) |idx| {
+                const cur_z = all[idx].z_index;
+                // We want the smallest non-selected z that is > cur_z.
+                var best: ?usize = null;
+                var best_z: i64 = std.math.maxInt(i64);
+                for (all, 0..) |e, i| {
+                    if (e.z_index <= cur_z) continue;
+                    if (InSet.check(indexes.items, i)) continue;
+                    if (e.z_index < best_z) {
+                        best_z = e.z_index;
+                        best = i;
+                    }
+                }
+                if (best) |b| {
+                    const other_z = all[b].z_index;
+                    all[idx].z_index = other_z;
+                    all[b].z_index = cur_z;
+                }
+            }
+        },
+        .send_backward => {
+            // Mirror of bring_forward: largest selected z swaps
+            // first with the next non-selected z below.
+            for (indexes.items) |idx| {
+                const cur_z = all[idx].z_index;
+                var best: ?usize = null;
+                var best_z: i64 = std.math.minInt(i64);
+                for (all, 0..) |e, i| {
+                    if (e.z_index >= cur_z) continue;
+                    if (InSet.check(indexes.items, i)) continue;
+                    if (e.z_index > best_z) {
+                        best_z = e.z_index;
+                        best = i;
+                    }
+                }
+                if (best) |b| {
+                    const other_z = all[b].z_index;
+                    all[idx].z_index = other_z;
+                    all[b].z_index = cur_z;
+                }
+            }
+        },
+    }
+
+    // 4. Persist the new z_index values.
+    for (all) |e| {
+        const z_str = try std.fmt.allocPrint(allocator, "{d}", .{e.z_index});
+        defer allocator.free(z_str);
+        db.exec(allocator,
+            "UPDATE design_page_elements SET z_index = ? WHERE id = ?",
+            &.{ z_str, e.id }) catch return error.DbError;
+    }
+
+    // 5. Return the updated rows in their new top-to-bottom order.
+    free_all = false;
+    for (all) |e| freeElement(allocator, e);
+    allocator.free(all);
+    // Re-fetch in case the source-of-truth DB rows changed (other
+    // tabs may have reordered while we were processing).
+    return listElements(allocator, db, input.page_id) catch |err| return switch (err) {
+        error.PageNotFound => error.PageNotFound,
+        else => error.DbError,
+    };
+}
+
 // ─── listElements / getElement ─────────────────────────────────────────────
 
 /// List all elements of a design page in (z_index, position) order.
