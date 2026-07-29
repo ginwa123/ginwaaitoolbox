@@ -73,6 +73,7 @@ import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import { useNotificationStore } from '../../stores/notifications'
 import { useDesignHandlers } from '../../composables/useDesignHandlers'
 import { useDesignHistory } from '../../composables/useDesignHistory'
+import DesignHistoryButtons from './DesignHistoryButtons.vue'
 import { useDesignContextMenu } from '../../composables/useDesignContextMenu'
 import {
   listDesignPages,
@@ -1781,6 +1782,19 @@ watch(
           >
             + Element
           </button>
+          <!--
+            Undo/Redo buttons (Chunk 3 of undo/redo plan). Placed in
+            the canvas header so they're visible in both layout modes
+            (chat-open + chat-closed). The composable reads
+            activeWorkspaceId / activeWorkspaceItemId from the store;
+            we pass pageId as a prop for clarity.
+          -->
+          <DesignHistoryButtons
+            v-if="!isPreviewMode"
+            :workspace-id="props.workspaceId"
+            :item-id="effectiveItemId"
+            :page-id="activePageId"
+          />
           <div
             v-if="activePage"
             class="text-xs flex-1 truncate"
