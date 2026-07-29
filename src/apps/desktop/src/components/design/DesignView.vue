@@ -129,6 +129,18 @@ const emit = defineEmits<{
 
 const workspacesStore = useWorkspacesStore()
 
+// Chunk 4 stub — Chunk 5 replaces with the real
+// workspacesStore.reorderDesignElements call once the backend lands.
+async function dispatchReorder(
+  mode: 'bring_to_front' | 'send_to_back' | 'bring_forward' | 'send_backward',
+): Promise<void> {
+  if (!props.workspaceId || !effectiveItemId.value || !activePageId.value) return
+  if (selectedIds.value.size === 0) return
+  console.warn(
+    `[DesignView] Cmd+[/] shortcut (mode=${mode}) pressed — backend lands in Chunk 5.`,
+  )
+}
+
 // ─── Effective ids ─────────────────────────────────────────────────────
 
 const effectiveItemId = computed(() => props.itemId || props.item.id)
@@ -483,10 +495,89 @@ const handleKeydown = (event: KeyboardEvent): void => {
       return
     }
     selectedIds.value = new Set()
-    // Also close the add-element dialog if it's open.
+    // Also close the canvas context menu (Chunk 4) and the
+    // add-element dialog if it's open.
+    canvasContextMenu.close()
     if (showAddElementDialog.value) {
       showAddElementDialog.value = false
     }
+    return
+  }
+
+  // Chunk 4: Cmd/Ctrl+A → Select all (Figma convention).
+  // Handles BOTH Mac (metaKey) and Linux/Windows (ctrlKey).
+  if (
+    (event.key === 'a' || event.key === 'A') &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.shiftKey &&
+    !event.altKey
+  ) {
+    event.preventDefault()
+    selectedIds.value = new Set(elements.value.map((e) => e.id))
+    return
+  }
+
+  // Chunk 4: Cmd/Ctrl+] (bring forward) and Cmd/Ctrl+Shift+]
+  // (bring to front). Both gate on selection.size >= 1. The actual
+  // reorder call lives in `workspacesStore.reorderDesignElements`,
+  // which Chunk 5 introduces — until then the shortcut fires the
+  // stub that no-ops with a warning.
+  if (
+    event.key === ']' &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.altKey
+  ) {
+    event.preventDefault()
+    if (event.shiftKey) {
+      void dispatchReorder('bring_to_front')
+    } else {
+      void dispatchReorder('bring_forward')
+    }
+    return
+  }
+
+  // Chunk 4: Cmd/Ctrl+[ (send backward) and Cmd/Ctrl+Shift+[
+  // (send to back).
+  if (
+    event.key === '[' &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.altKey
+  ) {
+    event.preventDefault()
+    if (event.shiftKey) {
+      void dispatchReorder('send_to_back')
+    } else {
+      void dispatchReorder('send_backward')
+    }
+    return
+  }
+
+  // Chunk 4: Backspace / Delete → delete current selection. The
+  // existing input-focus guard at the top of handleKeydown protects
+  // PropertiesPanel inputs from being interpreted as delete-element
+  // presses (Backspace inside a number input deletes the input's
+  // selection, not the design element).
+  if (
+    (event.key === 'Backspace' || event.key === 'Delete') &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    !event.shiftKey
+  ) {
+    event.preventDefault()
+    if (selectedIds.value.size === 0) return
+    const count = selectedIds.value.size
+    if (!confirm(`Delete ${count} element${count === 1 ? '' : 's'}?`)) return
+    if (!props.workspaceId || !effectiveItemId.value || !activePageId.value) return
+    for (const id of Array.from(selectedIds.value)) {
+      void workspacesStore.deleteDesignElement(
+        props.workspaceId,
+        effectiveItemId.value,
+        activePageId.value,
+        id,
+      )
+    }
+    selectedIds.value = new Set()
     return
   }
 
