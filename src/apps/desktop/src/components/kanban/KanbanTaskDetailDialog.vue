@@ -73,6 +73,7 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import type { Task, KanbanColumn } from '../../stores/workspaces'
 import KanbanDescriptionEditor from './KanbanDescriptionEditor.vue'
+import KanbanTagsInput from './KanbanTagsInput.vue'
 import MarkdownDescription from './MarkdownDescription.vue'
 import FilePreviewModal from './FilePreviewModal.vue'
 
@@ -107,7 +108,7 @@ const emit = defineEmits<{
   // backward compatibility with the existing test suite and for
   // the KanbanSettingsDialog-style pattern.
   close: []
-  save: [payload: { mode: 'edit'; name: string; description: string }]
+  save: [payload: { mode: 'edit'; name: string; description: string; tags: string[] }]
   // Create-mode counterpart. Host wires this to workspacesStore.addTask
   // + moveTaskToColumn. Same payload shape as `save` but with
   // mode='create' so the parent handler can switch on it.
@@ -122,6 +123,10 @@ const emit = defineEmits<{
       // api.createTask; the helper filters out `'0'` so the backend
       // only inserts a sessions row when the user actually opted in.
       is_auto_retry_until_stop: '0' | '1'
+      // NEW (kanban task tags, Migration 067): array of free-form
+      // tag strings. Empty array = no tags. Host forwards via
+      // api.createTask's `tags` param; backend validates + persists.
+      tags: string[]
     },
   ]
   // Emitted in edit mode when the user flips the unattended toggle.
@@ -137,6 +142,13 @@ const emit = defineEmits<{
 const name = ref('')
 const description = ref('')
 const unattended = ref<'0' | '1'>('0')
+const tags = ref<string[]>([])
+// Template ref for the chip input — handleSave calls commitDraft()
+// imperatively before reading `tags.value` so a draft tag typed but
+// not yet committed (Enter/comma not pressed) isn't dropped on Save.
+// The component's @blur handler covers the normal case; this is the
+// explicit "click Save without leaving the field" safety net.
+const tagsInputRef = ref<{ commitDraft: () => void } | null>(null)
 const nameInput = ref<HTMLInputElement | null>(null)
 const DESCRIPTION_MAX = 5000
 // Description render mode:
@@ -174,11 +186,15 @@ watch(
       name.value = ''
       description.value = ''
       unattended.value = '0'
+      tags.value = []  // NEW: start with empty tags in create mode
       isPreviewingDescription.value = false
     } else if (props.task) {
       name.value = props.task.name
       description.value = props.task.description ?? ''
       unattended.value = props.task.is_auto_retry_until_stop === '1' ? '1' : '0'
+      // Migration 067 — prefill tags from the loaded task. tags?
+      // is optional (legacy tasks may lack it); fallback to [].
+      tags.value = props.task.tags ?? []
       isPreviewingDescription.value = false
     }
     await nextTick()
@@ -202,7 +218,19 @@ const isDirty = computed<boolean>(() => {
   if (!props.task) return false
   const nameChanged = name.value.trim() !== props.task.name
   const descChanged = (description.value) !== (props.task.description ?? '')
-  return nameChanged || descChanged
+  // Migration 067 — tags dirty check. Compare arrays via JSON.stringify
+  // (cheap for ≤ 30 tags). Stable order matters: the chip input
+  // preserves the user's add order, but if the backend ever returns
+  // a different order, the dialog will treat the row as "dirty"
+  // and push a no-op update. Acceptable; the order is stable
+  // because we never re-sort tags on the backend.
+  const tagsBefore = props.task.tags ?? []
+  const tagsAfter = tags.value
+  const tagsEqual =
+    tagsBefore.length === tagsAfter.length &&
+    tagsBefore.every((t, i) => t === tagsAfter[i])
+  const tagsChanged = !tagsEqual
+  return nameChanged || descChanged || tagsChanged
 })
 
 const isValid = computed<boolean>(() => name.value.trim().length > 0)
@@ -212,27 +240,46 @@ const canSave = computed<boolean>(() => isDirty.value && isValid.value)
 
 const handleSave = () => {
   if (!canSave.value) return
+  // Belt + suspenders: if the user typed a tag and clicked Save
+  // without pressing Enter/comma, the KanbanTagsInput still holds the
+  // draft in its local `draftInput` ref. The mousedown handler
+  // below commits it before click logic runs, but commit again here
+  // to handle the (rarer) case where mousedown didn't fire (e.g.
+  // keyboard activation via Space/Enter).
+  tagsInputRef.value?.commitDraft()
+  // canSave reads tags.value; re-check after the commit in case the
+  // user's draft was the only "dirty" signal and committing it
+  // didn't change isDirty (e.g. duplicate draft). canSave recomputes
+  // reactively, but the read here is intentional — the Save button
+  // is disabled while canSave is false.
+  if (!canSave.value) return
   if (isCreateMode.value) {
-    emit('create', {
-      mode: 'create',
-      name: name.value.trim(),
-      description: description.value,
-      // Forward the unattended toggle's current value. The
-      // immediate-flip handler (handleUnattendedToggle) already
-      // updated `unattended` via PUT in edit mode; in create
-      // mode there's no session row yet, so this is the FIRST
-      // (and only) time the value gets sent. Host threads it
-      // through to api.createTask -> backend POST /tasks which
-      // inserts a sessions row when the value is '1'.
-      is_auto_retry_until_stop: unattended.value,
-    })
-  } else {
-    emit('save', {
-      mode: 'edit',
-      name: name.value.trim(),
-      description: description.value,
-    })
-  }
+      emit('create', {
+        mode: 'create',
+        name: name.value.trim(),
+        description: description.value,
+        // Forward the unattended toggle's current value. The
+        // immediate-flip handler (handleUnattendedToggle) already
+        // updated `unattended` via PUT in edit mode; in create
+        // mode there's no session row yet, so this is the FIRST
+        // (and only) time the value gets sent. Host threads it
+        // through to api.createTask -> backend POST /tasks which
+        // inserts a sessions row when the value is '1'.
+        is_auto_retry_until_stop: unattended.value,
+        // NEW (Migration 067 — kanban task tags): forward the
+        // current tags array. The KanbanTagsInput already
+        // validates + dedupes, so the array is ready to persist.
+        tags: tags.value,
+      })
+    } else {
+      emit('save', {
+        mode: 'edit',
+        name: name.value.trim(),
+        description: description.value,
+        // NEW (Migration 067): forward tags.
+        tags: tags.value,
+      })
+    }
 }
 
 const handleClose = () => {
@@ -241,6 +288,20 @@ const handleClose = () => {
   //   - :show + @close (KanbanSettingsDialog-style) listens for `close`
   emit('update:show', false)
   emit('close')
+}
+
+// Commit any draft tag typed in the chip input the moment the user
+// mousedowns the Save button. Why mousedown and not @blur on the
+// input: the Save button has `:disabled="!canSave"`, and a draft
+// tag typed without Enter/comma leaves canSave=false (the draft is
+// in the chip input's local ref, not in `tags.value` yet). If we
+// only relied on @blur, the click would land on a still-disabled
+// button and the browser would drop it. mousedown is NOT gated by
+// the disabled attribute (it's a low-level event), so we can
+// commit the draft, the canSave computed flips to true, and the
+// subsequent click event fires on the now-enabled button.
+const commitTagsDraftOnSaveMouseDown = () => {
+  tagsInputRef.value?.commitDraft()
 }
 
 const handleKeydown = (event: KeyboardEvent) => {
@@ -493,6 +554,25 @@ const columnLabel = computed<string | null>(() => {
               </button>
             </div>
 
+            <!-- Tags (Migration 067 — kanban task tags feature).
+                 Free-form chip input. Always shown (create + edit
+                 modes). The KanbanTagsInput component handles all
+                 validation + dedupe + color rendering. -->
+            <div class="mt-4">
+              <label
+                for="kanban-task-detail-tags"
+                class="block text-xs font-medium mb-2"
+                style="color: var(--semantic-text-dim);"
+              >
+                Tags
+              </label>
+              <KanbanTagsInput
+                ref="tagsInputRef"
+                v-model="tags"
+                :test-id="isCreateMode ? 'kanban-task-detail-create-tags' : 'kanban-task-detail-tags'"
+              />
+            </div>
+
             <!-- Unattended-mode toggle (always shown). Flips the
                  session's `is_auto_retry_until_stop` flag (which
                  lives on sessions, not workspace_item_tasks).
@@ -567,6 +647,7 @@ const columnLabel = computed<string | null>(() => {
             </button>
             <button
               type="button"
+              @mousedown="commitTagsDraftOnSaveMouseDown"
               @click="handleSave"
               :disabled="!canSave"
               data-testid="kanban-task-detail-save"

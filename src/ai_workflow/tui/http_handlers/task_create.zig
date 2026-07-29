@@ -42,6 +42,7 @@ const ai_mod = nalarcore.ai_mod;
 const memories_mod = nalarcore.memories;
 const cron = @import("../routines/cron.zig");
 const fire = @import("../routines/fire.zig");
+const tags_validation = @import("tags_validation.zig");
 const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 
 /// Domain-level error set for `useCase`. Each variant maps to a
@@ -74,6 +75,10 @@ pub const TaskCreateError = error{
     MemoryTaskInsertFailed,
     // 500 — standard-task DB ops
     StandardTaskCreateFailed,
+    // 400 — kanban task tags validation (Migration 067). Empty,
+    // too long, or contains forbidden characters (only
+    // [a-zA-Z0-9_-] allowed). See tags_validation.zig.
+    InvalidTags,
     // Underlying I/O / alloc errors (required by the type system
     // even though they're unreachable on the per-request arena)
     OutOfMemory,
@@ -118,6 +123,11 @@ pub const StandardResult = struct {
     /// a caller-supplied session_id per the task.id == session.id
     /// convention; the field is preserved for backward compatibility.
     session_id: ?[]const u8,
+    /// JSON-encoded array of tag strings (Migration 067 — kanban
+    /// task tags). Borrowed from the per-request arena; freed by
+    /// the arena reaper on request teardown (matches the lifetime
+    /// pattern of the other borrowed slices in StandardResult).
+    tags: []const u8 = "",
 };
 
 // Typed response structs. Serialized via std.json.Stringify.valueAlloc
@@ -164,6 +174,10 @@ const StandardResponse = struct {
     session_id: ?[]const u8,
     kanban_column_id: ?[]const u8 = null,
     kanban_position: i64 = 0,
+    /// JSON-encoded array of tag strings (Migration 067 — kanban
+    /// task tags feature). Empty string means the task has no
+    /// tags. Plan: docs/superpowers/plans/2026-07-28-kanban-task-tags.md
+    tags: []const u8 = "",
     created_at: ?[]const u8 = null,
     updated_at: ?[]const u8 = null,
 };
@@ -340,6 +354,17 @@ fn createStandardTask(
     input: TaskCreateInput,
     task_id: []const u8,
 ) TaskCreateError!StandardResult {
+    // Validate + normalize the tags payload (Migration 067). The
+    // helper returns a heap-allocated JSON-encoded array string
+    // (or "" for "no tags") — the right shape for the `tags`
+    // column. The slice is borrowed into the returned StandardResult
+    // (see comment there) — the per-request arena reaps it on
+    // request teardown. No explicit `defer allocator.free` here.
+    const validated_tags = tags_validation.validateAndNormalizeTags(
+        allocator,
+        input.body.tags,
+    ) catch return error.InvalidTags;
+
     const task = ai_mod.workspace_item_tasks.createWorkspaceItemTask(
         allocator,
         db,
@@ -348,6 +373,7 @@ fn createStandardTask(
         input.item_id,
         "standard",
         input.body.description,
+        validated_tags,
     ) catch return error.StandardTaskCreateFailed;
 
     // Chunk 5 of kanban-task-notification-icon: creating a card is
@@ -499,6 +525,9 @@ fn createStandardTask(
         .kanban_column_id = kanban_column_id,
         .kanban_position = kanban_position,
         .session_id = input.body.session_id,
+        // Migration 067 — kanban task tags. Borrowed from the
+        // per-request arena; the arena reaps it on request teardown.
+        .tags = validated_tags,
     };
 }
 
@@ -580,6 +609,7 @@ pub fn tasksCreateHandler(
             error.ItemIdRequired, error.MissingBody, error.InvalidJson => 400,
             error.RoutineScheduleRequired, error.RoutineInitialPromptRequired,
             error.InvalidCronExpression, error.FailedToComputeNextFireTime => 400,
+            error.InvalidTags => 400,
             error.MemoryNameRequired, error.InvalidMemoryName,
             error.MemoryContentRequired => 400,
             error.WorkspaceItemNotFound => 404,
@@ -597,6 +627,7 @@ pub fn tasksCreateHandler(
             error.RoutineInitialPromptRequired => "initial_prompt is required for routine tasks",
             error.InvalidCronExpression => "Invalid cron expression",
             error.FailedToComputeNextFireTime => "Failed to compute next fire time",
+            error.InvalidTags => "tags must be non-empty, ≤50 chars, and contain only letters, digits, hyphens, and underscores",
             error.MemoryNameRequired => "memory_name is required for memory tasks",
             error.InvalidMemoryName => "Invalid memory name (must end in .md, no /, no ..)",
             error.MemoryContentRequired => "memory_content is required for memory tasks",
@@ -659,6 +690,14 @@ pub fn tasksCreateHandler(
                     .session_id = r.session_id,
                     .kanban_column_id = r.kanban_column_id,
                     .kanban_position = r.kanban_position,
+                    // Migration 067 — kanban task tags. The
+                    // `r.tags` slice is borrowed from the per-
+                    // request arena (allocated by
+                    // validateAndNormalizeTags in createStandardTask,
+                    // reaped by the arena on request teardown).
+                    // valueAlloc copies it into the response JSON,
+                    // so no use-after-free.
+                    .tags = r.tags,
                 },
                 .{},
             ),

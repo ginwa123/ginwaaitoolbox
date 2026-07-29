@@ -283,7 +283,11 @@ const handleViewTaskDetail = (taskId: string) => {
 // optimistic update + API call + rollback-on-error. We close the
 // dialog only on success; on error we keep it open so the user can
 // retry without re-typing.
-const handleTaskDetailSave = async (payload: { name: string; description: string }) => {
+const handleTaskDetailSave = async (payload: {
+  name: string
+  description: string
+  tags?: string[]
+}) => {
   if (!activeTaskDetailId.value) return
   try {
     await workspacesStore.updateTaskDetails(
@@ -380,6 +384,7 @@ const handleCreateTaskSave = async (payload: {
   name: string
   description: string
   is_auto_retry_until_stop?: '0' | '1'
+  tags?: string[]
 }) => {
   if (!activeCreateColumnId.value) return
   createBusy.value = true
@@ -395,6 +400,10 @@ const handleCreateTaskSave = async (payload: {
       // dialog (Option A: backend atomically inserts a sessions
       // row + sets the flag when this is '1').
       isAutoRetryUntilStop: payload.is_auto_retry_until_stop,
+      // Migration 067 — forward tags from the dialog (the
+      // KanbanTagsInput has already validated + deduped). The store
+      // + api layer JSON-encode + send; backend persists.
+      tags: payload.tags,
     })
     if (!taskId) {
       createError.value = 'Failed to create task — please retry.'

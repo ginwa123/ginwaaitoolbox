@@ -417,6 +417,11 @@ pub fn executeCreateKanbanTaskToString(
         input.item_id,
         "standard",
         input.description,
+        // tags — the agent tool does not yet accept tags. Pass null
+        // until tags support is added to the tool surface (out of
+        // scope for the kanban-tags v1 plan; the user-facing wire
+        // path is the primary entry point).
+        null,
     ) catch {
         const msg = std.fmt.allocPrint(allocator,
             "Failed to INSERT task row into workspace_item_tasks",

@@ -314,7 +314,7 @@ All design decisions resolved. No follow-up questions for the implementation pla
 
 ## References
 
-- Plan file: `docs/superpowers/plans/2026-07-29-design-right-click-group-menu.md`
+- Plan file (to be created): `docs/superpowers/plans/2026-07-29-design-right-click-group-menu.md`
 - Predecessor: PR #136 — grouped layers (frame/group nesting) on design canvas
 - Predecessor: PR #125 — design element drag-and-drop (Figma-style)
 - Pattern reference: `src/apps/desktop/src/components/git/GitChanges.vue` (Teleport-based context menu)

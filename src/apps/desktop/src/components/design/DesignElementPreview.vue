@@ -9,10 +9,23 @@
 
   Public API:
     props:
-      html      string   the element's stored HTML body
-      editable  boolean  when true, the iframe body becomes
-                         contentEditable; on blur, the new innerHTML
-                         is emitted as htmlChanged. Default false.
+      html           string   the element's stored HTML body
+      editable       boolean  when true, the iframe body becomes
+                              contentEditable; on blur, the new innerHTML
+                              is emitted as htmlChanged. Default false.
+      pointerEvents  'auto' | 'none'   when 'none', clicks fall through
+                              to the parent DesignElement (drag/resize/
+                              select). The canvas passes 'none'; the
+                              PropertiesPanel Monaco preview passes 'auto'.
+      fill           string   the element's CSS fill color (e.g.
+                              "rgba(15, 14, 13, 0.78)" or "#ffffff").
+                              Applied to the iframe's inline
+                              `background` style so the element's color
+                              renders correctly when its srcdoc HTML is
+                              empty or transparent. When empty / unset
+                              the iframe background is 'transparent' and
+                              the parent wrapper's fill shows through.
+                              Default ''.
     emits:
       htmlChanged [html: string]
 
@@ -49,10 +62,27 @@ const props = withDefaults(
     // resize / select); the editable Monaco preview would pass
     // 'auto' so the user can interact with the iframe content.
     pointerEvents?: 'auto' | 'none'
+    // The element's CSS fill color. Applied to the iframe's inline
+    // background so the element renders with its true color when the
+    // srcdoc HTML is empty / transparent. Empty string = transparent
+    // (the wrapper's fill shows through). Default ''.
+    //
+    // Pre-fix history: the iframe had a hardcoded `background: white`
+    // which leaked through any element with `fill: ''` / transparent
+    // fill, producing visible white rectangles wherever small
+    // elements (input fields, buttons, labels) sat on the canvas.
+    // For the "Task Dialog" design this was particularly visible —
+    // the backdrop (which should be a dark semi-transparent overlay)
+    // rendered as a huge white slab because its empty HTML body
+    // relied on the wrapper's fill. See project memory
+    // "design-element-rectangle-covers-iframe" for the parallel
+    // white-rectangle bug; this fix completes the white-bleed story.
+    fill?: string
   }>(),
   {
     editable: false,
     pointerEvents: 'auto',
+    fill: '',
   },
 )
 
@@ -65,8 +95,8 @@ const emit = defineEmits<{
 // user's outer <div> collapses to 0 (because body is `height: auto`),
 // and any `position: relative` on that div becomes a 0-height
 // containing block for absolutely-positioned children — those
-// children collapse too, and the iframe's `background: white`
-// (set inline below) shows through, making the element appear blank.
+// children collapse too, and the iframe's background (set inline
+// below via `props.fill` or 'transparent' fallback) shows through.
 //
 // Prepending a stylesheet that forces html/body to fill the iframe
 // makes percentage-based layouts (and position:relative containing
@@ -117,7 +147,11 @@ watch(
     ref="iframeRef"
     sandbox="allow-scripts"
     class="w-full h-full"
-    :style="{ border: 'none', background: 'white', pointerEvents: props.pointerEvents }"
+    :style="{
+      border: 'none',
+      background: props.fill || 'transparent',
+      pointerEvents: props.pointerEvents,
+    }"
     :srcdoc="iframeHtml"
     data-testid="design-element-preview"
     @load="onIframeLoad"

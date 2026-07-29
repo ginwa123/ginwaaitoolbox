@@ -152,7 +152,7 @@ describe('KanbanTaskDetailDialog — save / cancel', () => {
     const emitted = w!.emitted('save')
     expect(emitted).toBeTruthy()
     expect(emitted![0]).toEqual([
-      { mode: 'edit', name: 'New name', description: 'New description' },
+      { mode: 'edit', name: 'New name', description: 'New description', tags: [] },
     ])
   })
 
@@ -166,7 +166,7 @@ describe('KanbanTaskDetailDialog — save / cancel', () => {
     const emitted = w!.emitted('save')
     expect(emitted).toBeTruthy()
     expect(emitted![0]).toEqual([
-      { mode: 'edit', name: 'Original name', description: '' },
+      { mode: 'edit', name: 'Original name', description: '', tags: [] },
     ])
   })
 
@@ -558,7 +558,7 @@ describe('KanbanTaskDetailDialog — create mode', () => {
     const emitted = w!.emitted('create')
     expect(emitted).toBeTruthy()
     expect(emitted![0]).toEqual([
-      { mode: 'create', name: 'New task', description: 'Some description', is_auto_retry_until_stop: '0' },
+      { mode: 'create', name: 'New task', description: 'Some description', is_auto_retry_until_stop: '0', tags: [] },
     ])
   })
 
@@ -580,7 +580,7 @@ describe('KanbanTaskDetailDialog — create mode', () => {
     const emitted = w!.emitted('create')
     expect(emitted).toBeTruthy()
     expect(emitted![0]).toEqual([
-      { mode: 'create', name: 'Overnight run', description: '', is_auto_retry_until_stop: '1' },
+      { mode: 'create', name: 'Overnight run', description: '', is_auto_retry_until_stop: '1', tags: [] },
     ])
   })
 

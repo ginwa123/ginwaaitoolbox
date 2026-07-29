@@ -449,12 +449,22 @@ onUnmounted(() => {
            `pointerEvents` is `'none'` in Edit mode (clicks pass
            through to the wrapper for drag/resize/select) and
            `'auto'` in Preview mode (the iframe captures clicks so
-           the user can type into inputs / click buttons). -->
+           the user can type into inputs / click buttons).
+
+           `:fill="element.fill"` passes the element's CSS fill color
+           through to the iframe's background so the element renders
+           with its true color even when its srcdoc HTML is empty
+           (e.g. an empty `<div style="width:100%;height:100%;"></div>`
+           that relies on the wrapper fill to show through). Without
+           this, the iframe's hardcoded `background: white` (the old
+           default) leaked white specks onto the canvas for every
+           element with `fill: ''` or `fill: 'transparent'`. -->
       <DesignElementPreview
         v-if="htmlBody"
         :html="htmlBody"
         :editable="false"
         :pointer-events="previewMode ? 'auto' : 'none'"
+        :fill="element.fill"
       />
       <!-- Loading state — empty until the iframe loads. Visible only
            briefly; the iframe replaces it within one render cycle of
