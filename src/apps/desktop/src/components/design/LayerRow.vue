@@ -81,6 +81,7 @@ const emit = defineEmits<{
   toggleCollapse: [elementId: string]
   moveUp: [elementId: string]
   moveDown: [elementId: string]
+  contextmenu: [payload: { event: MouseEvent; targetIds: string[] }]
 }>()
 
 // Computed flags for the row's visual state.
@@ -111,6 +112,28 @@ const handleSelect = (event: MouseEvent): void => {
     elementId: props.node.element.id,
     additive: event.shiftKey,
   })
+}
+
+const handleContextMenu = (event: MouseEvent): void => {
+  // Figma parity: right-click extends selection if the row is
+  // already in `selectedIds` AND shiftKey is held. Otherwise the
+  // menu targets just this one element (replace selection first,
+  // then open the menu against the single id).
+  const isInSelection = props.selectedIds.includes(props.node.element.id)
+  if (isInSelection && event.shiftKey) {
+    emit('contextmenu', {
+      event,
+      targetIds: [...props.selectedIds],
+    })
+  } else {
+    if (!isInSelection) {
+      emit('select', { elementId: props.node.element.id, additive: false })
+    }
+    emit('contextmenu', {
+      event,
+      targetIds: [props.node.element.id],
+    })
+  }
 }
 
 const handleDelete = (event: MouseEvent): void => {
@@ -156,6 +179,7 @@ const handleChevronClick = (event: MouseEvent): void => {
     }"
     :data-testid="`design-layer-${node.element.id}`"
     @click="handleSelect"
+    @contextmenu="handleContextMenu"
   >
     <!-- Chevron (only when the node has children). Spacer span on
          leaf nodes keeps the type icon vertically aligned. -->
@@ -230,6 +254,7 @@ const handleChevronClick = (event: MouseEvent): void => {
       @toggle-collapse="(id) => emit('toggleCollapse', id)"
       @move-up="(id) => emit('moveUp', id)"
       @move-down="(id) => emit('moveDown', id)"
+      @contextmenu="(p) => emit('contextmenu', p)"
     />
   </template>
 </template>

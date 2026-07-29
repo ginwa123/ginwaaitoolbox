@@ -22,6 +22,9 @@ defineProps<{
 
 defineEmits<{
   close: []
+  // Chunk 2 wires this single emit; the full 7-item table
+  // (Select all / Bring / Send / Delete) lands in Chunk 5.
+  group: [targetIds: string[]]
 }>()
 </script>
 
@@ -39,7 +42,17 @@ defineEmits<{
       data-testid="design-context-menu"
       @click.stop
     >
-      <!-- Menu items land here in Chunk 5 -->
+      <button
+        type="button"
+        class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
+        style="color: var(--semantic-text);"
+        :disabled="targetIds.length < 2"
+        data-testid="design-context-menu-group"
+        @click="$emit('group', [...targetIds])"
+      >
+        <span>Group selection</span>
+        <span class="text-xs" style="color: var(--semantic-text-dim);">⌘G</span>
+      </button>
     </div>
   </Teleport>
 </template>

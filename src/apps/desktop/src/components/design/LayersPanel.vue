@@ -38,6 +38,8 @@
 import { computed, ref } from 'vue'
 import type { DesignElement } from '../../api'
 import LayerRow, { type LayerTreeNode } from './LayerRow.vue'
+import DesignContextMenu from './DesignContextMenu.vue'
+import { useDesignContextMenu } from '../../composables/useDesignContextMenu'
 
 const props = withDefaults(
   defineProps<{
@@ -58,7 +60,25 @@ const emit = defineEmits<{
   select: [payload: { elementId: string; additive: boolean }]
   reorder: [orderedElementIds: string[]]
   delete: [elementId: string]
+  // NEW: right-click on a layer row → context menu. Parent wires
+  // the Group / Select all / Bring / Send / Delete actions to the
+  // appropriate handlers (useDesignHandlers, store actions).
+  group: [targetIds: string[]]
+  selectAll: []
+  bringToFront: [targetIds: string[]]
+  bringForward: [targetIds: string[]]
+  sendBackward: [targetIds: string[]]
+  sendToBack: [targetIds: string[]]
+  contextMenuDelete: [targetIds: string[]]
 }>()
+
+const contextMenu = useDesignContextMenu()
+
+function handleLayerContextMenu(payload: { event: MouseEvent; targetIds: string[] }): void {
+  // Preview mode / readonly: silently ignore right-clicks (no menu).
+  if (props.readonly) return
+  contextMenu.open(payload.event, payload.targetIds)
+}
 
 /**
  * Build a tree of nested `LayerTreeNode`s from a flat `DesignElement[]`.
@@ -261,8 +281,20 @@ const handleMoveDown = (elementId: string): void => {
         @toggle-collapse="toggleCollapse"
         @move-up="handleMoveUp"
         @move-down="handleMoveDown"
+        @contextmenu="handleLayerContextMenu"
       />
     </div>
+    <!-- Right-click context menu (full item table lands in Chunk 5;
+         this commit renders the empty shell so the composable's
+         open/close lifecycle can be exercised). -->
+    <DesignContextMenu
+      :visible="contextMenu.state.value.visible"
+      :x="contextMenu.state.value.x"
+      :y="contextMenu.state.value.y"
+      :target-ids="contextMenu.state.value.targetIds"
+      @group="(ids) => emit('group', ids)"
+      @close="contextMenu.close()"
+    />
   </div>
 </template>
 

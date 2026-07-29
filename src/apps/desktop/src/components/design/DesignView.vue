@@ -984,6 +984,18 @@ const handleLayerSelect = (payload: { elementId: string; additive: boolean }): v
   handleElementToggle(payload.elementId, payload.additive)
 }
 
+// NEW (Chunk 2 of the right-click group menu plan): when the
+// layers panel emits `group` from the context menu, mirror the
+// Cmd+G path: inject the targetIds into the local `selectedIds`
+// ref so `useDesignHandlers.groupSelection()` (which reads from
+// `selectedIds.value`) acts on them. On success the composable
+// clears the selection itself.
+const handleDesignGroupFromContextMenu = (targetIds: string[]): void => {
+  if (targetIds.length < 2) return
+  selectedIds.value = new Set(targetIds)
+  void designHandlers.groupSelection()
+}
+
 // Chunk 2: group drag. When the user drags any element that's part of
 // a multi-selection, DesignElement emits `groupDrag` with the cursor
 // delta (design-px, zoom-adjusted). We translate that into N individual
@@ -1707,6 +1719,7 @@ watch(
             @select="handleLayerSelect"
             @reorder="handleReorderElements"
             @delete="handleElementDelete"
+            @group="handleDesignGroupFromContextMenu"
           />
         </div>
 
