@@ -68,9 +68,11 @@ import DesignElement from './DesignElement.vue'
 import LayersPanel from './LayersPanel.vue'
 import PropertiesPanel from './PropertiesPanel.vue'
 import AddDesignElementDialog from './AddDesignElementDialog.vue'
+import DesignContextMenu from './DesignContextMenu.vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import { useNotificationStore } from '../../stores/notifications'
 import { useDesignHandlers } from '../../composables/useDesignHandlers'
+import { useDesignContextMenu } from '../../composables/useDesignContextMenu'
 import {
   listDesignPages,
   createDesignPage as createDesignPageApi,
@@ -677,6 +679,19 @@ const handleCanvasClick = (event: MouseEvent): void => {
     return
   }
   selectedIds.value = new Set()
+}
+
+// Chunk 3 (right-click group menu plan): per-instance context menu
+// for canvas right-clicks. Preview mode silently ignores right-clicks
+// (Figma parity: the menu is editor-only).
+const canvasContextMenu = useDesignContextMenu()
+function handleCanvasContextMenu(event: MouseEvent): void {
+  if (isPreviewMode.value) return
+  // Open with the current selection — right-click on empty canvas
+  // acts on whatever was previously selected. The LayersPanel owns
+  // its own context-menu instance for row-level right-clicks; this
+  // one is canvas-only.
+  canvasContextMenu.open(event, Array.from(selectedIds.value))
 }
 
 // True while the user is mid-drag with Space held. Gates the
@@ -1596,6 +1611,7 @@ watch(
             }"
             data-testid="design-canvas"
             @click.stop
+            @contextmenu="handleCanvasContextMenu"
           >
             <DesignElement
               v-for="element in elements"
@@ -1609,7 +1625,7 @@ watch(
               :item-id="itemId || item.id"
               :page-id="activePageId"
               :preview-mode="isPreviewMode"
-              @select="(id) => handleElementToggle(id, false)"
+              @select="(payload) => handleElementToggle(payload.elementId, payload.additive)"
               @update="handleElementUpdate"
               @group-drag="handleGroupDrag"
               @drag-end="clearSnapGuides"
@@ -1757,6 +1773,18 @@ watch(
       :readonly="false"
       @create="handleCreateElement"
       @close="showAddElementDialog = false"
+    />
+
+    <!-- ─── Canvas right-click context menu (Chunk 3) ─────────────
+         Disabled in Preview mode (the canvasContextMenu composable
+         keeps `visible: false` because handleCanvasContextMenu
+         short-circuits there). -->
+    <DesignContextMenu
+      :visible="canvasContextMenu.state.value.visible"
+      :x="canvasContextMenu.state.value.x"
+      :y="canvasContextMenu.state.value.y"
+      :target-ids="canvasContextMenu.state.value.targetIds"
+      @close="canvasContextMenu.close()"
     />
   </section>
 </template>
