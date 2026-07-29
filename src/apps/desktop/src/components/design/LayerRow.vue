@@ -108,27 +108,30 @@ const typeIcon = (type: DesignElement['type']): string => {
 }
 
 const handleSelect = (event: MouseEvent): void => {
+  // Figma parity: Shift OR Ctrl/Cmd click toggles membership in the
+  // multi-selection. Plain click replaces the selection. Alt-click
+  // is intentional left unhandled (Linux/macOS window menu shortcut)
+  // so it falls through to the plain-click path.
+  const additive = event.shiftKey || event.ctrlKey || event.metaKey
   emit('select', {
     elementId: props.node.element.id,
-    additive: event.shiftKey,
+    additive,
   })
 }
 
 const handleContextMenu = (event: MouseEvent): void => {
-  // Figma parity: right-click extends selection if the row is
-  // already in `selectedIds` AND shiftKey is held. Otherwise the
-  // menu targets just this one element (replace selection first,
-  // then open the menu against the single id).
+  // Figma parity: right-click on a row that IS in the multi-selection
+  // (regardless of shift) opens the menu against the full selection.
+  // Right-click on an unselected row replaces the selection with that
+  // single id and opens the menu against just that id.
   const isInSelection = props.selectedIds.includes(props.node.element.id)
-  if (isInSelection && event.shiftKey) {
+  if (isInSelection) {
     emit('contextmenu', {
       event,
       targetIds: [...props.selectedIds],
     })
   } else {
-    if (!isInSelection) {
-      emit('select', { elementId: props.node.element.id, additive: false })
-    }
+    emit('select', { elementId: props.node.element.id, additive: false })
     emit('contextmenu', {
       event,
       targetIds: [props.node.element.id],
