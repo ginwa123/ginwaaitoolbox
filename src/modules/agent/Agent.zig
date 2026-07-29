@@ -717,7 +717,6 @@ pub const AgentCall = struct {
     messages: []const AgentMessage,
     temperature: ?f32 = null,
     max_tokens: ?usize = null,
-    url_style: []const u8 = "openai",
 };
 
 pub const HttpOptions = struct {
@@ -772,22 +771,12 @@ pub const Agent = struct {
     model: []const u8 = "",
     temperature: f32 = 0.4,
     maxTokens: usize = 4096,
-    /// Custom HTTP client (libcurl-backed). One per Agent; libcurl
-    /// handles are per-thread, so each Agent owns its own client.
     client: custom_http_client.Client,
-    /// Io runtime — needed for the streaming worker thread spawned
-    /// inside `custom_http_client.openStream`. Stored on the struct so
-    /// callers don't have to thread it through every call.
     io: std.Io,
     thinkingEnabled: bool = true,
     allocator: std.mem.Allocator,
     httpOptions: HttpOptions = .{},
     UrlStyle: []const u8 = "openai",
-
-    /// LLM-API end-user identifier. Hardcoded to `"AnakMagang"` by
-    /// default — Anthropic emits it as `metadata.user_id`, OpenAI as
-    /// the top-level `user` field. Empty string = don't include the
-    /// identifier in the request body (used by tests for the absence case).
     userIdentifier: []const u8 = "AnakMagang",
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Agent {
@@ -1196,11 +1185,6 @@ pub const Agent = struct {
         ctx: ?*anyopaque,
         callback: StreamCallback,
     ) CallError!CallResponse {
-        // TODO: Anthropic streaming body parsing is OpenAI-format. content
-        // extraction for the /v1/messages endpoint is broken in v1 — only
-        // finish_reason is captured. Extend parse_stream_chunk (or add a new
-        // parse_anthropic_stream_chunk) to handle the Anthropic SSE shape
-        // (`event: content_block_delta` with `delta.text`). Tracked as a follow-up.
         self.log_fmt(.info, "[STREAM START] model={s} | messages={} | tools={} | streaming=true", .{
             self.model, params.messages.len, params.tools.len,
         });
@@ -1212,12 +1196,18 @@ pub const Agent = struct {
                 self.log_error("buildJsonRequest", err, null);
                 return error.BuildRequestFailed;
             };
-        } else {
+        } else if (std.mem.eql(u8, self.UrlStyle, "anthropic")) {
             json_body = self.buildJsonAnthropicRequest(params, true) catch |err| {
                 self.log_error("buildJsonAnthropicRequest", err, null);
                 return error.BuildRequestFailed;
             };
+        } else {
+            json_body = self.buildJsonOpenAIRequest(params, true) catch |err| {
+                self.log_error("buildJsonRequest", err, null);
+                return error.BuildRequestFailed;
+            };
         }
+
         defer self.allocator.free(json_body);
 
         const estimated_tokens = @divFloor(json_body.len + 3, 4);
