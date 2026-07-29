@@ -7,6 +7,15 @@ import DesignContextMenu from '../components/design/DesignContextMenu.vue'
 describe('DesignContextMenu', () => {
   let wrapper: VueWrapper | null = null
 
+  // Helper: a page-element list containing one of each interesting
+  // type. Tests pick the id(s) they need from this constant.
+  const elements = [
+    { id: 'a', type: 'rectangle' },
+    { id: 'b', type: 'rectangle' },
+    { id: 'g', type: 'group' },
+    { id: 'f', type: 'frame' },
+  ]
+
   beforeEach(() => {
     setActivePinia(createPinia())
     Object.defineProperty(navigator, 'platform', { value: 'Linux x86_64', configurable: true })
@@ -21,7 +30,7 @@ describe('DesignContextMenu', () => {
 
   it('renders nothing when visible is false (Teleport closed)', () => {
     wrapper = mount(DesignContextMenu, {
-      props: { visible: false, x: 100, y: 100, targetIds: ['a'] },
+      props: { visible: false, x: 100, y: 100, targetIds: ['a'], elements },
       attachTo: document.body,
     })
     expect(document.querySelector('[data-testid="design-context-menu"]')).toBeNull()
@@ -29,19 +38,23 @@ describe('DesignContextMenu', () => {
 
   it('renders the menu container when visible is true, positioned at x/y', async () => {
     wrapper = mount(DesignContextMenu, {
-      props: { visible: true, x: 250, y: 400, targetIds: ['a', 'b'] },
+      // Use small x/y so viewport edge-clamping (40px × 10 rows = 400px
+      // tall, 220px wide) doesn't shift the menu. Chunk 9 added 1 more
+      // menu row (Ungroup), so we keep y small to test the un-clamped
+      // positioning contract.
+      props: { visible: true, x: 50, y: 50, targetIds: ['a', 'b'], elements },
       attachTo: document.body,
     })
     await nextTick()
     const menu = document.querySelector<HTMLElement>('[data-testid="design-context-menu"]')
     expect(menu).not.toBeNull()
-    expect(menu!.style.left).toBe('250px')
-    expect(menu!.style.top).toBe('400px')
+    expect(menu!.style.left).toBe('50px')
+    expect(menu!.style.top).toBe('50px')
   })
 
   it('stops click propagation on the menu container (click inside does not close the menu)', async () => {
     wrapper = mount(DesignContextMenu, {
-      props: { visible: true, x: 100, y: 100, targetIds: ['a'] },
+      props: { visible: true, x: 100, y: 100, targetIds: ['a'], elements },
       attachTo: document.body,
     })
     await nextTick()
@@ -50,14 +63,15 @@ describe('DesignContextMenu', () => {
     expect(document.querySelector('[data-testid="design-context-menu"]')).not.toBeNull()
   })
 
-  it('renders all 7 menu items in the spec order with correct testids', async () => {
+  it('renders all 8 menu items in the spec order with correct testids (Chunk 9 added Ungroup)', async () => {
     wrapper = mount(DesignContextMenu, {
-      props: { visible: true, x: 100, y: 100, targetIds: ['a', 'b'] },
+      props: { visible: true, x: 100, y: 100, targetIds: ['a', 'b'], elements },
       attachTo: document.body,
     })
     await nextTick()
     const expected = [
       'design-context-menu-group',
+      'design-context-menu-ungroup',
       'design-context-menu-select-all',
       'design-context-menu-separator-1',
       'design-context-menu-bring-to-front',
@@ -75,7 +89,7 @@ describe('DesignContextMenu', () => {
 
   it('clicking Bring to front emits bringToFront with the targetIds', async () => {
     wrapper = mount(DesignContextMenu, {
-      props: { visible: true, x: 100, y: 100, targetIds: ['a', 'b'] },
+      props: { visible: true, x: 100, y: 100, targetIds: ['a', 'b'], elements },
       attachTo: document.body,
     })
     await nextTick()
@@ -91,7 +105,7 @@ describe('DesignContextMenu', () => {
 
   it('Group is disabled when fewer than 2 ids are targetIds', async () => {
     wrapper = mount(DesignContextMenu, {
-      props: { visible: true, x: 100, y: 100, targetIds: ['a'] },
+      props: { visible: true, x: 100, y: 100, targetIds: ['a'], elements },
       attachTo: document.body,
     })
     await nextTick()
@@ -103,5 +117,69 @@ describe('DesignContextMenu', () => {
     await nextTick()
     // Group emit should NOT fire because the button is disabled.
     expect(wrapper.emitted('group')).toBeUndefined()
+  })
+
+  // ─── Chunk 9 — Ungroup ────────────────────────────────────────────────
+
+  it('Ungroup is enabled when exactly one group is selected', async () => {
+    wrapper = mount(DesignContextMenu, {
+      props: { visible: true, x: 100, y: 100, targetIds: ['g'], elements },
+      attachTo: document.body,
+    })
+    await nextTick()
+    const btn = document.querySelector<HTMLButtonElement>(
+      '[data-testid="design-context-menu-ungroup"]',
+    )!
+    expect(btn.disabled).toBe(false)
+  })
+
+  it('Ungroup is enabled when exactly one frame is selected', async () => {
+    wrapper = mount(DesignContextMenu, {
+      props: { visible: true, x: 100, y: 100, targetIds: ['f'], elements },
+      attachTo: document.body,
+    })
+    await nextTick()
+    const btn = document.querySelector<HTMLButtonElement>(
+      '[data-testid="design-context-menu-ungroup"]',
+    )!
+    expect(btn.disabled).toBe(false)
+  })
+
+  it('Ungroup is disabled when the single selection is a rectangle', async () => {
+    wrapper = mount(DesignContextMenu, {
+      props: { visible: true, x: 100, y: 100, targetIds: ['a'], elements },
+      attachTo: document.body,
+    })
+    await nextTick()
+    const btn = document.querySelector<HTMLButtonElement>(
+      '[data-testid="design-context-menu-ungroup"]',
+    )!
+    expect(btn.disabled).toBe(true)
+  })
+
+  it('Ungroup is disabled when more than one element is selected', async () => {
+    wrapper = mount(DesignContextMenu, {
+      props: { visible: true, x: 100, y: 100, targetIds: ['g', 'a'], elements },
+      attachTo: document.body,
+    })
+    await nextTick()
+    const btn = document.querySelector<HTMLButtonElement>(
+      '[data-testid="design-context-menu-ungroup"]',
+    )!
+    expect(btn.disabled).toBe(true)
+  })
+
+  it('clicking Ungroup emits ungroup with the single selected id', async () => {
+    wrapper = mount(DesignContextMenu, {
+      props: { visible: true, x: 100, y: 100, targetIds: ['g'], elements },
+      attachTo: document.body,
+    })
+    await nextTick()
+    const btn = document.querySelector<HTMLButtonElement>(
+      '[data-testid="design-context-menu-ungroup"]',
+    )!
+    btn.click()
+    await nextTick()
+    expect(wrapper.emitted('ungroup')).toEqual([['g']])
   })
 })

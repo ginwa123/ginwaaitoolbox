@@ -20,6 +20,7 @@ test {
     _ = @import("compaction_config_threshold_test.zig");
     _ = @import("http_handlers/nalar_config_put_test.zig");
 _ = @import("http_handlers/design_elements_reorder_test.zig"); // Chunk 5 — POST /reorder handler
+_ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup handler
     _ = @import("http_handlers/nalar_config_put_parse_test.zig");
     _ = @import("http_handlers/nalar_config_get_test.zig");
     _ = @import("http_handlers/nalar_config_profile_delete_test.zig");

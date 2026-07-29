@@ -299,3 +299,39 @@ the URL stays clean for non-design items.
 **Plan:** docs/superpowers/plans/2026-07-28-kanban-task-tags.md
 **Spec:** docs/superpowers/specs/2026-07-28-kanban-task-tags-design.md
 **Branch:** `worktree/kanban-task-tags`
+
+
+### 2026-07-29: design Cmd+Shift+G Ungroup + rebased onto group-drag-fix
+
+**What landed:**
+
+Backend (commit `59061c7f` after rebase, originally `ee903dc9`):
+- `design_model.ungroupElements(alloc, db, input) UngroupError![]DesignElement`
+  - Reparents group children to the group's parent (or NULL); deletes the group row.
+  - Errors: `BadGroupId`, `NotAGroup`, `EmptyGroup`, `DbError`, `OutOfMemory`.
+- HTTP handler `design_elements_ungroup.zig`:
+  - `POST /api/workspaces/:ws/items/:item/design/pages/:page/elements/ungroup`
+  - Body `{ element_id }`, 200 `{ orphaned: DesignElement[] }`.
+  - Errors: 400 (`BadGroupId` / `NotAGroup` / `EmptyGroup`), 500.
+
+Frontend (commit `daf21418` after rebase, originally `d7a05497`):
+- `api.ungroupDesignElements(ws, item, page, elementId)` — POST wrapper.
+- `workspacesStore.ungroupDesignElements(...)` — replaces orphaned children in place + splices the group row.
+- `useDesignHandlers.ungroupSelection(elementId)` — composable; clears selection on success; toasts.
+- `DesignContextMenu` — new "Ungroup" item, disabled unless exactly 1 group/frame is selected.
+- `DesignView.vue` — Cmd+Shift+G keyboard handler + `handleDesignUngroupFromContextMenu` wired to the LayersPanel + canvas menus.
+
+**Rebase sequence (merging worktrees in the right order):**
+
+1. The `worktree/group-drag-fix` branch (commit `461fa3a9`) was a separate, parallel worktree that landed AFTER `worktree/group-ungroup` branched off `main`. The two branches touched different functions in `DesignView.vue` (group-drag added `expandSelectionWithDescendants`; ungroup added `handleDesignUngroupFromContextMenu`).
+2. Merged `worktree/group-drag-fix` → `main` with `--no-ff` (commit `ac66d088`).
+3. Rebased `worktree/group-ungroup` onto the updated `main`:
+   - Backend commit `ee903dc9` applied cleanly.
+   - Frontend commit `d7a05497` had 1 conflict in `DesignView.vue` (lines 1150–1190) — resolved by keeping both new functions (the conflict was at the same insertion point but for different functions; manual merge preserved both).
+   - Rebase produced new commit hashes `59061c7f` and `daf21418`.
+4. Verified: vue-tsc clean; vitest 1600/1601 (1 pre-existing NalarBrowserInlinePreview flake, passes standalone); zig 2013/2019; both binaries build clean.
+
+**Plan:** docs/superpowers/specs/2026-07-29-design-right-click-group-menu.md (Chunk 9, originally deferred from grouped-layers plan)
+**Branches:**
+- main: now contains group-drag-fix (merge `ac66d088`)
+- worktree/group-ungroup: now contains both group-drag-fix AND ungroup feature

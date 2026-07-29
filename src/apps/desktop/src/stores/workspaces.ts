@@ -217,6 +217,7 @@ import {
   updateDesignPage as updateDesignPageApi,
   groupDesignElements as groupDesignElementsApi,
   reorderDesignElements as reorderDesignElementsApi,
+  ungroupDesignElements as ungroupDesignElementsApi,
   type GroupDesignElementsRequest,
   type ReorderMode,
 } from '../api'
@@ -1362,6 +1363,32 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     return result
   }
 
+  // Dissolve a group/frame: reparent its direct children to the
+  // group's parent (or top-level if the group had no parent), then
+  // delete the group row. Mirrors the in-place-replace pattern of
+  // groupDesignElements (each returned `orphaned` row replaces its
+  // current row in `design_elements`; the group row is removed).
+  async function ungroupDesignElements(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    elementId: string,
+  ): Promise<{ orphaned: DesignElement[] }> {
+    const result = await ungroupDesignElementsApi(workspaceId, itemId, pageId, elementId)
+    const item = findItem(workspaceId, itemId)
+    if (item && item.design_elements) {
+      // Replace each orphaned child in place.
+      for (const updated of result.orphaned) {
+        const idx = item.design_elements.findIndex((e) => e.id === updated.id)
+        if (idx !== -1) item.design_elements[idx] = updated
+      }
+      // Remove the group row itself.
+      const group_idx = item.design_elements.findIndex((e) => e.id === elementId)
+      if (group_idx !== -1) item.design_elements.splice(group_idx, 1)
+    }
+    return result
+  }
+
   // Delete a page. Idempotent on the backend (404 = already gone).
   // Note: DesignView manages its own local `pages` array (fetched
   // via `listDesignPages`); there is no `design_pages` field on the
@@ -2397,7 +2424,8 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     deleteDesignPage,
     updateDesignPage,
     groupDesignElements,
-  reorderDesignElements,
+    ungroupDesignElements,
+    reorderDesignElements,
     initializeFromSystemFolder,
     onSessionEvent,
     fetchSystemFolder,

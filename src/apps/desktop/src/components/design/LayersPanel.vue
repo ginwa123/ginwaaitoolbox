@@ -64,6 +64,7 @@ const emit = defineEmits<{
   // the Group / Select all / Bring / Send / Delete actions to the
   // appropriate handlers (useDesignHandlers, store actions).
   group: [targetIds: string[]]
+  ungroup: [elementId: string]
   selectAll: []
   bringToFront: [targetIds: string[]]
   bringForward: [targetIds: string[]]
@@ -292,7 +293,9 @@ const handleMoveDown = (elementId: string): void => {
       :x="contextMenu.state.value.x"
       :y="contextMenu.state.value.y"
       :target-ids="contextMenu.state.value.targetIds"
+      :elements="elements"
       @group="(ids) => emit('group', ids)"
+      @ungroup="(id) => emit('ungroup', id)"
       @select-all="emit('selectAll')"
       @bring-to-front="(ids) => emit('bringToFront', ids)"
       @bring-forward="(ids) => emit('bringForward', ids)"

@@ -1691,6 +1691,33 @@ export async function deleteDesignElement(
 }
 
 /**
+ * POST /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/ungroup
+ *
+ * Dissolve a `group` or `frame` element: reparent its direct children
+ * to the group's parent (or top-level if the group had no parent), then
+ * delete the group row. Children keep their absolute x/y — their geometry
+ * is independent of the group's bbox.
+ *
+ * Body: `{ element_id: 'elem_g' }`.
+ *
+ * Response 200: `{ orphaned: DesignElement[] }` — the children in their
+ * new post-reparent state.
+ *
+ * Error shape: 400 (BadGroupId / NotAGroup / EmptyGroup), 500 (DbError).
+ */
+export async function ungroupDesignElements(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  elementId: string,
+): Promise<{ orphaned: DesignElement[] }> {
+  return await apiFetch<{ orphaned: DesignElement[] }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/ungroup`,
+    { method: 'POST', body: { element_id: elementId } },
+  )
+}
+
+/**
  * DELETE /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId
  *
  * Delete a design page. The backend (design_model.deletePage) handles

@@ -642,10 +642,12 @@ const handleKeydown = (event: KeyboardEvent): void => {
   // NEW (Chunk 6 of grouped-layers plan): Cmd/Ctrl+G groups the
   // current selection into a new `group` at the union bbox. Figma
   // convention. The composable enforces the 2+ selection rule
-  // silently (mirrors Figma's Cmd+G). Cmd+Shift+G is reserved for
-  // the deferred Chunk 9 "ungroup" feature — bound to a no-op for
-  // now so the future handler isn't accidentally consumed by
-  // browser/OS shortcuts.
+  // silently (mirrors Figma's Cmd+G).
+  //
+  // Chunk 9: Cmd/Ctrl+Shift+G is the inverse — dissolve the single
+  // selected group/frame. Only fires when exactly one element is
+  // selected AND its type is `group` or `frame` (the composable
+  // enforces this silently, mirroring Figma's greyed-out Ungroup).
   if (
     (event.key === 'g' || event.key === 'G') &&
     (event.ctrlKey || event.metaKey) &&
@@ -653,9 +655,10 @@ const handleKeydown = (event: KeyboardEvent): void => {
   ) {
     event.preventDefault()
     if (event.shiftKey) {
-      // TODO: implement ungroupSelection in Chunk 9 of the
-      // grouped-layers plan. For now: silent no-op so users don't
-      // get a silent failure if they try it.
+      if (selectedIds.value.size === 1) {
+        const onlyId = Array.from(selectedIds.value)[0]
+        if (onlyId) void designHandlers.ungroupSelection(onlyId)
+      }
       return
     }
     void designHandlers.groupSelection()
@@ -1172,6 +1175,17 @@ function expandSelectionWithDescendants(
     }
   }
   return out
+}
+
+// Chunk 9 of grouped-layers plan: dissolve the single selected
+// group/frame. Mirrors handleDesignGroupFromContextMenu but takes a
+// single id (groups always dissolve one at a time). Cmd+Shift+G and
+// the right-click menu both route here. The composable reads
+// selectedIds.value but doesn't need it pre-seeded — it just operates
+// on the passed elementId.
+const handleDesignUngroupFromContextMenu = (elementId: string): void => {
+  if (!elementId) return
+  void designHandlers.ungroupSelection(elementId)
 }
 
 // Chunk 2: group drag. When the user drags any element that's part of
@@ -1909,6 +1923,7 @@ watch(
             @reorder="handleReorderElements"
             @delete="handleElementDelete"
             @group="handleDesignGroupFromContextMenu"
+            @ungroup="handleDesignUngroupFromContextMenu"
             @select-all="handleDesignSelectAll"
             @bring-to-front="() => dispatchReorder('bring_to_front')"
             @bring-forward="() => dispatchReorder('bring_forward')"
@@ -1954,7 +1969,7 @@ watch(
       @close="showAddElementDialog = false"
     />
 
-    <!-- ─── Canvas right-click context menu (Chunk 3+5) ────────────
+    <!-- ─── Canvas right-click context menu (Chunk 3+5+9) ────────────
          Disabled in Preview mode (the canvasContextMenu composable
          keeps `visible: false` because handleCanvasContextMenu
          short-circuits there). -->
@@ -1963,7 +1978,9 @@ watch(
       :x="canvasContextMenu.state.value.x"
       :y="canvasContextMenu.state.value.y"
       :target-ids="canvasContextMenu.state.value.targetIds"
+      :elements="elements"
       @group="handleDesignGroupFromContextMenu"
+      @ungroup="handleDesignUngroupFromContextMenu"
       @select-all="handleDesignSelectAll"
       @bring-to-front="() => dispatchReorder('bring_to_front')"
       @bring-forward="() => dispatchReorder('bring_forward')"

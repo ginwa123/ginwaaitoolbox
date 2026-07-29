@@ -172,5 +172,46 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
     }
   }
 
-  return { updateElement, deleteElement, groupSelection }
+  /**
+   * NEW (Chunk 9 of grouped-layers plan). Figma convention:
+   * Cmd/Ctrl+Shift+G dissolves a `group` (or `frame`) — its direct
+   * children are reparented to the group's parent (or top-level if
+   * the group had no parent), the group row is deleted.
+   *
+   * Selection gate: silent no-op when `elementId` is empty (matches
+   * Figma — Ungroup is greyed out when nothing is selected).
+   *
+   * On success: clears the selection Set and fires a success toast.
+   * On failure: fires an error toast with the apiFetch error message.
+   */
+  async function ungroupSelection(elementId: string): Promise<void> {
+    if (!args) {
+      console.warn('[useDesignHandlers.ungroupSelection] no args provided; skipping')
+      return
+    }
+    const workspaceId = readId(args.workspaceId)
+    const itemId = readId(args.itemId)
+    const pageId = readId(args.pageId)
+    if (!workspaceId || !itemId || !pageId || !elementId) {
+      // Missing ids — quiet no-op.
+      return
+    }
+    try {
+      const result = await workspacesStore.ungroupDesignElements(
+        workspaceId, itemId, pageId, elementId,
+      )
+      // Clear selection so the user can immediately Ungroup again on a
+      // fresh selection (Figma behavior — Ungroup collapses to the
+      // new top-level children, then the user picks the next one).
+      args.selectedIds.value = new Set()
+      notificationStore.notifyError(
+        `Ungrouped ${result.orphaned.length} elements.`,
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      notificationStore.notifyError(message, 'Failed to ungroup.')
+    }
+  }
+
+  return { updateElement, deleteElement, groupSelection, ungroupSelection }
 }

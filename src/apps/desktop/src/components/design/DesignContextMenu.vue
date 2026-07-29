@@ -34,11 +34,20 @@ const props = defineProps<{
   x: number
   y: number
   targetIds: string[]
+  /**
+   * The full element list for the active page. Used to determine
+   * whether the current `targetIds` selection contains exactly one
+   * group/frame (the only state in which Ungroup can fire —
+   * matches Figma: Ungroup is greyed out unless the single selection
+   * is a group).
+   */
+  elements: ReadonlyArray<{ id: string; type: string }>
 }>()
 
 const emit = defineEmits<{
   close: []
   group: [targetIds: string[]]
+  ungroup: [targetId: string]
   selectAll: []
   bringToFront: [targetIds: string[]]
   bringForward: [targetIds: string[]]
@@ -56,6 +65,18 @@ const acc = (mac: string, linux: string): string => (isMac.value ? mac : linux)
 const hasSelection = computed(() => props.targetIds.length >= 1)
 const canGroup = computed(() => props.targetIds.length >= 2)
 
+// Ungroup is enabled only when EXACTLY ONE element is selected AND
+// that element's type is 'group' or 'frame'. Mirrors Figma's
+// "greyed-out Ungroup for non-group single selections" rule.
+const canUngroup = computed(() => {
+  if (props.targetIds.length !== 1) return false
+  const targetId = props.targetIds[0]
+  if (!targetId) return false
+  const target = props.elements.find((e) => e.id === targetId)
+  if (!target) return false
+  return target.type === 'group' || target.type === 'frame'
+})
+
 // Items dispatched through `v-for` to avoid repeating the same
 // button markup 4 times. Each entry maps to one of the design's
 // 4 reorder events. The single `reorder` handler below routes to
@@ -68,11 +89,11 @@ const reorderItems = computed(() => [
 ])
 
 // Estimated menu footprint for viewport edge clamping. Counted
-// from the items[] below: 7 buttons + 2 separators = 9 rows × 40px
+// from the items[] below: 8 buttons + 2 separators = 10 rows × 40px
 // tall; 220px wide minimum.
 const MENU_WIDTH = 220
 const MENU_ROW_HEIGHT = 40
-const MENU_ROWS = 9
+const MENU_ROWS = 10
 const VIEWPORT_MARGIN = 8
 
 const edgeClampedStyle = computed(() => {
@@ -128,6 +149,17 @@ function dispatchReorder(item: typeof reorderItems.value[number]): void {
       >
         <span>Group selection</span>
         <span class="text-xs" style="color: var(--semantic-text-dim);">{{ acc('⌘G', 'Ctrl+G') }}</span>
+      </button>
+      <button
+        type="button"
+        class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
+        style="color: var(--semantic-text);"
+        :disabled="!canUngroup"
+        data-testid="design-context-menu-ungroup"
+        @click="emit('ungroup', targetIds[0]!)"
+      >
+        <span>Ungroup</span>
+        <span class="text-xs" style="color: var(--semantic-text-dim);">{{ acc('⌘⇧G', 'Ctrl+Shift+G') }}</span>
       </button>
       <button
         type="button"

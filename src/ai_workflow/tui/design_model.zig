@@ -1362,6 +1362,129 @@ pub fn reorderElements(
     };
 }
 
+// ─── ungroupElements (Cmd+Shift+G / right-click Ungroup) ──────────────────
+
+pub const UngroupInput = struct {
+    page_id: []const u8,
+    /// The id of the `group` or `frame` element to dissolve. The
+    /// children of this element are reparented to the group's parent
+    /// (or top-level if the group had no parent).
+    element_id: []const u8,
+};
+
+pub const UngroupError = error{
+    /// `element_id` doesn't resolve on the page.
+    BadGroupId,
+    /// The element is not a `group` or `frame`.
+    NotAGroup,
+    /// The element has no children (matching Figma's greyed-out Ungroup).
+    EmptyGroup,
+    DbError,
+    OutOfMemory,
+};
+
+/// Dissolve a `group` or `frame`: reparent its direct children to
+/// the group's parent (or NULL if top-level), delete the group's row.
+/// Children keep their absolute x/y/z_index — their geometry is
+/// independent of the group's bbox.
+///
+/// Returns the rows of the now-orphaned children in their new state
+/// (post-reparent) so the caller can mirror them in local state.
+/// Call `freeElements(allocator, result)` on the returned slice.
+pub fn ungroupElements(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: UngroupInput,
+) UngroupError![]DesignElement {
+    // 1. Look up the group element. Verify it's a group/frame.
+    var group_row = db.query(allocator,
+        "SELECT id, page_id, COALESCE(parent_id, ''), type FROM design_page_elements WHERE id = ?",
+        &.{input.element_id}) catch return error.DbError;
+    defer group_row.deinit();
+    const maybe_g_opt = group_row.next() catch return error.DbError;
+    if (maybe_g_opt == null) return error.BadGroupId;
+    var g = maybe_g_opt.?;
+    defer g.deinit(allocator);
+
+    const group_parent_id: []const u8 = g.values[2];
+    const group_type_str: []const u8 = g.values[3];
+    if (!std.mem.eql(u8, group_type_str, "group") and
+        !std.mem.eql(u8, group_type_str, "frame"))
+    {
+        return error.NotAGroup;
+    }
+
+    // 2. Fetch the children to be reparented.
+    var children: std.ArrayList(DesignElement) = .empty;
+    defer {
+        for (children.items) |c| freeElement(allocator, c);
+        children.deinit(allocator);
+    }
+    {
+        var q = db.query(allocator,
+            \\SELECT de.id, de.page_id, COALESCE(de.parent_id, ''),
+            \\       de.x, de.y, de.width, de.height,
+            \\       de.z_index, de.position,
+            \\       de.name, de.type
+            \\FROM design_page_elements de
+            \\WHERE de.parent_id = ? AND de.page_id = ?
+            \\ORDER BY de.z_index ASC, de.position ASC
+        , &.{ input.element_id, input.page_id }) catch return error.DbError;
+        defer q.deinit();
+        while (q.next() catch return error.DbError) |row| {
+            defer row.deinit(allocator);
+            const e: DesignElement = .{
+                .id = allocator.dupe(u8, row.values[0]) catch return error.DbError,
+                .page_id = allocator.dupe(u8, row.values[1]) catch return error.DbError,
+                .name = allocator.dupe(u8, row.values[9]) catch return error.DbError,
+                .file_path = allocator.dupe(u8, "") catch return error.DbError,
+                .x = std.fmt.parseInt(i64, row.values[3], 10) catch 0,
+                .y = std.fmt.parseInt(i64, row.values[4], 10) catch 0,
+                .width = std.fmt.parseInt(i64, row.values[5], 10) catch 0,
+                .height = std.fmt.parseInt(i64, row.values[6], 10) catch 0,
+                .z_index = std.fmt.parseInt(i64, row.values[7], 10) catch 0,
+                .position = std.fmt.parseInt(i64, row.values[8], 10) catch 0,
+                .elem_type = allocator.dupe(u8, row.values[10]) catch return error.DbError,
+                .rotation = 0,
+                .fill = allocator.dupe(u8, "") catch return error.DbError,
+                .stroke = allocator.dupe(u8, "") catch return error.DbError,
+                .stroke_width = 0,
+                .corner_radius = 0,
+                .opacity = 1.0,
+                .text_content = allocator.dupe(u8, "") catch return error.DbError,
+                .text_style = allocator.dupe(u8, "") catch return error.DbError,
+                .image_url = allocator.dupe(u8, "") catch return error.DbError,
+                .parent_id = allocator.dupe(u8, group_parent_id) catch return error.DbError,
+                .created_at = allocator.dupe(u8, "") catch return error.DbError,
+                .updated_at = allocator.dupe(u8, "") catch return error.DbError,
+            };
+            children.append(allocator, e) catch return error.DbError;
+        }
+    }
+
+    if (children.items.len == 0) return error.EmptyGroup;
+
+    // 3. Reparent each child to the group's parent (or NULL).
+    for (children.items) |c| {
+        db.exec(allocator,
+            "UPDATE design_page_elements SET parent_id = ? WHERE id = ?",
+            &.{ group_parent_id, c.id }) catch return error.DbError;
+    }
+
+    // 4. Delete the group row.
+    db.exec(allocator,
+        "DELETE FROM design_page_elements WHERE id = ?",
+        &.{input.element_id}) catch return error.DbError;
+
+    // 5. Update each child's in-memory copy to reflect the new parent_id.
+    for (children.items) |*c| {
+        allocator.free(c.parent_id);
+        c.parent_id = allocator.dupe(u8, group_parent_id) catch return error.DbError;
+    }
+
+    return children.toOwnedSlice(allocator);
+}
+
 // ─── listElements / getElement ─────────────────────────────────────────────
 
 /// List all elements of a design page in (z_index, position) order.
