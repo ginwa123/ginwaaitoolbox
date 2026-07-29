@@ -127,6 +127,13 @@ pub fn maybeCompactMessagesNew(
         return false;
     };
 
+    // call all user chat history to embed TODO
+    // select where role is user and content is not null
+
+    // call all file that are touched by ai TODO
+    // tool name read_file , is_output true
+    // only get path file
+
     _ = try deps.compactMessagesInMemory(
         allocator,
         messages.*,
@@ -252,7 +259,6 @@ pub fn compactMessageInMemoryNew(
 ///
 /// Caller owns the returned string and must free with `allocator.free`.
 const MAX_INDEX_ENTRIES: usize = 50;
-const MAX_SUMMARY_BYTES: usize = 20_000;
 
 fn buildCompactionEnvelope(
     allocator: std.mem.Allocator,
@@ -351,10 +357,7 @@ fn buildCompactionEnvelope(
     // Hard cap as a safety net — the real budget should be enforced via
     // the compactor prompt itself, but we never want a misbehaving model
     // response to produce an unbounded envelope.
-    const summary_to_embed = if (compacted_xml.len > MAX_SUMMARY_BYTES)
-        compacted_xml[0..MAX_SUMMARY_BYTES]
-    else
-        compacted_xml;
+    const summary_to_embed = compacted_xml;
 
     // Wrapped in CDATA so embedded <, >, & in the summary (quoted file
     // contents, shell output, diffs, etc.) can never break the envelope.
