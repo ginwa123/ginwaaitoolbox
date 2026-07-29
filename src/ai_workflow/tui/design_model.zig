@@ -502,6 +502,12 @@ pub const AddElementInput = struct {
     text_content: []const u8 = "",
     text_style: []const u8 = "",
     image_url: []const u8 = "",
+    /// Optional FK to an existing `group` or `frame` on the same page.
+    /// When `null` (the default), the new element is top-level — same
+    /// as the pre-2026-07-29 behavior. The parent MUST exist on the
+    /// same `page_id` AND be of type `group` or `frame`; otherwise
+    /// the call fails with `BadParentId` or `ParentNotContainer`.
+    parent_id: ?[]const u8 = null,
 };
 
 pub const AddElementError = error{
@@ -509,6 +515,13 @@ pub const AddElementError = error{
     ItemPathMissing,
     BadName,
     FileWriteFailed,
+    /// `input.parent_id` doesn't reference any element on this page
+    /// (or doesn't reference any element at all).
+    BadParentId,
+    /// `input.parent_id` references an element that is NOT a
+    /// `group` or `frame` (i.e., it's a leaf type like rectangle,
+    /// text, ellipse, or image). Leaf elements can't contain children.
+    ParentNotContainer,
     DbError,
     OutOfMemory,
 };
@@ -563,6 +576,31 @@ pub fn addElement(
     defer allocator.free(lookup.item_path);
     if (lookup.item_path.len == 0) return error.ItemPathMissing;
 
+    // 1b. Validate parent_id (when provided): the parent element must
+    //     exist on the SAME page and must be of type `group` or `frame`.
+    //
+    //     We do this BEFORE the disk-write steps so a bad parent_id
+    //     fails fast without leaving orphan files. The query reads the
+    //     parent's page_id + type via a single SELECT — much cheaper
+    //     than writing the HTML and then rolling back the INSERT.
+    const parent_id_to_bind: []const u8 = if (input.parent_id) |pid| blk: {
+        var q = try db.query(allocator,
+            \\SELECT de.page_id, de.type FROM design_page_elements de WHERE de.id = ?
+        , &.{pid});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.BadParentId;
+        defer row.deinit(allocator);
+        const parent_page_id: []const u8 = row.values[0];
+        const parent_type: []const u8 = row.values[1];
+        if (!std.mem.eql(u8, parent_page_id, input.page_id)) return error.BadParentId;
+        if (!std.mem.eql(u8, parent_type, "group") and
+            !std.mem.eql(u8, parent_type, "frame"))
+        {
+            return error.ParentNotContainer;
+        }
+        break :blk pid;
+    } else "";
+
     // 2. Sanitize the page and element names for filesystem safety.
     const sanitized_page = try design_io.sanitizeFilename(allocator, lookup.page_name);
     defer allocator.free(sanitized_page);
@@ -613,13 +651,18 @@ pub fn addElement(
         \\    ?, ?, ?, ?, ?, ?, ?, ?, 0,
         \\    COALESCE((SELECT MAX(de.position) FROM design_page_elements de
         \\        WHERE de.page_id = ?), -1) + 1,
-        \\    ?, ?, ?, '', 0, ?, ?, '', '', '', NULL,
+        \\    ?, ?, ?, '', 0, ?, ?, '', '', '', ?,
         \\    datetime('now'), datetime('now')
         \\)
     , &.{
         id, input.page_id, input.name, file_path,
         x_str, y_str, width_str, height_str, input.page_id,
         elem_type_str, rotation_str, input.fill, corner_radius_str, opacity_str,
+        // SqliteBackend.exec binds an empty slice as SQL NULL — that's
+        // exactly what we want for `parent_id = ?` when the user did
+        // not pass parent_id. See project memory
+        // `sqlite-backend-empty-slice-binds-as-null`.
+        parent_id_to_bind,
     });
 
     // Emit SSE event AFTER the SQL INSERT succeeded. Best-effort: if
