@@ -140,6 +140,15 @@ async function dispatchReorder(
 ): Promise<void> {
   if (!props.workspaceId || !effectiveItemId.value || !activePageId.value) return
   if (selectedIds.value.size === 0) return
+  // Undo/redo plan (Chunk 5): capture the current top-to-bottom z-
+  // order BEFORE the reorder call. The composable's applyInverse
+  // for `reorder` is currently a no-op (no absolute-z-order endpoint
+  // yet); this entry at least records what the order was at
+  // gesture time.
+  const beforeOrder = elements.value
+    .slice()
+    .sort((a, b) => b.z_index - a.z_index)
+    .map((e) => e.id)
   try {
     await workspacesStore.reorderDesignElements(
       props.workspaceId,
@@ -148,6 +157,11 @@ async function dispatchReorder(
       mode,
       Array.from(selectedIds.value),
     )
+    const afterOrder = elements.value
+      .slice()
+      .sort((a, b) => b.z_index - a.z_index)
+      .map((e) => e.id)
+    void history.captureReorder(beforeOrder, afterOrder)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     useNotificationStore().notifyError(`Failed to reorder (${mode}): ${message}`)
@@ -167,6 +181,17 @@ async function handleDesignContextMenuDelete(targetIds: string[]): Promise<void>
   if (!props.workspaceId || !effectiveItemId.value || !activePageId.value) return
   if (targetIds.length === 0) return
   if (!confirm(`Delete ${targetIds.length} element${targetIds.length === 1 ? '' : 's'}?`)) return
+  // Undo/redo plan (Chunk 5): capture the deleted elements + their
+  // HTML bodies BEFORE the deletion so undo can restore everything.
+  // The composable's captureDelete is async (fetches HTML bodies).
+  const deletedElements = targetIds
+    .map((id) => {
+      const el = elements.value.find((e) => e.id === id)
+      if (!el) return null
+      return { element: { ...el }, htmlBody: null as string | null }
+    })
+    .filter((e): e is { element: DesignElementApi; htmlBody: string | null } => e !== null)
+  void history.captureDelete(deletedElements)
   for (const id of targetIds) {
     void workspacesStore.deleteDesignElement(
       props.workspaceId,
@@ -618,6 +643,16 @@ const handleKeydown = (event: KeyboardEvent): void => {
     const count = selectedIds.value.size
     if (!confirm(`Delete ${count} element${count === 1 ? '' : 's'}?`)) return
     if (!props.workspaceId || !effectiveItemId.value || !activePageId.value) return
+    // Undo/redo plan (Chunk 5): capture deleted elements + their
+    // HTML bodies BEFORE the deletion so undo restores them.
+    const deletedElements = Array.from(selectedIds.value)
+      .map((id) => {
+        const el = elements.value.find((e) => e.id === id)
+        if (!el) return null
+        return { element: { ...el }, htmlBody: null as string | null }
+      })
+      .filter((e): e is { element: DesignElementApi; htmlBody: string | null } => e !== null)
+    void history.captureDelete(deletedElements)
     for (const id of Array.from(selectedIds.value)) {
       void workspacesStore.deleteDesignElement(
         props.workspaceId,
@@ -668,6 +703,9 @@ const handleKeydown = (event: KeyboardEvent): void => {
       }
       return
     }
+    // Undo/redo plan (Chunk 5): capture the group entry before
+    // the selection gets cleared by the composable.
+    void history.captureGroup('__pending__', Array.from(selectedIds.value), true)
     void designHandlers.groupSelection()
     return
   }
@@ -733,6 +771,11 @@ const handleKeydown = (event: KeyboardEvent): void => {
     const dy =
       event.key === 'ArrowUp' ? -step :
       event.key === 'ArrowDown' ? step : 0
+    // Undo/redo plan (Chunk 4): each keypress is one undo entry
+    // (Figma parity). Pre-state is captured BEFORE the PATCH loop;
+    // post-state AFTER. capturePostState is async (reads HTML body);
+    // we don't await so the next keypress queues the next capture.
+    void history.capturePreState(Array.from(selectedIds.value))
     for (const id of selectedIds.value) {
       const el = elements.value.find((e) => e.id === id)
       if (!el) continue
@@ -758,6 +801,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
         { x: newX, y: newY },
       )
     }
+    void history.capturePostState(Array.from(selectedIds.value))
     return
   }
 }
@@ -1180,10 +1224,16 @@ const handleLayerSelect = (payload: { elementId: string; additive: boolean }): v
 // Cmd+G path: inject the targetIds into the local `selectedIds`
 // ref so `useDesignHandlers.groupSelection()` (which reads from
 // `selectedIds.value`) acts on them. On success the composable
-// clears the selection itself.
+// clears the selection itself. Undo/redo plan: capture the group
+// entry before the selection gets cleared.
 const handleDesignGroupFromContextMenu = (targetIds: string[]): void => {
   if (targetIds.length < 2) return
   selectedIds.value = new Set(targetIds)
+  // Push the group entry — the parent group's id is determined by
+  // the backend; for the capture entry we record `beforeParentExisted:
+  // true` (parent row doesn't exist yet) and use a placeholder id
+  // that the composable's inverse will treat as "no-op".
+  void history.captureGroup('__pending__', targetIds, true)
   void designHandlers.groupSelection()
 }
 
@@ -1377,6 +1427,28 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
 const clearSnapGuides = (): void => {
   snapGuides.value = []
   dragStartPositions = null
+}
+
+// Undo/redo plan (Chunk 4): gesture boundary capture. The
+// pre-state is captured at drag-start (pointerdown); the post-
+// state at drag-end (pointerup trailing emit). The composable
+// diffs them and pushes an entry if changed. dragStart/dragEnd
+// also fire for resize and group drag (DesignElement handles
+// all three gesture paths uniformly via these emits).
+const handleDragStart = (ids: string[]): void => {
+  void history.capturePreState(ids)
+}
+const handleDragEnd = (): void => {
+  void history.capturePostState(
+    // For single-element drag, ids is implicit (just this element).
+    // For multi-element drag, ids has been captured. We pass an
+    // empty array as a safety net — capturePostState re-reads the
+    // live state from the store and diffs against the pre-state we
+    // captured above.
+    Array.from(selectedIds.value),
+  ).then(() => {
+    snapGuides.value = []
+  })
 }
 
 const handleCreateElement = (
@@ -1918,7 +1990,8 @@ watch(
               @select="(payload) => handleElementToggle(payload.elementId, payload.additive)"
               @update="handleElementUpdate"
               @group-drag="handleGroupDrag"
-              @drag-end="clearSnapGuides"
+              @drag-end="handleDragEnd"
+              @drag-start="handleDragStart"
               @html-changed="handleElementHtmlChanged"
               @delete="handleElementDelete"
             />

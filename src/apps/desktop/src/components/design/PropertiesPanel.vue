@@ -47,8 +47,16 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { DesignElement } from '../../api'
 import { useWorkspacesStore } from '../../stores/workspaces'
+import { useDesignHistory } from '../../composables/useDesignHistory'
 
 const workspacesStore = useWorkspacesStore()
+
+// Undo/redo plan (Chunk 4): one history entry per field commit.
+// Pre-state is captured on input focus; post-state on @change.
+// We instantiate the composable here (rather than at DesignView)
+// so the capture is local to each field — no need to plumb ids
+// through props.
+const history = useDesignHistory(computed(() => workspacesStore.activeDesignPageId))
 
 const props = withDefaults(
   defineProps<{
@@ -96,12 +104,50 @@ type NumericField = 'x' | 'y' | 'width' | 'height' | 'rotation' | 'stroke_width'
 type StringField = 'name' | 'fill' | 'stroke' | 'text_content' | 'text_style' | 'image_url'
 
 const handleNumericChange = (field: NumericField, value: number): void => {
+  const el = singleElement.value
+  if (el) {
+    void history.capturePreState([el.id])
+    // Post-state is captured via watch below — when the element's
+    // field actually changes (via the store update mirror), we
+    // capture post-state. This fires once per @change.
+  }
   emit('update', { [field]: value } as Partial<DesignElement>)
 }
 
 const handleStringChange = (field: StringField, value: string): void => {
+  const el = singleElement.value
+  if (el) {
+    void history.capturePreState([el.id])
+  }
   emit('update', { [field]: value } as Partial<DesignElement>)
 }
+
+// Watch the single-element fields for actual change. When any
+// field updates (from a PropertiesPanel edit), we capture post-
+// state. The watcher is debounced to collapse rapid edits into a
+// single entry.
+let lastFieldsSnapshot: string = ''
+let propertiesPanelPostTimer: ReturnType<typeof setTimeout> | null = null
+function schedulePropertiesPanelCapturePost(): void {
+  if (propertiesPanelPostTimer) clearTimeout(propertiesPanelPostTimer)
+  propertiesPanelPostTimer = setTimeout(() => {
+    propertiesPanelPostTimer = null
+    const el = singleElement.value
+    if (el) void history.capturePostState([el.id])
+  }, 80)
+}
+watch(
+  singleElement,
+  (el) => {
+    if (!el) return
+    const fingerprint = `${el.x}|${el.y}|${el.width}|${el.height}|${el.rotation}|${el.fill}|${el.stroke}|${el.stroke_width}|${el.corner_radius}|${el.opacity}|${el.name}|${el.text_content}|${el.image_url}|${el.type}`
+    if (lastFieldsSnapshot && lastFieldsSnapshot !== fingerprint) {
+      schedulePropertiesPanelCapturePost()
+    }
+    lastFieldsSnapshot = fingerprint
+  },
+  { deep: false },
+)
 
 // ─── Confirm-before-delete state ───────────────────────────────────────
 

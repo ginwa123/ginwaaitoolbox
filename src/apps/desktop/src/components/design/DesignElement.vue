@@ -112,6 +112,11 @@ const emit = defineEmits<{
   // parent can clear its snap guides. Fires after both the single-
   // element drag and the multi-selection group drag paths.
   dragEnd: []
+  // Undo/redo plan: emit on drag-start so the parent can capture
+  // pre-state for the eventual undo entry. Carries the moved
+  // ids so the parent can capture the full selection (not just
+  // this element).
+  dragStart: [ids: string[]]
   htmlChanged: [html: string]
   delete: [elementId: string]
 }>()
@@ -158,6 +163,18 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     elementId: props.element.id,
     additive: event.shiftKey,
   })
+
+  // Undo/redo plan (Chunk 4): emit drag-start BEFORE the gesture
+  // branches so the parent can capture pre-state. For single-element
+  // drag, the captured set is [this element]. For group drag (below),
+  // we re-emit with the full selection BEFORE setting up the move
+  // handler. This way the parent's pre-state read happens once.
+  const groupDragIds = props.selectedIds.length > 1
+    && props.selectedIds.includes(props.element.id)
+    && mode === 'move'
+    ? props.selectedIds
+    : [props.element.id]
+  emit('dragStart', groupDragIds)
 
   // Group drag (Chunk 2): when this element is part of a multi-selection,
   // dragging moves the ENTIRE selection. The parent applies the same
