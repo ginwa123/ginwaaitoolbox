@@ -119,7 +119,7 @@ describe('PropertiesPanel Monaco Save wire-up (Chunk 1 of undo/redo plan)', () =
     }
     await nextTick()
 
-    const saveBtn = wrapper.find('[data-testid="properties-html-editor-save"]')
+    const saveBtn = wrapper.find('[data-testid="properties-html-save"]')
     expect(saveBtn.exists()).toBe(true)
     await saveBtn.trigger('click')
 

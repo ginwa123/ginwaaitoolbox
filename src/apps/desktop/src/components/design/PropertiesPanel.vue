@@ -46,6 +46,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { DesignElement } from '../../api'
+import { useWorkspacesStore } from '../../stores/workspaces'
+
+const workspacesStore = useWorkspacesStore()
 
 const props = withDefaults(
   defineProps<{
@@ -195,8 +198,28 @@ watch(htmlExpanded, async (expanded) => {
   }
 })
 
-const handleHtmlSave = (): void => {
-  emit('htmlChanged', htmlDraft.value)
+// Wire-up (undo/redo plan Chunk 1): was `emit('htmlChanged', htmlDraft.value)`
+// which went upward to DesignView → re-emitted → AppLayout had no
+// listener → silent drop. Now we call the store action directly.
+// Falls back to the emit if the store action throws (e.g. when the
+// single-element contract is violated mid-gesture).
+const handleHtmlSave = async (): Promise<void> => {
+  const el = singleElement.value
+  if (!el) {
+    emit('htmlChanged', htmlDraft.value)
+    return
+  }
+  try {
+    await workspacesStore.updateDesignElementHtml(
+      workspacesStore.activeWorkspace?.id ?? '',
+      workspacesStore.activeWorkspaceItemId ?? '',
+      workspacesStore.activeDesignPageId,
+      el.id,
+      htmlDraft.value,
+    )
+  } catch {
+    emit('htmlChanged', htmlDraft.value)
+  }
 }
 
 const handleHtmlCancel = (): void => {

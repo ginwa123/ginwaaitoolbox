@@ -211,6 +211,7 @@ import * as api from '../api'
 import {
   addDesignElement as addDesignElementApi,
   updateDesignElement as updateDesignElementApi,
+  updateDesignElementHtml as updateDesignElementHtmlApi,
   deleteDesignElement as deleteDesignElementApi,
   deleteDesignPage as deleteDesignPageApi,
   updateDesignElementGeometry as updateDesignElementGeometryApi,
@@ -1224,6 +1225,34 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       pageId,
       elementId,
       patch,
+    )
+    const item = findItem(workspaceId, itemId)
+    if (item?.design_elements) {
+      const idx = item.design_elements.findIndex((e) => e.id === elementId)
+      if (idx !== -1) item.design_elements[idx] = updated
+    }
+    return updated
+  }
+
+  // HTML body-only update (Monaco Save button). Mirrors the
+  // `updateDesignElement` shape: PATCHes the dedicated html
+  // endpoint, mirrors the response into the local design_elements
+  // array. Undo/redo plan Chunk 1 wire-up — the Monaco Save button
+  // previously emitted `htmlChanged` upward with no listener
+  // (silent drop). Now PropertiesPanel calls this directly.
+  async function updateDesignElementHtml(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    elementId: string,
+    html: string,
+  ): Promise<DesignElement> {
+    const updated = await updateDesignElementHtmlApi(
+      workspaceId,
+      itemId,
+      pageId,
+      elementId,
+      html,
     )
     const item = findItem(workspaceId, itemId)
     if (item?.design_elements) {
@@ -2420,6 +2449,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     addDesignElement,
     updateDesignElement,
     updateDesignElementGeometry,
+    updateDesignElementHtml,
     deleteDesignElement,
     deleteDesignPage,
     updateDesignPage,
