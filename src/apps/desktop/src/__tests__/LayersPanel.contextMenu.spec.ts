@@ -89,6 +89,32 @@ describe('LayersPanel context menu', () => {
     expect(vm.props('targetIds')).toEqual(['elem_a', 'elem_b'])
   })
 
+  it('opens the menu with the full selection when right-clicking an already-selected row (no shift)', async () => {
+    // Figma parity: right-click on a row that's already in the
+    // multi-selection — regardless of shift — opens the menu against
+    // the FULL selection. The earlier implementation incorrectly
+    // collapsed the targetIds to a single id, which broke the
+    // "Select all then right-click" workflow (Group selection was
+    // disabled because targetIds.length became 1).
+    const elements = [
+      makeElement({ id: 'elem_a', z_index: 2, position: 0 }),
+      makeElement({ id: 'elem_b', z_index: 1, position: 1 }),
+      makeElement({ id: 'elem_c', z_index: 0, position: 2 }),
+    ]
+    wrapper = mount(LayersPanel, {
+      props: { elements, selectedIds: ['elem_a', 'elem_b', 'elem_c'], readonly: false },
+      attachTo: document.body,
+    })
+    await nextTick()
+
+    const row = wrapper.find('[data-testid="design-layer-elem_b"]')
+    await row.trigger('contextmenu', { clientX: 150, clientY: 250 })
+    await nextTick()
+
+    const vm = wrapper.findComponent({ name: 'DesignContextMenu' })
+    expect(vm.props('targetIds')).toEqual(['elem_a', 'elem_b', 'elem_c'])
+  })
+
   it('replaces the selection with the right-clicked id when that row is NOT in the selection', async () => {
     const elements = [
       makeElement({ id: 'elem_a', z_index: 2, position: 0 }),
@@ -110,6 +136,67 @@ describe('LayersPanel context menu', () => {
 
     const vm = wrapper.findComponent({ name: 'DesignContextMenu' })
     expect(vm.props('targetIds')).toEqual(['elem_b'])
+  })
+
+  it('Shift+click on a row toggles additive selection (existing PR #136 behaviour)', async () => {
+    const elements = [
+      makeElement({ id: 'elem_a', z_index: 2 }),
+      makeElement({ id: 'elem_b', z_index: 1 }),
+    ]
+    wrapper = mount(LayersPanel, {
+      props: { elements, selectedIds: ['elem_a'], readonly: false },
+      attachTo: document.body,
+    })
+    await nextTick()
+
+    const row = wrapper.find('[data-testid="design-layer-elem_b"]')
+    await row.trigger('click', { shiftKey: true })
+    await nextTick()
+
+    const emits = wrapper.emitted('select')
+    expect(emits).toBeTruthy()
+    // The new emit (LayerRow fires select with additive: true).
+    expect(emits?.[0]?.[0]).toEqual({ elementId: 'elem_b', additive: true })
+  })
+
+  it('Ctrl+click on a row toggles additive selection (Figma parity for Linux/Windows users)', async () => {
+    const elements = [
+      makeElement({ id: 'elem_a', z_index: 2 }),
+      makeElement({ id: 'elem_b', z_index: 1 }),
+    ]
+    wrapper = mount(LayersPanel, {
+      props: { elements, selectedIds: ['elem_a'], readonly: false },
+      attachTo: document.body,
+    })
+    await nextTick()
+
+    const row = wrapper.find('[data-testid="design-layer-elem_b"]')
+    await row.trigger('click', { ctrlKey: true })
+    await nextTick()
+
+    const emits = wrapper.emitted('select')
+    expect(emits).toBeTruthy()
+    expect(emits?.[0]?.[0]).toEqual({ elementId: 'elem_b', additive: true })
+  })
+
+  it('Cmd+click on a row toggles additive selection (Figma parity for macOS users)', async () => {
+    const elements = [
+      makeElement({ id: 'elem_a', z_index: 2 }),
+      makeElement({ id: 'elem_b', z_index: 1 }),
+    ]
+    wrapper = mount(LayersPanel, {
+      props: { elements, selectedIds: ['elem_a'], readonly: false },
+      attachTo: document.body,
+    })
+    await nextTick()
+
+    const row = wrapper.find('[data-testid="design-layer-elem_b"]')
+    await row.trigger('click', { metaKey: true })
+    await nextTick()
+
+    const emits = wrapper.emitted('select')
+    expect(emits).toBeTruthy()
+    expect(emits?.[0]?.[0]).toEqual({ elementId: 'elem_b', additive: true })
   })
 
   it('does not render the menu when readonly is true (Preview mode)', async () => {
