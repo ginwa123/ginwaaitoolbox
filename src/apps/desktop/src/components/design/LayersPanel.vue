@@ -83,7 +83,14 @@ const layerTree = computed<LayerTreeNode[]>(() => {
   for (const e of props.elements) {
     const node: LayerTreeNode = { element: e, children: [] }
     nodes.set(e.id, node)
-    const pid = e.parent_id ?? null
+    // The backend's `listElements` returns `COALESCE(de.parent_id, '')`
+    // — so a top-level element (parent_id IS NULL) arrives as
+    // `parent_id === ""` (empty string), NOT null/undefined. Treat
+    // empty string the same as nullish so top-level rows land in the
+    // `null` bucket instead of a separate `""` bucket that the final
+    // `byParent.get(null) ?? []` returns empty. See the regression
+    // test in LayersPanel.spec.ts for the wire shape.
+    const pid = e.parent_id || null
     if (!byParent.has(pid)) byParent.set(pid, [])
     byParent.get(pid)!.push(node)
   }

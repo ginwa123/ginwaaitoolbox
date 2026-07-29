@@ -614,6 +614,12 @@ onUnmounted(() => {
   window.removeEventListener('blur', handleWindowBlur)
   // Defensive: clear body cursor if we unmount mid-press.
   document.body.style.cursor = ''
+  // Clear pinch-zoom state — if pointers are still active (rare,
+  // but possible across the chat-toggle unmount/mount cycle), the
+  // next mount would otherwise see stale entries.
+  pinchPointers.clear()
+  pinchStartDistance = null
+  pinchStartZoom = null
   // NOTE: we intentionally do NOT clear `activeDesignPageId` here.
   //
   // Why: AppLayout's main-content v-else-if chain renders TWO
@@ -1189,6 +1195,108 @@ const zoomFit = (): void => {
   })
 }
 
+// Pinch-to-zoom via Pointer Events (trackpad / touchscreen /
+// Linux WebKitGTK). The `@wheel`-with-Ctrl shortcut above works on
+// mouse wheels and macOS Safari / WKWebView (the browser auto-sets
+// ctrlKey on Mac trackpad pinch), but two inputs go through @wheel
+// nowhere — both need their own handler:
+//
+//   1. WebKitGTK 4.1 (desktop app on Linux) does NOT auto-convert
+//      trackpad pinches to wheel events. They silently disappear.
+//   2. Touchscreen pinches dispatch Touch events (or PointerEvents
+//      with pointerType='touch'), never wheel events.
+//
+// We listen for ≥2 simultaneous pointers on the canvas container and
+// compute zoom from the ratio of current finger-distance to the
+// distance at pinch-start. Mouse pointerType is intentionally ignored
+// — a single-mouse user can't physically pinch.
+//
+// Pair this with `touch-action: pan-x pan-y` on the same container
+// (set in the template below) so the browser stops doing
+// viewport-level pinch-zoom there — only the canvas scales, not the
+// sidebar / chrome.
+interface PinchPointer {
+  startX: number
+  startY: number
+  currentX: number
+  currentY: number
+}
+
+const pinchPointers = new Map<number, PinchPointer>()
+let pinchStartDistance: number | null = null
+let pinchStartZoom: number | null = null
+
+const onPinchPointerDown = (event: PointerEvent): void => {
+  // Run the Space-pan handler first — it's a no-op when Space isn't
+  // held, and we want both gestures to coexist on the same element
+  // (chained instead of multiple @pointerdown listeners because
+  // Vue 3 templates only bind one listener per event per element).
+  startCanvasPan(event)
+  // Mouse can't pinch (single-pointer by definition). Pen / touch only.
+  if (event.pointerType === 'mouse') return
+  // Don't pinch-zoom when pinching on a design element — let the
+  // element's own pointerdown handler take the gesture for drag.
+  const targetEl = event.target as HTMLElement | null
+  if (targetEl?.closest('[data-design-element]')) return
+  const target = event.currentTarget as HTMLElement | null
+  if (!target) return
+  target.setPointerCapture(event.pointerId)
+  pinchPointers.set(event.pointerId, {
+    startX: event.clientX,
+    startY: event.clientY,
+    currentX: event.clientX,
+    currentY: event.clientY,
+  })
+  if (pinchPointers.size === 2) {
+    const [p1, p2] = [...pinchPointers.values()] as [
+      PinchPointer,
+      PinchPointer,
+    ]
+    pinchStartDistance = Math.hypot(
+      p2.startX - p1.startX,
+      p2.startY - p1.startY,
+    )
+    pinchStartZoom = zoom.value
+  }
+}
+
+const onPinchPointerMove = (event: PointerEvent): void => {
+  const p = pinchPointers.get(event.pointerId)
+  if (!p) return
+  p.currentX = event.clientX
+  p.currentY = event.clientY
+  if (pinchPointers.size < 2 || pinchStartDistance == null || pinchStartZoom == null) return
+  // Two fingers starting at the same point gives distance=0; division
+  // would explode. Treat as no-op until the user actually moves a finger.
+  if (pinchStartDistance <= 0) return
+  const [p1, p2] = [...pinchPointers.values()] as [
+    PinchPointer,
+    PinchPointer,
+  ]
+  const currentDistance = Math.hypot(
+    p2.currentX - p1.currentX,
+    p2.currentY - p1.currentY,
+  )
+  const ratio = currentDistance / pinchStartDistance
+  const newZoom = Math.max(
+    ZOOM_MIN,
+    Math.min(ZOOM_MAX, pinchStartZoom * ratio),
+  )
+  setZoom(newZoom)
+}
+
+const onPinchPointerEnd = (event: PointerEvent): void => {
+  pinchPointers.delete(event.pointerId)
+  const target = event.currentTarget as HTMLElement | null
+  if (target && target.hasPointerCapture(event.pointerId)) {
+    target.releasePointerCapture(event.pointerId)
+  }
+  if (pinchPointers.size < 2) {
+    pinchStartDistance = null
+    pinchStartZoom = null
+  }
+}
+
 // Ctrl+wheel zooms in/out at the cursor position. The plain wheel
 // is left alone (it scrolls the canvas container as usual — matches
 // Figma / Miro / VS Code). Shift wheel zooms ×4 faster.
@@ -1414,12 +1522,14 @@ watch(
           <div
             class="flex items-center gap-1 shrink-0"
             data-testid="design-zoom-toolbar"
+            :title="`Zoom (Ctrl+wheel or trackpad pinch) — currently ${Math.round(zoom * 100)}%`"
           >
             <button
               type="button"
               class="px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80"
               style="color: var(--semantic-text); border: 1px solid var(--color-border);"
-              aria-label="Zoom out"
+              aria-label="Zoom out (Ctrl+wheel down)"
+              title="Zoom out (Ctrl+wheel down)"
               data-testid="design-zoom-out"
               @click="zoomOut"
             >−</button>
@@ -1445,7 +1555,8 @@ watch(
               type="button"
               class="px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80"
               style="color: var(--semantic-text); border: 1px solid var(--color-border);"
-              aria-label="Zoom in"
+              aria-label="Zoom in (Ctrl+wheel up)"
+              title="Zoom in (Ctrl+wheel up)"
               data-testid="design-zoom-in"
               @click="zoomIn"
             >+</button>
@@ -1455,11 +1566,14 @@ watch(
         <!-- Canvas viewport -->
         <div
           class="flex-1 overflow-auto min-h-0"
-          style="background-color: var(--color-bg-m2);"
+          style="background-color: var(--color-bg-m2); touch-action: pan-x pan-y;"
           data-testid="design-canvas-scroll-container"
           @click="handleCanvasClick"
           @wheel="handleCanvasWheel"
-          @pointerdown="startCanvasPan"
+          @pointerdown="onPinchPointerDown"
+          @pointermove="onPinchPointerMove"
+          @pointerup="onPinchPointerEnd"
+          @pointercancel="onPinchPointerEnd"
         >
           <div
             class="relative mx-auto my-6 origin-top-left"
