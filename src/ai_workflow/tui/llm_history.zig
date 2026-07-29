@@ -3314,6 +3314,14 @@ pub const WorkspaceItemTaskInfo = struct {
     /// every kanban-card query path.
     needs_human_review: bool = false,
 
+    /// JSON-encoded array of tag strings (Migration 067 —
+    /// kanban task tags feature). Empty string is the canonical
+    /// "no tags" sentinel, matching the `description` column
+    /// (Migration 062) pattern. Owned by the lister; freed by
+    /// `deinit`. Plan:
+    /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md
+    tags: []u8 = &.{},
+
     pub fn deinit(self: WorkspaceItemTaskInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.name);
@@ -3332,6 +3340,7 @@ pub const WorkspaceItemTaskInfo = struct {
         if (self.kanban_column_id) |kc| allocator.free(kc);
         if (self.is_auto_retry_until_stop.len > 0) allocator.free(self.is_auto_retry_until_stop);
         if (self.last_finish_reason.len > 0) allocator.free(self.last_finish_reason);
+        if (self.tags.len > 0) allocator.free(self.tags);
     }
 };
 
@@ -3344,6 +3353,15 @@ pub fn createWorkspaceItemTask(
     workspace_item_id: []const u8,
     task_type: []const u8,
     description: ?[]const u8,
+    /// JSON-encoded array of tag strings (Migration 067 —
+    /// kanban task tags feature). Null = no tags supplied;
+    /// empty slice = SQL '' literal (NOT NULL DEFAULT '') which
+    /// is stored as '' (the canonical "no tags" sentinel). The
+    /// caller is responsible for passing a VALIDATED+ENCODED
+    /// JSON array string — use `http_handlers.tags_validation
+    /// .validateAndNormalizeTags` to produce one. Plan:
+    /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md
+    tags: ?[]const u8,
 ) !WorkspaceItemTaskInfo {
     if (!std.mem.eql(u8, task_type, "standard") and !std.mem.eql(u8, task_type, "routine")) {
         return error.InvalidTaskType;
@@ -3369,12 +3387,18 @@ pub fn createWorkspaceItemTask(
     //     memory `sqlite-backend-empty-slice-binds-as-null`.
     //   - description == "x…"  → bind via `?` like normal.
     //
+    // Migration 067 follows the EXACT same shape for `tags`: null
+    // omits the column, "" uses SQL '' literal, "x…" binds via `?`.
+    // The same SQL-builder pattern is reused rather than chaining
+    // another branch.
+    //
     // The choice between "omit column" and "SQL '' literal" doesn't
     // change the stored value — both produce '' in the row. The
     // builder keeps the bind-safe path the only shape the call site
     // can ever reach, regardless of how the caller expressed "no
-    // description" (null vs empty string).
+    // description" / "no tags" (null vs empty string).
     const returned_desc: []const u8 = description orelse "";
+    const returned_tags: []const u8 = tags orelse "";
     {
         var cols_buf: std.ArrayList(u8) = .empty;
         defer cols_buf.deinit(allocator);
@@ -3400,6 +3424,22 @@ pub fn createWorkspaceItemTask(
             }
         }
 
+        // Migration 067 — same dynamic-SQL builder pattern for tags.
+        // Note: empty string MUST be a SQL '' literal — see the
+        // SqliteBackend.exec empty-slice-binds-as-NULL rule cited
+        // above. The validation helper (tags_validation.zig) only
+        // returns `''` when the caller supplied no tags.
+        if (tags) |t| {
+            if (t.len == 0) {
+                try cols_buf.appendSlice(allocator, ", tags");
+                try vals_buf.appendSlice(allocator, ", ''");
+            } else {
+                try cols_buf.appendSlice(allocator, ", tags");
+                try vals_buf.appendSlice(allocator, ", ?");
+                try bind_values.append(allocator, t);
+            }
+        }
+
         var sql_buf: std.ArrayList(u8) = .empty;
         defer sql_buf.deinit(allocator);
         try sql_buf.print(
@@ -3421,6 +3461,9 @@ pub fn createWorkspaceItemTask(
         // view of the new task matches what's in the DB without a
         // round-trip SELECT).
         .description = try allocator.dupe(u8, returned_desc),
+        // Persist the tags we just INSERTed (Migration 067). dupe
+        // unconditionally so `deinit` can free consistently.
+        .tags = try allocator.dupe(u8, returned_tags),
     };
 }
 
@@ -3430,10 +3473,19 @@ pub fn getWorkspaceItemTask(
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?WorkspaceItemTaskInfo {
-    // Migration 062: added `description` to the SELECT column list,
-    // positioned right after `workspace_item_id`. All subsequent
-    // column indices shift by one.
-    const sql = "SELECT id, name, workspace_item_id, description, created_at, updated_at, task_type FROM workspace_item_tasks t WHERE t.id = ?";
+    // Column index map for `row.values[N]`:
+    //   0: id
+    //   1: name
+    //   2: workspace_item_id
+    //   3: description      (Migration 062 — added right after workspace_item_id)
+    //   4: created_at
+    //   5: updated_at
+    //   6: task_type        (Migration 044)
+    //   7: tags             (Migration 067 — JSON-encode array string)
+    //
+    // All subsequent column indices shift by one when a column is added.
+    // Update this comment block + the constructor below together.
+    const sql = "SELECT id, name, workspace_item_id, description, created_at, updated_at, task_type, tags FROM workspace_item_tasks t WHERE t.id = ?";
 
     var rows = try db.query(allocator, sql, &.{id});
     defer rows.deinit();
@@ -3451,6 +3503,10 @@ pub fn getWorkspaceItemTask(
             .created_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
             .updated_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
             .task_type = if (row.values[6].len > 0) try allocator.dupe(u8, row.values[6]) else try allocator.dupe(u8, "standard"),
+            // tags is NOT NULL DEFAULT '' (Migration 067). The frontend
+            // decodes via JSON.parse. Stored value is a JSON-encode
+            // array string ('' when no tags).
+            .tags = try allocator.dupe(u8, row.values[7]),
             .routine = null, // single-row fetch path; routine loaded on demand
         };
         row.deinit(allocator);
@@ -3782,7 +3838,12 @@ pub fn listWorkspaceItemTasksWithCursor(
         //       (last_human_touched_at IS NULL OR older than
         //       sessions.updated_at, in unix-ms — we multiply
         //       SQLite's strftime('%s', updated_at) by 1000).
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at IS NULL OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s} {s} LIMIT {s}",
+        //
+        // Kanban task tags (Migration 067): appends a single
+        // passthrough column at index 21:
+        //   21: t.tags — JSON-encode array string ('' when no tags).
+        //       NOT NULL DEFAULT '' so always present.
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at IS NULL OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s} {s} LIMIT {s}",
         .{ cursor_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -3798,14 +3859,16 @@ pub fn listWorkspaceItemTasksWithCursor(
 
     while (try rows.next()) |row| {
         // Row indices (post-Migration-063-attended-toggle JOIN,
-        // post-Migration-065-notification-icon JOIN):
+        // post-Migration-065-notification-icon JOIN,
+        // post-Migration-067-tags):
         //   0: id, 1: name, 2: workspace_item_id, 3: description,
         //   4: created_at, 5: updated_at, 6: task_type,
         //   7: is_pinned, 8: pinned_position, 9: kanban_column_id,
         //   10: kanban_position, 11-17: routine fields,
         //   18: is_auto_retry_until_stop (joined from sessions),
         //   19: last_finish_reason (joined from sessions),
-        //   20: needs_human_review (CASE derived).
+        //   20: needs_human_review (CASE derived),
+        //   21: tags (Migration 067 — JSON-encode array string).
         const task_type = if (row.values[6].len > 0)
             try allocator.dupe(u8, row.values[6])
         else
@@ -3851,6 +3914,9 @@ pub fn listWorkspaceItemTasksWithCursor(
             // Kanban notification icon (Migration 065): index 20.
             // SQL CASE produces '1' or '0'; parse to bool.
             .needs_human_review = std.mem.eql(u8, row.values[20], "1"),
+            // Kanban task tags (Migration 067): index 21. NOT NULL
+            // DEFAULT '' so always present.
+            .tags = try allocator.dupe(u8, row.values[21]),
         };
         try tasks.append(allocator, task);
         row.deinit(allocator);

@@ -271,3 +271,31 @@ the URL stays clean for non-design items.
 - Branch: `worktree/close-chatview-keep-pageid`
 - Commit: `e5897530`
 
+
+### 2026-07-29: Kanban task tags (free-form string list)
+
+**What landed:**
+- New column on `workspace_item_tasks`: `tags TEXT NOT NULL DEFAULT ''` (Migration 067). JSON-encoded array of strings (e.g. `'["bug","urgent","frontend"]'`); empty string = "no tags".
+- Wire shape: `WorkspaceItemTaskResponse.tags` (string, JSON-encoded), `TaskCreateRequest.tags`, `TaskUpdateRequest.tags` (both `?[]const u8`).
+- Frontend: `KanbanTagsInput` chip input component. `<KanbanTagsInput>` rendered between description and unattended-mode toggle in `KanbanTaskDetailDialog` (both create + edit modes).
+- `WorkspaceItemTaskCard` renders up to 3 colored tag chips below the title (with `+N more` link if more than 3).
+- Validation via `tags_validation.zig::validateAndNormalizeTags` — char whitelist `[a-zA-Z0-9_-]`, length cap 50 chars per tag, case-insensitive dedupe (first-occurrence wins), JSON shape validation.
+- Deterministic 6-color palette via djb2 hash of lowercase tag (same algorithm in card + dialog for visual consistency).
+
+**Decisions taken:**
+- Free-form string list (Option A from the brainstorm) — chose simplicity over managed vocabulary. Forward-compatible with a future managed-tag migration (read the JSON array, create proper tag rows + join table).
+- JSON string column, not a separate table — no SQL-level filtering needed in v1.
+- Per-tag char whitelist `[a-zA-Z0-9_-]` (GitHub-style). Per-tag length cap 50 chars.
+- Case-insensitive dedupe preserves first-occurrence casing.
+- 6-color palette deterministically chosen via djb2 hash of lowercase tag name.
+
+**Out of scope (v1):**
+- Tag filtering on the kanban board (substring search later if needed).
+- Tag management page (no rename, no merge).
+- Tag autocomplete.
+- Tag rename propagation across tasks.
+- Per-tag colors user-chosen.
+
+**Plan:** docs/superpowers/plans/2026-07-28-kanban-task-tags.md
+**Spec:** docs/superpowers/specs/2026-07-28-kanban-task-tags-design.md
+**Branch:** `worktree/kanban-task-tags`

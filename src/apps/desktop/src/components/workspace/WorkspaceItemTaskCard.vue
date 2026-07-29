@@ -31,6 +31,34 @@ import { useWorkspacesStore } from '../../stores/workspaces'
 import { useTaskActions, type TaskComponentProps } from '../../composables/useTaskActions'
 import MarkdownDescription from '../kanban/MarkdownDescription.vue'
 
+// Kanban task tags palette (Migration 067 — plan
+// docs/superpowers/plans/2026-07-28-kanban-task-tags.md). Same 6
+// colors as KanbanTagsInput.vue so the card chips and dialog
+// chips share colors. djb2 hash of the lowercase tag selects
+// the index deterministically.
+const TAG_PALETTE = [
+  { bg: 'rgba(139, 92, 246, 0.18)', border: 'rgba(139, 92, 246, 0.45)', text: '#a78bfa' },
+  { bg: 'rgba(59, 130, 246, 0.18)', border: 'rgba(59, 130, 246, 0.45)', text: '#60a5fa' },
+  { bg: 'rgba(34, 197, 94, 0.18)', border: 'rgba(34, 197, 94, 0.45)', text: '#4ade80' },
+  { bg: 'rgba(245, 158, 11, 0.18)', border: 'rgba(245, 158, 11, 0.45)', text: '#fbbf24' },
+  { bg: 'rgba(249, 115, 22, 0.18)', border: 'rgba(249, 115, 22, 0.45)', text: '#fb923c' },
+  { bg: 'rgba(239, 68, 68, 0.18)', border: 'rgba(239, 68, 68, 0.45)', text: '#f87171' },
+] as const
+
+function tagChipStyle(tag: string): Record<string, string> {
+  let hash = 5381
+  for (const c of tag.toLowerCase()) {
+    hash = ((hash << 5) + hash + c.charCodeAt(0)) >>> 0
+  }
+  const idx = hash % TAG_PALETTE.length
+  const c = TAG_PALETTE[idx] ?? TAG_PALETTE[0]
+  return {
+    backgroundColor: c.bg,
+    border: `1px solid ${c.border}`,
+    color: c.text,
+  }
+}
+
 // Re-inject processingState from App.vue (same key WorkspaceItem and
 // ChatsList consume). Keyed by task.id == session_id.
 const processingState = inject<Ref<Record<string, boolean>>>(
@@ -211,6 +239,20 @@ const lastUpdated = computed<Date | string | null>(() => {
 const lastUpdatedLabel = computed<string>(() =>
   formatRelativeTime(lastUpdated.value),
 )
+
+// Visible tags for the chip row (Migration 067). Caps at 3 to
+// keep the card compact; the "+N more" affordance covers the rest.
+// `task.tags` is `[]` for tasks without tags — the v-if on the
+// tags row in the template handles the "no tags" case.
+const VISIBLE_TAGS_MAX = 3
+const visibleTags = computed<string[]>(() => {
+  const tags = props.task.tags ?? []
+  return tags.slice(0, VISIBLE_TAGS_MAX)
+})
+const extraTagsCount = computed<number>(() => {
+  const tags = props.task.tags ?? []
+  return Math.max(0, tags.length - VISIBLE_TAGS_MAX)
+})
 
 // The user-facing task-type label shown in the meta row. Returns
 // 'routine' for routine tasks, 'memory' for memory tasks, or null
@@ -500,6 +542,36 @@ const typeBadge = computed<string | null>(() => {
         max-height="3rem"
         :test-id="`task-description-rendered`"
       />
+    </div>
+    <!-- Tags row (Migration 067 — kanban task tags feature).
+         Up to 3 chips visible; "+N more" link if more (opens the
+         detail dialog). Same djb2-hash 6-color palette as the
+         KanbanTagsInput component so the card chips and dialog
+         chips share colors. -->
+    <div
+      v-if="task.tags && task.tags.length > 0"
+      class="flex items-center gap-1 flex-wrap self-start w-full mt-1"
+      data-testid="task-tags-row"
+    >
+      <span
+        v-for="(tag, idx) in visibleTags"
+        :key="`${tag}-${idx}`"
+        class="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded font-medium"
+        :style="tagChipStyle(tag)"
+        :data-testid="`task-tag-chip-${tag}`"
+      >
+        {{ tag }}
+      </span>
+      <button
+        v-if="extraTagsCount > 0"
+        type="button"
+        class="text-[10px] underline"
+        style="color: var(--semantic-text-dim);"
+        @click.stop="emit('viewTaskDetail', task.id)"
+        :data-testid="`task-tags-more`"
+      >
+        +{{ extraTagsCount }} more
+      </button>
     </div>
     <!-- Meta row. Just the last-updated time + a single subtle type
          label when relevant. The row gets a hairline top border with

@@ -1,0 +1,257 @@
+//! Tag input validation for the kanban task tags feature.
+//!
+//! ## What this does
+//!
+//! `validateAndNormalizeTags` takes a raw `?[]const u8` from the
+//! HTTP request body and returns a normalized JSON-encoded array
+//! string suitable for direct storage in the `workspace_item_tasks.tags`
+//! column (Migration 067).
+//!
+//! ## Validation rules
+//!
+//! | Input | Behavior |
+//! |---|---|
+//! | null / undefined | return `""` (no tags) |
+//! | `""` (empty string) | return `""` (no tags) |
+//! | non-empty, but not a JSON array | return `InvalidTags` |
+//! | JSON array of non-strings | return `InvalidTags` |
+//! | tag with empty value after trim | return `InvalidTags` |
+//! | tag with chars outside `[a-zA-Z0-9_-]` | return `InvalidTags` |
+//! | tag length > 50 chars | return `InvalidTags` |
+//! | duplicate tags (case-insensitive) | dedupe; preserve first casing |
+//! | array of all duplicates → empty | return `""` (no tags) |
+//!
+//! ## Why a static JSON-encode string (not a `[][]const u8`)
+//!
+//! The DB column is `TEXT`. The wire request body is a JSON value
+//! (homogeneous across the project's HTTP layer). Returning a
+//! JSON-encoded string keeps the call site a single `db.exec(...)`
+//! call with no `[]const u8` slicing — minimizing the chance of
+//! tripping the empty-slice-binds-as-NULL footgun (see project
+//! memory `sqlite-backend-empty-slice-binds-as-null`).
+//!
+//! Plan: docs/superpowers/plans/2026-07-28-kanban-task-tags.md (Task 7)
+
+const std = @import("std");
+
+pub const TagValidationError = error{
+    InvalidTags,
+};
+
+/// Validate and normalize a tag input from the wire.
+///
+/// Caller passes `raw: ?[]const u8` from the parsed request body.
+/// Returns a heap-allocated JSON-encode array string ready for the
+/// `tags` column. On validation failure, returns `error.InvalidTags`.
+/// `allocator` is used for all heap allocations; the returned slice
+/// must be freed by the caller.
+pub fn validateAndNormalizeTags(allocator: std.mem.Allocator, raw: ?[]const u8) (TagValidationError || std.mem.Allocator.Error)![]u8 {
+    // null or empty string → "no tags" sentinel.
+    if (raw == null or raw.?.len == 0) {
+        return allocator.dupe(u8, "");
+    }
+
+    // Parse the JSON-encoded array. We use `parseFromSlice` (not
+    // `parseFromSliceLeaky`) here because the per-request arena
+    // reaps everything on request teardown — but the values we
+    // extract (string slices) need to outlive the parsed arena
+    // long enough to be copied into our output buffer. Since we
+    // OWN the output buffer (allocated via the request arena), the
+    // cleanest path is: parse with `parseFromSlice`, copy the strings
+    // into our output, then `deinit` the parsed arena.
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, raw.?, .{}) catch {
+        return TagValidationError.InvalidTags;
+    };
+    defer parsed.deinit();
+
+    if (parsed.value != .array) return TagValidationError.InvalidTags;
+    const arr = parsed.value.array;
+
+    // Empty array → "no tags" sentinel (matches the "no tags
+    // supplied" semantics of null/empty).
+    if (arr.items.len == 0) {
+        return allocator.dupe(u8, "");
+    }
+
+    // Set of lowercase tags seen so far (for case-insensitive dedupe).
+    var seen = std.StringHashMapUnmanaged(void){};
+    defer seen.deinit(allocator);
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    try out.append(allocator, '[');
+
+    for (arr.items, 0..) |item, i| {
+        if (item != .string) return TagValidationError.InvalidTags;
+
+        // Strip leading/trailing whitespace (the chip input may
+        // submit tags with spaces if the user pastes them).
+        const tag = std.mem.trim(u8, item.string, " \t\n\r");
+
+        // Reject empty tags after trim.
+        if (tag.len == 0) return TagValidationError.InvalidTags;
+
+        // Reject tags over 50 chars (GitHub label convention).
+        if (tag.len > 50) return TagValidationError.InvalidTags;
+
+        // Reject forbidden chars (only [a-zA-Z0-9_-] allowed).
+        for (tag) |c| {
+            const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                (c >= '0' and c <= '9') or c == '_' or c == '-';
+            if (!ok) return TagValidationError.InvalidTags;
+        }
+
+        // Build the lowercase key for case-insensitive dedupe.
+        // Allocate a fresh buffer for the lowercased form so we
+        // don't mutate the (borrowed) tag string.
+        var lower_buf: [50]u8 = undefined;
+        if (tag.len > lower_buf.len) return TagValidationError.InvalidTags; // safety belt
+        for (tag, 0..) |c, idx| {
+            lower_buf[idx] = std.ascii.toLower(c);
+        }
+        const lower_slice = lower_buf[0..tag.len];
+
+        // Duplicate check via the hashmap. `getOrPut` returns
+        // `found_existing = true` if the key already exists.
+        const gop = seen.getOrPut(allocator, lower_slice) catch return TagValidationError.InvalidTags;
+        if (gop.found_existing) {
+            // Duplicate tag — skip this entry. Don't append to output.
+            continue;
+        }
+
+        // First occurrence (case-insensitive) wins for casing.
+        if (i > 0 and out.items.len > 1) {
+            // Comma separator between tags. The first char after '['
+            // is the first tag's opening quote, so we only need a
+            // comma if we've already appended at least one tag.
+            // We use the simpler "always comma before next tag"
+            // check: if we've already produced '[' + opening quote
+            // + tag + closing quote, we need a comma before the next
+            // tag. (Skipped on duplicate skips because we `continue`.)
+            try out.append(allocator, ',');
+        }
+        try out.append(allocator, '"');
+        try out.appendSlice(allocator, tag);
+        try out.append(allocator, '"');
+    }
+
+    try out.append(allocator, ']');
+    return out.toOwnedSlice(allocator);
+}
+
+// =====================================================================
+// Tests
+// =====================================================================
+
+const testing = std.testing;
+
+test "validateAndNormalizeTags: null returns empty string" {
+    const result = try validateAndNormalizeTags(testing.allocator, null);
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("", result);
+}
+
+test "validateAndNormalizeTags: empty string returns empty string" {
+    const result = try validateAndNormalizeTags(testing.allocator, "");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("", result);
+}
+
+test "validateAndNormalizeTags: empty JSON array returns empty string" {
+    const result = try validateAndNormalizeTags(testing.allocator, "[]");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("", result);
+}
+
+test "validateAndNormalizeTags: simple array normalizes correctly" {
+    const result = try validateAndNormalizeTags(testing.allocator, "[\"bug\",\"urgent\"]");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("[\"bug\",\"urgent\"]", result);
+}
+
+test "validateAndNormalizeTags: dedupe case-insensitively preserves first casing" {
+    const result = try validateAndNormalizeTags(testing.allocator, "[\"Bug\",\"bug\",\"BUG\"]");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("[\"Bug\"]", result);
+}
+
+test "validateAndNormalizeTags: rejects non-array JSON" {
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "{\"a\":1}"));
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "\"string\""));
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "42"));
+}
+
+test "validateAndNormalizeTags: rejects array of non-strings" {
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "[1,2,3]"));
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "[null]"));
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "[{\"a\":1}]"));
+}
+
+test "validateAndNormalizeTags: rejects invalid JSON" {
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "not json"));
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "["));
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "[,]"));
+}
+
+test "validateAndNormalizeTags: rejects empty tag after trim" {
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "[\"\"]"));
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "[\"   \"]"));
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "[\"\\t\"]"));
+}
+
+test "validateAndNormalizeTags: rejects tag with forbidden chars" {
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "[\"with space\"]"));
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "[\"with,comma\"]"));
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "[\"with/slash\"]"));
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "[\"with.dot\"]"));
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "[\"with@at\"]"));
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, "[\"unicode-é\"]"));
+}
+
+test "validateAndNormalizeTags: rejects tag > 50 chars" {
+    // Build a 51-char tag and wrap it as a JSON-encoded array. Use
+    // std.mem.concat (returns []const u8, sentinel-free) so the
+    // resulting buffer can be passed straight through to the
+    // validator. No std.fmt.bufPrint needed — the `{s}` format
+    // expects []const u8 (pointer+length, NO sentinel), and the
+    // NUL-terminated `*const [N:0]u8` from `"a" ** 51` would not
+    // unwrap.
+    const too_long = "a" ** 51;
+    const json = try std.mem.concat(testing.allocator, u8, &.{ "[\"", too_long[0..51], "\"]" });
+    defer testing.allocator.free(json);
+    try testing.expectError(TagValidationError.InvalidTags, validateAndNormalizeTags(testing.allocator, json));
+}
+
+test "validateAndNormalizeTags: accepts tag at exactly 50 chars" {
+    const exactly_50 = "a" ** 50;
+    const json = try std.mem.concat(testing.allocator, u8, &.{ "[\"", exactly_50[0..50], "\"]" });
+    defer testing.allocator.free(json);
+    const result = try validateAndNormalizeTags(testing.allocator, json);
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings(json, result);
+}
+
+test "validateAndNormalizeTags: accepts all allowed chars" {
+    const result = try validateAndNormalizeTags(testing.allocator, "[\"abcXYZ-_\", \"123\", \"a-b_c-1\"]");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("[\"abcXYZ-_\",\"123\",\"a-b_c-1\"]", result);
+}
+
+test "validateAndNormalizeTags: trims whitespace from tags" {
+    // The chip input may submit a tag with leading/trailing whitespace
+    // if the user pasted it. Trim is safe (current char whitelist
+    // doesn't include space).
+    const result = try validateAndNormalizeTags(testing.allocator, "[\"  bug  \"]");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("[\"bug\"]", result);
+}
+
+test "validateAndNormalizeTags: dedupe preserves first occurrence (case-insensitive)" {
+    // The frontend may send a list with case variations. The first
+    // occurrence (by array order) wins for casing; later duplicates
+    // are dropped silently.
+    const result = try validateAndNormalizeTags(testing.allocator, "[\"a\",\"A\",\"a\"]");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("[\"a\"]", result);
+}

@@ -236,7 +236,11 @@ test "createWorkspaceItemTask: description = null succeeds and stores ''" {
 
     // Caller passes null (omitted body field).
     const task = try createWorkspaceItemTask(alloc, &ctx.db,
-        "t_desc_null_061", "No description", parent_id, "standard", null);
+        "t_desc_null_061", "No description", parent_id, "standard", null,
+        // tags — Migration 067 added this arg; pre-Migration-067 callers
+        // passed null. The migration_062_test exercises the description
+        // path only; tags are exercised in migration_067_test.zig.
+        null);
     defer task.deinit(alloc);
 
     // SELECT the column back and confirm it was stored as the empty
@@ -258,7 +262,9 @@ test "createWorkspaceItemTask: description = '' (empty string) succeeds and stor
     // converts to SQL NULL → `NOT NULL constraint failed`. Post-fix:
     // the empty-string branch uses a SQL `''` literal.
     const task = try createWorkspaceItemTask(alloc, &ctx.db,
-        "t_desc_empty_061", "Empty description", parent_id, "standard", "");
+        "t_desc_empty_061", "Empty description", parent_id, "standard", "",
+        // tags — see comment on the null-tags branch above.
+        null);
     defer task.deinit(alloc);
 
     try testing.expectEqualStrings("", task.description);
@@ -275,7 +281,9 @@ test "createWorkspaceItemTask: description = 'hello world' succeeds and stores t
 
     const task = try createWorkspaceItemTask(alloc, &ctx.db,
         "t_desc_filled_061", "With description", parent_id, "standard",
-        "hello world from test");
+        "hello world from test",
+        // tags — see comment on the null-tags branch above.
+        null);
     defer task.deinit(alloc);
 
     try testing.expectEqualStrings("hello world from test", task.description);

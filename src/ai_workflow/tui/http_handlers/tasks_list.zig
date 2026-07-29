@@ -162,6 +162,10 @@ fn useCase(
             // needs_human_review is the SQL CASE derived boolean.
             .last_finish_reason = task.last_finish_reason,
             .needs_human_review = task.needs_human_review,
+            // Migration 067 — kanban task tags. JSON-encoded array
+            // string borrowed from WorkspaceItemTaskInfo.tags (the
+            // per-request arena reaps it on request teardown).
+            .tags = task.tags,
         });
     }
 

@@ -159,12 +159,49 @@ export interface Task {
   // ran" — when needs_human_review is false and this is 'stop',
   // we paint the green checkmark. Optional for backwards compat.
   last_finish_reason?: string
+  // NEW (kanban task tags feature, plan:
+  // docs/superpowers/plans/2026-07-28-kanban-task-tags.md).
+  // Array of free-form tag strings (Migration 067). Empty array
+  // = no tags. Optional for backwards compat with legacy task
+  // literals in tests. Decoded from the wire JSON-encode string
+  // (task.tags on the wire is a string; this is a string[]).
+  tags?: string[]
 }
 
 // localStorage keys for state persistence
 const STORAGE_KEY_WORKSPACE_EXPANDED = 'nalar-workspace-expanded'
 const STORAGE_KEY_WORKSPACE_ITEM_EXPANDED = 'nalar-workspace-item-expanded'
 const STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED = 'nalar-workspace-item-tasks-expanded'
+
+// Kanban task tags normalization (Migration 067 — plan
+// docs/superpowers/plans/2026-07-28-kanban-task-tags.md).
+// The backend stores tags as a JSON-encoded array string ('' when
+// no tags). On the wire the field is `tags: string`. The frontend
+// convention (per the `Task` interface) is `tags?: string[]`. This
+// helper decodes the wire shape to the in-memory shape — applied
+// at every `api.getTasks` fetch site so the rest of the codebase
+// can treat tags as a plain array.
+function normalizeTaskTags(task: Task): Task {
+  if (task.tags === undefined) {
+    return task
+  }
+  // Coerce anything (string, already-array, missing) to a string[].
+  // Defensive: legacy rows from before Migration 067 might have
+  // undefined OR an empty string. The new shape is a JSON-encoded
+  // array string; parse errors fall back to [] rather than
+  // throwing (the kanban card shouldn't crash on malformed JSON).
+  if (typeof task.tags === 'string') {
+    try {
+      const parsed = JSON.parse(task.tags) as unknown
+      task.tags = Array.isArray(parsed) ? (parsed as string[]) : []
+    } catch {
+      task.tags = []
+    }
+  } else if (!Array.isArray(task.tags)) {
+    task.tags = []
+  }
+  return task
+}
 
 import * as api from '../api'
 // Aliases for design-mode API functions whose names collide with
@@ -325,7 +362,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
               try {
                 const { tasks, has_more, next_cursor } = await api.getTasks(ws.id, item.id)
                 if (tasks && tasks.length > 0) {
-                  tasksByItem.set(item.id, tasks)
+                  // Migration 067 — normalize tags from wire string to
+                  // in-memory string[]. All fetch sites do this; the
+                  // card UI and dialog rely on tags being a string[].
+                  tasksByItem.set(item.id, tasks.map(normalizeTaskTags))
                 }
                 // Stash pagination state on the item object directly.
                 // The spread below copies these into the final item.
@@ -602,6 +642,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // helper filters out `'0'`/undefined so we don't trigger an
       // unnecessary session INSERT for the common case.
       isAutoRetryUntilStop?: string
+      // NEW (Migration 067 — kanban task tags): array of free-form
+      // tag strings. Forwarded to api.createTask which JSON-encodes
+      // for the wire. Empty array / undefined = no tags.
+      tags?: string[]
     },
   ): Promise<string | undefined> {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
@@ -624,6 +668,8 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         routine: params.routine,
         memory: params.memory,
         isAutoRetryUntilStop: params.isAutoRetryUntilStop,
+        // Migration 067 — pass tags through.
+        tags: params.tags,
       })
       item.tasks.unshift(newTask)
       return newTask.id
@@ -922,7 +968,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         itemId,
         100, // MAX_PAGE_SIZE — single round-trip for typical kanbans
       )
-      item.tasks = tasks ?? []
+      // Migration 067 — normalize tags from wire string to in-memory
+      // string[]. The card UI reads task.tags directly; if the wire
+      // string leaks through, JSON.stringify fails silently and the
+      // chip render path crashes.
+      item.tasks = (tasks ?? []).map(normalizeTaskTags)
       item.hasMoreTasks = has_more
       item.tasksNextCursor = next_cursor
     } catch (err) {
@@ -1604,9 +1654,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       )
       // Append the new page to the existing list. We push (not unshift)
       // because tasks are ordered newest-first, so older tasks go at
-      // the end of the list.
+      // the end of the list. Migration 067 — normalize tags from wire
+      // string to in-memory string[] at every fetch site.
       if (!item.tasks) item.tasks = []
-      item.tasks.push(...tasks)
+      item.tasks.push(...tasks.map(normalizeTaskTags))
       item.hasMoreTasks = has_more
       item.tasksNextCursor = next_cursor
     } catch (err) {
@@ -1818,7 +1869,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     workspaceId: string,
     itemId: string,
     taskId: string,
-    fields: { name?: string; description?: string },
+    fields: { name?: string; description?: string; tags?: string[] },
   ) {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
     if (!workspace) return
@@ -1828,9 +1879,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     if (!task) return
 
     // Build the patch — only include fields the caller actually sent.
-    // A no-op patch (both undefined) is rejected early so we don't
+    // A no-op patch (all undefined) is rejected early so we don't
     // burn an API call.
-    const patch: { name?: string; description?: string } = {}
+    const patch: { name?: string; description?: string; tags?: string[] } = {}
     if (fields.name !== undefined) {
       const trimmed = fields.name.trim()
       if (!trimmed) return // empty name is never a valid update
@@ -1839,13 +1890,22 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     if (fields.description !== undefined) {
       patch.description = fields.description
     }
+    // Migration 067 — kanban task tags. Empty array = clear all
+    // tags; undefined = leave unchanged. The api.updateTaskSimple
+    // helper detects `tags !== undefined` and JSON-encodes the
+    // array for the wire; the backend validates + persists.
+    if (fields.tags !== undefined) {
+      patch.tags = fields.tags
+    }
     if (Object.keys(patch).length === 0) return
 
     // Optimistic update — capture previous values for rollback.
     const previousName = task.name
     const previousDescription = task.description
+    const previousTags = task.tags
     if (patch.name !== undefined) task.name = patch.name
     if (patch.description !== undefined) task.description = patch.description
+    if (patch.tags !== undefined) task.tags = patch.tags
 
     // Keep the chat-view / chat-list header in sync if this is the
     // active task and a name change is part of the patch.
@@ -1861,6 +1921,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Rollback on error
       task.name = previousName
       task.description = previousDescription
+      task.tags = previousTags
       if (wasActive) {
         useNavigationStore().setActiveChatName(previousName)
       }
@@ -1899,7 +1960,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   ): Promise<void> {
     try {
       const { tasks: fresh } = await api.getTasks(workspaceId, itemId, 100)
-      const freshTask = fresh.find((t) => t.id === taskId)
+      // Migration 067 — normalize tags from wire string to in-memory
+      // string[] before splicing into the store.
+      const freshTask = fresh.map(normalizeTaskTags).find((t) => t.id === taskId)
       if (!freshTask) return
       for (const ws of workspaces.value) {
         if (ws.id !== workspaceId) continue

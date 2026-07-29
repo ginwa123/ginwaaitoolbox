@@ -139,6 +139,14 @@ pub const TaskCreateRequest = struct {
     /// Frontend's KanbanTaskDetailDialog toggle sends this on
     /// create when the user flipped unattended-mode ON.
     is_auto_retry_until_stop: ?[]const u8 = null,
+    /// JSON-encoded array of tag strings (Migration 067 — kanban
+    /// task tags feature). Null/undefined means "no tags supplied",
+    /// which is the same as an empty array. The handler validates
+    /// the JSON shape, char whitelist, dedupe, and length caps
+    /// (see http_handlers/tags_validation.zig). Stored verbatim on
+    /// the row's `tags` column. Plan:
+    /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md
+    tags: ?[]const u8 = null,
 };
 
 pub const TaskUpdateRequest = struct {
@@ -159,6 +167,16 @@ pub const TaskUpdateRequest = struct {
     /// Routine-only. New active flag. When false, the routine stays
     /// in the DB but is skipped by the scheduler.
     enabled: ?bool = null,
+    /// JSON-encoded array of tag strings (Migration 067).
+    /// Semantics:
+    ///   - null/undefined  → don't change existing tags (no-op).
+    ///   - `""` (empty string) → clear all tags (sets `tags = ''`).
+    ///   - `'["a","b"]'` → replace existing tags with this array
+    ///     (after validation + dedupe via tags_validation.zig).
+    /// The handler validates the shape, char whitelist, length cap,
+    /// and dedupes case-insensitively. Plan:
+    /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md.
+    tags: ?[]const u8 = null,
 };
 
 pub const GitStageResponse = struct {
@@ -451,6 +469,13 @@ pub const WorkspaceItemTaskResponse = struct {
     ///   - false AND last_finish_reason==='stop' → green checkmark
     ///   - false AND last_finish_reason==='' → no icon (never ran)
     needs_human_review: bool = false,
+
+    /// JSON-encoded array of tag strings (Migration 067 — kanban
+    /// task tags feature). Empty string is the canonical "no tags"
+    /// sentinel (NOT NULL DEFAULT ''). Frontend decodes via
+    /// JSON.parse. Plan:
+    /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md.
+    tags: []const u8 = "",
 };
 
 pub const WorkspaceItemTaskListResponse = struct {

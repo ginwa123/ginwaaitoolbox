@@ -6,6 +6,7 @@ const ai_mod = nalarcore.ai_mod;
 const llm_history = nalarcore.llm_history;
 const cron = @import("../routines/cron.zig");
 const fire = @import("../routines/fire.zig");
+const tags_validation = @import("tags_validation.zig");
 
 /// PUT /api/workspaces/tasks/:task_id - Update task by ID only (no workspace/item needed).
 ///
@@ -42,6 +43,10 @@ pub const TaskUpdateError = error{
     FailedToComputeNextFireTime,
     FailedToUpdateRoutine,
     FailedToUpdateTask,
+    /// Kanban task tags validation (Migration 067). Empty,
+    /// too long, or contains forbidden characters (only
+    /// [a-zA-Z0-9_-] allowed). See tags_validation.zig.
+    InvalidTags,
 };
 
 /// Slice of optional fields the client may send. Mirrors
@@ -104,6 +109,7 @@ fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
             error.MissingBody => 400,
             error.BadCron => 400,
             error.InvalidJson => 400,
+            error.InvalidTags => 400,
             error.OutOfMemory => 500,
         };
         const message: []const u8 = switch (err) {
@@ -116,6 +122,7 @@ fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
             error.FailedToComputeNextFireTime => "Failed to compute next fire time",
             error.FailedToUpdateRoutine => "Failed to update routine",
             error.FailedToUpdateTask => "Failed to update task",
+            error.InvalidTags => "tags must be non-empty, ≤50 chars, and contain only letters, digits, hyphens, and underscores",
             error.OutOfMemory => "Out of memory",
         };
         return res.jsonResponse(.{
@@ -192,6 +199,45 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
         } else {
             try sql_buf.appendSlice(allocator, "?");
             try bind_values.append(allocator, desc);
+        }
+        try sql_buf.appendSlice(allocator, " WHERE id = ?");
+        try bind_values.append(allocator, task_id);
+
+        input.db.exec(allocator, sql_buf.items, bind_values.items) catch return error.FailedToUpdateTask;
+    }
+
+    // Tags branch (Migration 067 — kanban task tags feature).
+    // Same shape as description: present (non-null) means
+    // overwrite; empty string is the canonical "no tags"
+    // sentinel and IS persisted (user actively cleared the
+    // tags); null means "leave unchanged".
+    //
+    // The dynamic SQL builder pattern matches description above —
+    // the empty-string case uses a SQL '' literal to avoid the
+    // empty-slice-binds-as-NULL footgun. See memory
+    // `sqlite-backend-empty-slice-binds-as-null`.
+    if (input.body.tags) |raw_tags| {
+        // Validate + normalize. Returns a JSON-encoded array
+        // string ('' when no tags). Borrowed from the per-request
+        // arena; arena reaps it on request teardown.
+        const validated_tags = tags_validation.validateAndNormalizeTags(
+            allocator,
+            raw_tags,
+        ) catch return error.InvalidTags;
+
+        var sql_buf: std.ArrayList(u8) = .empty;
+        defer sql_buf.deinit(allocator);
+        var bind_values: std.ArrayList([]const u8) = .empty;
+        defer bind_values.deinit(allocator);
+
+        try sql_buf.appendSlice(allocator,
+            "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
+        try sql_buf.appendSlice(allocator, ", tags = ");
+        if (validated_tags.len == 0) {
+            try sql_buf.appendSlice(allocator, "''");
+        } else {
+            try sql_buf.appendSlice(allocator, "?");
+            try bind_values.append(allocator, validated_tags);
         }
         try sql_buf.appendSlice(allocator, " WHERE id = ?");
         try bind_values.append(allocator, task_id);

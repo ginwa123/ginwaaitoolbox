@@ -335,6 +335,12 @@ export interface Task {
   // type-checking.
   kanban_column_id?: string | null
   kanban_position?: number
+  // NEW (kanban task tags, Migration 067). Array of free-form tag
+  // strings. Empty array = no tags. Optional so legacy task
+  // literals in tests keep type-checking. On the wire the field is
+  // a JSON-encoded array string; the store normalizes via
+  // `normalizeTaskTags` at every fetch site.
+  tags?: string[]
 }
 
 // Health check
@@ -562,6 +568,13 @@ export async function createTask(
     // `'0'` and undefined/empty are treated equivalently (no
     // session INSERT).
     isAutoRetryUntilStop?: string
+    // Kanban task tags (Migration 067 — kanban task tags feature).
+    // Array of free-form tag strings. Empty array / undefined = no
+    // tags. Forwarded as a JSON-encoded array string on the wire.
+    // The backend validates (char whitelist [a-zA-Z0-9_-], length
+    // cap 50 chars per tag, case-insensitive dedupe). Plan:
+    // docs/superpowers/plans/2026-07-28-kanban-task-tags.md.
+    tags?: string[]
   },
 ): Promise<Task> {
   const taskType = params.taskType ?? 'standard'
@@ -586,6 +599,13 @@ export async function createTask(
   // trigger an unnecessary session INSERT (a new row per task).
   if (params.isAutoRetryUntilStop === '1' && taskType === 'standard') {
     body.is_auto_retry_until_stop = '1'
+  }
+  // Forward tags as a JSON-encoded array string (Migration 067).
+  // The backend's tags_validation.validateAndNormalizeTags parses
+  // and re-encodes the array, so the wire shape is a JSON string,
+  // not an array — single source of truth for JSON shape.
+  if (params.tags && params.tags.length > 0) {
+    body.tags = JSON.stringify(params.tags)
   }
   return await apiFetch<Task>(`/workspaces/${workspaceId}/items/${itemId}/tasks`, {
     method: 'POST',
@@ -630,11 +650,19 @@ export async function updateTaskSimple(
     schedule?: string
     initial_prompt?: string
     enabled?: boolean
+    // NEW (kanban task tags, Migration 067): array of tag strings.
+    // Forwarded as JSON-encoded string. Empty array = clear tags.
+    tags?: string[]
   },
 ): Promise<{ success: boolean }> {
+  const body: Record<string, unknown> = { ...data }
+  // Encode tags array as a JSON string for the wire (Migration 067).
+  if (data.tags !== undefined) {
+    body.tags = JSON.stringify(data.tags)
+  }
   return await apiFetch<{ success: boolean }>(`/workspaces/tasks/${taskId}`, {
     method: 'PUT',
-    body: data,
+    body,
   })
 }
 
