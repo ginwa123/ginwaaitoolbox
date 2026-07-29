@@ -72,6 +72,7 @@ import DesignContextMenu from './DesignContextMenu.vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import { useNotificationStore } from '../../stores/notifications'
 import { useDesignHandlers } from '../../composables/useDesignHandlers'
+import { useDesignHistory } from '../../composables/useDesignHistory'
 import { useDesignContextMenu } from '../../composables/useDesignContextMenu'
 import {
   listDesignPages,
@@ -254,6 +255,11 @@ const designHandlers = useDesignHandlers({
   pageId: computed(() => activePageId.value),
   selectedIds,
 })
+
+// Undo/redo history composable (Chunk 3 of undo/redo plan). The
+// composable reads activeWorkspaceId/itemId/pageId from the store
+// directly, so we only need to pass the pageId ref.
+const history = useDesignHistory(computed(() => activePageId.value))
 
 // ─── Snap guides state ────────────────────────────────────────────────
 //
@@ -662,6 +668,39 @@ const handleKeydown = (event: KeyboardEvent): void => {
       return
     }
     void designHandlers.groupSelection()
+    return
+  }
+
+  // Undo/redo (Chunk 3 of undo/redo plan). Figma / Excalidraw
+  // convention:
+  //   Cmd/Ctrl+Z         → undo
+  //   Cmd/Ctrl+Shift+Z   → redo (mac convention)
+  //   Cmd/Ctrl+Y         → redo (Windows convention)
+  // The composable's undo/redo are no-ops when the stack is empty
+  // (Figma parity — don't push to undo/redo if there's nothing to
+  // apply). Input-focus guard is already in place at the top of
+  // this handler (browser-native Cmd+Z for text inputs wins).
+  if (
+    (event.key === 'z' || event.key === 'Z') &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.altKey
+  ) {
+    event.preventDefault()
+    if (event.shiftKey) {
+      if (history.canRedo.value) void history.redo()
+    } else {
+      if (history.canUndo.value) void history.undo()
+    }
+    return
+  }
+  if (
+    (event.key === 'y' || event.key === 'Y') &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.shiftKey &&
+    !event.altKey
+  ) {
+    event.preventDefault()
+    if (history.canRedo.value) void history.redo()
     return
   }
 
