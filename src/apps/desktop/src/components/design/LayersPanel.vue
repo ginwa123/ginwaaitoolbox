@@ -40,6 +40,16 @@ import type { DesignElement } from '../../api'
 import LayerRow, { type LayerTreeNode } from './LayerRow.vue'
 import DesignContextMenu from './DesignContextMenu.vue'
 import { useDesignContextMenu } from '../../composables/useDesignContextMenu'
+import { useWorkspacesStore } from '../../stores/workspaces'
+
+// Read the active workspace + item + page at call time. Mirrors the
+// pattern in `useDesignHandlers.updateElement` — no need to plumb
+// ids through props when the store already knows them. Undo/redo
+// plan Chunk 1 (wire-up of silent-drop emits).
+const workspacesStore = useWorkspacesStore()
+const activeWorkspaceId = computed(() => workspacesStore.activeWorkspace?.id ?? null)
+const activeWorkspaceItemId = computed(() => workspacesStore.activeWorkspaceItemId)
+const activeDesignPageId = computed(() => workspacesStore.activeDesignPageId)
 
 const props = withDefaults(
   defineProps<{
@@ -224,7 +234,21 @@ const handleMoveUp = (elementId: string): void => {
   const current = siblings[idx]!
   siblings[idx - 1] = current
   siblings[idx] = above
-  emit('reorder', flattenTopDown(cloned))
+  // Wire-up (undo/redo plan Chunk 1): was `emit('reorder',
+  // flattenTopDown(cloned))` which went up to DesignView → re-emitted
+  // upward → AppLayout had no listener → silent drop. Now we call
+  // the store action directly with `mode: 'bring_forward'`. The
+  // store action mirrors the response into the local design_elements
+  // array; the layers panel re-renders from that array on the next
+  // tick. Selecting just `[elementId]` (not the full order) matches
+  // the keyboard shortcut's behavior (Cmd+] / Cmd+[).
+  void workspacesStore.reorderDesignElements(
+    activeWorkspaceId.value!,
+    activeWorkspaceItemId.value!,
+    activeDesignPageId.value,
+    'bring_forward',
+    [elementId],
+  )
 }
 
 const handleMoveDown = (elementId: string): void => {
@@ -241,7 +265,14 @@ const handleMoveDown = (elementId: string): void => {
   const current = siblings[idx]!
   siblings[idx + 1] = current
   siblings[idx] = below
-  emit('reorder', flattenTopDown(cloned))
+  // See `handleMoveUp` above for the wire-up rationale.
+  void workspacesStore.reorderDesignElements(
+    activeWorkspaceId.value!,
+    activeWorkspaceItemId.value!,
+    activeDesignPageId.value,
+    'send_backward',
+    [elementId],
+  )
 }
 </script>
 

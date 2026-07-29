@@ -115,8 +115,10 @@ describe('LayersPanel ▲/▼ wire-up (Chunk 1 of undo/redo plan)', () => {
     expect(itemId).toBe('item_1')
     expect(pageId).toBe('page_1')
     expect(mode).toBe('bring_forward')
-    // After moving elem_b up, the order should swap elem_b with elem_a.
-    expect(ids).toEqual(['elem_b', 'elem_a', 'elem_c'])
+    // The store action takes just the moved id (mirrors the keyboard
+    // shortcut path which passes `selectedIds`); the server applies
+    // the mode to each id and returns the reordered rows.
+    expect(ids).toEqual(['elem_b'])
   })
 
   it('▼ button on layer row triggers reorderDesignElements with mode: "send_backward"', async () => {
@@ -161,7 +163,6 @@ describe('LayersPanel ▲/▼ wire-up (Chunk 1 of undo/redo plan)', () => {
     expect(reorderSpy).toHaveBeenCalledOnce()
     const [, , , mode, ids] = reorderSpy.mock.calls[0]!
     expect(mode).toBe('send_backward')
-    // After moving elem_b down, the order should swap elem_b with elem_c.
-    expect(ids).toEqual(['elem_a', 'elem_c', 'elem_b'])
+    expect(ids).toEqual(['elem_b'])
   })
 })
