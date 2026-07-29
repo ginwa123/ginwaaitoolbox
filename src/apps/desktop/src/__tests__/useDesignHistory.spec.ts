@@ -16,30 +16,27 @@
  * ~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { defineStore, setActivePinia, createPinia } from 'pinia'
+import { setActivePinia, createPinia } from 'pinia'
 import { ref, type ComputedRef } from 'vue'
 import { useDesignHistory } from '../composables/useDesignHistory'
 import { useDesignHistoryStore } from '../stores/designHistory'
-import { useWorkspacesStore } from '../stores/workspaces'
 import type { DesignElement } from '../api'
 
 // Mock the workspaces store actions so the composable's inverse/forward
-// can call them without hitting the network. We assert on call counts
-// rather than return shapes.
+// can call them without hitting the network. We keep the real store's
+// reactive state (so the composable can read design_elements) but
+// stub the mutating actions.
 vi.mock('../stores/workspaces', async () => {
   const actual = await vi.importActual<typeof import('../stores/workspaces')>(
     '../stores/workspaces',
   )
   return {
     ...actual,
-    useWorkspacesStore: defineStore('mockedWorkspaces', () => ({
-      activeWorkspace: ref({ id: 'ws_1' }),
-      activeWorkspaceItemId: ref<string | null>('item_1'),
-      activeDesignPageId: ref<string>('page_1'),
-      // Each test installs its own spy via `useWorkspacesStore()`'s
-      // action override pattern. We return undefined here so callers
-      // can use vi.spyOn(...) after useDesignHistory(...) creates
-      // the closure.
+    useWorkspacesStore: () => ({
+      workspaces: [{ id: 'ws_1', name: 'WS', items: [] }],
+      activeWorkspace: { id: 'ws_1' },
+      activeWorkspaceItemId: 'item_1',
+      activeDesignPageId: 'page_1',
       updateDesignElementGeometry: vi.fn().mockResolvedValue({} as DesignElement),
       updateDesignElement: vi.fn().mockResolvedValue({} as DesignElement),
       deleteDesignElement: vi.fn().mockResolvedValue(undefined),
@@ -49,7 +46,7 @@ vi.mock('../stores/workspaces', async () => {
         .fn()
         .mockResolvedValue({ parent: {} as DesignElement, children: [] }),
       updateDesignElementHtml: vi.fn().mockResolvedValue({} as DesignElement),
-    })),
+    }),
   }
 })
 
@@ -93,33 +90,23 @@ describe('useDesignHistory composable', () => {
 
   it('push then pop returns the same entry', async () => {
     const store = useDesignHistoryStore()
-    const workspaces = useWorkspacesStore()
-    const elem = makeElement({ id: 'elem_A', x: 0 })
-    // Seed the store's view of the element at x=0 so capturePreState
-    // reads the right pre-state.
-    workspaces.updateDesignElementGeometry.mockResolvedValue({
-      ...elem,
-      x: 100,
-    } as any)
     const pageId = ref('page_1') as ComputedRef<string>
     const history = useDesignHistory(pageId)
     expect(history.canUndo.value).toBe(false)
     expect(history.canRedo.value).toBe(false)
 
-    history.capturePreState(['elem_A'])
-    // Simulate the mutation by mutating the store directly (the
-    // composable's post-state read will see the new value).
-    workspaces.updateDesignElementGeometry.mockResolvedValue({
-      ...elem,
-      x: 100,
-    } as any)
-    // The composable reads from the store's design_elements array —
-    // we don't have one seeded, so we'll exercise the no-op detection
-    // path here. To actually trigger a push, we'll manually populate
-    // the change set via the captureDelete path in the next test.
-    await history.capturePostState(['elem_A'])
-    // Since no design_elements row exists, the diff is empty → no push.
+    // Push one entry via captureDelete (deterministic shape).
+    await history.captureDelete([
+      { element: makeElement({ id: 'A' }), htmlBody: null },
+    ])
+    expect(history.canUndo.value).toBe(true)
+    expect(history.canRedo.value).toBe(false)
+
+    await history.undo()
+    expect(history.canUndo.value).toBe(false)
+    expect(history.canRedo.value).toBe(true)
     expect(store.getStack('page_1').past.length).toBe(0)
+    expect(store.getStack('page_1').future.length).toBe(1)
   })
 
   it('push A, push B → pop returns B then A', async () => {
