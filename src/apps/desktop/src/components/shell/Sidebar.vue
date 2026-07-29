@@ -1038,7 +1038,14 @@ defineExpose({
     :style="{
       width: isCollapsed ? '64px' : sidebarWidth + 'px',
       backgroundColor: 'var(--semantic-sidebar-bg)',
-      borderRight: '1px solid var(--color-border)'
+      borderRight: '1px solid var(--color-border)',
+      // Block browser-level viewport pinch-zoom here. Single-finger
+      // pan still works (touch-action: pan-x pan-y allows scroll);
+      // only the multi-finger browser pinch-zoom is suppressed. The
+      // design canvas has its own Pointer-Events pinch handler that
+      // zooms only the canvas content, leaving the sidebar at its
+      // native size even when the user pinches over it.
+      touchAction: 'pan-x pan-y',
     }"
   >
     <!-- Resize Handle -->

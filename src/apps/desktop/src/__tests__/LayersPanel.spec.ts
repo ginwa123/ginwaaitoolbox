@@ -197,6 +197,28 @@ describe('LayersPanel.vue — flat list (no parent_id set)', () => {
     // Three rows, all top-level.
     expect(rows).toHaveLength(3)
   })
+
+  it('renders top-level rows when parent_id is the empty string (the wire form of SQL NULL from the backend)', () => {
+    // The backend's design_model.listElements uses
+    //   COALESCE(de.parent_id, '') AS parent_id
+    // so top-level elements (parent_id IS NULL) arrive at the
+    // frontend with parent_id === "" — NOT null, NOT undefined.
+    //
+    // The LayersPanel tree builder previously used
+    //   const pid = e.parent_id ?? null
+    // which kept "" as "" (empty string is not nullish), so the row
+    // went into the byParent.get("") bucket instead of the null
+    // bucket, and byParent.get(null) ?? [] returned []. The header
+    // correctly showed "Layers (2)" but no rows rendered — the bug
+    // this regression test pins.
+    const elements = [
+      makeElement({ id: 'elem_backdrop', name: 'backdrop', type: 'rectangle', z_index: 0, position: 0, parent_id: '' }),
+      makeElement({ id: 'elem_card', name: 'dialog-card', type: 'frame', z_index: 0, position: 1, parent_id: '' }),
+    ]
+    wrapper = mountPanel({ elements })
+    const rows = wrapper.findAll('[data-testid^="design-layer-elem_"]')
+    expect(rows).toHaveLength(2)
+  })
 })
 
 describe('LayersPanel.vue — tree render (parent_id set)', () => {

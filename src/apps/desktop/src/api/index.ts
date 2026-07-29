@@ -263,7 +263,7 @@ export interface DesignElementGeometry {
  * discriminator string.
  */
 export interface DesignElementEvent {
-  action: 'created' | 'updated' | 'deleted'
+  action: 'created' | 'updated' | 'deleted' | 'reordered'
   workspace_id: string
   item_id: string
   page_id: string
@@ -1605,6 +1605,44 @@ export async function groupDesignElements(
 }
 
 /**
+ * POST /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/reorder
+ *
+ * NEW (Chunk 5 of right-click group menu plan). Reorders 1+ elements
+ * on a page along the z-axis. The 4 modes:
+ *   - `bring_to_front`: selected ids jump above all non-selected elements
+ *     in the user-specified input order (first id = topmost).
+ *   - `send_to_back`: mirror of bring_to_front (first id = bottommost).
+ *   - `bring_forward`: each selected swaps with its next non-selected
+ *     sibling above (the multi-selection moves up by one slot).
+ *   - `send_backward`: mirror of bring_forward.
+ *
+ * Response 200: `{ reordered: DesignElement[] }` — the updated rows
+ * in their new top-to-bottom z-order.
+ *
+ * Error shape: 400 (BadMode / NoElementIds / EmptyElementIds /
+ * BadElementId / ChildAcrossDifferentPages), 404 (PageNotFound),
+ * 409 (CrossPageIds).
+ */
+export type ReorderMode = 'bring_to_front' | 'send_to_back' | 'bring_forward' | 'send_backward'
+
+export interface ReorderDesignElementsRequest {
+  mode: ReorderMode
+  element_ids: string[]
+}
+
+export async function reorderDesignElements(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  body: ReorderDesignElementsRequest,
+): Promise<{ reordered: DesignElement[] }> {
+  return await apiFetch<{ reordered: DesignElement[] }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/reorder`,
+    { method: 'POST', body },
+  )
+}
+
+/**
  * DELETE /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId
  *
  * Idempotent delete. Returns `{ success: true }` whether the row
@@ -2087,7 +2125,7 @@ export async function listFiles(cwd: string, dirPath?: string): Promise<string[]
 
 // Session event types for SSE subscription
 export interface SessionEvent {
-  action: 'created' | 'updated' | 'deleted'
+  action: 'created' | 'updated' | 'deleted' | 'reordered'
   id: string
   name: string
   status: string
@@ -2139,7 +2177,7 @@ export async function getQueuedMessages(sessionId: string): Promise<{
 
 // Workers SSE event types
 export interface WorkerEvent {
-  action: 'created' | 'updated' | 'deleted'
+  action: 'created' | 'updated' | 'deleted' | 'reordered'
   id: string
   session_id: string
   working_directory: string
@@ -2151,7 +2189,7 @@ export interface WorkerEvent {
 // Kanban SSE event types
 // (see src/ai_workflow/tui/on_event_sent_kanban.zig on the backend).
 export interface KanbanColumnEvent {
-  action: 'created' | 'updated' | 'deleted' | 'reordered'
+  action: 'created' | 'updated' | 'deleted' | 'reordered' | 'reordered'
   workspace_id: string
   item_id: string
   column_id: string

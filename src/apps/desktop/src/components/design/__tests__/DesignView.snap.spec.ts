@@ -31,15 +31,19 @@ describe('computeSnapDelta', () => {
     expect(result.guides).toContainEqual({ axis: 'x', position: 450 })
   })
 
-  it('snaps to canvas center when no other element is nearby', () => {
+  it('does NOT snap to canvas center when no other element is nearby (canvas background removed)', () => {
+    // The canvas-background feature was removed (plan
+    // docs/superpowers/plans/2026-07-29-remove-canvas-background.md).
+    // A lone element being dragged with no alignment partners now
+    // has no snap target — the function returns the raw delta with
+    // no correction and no guides.
     const elementsNoNearby = [
       { id: 'a', x: 100, y: 100, width: 200, height: 100 },
     ]
-    const result = computeSnapDelta(elementsNoNearby, 'a', 0, 0, { width: 1440, height: 1024 })
-    // Canvas center V is x=720. Element A's center V starts at x=200.
-    // To snap onto canvas center V, dx = 520.
-    expect(result.dx).toBe(520)
-    expect(result.guides).toContainEqual({ axis: 'x', position: 720 })
+    const result = computeSnapDelta(elementsNoNearby, 'a', 0, 0)
+    expect(result.dx).toBe(0)
+    expect(result.dy).toBe(0)
+    expect(result.guides).toEqual([])
   })
 
   it('returns no snap when moving element is far from all targets', () => {

@@ -179,7 +179,9 @@ import {
   updateDesignElementGeometry as updateDesignElementGeometryApi,
   updateDesignPage as updateDesignPageApi,
   groupDesignElements as groupDesignElementsApi,
+  reorderDesignElements as reorderDesignElementsApi,
   type GroupDesignElementsRequest,
+  type ReorderMode,
 } from '../api'
 
 export const useWorkspacesStore = defineStore('workspaces', () => {
@@ -1260,6 +1262,31 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   //
   // Errors propagate via the apiFetch ApiError (4xx throws, network
   // failures throw, surface via the composable's notification toast).
+  async function reorderDesignElements(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    mode: ReorderMode,
+    elementIds: string[],
+  ): Promise<DesignElement[]> {
+    const result = await reorderDesignElementsApi(workspaceId, itemId, pageId, {
+      mode,
+      element_ids: elementIds,
+    })
+    // Mirror the server's `reordered` rows into the local
+    // design_elements array so the layers panel + canvas re-render
+    // immediately. We replace matching ids in place (preserves the
+    // local array's ordering for any ids NOT in the response).
+    const item = findItem(workspaceId, itemId)
+    if (item?.design_elements) {
+      for (const updated of result.reordered) {
+        const idx = item.design_elements.findIndex((e) => e.id === updated.id)
+        if (idx !== -1) item.design_elements[idx] = updated
+      }
+    }
+    return result.reordered
+  }
+
   async function groupDesignElements(
     workspaceId: string,
     itemId: string,
@@ -2307,6 +2334,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     deleteDesignPage,
     updateDesignPage,
     groupDesignElements,
+  reorderDesignElements,
     initializeFromSystemFolder,
     onSessionEvent,
     fetchSystemFolder,

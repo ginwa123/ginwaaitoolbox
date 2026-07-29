@@ -152,6 +152,7 @@ pub const designElementsGeometryUpdateHandler = @import("design_elements_geometr
 // /api/workspaces/:w/items/:i/design/pages/:p/elements/group — see
 // docs/superpowers/plans/2026-07-28-grouped-layers.md (Chunk 3).
 pub const designElementsGroupHandler = @import("design_elements_group.zig").designElementsGroupHandler;
+pub const designElementsReorderHandler = @import("design_elements_reorder.zig").designElementsReorderHandler;
 
 // Session to client IDs monitoring
 pub const sessionToClientIdsHandler = @import("session_to_client_ids.zig").sessionToClientIdsHandler;

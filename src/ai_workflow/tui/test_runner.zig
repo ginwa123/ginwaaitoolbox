@@ -19,6 +19,7 @@ test {
     _ = @import("agentic_loop/workflow.zig");
     _ = @import("compaction_config_threshold_test.zig");
     _ = @import("http_handlers/nalar_config_put_test.zig");
+_ = @import("http_handlers/design_elements_reorder_test.zig"); // Chunk 5 — POST /reorder handler
     _ = @import("http_handlers/nalar_config_put_parse_test.zig");
     _ = @import("http_handlers/nalar_config_get_test.zig");
     _ = @import("http_handlers/nalar_config_profile_delete_test.zig");

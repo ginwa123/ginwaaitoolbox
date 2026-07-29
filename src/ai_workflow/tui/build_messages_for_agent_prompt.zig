@@ -806,6 +806,16 @@ pub fn BuildDesignCanvasPrompt(
         \\  or look up a page by name. Idempotent: calling with an existing
         \\  name returns the same `page_id`. Defaults: width=1920,
         \\  height=1080.
+        \\
+        \\**No fixed page bounds.** The canvas-background feature has been
+        \\removed (plan docs/superpowers/plans/2026-07-29-remove-canvas-background.md).
+        \\Pages are purely logical containers; elements can be placed at
+        \\ANY coordinates (positive, negative, or values larger than the
+        \\page width / height). The `width` / `height` values on a page
+        \\are informational only — a "preferred export size" hint, not
+        \\an enforced boundary. Do NOT try to keep elements inside any
+        \\specific rectangle; let the user place them wherever the design
+        \\needs.
         \\- `add_element(page_id, name, type, html, x?, y?, width?, height?, fill?, rotation?, corner_radius?, opacity?, text_content?, text_style?, image_url?)`
         \\  — add one element to a page. The `html` is the rendered DOM
         \\  fragment (e.g. `<div class="card">...</div>`) that the

@@ -96,7 +96,10 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{
-  select: [elementId: string]
+  // Chunk 3: select now carries an `additive` flag so the canvas's
+  // Shift+click can toggle membership in the multi-selection Set
+  // (Figma parity with the layers panel which already supports it).
+  select: [payload: { elementId: string; additive: boolean }]
   update: [patch: Partial<DesignElement>]
   // Chunk 2: when the user drags an element that's part of a
   // multi-selection, the WHOLE selection moves. The parent
@@ -151,7 +154,10 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // (e.g. the iframe content) — pointer-events:none on the iframe
   // already prevents that, but we double-check.
   if (event.button !== 0) return
-  emit('select', props.element.id)
+  emit('select', {
+    elementId: props.element.id,
+    additive: event.shiftKey,
+  })
 
   // Group drag (Chunk 2): when this element is part of a multi-selection,
   // dragging moves the ENTIRE selection. The parent applies the same

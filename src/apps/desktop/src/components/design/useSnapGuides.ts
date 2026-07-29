@@ -8,13 +8,11 @@
  *      bbox to the matching edge/center of the target.
  *   3. The closest pair within 6 design-px wins. The dx/dy needed to
  *      align them is the snap delta.
- *   4. If the dragged element is the ONLY element on the page (no
- *      other targets nearby) AND no element snap fired, fall back to
- *      canvas-center snapping. The dragged element's center H is
- *      pulled toward the canvas center H. Canvas-center snap has a
- *      wider (effectively infinite) threshold than element-to-element
- *      — it's a soft preference, not a strict 6px window. Only fires
- *      when the dragged element is alone; otherwise element snap wins.
+ *
+ * The canvas background feature has been removed (plan
+ * docs/superpowers/plans/2026-07-29-remove-canvas-background.md), so
+ * there is no longer a "canvas center" fallback target. Snap fires
+ * only when an actual element-edge snap target is within 6 design-px.
  *
  * Returns:
  *   - dx: design-px delta to ADD to the user's input dx
@@ -41,7 +39,6 @@ export function computeSnapDelta(
   draggedId: string,
   rawDx: number,
   rawDy: number,
-  canvasSize: { width: number; height: number } | null = null,
 ): SnapResult {
   const dragged = elements.find((e) => e.id === draggedId)
   if (!dragged) return { dx: rawDx, dy: rawDy, guides: [] }
@@ -62,28 +59,17 @@ export function computeSnapDelta(
     otherElementEdgesX.push(e.x, e.x + e.width, e.x + e.width / 2)
     otherElementEdgesY.push(e.y, e.y + e.height, e.y + e.height / 2)
   }
-  // isAlone = true iff the dragged element is the ONLY element on
-  // the page (no other targets nearby).
-  const isAlone = otherElementEdgesX.length === 0
   // Snap-to-start targets: the original left, center, and right
   // edges of the dragged element. Within 6px of start, the cursor
   // gets pulled back to the original position (Figma UX). These are
   // a SECONDARY target — they only fire when no other-element snap
-  // fires (priority: element-snap > snap-to-start > canvas-center).
+  // fires (priority: element-snap > snap-to-start).
   const snapToStartX: number[] = [
     dragged.x, dragged.x + dragged.width, dragged.x + dragged.width / 2,
   ]
   const snapToStartY: number[] = [
     dragged.y, dragged.y + dragged.height, dragged.y + dragged.height / 2,
   ]
-
-  // Canvas-center fallback targets. The canvas center is a special
-  // "magnetic" target — a single element with no other targets nearby
-  // is pulled toward the canvas center. We only expose the canvas
-  // CENTER (not the canvas edges) here because we want the soft
-  // pull to be toward the center, not toward a random edge.
-  const canvasCenterX = canvasSize ? canvasSize.width / 2 : null
-  const canvasCenterY = canvasSize ? canvasSize.height / 2 : null
 
   const movedEdgesX = [movedX, movedRight, movedCx]
   const movedEdgesY = [movedY, movedBottom, movedCy]
@@ -121,7 +107,7 @@ export function computeSnapDelta(
     }
   }
 
-  // Stage 1.5: snap-to-start fallback. Only fires when no other-
+  // Stage 2: snap-to-start fallback. Only fires when no other-
   // element snap fired on that axis. The dragged element's original
   // edges are added as targets so a tiny drag (within 6px of start)
   // pulls the cursor back to the original position. Lower priority
@@ -153,25 +139,10 @@ export function computeSnapDelta(
     }
   }
 
-  // Stage 2: canvas-center fallback. Only fires when the dragged
-  // element is the ONLY element on the page AND no element snap
-  // fired. A lone element being dragged with no alignment partners
-  // is pulled toward the canvas center (a Figma-like soft preference).
-  // The correction is computed from the dragged element's center,
-  // so the element's center H aligns with the canvas center H.
-  if (isAlone && !elementSnapXFired && canvasCenterX !== null) {
-    const correction = canvasCenterX - movedCx
-    bestSnapX = { dist: 0, correction, position: canvasCenterX, isStart: false }
-  }
-  if (isAlone && !elementSnapYFired && canvasCenterY !== null) {
-    const correction = canvasCenterY - movedCy
-    bestSnapY = { dist: 0, correction, position: canvasCenterY, isStart: false }
-  }
-
   const finalDx = rawDx + (bestSnapX?.correction ?? 0)
   const finalDy = rawDy + (bestSnapY?.correction ?? 0)
   const guides: SnapGuide[] = []
-  // Emit guides for alignment snaps (element or canvas). Skip the
+  // Emit guides for element-edge alignment snaps. Skip the
   // snap-to-start case — snapping back to the original position is
   // silent (no alignment line, just the cursor returning).
   if (bestSnapX && !bestSnapX.isStart) {

@@ -1,15 +1,12 @@
-## [done] 20260728_102500 — design-pages.workspace_item_task_id FK
+## [active] 2026-07-29_112500 — design-right-click-group-menu task ledger
 
-Plan: docs/superpowers/plans/2026-07-28-design-page-workspace-item-task-fk.md
-Worktree: /home/ginwa/ginwaaitoolbox_worktrees/design-page-task-fk
-Branch: worktree/design-page-task-fk
+Branch: worktree/design-right-click-group-menu
+Spec:  docs/superpowers/specs/2026-07-29-design-right-click-group-menu.md (commit 18bd4a14)
+Plan:  docs/superpowers/plans/2026-07-29-design-right-click-group-menu.md (commit 158508dc)
 
-### Task checklist
-`- [x]` - [ ] Task 1 — Migration 066: add `design_pages.workspace_item_task_id` column
-`- [x]` - [ ] Task 2 — `design_model.zig` model layer updates
-`- [x]` - [ ] Task 3 — Wire format (`DesignPageResponse`)
-`- [x]` - [ ] Task 4 — Static-contract test for the new field
-`- [x]` - [ ] Task 5 — Frontend wire format (`DesignPage` interface)
-`- [x]` - [ ] Task 6 — Rewrite `handleDesignOpenChat` + DesignChatToggle.spec.ts
-`- [x]` - [ ] Task 7 — Manual smoke test + cross-compile smoke
-`- [x]` - [ ] Task 8 — Memory note + SPEC update
+Chunks:
+- [x] Chunk 1 — composable + DesignContextMenu skeleton (3 tests) [commit 086f3848]
+- [ ] Chunk 2 — LayersPanel right-click → context menu → Group (4 tests)
+- [ ] Chunk 3 — Canvas right-click + Shift+click toggle (4 tests)
+- [ ] Chunk 4 — Keyboard shortcuts: Cmd+A / Cmd+[ / ] / Backspace (5 tests)
+- [ ] Chunk 5 — Backend reorder endpoint + wire into context menu (11+2 tests)

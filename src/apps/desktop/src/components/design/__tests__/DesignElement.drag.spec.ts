@@ -231,7 +231,7 @@ describe('DesignElement drag', () => {
     })
     const root = wrapper.find('[data-design-element]').element as HTMLElement
     root.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true }))
-    expect(wrapper.emitted('select')?.[0]).toEqual(['el_1'])
+    expect(wrapper.emitted('select')?.[0]).toEqual([{ elementId: 'el_1', additive: false }])
   })
 
   it('Delete key emits delete for every selected element', async () => {
