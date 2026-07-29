@@ -1018,6 +1018,7 @@ fn saveRetryAttemptMessage(
         .event_bus = event_bus,
         .is_emit_sse = true,
         .cwd = cwd,
+        .is_skip_db = true,
         .entity = .{
             .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
             .session_id = session_id,
@@ -1039,12 +1040,6 @@ fn saveRetryAttemptMessage(
             .parent_session_id = parent_session_id,
             .is_input = true,
             .is_output = false,
-            // Per-retry diagnostic stays in chat history (`is_input: true`)
-            // but does NOT propagate to the LLM context — feeding 10 identical
-            // "[Retry X/10]" lines per failure cycle bloats the prompt for no
-            // benefit. The LLM only needs the final TooManyRetries bail
-            // summary (see the `diagnostic` block below). See saveRetryAttempt
-            // docstring for the rationale.
             .is_feed_to_llm = false,
             .image_urls = null,
             .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
