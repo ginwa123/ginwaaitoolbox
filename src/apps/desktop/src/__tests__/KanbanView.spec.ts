@@ -786,4 +786,136 @@ describe('KanbanView — create-task flow', () => {
       document.querySelector('[data-testid="kanban-task-detail-dialog"]'),
     ).toBeNull()
   })
+
+  // Regression: kanban task tags were silently dropped on insert
+  // because handleCreateTaskSave's payload type omitted `tags` and
+  // the tag array was never forwarded to addTask. The user types
+  // tags in the chip input, clicks Save, sees a task created
+  // without tags. This test reproduces that exact flow and asserts
+  // the tags are forwarded end-to-end through KanbanView →
+  // workspacesStore.addTask.
+  it('forwards tags payload to addTask when the dialog emits tags (create mode)', async () => {
+    const w = await mountAndOpenDialog()
+
+    const { useWorkspacesStore } = await import('../stores/workspaces')
+    const store = useWorkspacesStore()
+    const addTaskSpy = vi
+      .spyOn(store, 'addTask')
+      .mockResolvedValue('task_new_tags')
+    vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
+
+    // Type the task name.
+    const nameInput = document.querySelector<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-create-name"]',
+    )
+    nameInput!.value = 'Tagged task'
+    nameInput!.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    // Type a tag into the chip input WITHOUT pressing Enter/comma.
+    // The bug was: this draft would not be committed by Save clicks,
+    // and even if it were committed, the handler did not forward it.
+    // The fix wires both: KanbanTagsInput's @blur + handleSave's
+    // explicit commitDraft() call.
+    const tagInput = document.querySelector<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-create-tags-field"]',
+    )
+    expect(tagInput).not.toBeNull()
+    tagInput!.value = 'sadsad'
+    tagInput!.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    // Click Save — the click moves focus, which fires @blur on the
+    // tag input → the draft commits → tags.value = ['sadsad'] → the
+    // dialog's handleSave emits { ..., tags: ['sadsad'] } → KanbanView
+    // forwards to addTask.
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="kanban-task-detail-save"]',
+      )!
+      .click()
+    await flushPromises()
+    await flushPromises()
+
+    expect(addTaskSpy).toHaveBeenCalledTimes(1)
+    expect(addTaskSpy).toHaveBeenCalledWith(
+      WS_ID,
+      ITEM_ID,
+      expect.objectContaining({
+        name: 'Tagged task',
+        tags: ['sadsad'],
+      }),
+    )
+    void w
+  })
+
+  // Regression: same as above but for the EDIT path. The save
+  // emit payload type in handleTaskDetailSave omitted `tags`, so
+  // editing an existing task's tags through the dialog was a
+  // no-op (the API never received them).
+  it('forwards tags payload to updateTaskDetails when the dialog emits tags (edit mode)', async () => {
+    const item = makeItem({
+      kanban_columns: [makeColumn({ id: 'col_x', name: 'todo', position: 0 })],
+      tasks: [
+        {
+          id: 'task_42',
+          name: 'Existing task',
+          description: 'A description',
+          kanban_column_id: 'col_x',
+          kanban_position: 0,
+          tags: ['original'],
+        },
+      ],
+    })
+    wrapper = mountView(item)
+    await flushPromises()
+
+    // Open the task detail dialog for task_42.
+    const column = wrapper!.findComponent({ name: 'KanbanColumn' })
+    column.vm.$emit('viewTaskDetail', 'task_42')
+    await flushPromises()
+
+    const { useWorkspacesStore } = await import('../stores/workspaces')
+    const store = useWorkspacesStore()
+    const updateSpy = vi
+      .spyOn(store, 'updateTaskDetails')
+      .mockResolvedValue(undefined)
+
+    // Add a new tag without pressing Enter/comma — exercises the
+    // draft-commit safety net.
+    const tagInput = document.querySelector<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-tags-field"]',
+    )
+    expect(tagInput).not.toBeNull()
+    tagInput!.value = 'fresh'
+    tagInput!.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    // Simulate the full pointer sequence: the Save button is
+    // :disabled="!canSave", and a draft tag leaves canSave=false
+    // (the draft is in the input's local ref, not yet in tags.value).
+    // The fix adds @mousedown on the Save button to commit the draft
+    // BEFORE the browser decides whether to fire click. el.click()
+    // only fires a click event, so dispatch mousedown + click to
+    // mirror the real browser pointer sequence.
+    const saveBtn = document.querySelector<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-save"]',
+    )
+    saveBtn!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    await flushPromises()
+    saveBtn!.click()
+    await flushPromises()
+    await flushPromises()
+
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    const lastCall = updateSpy.mock.calls[0]
+    expect(lastCall?.[0]).toBe(WS_ID)
+    expect(lastCall?.[1]).toBe(ITEM_ID)
+    expect(lastCall?.[2]).toBe('task_42')
+    expect(lastCall?.[3]).toEqual(
+      expect.objectContaining({
+        tags: ['original', 'fresh'],
+      }),
+    )
+  })
 })

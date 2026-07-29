@@ -166,6 +166,13 @@ function onInput(): void {
 // Whether the input shows an error style (red border). Drives the
 // `aria-invalid` attr and the red border class.
 const hasError = computed(() => errorMessage.value !== null)
+
+// Expose commitDraft so the host (KanbanTaskDetailDialog) can call
+// it imperatively right before reading the modelValue. Without this,
+// a draft tag typed just before Save (no Enter/comma pressed) is
+// silently dropped — `commitDraft` is only triggered by Enter/comma
+// (and `@blur` since the auto-commit addition below).
+defineExpose({ commitDraft })
 </script>
 
 <template>
@@ -201,6 +208,7 @@ const hasError = computed(() => errorMessage.value !== null)
         @keydown.enter.prevent="commitDraft"
         @keydown.,.prevent="commitDraft"
         @keydown.backspace="onBackspace"
+        @blur="commitDraft"
         @input="onInput"
         type="text"
         :placeholder="props.modelValue.length === 0 ? 'Add tags (letters, digits, hyphens)…' : ''"

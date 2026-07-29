@@ -143,6 +143,12 @@ const name = ref('')
 const description = ref('')
 const unattended = ref<'0' | '1'>('0')
 const tags = ref<string[]>([])
+// Template ref for the chip input — handleSave calls commitDraft()
+// imperatively before reading `tags.value` so a draft tag typed but
+// not yet committed (Enter/comma not pressed) isn't dropped on Save.
+// The component's @blur handler covers the normal case; this is the
+// explicit "click Save without leaving the field" safety net.
+const tagsInputRef = ref<{ commitDraft: () => void } | null>(null)
 const nameInput = ref<HTMLInputElement | null>(null)
 const DESCRIPTION_MAX = 5000
 // Description render mode:
@@ -233,8 +239,21 @@ const canSave = computed<boolean>(() => isDirty.value && isValid.value)
 // ─── Handlers ───────────────────────────────────────────────────────────
 
 const handleSave = () => {
-    if (!canSave.value) return
-    if (isCreateMode.value) {
+  if (!canSave.value) return
+  // Belt + suspenders: if the user typed a tag and clicked Save
+  // without pressing Enter/comma, the KanbanTagsInput still holds the
+  // draft in its local `draftInput` ref. The mousedown handler
+  // below commits it before click logic runs, but commit again here
+  // to handle the (rarer) case where mousedown didn't fire (e.g.
+  // keyboard activation via Space/Enter).
+  tagsInputRef.value?.commitDraft()
+  // canSave reads tags.value; re-check after the commit in case the
+  // user's draft was the only "dirty" signal and committing it
+  // didn't change isDirty (e.g. duplicate draft). canSave recomputes
+  // reactively, but the read here is intentional — the Save button
+  // is disabled while canSave is false.
+  if (!canSave.value) return
+  if (isCreateMode.value) {
       emit('create', {
         mode: 'create',
         name: name.value.trim(),
@@ -269,6 +288,20 @@ const handleClose = () => {
   //   - :show + @close (KanbanSettingsDialog-style) listens for `close`
   emit('update:show', false)
   emit('close')
+}
+
+// Commit any draft tag typed in the chip input the moment the user
+// mousedowns the Save button. Why mousedown and not @blur on the
+// input: the Save button has `:disabled="!canSave"`, and a draft
+// tag typed without Enter/comma leaves canSave=false (the draft is
+// in the chip input's local ref, not in `tags.value` yet). If we
+// only relied on @blur, the click would land on a still-disabled
+// button and the browser would drop it. mousedown is NOT gated by
+// the disabled attribute (it's a low-level event), so we can
+// commit the draft, the canSave computed flips to true, and the
+// subsequent click event fires on the now-enabled button.
+const commitTagsDraftOnSaveMouseDown = () => {
+  tagsInputRef.value?.commitDraft()
 }
 
 const handleKeydown = (event: KeyboardEvent) => {
@@ -534,6 +567,7 @@ const columnLabel = computed<string | null>(() => {
                 Tags
               </label>
               <KanbanTagsInput
+                ref="tagsInputRef"
                 v-model="tags"
                 :test-id="isCreateMode ? 'kanban-task-detail-create-tags' : 'kanban-task-detail-tags'"
               />
@@ -613,6 +647,7 @@ const columnLabel = computed<string | null>(() => {
             </button>
             <button
               type="button"
+              @mousedown="commitTagsDraftOnSaveMouseDown"
               @click="handleSave"
               :disabled="!canSave"
               data-testid="kanban-task-detail-save"
