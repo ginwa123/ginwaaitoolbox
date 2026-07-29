@@ -214,4 +214,111 @@ describe('DesignView group drag transitive expansion', () => {
       wrapper.unmount()
     }
   })
+
+  // BUG FIX (2026-07-29): "design mode drag element moves so fast".
+  // The original handleGroupDrag computed the PATCH as
+  // `el.x + finalDx` where `el.x` is the element's CURRENT position
+  // from `elements.value`. After the first PATCH round-trips, the
+  // SSE re-fetch overwrites `element.design_elements` with the new
+  // server state — so on the next pointermove, `el.x` is the latest
+  // server position, NOT the pointerdown-time position. Adding the
+  // cursor delta to the latest position compounded the delta on every
+  // pointermove, and the element visually jumped further than the
+  // cursor.
+  //
+  // The fix captures each element's position on the FIRST pointermove
+  // (drag start) and uses that snapshot for every subsequent PATCH.
+  // This test simulates the SSE update mid-drag and asserts the
+  // PATCH math is correct.
+  it('group drag uses ORIGINAL positions (not stale SSE\'d positions) after a mid-drag SSE re-fetch', async () => {
+    const wrapper = await mountWith([
+      makeEl({ id: 'el_g', type: 'group', x: 0, y: 0, width: 200, height: 200 }),
+      makeEl({ id: 'el_a', x: 10, y: 10, parent_id: 'el_g' }),
+    ])
+    try {
+      // Select the group.
+      const groupEl = wrapper.find('[data-testid="design-element-el_g"]')
+      groupEl.element.setPointerCapture = () => {}
+      groupEl.element.releasePointerCapture = () => {}
+      groupEl.element.hasPointerCapture = (): boolean => true
+      groupEl.element.dispatchEvent(new PointerEvent('pointerdown', {
+        button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true,
+      }))
+      await flushPromises()
+      updateGeometrySpy.mockClear()
+
+      // Mock performance.now() so the throttle (50ms) fires predictably.
+      // The child's throttled emit reads `performance.now()` — without
+      // a mock, every pointermove in the same tick skips the throttle.
+      let now = 0
+      const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => now)
+
+      // First pointermove: cursor at design-px (+50, +30).
+      // PATCH should be x=50, y=30 for el_g (originalX=0 + delta).
+      now = 100
+      groupEl.element.dispatchEvent(new PointerEvent('pointermove', {
+        button: 0, pointerId: 1, clientX: 150, clientY: 130, bubbles: true,
+      }))
+      await flushPromises()
+
+      // Sanity: the first PATCH should be x=50, y=30.
+      const earlyCalls = updateGeometrySpy.mock.calls.map((c: any[]) => c[4])
+      const earlyG = earlyCalls.find((g: any) => g && g.x === 50 && g.y === 30)
+      expect(earlyG).toBeDefined()
+
+      // Simulate SSE re-fetch: the backend's design_element_updated
+      // event triggers fetchDesignElements on the frontend, which
+      // overwrites item.design_elements with the latest server state.
+      // In production this happens via the SSE bus; in the test we
+      // mutate the prop directly. After this, el_g.x = 50, y = 30.
+      const item = (wrapper.vm as any).item
+      item.design_elements = item.design_elements.map((e: any) =>
+        e.id === 'el_g' ? { ...e, x: 50, y: 30 } : e,
+      )
+      await flushPromises()
+
+      // Second pointermove: cursor at design-px (+100, +60) total.
+      // Total delta from startClientX=100 is (100, 60).
+      //
+      // With the BUG: PATCH = el.x + delta = 50 + 100 = 150. WRONG.
+      // With the FIX: PATCH = originalX + delta = 0 + 100 = 100. CORRECT.
+      now = 200
+      groupEl.element.dispatchEvent(new PointerEvent('pointermove', {
+        button: 0, pointerId: 1, clientX: 200, clientY: 160, bubbles: true,
+      }))
+      await flushPromises()
+
+      // pointerup to fire the trailing emit (also reads
+      // performance.now()).
+      now = 300
+      groupEl.element.dispatchEvent(new PointerEvent('pointerup', {
+        button: 0, pointerId: 1, clientX: 200, clientY: 160, bubbles: true,
+      }))
+      await flushPromises()
+
+      // The LAST PATCH for 'el_g' should be x=100, y=60 (the cursor's
+      // absolute position). Without the fix, this would be x=150, y=90
+      // (or similar — the bug compounds the delta on every pointermove).
+      const xyById = new Map<string, { x: number; y: number }>()
+      for (const c of updateGeometrySpy.mock.calls) {
+        const id = c[3] as string
+        const geom = c[4] as { x?: number; y?: number }
+        if (geom.x !== undefined && geom.y !== undefined) {
+          xyById.set(id, { x: geom.x, y: geom.y })
+        }
+      }
+      expect(xyById.get('el_g')).toEqual({ x: 100, y: 60 })
+      // Descendant el_a started at (10, 10). Original + delta(100, 60)
+      // = (110, 70). The bug only manifests for elements whose `el.x`
+      // was updated by SSE — the test only mutates el_g, so el_a's x
+      // stays at 10 and the formula gives the correct answer (110)
+      // by coincidence. Pin it anyway so a future refactor that
+      // breaks the snapshot is caught.
+      expect(xyById.get('el_a')).toEqual({ x: 110, y: 70 })
+
+      nowSpy.mockRestore()
+    } finally {
+      wrapper.unmount()
+    }
+  })
 })

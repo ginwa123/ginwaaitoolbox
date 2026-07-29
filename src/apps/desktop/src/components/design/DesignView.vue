@@ -1199,6 +1199,25 @@ const handleDesignUngroupFromContextMenu = (elementId: string): void => {
 // a 3-element drag would otherwise generate 3 emits per pointermove ×
 // the store's throttle. Direct calls keep latency at one round-trip
 // per 50ms for the WHOLE selection.
+//
+// BUG FIX (2026-07-29): the original implementation used
+// `el.x + finalDx` where `el.x` is the element's CURRENT position
+// from `elements.value`. But after the first PATCH round-trips, the
+// SSE re-fetch overwrites `element.design_elements` with the new
+// server state — so `el.x` is the LATEST server position, not the
+// pointerdown-time position. Adding the cursor delta to the LATEST
+// position compounds the delta on every pointermove, and the
+// element visually jumps further than the cursor. The user reported
+// this as "design mode drag element moves so fast".
+//
+// The fix: capture each element's position the FIRST time
+// `handleGroupDrag` fires (the drag start), then use that snapshot
+// for every subsequent PATCH in the same drag. The cursor's delta
+// is applied to the ORIGINAL position, so the PATCH is always the
+// correct absolute target — matching the single-element drag's
+// `start.x + dx` pattern in DesignElement.vue.
+let dragStartPositions: Map<string, { x: number; y: number }> | null = null
+
 const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
   if (selectedIds.value.size === 0) return
   if (!props.workspaceId || !effectiveItemId.value) return
@@ -1224,10 +1243,33 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
   )
   const selected = elements.value.filter((e) => dragIds.has(e.id))
   if (selected.length > 0) {
-    const minX = Math.min(...selected.map((e) => e.x + delta.dx))
-    const minY = Math.min(...selected.map((e) => e.y + delta.dy))
-    const maxX = Math.max(...selected.map((e) => e.x + delta.dx + e.width))
-    const maxY = Math.max(...selected.map((e) => e.y + delta.dy + e.height))
+    // Capture original positions ONCE at the start of the drag. The
+    // first pointermove fires before any PATCH round-trips, so the
+    // snapshot reflects the pointerdown-time positions. On subsequent
+    // pointermoves, SSE may have rewritten `elements.value`, but the
+    // snapshot stays stable — that's the source of truth for the
+    // PATCH math. (`dragStartPositions` is reset on dragEnd below.)
+    if (dragStartPositions === null) {
+      dragStartPositions = new Map()
+      for (const el of selected) {
+        dragStartPositions.set(el.id, { x: el.x, y: el.y })
+      }
+    }
+    const originalPos = (e: DesignElementApi): { x: number; y: number } =>
+      dragStartPositions!.get(e.id) ?? { x: e.x, y: e.y }
+
+    // Snap math uses ORIGINAL positions + delta (NOT the live
+    // `el.x` which may have been updated by SSE). Without this,
+    // the union bbox reflects the SSE'd els + delta — wrong by the
+    // accumulated delta so far.
+    const minX = Math.min(...selected.map((e) => originalPos(e).x + delta.dx))
+    const minY = Math.min(...selected.map((e) => originalPos(e).y + delta.dy))
+    const maxX = Math.max(
+      ...selected.map((e) => originalPos(e).x + delta.dx + e.width),
+    )
+    const maxY = Math.max(
+      ...selected.map((e) => originalPos(e).y + delta.dy + e.height),
+    )
     const unionBbox = {
       id: '__union__',
       x: minX,
@@ -1250,14 +1292,15 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
     const finalDx = delta.dx + snapResult.dx
     const finalDy = delta.dy + snapResult.dy
     for (const el of selected) {
+      const orig = originalPos(el)
       void workspacesStore.updateDesignElementGeometry(
         workspaceId,
         itemId,
         pageId,
         el.id,
         {
-          x: Math.round(el.x + finalDx),
-          y: Math.round(el.y + finalDy),
+          x: Math.round(orig.x + finalDx),
+          y: Math.round(orig.y + finalDy),
         },
       )
     }
@@ -1282,11 +1325,18 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
   }
 }
 
-// Clear snap guides when the drag ends. DesignElement emits `dragEnd`
-// on pointerup; we listen via @drag-end on each <DesignElement>. This
-// is a no-op if no drag is in flight.
+// Clear snap guides + reset drag-start positions when the drag ends.
+// DesignElement emits `dragEnd` on pointerup; we listen via @drag-end
+// on each <DesignElement>. This is a no-op if no drag is in flight.
+//
+// Resetting `dragStartPositions` is critical: if the user starts a
+// NEW drag right after this one (e.g., they let go, then grab
+// another element), the new first pointermove must capture the
+// current positions as the new baseline — NOT the stale snapshot
+// from the previous drag.
 const clearSnapGuides = (): void => {
   snapGuides.value = []
+  dragStartPositions = null
 }
 
 const handleCreateElement = (
