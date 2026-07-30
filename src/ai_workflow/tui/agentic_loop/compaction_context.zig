@@ -15,6 +15,7 @@ const nalarcore = mod.nalarcore;
 const sqlite = nalarcore.sqlite;
 const logger_mod = nalarcore.loggermod;
 const Logger = logger_mod.Logger;
+const xml_escape = nalarcore.helpers.xml_escape;
 
 /// One user-turn row from `llm_history`. Used to embed the full user
 /// history into the compacted envelope so the next iteration of the
@@ -190,7 +191,7 @@ pub fn enrichCompactionXml(
             t.content[0..MAX_USER_CONTENT_CHARS]
         else
             t.content;
-        const escaped = try xmlEscape(allocator, truncated);
+        const escaped = try xml_escape(allocator, truncated);
         defer allocator.free(escaped);
         try out.print(
             allocator,
@@ -209,7 +210,7 @@ pub fn enrichCompactionXml(
         try seen.put(allocator, rf.path, {});
         const abs = try resolvePath(allocator, rf.path, cwd);
         defer allocator.free(abs);
-        const escaped = try xmlEscape(allocator, rf.path);
+        const escaped = try xml_escape(allocator, rf.path);
         defer allocator.free(escaped);
         try out.print(
             allocator,
@@ -227,22 +228,6 @@ pub fn enrichCompactionXml(
     try out.appendSlice(allocator, "</compaction_context>\n");
 
     return out.toOwnedSlice(allocator);
-}
-
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    errdefer buf.deinit(allocator);
-    for (s) |c| {
-        switch (c) {
-            '&' => try buf.appendSlice(allocator, "&amp;"),
-            '<' => try buf.appendSlice(allocator, "&lt;"),
-            '>' => try buf.appendSlice(allocator, "&gt;"),
-            '"' => try buf.appendSlice(allocator, "&quot;"),
-            '\'' => try buf.appendSlice(allocator, "&apos;"),
-            else => try buf.append(allocator, c),
-        }
-    }
-    return buf.toOwnedSlice(allocator);
 }
 
 fn resolvePath(allocator: std.mem.Allocator, path: []const u8, cwd: []const u8) ![]u8 {
