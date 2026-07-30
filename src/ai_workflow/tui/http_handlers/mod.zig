@@ -62,6 +62,10 @@ pub const kanbanColumnsDeleteHandler = @import("kanban_columns_delete.zig").kanb
 pub const kanbanCopySpecHandler = @import("kanban_copy_spec.zig").kanbanCopySpecHandler;
 pub const tasksMoveHandler = @import("tasks_move.zig").tasksMoveHandler;
 pub const tasksListHandler = @import("tasks_list.zig").tasksListHandler;
+// Kanban tag autocomplete endpoint (Chunk 1 of plan
+// docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md).
+// Stub-only in this commit — Task 1.4 implements the useCase body.
+pub const kanbanTagsListHandler = @import("kanban_tags_list.zig").kanbanTagsListHandler;
 pub const tasksCreateHandler = @import("task_create.zig").tasksCreateHandler;
 pub const tasksUpdateHandler = @import("task_update.zig").tasksUpdateHandler;
 pub const tasksUpdateByIdHandler = @import("task_update.zig").tasksUpdateByIdHandler;
