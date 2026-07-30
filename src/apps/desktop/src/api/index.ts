@@ -268,6 +268,14 @@ export interface DesignElementEvent {
   item_id: string
   page_id: string
   element_id: string
+  /**
+   * Batch event variant (design_elements_geometry_batch_updated,
+   * Chunk 3 of design-drag-debounce-batch). When set, the SSE
+   * handler reads `element_ids` instead of `element_id` to drive
+   * the local-mutation dedupe. Optional for backward compat with
+   * existing single-element events.
+   */
+  element_ids?: string[]
 }
 
 export interface WorkspaceItem {

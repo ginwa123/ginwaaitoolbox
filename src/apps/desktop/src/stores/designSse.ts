@@ -38,7 +38,7 @@ import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 import { useSseBus } from '../helpers/sseBus'
 import type { DesignElementEvent } from '../api'
-import { useWorkspacesStore } from './workspaces'
+import { useWorkspacesStore, isRecentLocalMutation } from './workspaces'
 
 export const useDesignSseStore = defineStore('designSse', () => {
   // Mutable ref so `setActiveWorkspaceId` can update the filter
@@ -98,6 +98,32 @@ export const useDesignSseStore = defineStore('designSse', () => {
       // them all. Skipping the no-op fetch keeps the local store's
       // re-fetch rate at 1 per actual mutation.
       if (event.workspace_id !== activeWorkspaceId.value) return
+      // Chunk 3 (design-drag-debounce-batch): LOCAL-MUTATION DEDUPE.
+      //
+      // Every locally-issued geometry PATCH (single or batch)
+      // registers the affected element_id(s) in the
+      // `recentLocalMutations` Map (workspaces.ts) with a 1500 ms
+      // TTL. When the SSE event comes back for an element THIS
+      // client just mutated, skip the `fetchDesignElements` GET
+      // fan-out — the local store already has the truth (the API
+      // mirror updated it synchronously).
+      //
+      // Safety semantics (strict superset): if ANY element_id in the
+      // event is missing from the Map OR has an expired TTL, fall
+      // through to the normal fetch path. This is the only safe
+      // default — partial dedupe would leave the cache inconsistent.
+      //
+      // DOMINANT BACKEND-LOAD REDUCTION: this single check removes
+      // the GET fan-out that was the dominant cost of the old
+      // 50 ms-throttled drag (~200 req/sec for a 5-element drag).
+      const eventElementIds = extractElementIds(event)
+      if (eventElementIds.length > 0) {
+        const allLocal = eventElementIds.every((id) => isRecentLocalMutation(id))
+        if (allLocal) {
+          // Skip the GET — the local store already mirrors the truth.
+          return
+        }
+      }
       const ws = useWorkspacesStore()
       // Re-fetch the elements for the page named in the event. The
       // server-side change might apply to ANY active page (not just
@@ -225,3 +251,20 @@ export const useDesignSseStore = defineStore('designSse', () => {
     setActiveWorkspaceId,
   }
 })
+
+/**
+ * Extract the list of element ids from a design SSE event. The
+ * single-element wire shape carries `element_id`; the batch wire
+ * shape (Chunk 3 of design-drag-debounce-batch) carries
+ * `element_ids`. Defensive: missing fields → empty array → SSE
+ * handler falls through to the normal fetch path.
+ */
+function extractElementIds(event: DesignElementEvent): string[] {
+  const e = event as unknown as {
+    element_id?: string
+    element_ids?: string[]
+  }
+  if (Array.isArray(e.element_ids)) return e.element_ids
+  if (typeof e.element_id === 'string' && e.element_id.length > 0) return [e.element_id]
+  return []
+}
