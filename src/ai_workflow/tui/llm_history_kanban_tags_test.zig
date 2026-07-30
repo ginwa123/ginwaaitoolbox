@@ -33,9 +33,19 @@ fn setupDbWithTags() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Thread
 }
 
 fn insertTaskWithTags(db: *sqlite.SqliteBackend, alloc: std.mem.Allocator, id: []const u8, item_id: []const u8, tags_json: []const u8) !void {
-    try db.exec(alloc,
-        "INSERT INTO workspace_item_tasks (id, workspace_item_id, tags) VALUES (?, ?, ?)",
-        &.{ id, item_id, tags_json });
+    // SqliteBackend.exec binds empty `[]const u8` as SQL NULL — which
+    // would fail the NOT NULL constraint on `tags`. Match the
+    // production pattern (see llm_history.createWorkspaceItemTask):
+    // use a SQL `''` literal when the value is the empty string.
+    if (tags_json.len == 0) {
+        try db.exec(alloc,
+            "INSERT INTO workspace_item_tasks (id, workspace_item_id, tags) VALUES (?, ?, '')",
+            &.{ id, item_id });
+    } else {
+        try db.exec(alloc,
+            "INSERT INTO workspace_item_tasks (id, workspace_item_id, tags) VALUES (?, ?, ?)",
+            &.{ id, item_id, tags_json });
+    }
 }
 
 fn insertTaskWithTagsAndUpdatedAt(

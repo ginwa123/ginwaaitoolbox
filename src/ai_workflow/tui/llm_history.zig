@@ -3998,12 +3998,77 @@ pub fn listKanbanDistinctTags(
     limit: u32,
     offset: u32,
 ) anyerror!KanbanTagSuggestionsPage {
-    _ = allocator;
-    _ = db;
-    _ = workspace_item_id;
-    _ = limit;
-    _ = offset;
-    return error.NotImplemented;
+    // Defensive: clamp limit to a sane max even if the caller passes
+    // a huge value. The handler also clamps but defense-in-depth.
+    const clamped_limit: u32 = if (limit == 0) 1 else if (limit > 50) 50 else limit;
+
+    // LIMIT N+1 trick: fetch one extra row so we can detect has_more
+    // in a single query. If the result has <= N rows, has_more=false.
+    const fetch_limit: u32 = clamped_limit + 1;
+
+    // Format the u32 LIMIT/OFFSET to strings for bind. db.query
+    // only binds TEXT, so integers must be string-formatted. SQLite
+    // coerces numeric-looking TEXT in numeric contexts.
+    const limit_str = std.fmt.allocPrint(allocator, "{d}", .{fetch_limit}) catch "";
+    const offset_str = std.fmt.allocPrint(allocator, "{d}", .{offset}) catch "";
+    defer {
+        if (limit_str.len > 0) allocator.free(limit_str);
+        if (offset_str.len > 0) allocator.free(offset_str);
+    }
+
+    // json_each() expands the `tags` JSON array into a virtual table
+    // with one row per element. json_valid + json_type filter out
+    // malformed/non-array rows (legacy / corrupted). GROUP BY value
+    // counts per-tag usage. MAX(updated_at) is the recency tie-breaker.
+    var q = try db.query(allocator,
+        \\SELECT je.value AS tag, COUNT(*) AS cnt, MAX(t.updated_at) AS last_used
+        \\FROM workspace_item_tasks t, json_each(t.tags) je
+        \\WHERE t.workspace_item_id = ?
+        \\  AND json_valid(t.tags) = 1
+        \\  AND json_type(t.tags) = 'array'
+        \\GROUP BY je.value
+        \\ORDER BY cnt DESC, last_used DESC
+        \\LIMIT ?
+        \\OFFSET ?
+    , &.{
+        workspace_item_id,
+        limit_str,
+        offset_str,
+    });
+    defer q.deinit();
+
+    var results: std.ArrayList(KanbanTagSuggestion) = .empty;
+    errdefer {
+        for (results.items) |r| r.deinit(allocator);
+        results.deinit(allocator);
+    }
+
+    while (try q.next()) |row| {
+        defer row.deinit(allocator);
+        const suggestion: KanbanTagSuggestion = .{
+            .name = try allocator.dupe(u8, row.values[0]),
+            .count = std.fmt.parseInt(u32, row.values[1], 10) catch 0,
+            .last_used_at = if (row.values[2].len > 0)
+                try allocator.dupe(u8, row.values[2])
+            else
+                null,
+        };
+        try results.append(allocator, suggestion);
+    }
+
+    // Apply the LIMIT N+1 trick: if we got back more than the
+    // requested limit, truncate and set has_more = true.
+    const has_more = results.items.len > clamped_limit;
+    if (has_more) {
+        // Drop the last (extra) row; we don't want to return it.
+        const last = results.pop().?;
+        last.deinit(allocator);
+    }
+
+    return KanbanTagSuggestionsPage{
+        .tags = try results.toOwnedSlice(allocator),
+        .has_more = has_more,
+    };
 }
 
 /// Get all active sessions for SSE broadcast
