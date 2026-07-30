@@ -34,13 +34,38 @@ export function useKanbanTagSuggestions(
   const hasMore = ref(false)
   const loading = ref(false)
   const loaded = ref(false)
+  const offset = ref(0)
+  let inFlight = false
+
+  async function fetchPage(targetOffset: number): Promise<void> {
+    if (inFlight) return
+    inFlight = true
+    loading.value = true
+    try {
+      const page = await getKanbanTagSuggestions(workspaceId, itemId, {
+        limit,
+        offset: targetOffset,
+      })
+      tags.value = [...tags.value, ...page.tags]
+      hasMore.value = page.has_more
+      loaded.value = true
+      offset.value = targetOffset + limit
+    } catch {
+      hasMore.value = false
+    } finally {
+      loading.value = false
+      inFlight = false
+    }
+  }
 
   async function ensureLoaded(): Promise<void> {
-    // Stub.
+    if (loaded.value) return
+    await fetchPage(0)
   }
 
   async function loadNextPage(): Promise<void> {
-    // Stub.
+    if (!hasMore.value || inFlight) return
+    await fetchPage(offset.value)
   }
 
   function reset(): void {
@@ -48,6 +73,7 @@ export function useKanbanTagSuggestions(
     hasMore.value = false
     loading.value = false
     loaded.value = false
+    offset.value = 0
   }
 
   return { tags, hasMore, loading, loaded, ensureLoaded, loadNextPage, reset }

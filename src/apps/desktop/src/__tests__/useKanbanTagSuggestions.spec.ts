@@ -36,8 +36,8 @@ describe('useKanbanTagSuggestions', () => {
     expect(api.getKanbanTagSuggestions).toHaveBeenCalledTimes(2)
     expect(api.getKanbanTagSuggestions).toHaveBeenNthCalledWith(2, 'ws_x', 'item_x', { limit: 8, offset: 8 })
     expect(c.tags.value).toHaveLength(2)
-    expect(c.tags.value[0].name).toBe('a')
-    expect(c.tags.value[1].name).toBe('b')
+    expect(c.tags.value[0]!.name).toBe('a')
+    expect(c.tags.value[1]!.name).toBe('b')
     expect(c.hasMore.value).toBe(false)
   })
 
