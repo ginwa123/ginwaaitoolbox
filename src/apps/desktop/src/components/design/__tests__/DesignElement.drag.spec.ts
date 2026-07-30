@@ -62,7 +62,7 @@ describe('DesignElement drag', () => {
     moveHandler(new PointerEvent('pointermove', { clientX: 150, clientY: 130, pointerId: 1 }))
     // Within the throttle window — may or may not have emitted yet.
     // Use the wrapper's emitted() after waiting.
-    await new Promise((r) => setTimeout(r, 60))  // wait past throttle
+    await new Promise((r) => setTimeout(r, 300))  // wait past the 250 ms trailing-edge debounce (Chunk 3)
     const updates = wrapper.emitted('update') ?? []
     const lastUpdate = updates[updates.length - 1]?.[0] as any
     expect(lastUpdate).toMatchObject({ x: 150, y: 130 })
@@ -113,7 +113,7 @@ describe('DesignElement drag', () => {
     moveHandler(new PointerEvent('pointermove', { clientX: 200, clientY: 100, pointerId: 1 }))
     // 100 screen-px move at 50% zoom = 200 design-px move.
     // Start: x=100, dx = (200-100)/0.5 = 200 → x = 100+200 = 300
-    await new Promise((r) => setTimeout(r, 60))
+    await new Promise((r) => setTimeout(r, 300))
     const updates = wrapper.emitted('update') ?? []
     const lastUpdate = updates[updates.length - 1]?.[0] as any
     expect(lastUpdate.x).toBe(300)
@@ -156,7 +156,7 @@ describe('DesignElement drag', () => {
     // Drag NW handle up-left by (-30, -40): width grows by 30, height grows by 40,
     // x shrinks by 30, y shrinks by 40.
     moveHandler(new PointerEvent('pointermove', { clientX: 70, clientY: 60, pointerId: 1 }))
-    await new Promise((r) => setTimeout(r, 60))
+    await new Promise((r) => setTimeout(r, 300))
     const updates = wrapper.emitted('update') ?? []
     const lastUpdate = updates[updates.length - 1]?.[0] as any
     expect(lastUpdate.width).toBe(230)   // 200 + 30
@@ -183,7 +183,7 @@ describe('DesignElement drag', () => {
     eEl.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true }))
     // Drag E handle -1000px left: width would go to -800, clamped to 10.
     moveHandler(new PointerEvent('pointermove', { clientX: -900, clientY: 100, pointerId: 1 }))
-    await new Promise((r) => setTimeout(r, 60))
+    await new Promise((r) => setTimeout(r, 300))
     const updates = wrapper.emitted('update') ?? []
     const lastUpdate = updates[updates.length - 1]?.[0] as any
     expect(lastUpdate.width).toBe(10)

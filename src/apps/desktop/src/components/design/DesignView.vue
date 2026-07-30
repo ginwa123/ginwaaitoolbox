@@ -1381,19 +1381,28 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
     snapGuides.value = snapResult.guides
     const finalDx = delta.dx + snapResult.dx
     const finalDy = delta.dy + snapResult.dy
-    for (const el of selected) {
-      const orig = originalPos(el)
-      void workspacesStore.updateDesignElementGeometry(
-        workspaceId,
-        itemId,
-        pageId,
-        el.id,
-        {
-          x: Math.round(orig.x + finalDx),
-          y: Math.round(orig.y + finalDy),
-        },
-      )
-    }
+    // ─── CHUNK 3 CHANGE: ONE batch PATCH per pointermove ──────────────
+    // Before this fix, this loop fired N per-element PATCHes per
+    // pointermove tick (N = selection size). With a 5-element
+    // multi-select drag at 50 ms throttle, that's 5 PATCHes per tick
+    // — and each PATCH triggered a SSE fan-out fetchDesignElements,
+    // pushing the backend over the edge (~200 req/sec).
+    //
+    // The batch endpoint accepts N element geometries in one POST
+    // and runs them in a single SQL transaction. The frontend SSE
+    // dedupe (stores/designSse.ts) then sees ONE `design_elements_
+    // geometry_batch_updated` event with all N element ids and
+    // skips the per-element GET fan-out entirely.
+    void workspacesStore.updateDesignElementsGeometryBatch(
+      workspaceId,
+      itemId,
+      pageId,
+      selected.map((el) => ({
+        element_id: el.id,
+        x: Math.round(originalPos(el).x + finalDx),
+        y: Math.round(originalPos(el).y + finalDy),
+      })),
+    )
     return
   }
 

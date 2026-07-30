@@ -1808,6 +1808,51 @@ export async function updateDesignElementGeometry(
   )
 }
 
+/**
+ * Per-element geometry patch for the batch endpoint. All fields are
+ * optional; null means "leave unchanged". Mirror of the single
+ * `updateDesignElementGeometry` shape but reusable for N elements.
+ */
+export interface GeometryBatchUpdate {
+  element_id: string
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  rotation?: number
+}
+
+/**
+ * Response from `POST .../geometry-batch`. `updated` is the
+ * post-batch element list in input order.
+ */
+export interface GeometryBatchUpdateResponse {
+  updated: DesignElement[]
+}
+
+/**
+ * Atomic N-element geometry update. Used by the canvas drag handler
+ * when multiple elements are selected (multi-element drag, group /
+ * frame being moved) so the N per-element PATCHes collapse into ONE
+ * PATCH per pointermove. Combined with the trailing-edge debounce in
+ * `useDesignDragDebounce`, this drops the request rate from ~200
+ * req/sec to ~2 req/sec for a 5-element drag.
+ *
+ * Plan: docs/superpowers/plans/2026-07-30-design-drag-debounce-batch.md
+ *   (Chunk 3, Task 3.1)
+ */
+export async function updateDesignElementsGeometryBatch(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  updates: GeometryBatchUpdate[],
+): Promise<GeometryBatchUpdateResponse> {
+  return await apiFetch<GeometryBatchUpdateResponse>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/geometry-batch`,
+    { method: 'POST', body: { updates } },
+  )
+}
+
 // Skills API
 export interface Skill {
   name: string
