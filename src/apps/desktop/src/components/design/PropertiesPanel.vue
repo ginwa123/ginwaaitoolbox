@@ -48,6 +48,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { DesignElement } from '../../api'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useDesignHistory } from '../../composables/useDesignHistory'
+import { useDesignHistoryStore } from '../../stores/designHistory'
 
 const workspacesStore = useWorkspacesStore()
 
@@ -249,12 +250,17 @@ watch(htmlExpanded, async (expanded) => {
 // listener → silent drop. Now we call the store action directly.
 // Falls back to the emit if the store action throws (e.g. when the
 // single-element contract is violated mid-gesture).
+//
+// Undo/redo plan (Chunk 6): push an html_edit entry that records
+// the before/after body so undo can restore the previous body.
 const handleHtmlSave = async (): Promise<void> => {
   const el = singleElement.value
   if (!el) {
     emit('htmlChanged', htmlDraft.value)
     return
   }
+  // Capture pre-state (before body).
+  const beforeHtml = el.text_content ?? ''
   try {
     await workspacesStore.updateDesignElementHtml(
       workspacesStore.activeWorkspace?.id ?? '',
@@ -263,6 +269,30 @@ const handleHtmlSave = async (): Promise<void> => {
       el.id,
       htmlDraft.value,
     )
+    // Push the html_edit entry with before/after body so undo can
+    // restore the previous HTML body via PATCH.
+    void history.capturePostState([el.id]).then(() => {
+      // capturePostState diffs element fields. We also need to
+      // attach the html body diff. The composable's capturePostState
+      // doesn't fetch HTML bodies (that would be slow on every
+      // drag); for html_edit we use a dedicated push.
+      const htmlHistoryStore = useDesignHistoryStore()
+      htmlHistoryStore.push(workspacesStore.activeDesignPageId, {
+        id: `entry_html_${Date.now()}_${Math.random()}`,
+        timestamp: Date.now(),
+        label: 'Edit HTML body',
+        pageId: workspacesStore.activeDesignPageId,
+        kind: 'html_edit',
+        changes: [
+          {
+            elementId: el.id,
+            before: { text_content: beforeHtml },
+            after: { text_content: htmlDraft.value },
+            htmlBody: { before: beforeHtml, after: htmlDraft.value },
+          },
+        ],
+      })
+    })
   } catch {
     emit('htmlChanged', htmlDraft.value)
   }

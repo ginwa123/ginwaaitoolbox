@@ -172,16 +172,41 @@ export function useDesignHistory(pageId: ComputedRef<string>): UseDesignHistory 
     elements: Array<{ element: DesignElement; htmlBody: string | null }>,
   ): Promise<void> {
     if (elements.length === 0) return
+    // Chunk 6 (undo/redo plan): if the caller didn't provide an
+    // HTML body, fetch it from the backend BEFORE the delete
+    // happens. The captured body is what `applyInverse` will
+    // PATCH back on undo. Without this, undo restores the SQL row
+    // but the on-disk HTML file is gone (deleteElement deletes it
+    // best-effort).
+    const enriched = await Promise.all(
+      elements.map(async (e) => {
+        if (e.htmlBody !== null) return e
+        if (!e.element.file_path) return e
+        try {
+          const resp = await import('../api').then((m) =>
+            m.getDesignElementHtml(
+              workspacesStore.activeWorkspace?.id ?? '',
+              workspacesStore.activeWorkspaceItemId ?? '',
+              pageId.value,
+              e.element.id,
+            ),
+          )
+          return { element: e.element, htmlBody: resp.html }
+        } catch {
+          return e
+        }
+      }),
+    )
     pushEntry({
       id: generateEntryId(),
       timestamp: Date.now(),
       label:
-        elements.length === 1
-          ? `Delete ${elements[0]!.element.name}`
-          : `Delete ${elements.length} elements`,
+        enriched.length === 1
+          ? `Delete ${enriched[0]!.element.name}`
+          : `Delete ${enriched.length} elements`,
       pageId: pageId.value,
       kind: 'delete',
-      deletedElements: elements.map((e) => ({
+      deletedElements: enriched.map((e) => ({
         element: { ...e.element },
         htmlBody: e.htmlBody,
       })),
