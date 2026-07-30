@@ -543,6 +543,16 @@ iterate ALL non-canonical tasks. Don't pick "oldest task" as a
 heuristic — it works for the user's current state but breaks if the
 user manually creates an empty task before the canonical.
 
+### 2026-07-30: Kanban task search (server-side q param)
+
+**What landed.** Server-side `?q=` filter on `GET /api/workspaces/:ws/items/:item/tasks` + compact `<KanbanSearchInput>` in the kanban header (left of ⚙️ Settings). 8 files (2 NEW + 6 EDIT) + 2 plan/spec docs. ~33 new behavioural tests (11 backend + 22 frontend).
+
+**Architecture.** `listWorkspaceItemTasksWithCursor` accepts `q: ?[]const u8`. When non-empty, appends `WHERE LOWER(t.name) LIKE ? ESCAPE '\\' OR LOWER(t.description) LIKE ? ESCAPE '\\' OR LOWER(t.tags) LIKE ? ESCAPE '\\'` with user input `%`/`_`/`\` escaped to literal semantics. Cursor advances through the **filtered** set. Empty/missing `q` → no filter.
+
+**Frontend wiring.** `<KanbanSearchInput>` is a stateless v-model'd input + ✕ clear button + Esc-to-clear. `KanbanView.vue` owns a 300ms hand-rolled debounce (`@vueuse/core` not installed) that refetches via `workspacesStore.fetchKanbanTasks(ws, item, 100, undefined, q)`. `activeSearchQueries: Map<itemId, string>` lets the SSE handler + `loadMoreTasks` forward the active q on refetch.
+
+**Pitfalls.** (1) Always escape user input `%`/`_`/`\` before LIKE binding (otherwise `%` matches everything). (2) Reset cursor to `undefined` on every query change — mixing page-1-old-query with page-2-new-query gives inconsistent results. (3) SSE handlers MUST forward the active q via `activeSearchQueries` — otherwise a remote task move during a search silently resets the user's narrowed view. (4) The "tags" substring match on JSON text means `bug` matches `["debug"]` and `["bugfix"]` — accepted as the typical kanban-search UX.
+
 ---
 
 ## 📖 Related documentation

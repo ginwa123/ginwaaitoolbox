@@ -243,6 +243,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-07-04-copy-kanban-spec.md` | ✅ | `POST /kanban/copy_spec_from` + `CopyKanbanSpecDialog.vue` |
 | `2026-07-01-change-task-to-card-kanban.md` | ✅ | `WorkspaceItemTask` `variant: 'row' \| 'card'` (#57) |
 | `2026-06-27-kanban-status-prompt.md` | ✅ | "Kanban Status Tracking" section in agent prompt |
+| `2026-07-30-kanban-task-search.md` | ✅ | Server-side `?q=` filter on `GET /api/.../items/.../tasks` + compact `<KanbanSearchInput>` in the kanban header. See §3.7.2 below. |
 
 #### 3.7.1 Kanban task "AI finished — awaiting review" notification icon (2026-07-26)
 
@@ -273,6 +274,26 @@ A small affordance on each **standard** kanban task card (routine and memory car
   ```
 
   The `* 1000` is the seconds→unix-ms conversion (sessions.updated_at is TEXT in `YYYY-MM-DD HH:MM:SS`; `last_human_touched_at` is INTEGER unix-ms).
+
+#### 3.7.2 Kanban task search input (2026-07-30)
+
+A compact `<KanbanSearchInput>` renders in the kanban board header (to the left of ⚙️ Settings). Typing filters visible tasks by `name`, `description`, and `tags` via a new `?q=` query param on the existing `GET /api/workspaces/:ws/items/:item/tasks` endpoint.
+
+**Server-side filter** (NOT a frontend `.filter()` over `item.tasks`): the kanban loads only the first 100 tasks per page (`MAX_PAGE_SIZE`). A frontend `.filter()` would miss tasks on later pages — exactly the failure mode the user is trying to avoid when their board has 200+ tasks.
+
+**SQL** — `WHERE LOWER(t.name) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(t.description, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(t.tags, '')) LIKE ? ESCAPE '\\'` when `q` is set. User-supplied `%`, `_`, `\` are escaped to literal `\%`, `\_`, `\\` before binding — without the `ESCAPE` clause, a user typing `%` would match every row (LIKE wildcard). Cursor pagination advances through the **filtered** set, not the unfiltered set.
+
+**Empty / missing `q`** → no filter (the original efficient WHERE on `workspace_item_id` alone).
+
+**`tags` matching** uses substring on the JSON-encoded TEXT column (e.g. `["bug","urgent"]` matches `bug`). Substring `bug` also matches `["debug"]` and `["bugfix"]` — accepted as the typical kanban-search UX (Trello/Linear both do this). Strict `json_each`-based exact-tag match is deferred.
+
+**Frontend UX** — the input is debounced 300ms (hand-rolled `setTimeout`; `@vueuse/core` is not installed in this project). Cursor resets to `undefined` (page 1 of the filtered set) on every query change. Press `Esc` or click the ✕ clear button to reset. Component-local state — closing the kanban clears the query automatically.
+
+**Empty state** — a `No tasks match "..."` banner renders between the header and columns when `tasks.length === 0 && searchQuery.trim() !== ''`.
+
+**SSE wire** — the `kanban_task.*` SSE handler in `stores/kanbanSse.ts` reads the active q from `workspacesStore.activeSearchQueries: Map<itemId, string>` and forwards it on refetch. Without this, a remote task move/edit during a search would silently reset the user's narrowed view to the unfiltered list.
+
+**Out of scope** — fuzzy / regex matching, search history, URL persistence, highlight inside card text, multi-page auto-load (search only sees the first 100 matches per page), `json_each` exact-tag match.
 
 **SSE wire** — extends the existing `kanban_task` event with a new `human_touched` action + `needs_human_review: bool` payload. The frontend `kanbanSse` store already handles `'task_id' in event` to trigger `fetchKanbanTasks` — no consumer change needed.
 
