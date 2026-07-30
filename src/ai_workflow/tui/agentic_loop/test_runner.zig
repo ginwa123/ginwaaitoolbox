@@ -32,4 +32,6 @@ test {
     _ = @import("workflow.zig");
     _ = @import("tools_wrap_output.zig");
     _ = @import("workflow_commpact_message.zig");
+    _ = @import("compaction_context_test.zig");  // 2026-07-30-better-compaction-context — fetchUserChatHistory + fetchReadFilePaths + parseReadFilePath
+    _ = @import("compaction_enrich_test.zig");  // 2026-07-30-better-compaction-context — enrichCompactionXml wire shape
 }
