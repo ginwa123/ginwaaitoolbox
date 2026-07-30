@@ -78,6 +78,7 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/kanban_columns_create_test.zig");
     _ = @import("http_handlers/kanban_columns_update_test.zig");
     _ = @import("http_handlers/kanban_columns_delete_test.zig");
+    _ = @import("http_handlers/kanban_tags_list_test.zig"); // 2026-07-30-kanban-task-tags-autocomplete (Chunk 1 Task 1.4) — paginated handler useCase + has_more
     _ = @import("http_handlers/design_pages_list_test.zig");
     _ = @import("http_handlers/design_pages_create_test.zig");
     _ = @import("http_handlers/design_items_create_test.zig");
