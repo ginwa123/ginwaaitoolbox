@@ -217,7 +217,7 @@ describe('useKanbanSseStore (bus-backed)', () => {
     // a future bug where the column handler accidentally picks up task
     // events).
     expect(fetchColumnsSpy).not.toHaveBeenCalled()
-    expect(fetchTasksSpy).toHaveBeenCalledWith('ws_1', 'item_1')
+    expect(fetchTasksSpy).toHaveBeenCalledWith('ws_1', 'item_1', 100, undefined, undefined)
   })
 
   it('triggers fetchKanbanTasks on kanban_task events (assigned action)', async () => {
@@ -237,7 +237,7 @@ describe('useKanbanSseStore (bus-backed)', () => {
     }
     dispatch(event)
 
-    expect(fetchTasksSpy).toHaveBeenCalledWith('ws_1', 'item_1')
+    expect(fetchTasksSpy).toHaveBeenCalledWith('ws_1', 'item_1', 100, undefined, undefined)
   })
 
   it('triggers fetchKanbanTasks on kanban_task events (unassigned action)', async () => {
@@ -257,7 +257,58 @@ describe('useKanbanSseStore (bus-backed)', () => {
     }
     dispatch(event)
 
-    expect(fetchTasksSpy).toHaveBeenCalledWith('ws_1', 'item_1')
+    expect(fetchTasksSpy).toHaveBeenCalledWith('ws_1', 'item_1', 100, undefined, undefined)
+  })
+
+  it('forwards the active q to fetchKanbanTasks on kanban_task events (Chunk 7)', async () => {
+    // CONTRACT (kanban task search, plan
+    // docs/superpowers/plans/2026-07-30-kanban-task-search.md Chunk 7):
+    // When the SSE handler triggers a task refetch, it MUST forward
+    // the active q from activeSearchQueries so a remote move/edit
+    // during a search doesn't reset the user's narrowed view to the
+    // unfiltered list.
+    const ws = useWorkspacesStore()
+    // Seed the activeSearchQueries for item_1.
+    ws.activeSearchQueries.set('item_1', 'design')
+
+    const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
+
+    const store = useKanbanSseStore()
+    await store.initKanbanSse('ws_1')
+
+    const event: KanbanTaskEvent = {
+      action: 'moved',
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      task_id: 'task_1',
+      new_column_id: 'col_done',
+      new_position: 0,
+    }
+    dispatch(event)
+
+    expect(fetchTasksSpy).toHaveBeenCalledWith('ws_1', 'item_1', 100, undefined, 'design')
+  })
+
+  it('forwards q=undefined to fetchKanbanTasks when no search active (Chunk 7)', async () => {
+    const ws = useWorkspacesStore()
+    // No q set in activeSearchQueries.
+    const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
+
+    const store = useKanbanSseStore()
+    await store.initKanbanSse('ws_1')
+
+    const event: KanbanTaskEvent = {
+      action: 'moved',
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      task_id: 'task_1',
+      new_column_id: 'col_done',
+      new_position: 0,
+    }
+    dispatch(event)
+
+    const lastCall = fetchTasksSpy.mock.calls[fetchTasksSpy.mock.calls.length - 1]!
+    expect(lastCall[4]).toBeUndefined() // q = undefined
   })
 
   it('triggers fetchKanbanColumns (NOT fetchKanbanTasks) on kanban_column events', async () => {

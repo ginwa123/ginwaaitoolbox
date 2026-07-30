@@ -115,7 +115,12 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
       if ('column_id' in event) {
         void ws.fetchKanbanColumns(event.workspace_id, event.item_id)
       } else if ('task_id' in event) {
-        void ws.fetchKanbanTasks(event.workspace_id, event.item_id)
+        // Kanban task search (Chunk 7): forward the active q so a
+        // remote move/edit during a search doesn't reset the user's
+        // narrowed view to the unfiltered list. activeSearchQueries
+        // is a Map<itemId, string>; undefined when no search active.
+        const q = ws.activeSearchQueries.get(event.item_id)
+        void ws.fetchKanbanTasks(event.workspace_id, event.item_id, 100, undefined, q)
       }
       // Defensive: unknown event shapes are silently dropped.
     })
