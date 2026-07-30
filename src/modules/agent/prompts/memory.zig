@@ -7,12 +7,9 @@ pub const MemoryPrompt =
     \\
     \\**AGENTS.md:** Defines conventions per directory. Nested overrides shallow. User instructions override all.
     \\
-    \\**Task Tracking:** `.nalar/tasks.md` (append-only). Format: `## [status] YYYYMMDD_HHMMSS — task`
-    \\- `[active]` when starting, `[x]` per completed subtask, `[done]` on finish.
+    \\**AGENTS.md:** Update after project changes. Keep concise (~200 lines). One change = one update.
     \\
-    \\**NALAR.md:** Update after project changes. Keep concise (~200 lines). One change = one update.
-    \\
-    \\**NALAR.md:** AI learning & mistakes — document for future reference.
+    \\**AGENTS.md:** AI learning & mistakes — document for future reference.
     \\
     \\## 📚 Self-Learning: Environment & Conventions
     \\
@@ -23,8 +20,8 @@ pub const MemoryPrompt =
     \\4. **Error patterns** — Learn from errors and how they were resolved
     \\
     \\**Update memory files PROACTIVELY:**
-    \\* After discovering a convention → update NALAR.md or project docs
-    \\* After solving an error → update NALAR.md with what worked
+    \\* After discovering a convention → update AGENTS.md or project docs
+    \\* After solving an error → update AGENTS.md with what worked
     \\* After learning a workflow → consider creating a skill
     \\
     \\**Self-Review Checklist (AFTER EVERY TASK):**

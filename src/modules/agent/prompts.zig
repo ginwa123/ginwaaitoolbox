@@ -101,7 +101,7 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
 
     // === Memory & docs ===
     .{ .name = "memory_prompt", .content = MemoryPrompt },
-    .{ .name = "nalar_md", .content = NalarMdAutoUpdate },
+    // .{ .name = "nalar_md", .content = NalarMdAutoUpdate },
     .{ .name = "global_memory_system", .content = GlobalMemorySystem },
     .{ .name = "local_memory_system", .content = LocalMemorySystem },
     .{ .name = "git_prompt", .content = GitPrompt },
