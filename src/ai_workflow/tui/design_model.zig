@@ -945,6 +945,234 @@ pub fn updateElement(
     return allocator.dupe(u8, input.element_id);
 }
 
+// ─── updateElementsBatch ───────────────────────────────────────────────────
+//
+// Atomic N-element geometry update in a single SQL transaction. Used by
+// the design-canvas drag handler to collapse N per-element PATCHes (one
+// per selected element per pointermove) into ONE PATCH per pointermove.
+//
+// Behaviour:
+//   1. Validate every element_id exists and lives on `input.page_id`.
+//      Pre-flight check (a single SELECT COUNT(*) ... WHERE id IN (...) AND
+//      page_id = ?). If count != input.updates.len → error.ElementNotFound
+//      with NO writes performed.
+//   2. Begin a transaction (mutex-held for the whole batch).
+//   3. For each input.updates[i] in order: build the SET clause
+//      (same dynamic-set pattern as `updateElement`) and execute the
+//      UPDATE inside the transaction.
+//   4. Re-SELECT the updated rows via `getElement` per id (in input order)
+//      and return them as `[]DesignElement`. Caller MUST release with
+//      `freeElements(allocator, result)`.
+//   5. Emit ONE `design_elements_geometry_batch_updated` SSE event
+//      carrying the full id context (workspace_id, item_id, page_id,
+//      element_ids[], updated_at). The frontend's local-mutation dedupe
+//      (stores/designSse.ts) uses this to skip the GET fan-out when the
+//      batch came from this client.
+//   6. Commit (or rollback on any failure inside the loop).
+//
+// Plan: docs/superpowers/plans/2026-07-30-design-drag-debounce-batch.md
+//   (Chunk 1, Task 1.1)
+
+pub const BatchGeometryUpdateInput = struct {
+    page_id: []const u8,
+    /// Per-element geometry patches. Only geometry fields (x, y, width,
+    /// height, rotation) are honored — name / type / html / etc. are
+    /// ignored (the batch endpoint is drag-specific).
+    updates: []const UpdateElementInput,
+};
+
+pub const BatchGeometryUpdateError = error{
+    PageNotFound,
+    EmptyUpdates,
+    ElementNotFound,
+    /// Any DB-side failure (PrepareFailed, ExecuteFailed, BindFailed,
+    /// QueryFailed, RowNotFound, DatabaseCorrupt, DiskFull, etc.).
+    /// The handler maps this to 500. Use the concrete error names
+    /// elsewhere if you need to discriminate; this is the catch-all.
+    DbError,
+    OutOfMemory,
+};
+
+pub fn updateElementsBatch(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: BatchGeometryUpdateInput,
+) anyerror![]DesignElement {
+    if (input.updates.len == 0) return error.EmptyUpdates;
+
+    // 1. Look up the page JOIN (workspace_id, item_id) — needed for the
+    //    SSE event payload. Mirrors the lookup pattern in
+    //    `groupElements` and `updateElement`.
+    const PageContext = struct {
+        workspace_id: []u8,
+        item_id: []u8,
+    };
+    const page_ctx: PageContext = blk: {
+        var q = try db.query(allocator,
+            \\SELECT wi.workspace_id, dp.workspace_item_id
+            \\FROM design_pages dp
+            \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
+            \\WHERE dp.id = ?
+        , &.{input.page_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.PageNotFound;
+        defer row.deinit(allocator);
+        break :blk .{
+            .workspace_id = try allocator.dupe(u8, row.values[0]),
+            .item_id = try allocator.dupe(u8, row.values[1]),
+        };
+    };
+    defer allocator.free(page_ctx.workspace_id);
+    defer allocator.free(page_ctx.item_id);
+
+    // 2. Pre-flight: build a dynamic IN-list SELECT and verify every
+    //    element_id exists on `input.page_id`. If count != updates.len
+    //    → error.ElementNotFound (atomicity — NO writes happen).
+    var in_list_sql: std.ArrayList(u8) = .empty;
+    defer in_list_sql.deinit(allocator);
+    try in_list_sql.appendSlice(allocator,
+        "SELECT COUNT(*) FROM design_page_elements WHERE page_id = ? AND id IN (");
+    var preflight_args: std.ArrayList([]const u8) = .empty;
+    defer preflight_args.deinit(allocator);
+    try preflight_args.append(allocator, input.page_id);
+    for (input.updates, 0..) |u, i| {
+        if (i > 0) try in_list_sql.append(allocator, ',');
+        try in_list_sql.append(allocator, '?');
+        try preflight_args.append(allocator, u.element_id);
+    }
+    try in_list_sql.append(allocator, ')');
+
+    const matched_count: usize = blk: {
+        var q = try db.query(allocator, in_list_sql.items, preflight_args.items);
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.DbError;
+        defer row.deinit(allocator);
+        break :blk std.fmt.parseInt(usize, row.values[0], 10) catch 0;
+    };
+    if (matched_count != input.updates.len) return error.ElementNotFound;
+
+    // 3. Begin transaction. RAII defer pattern: any error below
+    //    fires rollback. After successful commit, mark `committed` to
+    //    skip the deferred rollback.
+    var tx = try db.begin();
+    var committed = false;
+    defer if (!committed) tx.rollback() catch {};
+
+    // 4. Apply each UPDATE inside the transaction. We deliberately
+    //    don't extract a helper — the SET-list build is small enough
+    //    that inlining keeps the logic visible and avoids borrowing
+    //    arena slices across loop iterations.
+    for (input.updates) |u| {
+        var sets: std.ArrayList([]const u8) = .empty;
+        defer sets.deinit(allocator);
+        var owned: std.ArrayList([]u8) = .empty;
+        defer {
+            for (owned.items) |s| allocator.free(s);
+            owned.deinit(allocator);
+        }
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(allocator);
+
+        if (u.x) |v| {
+            try sets.append(allocator, "x = ?");
+            try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+            try argv.append(allocator, owned.items[owned.items.len - 1]);
+        }
+        if (u.y) |v| {
+            try sets.append(allocator, "y = ?");
+            try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+            try argv.append(allocator, owned.items[owned.items.len - 1]);
+        }
+        if (u.width) |v| {
+            try sets.append(allocator, "width = ?");
+            try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+            try argv.append(allocator, owned.items[owned.items.len - 1]);
+        }
+        if (u.height) |v| {
+            try sets.append(allocator, "height = ?");
+            try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+            try argv.append(allocator, owned.items[owned.items.len - 1]);
+        }
+        if (u.rotation) |v| {
+            try sets.append(allocator, "rotation = ?");
+            try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+            try argv.append(allocator, owned.items[owned.items.len - 1]);
+        }
+        // Always update updated_at.
+        try sets.append(allocator, "updated_at = datetime('now')");
+        try argv.append(allocator, u.element_id);
+
+        var sql_buf: [1024]u8 = undefined;
+        const sql_prefix = "UPDATE design_page_elements SET ";
+        var pos: usize = 0;
+        @memcpy(sql_buf[pos..][0..sql_prefix.len], sql_prefix);
+        pos += sql_prefix.len;
+        for (sets.items, 0..) |s, i| {
+            if (i > 0) {
+                @memcpy(sql_buf[pos..][0..2], ", ");
+                pos += 2;
+            }
+            @memcpy(sql_buf[pos..][0..s.len], s);
+            pos += s.len;
+        }
+        const where_clause = " WHERE id = ?";
+        @memcpy(sql_buf[pos..][0..where_clause.len], where_clause);
+        pos += where_clause.len;
+
+        try tx.exec(allocator, sql_buf[0..pos], argv.items);
+    }
+
+    // 5. Commit BEFORE re-querying. Re-querying via `db.query`
+    //    (which `getElement` uses) acquires the same mutex the
+    //    transaction holds — calling it inside the tx would
+    //    deadlock. The project memory `zig-sqlite-patterns.md` §
+    //    "Pitfall 3: RAII mutex-held-for-whole-resource-lifetime"
+    //    documents this constraint.
+    try tx.commit();
+    committed = true;
+
+    // 6. Re-SELECT the updated rows in INPUT order (not SQL order).
+    //    Use `getElement` per id — each call allocates fresh strings,
+    //    so the returned slice is fully owned. Caller MUST release
+    //    with `freeElements(allocator, result)`.
+    var results: std.ArrayList(DesignElement) = .empty;
+    errdefer {
+        for (results.items) |e| freeElement(allocator, e);
+        results.deinit(allocator);
+    }
+    for (input.updates) |u| {
+        const el = getElement(allocator, db, u.element_id) catch |err| switch (err) {
+            error.ElementNotFound => return error.DbError, // shouldn't happen — pre-flight checked
+            else => return error.DbError,
+        };
+        try results.append(allocator, el);
+    }
+
+    // 7. Emit ONE batch SSE event. Best-effort: failure here does NOT
+    //    fail the request — SSE is a hint, not a hard contract. The
+    //    `updated_at` is the current Unix epoch in seconds (matches
+    //    existing SSE timestamps elsewhere).
+    var element_ids_buf: std.ArrayList([]const u8) = .empty;
+    defer element_ids_buf.deinit(allocator);
+    for (input.updates) |u| try element_ids_buf.append(allocator, u.element_id);
+    // Unix seconds — `std.time.timestamp()` was removed in Zig 0.16,
+    // use libc `gettimeofday` (matches the rest of this codebase).
+    const updated_at: i64 = blk: {
+        var tv: std.c.timeval = undefined;
+        _ = std.c.gettimeofday(&tv, null);
+        break :blk @intCast(tv.sec);
+    };
+    on_event_sent_design.onEventSendDesignElementsGeometryBatchUpdated(allocator, .{
+        .workspace_id = page_ctx.workspace_id,
+        .item_id = page_ctx.item_id,
+        .page_id = input.page_id,
+        .element_ids = element_ids_buf.items,
+        .updated_at = updated_at,
+    }) catch {};
+
+    return results.toOwnedSlice(allocator);
+}
+
 // ─── groupElements ────────────────────────────────────────────────────────
 
 pub const GroupElementsInput = struct {

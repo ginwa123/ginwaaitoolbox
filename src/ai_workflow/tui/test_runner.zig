@@ -59,6 +59,7 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("design_model_delete_parent_test.zig"); // 2026-07-28-grouped-layers (Chunk 4) — deleteElement NULLs children
     _ = @import("design_model_add_element_parent_test.zig"); // 2026-07-29 — addElement accepts parent_id (Task 1)
     _ = @import("design_model_set_element_parent_test.zig"); // 2026-07-29 — setElementParent re-parents with cycle detection (Task 2)
+    _ = @import("design_model_geometry_batch_test.zig"); // 2026-07-30 — updateElementsBatch (Chunk 1 of design-drag-debounce-batch)
     _ = @import("migration_057_test.zig");  // stays at this path; imported by src/migrations/test_runner.zig via relative path
     _ = @import("migration_063_runtime_test.zig");  // Chunk 1 — sessions auto_retry + finish_reason runtime CRUD
     _ = @import("http_handlers/session_create_migration_063_test.zig");  // Chunk 3 Task 3.1 — POST /api/session static-contract

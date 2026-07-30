@@ -47,6 +47,30 @@ pub const DesignElementUpdatedData = struct {
     element_id: []const u8,
 };
 
+/// JSON payload for the `design_elements_geometry_batch_updated` SSE
+/// event. Emitted by `design_model.updateElementsBatch` after a single
+/// atomic transaction moves 1+ elements. The frontend's local-mutation
+/// dedupe (stores/designSse.ts) reads `element_ids` to skip the
+/// `fetchDesignElements` GET fan-out when the batch originated from
+/// this client within the last 1500 ms.
+///
+/// Plan: docs/superpowers/plans/2026-07-30-design-drag-debounce-batch.md
+///   (Chunk 1, Task 1.2)
+pub const DesignElementsGeometryBatchUpdatedData = struct {
+    workspace_id: []const u8,
+    item_id: []const u8,
+    page_id: []const u8,
+    /// All element ids affected by this batch, in input order. The
+    /// frontend listener checks each id against its local-mutation Set
+    /// and skips the GET only if EVERY id is in the Set.
+    element_ids: []const []const u8,
+    /// Unix epoch seconds — matches the timestamp format used by the
+    /// other design SSE events. The frontend uses this to break ties
+    /// when concurrent edits from another client interleave with the
+    /// local drag.
+    updated_at: i64,
+};
+
 /// JSON payload for the `design_element_deleted` SSE event.
 pub const DesignElementDeletedData = struct {
     /// "deleted"
