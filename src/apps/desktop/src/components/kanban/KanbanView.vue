@@ -55,8 +55,9 @@
     user navigates between kanbans).
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import KanbanColumn from './KanbanColumn.vue'
+import KanbanSearchInput from './KanbanSearchInput.vue'
 import KanbanTaskDetailDialog from './KanbanTaskDetailDialog.vue'
 import InlineEditableText from '../preview/InlineEditableText.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
@@ -175,6 +176,46 @@ const sortedColumns = computed(() => {
 
 // Tasks for this kanban (defensive — undefined is treated as []).
 const tasks = computed<Task[]>(() => props.item.tasks ?? [])
+
+// ─── Search (kanban task search — Chunk 6) ────────────────────────────────
+//
+// The search input is a v-model'd ref. A 300ms trailing-edge debounce
+// (hand-rolled — @vueuse/core is not installed in this project) drives
+// a refetch via workspacesStore.fetchKanbanTasks(q). Empty/whitespace
+// q is treated as "no filter" (passed as undefined so the backend
+// omits the SQL WHERE clause). Component-local state — closing and
+// reopening the kanban clears it automatically (KanbanView is
+// mounted/unmounted on navigation between kanbans).
+//
+// Cursor resets on every query change (page 1 of the filtered set) —
+// mixing page 1 of the old query with page 2 of the new query would
+// return inconsistent results.
+const searchQuery = ref('')
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+const clearSearchDebounce = () => {
+  if (searchDebounceTimer !== null) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+}
+
+watch(searchQuery, (newQ) => {
+  clearSearchDebounce()
+  searchDebounceTimer = setTimeout(() => {
+    searchDebounceTimer = null
+    const trimmed = newQ.trim()
+    void workspacesStore.fetchKanbanTasks(
+      props.workspaceId,
+      effectiveItemId.value,
+      100,        // limit (matches backend MAX_PAGE_SIZE)
+      undefined,  // cursor — reset to page 1 of the filtered set
+      trimmed || undefined,
+    )
+  }, 300)
+})
+
+onUnmounted(clearSearchDebounce)
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
 
@@ -480,6 +521,8 @@ const handleCreateTaskSave = async (payload: {
         <span aria-hidden="true">⚠️</span>
         <span class="ml-1">{{ pathPickerBusy ? 'Setting…' : 'Set project root' }}</span>
       </button>
+      <KanbanSearchInput v-model="searchQuery" />
+
       <button
         type="button"
         class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
@@ -497,6 +540,23 @@ const handleCreateTaskSave = async (payload: {
       </button>
 
     </header>
+
+    <!--
+      Search "no matches" banner (kanban task search, Chunk 6). Renders
+      only when the backend returned an empty task list AND the user
+      has a non-empty search query. Empty-string query is excluded so
+      the banner doesn't appear on a freshly-opened empty board.
+      Dismissed automatically when the search is cleared or any task
+      matches.
+    -->
+    <div
+      v-if="tasks.length === 0 && searchQuery.trim() !== ''"
+      class="px-3 py-2 text-xs shrink-0"
+      style="color: var(--semantic-text-dim);"
+      :data-testid="`kanban-view-${item.id}-no-search-matches`"
+    >
+      No tasks match "{{ searchQuery }}"
+    </div>
 
     <!-- ─── Columns row (horizontal scroll) ──────────────────────────── -->
     <!--
