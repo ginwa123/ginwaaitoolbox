@@ -1824,6 +1824,146 @@ pub fn freePagesWithElements(allocator: std.mem.Allocator, items: []PageWithElem
     allocator.free(items);
 }
 
+// ─── setElementParent ─────────────────────────────────────────────────────
+//
+// Re-parent an existing element to a new `group`/`frame` (or to
+// top-level when `new_parent_id` is null). This is the v1 unblocker
+// for the LLM tool surface — without this primitive, an element
+// created via `add_element` (which always lands at top-level) cannot
+// be moved into an existing group/frame after the fact.
+
+pub const SetElementParentError = error{
+    ElementNotFound,
+    ParentNotFound,
+    ParentNotContainer,
+    DifferentPages,
+    CycleDetected,
+    DbError,
+    OutOfMemory,
+};
+
+/// Re-parent `element_id` to `new_parent_id` (or top-level when null).
+///
+/// Behaviour:
+///   1. Look up `element_id`'s current page_id + parent_id.
+///      Return `ElementNotFound` if the row is missing.
+///   2. If `new_parent_id` is null → UPDATE parent_id = NULL
+///      (empty string for the empty-slice-binds-as-NULL SQLite
+///      convention; same trick used by `addElement`).
+///   3. If `new_parent_id` equals the element's current parent_id →
+///      no-op (idempotent success).
+///   4. Look up `new_parent_id`'s page_id + type.
+///      Return `ParentNotFound` if the row is missing.
+///   5. Different page? Return `DifferentPages`.
+///   6. Type in {`group`, `frame`}? Otherwise return
+///      `ParentNotContainer`.
+///   7. Cycle check: walk the parent chain from `new_parent_id`
+///      upward; if `element_id` appears, return `CycleDetected`.
+///   8. UPDATE design_page_elements SET parent_id = ? WHERE id = ?
+///      and emit a `design_element_updated` SSE event.
+///
+/// Returns `void`; the caller re-fetches the element via `getElement`
+/// if it needs the post-update state.
+pub fn setElementParent(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    element_id: []const u8,
+    new_parent_id: ?[]const u8,
+) anyerror!void {
+    // 1. Look up the element's current page_id + parent_id.
+    const ElemLookup = struct {
+        page_id: []u8,
+        current_parent_id: []u8,
+    };
+    const elem: ElemLookup = blk: {
+        var q = try db.query(allocator,
+            \\SELECT page_id, COALESCE(parent_id, '') FROM design_page_elements WHERE id = ?
+        , &.{element_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.ElementNotFound;
+        defer row.deinit(allocator);
+        break :blk .{
+            .page_id = try allocator.dupe(u8, row.values[0]),
+            .current_parent_id = try allocator.dupe(u8, row.values[1]),
+        };
+    };
+    defer allocator.free(elem.page_id);
+    defer allocator.free(elem.current_parent_id);
+
+    // 2. Null new_parent_id → move to top-level.
+    if (new_parent_id == null) {
+        try db.exec(allocator,
+            "UPDATE design_page_elements SET parent_id = NULL, updated_at = datetime('now') WHERE id = ?",
+            &.{element_id});
+        return;
+    }
+
+    const new_pid = new_parent_id.?;
+
+    // 3. Same parent? No-op.
+    if (std.mem.eql(u8, elem.current_parent_id, new_pid)) return;
+
+    // 4. Look up the new parent's page_id + type.
+    const ParentLookup = struct {
+        page_id: []u8,
+        elem_type: []u8,
+    };
+    const parent: ParentLookup = blk: {
+        var q = try db.query(allocator,
+            \\SELECT page_id, type FROM design_page_elements WHERE id = ?
+        , &.{new_pid});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.ParentNotFound;
+        defer row.deinit(allocator);
+        break :blk .{
+            .page_id = try allocator.dupe(u8, row.values[0]),
+            .elem_type = try allocator.dupe(u8, row.values[1]),
+        };
+    };
+    defer allocator.free(parent.page_id);
+    defer allocator.free(parent.elem_type);
+
+    // 5. Same page?
+    if (!std.mem.eql(u8, parent.page_id, elem.page_id)) return error.DifferentPages;
+
+    // 6. Container type?
+    if (!std.mem.eql(u8, parent.elem_type, "group") and
+        !std.mem.eql(u8, parent.elem_type, "frame"))
+    {
+        return error.ParentNotContainer;
+    }
+
+    // 7. Cycle detection via recursive CTE.
+    //
+    // Walk up the parent chain starting from `new_parent_id`. If any
+    // ancestor equals `element_id`, the new assignment would close
+    // a cycle (element_id → ... → new_parent_id → element_id).
+    //
+    // The `WHERE dpe.parent_id IS NOT NULL` guard prevents infinite
+    // loops on top-level chains (parent_id = NULL ends the walk).
+    {
+        var q = try db.query(allocator,
+            \\WITH RECURSIVE chain(id) AS (
+            \\    SELECT id FROM design_page_elements WHERE id = ?
+            \\    UNION ALL
+            \\    SELECT dpe.parent_id FROM design_page_elements dpe
+            \\        JOIN chain c ON dpe.id = c.id
+            \\        WHERE dpe.parent_id IS NOT NULL
+            \\)
+            \\SELECT 1 FROM chain WHERE id = ? LIMIT 1
+        , &.{ new_pid, element_id });
+        defer q.deinit();
+        if (try q.next()) |_| {
+            return error.CycleDetected;
+        }
+    }
+
+    // 8. Apply the UPDATE.
+    try db.exec(allocator,
+        "UPDATE design_page_elements SET parent_id = ?, updated_at = datetime('now') WHERE id = ?",
+        &.{ new_pid, element_id });
+}
+
 // ─── deleteElement ────────────────────────────────────────────────────────
 
 /// Delete an element. Returns `true` if the row was deleted, `false`
