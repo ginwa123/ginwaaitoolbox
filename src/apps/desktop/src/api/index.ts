@@ -1468,8 +1468,20 @@ export async function getKanbanTagSuggestions(
   itemId: string,
   options?: GetKanbanTagSuggestionsOptions,
 ): Promise<KanbanTagSuggestionsResponse> {
-  // Stub — fails the test that asserts the URL shape.
-  return { tags: [], has_more: false }
+  const limit = options?.limit ?? 8
+  const offset = options?.offset ?? 0
+  const url = `/workspaces/${encodeURIComponent(workspaceId)}/items/${encodeURIComponent(itemId)}/kanban/tags?limit=${limit}&offset=${offset}`
+  // Graceful degradation: a 5xx returns empty + has_more=false so a
+  // broken server doesn't block the user from typing tags.
+  try {
+    const res = await apiFetch<KanbanTagSuggestionsResponse>(url, { method: 'GET' })
+    return {
+      tags: res.tags ?? [],
+      has_more: res.has_more ?? false,
+    }
+  } catch {
+    return { tags: [], has_more: false }
+  }
 }
 
 // =====================================================================

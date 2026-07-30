@@ -48,7 +48,7 @@ describe('getKanbanTagSuggestions', () => {
     })
     const result = await api.getKanbanTagSuggestions('ws_x', 'item_x')
     expect(result.tags).toHaveLength(1)
-    expect(result.tags[0].name).toBe('bug')
+    expect(result.tags[0]!.name).toBe('bug')
     expect(result.has_more).toBe(true)
   })
 
