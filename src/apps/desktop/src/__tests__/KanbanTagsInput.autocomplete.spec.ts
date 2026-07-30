@@ -23,9 +23,33 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import KanbanTagsInput from '../components/kanban/KanbanTagsInput.vue'
 
+// jsdom does NOT implement IntersectionObserver natively. The
+// component's watcher fires on focus and unconditionally calls
+// `new IntersectionObserver(...)` when the scroll sentinel is in
+// the DOM. Without a mock, that call throws a ReferenceError and
+// cascades into a corrupted test runner for subsequent tests (the
+// next `mount` returns a wrapper with a null root, surfacing as
+// `Cannot read properties of null (reading '$')`).
+//
+// Install a no-op IntersectionObserver for every test by default;
+// the "IntersectionObserver fires onLoadMore" test overrides the
+// global with a capturing mock and restores the no-op in `finally`.
+class NoopIntersectionObserver {
+  constructor(_cb: IntersectionObserverCallback, _opts?: IntersectionObserverInit) {}
+  observe(_target: Element): void {}
+  disconnect(): void {}
+  unobserve(_target: Element): void {}
+  takeRecords(): IntersectionObserverEntry[] {
+    return []
+  }
+  root: Element | null = null
+  rootMargin = '0px'
+  thresholds = [0]
+}
+
 describe('KanbanTagsInput — autocomplete dropdown', () => {
   beforeEach(() => {
-    // No global setup; the component is fully self-contained.
+    ;(globalThis as any).IntersectionObserver = NoopIntersectionObserver
   })
 
   it('does not show the dropdown when there are no suggestions', async () => {
@@ -188,11 +212,14 @@ describe('KanbanTagsInput — autocomplete dropdown', () => {
     // jsdom doesn't trigger IntersectionObserver by default,
     // so we stub the constructor to call the callback with
     // isIntersecting=true synchronously.
+    // Note: the vitest tsconfig has `"lib": []` (no DOM types),
+    // so we use `any` for the captured cb/opts instead of the
+    // global IntersectionObserver types (which are undeclared).
     const originalIO = globalThis.IntersectionObserver
-    let capturedCb: IntersectionObserverCallback | null = null
-    let capturedOpts: IntersectionObserverInit | null = null
+    let capturedCb: any = null
+    let capturedOpts: any = null
     ;(globalThis as any).IntersectionObserver = class MockIntersectionObserver {
-      constructor(cb: IntersectionObserverCallback, opts?: IntersectionObserverInit) {
+      constructor(cb: any, opts?: any) {
         capturedCb = cb
         capturedOpts = opts ?? null
       }
@@ -215,8 +242,8 @@ describe('KanbanTagsInput — autocomplete dropdown', () => {
       await nextTick()
       // Fire the observer callback as if the sentinel is visible.
       capturedCb?.(
-        [{ isIntersecting: true } as IntersectionObserverEntry],
-        null as any,
+        [{ isIntersecting: true }],
+        null,
       )
       expect(onLoadMore).toHaveBeenCalledTimes(1)
       // Verify the rootMargin config (100px preload).

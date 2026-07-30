@@ -197,8 +197,16 @@ const filteredSuggestions = computed<string[]>(() => {
   return filtered.filter((s) => !modelLower.has(s.toLowerCase()))
 })
 
+// The dropdown stays open as long as the input is focused AND the
+// parent has provided at least one suggestion to filter from. The
+// `filteredSuggestions` computed drives what shows inside the
+// dropdown; this `showDropdown` only controls the wrapper
+// visibility so an unmatched draft (e.g. "partial" with no
+// "partial*" suggestions) keeps the dropdown open — the user
+// can backspace to reveal matches, and Escape closes it without
+// committing the draft.
 const showDropdown = computed<boolean>(
-  () => isFocused.value && filteredSuggestions.value.length > 0,
+  () => isFocused.value && props.suggestions.length > 0,
 )
 
 function onFocus(): void {
