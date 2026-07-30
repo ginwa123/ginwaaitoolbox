@@ -50,6 +50,11 @@ pub const TasksListInput = struct {
     cursor: ?[]const u8,
     sort_field: llm_history.TaskSortField,
     sort_direction: llm_history.TaskSortDirection,
+    /// Optional case-insensitive substring filter applied at the SQL
+    /// level against `name`, `description`, `tags`. Null / empty →
+    /// no filter (matches the historical behaviour). The DB fn
+    /// handles the LIKE escape clause + user-input wildcard escape.
+    q: ?[]const u8,
 };
 
 pub const TasksListResult = []const u8; // pre-serialized JSON
@@ -84,12 +89,20 @@ fn parseInput(query: anytype) TasksListInput {
     const cursor_raw = query.get("cursor");
     const cursor: ?[]const u8 = if (cursor_raw) |c| (if (c.len == 0) null else c) else null;
 
+    // Optional q (search) — null when absent or empty. Empty string is
+    // treated identically to "no q param" so the URL ?q= (empty value)
+    // behaves the same as no q at all. The DB fn's WHERE clause is
+    // gated on `q != null && q.len > 0`.
+    const q_raw = query.get("q");
+    const q: ?[]const u8 = if (q_raw) |q_val| (if (q_val.len == 0) null else q_val) else null;
+
     return .{
         .item_id = "", // set by the handler (path param)
         .limit = limit,
         .cursor = cursor,
         .sort_field = sort_field,
         .sort_direction = sort_direction,
+        .q = q,
     };
 }
 
@@ -106,6 +119,7 @@ fn useCase(
         input.cursor,
         input.sort_field,
         input.sort_direction,
+        input.q,
     ) catch return error.QueryFailed;
     defer {
         for (result.tasks) |task| task.deinit(allocator);

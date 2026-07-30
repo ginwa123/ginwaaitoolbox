@@ -3783,6 +3783,32 @@ pub fn listWorkspaceItemTasks(
 /// or `>` for ASC. The last_id is encoded in the cursor as
 /// `"<sort_value>|<id>"` by the handler. Mirrors
 /// `getSessionListWithCursor` (above) for SQL building style.
+///
+/// Escape SQL LIKE wildcards in user input. Pairs with `LIKE ? ESCAPE '\\'`
+/// in the WHERE clause: prefix `\` to each literal `%`, `_`, or `\` so
+/// the LIKE pattern matches the user's literal characters instead of
+/// acting as a wildcard. Returns a fresh allocation (caller frees).
+fn escapeLikePattern(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    for (input) |c| {
+        if (c == '%' or c == '_' or c == '\\') {
+            try out.append(allocator, '\\');
+        }
+        try out.append(allocator, c);
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+/// `q` is an optional case-insensitive substring filter applied at the
+/// SQL level against `name`, `description`, and `tags` (Migration 067
+/// JSON-encode text). When non-null AND non-empty, the WHERE clause
+/// gains `AND (LOWER(t.name) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(t.description, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(t.tags, '')) LIKE ? ESCAPE '\\')`.
+/// User-supplied `%`, `_`, and `\` in `q` are escaped to literal
+/// `\%`, `\_`, `\\` before binding — without the ESCAPE clause, a
+/// user typing `%` would match every row. Pagination advances through
+/// the filtered set, not the unfiltered set. Null / empty `q` → no
+/// filter (the original efficient WHERE on `workspace_item_id` only).
 pub fn listWorkspaceItemTasksWithCursor(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -3791,6 +3817,7 @@ pub fn listWorkspaceItemTasksWithCursor(
     cursor: ?[]const u8,
     sort_field: TaskSortField,
     sort_direction: TaskSortDirection,
+    q: ?[]const u8,
 ) !struct {
     tasks: []WorkspaceItemTaskInfo,
     has_more: bool,
@@ -3854,6 +3881,32 @@ pub fn listWorkspaceItemTasksWithCursor(
     };
     defer allocator.free(cursor_clause);
 
+    // Optional q filter — case-insensitive substring match on
+    // name / description / tags. When `q` is null OR empty, q_clause
+    // is "" (no WHERE addition, keeps the original efficient query
+    // on `workspace_item_id` alone). Otherwise escape LIKE wildcards
+    // in the user input, wrap in `%…%`, and bind the pattern 3x
+    // (one per OR'd LIKE clause). The `ESCAPE '\'` clause makes the
+    // wildcards literal — a user typing `%` matches a literal `%`
+    // in the data, not every row.
+    var q_pattern: ?[]u8 = null;
+    defer if (q_pattern) |p| allocator.free(p);
+    var q_clause: []u8 = try allocator.dupe(u8, "");
+    errdefer allocator.free(q_clause);
+    if (q) |raw_q| {
+        if (raw_q.len > 0) {
+            const escaped = try escapeLikePattern(allocator, raw_q);
+            defer allocator.free(escaped);
+            q_pattern = try std.fmt.allocPrint(allocator, "%{s}%", .{escaped});
+            q_clause = try std.fmt.allocPrint(
+                allocator,
+                " AND (LOWER(t.name) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(t.description, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(t.tags, '')) LIKE ? ESCAPE '\\')",
+                .{},
+            );
+        }
+    }
+    defer allocator.free(q_clause);
+
     const sql = try std.fmt.allocPrint(
         allocator,
         // Auto-retry-until-stop: LEFT JOIN sessions on t.id =
@@ -3883,12 +3936,25 @@ pub fn listWorkspaceItemTasksWithCursor(
         // passthrough column at index 21:
         //   21: t.tags — JSON-encode array string ('' when no tags).
         //       NOT NULL DEFAULT '' so always present.
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at IS NULL OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s} {s} LIMIT {s}",
-        .{ cursor_clause, order_by, limit_str },
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at IS NULL OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s} {s} LIMIT {s}",
+        .{ cursor_clause, q_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
 
-    var rows = try db.query(allocator, sql, &.{workspace_item_id});
+    // Build binds: always workspace_item_id; when q is set, append the
+    // q_pattern 3 times (one per OR'd LIKE clause). SQLite reuses the
+    // same bind position when `?` is reused — so 3 binds means the
+    // pattern is compared against name, description, and tags.
+    var binds = std.ArrayList([]const u8).empty;
+    defer binds.deinit(allocator);
+    try binds.append(allocator, workspace_item_id);
+    if (q_pattern) |p| {
+        try binds.append(allocator, p);
+        try binds.append(allocator, p);
+        try binds.append(allocator, p);
+    }
+
+    var rows = try db.query(allocator, sql, binds.items);
     defer rows.deinit();
 
     var tasks = std.ArrayList(WorkspaceItemTaskInfo).empty;

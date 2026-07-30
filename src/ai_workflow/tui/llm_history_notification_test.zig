@@ -186,9 +186,9 @@ test "listWorkspaceItemTasksWithCursor SELECT adds last_finish_reason and needs_
         , .{});
         return error.FnMissing;
     };
-    // Slice the next 4000 chars (the function is ~150 lines; we just
-    // need to find both column names within it).
-    const fn_body_end = @min(fn_idx + 4000, source.len);
+    // Slice the next 8000 chars (the function grew with the kanban
+    // task search feature; the SELECT statement is now further down).
+    const fn_body_end = @min(fn_idx + 8000, source.len);
     const fn_body = source[fn_idx..fn_body_end];
     if (std.mem.indexOf(u8, fn_body, "last_finish_reason") == null) {
         std.debug.print(
