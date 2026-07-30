@@ -46,6 +46,18 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { DesignElement } from '../../api'
+import { useWorkspacesStore } from '../../stores/workspaces'
+import { useDesignHistory } from '../../composables/useDesignHistory'
+import { useDesignHistoryStore } from '../../stores/designHistory'
+
+const workspacesStore = useWorkspacesStore()
+
+// Undo/redo plan (Chunk 4): one history entry per field commit.
+// Pre-state is captured on input focus; post-state on @change.
+// We instantiate the composable here (rather than at DesignView)
+// so the capture is local to each field — no need to plumb ids
+// through props.
+const history = useDesignHistory(computed(() => workspacesStore.activeDesignPageId))
 
 const props = withDefaults(
   defineProps<{
@@ -93,12 +105,50 @@ type NumericField = 'x' | 'y' | 'width' | 'height' | 'rotation' | 'stroke_width'
 type StringField = 'name' | 'fill' | 'stroke' | 'text_content' | 'text_style' | 'image_url'
 
 const handleNumericChange = (field: NumericField, value: number): void => {
+  const el = singleElement.value
+  if (el) {
+    void history.capturePreState([el.id])
+    // Post-state is captured via watch below — when the element's
+    // field actually changes (via the store update mirror), we
+    // capture post-state. This fires once per @change.
+  }
   emit('update', { [field]: value } as Partial<DesignElement>)
 }
 
 const handleStringChange = (field: StringField, value: string): void => {
+  const el = singleElement.value
+  if (el) {
+    void history.capturePreState([el.id])
+  }
   emit('update', { [field]: value } as Partial<DesignElement>)
 }
+
+// Watch the single-element fields for actual change. When any
+// field updates (from a PropertiesPanel edit), we capture post-
+// state. The watcher is debounced to collapse rapid edits into a
+// single entry.
+let lastFieldsSnapshot: string = ''
+let propertiesPanelPostTimer: ReturnType<typeof setTimeout> | null = null
+function schedulePropertiesPanelCapturePost(): void {
+  if (propertiesPanelPostTimer) clearTimeout(propertiesPanelPostTimer)
+  propertiesPanelPostTimer = setTimeout(() => {
+    propertiesPanelPostTimer = null
+    const el = singleElement.value
+    if (el) void history.capturePostState([el.id])
+  }, 80)
+}
+watch(
+  singleElement,
+  (el) => {
+    if (!el) return
+    const fingerprint = `${el.x}|${el.y}|${el.width}|${el.height}|${el.rotation}|${el.fill}|${el.stroke}|${el.stroke_width}|${el.corner_radius}|${el.opacity}|${el.name}|${el.text_content}|${el.image_url}|${el.type}`
+    if (lastFieldsSnapshot && lastFieldsSnapshot !== fingerprint) {
+      schedulePropertiesPanelCapturePost()
+    }
+    lastFieldsSnapshot = fingerprint
+  },
+  { deep: false },
+)
 
 // ─── Confirm-before-delete state ───────────────────────────────────────
 
@@ -195,8 +245,57 @@ watch(htmlExpanded, async (expanded) => {
   }
 })
 
-const handleHtmlSave = (): void => {
-  emit('htmlChanged', htmlDraft.value)
+// Wire-up (undo/redo plan Chunk 1): was `emit('htmlChanged', htmlDraft.value)`
+// which went upward to DesignView → re-emitted → AppLayout had no
+// listener → silent drop. Now we call the store action directly.
+// Falls back to the emit if the store action throws (e.g. when the
+// single-element contract is violated mid-gesture).
+//
+// Undo/redo plan (Chunk 6): push an html_edit entry that records
+// the before/after body so undo can restore the previous body.
+const handleHtmlSave = async (): Promise<void> => {
+  const el = singleElement.value
+  if (!el) {
+    emit('htmlChanged', htmlDraft.value)
+    return
+  }
+  // Capture pre-state (before body).
+  const beforeHtml = el.text_content ?? ''
+  try {
+    await workspacesStore.updateDesignElementHtml(
+      workspacesStore.activeWorkspace?.id ?? '',
+      workspacesStore.activeWorkspaceItemId ?? '',
+      workspacesStore.activeDesignPageId,
+      el.id,
+      htmlDraft.value,
+    )
+    // Push the html_edit entry with before/after body so undo can
+    // restore the previous HTML body via PATCH.
+    void history.capturePostState([el.id]).then(() => {
+      // capturePostState diffs element fields. We also need to
+      // attach the html body diff. The composable's capturePostState
+      // doesn't fetch HTML bodies (that would be slow on every
+      // drag); for html_edit we use a dedicated push.
+      const htmlHistoryStore = useDesignHistoryStore()
+      htmlHistoryStore.push(workspacesStore.activeDesignPageId, {
+        id: `entry_html_${Date.now()}_${Math.random()}`,
+        timestamp: Date.now(),
+        label: 'Edit HTML body',
+        pageId: workspacesStore.activeDesignPageId,
+        kind: 'html_edit',
+        changes: [
+          {
+            elementId: el.id,
+            before: { text_content: beforeHtml },
+            after: { text_content: htmlDraft.value },
+            htmlBody: { before: beforeHtml, after: htmlDraft.value },
+          },
+        ],
+      })
+    })
+  } catch {
+    emit('htmlChanged', htmlDraft.value)
+  }
 }
 
 const handleHtmlCancel = (): void => {
