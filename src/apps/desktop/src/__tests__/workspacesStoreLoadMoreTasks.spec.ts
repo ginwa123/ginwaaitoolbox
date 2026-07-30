@@ -135,7 +135,8 @@ describe('useWorkspacesStore.loadMoreTasks()', () => {
 
     await store.loadMoreTasks('ws_1', 'item_1a')
 
-    // getTasks was called a second time, with the cursor as the 4th arg
+    // getTasks was called a second time, with the cursor as the 4th
+    // arg + sortBy + direction + q (Chunk 4 signature — 7 args total).
     expect(getTasksMock).toHaveBeenCalledTimes(2)
     expect(getTasksMock).toHaveBeenNthCalledWith(
       2,
@@ -143,6 +144,9 @@ describe('useWorkspacesStore.loadMoreTasks()', () => {
       'item_1a',
       20, // PAGE_SIZE
       '2026-06-10T10:02:00.000Z', // the previous next_cursor
+      'updated_at', // sortBy
+      'desc',      // direction
+      undefined,   // q (no active search in this test)
     )
 
     const item = store.workspaces[0]!.items[0]!
