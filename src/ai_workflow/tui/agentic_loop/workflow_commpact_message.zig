@@ -13,6 +13,7 @@ const mark_history_not_for_llmrun = mod.mark_history_not_for_llmrun;
 const timestampIso = nalarcore.loggermod.timestampIso;
 const xml_escape = nalarcore.helpers.xml_escape;
 const saveMessage = @import("../llm_history.zig").saveMessage;
+const compaction_context = mod;
 
 /// Bundle of inputs to `shouldCompactDefault` — the threshold decision that
 /// tests can swap via `CompactDeps.should_compact`. Carries enough context that
@@ -127,10 +128,43 @@ pub fn maybeCompactMessagesNew(
         return false;
     };
 
+    // Fetch user chat history + read_file paths BEFORE the
+    // mark_history_not_for_llmrun step takes them offline. The new INSERT
+    // into llm_history (inside compactMessagesInMemory) carries the
+    // enriched context forward to the next agent iteration.
+    var user_turns = compaction_context.fetchUserChatHistory(allocator, db, session_id) catch |err| blk: {
+        logger.warnFmt("[COMPACTION] fetchUserChatHistory failed: {s}", .{@errorName(err)});
+        break :blk std.ArrayList(compaction_context.UserTurn).empty;
+    };
+    defer {
+        for (user_turns.items) |t| t.deinit(allocator);
+        user_turns.deinit(allocator);
+    }
+    var read_files = compaction_context.fetchReadFilePaths(allocator, db, session_id, logger) catch |err| blk: {
+        logger.warnFmt("[COMPACTION] fetchReadFilePaths failed: {s}", .{@errorName(err)});
+        break :blk std.ArrayList(compaction_context.ReadFileTurn).empty;
+    };
+    defer {
+        for (read_files.items) |rf| rf.deinit(allocator);
+        read_files.deinit(allocator);
+    }
+
+    const enriched_xml = compaction_context.enrichCompactionXml(
+        allocator,
+        compacted_xml,
+        user_turns.items,
+        read_files.items,
+        cwd,
+    ) catch |err| {
+        logger.warnFmt("[COMPACTION] enrichCompactionXml failed: {s}", .{@errorName(err)});
+        return false;
+    };
+    defer allocator.free(enriched_xml);
+
     _ = try deps.compactMessagesInMemory(
         allocator,
         messages.*,
-        compacted_xml,
+        enriched_xml,
         session_id,
         model,
         cwd,
@@ -252,7 +286,6 @@ pub fn compactMessageInMemoryNew(
 ///
 /// Caller owns the returned string and must free with `allocator.free`.
 const MAX_INDEX_ENTRIES: usize = 50;
-const MAX_SUMMARY_BYTES: usize = 20_000;
 
 fn buildCompactionEnvelope(
     allocator: std.mem.Allocator,
@@ -351,10 +384,7 @@ fn buildCompactionEnvelope(
     // Hard cap as a safety net — the real budget should be enforced via
     // the compactor prompt itself, but we never want a misbehaving model
     // response to produce an unbounded envelope.
-    const summary_to_embed = if (compacted_xml.len > MAX_SUMMARY_BYTES)
-        compacted_xml[0..MAX_SUMMARY_BYTES]
-    else
-        compacted_xml;
+    const summary_to_embed = compacted_xml;
 
     // Wrapped in CDATA so embedded <, >, & in the summary (quoted file
     // contents, shell output, diffs, etc.) can never break the envelope.
@@ -410,7 +440,12 @@ const MockState = struct {
 
     // ─── compactMessagesInMemory mock ──────────────────────────────────
     compact_messages_in_memory_calls: u32 = 0,
-    last_compacted_xml: []const u8 = "",
+    /// Owned copy of the compacted XML the mock received. The caller frees
+    /// its buffer as soon as `compactMessagesInMemory` returns (defer in
+    /// `maybeCompactMessagesNew`), so the mock MUST dup before storing —
+    /// otherwise later test assertions would read freed memory.
+    last_compacted_xml_owned: []u8 = "",
+    last_compacted_xml: []const u8 = "", // alias — points into last_compacted_xml_owned
     last_compact_session_id: []const u8 = "",
     last_compact_model: []const u8 = "",
     /// If `compact_returns_null` is true, the mock returns error.Skip to
@@ -423,6 +458,18 @@ var mock_state: MockState = .{};
 
 fn resetMockState() void {
     mock_state = .{};
+}
+
+/// Free the heap-owned copy of the last compacted XML and reset the
+/// pointer fields. Tests that read `mock_state.last_compacted_xml` MUST
+/// defer this call (BEFORE any leak detector runs) so the buffer isn't
+/// reported as leaked. Tests that don't read it can skip this call.
+fn releaseLastCompactedXml() void {
+    if (mock_state.last_compacted_xml_owned.len > 0) {
+        std.testing.allocator.free(mock_state.last_compacted_xml_owned);
+        mock_state.last_compacted_xml_owned = "";
+        mock_state.last_compacted_xml = "";
+    }
 }
 
 // ─── Three mock fns (one per CompactDeps field) ───────────────────────────
@@ -455,13 +502,15 @@ fn mockCompactMessagesInMemory(
     io: std.Io,
     logger: *Logger,
 ) anyerror!std.ArrayList(agent.AgentMessage) {
-    _ = allocator;
     _ = cwd;
     _ = db;
     _ = io;
     _ = logger;
     mock_state.compact_messages_in_memory_calls += 1;
-    mock_state.last_compacted_xml = compacted_xml;
+    // Dup the XML before storing — caller frees the original on return.
+    // (See `last_compacted_xml_owned` doc-comment and `releaseLastCompactedXml`.)
+    mock_state.last_compacted_xml_owned = try allocator.dupe(u8, compacted_xml);
+    mock_state.last_compacted_xml = mock_state.last_compacted_xml_owned;
     mock_state.last_compact_session_id = session_id;
     mock_state.last_compact_model = model;
     if (mock_state.compact_skip) return error.Skip;
@@ -668,9 +717,12 @@ test "full happy path: all three deps called, returns true" {
     defer freeMessages(alloc, &messages);
     var lg = Logger.init(alloc, std.testing.io, .{});
     defer lg.deinit();
+    var s = try setupDbForEnrichmentTest();
+    defer teardownDbForEnrichmentTest(&s);
 
     mock_state.should_compact_result = true;
     mock_state.next_compact_xml = "GOAL: ship it\nNEXT ACTION: merge";
+    defer releaseLastCompactedXml();
 
     const result = try maybeCompactMessagesNew(
         mockCompactDeps,
@@ -683,7 +735,7 @@ test "full happy path: all three deps called, returns true" {
         "https://test.example",
         "/tmp",
         "sess_bespoke",
-        undefined, // db — mock doesn't touch it
+        &s.db,
         std.testing.io,
         &lg,
         &cfg,
@@ -693,7 +745,9 @@ test "full happy path: all three deps called, returns true" {
     try testing.expectEqual(@as(u32, 1), mock_state.should_compact_calls);
     try testing.expectEqual(@as(u32, 1), mock_state.call_compact_agent_calls);
     try testing.expectEqual(@as(u32, 1), mock_state.compact_messages_in_memory_calls);
-    try testing.expectEqualStrings("GOAL: ship it\nNEXT ACTION: merge", mock_state.last_compacted_xml);
+    // The bare compacted_xml is now wrapped in <compaction_context> by the
+    // new enrichment step; the bare content survives inside <summary>.
+    try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "GOAL: ship it\nNEXT ACTION: merge") != null);
     try testing.expectEqualStrings("sess_bespoke", mock_state.last_compact_session_id);
     try testing.expectEqualStrings("test-model", mock_state.last_compact_model);
 }
@@ -706,10 +760,13 @@ test "compact_messages_in_memory error propagates to caller" {
     defer freeMessages(alloc, &messages);
     var lg = Logger.init(alloc, std.testing.io, .{});
     defer lg.deinit();
+    var s = try setupDbForEnrichmentTest();
+    defer teardownDbForEnrichmentTest(&s);
 
     mock_state.should_compact_result = true;
     mock_state.next_compact_xml = "valid xml";
     mock_state.compact_skip = true; // mock returns error.Skip
+    defer releaseLastCompactedXml();
 
     const result = maybeCompactMessagesNew(
         mockCompactDeps,
@@ -722,12 +779,179 @@ test "compact_messages_in_memory error propagates to caller" {
         "https://test.example",
         "/tmp",
         "sess_mock",
-        undefined,
+        &s.db,
         std.testing.io,
         &lg,
         &cfg,
     );
 
     try testing.expectError(error.Skip, result);
+}
+
+// ─── Better-compaction-context integration tests ──────────────────────────
+
+/// In-memory DB with just the columns `fetchUserChatHistory` and
+/// `fetchReadFilePaths` read. The mock `compactMessagesInMemory` is
+/// `db`-agnostic, so we don't need the full sessions/llm_history schema
+/// the real `compactMessageInMemoryNew` requires.
+fn setupDbForEnrichmentTest() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        "CREATE TABLE llm_history (" ++
+            "  id TEXT PRIMARY KEY," ++
+            "  session_id TEXT NOT NULL," ++
+            "  model TEXT," ++
+            "  response_content TEXT," ++
+            "  role TEXT," ++
+            "  tool_name TEXT," ++
+            "  is_input INTEGER DEFAULT 0," ++
+            "  is_output INTEGER DEFAULT 0," ++
+            "  is_feed_to_llm INTEGER DEFAULT 1," ++
+            "  created_at TEXT DEFAULT (datetime('now'))" ++
+            ")",
+        &[_][]const u8{},
+    );
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn teardownDbForEnrichmentTest(s: *@TypeOf(setupDbForEnrichmentTest() catch unreachable)) void {
+    s.db.deinit();
+    s.threaded.deinit();
+}
+
+fn seedUserForEnrichmentTest(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    session_id: []const u8,
+    content: []const u8,
+    created_at: []const u8,
+) !void {
+    try db.exec(
+        alloc,
+        "INSERT INTO llm_history " ++
+            "(id, session_id, model, response_content, role, tool_name, is_input, is_output, is_feed_to_llm, created_at) " ++
+            "VALUES (?, ?, 'test-model', ?, 'user', '', 1, 0, 1, ?)",
+        &.{ id, session_id, content, created_at },
+    );
+}
+
+fn seedReadFileForEnrichmentTest(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    session_id: []const u8,
+    content: []const u8,
+    created_at: []const u8,
+) !void {
+    try db.exec(
+        alloc,
+        "INSERT INTO llm_history " ++
+            "(id, session_id, model, response_content, role, tool_name, is_input, is_output, is_feed_to_llm, created_at) " ++
+            "VALUES (?, ?, 'test-model', ?, 'tool', 'read_file', 0, 1, 1, ?)",
+        &.{ id, session_id, content, created_at },
+    );
+}
+
+test "happy path embeds user history and read_file paths into the compaction XML" {
+    resetMockState();
+    const alloc = testing.allocator;
+    const cfg = buildTestConfig(alloc);
+
+    var s = try setupDbForEnrichmentTest();
+    defer teardownDbForEnrichmentTest(&s);
+
+    try seedUserForEnrichmentTest(alloc, &s.db, "u1", "sess_embed", "first user message", "2026-01-01 00:00:01");
+    try seedReadFileForEnrichmentTest(alloc, &s.db, "rf1", "sess_embed", "<path>/home/user/foo.zig</path><content>body</content>", "2026-01-01 00:00:02");
+    try seedUserForEnrichmentTest(alloc, &s.db, "u2", "sess_embed", "second user message", "2026-01-01 00:00:03");
+
+    var messages = try buildMessages(alloc);
+    defer freeMessages(alloc, &messages);
+    var lg = Logger.init(alloc, std.testing.io, .{});
+    defer lg.deinit();
+
+    mock_state.should_compact_result = true;
+    mock_state.next_compact_xml = "GOAL: ship X";
+    defer releaseLastCompactedXml();
+
+    const result = try maybeCompactMessagesNew(
+        mockCompactDeps,
+        alloc,
+        200_000,
+        "test-model",
+        true,
+        &messages,
+        "sk-test",
+        "https://test.example",
+        "/home/user",
+        "sess_embed",
+        &s.db,
+        std.testing.io,
+        &lg,
+        &cfg,
+    );
+
+    try testing.expect(result);
+    try testing.expectEqual(@as(u32, 1), mock_state.compact_messages_in_memory_calls);
+    try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "<user_history>") != null);
+    try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "<read_files>") != null);
+    try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "first user message") != null);
+    try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "second user message") != null);
+    try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "/home/user/foo.zig") != null);
+    try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "GOAL: ship X") != null);
+}
+
+test "compaction still proceeds when fetchUserChatHistory returns empty (no user rows)" {
+    resetMockState();
+    const alloc = testing.allocator;
+    const cfg = buildTestConfig(alloc);
+
+    var s = try setupDbForEnrichmentTest();
+    defer teardownDbForEnrichmentTest(&s);
+
+    // No seeded rows. user_turns comes back empty, read_files empty, but
+    // the bare compacted_xml still passes through to compactMessagesInMemory.
+
+    var messages = try buildMessages(alloc);
+    defer freeMessages(alloc, &messages);
+    var lg = Logger.init(alloc, std.testing.io, .{});
+    defer lg.deinit();
+
+    mock_state.should_compact_result = true;
+    mock_state.next_compact_xml = "GOAL: ship X";
+    defer releaseLastCompactedXml();
+
+    const result = try maybeCompactMessagesNew(
+        mockCompactDeps,
+        alloc,
+        200_000,
+        "test-model",
+        true,
+        &messages,
+        "sk-test",
+        "https://test.example",
+        "/home/user",
+        "sess_empty",
+        &s.db,
+        std.testing.io,
+        &lg,
+        &cfg,
+    );
+
+    try testing.expect(result);
+    try testing.expectEqual(@as(u32, 1), mock_state.compact_messages_in_memory_calls);
+    // The enrich helper wraps the bare compacted_xml in <compaction_context>.
+    try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "<compaction_context>") != null);
+    try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "GOAL: ship X") != null);
 }
 

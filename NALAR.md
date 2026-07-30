@@ -335,3 +335,69 @@ Frontend (commit `daf21418` after rebase, originally `d7a05497`):
 **Branches:**
 - main: now contains group-drag-fix (merge `ac66d088`)
 - worktree/group-ungroup: now contains both group-drag-fix AND ungroup feature
+
+### 2026-07-30: better-compaction-context — enriched XML + use-after-free mock bug
+
+### Symptom
+The agent's compaction step (when session history grew past the model's
+window) gave the next iteration of the agent ONLY the compactor's summary.
+The next iteration had no access to (a) the full user chat history or
+(b) every file the AI had previously read via `read_file`. So if the
+agent's next iteration needed to know "what did the user actually ask"
+or "what files did the AI previously scan", it had to re-fetch from
+scratch — losing the compaction's value.
+
+### Fix
+Added `compaction_context.zig` helper module that wraps the compactor's
+XML in a `<compaction_context>` envelope with two new sections:
+- `<user_history>` — every user chat row for the session, capped at 100
+  turns / 2000 chars each (truncated; oldest dropped).
+- `<read_files>` — every `read_file` tool-result row, deduplicated
+  (first occurrence wins), with absolute paths computed relative to `cwd`.
+
+Wired into `maybeCompactMessagesNew` so every compaction now carries
+this enriched context forward to the next iteration.
+
+### Tests
+12 new tests across 2 files (`compaction_context_test.zig` + `compaction_enrich_test.zig`):
+- parseReadFilePath extracts the path from a valid envelope
+- fetchUserChatHistory / fetchReadFilePaths query mock DBs and de-dup / sort
+- enrichCompactionXml wraps the compactor's output and renders both sections
+- Integration tests (3) verify the wire-up — the mock now sees the
+  enriched XML, not the bare compactor output.
+
+### Bug fix (commit d131eb1d) — module-global mock_state slices go stale
+**Symptom (pre-fix).** 3 integration tests crashed with `signal ABRT`/
+`Segmentation fault` — stack trace pointed at
+`std.mem.indexOf(u8, mock_state.last_compacted_xml, ...)`.
+
+**Root cause.** `mockCompactMessagesInMemory` stored a raw `[]const u8`
+pointer to the `enriched_xml` that the caller (`maybeCompactMessagesNew`)
+would `defer allocator.free` on its return path. By the time the test
+read `mock_state.last_compacted_xml`, the buffer was already freed.
+`mock_state` is a module-level GLOBAL, so test N+1 inherited the
+dangling pointer and crashed reading it.
+
+**Fix.**
+- `MockState.last_compacted_xml_owned: []u8` — the mock now `dupe`s
+  the input before storing.
+- `releaseLastCompactedXml()` helper frees the owned buffer.
+- Each test that reads `last_compacted_xml` defers `releaseLastCompactedXml()`
+  so the buffer is freed BEFORE `testing.allocator_instance.detectLeaks()`
+  fires (post-test-scope).
+
+**Memory written.** `~/.config/nalar/memories/zig-mock-state-global-use-after-free-across-tests.md`
+documents the pattern for future mock-state authors.
+
+### Verification
+- `zig build test --summary all`: 2021/2027 pass (was 2018/2027 — +3 new tests)
+- `zig build install:linux:system`: 87 MB nalar binary at zig-out/bin/nalar
+  (cp-to-/usr/local/bin/nalar fails harmlessly on permission).
+- Cross-compile `zig build-obj -fno-emit-bin` for Windows + macOS: clean
+  (only sibling files with `@import("../..")` fail — pre-existing limitation).
+
+**Branch:** worktree/better-compaction-context
+**Commits:** `d131eb1d fix(test): mock now dups compacted XML ...`,
+             `a8e1da0c todo better compact` (scaffolding),
+             plus prior test scaffolding (`use proper allocator`,
+             `remove useless test`).
