@@ -1445,6 +1445,33 @@ export async function moveTask(
   )
 }
 
+/** Plan: docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md */
+
+export interface KanbanTagSuggestion {
+  name: string
+  count: number
+  last_used_at: string | null
+}
+
+export interface KanbanTagSuggestionsResponse {
+  tags: KanbanTagSuggestion[]
+  has_more: boolean
+}
+
+export interface GetKanbanTagSuggestionsOptions {
+  limit?: number
+  offset?: number
+}
+
+export async function getKanbanTagSuggestions(
+  workspaceId: string,
+  itemId: string,
+  options?: GetKanbanTagSuggestionsOptions,
+): Promise<KanbanTagSuggestionsResponse> {
+  // Stub — fails the test that asserts the URL shape.
+  return { tags: [], has_more: false }
+}
+
 // =====================================================================
 // Design Mode API (v6 — Figma-lite, file-backed HTML model)
 // =====================================================================
