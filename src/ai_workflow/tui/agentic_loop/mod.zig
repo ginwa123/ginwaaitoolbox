@@ -61,6 +61,14 @@ const compaction_mod = @import("compaction.zig");
 pub const CallCompactAgentInput = compaction_mod.CallCompactAgentInput;
 pub const callCompactAgent = compaction_mod.callCompactAgent;
 
+const compaction_context_mod = @import("compaction_context.zig");
+pub const fetchUserChatHistory = compaction_context_mod.fetchUserChatHistory;
+pub const fetchReadFilePaths = compaction_context_mod.fetchReadFilePaths;
+pub const enrichCompactionXml = compaction_context_mod.enrichCompactionXml;
+pub const parseReadFilePath = compaction_context_mod.parseReadFilePath;
+pub const UserTurn = compaction_context_mod.UserTurn;
+pub const ReadFileTurn = compaction_context_mod.ReadFileTurn;
+
 const is_session_kanban_mod = @import("is_session_kanban.zig");
 pub const isSessionKanban = is_session_kanban_mod.isSessionKanban;
 

@@ -234,3 +234,335 @@ fn resolvePath(allocator: std.mem.Allocator, path: []const u8, cwd: []const u8) 
     if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
     return std.fs.path.join(allocator, &.{ cwd, path });
 }
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+const testing = std.testing;
+
+fn setupDb() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        "CREATE TABLE llm_history (" ++
+            "  id TEXT PRIMARY KEY," ++
+            "  session_id TEXT NOT NULL," ++
+            "  model TEXT," ++
+            "  response_content TEXT," ++
+            "  role TEXT," ++
+            "  tool_name TEXT," ++
+            "  is_input INTEGER DEFAULT 0," ++
+            "  is_output INTEGER DEFAULT 0," ++
+            "  is_feed_to_llm INTEGER DEFAULT 1," ++
+            "  created_at TEXT DEFAULT (datetime('now'))" ++
+            ")",
+        &[_][]const u8{},
+    );
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn seedRow(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    row: struct {
+        id: []const u8,
+        session_id: []const u8,
+        role: []const u8,
+        tool_name: []const u8,
+        content: []const u8,
+        is_input: []const u8,
+        is_output: []const u8,
+        created_at: []const u8,
+    },
+) !void {
+    try db.exec(
+        alloc,
+        "INSERT INTO llm_history " ++
+            "(id, session_id, model, response_content, role, tool_name, is_input, is_output, is_feed_to_llm, created_at) " ++
+            "VALUES (?, ?, 'test-model', ?, ?, ?, ?, ?, 1, ?)",
+        &.{ row.id, row.session_id, row.content, row.role, row.tool_name, row.is_input, row.is_output, row.created_at },
+    );
+}
+
+test "parseReadFilePath extracts the path from a valid envelope" {
+    const content = "<path>/home/user/foo.zig</path>\n<content>body</content>";
+    try testing.expectEqualStrings("/home/user/foo.zig", parseReadFilePath(content).?);
+}
+
+test "parseReadFilePath returns null when the tag is missing" {
+    const content = "<content>body without a path</content>";
+    try testing.expect(parseReadFilePath(content) == null);
+}
+
+test "parseReadFilePath returns null when the close tag is missing" {
+    const content = "<path>/home/user/foo.zig\n<content>body</content>";
+    try testing.expect(parseReadFilePath(content) == null);
+}
+
+test "parseReadFilePath handles paths with spaces and unicode" {
+    const content = "<path>/home/user/My Files/日本語.txt</path><content>x</content>";
+    try testing.expectEqualStrings("/home/user/My Files/日本語.txt", parseReadFilePath(content).?);
+}
+
+test "fetchUserChatHistory returns only matching session's user rows with non-null content, in chrono order" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    const alloc = testing.allocator;
+
+    try seedRow(alloc, &s.db, .{
+        .id = "u1",
+        .session_id = "sess_a",
+        .role = "user",
+        .tool_name = "",
+        .content = "first ask",
+        .is_input = "1",
+        .is_output = "0",
+        .created_at = "2026-01-01 00:00:01",
+    });
+    try seedRow(alloc, &s.db, .{
+        .id = "a1",
+        .session_id = "sess_a",
+        .role = "assistant",
+        .tool_name = "",
+        .content = "first reply",
+        .is_input = "0",
+        .is_output = "1",
+        .created_at = "2026-01-01 00:00:02",
+    });
+    try seedRow(alloc, &s.db, .{
+        .id = "u2",
+        .session_id = "sess_a",
+        .role = "user",
+        .tool_name = "",
+        .content = "second ask",
+        .is_input = "1",
+        .is_output = "0",
+        .created_at = "2026-01-01 00:00:03",
+    });
+    try seedRow(alloc, &s.db, .{
+        .id = "u3",
+        .session_id = "sess_a",
+        .role = "user",
+        .tool_name = "",
+        .content = "",
+        .is_input = "1",
+        .is_output = "0",
+        .created_at = "2026-01-01 00:00:04",
+    });
+    try seedRow(alloc, &s.db, .{
+        .id = "u_x",
+        .session_id = "sess_b",
+        .role = "user",
+        .tool_name = "",
+        .content = "wrong session",
+        .is_input = "1",
+        .is_output = "0",
+        .created_at = "2026-01-01 00:00:01",
+    });
+
+    var turns = try fetchUserChatHistory(alloc, &s.db, "sess_a");
+    defer {
+        for (turns.items) |t| t.deinit(alloc);
+        turns.deinit(alloc);
+    }
+
+    try testing.expectEqual(@as(usize, 2), turns.items.len);
+    try testing.expectEqualStrings("first ask", turns.items[0].content);
+    try testing.expectEqualStrings("second ask", turns.items[1].content);
+    try testing.expectEqualStrings("2026-01-01 00:00:01", turns.items[0].created_at);
+    try testing.expectEqualStrings("2026-01-01 00:00:03", turns.items[1].created_at);
+}
+
+test "fetchReadFilePaths returns only matching session's read_file outputs, with parsed paths" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    const alloc = testing.allocator;
+
+    try seedRow(alloc, &s.db, .{
+        .id = "rf1",
+        .session_id = "sess_a",
+        .role = "tool",
+        .tool_name = "read_file",
+        .content = "<path>/home/user/foo.zig</path>\n<content>foo body</content>",
+        .is_input = "0",
+        .is_output = "1",
+        .created_at = "2026-01-01 00:00:01",
+    });
+    try seedRow(alloc, &s.db, .{
+        .id = "rf2",
+        .session_id = "sess_a",
+        .role = "tool",
+        .tool_name = "read_file",
+        .content = "<path>/home/user/bar.zig</path>\n<content>bar body</content>",
+        .is_input = "0",
+        .is_output = "1",
+        .created_at = "2026-01-01 00:00:02",
+    });
+    try seedRow(alloc, &s.db, .{
+        .id = "rf3",
+        .session_id = "sess_a",
+        .role = "tool",
+        .tool_name = "read_file",
+        .content = "<path>/home/user/ignored.zig</path>",
+        .is_input = "1", // is_input not is_output -> filtered
+        .is_output = "0",
+        .created_at = "2026-01-01 00:00:03",
+    });
+    try seedRow(alloc, &s.db, .{
+        .id = "rf_x",
+        .session_id = "sess_b",
+        .role = "tool",
+        .tool_name = "read_file",
+        .content = "<path>/home/user/wrong.zig</path>",
+        .is_input = "0",
+        .is_output = "1",
+        .created_at = "2026-01-01 00:00:01",
+    });
+    try seedRow(alloc, &s.db, .{
+        .id = "rf_malformed",
+        .session_id = "sess_a",
+        .role = "tool",
+        .tool_name = "read_file",
+        .content = "<content>no path tag here</content>",
+        .is_input = "0",
+        .is_output = "1",
+        .created_at = "2026-01-01 00:00:04",
+    });
+
+    var lg = Logger.init(alloc, std.testing.io, .{});
+    defer lg.deinit();
+    var turns = try fetchReadFilePaths(alloc, &s.db, "sess_a", &lg);
+    defer {
+        for (turns.items) |t| t.deinit(alloc);
+        turns.deinit(alloc);
+    }
+
+    // rf3 is filtered by is_output=0; rf_malformed is dropped with a warning
+    // (not failed). 2 valid rows remain.
+    try testing.expectEqual(@as(usize, 2), turns.items.len);
+    try testing.expectEqualStrings("/home/user/foo.zig", turns.items[0].path);
+    try testing.expectEqualStrings("/home/user/bar.zig", turns.items[1].path);
+    try testing.expect(std.mem.indexOf(u8, turns.items[0].raw_content, "foo body") != null);
+}
+
+test "enrichCompactionXml with empty user history and empty read files returns the original compacted_xml wrapped in <summary>" {
+    const alloc = testing.allocator;
+    const result = try enrichCompactionXml(
+        alloc,
+        "GOAL: ship X\nNEXT: test",
+        &.{},
+        &.{},
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "<compaction_context>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<user_history>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<read_files>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<summary>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "GOAL: ship X") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<turn ") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "<path ") == null);
+}
+
+test "enrichCompactionXml embeds user history and read files with the right content" {
+    const alloc = testing.allocator;
+    const user_turns = [_]UserTurn{
+        .{ .content = "fix the bug", .created_at = "2026-01-01 00:00:01" },
+        .{ .content = "now also write tests", .created_at = "2026-01-01 00:00:05" },
+    };
+    const read_files = [_]ReadFileTurn{
+        .{
+            .path = "/home/user/foo.zig",
+            .raw_content = "<path>/home/user/foo.zig</path>",
+            .created_at = "2026-01-01 00:00:02",
+        },
+    };
+    const result = try enrichCompactionXml(
+        alloc,
+        "GOAL: ship X",
+        &user_turns,
+        &read_files,
+        "/home/user",
+    );
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "<turn created_at=\"2026-01-01 00:00:01\">fix the bug</turn>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<turn created_at=\"2026-01-01 00:00:05\">now also write tests</turn>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<path abs=\"/home/user/foo.zig\">/home/user/foo.zig</path>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<summary>") != null);
+}
+
+test "enrichCompactionXml emits all 50 user turns when the cap is hit" {
+    const alloc = testing.allocator;
+    var turns: [50]UserTurn = undefined;
+    var owned_strings: [50][]u8 = undefined;
+    for (&turns, &owned_strings, 0..) |*t, *owned, i| {
+        owned.* = try std.fmt.allocPrint(alloc, "turn {d}", .{i});
+        t.* = .{
+            .content = owned.*,
+            .created_at = "2026-01-01 00:00:00",
+        };
+    }
+    defer for (owned_strings) |s| alloc.free(s);
+
+    const result = try enrichCompactionXml(
+        alloc,
+        "summary",
+        &turns,
+        &.{},
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    for (turns, 0..) |_, i| {
+        const needle = try std.fmt.allocPrint(alloc, ">turn {d}</turn>", .{i});
+        defer alloc.free(needle);
+        try testing.expect(std.mem.indexOf(u8, result, needle) != null);
+    }
+}
+
+test "enrichCompactionXml deduplicates read_file on the same path" {
+    const alloc = testing.allocator;
+    const read_files = [_]ReadFileTurn{
+        .{ .path = "/home/user/foo.zig", .raw_content = "", .created_at = "t1" },
+        .{ .path = "/home/user/bar.zig", .raw_content = "", .created_at = "t2" },
+        .{ .path = "/home/user/foo.zig", .raw_content = "", .created_at = "t3" },
+        .{ .path = "/home/user/baz.zig", .raw_content = "", .created_at = "t4" },
+        .{ .path = "/home/user/bar.zig", .raw_content = "", .created_at = "t5" },
+    };
+    const result = try enrichCompactionXml(
+        alloc,
+        "summary",
+        &.{},
+        &read_files,
+        "/home/user",
+    );
+    defer alloc.free(result);
+
+    try testing.expectEqual(@as(usize, 3), countSubstring(result, "<path "));
+    try testing.expect(std.mem.indexOf(u8, result, "<path abs=\"/home/user/foo.zig\">/home/user/foo.zig</path>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<path abs=\"/home/user/bar.zig\">/home/user/bar.zig</path>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<path abs=\"/home/user/baz.zig\">/home/user/baz.zig</path>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "truncated_by") == null);
+}
+
+fn countSubstring(hay: []const u8, needle: []const u8) usize {
+    var count: usize = 0;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, hay, i, needle)) |pos| {
+        count += 1;
+        i = pos + needle.len;
+    }
+    return count;
+}
