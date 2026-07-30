@@ -3345,6 +3345,44 @@ pub const WorkspaceItemTaskInfo = struct {
     }
 };
 
+/// One distinct tag suggestion for a kanban's autocomplete dropdown
+/// (plan docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md).
+/// Returned by `listKanbanDistinctTags` ordered by frequency DESC then
+/// recency DESC. The slice fields are heap-allocated from the passed
+/// allocator; the caller frees via `KanbanTagSuggestion.deinit`.
+pub const KanbanTagSuggestion = struct {
+    /// The tag value as it appeared in some task's tags JSON array.
+    /// First-occurrence casing wins (matches tags_validation.zig).
+    name: []u8,
+    /// Number of tasks on this kanban whose `tags` JSON array contains
+    /// this value (after json_each expansion).
+    count: u32,
+    /// `updated_at` of the MOST RECENT task that uses this tag, in
+    /// the same `YYYY-MM-DD HH:MM:SS` format the DB stores it in.
+    /// Used as the tie-breaker for sort order. null = no task has
+    /// this tag (shouldn't happen in normal flow).
+    last_used_at: ?[]u8,
+
+    pub fn deinit(self: KanbanTagSuggestion, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        if (self.last_used_at) |s| allocator.free(s);
+    }
+};
+
+/// Result of a single page of tag suggestions. The caller KNOWS the
+/// page size (`limit` arg) so it can detect `has_more` by comparing
+/// `tags.len >= limit`. We also return `has_more` directly so the
+/// HTTP handler doesn't need to know the limit it passed.
+pub const KanbanTagSuggestionsPage = struct {
+    tags: []KanbanTagSuggestion,
+    has_more: bool,
+
+    pub fn deinit(self: KanbanTagSuggestionsPage, allocator: std.mem.Allocator) void {
+        for (self.tags) |t| t.deinit(allocator);
+        allocator.free(self.tags);
+    }
+};
+
 /// Create a new workspace item task
 pub fn createWorkspaceItemTask(
     allocator: std.mem.Allocator,
@@ -3934,6 +3972,38 @@ pub fn listWorkspaceItemTasksWithCursor(
         .tasks = try tasks.toOwnedSlice(allocator),
         .has_more = has_more,
     };
+}
+
+/// Returns one page of distinct tags on tasks belonging to the
+/// given workspace item, ordered by frequency DESC then by
+/// most-recent usage DESC. Used by the kanban task detail dialog
+/// autocomplete dropdown. Pagination: caller passes `limit` (page
+/// size) and `offset` (rows to skip). Returns `has_more=true` when
+/// more rows exist past the requested page.
+///
+/// Defensive against malformed `tags` JSON: rows whose `tags` column
+/// is not a valid JSON array (legacy / corrupted rows) are skipped
+/// via `WHERE json_valid(tags) = 1 AND json_type(tags) = 'array'`.
+///
+/// Returns an empty page (not an error) when the kanban has no tags.
+///
+/// Implementation uses the `LIMIT N+1` trick to compute `has_more`
+/// in a single SQL query: we fetch `limit + 1` rows; if we got back
+/// `limit + 1` rows, there are more, so we trim to `limit` and set
+/// `has_more = true`.
+pub fn listKanbanDistinctTags(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    workspace_item_id: []const u8,
+    limit: u32,
+    offset: u32,
+) anyerror!KanbanTagSuggestionsPage {
+    _ = allocator;
+    _ = db;
+    _ = workspace_item_id;
+    _ = limit;
+    _ = offset;
+    return error.NotImplemented;
 }
 
 /// Get all active sessions for SSE broadcast
