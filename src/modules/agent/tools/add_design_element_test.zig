@@ -564,6 +564,81 @@ test "executeAddElementToString returns error XML when page_id has wrong prefix"
     try testing.expect(contains(xml, "elem_"));
 }
 
+test "executeAddElementToString accepts parent_id (nests new element under existing frame)" {
+    const alloc = testing.allocator;
+    var s = try setupDbWithPage();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    defer alloc.free(s.item_id);
+    defer alloc.free(s.page_id);
+
+    // Add a parent frame first.
+    const parent_xml = try add_element.executeAddElementToString(alloc, &s.db, s.threaded.io(), .{
+        .page_id = s.page_id,
+        .name = "login-card",
+        .type = "frame",
+        .html = "<div></div>",
+        .x = 100,
+        .y = 200,
+        .width = 400,
+        .height = 300,
+        .fill = "#ffffff",
+    });
+    defer alloc.free(parent_xml);
+
+    // Extract the parent's element id from the response XML. The
+    // response shape is `<element id="elem_xxx" .../>` so a simple
+    // substring search between the `id="` prefix and the next `"` is
+    // enough.
+    const id_prefix = "id=\"";
+    const id_start = std.mem.indexOf(u8, parent_xml, id_prefix) orelse return error.MissingIdAttribute;
+    const id_value_start = id_start + id_prefix.len;
+    const id_end = std.mem.indexOfPos(u8, parent_xml, id_value_start, "\"") orelse return error.MissingIdCloseQuote;
+    const parent_elem_id = parent_xml[id_value_start..id_end];
+    try testing.expect(std.mem.startsWith(u8, parent_elem_id, "elem_"));
+
+    // Add a child rectangle with parent_id pointing to the frame.
+    const child_input = add_element.AddElementInput{
+        .page_id = s.page_id,
+        .name = "login-button",
+        .type = "rectangle",
+        .html = "<button>Sign in</button>",
+        .x = 120,
+        .y = 520,
+        .width = 120,
+        .height = 40,
+        .fill = "#22c55e",
+        .parent_id = parent_elem_id,
+    };
+    const child_xml = try add_element.executeAddElementToString(alloc, &s.db, s.threaded.io(), child_input);
+    defer alloc.free(child_xml);
+    // Response XML must include the parent_id attribute (the LLM needs
+    // to confirm the nesting took effect).
+    try testing.expect(contains(child_xml, "parent_id=\""));
+    try testing.expect(contains(child_xml, parent_elem_id));
+}
+
+test "executeAddElementToString rejects parent_id with invalid prefix" {
+    const alloc = testing.allocator;
+    var s = try setupDbWithPage();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    defer alloc.free(s.item_id);
+    defer alloc.free(s.page_id);
+
+    const input = add_element.AddElementInput{
+        .page_id = s.page_id,
+        .name = "x",
+        .type = "rectangle",
+        .html = "<div></div>",
+        .parent_id = "page_does_not_start_with_elem",
+    };
+    const xml = try add_element.executeAddElementToString(alloc, &s.db, s.threaded.io(), input);
+    defer alloc.free(xml);
+    try testing.expect(contains(xml, "<error>"));
+    try testing.expect(contains(xml, "parent_id"));
+}
+
 test "executeAddElementToString returns error XML when name is empty" {
     const alloc = testing.allocator;
     var s = try setupDbWithPage();

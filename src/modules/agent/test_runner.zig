@@ -38,6 +38,7 @@ test {
     _ = @import("tools/add_design_element_test.zig");
     _ = @import("tools/update_design_element_test.zig");
     _ = @import("tools/group_design_elements_test.zig");
+    _ = @import("tools/set_element_parent_test.zig"); // 2026-07-29 — re-parents existing element to new group/frame (Task 5)
 
     // Bash tool cross-platform tests
     _ = @import("tools/bash_test.zig");

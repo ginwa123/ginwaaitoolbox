@@ -290,6 +290,61 @@ test "toXml renders element attributes with v6 fields" {
     try testing.expect(contains(xml, "height=\"300\""));
     try testing.expect(contains(xml, "fill=\"#ffffff\""));
     try testing.expect(contains(xml, "file_path="));
+    try testing.expect(contains(xml, "parent_id=\"\""));
+}
+
+test "toXml renders parent_id for a nested element" {
+    const alloc = testing.allocator;
+    const page = design_model.DesignPage{
+        .id = try alloc.dupe(u8, "page_abc"),
+        .workspace_item_id = try alloc.dupe(u8, "item_test"),
+        .name = try alloc.dupe(u8, "Login"),
+        .workspace_item_task_id = try alloc.dupe(u8, "task_test"),
+        .width = 1440,
+        .height = 1024,
+        .position = 0,
+        .created_at = try alloc.dupe(u8, ""),
+        .updated_at = try alloc.dupe(u8, ""),
+    };
+    defer {
+        alloc.free(page.id);
+        alloc.free(page.workspace_item_id);
+        alloc.free(page.name);
+        alloc.free(page.workspace_item_task_id);
+        alloc.free(page.created_at);
+        alloc.free(page.updated_at);
+    }
+    // A child element parented under elem_parent_1.
+    const elem = design_model.DesignElement{
+        .id = try alloc.dupe(u8, "elem_child_1"),
+        .page_id = try alloc.dupe(u8, "page_abc"),
+        .name = try alloc.dupe(u8, "login-button"),
+        .file_path = try alloc.dupe(u8, "/tmp/.nalar/design/Login/login-button.html"),
+        .x = 10,
+        .y = 20,
+        .width = 80,
+        .height = 30,
+        .z_index = 0,
+        .position = 1,
+        .elem_type = try alloc.dupe(u8, "rectangle"),
+        .rotation = 0.0,
+        .fill = try alloc.dupe(u8, "#000000"),
+        .stroke = try alloc.dupe(u8, ""),
+        .stroke_width = 0,
+        .corner_radius = 0,
+        .opacity = 1.0,
+        .text_content = try alloc.dupe(u8, ""),
+        .text_style = try alloc.dupe(u8, ""),
+        .image_url = try alloc.dupe(u8, ""),
+        .parent_id = try alloc.dupe(u8, "elem_parent_1"),
+        .created_at = try alloc.dupe(u8, ""),
+        .updated_at = try alloc.dupe(u8, ""),
+    };
+    defer design_model.freeElement(alloc, elem);
+    const elements = [_]design_model.DesignElement{elem};
+    const xml = try set_design_page.toXml(alloc, page, &elements);
+    defer alloc.free(xml);
+    try testing.expect(contains(xml, "parent_id=\"elem_parent_1\""));
 }
 
 test "errorXml on missing field returns <page><error>...</error></page>" {

@@ -797,7 +797,7 @@ pub fn BuildDesignCanvasPrompt(
     try out.appendSlice(allocator, "\n\n## Design Canvas\n\n");
     try out.appendSlice(allocator,
         \\This task is on a design canvas (parent item_type: `design`).
-        \\**You interact with the canvas via 3 LLM tools** (full schemas
+        \\**You interact with the canvas via 5 LLM tools** (full schemas
         \\in the tool listing below — pass `workspace_id` + `item_id` from
         \\the `## Workspace Context` section above, and `page_id` is the
         \\page's id from the listing below):
@@ -816,17 +816,35 @@ pub fn BuildDesignCanvasPrompt(
         \\an enforced boundary. Do NOT try to keep elements inside any
         \\specific rectangle; let the user place them wherever the design
         \\needs.
-        \\- `add_element(page_id, name, type, html, x?, y?, width?, height?, fill?, rotation?, corner_radius?, opacity?, text_content?, text_style?, image_url?)`
+        \\- `add_element(page_id, name, type, html, x?, y?, width?, height?, fill?, rotation?, corner_radius?, opacity?, text_content?, text_style?, image_url?, parent_id?)`
         \\  — add one element to a page. The `html` is the rendered DOM
         \\  fragment (e.g. `<div class="card">...</div>`) that the
         \\  frontend mounts in the canvas at the given (x, y) with the
         \\  given width/height. Geometry defaults to 0/0/100/100; `fill`
         \\  is a CSS color string (`#ffffff`, `rgb(...)`, etc.).
+        \\  Pass `parent_id="elem_..."` to nest the new element under
+        \\  an existing `group` or `frame` on the same page. Omit
+        \\  `parent_id` (or pass `null`) for top-level — same as the
+        \\  pre-2026-07-29 behaviour.
         \\- `update_element(element_id, ...)` — patch any subset of the
         \\  element's fields (name, type, html, x/y/width/height/rotation,
         \\  fill, stroke, stroke_width, corner_radius, opacity,
         \\  text_content, text_style, image_url). All fields nullable;
-        \\  pass only what changes.
+        \\  pass only what changes. **`update_element` does NOT change
+        \\  the parent/group hierarchy** — see `set_element_parent` for
+        \\  that.
+        \\- `set_element_parent(element_id, new_parent_id?)` — re-parent
+        \\  an EXISTING element. Pass `new_parent_id="elem_..."` to
+        \\  nest it under an existing `group`/`frame`; pass
+        \\  `new_parent_id=null` (or omit) to detach back to top-level.
+        \\  Use this to fix an element that was created at the wrong
+        \\  nesting level — there is no need to delete + re-add.
+        \\- `group_elements(page_id, child_ids, name?, type?)` — wrap
+        \\  2+ existing top-level elements in a NEW `group` or `frame`
+        \\  (unioned bounding box). The new parent is a sibling of the
+        \\  children; the children get a new `parent_id` pointing to
+        \\  the new group. Use this when you want to group EXISTING
+        \\  siblings that you didn't create with a parent.
         \\
         \\**Element types** (pass the string in `add_element`/`update_element`):
         \\
@@ -894,19 +912,37 @@ pub fn BuildDesignCanvasPrompt(
         \\      <button type="submit">Submit</button>
         \\    </form>
         \\
-        \\**Nesting rules:**
+        \\**Nesting / parent_id rules:**
         \\  1. The parent must exist BEFORE the child. Two `add_element`
         \\     calls: first the parent (frame/group), THEN the child with
         \\     `parent_id=<parent.id>`.
-        \\  2. Re-parent with
-        \\     `update_element(child_id, parent_id='<new>')`. Pass
-        \\     `parent_id=''` to detach (make top-level). Omit
-        \\     `parent_id` to leave parent unchanged.
-        \\  3. The target parent must have `type='frame'` or
-        \\     `type='group'` and be on the SAME page.
-        \\  4. Self-parenting and creating a cycle (target is the
-        \\     element itself or any descendant) are rejected with
-        \\     `<error>parent_id must reference a frame or group...</error>`.
+        \\  2. The target parent must have `type='frame'` or `type='group'`
+        \\     and be on the SAME page. Leaf types (rectangle, ellipse,
+        \\     text, image) cannot contain children — reject with
+        \\     `<error>parent_id points to a leaf-type element...</error>`.
+        \\  3. To re-parent an EXISTING element (e.g. you created
+        \\     `tags-label` at top-level but want it inside `dialog-card`),
+        \\     call `set_element_parent(element_id, new_parent_id)`. Do
+        \\     NOT pass `parent_id` to `update_element` — that field is
+        \\     not in `update_element`'s schema and the call will be
+        \\     rejected or silently ignored.
+        \\  4. To un-parent (make top-level), call
+        \\     `set_element_parent(element_id, null)` or with
+        \\     `new_parent_id=""`.
+        \\  5. Self-parenting and creating a cycle (target is the element
+        \\     itself or any descendant) are rejected with
+        \\     `CycleDetected` (the element's `parent_id` is unchanged).
+        \\  6. To wrap multiple EXISTING top-level siblings in a new
+        \\     group, use `group_elements(page_id, [...child_ids])` —
+        \\     creates a new parent + reparents the children atomically.
+        \\  7. **Decide your nesting strategy BEFORE you start adding
+        \\     elements.** Adding siblings at top-level and then trying
+        \\     to bulk-nest them works (via `group_elements` for new
+        \\     groups, or `set_element_parent` for an existing one),
+        \\     but it's strictly more work than nesting during creation.
+        \\     The design viewer shows the Layers panel on the right
+        \\     edge — always visually confirm each element is under the
+        \\     correct parent after the call.
         \\
         \\**No cross-iframe persistence.** State inside one element's
         \\iframe does NOT survive Preview-mode toggle (the iframe
@@ -1001,6 +1037,15 @@ pub fn BuildDesignCanvasPrompt(
                     try out.appendSlice(allocator, e.elem_type);
                     try out.appendSlice(allocator, ", id ");
                     try out.appendSlice(allocator, e.id);
+                    // Include parent_id so the LLM can see the existing
+                    // hierarchy at a glance ("top-level" vs nested under
+                    // which container). Empty parent_id = "(top-level)".
+                    if (e.parent_id.len > 0) {
+                        try out.appendSlice(allocator, ", parent=");
+                        try out.appendSlice(allocator, e.parent_id);
+                    } else {
+                        try out.appendSlice(allocator, ", parent=(top-level)");
+                    }
                     const xywh = try std.fmt.allocPrint(allocator, ", x={d} y={d} w={d} h={d}", .{ e.x, e.y, e.width, e.height });
                     defer allocator.free(xywh);
                     try out.appendSlice(allocator, xywh);

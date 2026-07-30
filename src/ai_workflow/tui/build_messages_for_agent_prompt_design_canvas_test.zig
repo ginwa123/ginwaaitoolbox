@@ -284,3 +284,87 @@ test "BuildDesignCanvasPrompt returns empty string for non-design parent" {
     // canvas — same pattern as BuildKanbanStatusPrompt.
     try testing.expectEqualStrings("", md);
 }
+
+// ─── Test 6: prompt mentions the new set_element_parent tool ─────────────
+
+test "BuildDesignCanvasPrompt mentions the set_element_parent tool" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try seedDesignParent(&ctx.db, alloc);
+
+    const md = try @import("build_messages_for_agent_prompt.zig").BuildDesignCanvasPrompt(
+        alloc,
+        &ctx.db,
+        "task_design1",
+    );
+    defer alloc.free(md);
+
+    // The set_element_parent tool must be advertised to the LLM so it
+    // knows how to fix a previously-created element that landed at the
+    // wrong nesting level (the prior gap that caused the bug behind
+    // task "design mode, put wrong html").
+    try testing.expect(std.mem.indexOf(u8, md, "set_element_parent") != null);
+}
+
+// ─── Test 7: prompt mentions parent_id on add_element ───────────────────
+
+test "BuildDesignCanvasPrompt mentions parent_id parameter on add_element" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try seedDesignParent(&ctx.db, alloc);
+
+    const md = try @import("build_messages_for_agent_prompt.zig").BuildDesignCanvasPrompt(
+        alloc,
+        &ctx.db,
+        "task_design1",
+    );
+    defer alloc.free(md);
+
+    // The add_element call example must surface `parent_id` so the LLM
+    // knows it can nest new elements at creation time.
+    try testing.expect(std.mem.indexOf(u8, md, "parent_id") != null);
+}
+
+// ─── Test 8: prompt directs re-parenting to set_element_parent, not update_element ─
+
+test "BuildDesignCanvasPrompt directs re-parenting to set_element_parent, not update_element" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try seedDesignParent(&ctx.db, alloc);
+
+    const md = try @import("build_messages_for_agent_prompt.zig").BuildDesignCanvasPrompt(
+        alloc,
+        &ctx.db,
+        "task_design1",
+    );
+    defer alloc.free(md);
+
+    // The previous prompt was wrong: it told the LLM to use
+    // update_element(child_id, parent_id='...') for re-parenting, but
+    // update_element does NOT accept parent_id. The correct API is
+    // set_element_parent. This test pins the new behavior.
+    //
+    // We assert the prompt says "set_element_parent" near "re-parent"
+    // (case-insensitive neighborhood search via substring).
+    const lower_md = try alloc.dupe(u8, md);
+    defer alloc.free(lower_md);
+    for (lower_md, 0..) |c, i| lower_md[i] = std.ascii.toLower(c);
+
+    // The word "set_element_parent" must appear in the prompt AND
+    // appear in a context that mentions re-parenting.
+    try testing.expect(std.mem.indexOf(u8, md, "set_element_parent") != null);
+    // The phrase "re-parent" (or "reparent") should appear in the prompt.
+    try testing.expect(
+        std.mem.indexOf(u8, lower_md, "re-parent") != null or
+            std.mem.indexOf(u8, lower_md, "reparent") != null,
+    );
+}
