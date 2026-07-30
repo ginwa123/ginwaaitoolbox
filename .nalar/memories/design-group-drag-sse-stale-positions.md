@@ -81,14 +81,50 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
   }
 }
 
-const clearSnapGuides = (): void => {
-  snapGuides.value = []
-  dragStartPositions = null  // ← reset for the next drag
+const handleDragEnd = (): void => {
+  // CRITICAL: reset the snapshot between drags. PR #144 (undo/redo)
+  // removed the previous `clearSnapGuides → dragStartPositions = null`
+  // pattern by replacing it with this `handleDragEnd`, which did
+  // NOT include the reset. Without the reset, the SECOND consecutive
+  // drag reuses the FIRST drag's snapshot → element lags cursor by
+  // `firstDelta` design-px on the second drag.
+  dragStartPositions = null
+  // ... rest of post-state capture + snapGuides clear ...
 }
 ```
 
 The fix mirrors the single-element drag's pattern: `start.x + dx` where
 `start` is captured at drag start and never re-read.
+
+## Footgun: PR #144 silently broke the reset
+
+The original fix reset `dragStartPositions = null` inside a function
+called `clearSnapGuides`, which was the `@drag-end` handler in the
+template. PR #144 (`feat(design): undo/redo for design mode`)
+replaced `clearSnapGuides` with a new function `handleDragEnd` to
+hook into the gesture-boundary capture. The new function focused on
+the history composable and forgot to reset `dragStartPositions`.
+
+The first regression test (mid-drag SSE re-fetch) still passed, so
+the breakage was invisible until a second consecutive drag was
+exercised — the second drag PATCH math now uses the FIRST drag's
+baseline, so the element ends up at `firstOriginal + secondDelta`
+(correct relative motion, wrong absolute position from cursor).
+
+A second regression test ("group drag RESETS the original-position
+snapshot between consecutive drags") was added in the 2026-07-30
+follow-up commit. It performs two drags back-to-back, mutates the
+prop between them to simulate the SSE update, and asserts the second
+drag's final PATCH uses the SECOND drag's original position
+(expected `{x: 330, y: 270}`, bug returns `{x: 280, y: 240}` =
+`firstOriginal + secondDelta`).
+
+**Lesson for future maintainers:** when refactoring a `@drag-end`
+or any other handler that owns reset semantics, search the file for
+`dragStartPositions` and any other state-initializing reads inside
+the handler being replaced. The new handler must preserve every
+state mutation — including ones that aren't obviously related to
+the new feature being added.
 
 ## Why the existing test didn't catch it
 

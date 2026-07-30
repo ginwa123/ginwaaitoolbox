@@ -1415,30 +1415,31 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
   }
 }
 
-// Clear snap guides + reset drag-start positions when the drag ends.
-// DesignElement emits `dragEnd` on pointerup; we listen via @drag-end
-// on each <DesignElement>. This is a no-op if no drag is in flight.
-//
-// Resetting `dragStartPositions` is critical: if the user starts a
-// NEW drag right after this one (e.g., they let go, then grab
-// another element), the new first pointermove must capture the
-// current positions as the new baseline — NOT the stale snapshot
-// from the previous drag.
-const clearSnapGuides = (): void => {
-  snapGuides.value = []
-  dragStartPositions = null
-}
-
 // Undo/redo plan (Chunk 4): gesture boundary capture. The
 // pre-state is captured at drag-start (pointerdown); the post-
 // state at drag-end (pointerup trailing emit). The composable
 // diffs them and pushes an entry if changed. dragStart/dragEnd
 // also fire for resize and group drag (DesignElement handles
 // all three gesture paths uniformly via these emits).
+//
+// REGRESSION (2026-07-30): this handler REPLACED the original
+// `clearSnapGuides` on the `@drag-end` binding. The old function
+// reset `dragStartPositions` (the group-drag baseline snapshot
+// used by `handleGroupDrag` to defeat the SSE-re-fetch compound
+// delta); this new handler must ALSO reset it, otherwise a
+// SECOND consecutive group drag reuses the FIRST drag's baseline
+// and PATCHes `firstOriginal + secondDelta` instead of
+// `secondOriginal + secondDelta` — the element lags the cursor
+// by `firstDelta` design-px on the second drag. Reset here
+// synchronously: `capturePostState` does not depend on the
+// snapshot (it reads from the store directly), so the order is
+// irrelevant to its correctness; synchronous is just safer for
+// a quick-follow-up second drag.
 const handleDragStart = (ids: string[]): void => {
   void history.capturePreState(ids)
 }
 const handleDragEnd = (): void => {
+  dragStartPositions = null
   void history.capturePostState(
     // For single-element drag, ids is implicit (just this element).
     // For multi-element drag, ids has been captured. We pass an

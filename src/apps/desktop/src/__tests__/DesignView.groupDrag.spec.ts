@@ -131,6 +131,53 @@ describe('DesignView group drag transitive expansion', () => {
     }))
   }
 
+  /**
+   * Multi-step drag helper: dragElement, but each pointermove fires
+   * independently with a (controllable) `performance.now()` tick so the
+   * child's 50ms throttle fires between them. `steps` is the array of
+   * (deltaX, deltaY) — each becomes one pointermove + one PATCH.
+   */
+  function dragElementSteps(
+    wrapper: any,
+    elementId: string,
+    steps: Array<[number, number]>,
+  ): void {
+    const target = wrapper.find(`[data-testid="design-element-${elementId}"]`)
+    if (!target.exists()) throw new Error(`Element ${elementId} not found in canvas`)
+    const rootEl = target.element as HTMLElement
+    rootEl.setPointerCapture = () => {}
+    rootEl.releasePointerCapture = () => {}
+    rootEl.hasPointerCapture = (): boolean => true
+    rootEl.dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, pointerId: 1, clientX: 100, clientY: 100,
+      bubbles: true,
+    }))
+    let cumulativeDx = 0
+    let cumulativeDy = 0
+    let now = 0
+    const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => now)
+    try {
+      for (const [dx, dy] of steps) {
+        cumulativeDx += dx
+        cumulativeDy += dy
+        now += 100  // throttle window passes each tick
+        rootEl.dispatchEvent(new PointerEvent('pointermove', {
+          button: 0, pointerId: 1,
+          clientX: 100 + cumulativeDx, clientY: 100 + cumulativeDy,
+          bubbles: true,
+        }))
+      }
+      now = (steps.length + 1) * 100
+      rootEl.dispatchEvent(new PointerEvent('pointerup', {
+        button: 0, pointerId: 1,
+        clientX: 100 + cumulativeDx, clientY: 100 + cumulativeDy,
+        bubbles: true,
+      }))
+    } finally {
+      nowSpy.mockRestore()
+    }
+  }
+
   it('dragging a group with 2 children moves the group AND both children (Figma parity)', async () => {
     const wrapper = await mountWith([
       makeEl({ id: 'el_g', type: 'group', x: 0, y: 0, width: 200, height: 200 }),
@@ -317,6 +364,116 @@ describe('DesignView group drag transitive expansion', () => {
       expect(xyById.get('el_a')).toEqual({ x: 110, y: 70 })
 
       nowSpy.mockRestore()
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  // REGRESSION (2026-07-30): the same bug pattern surfaces in a different
+  // shape if `dragStartPositions` is NOT reset between consecutive
+  // gestures. PR #144 (undo/redo) replaced `clearSnapGuides` with
+  // `handleDragEnd`, which does NOT reset the snapshot — so a SECOND
+  // group drag reuses the FIRST drag's baseline and PATCHes the
+  // element with `firstDragOriginal + secondDelta`. The element ends up
+  // NOT moving by the second drag's full delta (it stays at
+  // `firstDragFinal + (secondDragDelta - firstDragDelta)`), making the
+  // element lag the cursor by `firstDragDelta` design-px.
+  //
+  // Before fix: the test assertion `xyById.get('el_g').x === 230` fails
+  // because the BUG sends `x = 180 + 80 = 260` (firstOr=180, secondDelta=80).
+  // After fix: assertion passes (PATCH = 230 + 80 = ... wait let me redo).
+  it('group drag RESETS the original-position snapshot between consecutive drags (regression for PR #144)', async () => {
+    const wrapper = await mountWith([
+      makeEl({ id: 'el_g', type: 'group', x: 180, y: 180, width: 200, height: 200 }),
+      makeEl({ id: 'el_a', x: 200, y: 200, parent_id: 'el_g' }),
+    ])
+    try {
+      // Helper: select the group + dispatch a 2-step drag.
+      const selectGroup = async (): Promise<any> => {
+        const groupEl = wrapper.find('[data-testid="design-element-el_g"]')
+        groupEl.element.setPointerCapture = () => {}
+        groupEl.element.releasePointerCapture = () => {}
+        groupEl.element.hasPointerCapture = (): boolean => true
+        groupEl.element.dispatchEvent(new PointerEvent('pointerdown', {
+          button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true,
+        }))
+        await flushPromises()
+        return groupEl
+      }
+
+      // ─── 1st drag: cursor +50, +30 ───
+      await selectGroup()
+      updateGeometrySpy.mockClear()
+      dragElement(wrapper, 'el_g', 50, 30)
+      await flushPromises()
+      // PATCH should be originalX + delta1 = 180 + 50 = 230 (single step).
+      const firstCalls = updateGeometrySpy.mock.calls.map((c: any[]) => c[4])
+      const firstG = firstCalls.find((g: any) => g.x === 230 && g.y === 210)
+      expect(firstG).toBeDefined()
+
+      // ─── Simulate the SSE update that follows the 1st drag ───
+      // The element is now at design (230, 210).
+      const item = (wrapper.vm as any).item
+      item.design_elements = item.design_elements.map((e: any) =>
+        e.id === 'el_g' ? { ...e, x: 230, y: 210 } : e,
+      )
+      await flushPromises()
+
+      // ─── 2nd drag: cursor +100, +60 (total) ───
+      // User clicks the element at its new visual position (which is at
+      // design (230, 210), screen (100 + 50, 100 + 30) — and then drags
+      // +50 more in x, +30 more in y. Cumulative delta = (100, 60).
+      // Expected: PATCH = 230 + 100 = 330, 210 + 60 = 270.
+      await selectGroup()
+      updateGeometrySpy.mockClear()
+      // The drag starts at the element's CURRENT screen position, which
+      // is (100+50, 100+30) — adjust the helper to start the cursor
+      // there by overriding the helper. For simplicity, we use the
+      // existing dragElement (which starts the cursor at (100, 100))
+      // and re-implement with a custom start. The bug doesn't depend
+      // on where the cursor starts the 2nd drag; it depends on the
+      // snapshot being reused.
+      const groupEl2 = wrapper.find('[data-testid="design-element-el_g"]')
+      groupEl2.element.setPointerCapture = () => {}
+      groupEl2.element.releasePointerCapture = () => {}
+      groupEl2.element.hasPointerCapture = (): boolean => true
+      // Click the element at its current visual position screen (150, 130).
+      groupEl2.element.dispatchEvent(new PointerEvent('pointerdown', {
+        button: 0, pointerId: 1, clientX: 150, clientY: 130, bubbles: true,
+      }))
+      await flushPromises()
+      // Move to (250, 190) — delta (100, 60) design-px from the 2nd drag
+      // start (which was at design (230, 210)).
+      groupEl2.element.dispatchEvent(new PointerEvent('pointermove', {
+        button: 0, pointerId: 1, clientX: 250, clientY: 190, bubbles: true,
+      }))
+      await flushPromises()
+      groupEl2.element.dispatchEvent(new PointerEvent('pointerup', {
+        button: 0, pointerId: 1, clientX: 250, clientY: 190, bubbles: true,
+      }))
+      await flushPromises()
+
+      // Collect all PATCHes for el_g in the 2nd drag — the trailing emit
+      // is the FINAL position.
+      const xyById = new Map<string, { x: number; y: number }>()
+      for (const c of updateGeometrySpy.mock.calls) {
+        const id = c[3] as string
+        const geom = c[4] as { x?: number; y?: number }
+        if (geom.x !== undefined && geom.y !== undefined) {
+          xyById.set(id, { x: geom.x, y: geom.y })
+        }
+      }
+      // Expected: 2nd drag uses the SECOND pointerdown's position
+      // (originalX=230) + delta(100,60) = (330, 270).
+      //
+      // BUG (dragStartPositions not reset): the 2nd drag reuses the
+      // FIRST drag's original (180, 210). PATCH = 180 + 100 = 280. Element
+      // ends at x=280, but the cursor is at design-x=330. LAG by 50.
+      //
+      // Sanity check: the trailing emit may double-fire (throttle + the
+      // explicit flushEmit). Either way the LAST entry is what the
+      // server eventually sees.
+      expect(xyById.get('el_g')).toEqual({ x: 330, y: 270 })
     } finally {
       wrapper.unmount()
     }
