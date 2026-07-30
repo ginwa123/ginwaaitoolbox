@@ -67,6 +67,14 @@ pub const AddElementInput = struct {
     text_style: []const u8 = "",
     /// Image URL (for `type='image'`). Defaults to "".
     image_url: []const u8 = "",
+    /// Optional FK to an existing `group` or `frame` on the SAME
+    /// page. When set, the new element nests under that container
+    /// instead of landing at top-level. See
+    /// `design_model.addElement` for the validation rules (parent
+    /// must exist, same page, type in {`group`, `frame`}).
+    /// Optional / null = top-level — same as the pre-2026-07-29
+    /// behaviour.
+    parent_id: ?[]const u8 = null,
 };
 
 /// Top-level tool definition for the LLM.
@@ -168,6 +176,11 @@ pub const add_design_element_tool = AgentTool{
                     .name = "image_url",
                     .type = "string",
                     .description = "Image URL (for type='image'). Defaults to ''.",
+                },
+                .{
+                    .name = "parent_id",
+                    .type = "string",
+                    .description = "Optional FK to an existing `group` or `frame` on the SAME page. When set, the new element nests under that container instead of landing at top-level. Discover via `set_design_page` (each `<element>` has an `id=\"...\"` attribute). The parent must be of type `group` or `frame`; leaf types (rectangle, ellipse, text, image) cannot contain children. Omit (or pass null) for top-level — the default.",
                 },
             },
             .required = &.{ "page_id", "name", "type", "html" },
@@ -333,6 +346,15 @@ pub fn elementToXml(
         try xml.appendSlice(allocator, v);
         try xml.appendSlice(allocator, "\"");
     }
+    if (elem.parent_id.len > 0) {
+        const v = try xmlEscape(allocator, elem.parent_id);
+        defer allocator.free(v);
+        try xml.appendSlice(allocator, " parent_id=\"");
+        try xml.appendSlice(allocator, v);
+        try xml.appendSlice(allocator, "\"");
+    } else {
+        try xml.appendSlice(allocator, " parent_id=\"\"");
+    }
 
     try xml.appendSlice(allocator, " created_at=\"");
     try xml.appendSlice(allocator, elem.created_at);
@@ -424,6 +446,19 @@ fn validateHtmlShape(allocator: std.mem.Allocator, html: []const u8) !?[]u8 {
     return null;
 }
 
+/// Validate `parent_id` (when provided) has the right shape — starts
+/// with `elem_`. The deeper validation (same page, type in
+/// {`group`, `frame`}) runs in `design_model.addElement` once the DB
+/// is consulted.
+fn validateParentIdShape(allocator: std.mem.Allocator, parent_id: []const u8) !?[]u8 {
+    if (!std.mem.startsWith(u8, parent_id, "elem_")) {
+        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+            \\parent_id '{s}' has an unrecognized prefix (expected 'elem_'). add_element expects an element id from a previous set_design_page response, not a free-form string.
+        , .{parent_id}));
+    }
+    return null;
+}
+
 /// Execute the `add_element` tool. Returns an XML string for the LLM.
 ///
 /// On success, the response shape is the same as `set_design_page`'s
@@ -441,6 +476,9 @@ pub fn executeAddElementToString(
     if (try validatePageIdShape(allocator, input.page_id)) |e| return e;
     if (try validateNameShape(allocator, input.name)) |e| return e;
     if (try validateHtmlShape(allocator, input.html)) |e| return e;
+    if (input.parent_id) |pid| {
+        if (try validateParentIdShape(allocator, pid)) |e| return e;
+    }
 
     // 1. Parse the type string into the ElementType enum. Returns a
     //    structured error when the type is not one of the 6 valid
@@ -488,11 +526,14 @@ pub fn executeAddElementToString(
         .text_content = input.text_content,
         .text_style = input.text_style,
         .image_url = input.image_url,
+        .parent_id = input.parent_id,
     }) catch |err| switch (err) {
         error.PageNotFound => return try errorXml(allocator, "page_id does not match any design page — call set_design_page first"),
         error.ItemPathMissing => return try errorXml(allocator, "the design item has no path; set one via AddDesignDialog"),
         error.BadName => return try errorXml(allocator, "name is invalid (empty or contains illegal characters)"),
         error.FileWriteFailed => return try errorXml(allocator, "could not write the HTML file to disk (permission denied or out of space)"),
+        error.BadParentId => return try errorXml(allocator, "parent_id does not reference any design element on this page — call set_design_page first"),
+        error.ParentNotContainer => return try errorXml(allocator, "parent_id points to a leaf-type element (rectangle/ellipse/text/image); only `group` or `frame` can contain children"),
         else => return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: addElement failed: {s}", .{@errorName(err)})),
     };
     defer allocator.free(element_id);
