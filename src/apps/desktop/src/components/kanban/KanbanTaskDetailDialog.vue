@@ -72,6 +72,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
 import type { Task, KanbanColumn } from '../../stores/workspaces'
+import { useKanbanTagSuggestions } from '../../composables/useKanbanTagSuggestions'
 import KanbanDescriptionEditor from './KanbanDescriptionEditor.vue'
 import KanbanTagsInput from './KanbanTagsInput.vue'
 import MarkdownDescription from './MarkdownDescription.vue'
@@ -88,13 +89,36 @@ const props = withDefaults(
     // in <KanbanDescriptionEditor>. Falls back to '' (no picker
     // results) for legacy kanbans that don't have a path set.
     cwd?: string
+    // NEW (plan: kanban-task-tags-autocomplete.md, Task 2.7):
+    // Workspace id required by the tag-suggestions composable.
+    // Empty string = no fetch attempted (legacy callers + tests
+    // that don't care about suggestions).
+    workspaceId?: string
   }>(),
   {
     mode: 'edit',
     column: null,
     errorMessage: null,
     cwd: '',
+    workspaceId: '',
   },
+)
+
+// ─── Tag suggestions composable (Task 2.7) ─────────────────────────────
+// Lazily fetches distinct tags from other tasks on this kanban for
+// the autocomplete dropdown in <KanbanTagsInput>. The composable's
+// internal `loaded`/`hasMore`/`loading` refs drive the dropdown
+// gating — calls to ensureLoaded() on dialog open, and loadNextPage()
+// from the IntersectionObserver on the input's scroll sentinel.
+// The composable handles empty workspaceId / empty itemId gracefully
+// (no fetch attempted), so we can pass the fallbacks unconditionally
+// without conditional wiring. We source the item id from the column
+// prop (which carries the parent kanban's workspace_item_id) —
+// Task itself doesn't carry workspace_item_id, but every active task
+// in the kanban is reachable via column.workspace_item_id.
+const tagSuggestions = useKanbanTagSuggestions(
+  props.workspaceId ?? '',
+  props.column?.workspace_item_id ?? '',
 )
 
 const emit = defineEmits<{
@@ -203,6 +227,18 @@ watch(
     // is a single keystroke). In create mode the input is empty —
     // `select()` is a no-op but skipping it removes a code-smell.
     if (!isCreateMode.value) nameInput.value?.select()
+    // NEW (Task 2.7): reset the suggestions composable + start a
+    // lazy load. Reset clears any state from the previous dialog
+    // session so a different kanban (or a fresh open of the same one)
+    // doesn't see stale suggestions from the previous task.
+    tagSuggestions.reset()
+    // Don't await — let the fetch happen in the background. The
+    // dropdown only opens when the user focuses the input, which is
+    // itself a separate trigger; awaiting here would block the
+    // focus call on a network round-trip for no benefit.
+    if (props.task && props.workspaceId) {
+      void tagSuggestions.ensureLoaded()
+    }
   },
   { immediate: true },
 )
@@ -339,6 +375,18 @@ const taskTypeLabel = computed<string | null>(() => {
 
 const columnLabel = computed<string | null>(() => {
   return props.column?.name ?? null
+})
+
+// NEW (Task 2.7): Filter the suggestions composable's tags down to
+// the names that are NOT already on the current task's draft chips.
+// The model can't know about an unsaved draft, so we hide
+// already-committed chips client-side. Case-insensitive set lookup
+// so "Bug" doesn't show as a suggestion when the task has "bug".
+const filteredTagSuggestions = computed<string[]>(() => {
+  const excludeLower = new Set(tags.value.map((t) => t.toLowerCase()))
+  return tagSuggestions.tags.value
+    .map((s) => s.name)
+    .filter((n) => !excludeLower.has(n.toLowerCase()))
 })
 </script>
 
@@ -569,6 +617,10 @@ const columnLabel = computed<string | null>(() => {
               <KanbanTagsInput
                 ref="tagsInputRef"
                 v-model="tags"
+                :suggestions="filteredTagSuggestions"
+                :has-more="tagSuggestions.hasMore.value"
+                :loading-more="tagSuggestions.loading.value"
+                :on-load-more="tagSuggestions.loadNextPage"
                 :test-id="isCreateMode ? 'kanban-task-detail-create-tags' : 'kanban-task-detail-tags'"
               />
             </div>

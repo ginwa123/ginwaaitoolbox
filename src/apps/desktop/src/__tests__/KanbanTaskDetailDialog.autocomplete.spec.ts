@@ -1,0 +1,238 @@
+/**
+ * Behavioural tests for KanbanTaskDetailDialog — tag autocomplete
+ * wiring (Task 2.7 of the kanban-task-tags-autocomplete plan).
+ *
+ * The dialog owns a `useKanbanTagSuggestions` composable instance and
+ * passes its `tags` / `hasMore` / `loading` / `loadNextPage` into the
+ * <KanbanTagsInput> child. These tests verify:
+ *   - The composable is mounted with the dialog's task's
+ *     workspace_item_id + the new `workspaceId` prop.
+ *   - Tags already on the task's draft chips are filtered out of the
+ *     suggestions bound to <KanbanTagsInput>.
+ *   - In create mode (no task yet), no fetch is attempted — the
+ *     composable is mounted with `itemId = ''` which is a no-op.
+ *   - Resetting the composable happens on dialog close + reopen so a
+ *     different task opens a fresh fetch.
+ *   - The composable's `loadNextPage` is wired into the input's
+ *     `onLoadMore` prop.
+ *
+ * Mount pattern: same as KanbanTaskDetailDialog.spec.ts — Teleport
+ * to body, attachTo: document.body, document.querySelector for DOM
+ * assertions. Pinia is set up in beforeEach because apiFetch's
+ * error path uses useNotificationStore().
+ *
+ * Plan: docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md
+ *   Chunk 2 / Task 2.7
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { setActivePinia, createPinia } from 'pinia'
+
+import KanbanTaskDetailDialog from '@/components/kanban/KanbanTaskDetailDialog.vue'
+import type { Task, KanbanColumn } from '@/stores/workspaces'
+import * as api from '../api'
+
+const TASK_WITH_TAGS: Task = {
+  id: 'task_test_1',
+  name: 'Original name',
+  description: '',
+  task_type: 'standard',
+  tags: ['bug'],
+}
+
+// The dialog reads the parent kanban's workspace_item_id from the
+// `column` prop (Task itself doesn't carry workspace_item_id). All
+// `mountDialog()` calls below pass this so the composable has a
+// valid item id to fetch suggestions for.
+const COLUMN: KanbanColumn = {
+  id: 'col_x',
+  workspace_item_id: 'item_x',
+  name: 'todo',
+  position: 0,
+  created_at: '2026-01-01 00:00:00',
+}
+
+function findInDom<T extends Element = Element>(selector: string): T | null {
+  return document.querySelector<T>(selector)
+}
+
+function findAllInDom<T extends Element = Element>(selector: string): T[] {
+  return Array.from(document.querySelectorAll<T>(selector))
+}
+
+describe('KanbanTaskDetailDialog — tag autocomplete wiring', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.resetAllMocks()
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    findAllInDom('[data-testid="kanban-task-detail-dialog"]').forEach((el) =>
+      el.remove(),
+    )
+  })
+
+  function mountDialog(
+    task: Task | null = TASK_WITH_TAGS,
+    overrides: Record<string, unknown> = {},
+  ) {
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        task,
+        column: COLUMN,
+        workspaceId: 'ws_x',
+        ...overrides,
+      },
+    })
+    return wrapper
+  }
+
+  it('mounts the tag suggestions composable with the dialog task item id (Task 2.7 wiring)', async () => {
+    const spy = vi
+      .spyOn(api, 'getKanbanTagSuggestions')
+      .mockResolvedValue({
+        tags: [
+          { name: 'bug', count: 3, last_used_at: null },
+          { name: 'urgent', count: 1, last_used_at: null },
+        ],
+        has_more: false,
+      })
+
+    mountDialog(TASK_WITH_TAGS)
+    await flushPromises()
+    await flushPromises()
+    // The dialog's watcher fires ensureLoaded() when show=true and a
+    // task + workspaceId are present. The composable passes the ids
+    // through to getKanbanTagSuggestions.
+    expect(spy).toHaveBeenCalledWith('ws_x', 'item_x', { limit: 8, offset: 0 })
+  })
+
+  it('filters out tags already on the current task from the suggestions passed to KanbanTagsInput', async () => {
+    vi.spyOn(api, 'getKanbanTagSuggestions').mockResolvedValue({
+      tags: [
+        { name: 'bug', count: 3, last_used_at: null },
+        { name: 'urgent', count: 1, last_used_at: null },
+        { name: 'frontend', count: 1, last_used_at: null },
+      ],
+      has_more: false,
+    })
+
+    // Task already has 'bug' as a chip. The dialog should NOT pass
+    // 'bug' into the input's :suggestions binding.
+    mountDialog(TASK_WITH_TAGS)
+    await flushPromises()
+    await flushPromises()
+
+    // Open the input so the dropdown renders + suggestions mount.
+    const field = findInDom<HTMLInputElement>('[data-testid="kanban-task-detail-tags-field"]')
+    if (!field) throw new Error('tags field not found')
+    field.focus()
+    field.dispatchEvent(new Event('focus', { bubbles: true }))
+    await flushPromises()
+
+    const suggestionsContainer = findInDom(
+      '[data-testid="kanban-task-detail-tags-suggestions"]',
+    )
+    expect(suggestionsContainer).not.toBeNull()
+    const bugRow = findInDom(
+      '[data-testid="kanban-task-detail-tags-suggestion-bug"]',
+    )
+    const urgentRow = findInDom(
+      '[data-testid="kanban-task-detail-tags-suggestion-urgent"]',
+    )
+    const frontendRow = findInDom(
+      '[data-testid="kanban-task-detail-tags-suggestion-frontend"]',
+    )
+    expect(bugRow).toBeNull() // already a chip — filtered out
+    expect(urgentRow).not.toBeNull()
+    expect(frontendRow).not.toBeNull()
+  })
+
+  it('does NOT fetch in create mode (no task exists yet — no item_id to fetch for)', async () => {
+    const spy = vi.spyOn(api, 'getKanbanTagSuggestions')
+    // mount in create mode with task=null
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        mode: 'create',
+        task: null,
+        workspaceId: 'ws_x',
+      },
+    })
+    await flushPromises()
+    await flushPromises()
+    // ensureLoaded is gated on `props.task && props.workspaceId`, so
+    // create mode (task=null) must NOT trigger a fetch.
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('resets the composable on dialog close + reopen so a fresh fetch is triggered', async () => {
+    const spy = vi.spyOn(api, 'getKanbanTagSuggestions').mockResolvedValue({
+      tags: [],
+      has_more: false,
+    })
+
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        task: TASK_WITH_TAGS,
+        workspaceId: 'ws_x',
+      },
+    })
+    await flushPromises()
+    await flushPromises()
+    const callsAfterOpen = spy.mock.calls.length
+
+    // Toggle show false then true again — the watcher should reset
+    // the composable and trigger ensureLoaded again.
+    await wrapper!.setProps({ show: false })
+    await flushPromises()
+    await wrapper!.setProps({ show: true })
+    await flushPromises()
+    await flushPromises()
+
+    expect(spy.mock.calls.length).toBeGreaterThan(callsAfterOpen)
+  })
+
+  it('forwards the composable loadNextPage to the input via onLoadMore', async () => {
+    const spy = vi.spyOn(api, 'getKanbanTagSuggestions')
+    spy.mockResolvedValueOnce({
+      tags: [{ name: 'a', count: 1, last_used_at: null }],
+      has_more: true,
+    })
+    spy.mockResolvedValueOnce({
+      tags: [{ name: 'b', count: 1, last_used_at: null }],
+      has_more: false,
+    })
+
+    mountDialog(TASK_WITH_TAGS)
+    await flushPromises()
+    await flushPromises()
+    // First page fetched.
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy).toHaveBeenLastCalledWith('ws_x', 'item_x', { limit: 8, offset: 0 })
+
+    // The wiring proof: the KanbanTagsInput child component receives
+    // the composable's loadNextPage function as its `onLoadMore` prop.
+    // Calling that prop triggers a second fetch at offset=8.
+    const tagsInput = wrapper!.findComponent({ name: 'KanbanTagsInput' })
+    expect(tagsInput.exists()).toBe(true)
+    const onLoadMore = tagsInput.props('onLoadMore')
+    expect(typeof onLoadMore).toBe('function')
+    await (onLoadMore as () => Promise<void>)()
+    await flushPromises()
+    expect(spy).toHaveBeenCalledTimes(2)
+    expect(spy).toHaveBeenLastCalledWith('ws_x', 'item_x', { limit: 8, offset: 8 })
+  })
+})

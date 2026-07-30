@@ -573,6 +573,7 @@ const handleCreateTaskSave = async (payload: {
     :task="activeTaskDetail"
     :column="activeTaskDetailColumn"
     :cwd="item.path || ''"
+    :workspace-id="workspaceId"
     @save="handleTaskDetailSave"
     @update-unattended="handleUnattendedToggle"
   />
@@ -590,6 +591,7 @@ const handleCreateTaskSave = async (payload: {
     :task="null"
     :column="activeCreateColumn"
     :cwd="item.path || ''"
+    :workspace-id="workspaceId"
     :error-message="createError"
     @create="handleCreateTaskSave"
   />
