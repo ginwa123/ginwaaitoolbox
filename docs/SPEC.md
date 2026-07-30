@@ -306,6 +306,7 @@ A small affordance on each **standard** kanban task card (routine and memory car
 | `2026-07-28-design-per-page-chat-sessions.md` | ✅ | Per-page chat scoping (each design page gets a disjoint "Design Chat: <pageName>" task) + one-shot legacy migration |
 | `2026-07-28-design-page-workspace-item-task-fk.md` | ✅ | 1:1 FK design_pages.workspace_item_task_id → workspace_item_tasks.id (replaces the brittle name-based lookup) |
 | `2026-07-29-remove-canvas-background.md` | ✅ | Canvas background removed (no visible page rectangle, no W × H header inputs, no drag/nudge clamps, no snap-to-canvas-edges). Pages are purely logical containers; elements can be placed at any coordinates. |
+| `2026-07-30-design-undo-redo.md` | ✅ | Element-level undo/redo (`Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Y` + toolbar buttons). Per-page history stacks (100-entry cap), localStorage-persisted (debounced 500ms, `:v1:` schema version). Captures drag/resize/nudge/PropertiesPanel/delete/reorder/group at gesture boundaries (one entry per gesture; arrow nudge = 1 per keypress). Includes wire-up of 2 silently-dropped emits (LayersPanel ▲/▼, Monaco Save) as prerequisite. |
 
 ### 3.9 Frontend — Settings / Profiles / Nalar
 
