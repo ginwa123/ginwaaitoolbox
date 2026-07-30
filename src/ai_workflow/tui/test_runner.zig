@@ -91,6 +91,7 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     _ = @import("http_handlers/design_elements_html_get_test.zig");
     _ = @import("http_handlers/design_elements_html_update_test.zig");
     _ = @import("http_handlers/design_elements_geometry_update_test.zig");
+    _ = @import("http_handlers/design_elements_geometry_batch_test.zig"); // Chunk 1 Task 1.3 — POST /geometry-batch handler (behavioural useCase tests)
     _ = @import("http_handlers/kanban_copy_spec_test.zig");
     _ = @import("http_handlers/tasks_move_test.zig");
     _ = @import("http_handlers/tasks_create_kanban_test.zig");
