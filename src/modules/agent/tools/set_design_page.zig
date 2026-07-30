@@ -376,6 +376,21 @@ pub fn toXml(
             try xml.appendSlice(allocator, "\"");
         }
 
+        // parent_id: FK to a `group`/`frame` on the same page (empty
+        // string for top-level — the `COALESCE(parent_id, '')` wire
+        // convention, same as the read-back path). Render as an
+        // explicit empty attribute for top-level so the LLM can see
+        // the slot exists.
+        if (e.parent_id.len > 0) {
+            const v = try xmlEscape(allocator, e.parent_id);
+            defer allocator.free(v);
+            try xml.appendSlice(allocator, " parent_id=\"");
+            try xml.appendSlice(allocator, v);
+            try xml.appendSlice(allocator, "\"");
+        } else {
+            try xml.appendSlice(allocator, " parent_id=\"\"");
+        }
+
         try xml.appendSlice(allocator, " />");
     }
 
