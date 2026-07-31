@@ -219,24 +219,28 @@ const imageSrc = computed<string | null>(() => {
 })
 
 /**
- * Attribute-escape the user HTML for the iframe's `srcdoc` attribute.
- * Only needs to escape the four characters that would break the wrapping
- * attribute (`< > & "`) — NOT a full HTML sanitizer. The iframe sandbox
- * is the security boundary, not escape quality.
+ * Build the iframe's `srcdoc` value from the user HTML.
+ *
+ * CRITICAL: do NOT manually escape `<`, `>`, `&`, `"` here. The browser's
+ * `setAttribute('srcdoc', value)` path automatically encodes those four
+ * characters for the attribute value, then the iframe's own parser
+ * decodes them back when loading the document. Manually escaping here
+ * produces DOUBLE-escaped HTML — the iframe renders the literal text
+ * `&lt;p&gt;Hello&lt;/p&gt;` instead of the rendered `<p>Hello</p>`.
+ *
+ * The user's HTML is bound via `:srcdoc="htmlSrcDoc"` (Vue's reactive
+ * binding), which calls `setAttribute` for us. The browser then handles
+ * the encoding/encoding pair. Quotes inside the user's HTML are handled
+ * by setAttribute's own quoting (no manual escaping needed).
  *
  * Also wraps the HTML in a tiny `<style>` reset so the preview doesn't
- * get a default-margin surprise from the browser body. Mirrors the pattern
- * in DesignElementPreview.vue:45-50.
+ * get a default-margin surprise from the browser body. Mirrors the
+ * pattern in DesignElementPreview.vue:45-50.
  */
 const htmlSrcDoc = computed<string | null>(() => {
   if (activeContentType.value !== 'html') return null
   const raw = activeArgs.value.content ?? ''
-  const escaped = raw
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-  return `<style>html,body{margin:0;padding:0;background:#fff;}</style>${escaped}`
+  return `<style>html,body{margin:0;padding:0;background:#fff;}</style>${raw}`
 })
 
 const ICONS: Record<string, string> = { markdown: 'M', text: 'T', code: 'C', image: 'I', html: 'H' }
