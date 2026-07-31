@@ -62,6 +62,7 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("design_model_delete_parent_test.zig"); // 2026-07-28-grouped-layers (Chunk 4) — deleteElement NULLs children
     _ = @import("design_model_add_element_parent_test.zig"); // 2026-07-29 — addElement accepts parent_id (Task 1)
     _ = @import("design_model_set_element_parent_test.zig"); // 2026-07-29 — setElementParent re-parents with cycle detection (Task 2)
+    _ = @import("design_model_reparent_test.zig"); // 2026-07-30 — updateElement.reposition + cycle prevention (Chunk 1 Tasks 1.1+1.2)
     // Inline tests for `updateElementsBatch` live at the bottom of design_model.zig
     // — registered here so zig build test actually runs them.
     _ = @import("design_model.zig");

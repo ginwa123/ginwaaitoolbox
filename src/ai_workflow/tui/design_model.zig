@@ -730,6 +730,23 @@ pub const UpdateElementInput = struct {
     /// parent (reparent to top-level). See
     /// `docs/superpowers/plans/2026-07-28-grouped-layers.md` Chunk 2.
     parent_id: ?[]const u8 = null,
+    /// Optional post-update position normalization. When set, the
+    /// element's position is recomputed AFTER the SET clause runs —
+    /// used by the drag-to-reparent UX so the moved element lands
+    /// at the bottom of its new parent's children. See
+    /// `docs/superpowers/plans/2026-07-30-design-layer-drag-join-or-leave-group.md`.
+    reposition: ?RepositionMode = null,
+};
+
+/// How to recompute the element's `position` column after a
+/// parent_id change. Currently only one variant; future variants
+/// branch in `updateElement` to do precise-position inserts.
+pub const RepositionMode = enum {
+    /// Land at MAX(position) + 1 of all rows that share the new
+    /// parent (or are top-level when parent_id is empty). The
+    /// element being moved is excluded from the MAX so it lands
+    /// strictly after its new siblings.
+    last_in_parent,
 };
 
 /// Update an element. Each non-null field is SET in the SQL UPDATE;
@@ -837,6 +854,44 @@ pub fn updateElement(
     if (input.text_style) |v| { try sets.append(allocator, "text_style = ?"); try args.append(allocator, v); }
     if (input.image_url) |v| { try sets.append(allocator, "image_url = ?"); try args.append(allocator, v); }
     if (input.parent_id) |v| { try sets.append(allocator, "parent_id = ?"); try args.append(allocator, v); }
+
+    // Cycle prevention for the parent_id assignment. Run BEFORE the
+    // UPDATE so a cycle never reaches the database. Two checks:
+    //   (a) self-cycle (drop the element into itself)
+    //   (b) ancestor-into-descendant (close a cycle via the chain)
+    // Both return `error.CycleDetected`, mapped to HTTP 400 in the
+    // handler. Skip entirely when parent_id is null (no change).
+    if (input.parent_id) |new_pid| {
+        if (std.mem.eql(u8, new_pid, input.element_id)) return error.CycleDetected;
+        if (try wouldCreateCycle(db, allocator, input.element_id, new_pid)) {
+            return error.CycleDetected;
+        }
+    }
+
+    if (input.reposition) |mode| {
+        // Currently only one variant — the `defer _ = mode;` documents
+        // the future branch point for additional RepositionMode variants
+        // (e.g. `before_sibling`, `after_sibling`).
+        defer _ = mode;
+        // The new parent_id is what we just appended to the SET list
+        // (or empty string for top-level). The COALESCE in the SQL
+        // matches the SELECT-side convention used everywhere in the
+        // codebase: NULL → ''. So `COALESCE(parent_id, '') = ?` works
+        // for BOTH top-level (`?` = '') and nested (`?` = group_id).
+        const new_parent_sql: []const u8 = if (input.parent_id) |p| p else "";
+        var max_pos_q = try db.query(allocator,
+            \\SELECT COALESCE(MAX(position), -1) FROM design_page_elements
+            \\WHERE COALESCE(parent_id, '') = ? AND id != ?
+        , &.{ new_parent_sql, input.element_id });
+        defer max_pos_q.deinit();
+        const max_pos_row = (try max_pos_q.next()) orelse unreachable;
+        defer max_pos_row.deinit(allocator);
+        const max_pos_value = std.fmt.parseInt(i64, max_pos_row.values[0], 10) catch 0;
+        const new_position_str = try std.fmt.allocPrint(allocator, "{d}", .{max_pos_value + 1});
+        try owned.append(allocator, new_position_str);
+        try sets.append(allocator, "position = ?");
+        try args.append(allocator, owned.items[owned.items.len - 1]);
+    }
 
     // If html changed, look up file_path, atomic-rewrite the file,
     // and record that we need to UPDATE file_path too if the file
@@ -2069,6 +2124,49 @@ pub const SetElementParentError = error{
     DbError,
     OutOfMemory,
 };
+
+/// Cycle detection for reparent operations. Returns `true` iff
+/// reparenting `element_id` to be a child of `new_parent_id` would
+/// close a cycle — i.e. `new_parent_id` is already a descendant of
+/// `element_id` (or `element_id` itself, though the self-check is
+/// done separately at the call site).
+///
+/// The recursive CTE walks the parent chain UPWARD from
+/// `new_parent_id`. If `element_id` appears anywhere in that chain,
+/// the new assignment would close a cycle. The
+/// `WHERE dpe.parent_id IS NOT NULL` guard terminates the walk at
+/// top-level rows. `LIMIT 1` short-circuits as soon as the target
+/// is found.
+///
+/// Used by `updateElement` and `reparentElements` to reject reparent
+/// requests that would close a cycle. Same shape as the inline check
+/// in `setElementParent` — extracted so both endpoints share one
+/// canonical implementation.
+///
+/// Plan: docs/superpowers/plans/2026-07-30-design-layer-drag-join-or-leave-group.md
+pub fn wouldCreateCycle(
+    db: *sqlite.SqliteBackend,
+    allocator: std.mem.Allocator,
+    element_id: []const u8,
+    new_parent_id: []const u8,
+) !bool {
+    var q = try db.query(allocator,
+        \\WITH RECURSIVE chain(id) AS (
+        \\    SELECT id FROM design_page_elements WHERE id = ?
+        \\    UNION ALL
+        \\    SELECT dpe.parent_id FROM design_page_elements dpe
+        \\        JOIN chain c ON dpe.id = c.id
+        \\        WHERE dpe.parent_id IS NOT NULL
+        \\)
+        \\SELECT 1 FROM chain WHERE id = ? LIMIT 1
+    , &.{ new_parent_id, element_id });
+    defer q.deinit();
+    if (try q.next()) |row| {
+        defer row.deinit(allocator);
+        return true;
+    }
+    return false;
+}
 
 /// Re-parent `element_id` to `new_parent_id` (or top-level when null).
 ///
