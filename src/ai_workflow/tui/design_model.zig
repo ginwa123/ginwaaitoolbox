@@ -945,6 +945,234 @@ pub fn updateElement(
     return allocator.dupe(u8, input.element_id);
 }
 
+// ─── updateElementsBatch ───────────────────────────────────────────────────
+//
+// Atomic N-element geometry update in a single SQL transaction. Used by
+// the design-canvas drag handler to collapse N per-element PATCHes (one
+// per selected element per pointermove) into ONE PATCH per pointermove.
+//
+// Behaviour:
+//   1. Validate every element_id exists and lives on `input.page_id`.
+//      Pre-flight check (a single SELECT COUNT(*) ... WHERE id IN (...) AND
+//      page_id = ?). If count != input.updates.len → error.ElementNotFound
+//      with NO writes performed.
+//   2. Begin a transaction (mutex-held for the whole batch).
+//   3. For each input.updates[i] in order: build the SET clause
+//      (same dynamic-set pattern as `updateElement`) and execute the
+//      UPDATE inside the transaction.
+//   4. Re-SELECT the updated rows via `getElement` per id (in input order)
+//      and return them as `[]DesignElement`. Caller MUST release with
+//      `freeElements(allocator, result)`.
+//   5. Emit ONE `design_elements_geometry_batch_updated` SSE event
+//      carrying the full id context (workspace_id, item_id, page_id,
+//      element_ids[], updated_at). The frontend's local-mutation dedupe
+//      (stores/designSse.ts) uses this to skip the GET fan-out when the
+//      batch came from this client.
+//   6. Commit (or rollback on any failure inside the loop).
+//
+// Plan: docs/superpowers/plans/2026-07-30-design-drag-debounce-batch.md
+//   (Chunk 1, Task 1.1)
+
+pub const BatchGeometryUpdateInput = struct {
+    page_id: []const u8,
+    /// Per-element geometry patches. Only geometry fields (x, y, width,
+    /// height, rotation) are honored — name / type / html / etc. are
+    /// ignored (the batch endpoint is drag-specific).
+    updates: []const UpdateElementInput,
+};
+
+pub const BatchGeometryUpdateError = error{
+    PageNotFound,
+    EmptyUpdates,
+    ElementNotFound,
+    /// Any DB-side failure (PrepareFailed, ExecuteFailed, BindFailed,
+    /// QueryFailed, RowNotFound, DatabaseCorrupt, DiskFull, etc.).
+    /// The handler maps this to 500. Use the concrete error names
+    /// elsewhere if you need to discriminate; this is the catch-all.
+    DbError,
+    OutOfMemory,
+};
+
+pub fn updateElementsBatch(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: BatchGeometryUpdateInput,
+) anyerror![]DesignElement {
+    if (input.updates.len == 0) return error.EmptyUpdates;
+
+    // 1. Look up the page JOIN (workspace_id, item_id) — needed for the
+    //    SSE event payload. Mirrors the lookup pattern in
+    //    `groupElements` and `updateElement`.
+    const PageContext = struct {
+        workspace_id: []u8,
+        item_id: []u8,
+    };
+    const page_ctx: PageContext = blk: {
+        var q = try db.query(allocator,
+            \\SELECT wi.workspace_id, dp.workspace_item_id
+            \\FROM design_pages dp
+            \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
+            \\WHERE dp.id = ?
+        , &.{input.page_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.PageNotFound;
+        defer row.deinit(allocator);
+        break :blk .{
+            .workspace_id = try allocator.dupe(u8, row.values[0]),
+            .item_id = try allocator.dupe(u8, row.values[1]),
+        };
+    };
+    defer allocator.free(page_ctx.workspace_id);
+    defer allocator.free(page_ctx.item_id);
+
+    // 2. Pre-flight: build a dynamic IN-list SELECT and verify every
+    //    element_id exists on `input.page_id`. If count != updates.len
+    //    → error.ElementNotFound (atomicity — NO writes happen).
+    var in_list_sql: std.ArrayList(u8) = .empty;
+    defer in_list_sql.deinit(allocator);
+    try in_list_sql.appendSlice(allocator,
+        "SELECT COUNT(*) FROM design_page_elements WHERE page_id = ? AND id IN (");
+    var preflight_args: std.ArrayList([]const u8) = .empty;
+    defer preflight_args.deinit(allocator);
+    try preflight_args.append(allocator, input.page_id);
+    for (input.updates, 0..) |u, i| {
+        if (i > 0) try in_list_sql.append(allocator, ',');
+        try in_list_sql.append(allocator, '?');
+        try preflight_args.append(allocator, u.element_id);
+    }
+    try in_list_sql.append(allocator, ')');
+
+    const matched_count: usize = blk: {
+        var q = try db.query(allocator, in_list_sql.items, preflight_args.items);
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.DbError;
+        defer row.deinit(allocator);
+        break :blk std.fmt.parseInt(usize, row.values[0], 10) catch 0;
+    };
+    if (matched_count != input.updates.len) return error.ElementNotFound;
+
+    // 3. Begin transaction. RAII defer pattern: any error below
+    //    fires rollback. After successful commit, mark `committed` to
+    //    skip the deferred rollback.
+    var tx = try db.begin();
+    var committed = false;
+    defer if (!committed) tx.rollback() catch {};
+
+    // 4. Apply each UPDATE inside the transaction. We deliberately
+    //    don't extract a helper — the SET-list build is small enough
+    //    that inlining keeps the logic visible and avoids borrowing
+    //    arena slices across loop iterations.
+    for (input.updates) |u| {
+        var sets: std.ArrayList([]const u8) = .empty;
+        defer sets.deinit(allocator);
+        var owned: std.ArrayList([]u8) = .empty;
+        defer {
+            for (owned.items) |s| allocator.free(s);
+            owned.deinit(allocator);
+        }
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(allocator);
+
+        if (u.x) |v| {
+            try sets.append(allocator, "x = ?");
+            try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+            try argv.append(allocator, owned.items[owned.items.len - 1]);
+        }
+        if (u.y) |v| {
+            try sets.append(allocator, "y = ?");
+            try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+            try argv.append(allocator, owned.items[owned.items.len - 1]);
+        }
+        if (u.width) |v| {
+            try sets.append(allocator, "width = ?");
+            try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+            try argv.append(allocator, owned.items[owned.items.len - 1]);
+        }
+        if (u.height) |v| {
+            try sets.append(allocator, "height = ?");
+            try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+            try argv.append(allocator, owned.items[owned.items.len - 1]);
+        }
+        if (u.rotation) |v| {
+            try sets.append(allocator, "rotation = ?");
+            try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+            try argv.append(allocator, owned.items[owned.items.len - 1]);
+        }
+        // Always update updated_at.
+        try sets.append(allocator, "updated_at = datetime('now')");
+        try argv.append(allocator, u.element_id);
+
+        var sql_buf: [1024]u8 = undefined;
+        const sql_prefix = "UPDATE design_page_elements SET ";
+        var pos: usize = 0;
+        @memcpy(sql_buf[pos..][0..sql_prefix.len], sql_prefix);
+        pos += sql_prefix.len;
+        for (sets.items, 0..) |s, i| {
+            if (i > 0) {
+                @memcpy(sql_buf[pos..][0..2], ", ");
+                pos += 2;
+            }
+            @memcpy(sql_buf[pos..][0..s.len], s);
+            pos += s.len;
+        }
+        const where_clause = " WHERE id = ?";
+        @memcpy(sql_buf[pos..][0..where_clause.len], where_clause);
+        pos += where_clause.len;
+
+        try tx.exec(allocator, sql_buf[0..pos], argv.items);
+    }
+
+    // 5. Commit BEFORE re-querying. Re-querying via `db.query`
+    //    (which `getElement` uses) acquires the same mutex the
+    //    transaction holds — calling it inside the tx would
+    //    deadlock. The project memory `zig-sqlite-patterns.md` §
+    //    "Pitfall 3: RAII mutex-held-for-whole-resource-lifetime"
+    //    documents this constraint.
+    try tx.commit();
+    committed = true;
+
+    // 6. Re-SELECT the updated rows in INPUT order (not SQL order).
+    //    Use `getElement` per id — each call allocates fresh strings,
+    //    so the returned slice is fully owned. Caller MUST release
+    //    with `freeElements(allocator, result)`.
+    var results: std.ArrayList(DesignElement) = .empty;
+    errdefer {
+        for (results.items) |e| freeElement(allocator, e);
+        results.deinit(allocator);
+    }
+    for (input.updates) |u| {
+        const el = getElement(allocator, db, u.element_id) catch |err| switch (err) {
+            error.ElementNotFound => return error.DbError, // shouldn't happen — pre-flight checked
+            else => return error.DbError,
+        };
+        try results.append(allocator, el);
+    }
+
+    // 7. Emit ONE batch SSE event. Best-effort: failure here does NOT
+    //    fail the request — SSE is a hint, not a hard contract. The
+    //    `updated_at` is the current Unix epoch in seconds (matches
+    //    existing SSE timestamps elsewhere).
+    var element_ids_buf: std.ArrayList([]const u8) = .empty;
+    defer element_ids_buf.deinit(allocator);
+    for (input.updates) |u| try element_ids_buf.append(allocator, u.element_id);
+    // Unix seconds — `std.time.timestamp()` was removed in Zig 0.16,
+    // use libc `gettimeofday` (matches the rest of this codebase).
+    const updated_at: i64 = blk: {
+        var tv: std.c.timeval = undefined;
+        _ = std.c.gettimeofday(&tv, null);
+        break :blk @intCast(tv.sec);
+    };
+    on_event_sent_design.onEventSendDesignElementsGeometryBatchUpdated(allocator, .{
+        .workspace_id = page_ctx.workspace_id,
+        .item_id = page_ctx.item_id,
+        .page_id = input.page_id,
+        .element_ids = element_ids_buf.items,
+        .updated_at = updated_at,
+    }) catch {};
+
+    return results.toOwnedSlice(allocator);
+}
+
 // ─── groupElements ────────────────────────────────────────────────────────
 
 pub const GroupElementsInput = struct {
@@ -2184,4 +2412,329 @@ pub fn loadElementHtml(
     defer allocator.free(file_path);
     if (file_path.len == 0) return error.FileNotFound;
     return try std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(5 * 1024 * 1024));
+}
+
+// ─── Behavioural tests for `updateElementsBatch` ─────────────────────────
+//
+// Plan: docs/superpowers/plans/2026-07-30-design-drag-debounce-batch.md
+// (Chunk 1, Task 1.1) — the backend mitigation that collapses N
+// per-element PATCHes into one PATCH for multi-element drag.
+//
+// Inline at the bottom of the impl file per the project rule (the
+// `agentic_loop/` convention generalised: tests for a function live
+// next to the function it exercises).
+
+const testing_geometry = std.testing;
+
+fn teardownGeometryBatchDb(db: *sqlite.SqliteBackend, threaded: *std.Io.Threaded) void {
+    db.deinit();
+    threaded.deinit();
+}
+
+fn insertElementRaw(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    page_id: []const u8,
+    name: []const u8,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+) ![]u8 {
+    const id = try std.fmt.allocPrint(alloc, "elem_{s}", .{name});
+    errdefer alloc.free(id);
+    const x_str = try std.fmt.allocPrint(alloc, "{d}", .{x});
+    defer alloc.free(x_str);
+    const y_str = try std.fmt.allocPrint(alloc, "{d}", .{y});
+    defer alloc.free(y_str);
+    const w_str = try std.fmt.allocPrint(alloc, "{d}", .{width});
+    defer alloc.free(w_str);
+    const h_str = try std.fmt.allocPrint(alloc, "{d}", .{height});
+    defer alloc.free(h_str);
+
+    try db.exec(alloc,
+        \\INSERT INTO design_page_elements (
+        \\    id, page_id, name, file_path, x, y, width, height,
+        \\    z_index, position, type, rotation,
+        \\    fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at
+        \\) VALUES (
+        \\    ?, ?, ?, '', ?, ?, ?, ?,
+        \\    0, 0, 'rectangle', 0,
+        \\    '', '', 0, 0, 1.0,
+        \\    '', '', '', NULL,
+        \\    datetime('now'), datetime('now')
+        \\)
+    , &.{ id, page_id, name, x_str, y_str, w_str, h_str });
+
+    return id;
+}
+
+fn setupGeometryBatchDbAndItem() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_id: []const u8,
+    item_path: []u8,
+} {
+    const alloc = testing_geometry.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '')
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    UNIQUE (workspace_item_id, name),
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 375, height INTEGER NOT NULL DEFAULT 667,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle', rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '', stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0, opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '', text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '', parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    var tmp = testing_geometry.tmpDir(.{});
+    var tmpdir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_len = try tmp.dir.realPath(testing_geometry.io, &tmpdir_buf);
+    const tmpdir_path = try testing_geometry.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
+
+    const item_id_const = "item_design_geometry_batch";
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)",
+        &.{ item_id_const, tmpdir_path });
+
+    const item_id_slice = try alloc.dupe(u8, item_id_const);
+
+    return .{
+        .db = db,
+        .threaded = threaded,
+        .item_id = item_id_slice,
+        .item_path = tmpdir_path,
+    };
+}
+
+test "updateElementsBatch moves 3 elements in one transaction and returns updated rows in input order" {
+    const alloc = testing_geometry.allocator;
+    var ctx = try setupGeometryBatchDbAndItem();
+    defer teardownGeometryBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Test Page",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const a = try insertElementRaw(alloc, &ctx.db, page_id, "a", 0, 0, 100, 100);
+    defer alloc.free(a);
+    const b = try insertElementRaw(alloc, &ctx.db, page_id, "b", 0, 0, 100, 100);
+    defer alloc.free(b);
+    const c = try insertElementRaw(alloc, &ctx.db, page_id, "c", 0, 0, 100, 100);
+    defer alloc.free(c);
+
+    const result = try updateElementsBatch(alloc, &ctx.db, .{
+        .page_id = page_id,
+        .updates = &.{
+            .{ .element_id = a, .x = 100 },
+            .{ .element_id = b, .x = 200 },
+            .{ .element_id = c, .x = 300 },
+        },
+    });
+    defer freeElements(alloc, result);
+
+    try testing_geometry.expectEqual(@as(usize, 3), result.len);
+    try testing_geometry.expectEqualStrings(a, result[0].id);
+    try testing_geometry.expectEqualStrings(b, result[1].id);
+    try testing_geometry.expectEqualStrings(c, result[2].id);
+    try testing_geometry.expectEqual(@as(i64, 100), result[0].x);
+    try testing_geometry.expectEqual(@as(i64, 200), result[1].x);
+    try testing_geometry.expectEqual(@as(i64, 300), result[2].x);
+
+    const all = try listElements(alloc, &ctx.db, page_id);
+    defer freeElements(alloc, all);
+    try testing_geometry.expectEqual(@as(usize, 3), all.len);
+    for (all) |el| {
+        if (std.mem.eql(u8, el.id, a)) try testing_geometry.expectEqual(@as(i64, 100), el.x);
+        if (std.mem.eql(u8, el.id, b)) try testing_geometry.expectEqual(@as(i64, 200), el.x);
+        if (std.mem.eql(u8, el.id, c)) try testing_geometry.expectEqual(@as(i64, 300), el.x);
+    }
+}
+
+test "updateElementsBatch rejects empty input with EmptyUpdates" {
+    const alloc = testing_geometry.allocator;
+    var ctx = try setupGeometryBatchDbAndItem();
+    defer teardownGeometryBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Empty Page",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const result = updateElementsBatch(alloc, &ctx.db, .{
+        .page_id = page_id,
+        .updates = &.{},
+    });
+    try testing_geometry.expectError(error.EmptyUpdates, result);
+}
+
+test "updateElementsBatch rolls back when ANY element_id is missing (no partial writes)" {
+    const alloc = testing_geometry.allocator;
+    var ctx = try setupGeometryBatchDbAndItem();
+    defer teardownGeometryBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Atomicity Page",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const a = try insertElementRaw(alloc, &ctx.db, page_id, "a", 0, 0, 100, 100);
+    defer alloc.free(a);
+    const b = try insertElementRaw(alloc, &ctx.db, page_id, "b", 0, 0, 100, 100);
+    defer alloc.free(b);
+
+    var pre_a_x: i64 = 0;
+    var pre_b_x: i64 = 0;
+    {
+        const all = try listElements(alloc, &ctx.db, page_id);
+        defer freeElements(alloc, all);
+        for (all) |el| {
+            if (std.mem.eql(u8, el.id, a)) pre_a_x = el.x;
+            if (std.mem.eql(u8, el.id, b)) pre_b_x = el.x;
+        }
+    }
+
+    const result = updateElementsBatch(alloc, &ctx.db, .{
+        .page_id = page_id,
+        .updates = &.{
+            .{ .element_id = a, .x = 100 },
+            .{ .element_id = "elem_missing", .x = 200 },
+            .{ .element_id = b, .x = 300 },
+        },
+    });
+    try testing_geometry.expectError(error.ElementNotFound, result);
+
+    const post = try listElements(alloc, &ctx.db, page_id);
+    defer freeElements(alloc, post);
+    try testing_geometry.expectEqual(@as(usize, 2), post.len);
+    for (post) |el| {
+        if (std.mem.eql(u8, el.id, a)) try testing_geometry.expectEqual(pre_a_x, el.x);
+        if (std.mem.eql(u8, el.id, b)) try testing_geometry.expectEqual(pre_b_x, el.x);
+    }
+}
+
+test "updateElementsBatch accepts a single-element batch (N=1)" {
+    const alloc = testing_geometry.allocator;
+    var ctx = try setupGeometryBatchDbAndItem();
+    defer teardownGeometryBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Single Page",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const a = try insertElementRaw(alloc, &ctx.db, page_id, "a", 0, 0, 100, 100);
+    defer alloc.free(a);
+
+    const result = try updateElementsBatch(alloc, &ctx.db, .{
+        .page_id = page_id,
+        .updates = &.{.{ .element_id = a, .x = 999 }},
+    });
+    defer freeElements(alloc, result);
+
+    try testing_geometry.expectEqual(@as(usize, 1), result.len);
+    try testing_geometry.expectEqualStrings(a, result[0].id);
+    try testing_geometry.expectEqual(@as(i64, 999), result[0].x);
+}
+
+test "updateElementsBatch accepts a single field per update (no other fields required)" {
+    const alloc = testing_geometry.allocator;
+    var ctx = try setupGeometryBatchDbAndItem();
+    defer teardownGeometryBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Partial Page",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const a = try insertElementRaw(alloc, &ctx.db, page_id, "a", 50, 50, 200, 200);
+    defer alloc.free(a);
+
+    const result = try updateElementsBatch(alloc, &ctx.db, .{
+        .page_id = page_id,
+        .updates = &.{.{ .element_id = a, .y = 75 }},
+    });
+    defer freeElements(alloc, result);
+
+    try testing_geometry.expectEqual(@as(usize, 1), result.len);
+    try testing_geometry.expectEqual(@as(i64, 50), result[0].x);
+    try testing_geometry.expectEqual(@as(i64, 75), result[0].y);
+    try testing_geometry.expectEqual(@as(i64, 200), result[0].width);
+    try testing_geometry.expectEqual(@as(i64, 200), result[0].height);
 }

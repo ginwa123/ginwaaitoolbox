@@ -116,6 +116,36 @@ pub fn onEventSendDesignElementUpdated(
     di.event_bus.emit(SseEvent, "design_element", event);
 }
 
+/// Emit a `design_elements_geometry_batch_updated` SSE event. Called
+/// from `design_model.updateElementsBatch` after a single atomic
+/// transaction moves 1+ elements. The frontend's local-mutation dedupe
+/// (stores/designSse.ts) reads `element_ids` from this payload to
+/// skip the `fetchDesignElements` GET fan-out when the batch originated
+/// from this client within the last 1500 ms.
+///
+/// Plan: docs/superpowers/plans/2026-07-30-design-drag-debounce-batch.md
+///   (Chunk 1, Task 1.2)
+pub fn onEventSendDesignElementsGeometryBatchUpdated(
+    allocator: std.mem.Allocator,
+    payload: on_event_design.DesignElementsGeometryBatchUpdatedData,
+) !void {
+    const json_payload = try std.json.Stringify.valueAlloc(
+        allocator,
+        payload,
+        .{},
+    );
+    defer allocator.free(json_payload);
+
+    const event = SseEvent{
+        .session_id = "design_element",
+        .data = json_payload,
+        .event_type = "design_elements_geometry_batch_updated",
+    };
+
+    const di = nalarcore.getSingleton() catch return;
+    di.event_bus.emit(SseEvent, "design_element", event);
+}
+
 /// Emit a `design_element_deleted` SSE event. Called from
 /// `design_model.deleteElement` on every successful delete. The
 /// frontend listener uses this to remove the element from the

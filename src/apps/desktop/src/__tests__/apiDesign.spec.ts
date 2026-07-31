@@ -30,6 +30,7 @@ import {
   getDesignElementHtml,
   updateDesignElementHtml,
   updateDesignElementGeometry,
+  updateDesignElementsGeometryBatch,
   type DesignElementType,
 } from '../api'
 
@@ -575,6 +576,56 @@ describe('api.design', () => {
       const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
       const body = JSON.parse(init.body as string)
       expect(body).toEqual({ rotation: 90 })
+    })
+  })
+
+  describe('updateDesignElementsGeometryBatch', () => {
+    it('POSTs to /geometry-batch with the full updates array', async () => {
+      mockFetchOnce(200, {
+        updated: [
+          { id: 'e1', x: 100 },
+          { id: 'e2', x: 200 },
+          { id: 'e3', x: 300 },
+        ],
+      })
+
+      const result = await updateDesignElementsGeometryBatch(
+        'ws_1',
+        'item_1',
+        'p1',
+        [
+          { element_id: 'e1', x: 100 },
+          { element_id: 'e2', x: 200 },
+          { element_id: 'e3', x: 300 },
+        ],
+      )
+
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+      expect(url).toBe(
+        '/api/workspaces/ws_1/items/item_1/design/pages/p1/elements/geometry-batch',
+      )
+      expect(init.method).toBe('POST')
+      const body = JSON.parse(init.body as string)
+      expect(body.updates).toHaveLength(3)
+      expect(body.updates[0]).toEqual({ element_id: 'e1', x: 100 })
+      expect(body.updates[1]).toEqual({ element_id: 'e2', x: 200 })
+      expect(body.updates[2]).toEqual({ element_id: 'e3', x: 300 })
+      expect(result.updated).toHaveLength(3)
+      expect(result.updated[0]?.x).toBe(100)
+    })
+
+    it('accepts a single-element batch (N=1)', async () => {
+      mockFetchOnce(200, {
+        updated: [{ id: 'e1', x: 999 }],
+      })
+
+      await updateDesignElementsGeometryBatch('ws_1', 'item_1', 'p1', [
+        { element_id: 'e1', x: 999 },
+      ])
+
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+      const body = JSON.parse(init.body as string)
+      expect(body.updates).toHaveLength(1)
     })
   })
 })

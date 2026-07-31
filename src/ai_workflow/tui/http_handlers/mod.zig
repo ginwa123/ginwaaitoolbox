@@ -148,6 +148,7 @@ pub const designElementsDeleteHandler = @import("design_elements_delete.zig").de
 pub const designElementsHtmlGetHandler = @import("design_elements_html_get.zig").designElementsHtmlGetHandler;
 pub const designElementsHtmlUpdateHandler = @import("design_elements_html_update.zig").designElementsHtmlUpdateHandler;
 pub const designElementsGeometryUpdateHandler = @import("design_elements_geometry_update.zig").designElementsGeometryUpdateHandler;
+pub const designElementsGeometryBatchHandler = @import("design_elements_geometry_batch.zig").designElementsGeometryBatchHandler;
 // Group 2+ elements into a new `group`/`frame` parent. POST
 // /api/workspaces/:w/items/:i/design/pages/:p/elements/group — see
 // docs/superpowers/plans/2026-07-28-grouped-layers.md (Chunk 3).

@@ -235,7 +235,23 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     return
   }
 
-  // Single-element drag (existing throttled-emit logic from Chunk 1).
+  // Single-element drag. 50 ms leading-edge throttle + trailing
+  // pointerup emit. The visual position update flows through:
+  //   pointermove (60 Hz) → 50 ms throttle → emit('update') →
+  //   useDesignHandlers.updateElement → workspacesStore.updateDesignElementGeometry
+  //   (PATCH) → backend emits design_element_updated SSE →
+  //   frontend designSse.ts skips fetchDesignElements (the SSE dedupe
+  //   from Chunk 3 Task 3.4 sees this is a local mutation) → local
+  //   element stays put, props.element.x is unchanged.
+  //
+  // The throttle is REQUIRED for visual feedback during drag: the
+  // element's `style.transform` is bound to props.element.x/y, so the
+  // user only sees movement when the PATCH round-trips. A pure
+  // trailing-edge debounce would give zero movement during continuous
+  // drag (deferred to a follow-up that adds local optimistic state
+  // mutation). The 50 ms throttle keeps the visual feedback flow
+  // alive; the SSE dedupe removes the GET cascade that was the
+  // dominant backend cost.
   event.preventDefault()
 
   const target = event.currentTarget as HTMLElement | null
@@ -317,6 +333,8 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   target.addEventListener('pointerup', onUp)
   target.addEventListener('pointercancel', onUp)
 }
+
+// ─── HTML preview wrapper ───────────────────────────────────────────────
 
 // ─── HTML preview wrapper ───────────────────────────────────────────────
 

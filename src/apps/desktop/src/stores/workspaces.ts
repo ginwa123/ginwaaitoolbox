@@ -203,6 +203,75 @@ function normalizeTaskTags(task: Task): Task {
   return task
 }
 
+// ─── SSE local-mutation dedupe (Chunk 3 of design-drag-debounce-batch)
+// ─────────────────────────────────────────────────────────────────
+//
+// Every locally-issued geometry PATCH (single-element or batch)
+// registers the affected element_id(s) here with an expiry timestamp.
+// The SSE handler in `stores/designSse.ts` reads this Map on every
+// incoming `design_element_updated` / `design_elements_geometry_batch_updated`
+// event and SKIPS the `fetchDesignElements` GET when the event is for
+// one of these ids (i.e. the change came from this client).
+//
+// Why a module-level Map (NOT a Pinia ref): the SSE handler reads it
+// synchronously on every event. Reactivity would add overhead for no
+// benefit — the Map is not user-visible state.
+//
+// Why 1500 ms TTL: long enough to cover the round-trip + SSE round-trip
+// + Vue reactivity on slow networks; short enough that concurrent
+// edits from another client (chat-side, second tab) still propagate
+// within ~1.5 s. Figma uses ~1000 ms; 1500 ms is the safer default
+// for slower networks.
+//
+// Plan: docs/superpowers/plans/2026-07-30-design-drag-debounce-batch.md
+//   (Chunk 3, Task 3.1)
+export const RECENT_MUTATION_TTL_MS = 1500
+
+const recentLocalMutations = new Map<string, number>()
+
+export function registerRecentLocalMutations(
+  ids: string[],
+  expiryMs: number,
+): void {
+  const now = Date.now()
+  // Lazy GC: drop expired entries on every register call to keep
+  // the Map small. O(N) per PATCH is acceptable for v1 (worst case
+  // bounded by the mutation rate; typically < 50 entries).
+  for (const [id, exp] of recentLocalMutations) {
+    if (exp < now) recentLocalMutations.delete(id)
+  }
+  for (const id of ids) {
+    recentLocalMutations.set(id, expiryMs)
+  }
+}
+
+/**
+ * True iff `elementId` was mutated by this client within the last
+ * `RECENT_MUTATION_TTL_MS` milliseconds. Read by the SSE handler to
+ * decide whether to skip the GET fan-out for an incoming event.
+ *
+ * Exported for `stores/designSse.ts`. Side effect: expired entries are
+ * lazily GC'd on read.
+ */
+export function isRecentLocalMutation(elementId: string): boolean {
+  const exp = recentLocalMutations.get(elementId)
+  if (exp === undefined) return false
+  if (exp < Date.now()) {
+    recentLocalMutations.delete(elementId)
+    return false
+  }
+  return true
+}
+
+/**
+ * Test-only helper to clear the dedupe Map between tests. NOT exposed
+ * in the production API surface — exported via the store's returned
+ * object only for unit tests.
+ */
+export function _clearRecentLocalMutationsForTests(): void {
+  recentLocalMutations.clear()
+}
+
 import * as api from '../api'
 // Aliases for design-mode API functions whose names collide with
 // the store action wrappers below (Task 6.1 of design-mode-redesign
@@ -215,10 +284,12 @@ import {
   deleteDesignElement as deleteDesignElementApi,
   deleteDesignPage as deleteDesignPageApi,
   updateDesignElementGeometry as updateDesignElementGeometryApi,
+  updateDesignElementsGeometryBatch as updateDesignElementsGeometryBatchApi,
   updateDesignPage as updateDesignPageApi,
   groupDesignElements as groupDesignElementsApi,
   reorderDesignElements as reorderDesignElementsApi,
   ungroupDesignElements as ungroupDesignElementsApi,
+  type GeometryBatchUpdate,
   type GroupDesignElementsRequest,
   type ReorderMode,
 } from '../api'
@@ -1275,6 +1346,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // DesignView.vue (Chunk 7) fires a follow-up
   // `fetchDesignElements` to reconcile local state once the user
   // releases the mouse.
+  //
+  // Chunk 3 (design-drag-debounce-batch): also register the
+  // mutated element_id in `recentLocalMutations` so the SSE
+  // handler can skip the GET fan-out for locally-issued PATCHes.
   async function updateDesignElementGeometry(
     workspaceId: string,
     itemId: string,
@@ -1288,13 +1363,55 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       rotation?: number
     },
   ): Promise<DesignElement> {
-    return await updateDesignElementGeometryApi(
+    const result = await updateDesignElementGeometryApi(
       workspaceId,
       itemId,
       pageId,
       elementId,
       geometry,
     )
+    registerRecentLocalMutations([elementId], Date.now() + RECENT_MUTATION_TTL_MS)
+    return result
+  }
+
+  // Atomic N-element geometry update. Used by the canvas drag
+  // handler for multi-element drag so the N per-element PATCHes
+  // collapse into ONE PATCH per pointermove. The response is
+  // mirrored into the local design_elements array in place
+  // (preserves the array's order for non-affected elements).
+  //
+  // Plan: docs/superpowers/plans/2026-07-30-design-drag-debounce-batch.md
+  //   (Chunk 3, Task 3.1)
+  async function updateDesignElementsGeometryBatch(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    updates: GeometryBatchUpdate[],
+  ): Promise<DesignElement[]> {
+    if (updates.length === 0) return []
+    const result = await updateDesignElementsGeometryBatchApi(
+      workspaceId,
+      itemId,
+      pageId,
+      updates,
+    )
+    // Mirror every updated row into the local design_elements array
+    // in input order (preserves the array's existing order).
+    const item = findItem(workspaceId, itemId)
+    if (item?.design_elements) {
+      for (const updated of result.updated) {
+        const idx = item.design_elements.findIndex((e) => e.id === updated.id)
+        if (idx !== -1) item.design_elements[idx] = updated
+      }
+    }
+    // Register all affected element ids so the SSE handler skips the
+    // GET fan-out. Strict superset semantics in the SSE listener:
+    // a missing id falls through to the fetch path (defensive).
+    registerRecentLocalMutations(
+      updates.map((u) => u.element_id),
+      Date.now() + RECENT_MUTATION_TTL_MS,
+    )
+    return result.updated
   }
 
   // Update a design page's width/height (UI resize from the canvas
@@ -2449,6 +2566,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     addDesignElement,
     updateDesignElement,
     updateDesignElementGeometry,
+    updateDesignElementsGeometryBatch,
     updateDesignElementHtml,
     deleteDesignElement,
     deleteDesignPage,
