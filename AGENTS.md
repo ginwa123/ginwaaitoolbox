@@ -395,6 +395,68 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Single-element drag freezes at pointerdown position (latent v6 bug)
+
+**Symptom (pre-fix).** Dragging a single (non-group, non-frame)
+element in the design canvas emits hundreds of `PATCH /geometry`
+requests (visible in DevTools Network tab — e.g. 475 requests in
+14 s), but the element stays frozen at its pointerdown position. The
+element visually doesn't follow the cursor. Refresh fixes the visual
+position once (because `loadPages()` → `fetchDesignElements` re-mirrors
+the server state), then the bug returns.
+
+**Root cause.** `workspacesStore.updateDesignElementGeometry`
+(`src/apps/desktop/src/stores/workspaces.ts`) did **not** mirror the
+API response into `item.design_elements[]`, contrary to the comment
+that claimed "the drag-end handler in DesignView.vue (Chunk 7) fires
+a follow-up `fetchDesignElements` to reconcile" — that handler
+**does not exist**. Result: `props.element.x/y` stayed at the
+pointerdown-time value for the entire drag (and after, until the next
+SSE event triggered a full reconcile). The element's `elementStyle.
+left/top` (bound to `props.element.x/y`) stayed frozen.
+
+The batch endpoint (`updateDesignElementsGeometryBatch`) DID mirror
+its response — that's why group / multi-select / group+frame drags
+worked correctly. The single-element path was the asymmetric
+exception.
+
+**Fix.** Mirror the response into `item.design_elements[]` in
+`updateDesignElementGeometry`, matching the batch endpoint's pattern.
+13-line code change plus a 14-line comment correction. Also updated
+the now-stale 2026-07-14 comment block in `DesignElement.vue` that
+incorrectly described the visual feedback flow.
+
+**Tests.** New file `src/__tests__/workspacesStoreSingleGeometry.spec.ts`
+with 8 behavioural tests:
+- 4 fail on pre-fix code (the local-mirror invariant): x/y mirror,
+  width/height mirror, rotation mirror, order-preserving in-place
+  update.
+- 4 pass on pre-fix code (already-correct behaviours we lock in):
+  SSE dedupe registration, PATCH `/geometry` URL, return value shape,
+  defensive no-op when item isn't in the local store.
+
+**Files touched.**
+- `src/apps/desktop/src/stores/workspaces.ts` — mirror in
+  `updateDesignElementGeometry` (13 lines, +14-line comment block).
+- `src/apps/desktop/src/components/design/DesignElement.vue` —
+  corrected stale comment block (lines 261-275 → 261-279).
+- `src/apps/desktop/src/__tests__/workspacesStoreSingleGeometry.spec.ts`
+  — new, 8 behavioural tests.
+
+**Verification.** `vue-tsc --build` clean; `bun run build` clean
+(1.82 s); `bunx vitest run` 1808/1809 (1 pre-existing
+`NalarBrowserInlinePreview` test-isolation flake on `main`, unrelated;
+also pre-existing `DesignView.nudge.spec.ts` failure, unrelated).
+
+**Lesson.** Comments documenting cross-component behaviour ("X
+reconciles after Y") that aren't backed by a test or a code search
+can rot silently. The fix changed an assumption that had been
+documented-but-never-implemented for ~3 weeks without anyone noticing
+because (a) group/multi-select drags worked through a different code
+path, (b) the request flood is invisible without DevTools Network
+panel open, and (c) the "refresh works" pattern gives the user a
+workaround.
+
 ### 2026-08-06: Chat scroll position persistence (close → reopen keeps position)
 
 **Symptom (pre-fix).** Open a task from the kanban sidebar → ChatView
