@@ -159,6 +159,9 @@ pub const designElementsGeometryBatchHandler = @import("design_elements_geometry
 pub const designElementsGroupHandler = @import("design_elements_group.zig").designElementsGroupHandler;
 pub const designElementsReorderHandler = @import("design_elements_reorder.zig").designElementsReorderHandler;
 pub const designElementsReparentBatchHandler = @import("design_elements_reparent.zig").designElementsReparentBatchHandler;
+// Server-side cascade move. POST /api/workspaces/:w/items/:i/design/pages/:p/elements/move-batch
+// — see docs/superpowers/plans/2026-08-06-move-element-with-descendants.md (Chunk 2).
+pub const designElementsMoveBatchHandler = @import("design_elements_move_batch.zig").designElementsMoveBatchHandler;
 pub const designElementsUngroupHandler = @import("design_elements_ungroup.zig").designElementsUngroupHandler;
 
 // Session to client IDs monitoring

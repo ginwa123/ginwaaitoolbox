@@ -39,6 +39,7 @@ test {
     _ = @import("tools/update_design_element_test.zig");
     _ = @import("tools/group_design_elements_test.zig");
     _ = @import("tools/set_element_parent_test.zig"); // 2026-07-29 — re-parents existing element to new group/frame (Task 5)
+    _ = @import("tools/move_design_element_test.zig"); // 2026-08-06 — moves element by (dx, dy) with optional cascade to descendants (Plan: docs/superpowers/plans/2026-08-06-move-element-with-descendants.md)
 
     // Bash tool cross-platform tests
     _ = @import("tools/bash_test.zig");

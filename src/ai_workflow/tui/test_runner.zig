@@ -108,6 +108,11 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     // bottom of design_elements_geometry_batch.zig — registered here so
     // zig build test actually runs them.
     _ = @import("http_handlers/design_elements_geometry_batch.zig");
+    // Inline tests for the move-batch handler `useCase` live at the
+    // bottom of design_elements_move_batch.zig — registered here so zig
+    // build test actually runs them. See
+    // docs/superpowers/plans/2026-08-06-move-element-with-descendants.md (Chunk 2).
+    _ = @import("http_handlers/design_elements_move_batch.zig");
     _ = @import("http_handlers/kanban_copy_spec_test.zig");
     _ = @import("http_handlers/tasks_move_test.zig");
     _ = @import("http_handlers/tasks_create_kanban_test.zig");

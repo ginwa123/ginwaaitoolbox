@@ -1961,6 +1961,47 @@ export async function updateDesignElementsGeometryBatch(
   )
 }
 
+/**
+ * Server-side cascade move. Each item's `(dx, dy)` applies to the
+ * element AND every transitive descendant of that element via a
+ * single recursive CTE inside one SQL transaction. Optional
+ * `width`/`height`/`rotation` apply ONLY to the root element (Figma
+ * convention — resize is per-element, not per-subtree).
+ *
+ * Plan: docs/superpowers/plans/2026-08-06-move-element-with-descendants.md
+ *   (Chunk 3, Task 3.1)
+ */
+export interface MoveBatchItem {
+  element_id: string
+  /** Translation delta in CSS px. Cascades to descendants. */
+  dx: number
+  dy: number
+  /** Optional. Applies ONLY to the element_id (not descendants). */
+  width?: number
+  height?: number
+  rotation?: number
+}
+
+export interface MoveBatchInput {
+  items: MoveBatchItem[]
+}
+
+export interface MoveBatchResponse {
+  updated: DesignElement[]
+}
+
+export async function moveDesignElementsBatch(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  input: MoveBatchInput,
+): Promise<MoveBatchResponse> {
+  return await apiFetch<MoveBatchResponse>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/move-batch`,
+    { method: 'POST', body: input },
+  )
+}
+
 // Skills API
 export interface Skill {
   name: string

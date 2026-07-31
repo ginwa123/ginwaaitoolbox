@@ -35,6 +35,7 @@ const add_design_element_mod = nalar_mod.add_design_element;
 const update_design_element_mod = nalar_mod.update_design_element;
 const group_design_elements_mod = nalar_mod.group_design_elements;
 const set_element_parent_mod = nalar_mod.set_element_parent;
+const move_design_element_mod = nalar_mod.move_design_element;
 const show_preview_mod = nalar_mod.ai_mod.show_preview;
 const remove_agent_mod = nalar_mod.remove_agent;
 const remove_file_mod = nalar_mod.remove_file;
@@ -179,6 +180,7 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         .{ .name = "update_element", .exec = agentic_loop_mod.tools.execUpdateElement, .tool_def = update_design_element_mod.update_design_element_tool },
         .{ .name = "group_elements", .exec = agentic_loop_mod.tools.execGroupElements, .tool_def = group_design_elements_mod.group_design_element_tool },
         .{ .name = "set_element_parent", .exec = agentic_loop_mod.tools.execSetElementParent, .tool_def = set_element_parent_mod.set_element_parent_tool },
+        .{ .name = "move_design_element", .exec = agentic_loop_mod.tools.execMoveDesignElement, .tool_def = move_design_element_mod.move_design_element_tool },
 
         // === PREVIEW TOOLS ===
         .{ .name = "show_preview", .exec = agentic_loop_mod.tools.execShowPreview, .tool_def = show_preview_mod.show_preview_tool },

@@ -465,6 +465,11 @@ try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:p
     try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/html", ai_mod.http_handlers.designElementsHtmlUpdateHandler);
     try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/geometry", ai_mod.http_handlers.designElementsGeometryUpdateHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/geometry-batch", ai_mod.http_handlers.designElementsGeometryBatchHandler);
+    // Server-side cascade move. Each item's (dx, dy) recursively applies
+    // to every transitive descendant of that item's element in one
+    // SQL transaction. See
+    // docs/superpowers/plans/2026-08-06-move-element-with-descendants.md (Chunk 2, Task 2.2).
+    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/move-batch", ai_mod.http_handlers.designElementsMoveBatchHandler);
 
     // testing debug
     try gs.router.post("/test/shutdown", ai_mod.http_handlers.shutdownHandler);

@@ -290,7 +290,9 @@ import {
   reorderDesignElements as reorderDesignElementsApi,
   ungroupDesignElements as ungroupDesignElementsApi,
   reparentDesignElementsBatch as reparentDesignElementsBatchApi,
+  moveDesignElementsBatch as moveDesignElementsBatchApi,
   type GeometryBatchUpdate,
+  type MoveBatchItem,
   type GroupDesignElementsRequest,
   type ReparentDesignElementsBatchRequest,
   type ReorderMode,
@@ -1485,6 +1487,48 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     return await updateDesignPageApi(workspaceId, itemId, pageId, patch)
   }
 
+  // Server-side cascade move. Each item's (dx, dy) applies to the
+  // element AND every transitive descendant of that element. Optional
+  // width/height/rotation apply ONLY to the root.
+  //
+  // Mirrors the response into the local `design_elements` array in
+  // input order (the server returns the deduped union of all cascaded
+  // ids in tree-traversal order). Registers all cascaded ids in
+  // recentLocalMutations so the SSE handler skips the GET fan-out.
+  //
+  // Empty `items` is a no-op (returns []) without an API call — same
+  // defensive pattern as `updateDesignElementsGeometryBatch`.
+  //
+  // Plan: docs/superpowers/plans/2026-08-06-move-element-with-descendants.md
+  //   (Chunk 3, Task 3.2)
+  async function moveDesignElementsBatch(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    items: MoveBatchItem[],
+  ): Promise<DesignElement[]> {
+    if (items.length === 0) return []
+    const result = await moveDesignElementsBatchApi(workspaceId, itemId, pageId, { items })
+    // Mirror every updated row into the local design_elements array
+    // (preserves the array's existing order for non-affected elements).
+    const item = findItem(workspaceId, itemId)
+    if (item?.design_elements) {
+      for (const updated of result.updated) {
+        const idx = item.design_elements.findIndex((e) => e.id === updated.id)
+        if (idx !== -1) item.design_elements[idx] = updated
+      }
+    }
+    // Register all cascaded ids so the SSE handler skips the GET
+    // fan-out. The cascade can include descendants the user didn't
+    // explicitly select (e.g. clicking a group with 4 children follows
+    // with all 4 ids).
+    registerRecentLocalMutations(
+      result.updated.map((e) => e.id),
+      Date.now() + RECENT_MUTATION_TTL_MS,
+    )
+    return result.updated
+  }
+
   // Delete an element. Idempotent on the backend (returns
   // `{success: true}` whether the row existed or not). Filters
   // the local `design_elements` array to remove the row.
@@ -2667,6 +2711,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     updateDesignElement,
     updateDesignElementGeometry,
     updateDesignElementsGeometryBatch,
+    moveDesignElementsBatch,
     updateDesignElementHtml,
     deleteDesignElement,
     deleteDesignPage,
