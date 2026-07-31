@@ -133,7 +133,6 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
     const event_bus = di.event_bus;
     const db = di.db;
     const io = di.io;
-    const config = nalarcore.getLlmConfig(di);
     const environment = di.environment;
 
     ai_workflow.runAgenticMultiStepnew(.{
@@ -143,7 +142,10 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         .logger = logger,
         .event_bus = event_bus,
         .active_loops = active_loops,
-        .llm_config = config,
+        // Live DI handle: re-read inside the workflow loop so
+        // NalarSettings changes take effect per iteration
+        // (plan 2026-08-06-live-config-reload).
+        .di = di,
         .environment = environment,
     }, .{
         .parent_session_id = args_ptr.parent_sess_id,

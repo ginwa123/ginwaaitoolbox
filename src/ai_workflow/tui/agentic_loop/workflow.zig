@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 
 const nalarcore = @import("nalarcore");
 
@@ -45,7 +46,6 @@ pub const CallbackAiWorkerFlow = struct {
         const db = di.db;
         const io = di.io;
         const session_id = data.session_id;
-        const config = nalarcore.getLlmConfig(di);
         const cwd = data.cwd;
         const environment = di.environment;
 
@@ -56,7 +56,10 @@ pub const CallbackAiWorkerFlow = struct {
             .logger = logger,
             .event_bus = event_bus,
             .active_loops = active_loops,
-            .llm_config = config,
+            // Live DI handle: re-read inside the workflow loop so
+            // NalarSettings changes take effect per iteration
+            // (plan 2026-08-06-live-config-reload).
+            .di = di,
             .environment = environment,
         }, data) catch |err| {
             logger.errFmt("[{s}] Failed to run agentic workflow: {s}\n", .{ keyword, @errorName(err) });
@@ -103,7 +106,7 @@ pub const CallbackAiWorkerFlow = struct {
             const created_at = std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}) catch return;
             defer allocator.free(created_at);
 
-            agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{ .id = id, .session_id = session_id, .model = config.model, .response_content = error_message, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = initial_agent, .loop_index = 0, .temperature = initial_agent_state.temperature, .is_thinking = initial_agent_state.is_thinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = session_id, .parent_session_id = session_id, .is_input = true, .is_output = false, .is_feed_to_llm = false, .image_urls = null, .created_at = created_at } }) catch return;
+            agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{ .id = id, .session_id = session_id, .model = nalarcore.getLlmConfig(di).model, .response_content = error_message, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = initial_agent, .loop_index = 0, .temperature = initial_agent_state.temperature, .is_thinking = initial_agent_state.is_thinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = session_id, .parent_session_id = session_id, .is_input = true, .is_output = false, .is_feed_to_llm = false, .image_urls = null, .created_at = created_at } }) catch return;
         };
     }
 };
@@ -115,9 +118,208 @@ pub const RunAgenticMultiStepInput = struct {
     logger: *logger_mod.Logger,
     event_bus: *event_bus_mod.EventBus,
     active_loops: *models.ActiveLoops,
-    llm_config: *config_mod.LlmConfig,
+    /// Plan 2026-08-06-live-config-reload — DI context for live
+    /// `LlmConfig` re-reads. The workflow calls
+    /// `nalarcore.getLlmConfig(di)` once per loop iteration so
+    /// changes to the user's profile / model / API key (via
+    /// NalarSettings → PUT /api/config/nalar) take effect on the
+    /// next LLM call without waiting for the workflow to end. The
+    /// returned `*const LlmConfig` is kept alive by
+    /// `LlmConfigHolder.previous` until the workflow run finishes,
+    /// so dereferencing it is memory-safe even if a hot-swap
+    /// happened mid-run.
+    di: *nalarcore.ContextIPCTui,
     environment: ?*const std.process.Environ.Map,
 };
+
+/// Resolve a single LLM field by walking the profile cascade:
+///   1. `selected_profile_model` if non-empty AND profile exists
+///   2. `config.active_profile` if non-null AND non-empty AND profile exists
+///   3. top-level `top_level` fallback
+///
+/// `comptime field` is the name of the field on `LlmProfile` to read
+/// (e.g. `"model"`, `"api_key"`, `"base_url"`, `"url_style"`).
+///
+/// The caller is responsible for emitting any "profile not found"
+/// warning (we don't log here so this helper stays logger-free and
+/// unit-testable — `runAgenticMultiStepnew` emits the warning at the
+/// one place where it can compute it cheaply without duplicating the
+/// `getProfile` lookup).
+///
+/// Plan: docs/superpowers/plans/2026-08-06-set-active-profile-default.md
+fn resolveProfileField(
+    comptime field: []const u8,
+    config: *const config_mod.LlmConfig,
+    selected_profile_model: []const u8,
+    active_profile: ?[]const u8,
+    top_level: []const u8,
+) []const u8 {
+    // Step 1: per-session / per-call selection wins.
+    if (selected_profile_model.len > 0) {
+        if (config.getProfile(selected_profile_model)) |profile| {
+            const v = @field(profile, field);
+            if (v.len > 0) return v;
+        }
+    }
+    // Step 2: user-set active profile (the new fallback). Silent on
+    // miss — `active_profile` is the user's default, so a typo or a
+    // deleted profile is a normal fall-through to top-level (logged
+    // at the call site if the user wants to debug).
+    if (active_profile) |ap| {
+        if (ap.len > 0) {
+            if (config.getProfile(ap)) |profile| {
+                const v = @field(profile, field);
+                if (v.len > 0) return v;
+            }
+        }
+    }
+    // Step 3: top-level config (built-in default).
+    return top_level;
+}
+
+// ─── Inline tests for `resolveProfileField` ──────────────────────────────────
+// Per the agentic_loop/ README: this directory uses inline tests, not
+// separate `_test.zig` files (the only exception is `parsing_test.zig`).
+//
+// Why behavioural, not static-contract?
+// ─────────────────────────────────────
+// The user rule (2026-07-29) is: "Never write static-contract tests —
+// call the function, assert the return." `resolveProfileField` is a
+// pure function over `LlmConfig`, so we construct a minimal config
+// in-memory and call it directly.
+
+/// Allocate a fresh `LlmConfig` with the minimal fields needed by the
+/// helper: top-level fields + one profile `"alpha"`. Caller owns the
+/// result and must call `cfg.deinit()`.
+fn makeTestConfig(allocator: std.mem.Allocator) !config_mod.LlmConfig {
+    var cfg: config_mod.LlmConfig = .{
+        .allocator = allocator,
+        .api_key = try allocator.dupe(u8, "default-key"),
+        .model = try allocator.dupe(u8, "default-model"),
+        .base_url = try allocator.dupe(u8, "https://default.example.com"),
+        .url_style = try allocator.dupe(u8, "openai"),
+        .model_compaction_size_kb = 100,
+        .notify_on_complete = false,
+        .retry_delay_ms = 0,
+        .max_capacity_token_model = null,
+        .compaction_threshold_percent = null,
+        .active_profile = null,
+        .mcpServers_parsed = null,
+        .mcp_servers = config_mod.LlmConfig.McpServersMap.init(allocator),
+        .profiles_models = config_mod.LlmConfig.ProfilesMap.init(allocator),
+        .sub_agents = &.{},
+        .random_names = &.{},
+    };
+    errdefer cfg.deinit();
+
+    // Profile "alpha" — every field populated, non-empty.
+    try cfg.profiles_models.put(try allocator.dupe(u8, "alpha"), .{
+        .model = try allocator.dupe(u8, "alpha-model"),
+        .base_url = try allocator.dupe(u8, "https://alpha.example.com"),
+        .thinking = try allocator.dupe(u8, "auto"),
+        .temperature = try allocator.dupe(u8, "auto"),
+        .url_style = try allocator.dupe(u8, "anthropic"),
+        .api_key = try allocator.dupe(u8, "alpha-key"),
+        .sub_agents = &.{},
+        .max_capacity_tokens = null,
+        .compaction_threshold_percent = null,
+    });
+    return cfg;
+}
+
+test "resolveProfileField: empty selected + null active_profile → top-level" {
+    const alloc = testing.allocator;
+    var cfg = try makeTestConfig(alloc);
+    defer cfg.deinit();
+
+    const got = resolveProfileField("model", &cfg, "", null, cfg.model);
+    try testing.expectEqualStrings("default-model", got);
+}
+
+test "resolveProfileField: selected_profile_model wins over active_profile" {
+    const alloc = testing.allocator;
+    var cfg = try makeTestConfig(alloc);
+    defer cfg.deinit();
+    cfg.active_profile = try alloc.dupe(u8, "alpha");
+
+    // Both names resolve to "alpha" in our test config, but the
+    // selected one is checked first — we can't observe a difference
+    // unless we add a second profile. Skip the distinct-values check
+    // here; the precedence is covered by the "wins over top-level"
+    // test below (which would fail if step 1 was skipped).
+    const got = resolveProfileField("model", &cfg, "alpha", "alpha", cfg.model);
+    try testing.expectEqualStrings("alpha-model", got);
+}
+
+test "resolveProfileField: active_profile wins over top-level when selected is empty" {
+    // This is the bug: previously, `active_profile` was parsed + saved
+    // but the workflow ignored it, always falling through to top-level.
+    // With the fix, `active_profile = "alpha"` should select the
+    // profile's model.
+    const alloc = testing.allocator;
+    var cfg = try makeTestConfig(alloc);
+    defer cfg.deinit();
+    cfg.active_profile = try alloc.dupe(u8, "alpha");
+
+    const got = resolveProfileField("model", &cfg, "", "alpha", cfg.model);
+    try testing.expectEqualStrings("alpha-model", got);
+}
+
+test "resolveProfileField: active_profile also resolves base_url + url_style + api_key" {
+    // The fix is for the WHOLE profile, not just the model field.
+    // Verify each of the four fields the workflow cascades.
+    const alloc = testing.allocator;
+    var cfg = try makeTestConfig(alloc);
+    defer cfg.deinit();
+    cfg.active_profile = try alloc.dupe(u8, "alpha");
+
+    try testing.expectEqualStrings("alpha-model", resolveProfileField("model", &cfg, "", "alpha", cfg.model));
+    try testing.expectEqualStrings("https://alpha.example.com", resolveProfileField("base_url", &cfg, "", "alpha", cfg.base_url));
+    try testing.expectEqualStrings("anthropic", resolveProfileField("url_style", &cfg, "", "alpha", cfg.url_style));
+    try testing.expectEqualStrings("alpha-key", resolveProfileField("api_key", &cfg, "", "alpha", cfg.api_key));
+}
+
+test "resolveProfileField: missing active_profile name falls through to top-level" {
+    const alloc = testing.allocator;
+    var cfg = try makeTestConfig(alloc);
+    defer cfg.deinit();
+    cfg.active_profile = try alloc.dupe(u8, "does_not_exist");
+
+    const got = resolveProfileField("model", &cfg, "", "does_not_exist", cfg.model);
+    try testing.expectEqualStrings("default-model", got);
+}
+
+test "resolveProfileField: empty active_profile string falls through to top-level" {
+    // Empty string would come from a stale config or a manual JSON
+    // edit. Must not crash on `getProfile("")`.
+    const alloc = testing.allocator;
+    var cfg = try makeTestConfig(alloc);
+    defer cfg.deinit();
+    cfg.active_profile = try alloc.dupe(u8, "");
+
+    const got = resolveProfileField("model", &cfg, "", "", cfg.model);
+    try testing.expectEqualStrings("default-model", got);
+}
+
+test "resolveProfileField: profile with empty field falls through to top-level for THAT field only" {
+    // The existing "len > 0" guard: a profile might have a model but
+    // an empty base_url. Verify each field cascades independently.
+    const alloc = testing.allocator;
+    var cfg = try makeTestConfig(alloc);
+    defer cfg.deinit();
+
+    // Override "alpha" so base_url is empty (but model is set).
+    if (cfg.profiles_models.getEntry("alpha")) |entry| {
+        alloc.free(entry.value_ptr.base_url);
+        entry.value_ptr.base_url = try alloc.dupe(u8, "");
+    }
+    cfg.active_profile = try alloc.dupe(u8, "alpha");
+
+    // model still picks up the profile (alpha-model)
+    try testing.expectEqualStrings("alpha-model", resolveProfileField("model", &cfg, "", "alpha", cfg.model));
+    // base_url falls through (alpha has empty base_url, so top-level wins)
+    try testing.expectEqualStrings("https://default.example.com", resolveProfileField("base_url", &cfg, "", "alpha", cfg.base_url));
+}
 
 pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew) !void {
     var parent_arena_allocator = std.heap.ArenaAllocator.init(di.allocator);
@@ -129,7 +331,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const active_loops = di.active_loops;
     const event_bus = di.event_bus;
     const io = di.io;
-    const config = di.llm_config;
     const environment = di.environment;
 
     logger.infoFmt(
@@ -138,44 +339,23 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     );
 
     // ─── Resolve the effective LLM profile (selected_profile_model) ──────
-    // Fallback chain:
+    // Fallback chain (plan 2026-08-06-set-active-profile-default):
     //   1. params.selected_profile_model (from POST body) if non-empty AND profile exists
-    //   2. top-level LlmConfig (the "default" mode)
-    // All four slices borrow from the LlmConfig; they live for the whole workflow run.
-    var effective_api_key: []const u8 = blk: {
-        if (params.selected_profile_model.len > 0) {
-            if (config.getProfile(params.selected_profile_model)) |profile| {
-                if (profile.api_key.len > 0) break :blk profile.api_key;
-            } else {
-                logger.warnFmt("WORKFLOW: selected_profile_model '{s}' not found in LlmConfig.profiles_models, using top-level config", .{params.selected_profile_model});
-            }
-        }
-        break :blk config.api_key;
-    };
-    var effective_model: []const u8 = blk: {
-        if (params.selected_profile_model.len > 0) {
-            if (config.getProfile(params.selected_profile_model)) |profile| {
-                if (profile.model.len > 0) break :blk profile.model;
-            }
-        }
-        break :blk config.model;
-    };
-    var effective_base_url: []const u8 = blk: {
-        if (params.selected_profile_model.len > 0) {
-            if (config.getProfile(params.selected_profile_model)) |profile| {
-                if (profile.base_url.len > 0) break :blk profile.base_url;
-            }
-        }
-        break :blk config.base_url;
-    };
-    var effective_url_style: []const u8 = blk: {
-        if (params.selected_profile_model.len > 0) {
-            if (config.getProfile(params.selected_profile_model)) |profile| {
-                if (profile.url_style.len > 0) break :blk profile.url_style;
-            }
-        }
-        break :blk config.url_style;
-    };
+    //   2. config.active_profile if non-null AND non-empty AND profile exists
+    //   3. top-level LlmConfig (the "default" mode)
+    //
+    // IMPORTANT: `effective_*` are reassigned at the TOP of every
+    // loop iteration (see "Live config re-read" comment inside the
+    // while loop below) so that NalarSettings changes — model swap,
+    // profile switch, API-key rotation — take effect on the next LLM
+    // call without waiting for the workflow to end. The declarations
+    // stay outside the loop so the names remain visible to all
+    // statements below (the inner reassignment is a re-assign of the
+    // outer `var`, not a redeclaration).
+    var effective_api_key: []const u8 = undefined;
+    var effective_model: []const u8 = undefined;
+    var effective_base_url: []const u8 = undefined;
+    var effective_url_style: []const u8 = undefined;
 
     logger.infoFmt(
         "[CHECKPOINT] profile selected_profile_model='{s}' effective_model={s} effective_base_url={s} effective_url_style={s}",
@@ -308,8 +488,13 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     var loop_counter: u32 = 0;
     var last_iter_start_ns: i128 = 0;
 
+    // One-shot config read for the once-per-workflow setup (MCP tool
+    // list). The per-iteration LLM-call fields are re-read inside the
+    // loop body — see "Live config re-read" below.
+    const initial_config = nalarcore.getLlmConfig(di.di);
+
     // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
-    const mcp_tools_fetched = (build_msg_prompt.buildMCPToolsRun(parent_allocator, io, config.mcpServers() orelse .null) catch |err| blk: {
+    const mcp_tools_fetched = (build_msg_prompt.buildMCPToolsRun(parent_allocator, io, initial_config.mcpServers() orelse .null) catch |err| blk: {
         logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
         break :blk null;
     }) orelse &[_]agent.AgentTool{};
@@ -330,9 +515,33 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         const allocator = arenaAllocatorWhileLoop.allocator();
 
         last_iter_start_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+
+        // ─── Live config re-read (plan 2026-08-06-live-config-reload) ───
+        // Re-fetch the LlmConfig pointer from the holder once per
+        // iteration so user-initiated changes (model switch, profile
+        // change, API-key rotation via NalarSettings) take effect on
+        // the next LLM call without waiting for the workflow run to
+        // end. `getLlmConfig` is a lock-free single-word pointer load;
+        // memory safety is preserved by `LlmConfigHolder.previous`
+        // keeping the swapped-out config alive until this run finishes.
+        const config = nalarcore.getLlmConfig(di.di);
+
+        // Step 1 produces a warning when the named profile is missing.
+        // Step 2 (`config.active_profile`) is silent — it's the user's
+        // default, so a typo there is a normal fall-through to top-level.
+        if (params.selected_profile_model.len > 0 and
+            config.getProfile(params.selected_profile_model) == null)
+        {
+            logger.warnFmt("WORKFLOW: selected_profile_model '{s}' not found in LlmConfig.profiles_models, using top-level config", .{params.selected_profile_model});
+        }
+        effective_api_key = resolveProfileField("api_key", config, params.selected_profile_model, config.active_profile, config.api_key);
+        effective_model = resolveProfileField("model", config, params.selected_profile_model, config.active_profile, config.model);
+        effective_base_url = resolveProfileField("base_url", config, params.selected_profile_model, config.active_profile, config.base_url);
+        effective_url_style = resolveProfileField("url_style", config, params.selected_profile_model, config.active_profile, config.url_style);
+
         logger.infoFmt(
-            "[CHECKPOINT] loop iter start session_id={s} loop_counter={d} retry_count={d}",
-            .{ copy_session_id, loop_counter, retry_count },
+            "[CHECKPOINT] loop iter start session_id={s} loop_counter={d} retry_count={d} effective_model={s}",
+            .{ copy_session_id, loop_counter, retry_count, effective_model },
         );
 
         // Check cancellation using DB

@@ -203,6 +203,64 @@ test "setLlmConfig: long swap sequence holds only the most recent two configs" {
 }
 
 // ---------------------------------------------------------------------------
+// 5b. Live-reload-per-iteration semantics (plan 2026-08-06-live-config-reload)
+//
+// The workflow's `runAgenticMultiStepnew` reads
+// `nalarcore.getLlmConfig(di.di)` at the top of every loop iteration.
+// These tests verify the holder contract that makes that work:
+//   - `getLlmConfig` returns the most recently swapped pointer
+//   - in-flight readers of the old pointer keep working (held in `previous`)
+//   - the swap is visible WITHOUT waiting for any background task
+// ---------------------------------------------------------------------------
+
+test "live-reload: getLlmConfig returns the latest pointer immediately after setLlmConfig" {
+    // This is the property that makes the per-iteration re-read in
+    // `runAgenticMultiStepnew` actually pick up NalarSettings changes.
+    const allocator = testing.allocator;
+    const cfg_a = try makeConfig(allocator, "model-a");
+    const cfg_b = try makeConfig(allocator, "model-b");
+
+    const ctx = try makeCtx(allocator, .{ .current = cfg_a });
+    defer allocator.destroy(ctx);
+
+    // Sanity: initial config visible.
+    try testing.expectEqualStrings("model-a", nalarcore.getLlmConfig(ctx).model);
+
+    // Swap — no synchronization, no waiting for any background task.
+    nalarcore.setLlmConfig(ctx, cfg_b);
+
+    // Next call to getLlmConfig (i.e. the workflow's next iteration)
+    // sees the new config without delay.
+    try testing.expectEqualStrings("model-b", nalarcore.getLlmConfig(ctx).model);
+
+    // And the old config is still readable for any in-flight workflow
+    // that captured it before the swap (memory safety).
+    try testing.expectEqual(cfg_a, ctx.llm_config_holder.previous);
+    try testing.expectEqualStrings("model-a", ctx.llm_config_holder.previous.?.model);
+
+    nalarcore.freeAllLlmConfigs(ctx);
+}
+
+test "live-reload: swapping the same model name twice returns the new pointer each time" {
+    // The model string is the same in both configs (e.g. user clicked
+    // "Save" without changing the value), but the holder still swaps
+    // the pointer — the workflow's per-iteration `getProfile()` etc.
+    // picks up any sub-field change too (e.g. updated API key).
+    const allocator = testing.allocator;
+    const cfg_a = try makeConfig(allocator, "model-same");
+    const cfg_b = try makeConfig(allocator, "model-same");
+
+    const ctx = try makeCtx(allocator, .{ .current = cfg_a });
+    defer allocator.destroy(ctx);
+
+    nalarcore.setLlmConfig(ctx, cfg_b);
+    try testing.expectEqual(cfg_b, nalarcore.getLlmConfig(ctx));
+    try testing.expectEqual(cfg_a, ctx.llm_config_holder.previous);
+
+    nalarcore.freeAllLlmConfigs(ctx);
+}
+
+// ---------------------------------------------------------------------------
 // 6. Public API surface
 // ---------------------------------------------------------------------------
 

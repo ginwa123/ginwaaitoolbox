@@ -50,6 +50,15 @@ pub const LlmConfig = struct {
     /// then to the built-in default of 80. Range-validated at the
     /// HTTP layer (see `error.InvalidThresholdPercent`).
     compaction_threshold_percent: ?u8 = null,
+    /// Plan 2026-08-06-set-active-profile-default — optional name of
+    /// a profile in `profiles_models` that the workflow uses as the
+    /// default when neither the session's `selected_profile_model`
+    /// nor the POST body's `selected_profile_model` is set. Set by
+    /// the user via NalarSettings → "Set as active profile"; falls
+    /// through to top-level config when the named profile is missing
+    /// or when the field itself is `null`. Empty string is normalized
+    /// to `null` on load (the PUT handler also coerces `""` → null).
+    active_profile: ?[]const u8 = null,
     /// Owned slice of random sub-agent names that `resolveSubAgent`
     /// generated for the random-fallback case. Each name is allocated
     /// on `self.allocator` and is freed in `deinit`. Slices in the
@@ -230,6 +239,14 @@ pub const LlmConfig = struct {
         /// Optional top-level compaction threshold as a percentage (0-100).
         /// Null = fall through to per-profile override, then 80.
         compaction_threshold_percent: ?u8 = null,
+        /// Plan 2026-08-06-set-active-profile-default — name of the
+        /// profile to use as the default when no other selection is
+        /// set. Round-tripped as a top-level config key so the
+        /// NalarSettings "Set as active profile" UI persists across
+        /// reloads. The PUT handler in `nalar_config_put.zig` coerces
+        /// empty string → null so a manual JSON edit of `""` is
+        /// equivalent to deleting the key.
+        active_profile: ?[]const u8 = null,
         /// Configured MCP servers (snake_case, matches NALAR.md JSON convention).
         mcp_servers: ?std.json.Value = null,
         /// Profiles - parsed as json.Value then converted to map
@@ -395,6 +412,15 @@ pub const LlmConfig = struct {
             // `compactionThresholdPercent` honors null = fall through.
             .max_capacity_token_model = config_json.max_capacity_token_model,
             .compaction_threshold_percent = config_json.compaction_threshold_percent,
+            // Plan 2026-08-06-set-active-profile-default — load the
+            // user-chosen default profile from JSON. Coerce empty
+            // string to null so manual `""` edits don't survive the
+            // round-trip (matches `nalar_config_put.zig` PUT coercion).
+            .active_profile = blk: {
+                const raw = config_json.active_profile orelse break :blk null;
+                if (raw.len == 0) break :blk null;
+                break :blk try allocator.dupe(u8, raw);
+            },
             .mcpServers_parsed = null,
             .mcp_servers = McpServersMap.init(allocator),
             .profiles_models = ProfilesMap.init(allocator),
@@ -405,6 +431,7 @@ pub const LlmConfig = struct {
             allocator.free(config.model);
             allocator.free(config.base_url);
             allocator.free(config.url_style);
+            if (config.active_profile) |ap| allocator.free(ap);
             freeMcpServersMap(&config.mcp_servers, allocator);
             freeProfilesMap(&config.profiles_models, allocator);
             freeSubAgentsList(config.sub_agents, allocator);
@@ -812,6 +839,9 @@ pub const LlmConfig = struct {
         self.allocator.free(self.model);
         self.allocator.free(self.base_url);
         self.allocator.free(self.url_style);
+        // Plan 2026-08-06-set-active-profile-default — owned slice was
+        // duped in `init` only when non-empty.
+        if (self.active_profile) |ap| self.allocator.free(ap);
 
         freeMcpServersMap(&self.mcp_servers, self.allocator);
         freeProfilesMap(&self.profiles_models, self.allocator);
@@ -846,6 +876,12 @@ pub const LlmConfig = struct {
             // allocation needed (they're plain optionals).
             .max_capacity_token_model = self.max_capacity_token_model,
             .compaction_threshold_percent = self.compaction_threshold_percent,
+            // Plan 2026-08-06-set-active-profile-default — deep-dupe
+            // the user-chosen default profile name (null stays null).
+            .active_profile = if (self.active_profile) |ap|
+                try self.allocator.dupe(u8, ap)
+            else
+                null,
             .mcpServers_parsed = null,
             .mcp_servers = McpServersMap.init(self.allocator),
             .profiles_models = ProfilesMap.init(self.allocator),
@@ -856,6 +892,7 @@ pub const LlmConfig = struct {
             self.allocator.free(config.model);
             self.allocator.free(config.base_url);
             self.allocator.free(config.url_style);
+            if (config.active_profile) |ap| self.allocator.free(ap);
             freeMcpServersMap(&config.mcp_servers, self.allocator);
             freeProfilesMap(&config.profiles_models, self.allocator);
             freeSubAgentsList(config.sub_agents, self.allocator);
