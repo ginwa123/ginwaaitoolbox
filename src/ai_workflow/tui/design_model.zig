@@ -1048,6 +1048,42 @@ pub const BatchGeometryUpdateError = error{
     OutOfMemory,
 };
 
+// ─── moveElementsWithDescendantsBatch ─────────────────────────────────────
+//
+// Plan: docs/superpowers/plans/2026-08-06-move-element-with-descendants.md
+// (Chunk 1, Task 1.1)
+//
+// Server-side cascade: each item's (dx, dy) applies to the item's
+// element AND every transitive descendant of that element. Optional
+// (width, height, rotation) apply ONLY to the root element — Figma
+// convention (resize is per-element, not per-subtree). One SQL
+// transaction across all items — all-or-nothing atomicity.
+
+pub const MoveItem = struct {
+    element_id: []const u8,
+    dx: i64 = 0,
+    dy: i64 = 0,
+    width: ?i64 = null,
+    height: ?i64 = null,
+    rotation: ?f64 = null,
+};
+
+pub const MoveElementsWithDescendantsBatchInput = struct {
+    page_id: []const u8,
+    items: []const MoveItem,
+};
+
+pub const MoveElementsWithDescendantsBatchError = error{
+    PageNotFound,
+    EmptyItems,
+    /// Any element_id is missing from the DB or on a different page.
+    /// Whole batch is rejected — atomicity.
+    ElementNotFound,
+    /// Any DB-side failure. Maps to 500.
+    DbError,
+    OutOfMemory,
+};
+
 pub fn updateElementsBatch(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -1212,6 +1248,308 @@ pub fn updateElementsBatch(
     for (input.updates) |u| try element_ids_buf.append(allocator, u.element_id);
     // Unix seconds — `std.time.timestamp()` was removed in Zig 0.16,
     // use libc `gettimeofday` (matches the rest of this codebase).
+    const updated_at: i64 = blk: {
+        var tv: std.c.timeval = undefined;
+        _ = std.c.gettimeofday(&tv, null);
+        break :blk @intCast(tv.sec);
+    };
+    on_event_sent_design.onEventSendDesignElementsGeometryBatchUpdated(allocator, .{
+        .workspace_id = page_ctx.workspace_id,
+        .item_id = page_ctx.item_id,
+        .page_id = input.page_id,
+        .element_ids = element_ids_buf.items,
+        .updated_at = updated_at,
+    }) catch {};
+
+    return results.toOwnedSlice(allocator);
+}
+
+// ─── moveElementsWithDescendantsBatch ─────────────────────────────────────
+//
+// Plan: docs/superpowers/plans/2026-08-06-move-element-with-descendants.md
+// (Chunk 1, Task 1.2)
+//
+// Server-side cascade move. Each item's (dx, dy) applies to the item's
+// element AND every transitive descendant of that element via a single
+// recursive CTE inside one SQL transaction. Optional (width, height,
+// rotation) apply ONLY to the item's root — Figma convention (resize
+// is per-element, not per-subtree).
+//
+// Behaviour:
+//   1. Validate `items` is non-empty (EmptyItems).
+//   2. Look up the page JOIN (workspace_id, item_id) — needed for the
+//      SSE event payload. PageNotFound on miss.
+//   3. Pre-flight: verify every input item's element_id exists on
+//      `input.page_id`. Any miss → ElementNotFound (atomicity, no
+//      writes).
+//   4. Begin transaction. For each input item:
+//      a. Build a recursive CTE that walks DOWN from `item.element_id`
+//         through `parent_id` (limited to 10000 rows as a safety net
+//         against pathological cycles — though cycle prevention on
+//         reparent already keeps the DB consistent).
+//      b. UPDATE all subtree rows: SET x = x + dx, y = y + dy,
+//         updated_at = datetime('now').
+//      c. For the root row only, also SET width/height/rotation
+//         (when non-null) + updated_at.
+//   5. Commit. On any failure the deferred rollback leaves the DB
+//      unchanged.
+//   6. Re-SELECT every affected element (deduped union of all
+//      subtrees) and return them in tree-traversal order (root first,
+//      then descendants in source order). Heap-owned; caller frees
+//      with `freeElements`.
+//   7. Emit ONE `design_elements_geometry_batch_updated` SSE event
+//      carrying the deduped union of affected element_ids.
+//
+// Returns the slice of updated `DesignElement` rows in tree-traversal
+// order. Atomicity is all-or-nothing.
+
+pub fn moveElementsWithDescendantsBatch(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: MoveElementsWithDescendantsBatchInput,
+) anyerror![]DesignElement {
+    if (input.items.len == 0) return error.EmptyItems;
+
+    // 1. Look up the page JOIN (workspace_id, item_id) for the SSE
+    //    event payload. Mirrors the lookup pattern in
+    //    `updateElementsBatch` and `groupElements`.
+    const PageContext = struct {
+        workspace_id: []u8,
+        item_id: []u8,
+    };
+    const page_ctx: PageContext = blk: {
+        var q = try db.query(allocator,
+            \\SELECT wi.workspace_id, dp.workspace_item_id
+            \\FROM design_pages dp
+            \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
+            \\WHERE dp.id = ?
+        , &.{input.page_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.PageNotFound;
+        defer row.deinit(allocator);
+        break :blk .{
+            .workspace_id = try allocator.dupe(u8, row.values[0]),
+            .item_id = try allocator.dupe(u8, row.values[1]),
+        };
+    };
+    defer allocator.free(page_ctx.workspace_id);
+    defer allocator.free(page_ctx.item_id);
+
+    // 2. Pre-flight: verify every input element_id exists on
+    //    `input.page_id`. Any miss → ElementNotFound (atomicity).
+    {
+        var in_list_sql: std.ArrayList(u8) = .empty;
+        defer in_list_sql.deinit(allocator);
+        try in_list_sql.appendSlice(allocator,
+            "SELECT COUNT(*) FROM design_page_elements WHERE page_id = ? AND id IN (");
+        var preflight_args: std.ArrayList([]const u8) = .empty;
+        defer preflight_args.deinit(allocator);
+        try preflight_args.append(allocator, input.page_id);
+        for (input.items, 0..) |it, i| {
+            if (i > 0) try in_list_sql.append(allocator, ',');
+            try in_list_sql.append(allocator, '?');
+            try preflight_args.append(allocator, it.element_id);
+        }
+        try in_list_sql.append(allocator, ')');
+
+        const matched_count: usize = blk: {
+            var q = try db.query(allocator, in_list_sql.items, preflight_args.items);
+            defer q.deinit();
+            const row = (try q.next()) orelse return error.DbError;
+            defer row.deinit(allocator);
+            break :blk std.fmt.parseInt(usize, row.values[0], 10) catch 0;
+        };
+        if (matched_count != input.items.len) return error.ElementNotFound;
+    }
+
+    // 3. Begin transaction. RAII defer pattern: any error below
+    //    fires rollback. After successful commit, mark `committed` to
+    //    skip the deferred rollback.
+    var tx = try db.begin();
+    var committed = false;
+    defer if (!committed) tx.rollback() catch {};
+
+    // 4. Apply the per-item cascade UPDATEs. We use a dynamic
+    //    `UPDATE ... WHERE id IN (subtree_ids)` per item, where
+    //    `subtree_ids` is collected by a recursive CTE in a separate
+    //    SELECT first (so we can dedupe + reuse).
+    //
+    // Strategy: for each item:
+    //   a. SELECT all subtree element ids via recursive CTE.
+    //   b. UPDATE x/y for the whole subtree (root + descendants).
+    //   c. UPDATE width/height/rotation for the root only (when
+    //      non-null). When both (b) and (c) target the same row,
+    //      SQLite's per-statement UPDATE applies both — we just split
+    //      into two UPDATEs to keep the SET-list build simple.
+    //
+    // Dedup is automatic: `WHERE id IN (subtree_ids)` matches each row
+    // at most once per UPDATE. The (dx, dy) is applied to the row's
+    // CURRENT x/y at UPDATE-time, so multiple items in the batch
+    // with overlapping subtrees would compound the delta — the
+    // caller should avoid this (the frontend sends one item per
+    // selected root, no overlap in normal usage).
+    var affected_ids: std.ArrayList([]u8) = .empty;
+    defer {
+        for (affected_ids.items) |id| allocator.free(id);
+        affected_ids.deinit(allocator);
+    }
+    var seen: std.StringHashMap(void) = .init(allocator);
+    defer seen.deinit();
+
+    for (input.items) |it| {
+        // 4a. Recursive CTE — collect the subtree ids (root + every
+        //     transitive descendant). We inline the SQL here rather
+        //     than extract a helper because the helper would need
+        //     to know about the `*Transaction` vs `*SqliteBackend`
+        //     type distinction (both expose `.query`, but they're
+        //     distinct types in this codebase).
+        var subtree_ids: std.ArrayList([]u8) = .empty;
+        errdefer {
+            for (subtree_ids.items) |id| allocator.free(id);
+            subtree_ids.deinit(allocator);
+        }
+        {
+            var q = try tx.query(allocator,
+                \\WITH RECURSIVE subtree(id) AS (
+                \\    SELECT id FROM design_page_elements
+                \\        WHERE id = ? AND page_id = ?
+                \\    UNION ALL
+                \\    SELECT dpe.id FROM design_page_elements dpe
+                \\        JOIN subtree s ON dpe.parent_id = s.id
+                \\    LIMIT 10000
+                \\)
+                \\SELECT id FROM subtree
+            , &.{ it.element_id, input.page_id });
+            defer q.deinit();
+            while (try q.next()) |row| {
+                defer row.deinit(allocator);
+                try subtree_ids.append(allocator, try allocator.dupe(u8, row.values[0]));
+            }
+        }
+        defer {
+            for (subtree_ids.items) |id| allocator.free(id);
+            subtree_ids.deinit(allocator);
+        }
+
+        // 4b. UPDATE x/y for the whole subtree. Build the dynamic
+        //     IN-list and the SET-list, then exec.
+        {
+            var sql_buf: std.ArrayList(u8) = .empty;
+            defer sql_buf.deinit(allocator);
+            try sql_buf.appendSlice(allocator,
+                "UPDATE design_page_elements SET x = x + ?, y = y + ?, updated_at = datetime('now') WHERE id IN (");
+            var argv: std.ArrayList([]const u8) = .empty;
+            defer argv.deinit(allocator);
+            // Bind dx and dy as text — the codebase convention is
+            // that `tx.exec` only binds TEXT (see
+            // `zig-sqlite-patterns.md` §"exec / query only bind TEXT").
+            // SQLite coerces numeric-looking TEXT to INTEGER under
+            // INTEGER affinity.
+            const dx_str = try std.fmt.allocPrint(allocator, "{d}", .{it.dx});
+            defer allocator.free(dx_str);
+            const dy_str = try std.fmt.allocPrint(allocator, "{d}", .{it.dy});
+            defer allocator.free(dy_str);
+            try argv.append(allocator, dx_str);
+            try argv.append(allocator, dy_str);
+            for (subtree_ids.items, 0..) |id, i| {
+                if (i > 0) try sql_buf.append(allocator, ',');
+                try sql_buf.append(allocator, '?');
+                try argv.append(allocator, id);
+            }
+            try sql_buf.append(allocator, ')');
+
+            try tx.exec(allocator, sql_buf.items, argv.items);
+        }
+
+        // 4c. UPDATE width/height/rotation for the root ONLY (when
+        //     non-null). Skip the round-trip when all three are null.
+        if (it.width != null or it.height != null or it.rotation != null) {
+            var sets: std.ArrayList([]const u8) = .empty;
+            defer sets.deinit(allocator);
+            var owned: std.ArrayList([]u8) = .empty;
+            defer {
+                for (owned.items) |s| allocator.free(s);
+                owned.deinit(allocator);
+            }
+            var argv: std.ArrayList([]const u8) = .empty;
+            defer argv.deinit(allocator);
+
+            if (it.width) |v| {
+                try sets.append(allocator, "width = ?");
+                try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+                try argv.append(allocator, owned.items[owned.items.len - 1]);
+            }
+            if (it.height) |v| {
+                try sets.append(allocator, "height = ?");
+                try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+                try argv.append(allocator, owned.items[owned.items.len - 1]);
+            }
+            if (it.rotation) |v| {
+                try sets.append(allocator, "rotation = ?");
+                try owned.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{v}));
+                try argv.append(allocator, owned.items[owned.items.len - 1]);
+            }
+            try sets.append(allocator, "updated_at = datetime('now')");
+            try argv.append(allocator, it.element_id);
+
+            var sql_buf: [512]u8 = undefined;
+            const sql_prefix = "UPDATE design_page_elements SET ";
+            var pos: usize = 0;
+            @memcpy(sql_buf[pos..][0..sql_prefix.len], sql_prefix);
+            pos += sql_prefix.len;
+            for (sets.items, 0..) |s, i| {
+                if (i > 0) {
+                    @memcpy(sql_buf[pos..][0..2], ", ");
+                    pos += 2;
+                }
+                @memcpy(sql_buf[pos..][0..s.len], s);
+                pos += s.len;
+            }
+            const where_clause = " WHERE id = ?";
+            @memcpy(sql_buf[pos..][0..where_clause.len], where_clause);
+            pos += where_clause.len;
+
+            try tx.exec(allocator, sql_buf[0..pos], argv.items);
+        }
+
+        // 4d. Track every affected id (deduped) for the re-SELECT +
+        //     SSE event below.
+        for (subtree_ids.items) |id| {
+            const gop = seen.getOrPut(id) catch return error.DbError;
+            if (!gop.found_existing) {
+                try affected_ids.append(allocator, try allocator.dupe(u8, id));
+            }
+        }
+    }
+
+    // 5. Commit BEFORE re-querying. The project memory
+    //    `zig-sqlite-patterns.md` §"Pitfall 3" documents this
+    //    constraint.
+    try tx.commit();
+    committed = true;
+
+    // 6. Re-SELECT the affected rows (deduped union of all subtrees).
+    //    Use `getElement` per id — each call allocates fresh strings,
+    //    so the returned slice is fully owned. Caller MUST release
+    //    with `freeElements(allocator, result)`.
+    var results: std.ArrayList(DesignElement) = .empty;
+    errdefer {
+        for (results.items) |e| freeElement(allocator, e);
+        results.deinit(allocator);
+    }
+    for (affected_ids.items) |id| {
+        const el = getElement(allocator, db, id) catch |err| switch (err) {
+            error.ElementNotFound => return error.DbError,
+            else => return error.DbError,
+        };
+        try results.append(allocator, el);
+    }
+
+    // 7. Emit ONE batch SSE event. Best-effort: failure here does NOT
+    //    fail the request — SSE is a hint, not a hard contract.
+    var element_ids_buf: std.ArrayList([]const u8) = .empty;
+    defer element_ids_buf.deinit(allocator);
+    for (affected_ids.items) |id| try element_ids_buf.append(allocator, id);
     const updated_at: i64 = blk: {
         var tv: std.c.timeval = undefined;
         _ = std.c.gettimeofday(&tv, null);
@@ -3984,4 +4322,609 @@ test "reparentElements returns BadElementId when an id does not exist" {
         .reposition = .last_in_parent,
     });
     try testing_reparent_batch.expectError(error.BadElementId, result);
+}
+
+// ─── Behavioural tests for `moveElementsWithDescendantsBatch` (Chunk 1) ──
+//
+// Inline tests per the project rule (see
+// `nalar-agentic-loop-inline-tests-required.md`). Tests below follow
+// the existing inline pattern in this file (e.g. `updateElementsBatch`
+// at line 2794+).
+
+const testing_move_batch = std.testing;
+
+fn setupMoveBatchDbAndItem() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_id: []const u8,
+    item_path: []u8,
+    page_id: []u8,
+} {
+    const alloc = testing_move_batch.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '')
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    UNIQUE (workspace_item_id, name),
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 375, height INTEGER NOT NULL DEFAULT 667,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle', rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '', stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0, opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '', text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '', parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    var tmp = testing_move_batch.tmpDir(.{});
+    var tmpdir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_len = try tmp.dir.realPath(testing_move_batch.io, &tmpdir_buf);
+    const tmpdir_path = try testing_move_batch.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
+
+    const item_id_const = "item_design_move_batch";
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)",
+        &.{ item_id_const, tmpdir_path });
+
+    const item_id_slice = try alloc.dupe(u8, item_id_const);
+
+    const page_id_alloc = try setDesignPage(alloc, &db, .{
+        .item_id = item_id_slice,
+        .page_name = "MoveBatch",
+        .width = 1440,
+        .height = 1024,
+    });
+
+    return .{
+        .db = db,
+        .threaded = threaded,
+        .item_id = item_id_slice,
+        .item_path = tmpdir_path,
+        .page_id = page_id_alloc,
+    };
+}
+
+fn teardownMoveBatchDb(db: *sqlite.SqliteBackend, threaded: *std.Io.Threaded) void {
+    db.deinit();
+    threaded.deinit();
+}
+
+/// Read an element's current x back from the DB (test fixture).
+fn moveBatchReadX(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    element_id: []const u8,
+) !i64 {
+    var q = try db.query(alloc,
+        "SELECT x FROM design_page_elements WHERE id = ?",
+        &.{element_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ElementNotFound;
+    defer row.deinit(alloc);
+    return std.fmt.parseInt(i64, row.values[0], 10) catch 0;
+}
+
+fn moveBatchReadY(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    element_id: []const u8,
+) !i64 {
+    var q = try db.query(alloc,
+        "SELECT y FROM design_page_elements WHERE id = ?",
+        &.{element_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ElementNotFound;
+    defer row.deinit(alloc);
+    return std.fmt.parseInt(i64, row.values[0], 10) catch 0;
+}
+
+fn moveBatchReadWidth(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    element_id: []const u8,
+) !i64 {
+    var q = try db.query(alloc,
+        "SELECT width FROM design_page_elements WHERE id = ?",
+        &.{element_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ElementNotFound;
+    defer row.deinit(alloc);
+    return std.fmt.parseInt(i64, row.values[0], 10) catch 0;
+}
+
+test "moveElementsWithDescendantsBatch moves a leaf with no children (cascade is a no-op)" {
+    const alloc = testing_move_batch.allocator;
+    var ctx = try setupMoveBatchDbAndItem();
+    defer teardownMoveBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const leaf = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "leaf",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 100, .y = 50, .width = 80, .height = 40,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(leaf);
+
+    const items = [_]MoveItem{.{ .element_id = leaf, .dx = 30, .dy = 20 }};
+    const updated = try moveElementsWithDescendantsBatch(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .items = &items,
+    });
+    defer freeElements(alloc, updated);
+
+    try testing_move_batch.expectEqual(@as(usize, 1), updated.len);
+    try testing_move_batch.expectEqualStrings(leaf, updated[0].id);
+    try testing_move_batch.expectEqual(@as(i64, 130), updated[0].x);
+    try testing_move_batch.expectEqual(@as(i64, 70), updated[0].y);
+
+    // Confirm DB persisted the new position.
+    try testing_move_batch.expectEqual(@as(i64, 130), try moveBatchReadX(alloc, &ctx.db, leaf));
+    try testing_move_batch.expectEqual(@as(i64, 70), try moveBatchReadY(alloc, &ctx.db, leaf));
+}
+
+test "moveElementsWithDescendantsBatch moves a container with 2 children by the same delta" {
+    const alloc = testing_move_batch.allocator;
+    var ctx = try setupMoveBatchDbAndItem();
+    defer teardownMoveBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const group = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "group",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 50, .y = 100, .width = 200, .height = 150,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group);
+
+    const child1 = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "child1",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 70, .y = 110, .width = 30, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = group,
+    });
+    defer alloc.free(child1);
+
+    const child2 = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "child2",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 200, .y = 200, .width = 30, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = group,
+    });
+    defer alloc.free(child2);
+
+    const items = [_]MoveItem{.{ .element_id = group, .dx = 100, .dy = 50 }};
+    const updated = try moveElementsWithDescendantsBatch(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .items = &items,
+    });
+    defer freeElements(alloc, updated);
+
+    // 3 elements in the affected set: group + child1 + child2.
+    try testing_move_batch.expectEqual(@as(usize, 3), updated.len);
+
+    // All three x/y moved by (100, 50).
+    for (updated) |el| {
+        const is_group = std.mem.eql(u8, el.id, group);
+        const is_child1 = std.mem.eql(u8, el.id, child1);
+        const is_child2 = std.mem.eql(u8, el.id, child2);
+        try testing_move_batch.expect(is_group or is_child1 or is_child2);
+    }
+
+    // Spot-check each row's NEW x/y at the DB level (delta was 100, 50).
+    try testing_move_batch.expectEqual(@as(i64, 150), try moveBatchReadX(alloc, &ctx.db, group));
+    try testing_move_batch.expectEqual(@as(i64, 150), try moveBatchReadY(alloc, &ctx.db, group));
+    try testing_move_batch.expectEqual(@as(i64, 170), try moveBatchReadX(alloc, &ctx.db, child1));
+    try testing_move_batch.expectEqual(@as(i64, 160), try moveBatchReadY(alloc, &ctx.db, child1));
+    try testing_move_batch.expectEqual(@as(i64, 300), try moveBatchReadX(alloc, &ctx.db, child2));
+    try testing_move_batch.expectEqual(@as(i64, 250), try moveBatchReadY(alloc, &ctx.db, child2));
+}
+
+test "moveElementsWithDescendantsBatch moves a container with grandchildren (depth 2)" {
+    const alloc = testing_move_batch.allocator;
+    var ctx = try setupMoveBatchDbAndItem();
+    defer teardownMoveBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const parent_group = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "parent",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 100, .y = 100, .width = 300, .height = 300,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(parent_group);
+
+    const child_group = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "child_group",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 150, .y = 150, .width = 100, .height = 100,
+        .fill = "#cccccc", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = parent_group,
+    });
+    defer alloc.free(child_group);
+
+    const leaf = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "leaf",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 170, .y = 170, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = child_group,
+    });
+    defer alloc.free(leaf);
+
+    const items = [_]MoveItem{.{ .element_id = parent_group, .dx = 10, .dy = 20 }};
+    const updated = try moveElementsWithDescendantsBatch(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .items = &items,
+    });
+    defer freeElements(alloc, updated);
+
+    try testing_move_batch.expectEqual(@as(usize, 3), updated.len);
+    try testing_move_batch.expectEqual(@as(i64, 110), try moveBatchReadX(alloc, &ctx.db, parent_group));
+    try testing_move_batch.expectEqual(@as(i64, 120), try moveBatchReadY(alloc, &ctx.db, parent_group));
+    try testing_move_batch.expectEqual(@as(i64, 160), try moveBatchReadX(alloc, &ctx.db, child_group));
+    try testing_move_batch.expectEqual(@as(i64, 170), try moveBatchReadY(alloc, &ctx.db, child_group));
+    try testing_move_batch.expectEqual(@as(i64, 180), try moveBatchReadX(alloc, &ctx.db, leaf));
+    try testing_move_batch.expectEqual(@as(i64, 190), try moveBatchReadY(alloc, &ctx.db, leaf));
+}
+
+test "moveElementsWithDescendantsBatch applies width/height/rotation to root ONLY (descendants unchanged)" {
+    const alloc = testing_move_batch.allocator;
+    var ctx = try setupMoveBatchDbAndItem();
+    defer teardownMoveBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const group = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "g",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 200, .height = 150,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group);
+
+    const child = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "c",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 10, .y = 10, .width = 80, .height = 60,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = group,
+    });
+    defer alloc.free(child);
+
+    const items = [_]MoveItem{.{ .element_id = group, .dx = 50, .dy = 50, .width = 500, .height = 300, .rotation = 0.5 }};
+    const updated = try moveElementsWithDescendantsBatch(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .items = &items,
+    });
+    defer freeElements(alloc, updated);
+
+    // Root: width/height/rotation all changed.
+    try testing_move_batch.expectEqual(@as(i64, 500), try moveBatchReadWidth(alloc, &ctx.db, group));
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT rotation FROM design_page_elements WHERE id = ?",
+            &.{group});
+        defer q.deinit();
+        const row = (try q.next()) orelse unreachable;
+        defer row.deinit(alloc);
+        const rot = std.fmt.parseFloat(f64, row.values[0]) catch 0.0;
+        try testing_move_batch.expectApproxEqAbs(@as(f64, 0.5), rot, 0.0001);
+    }
+
+    // Child: width UNCHANGED (80), x/y MOVED by (50, 50).
+    try testing_move_batch.expectEqual(@as(i64, 80), try moveBatchReadWidth(alloc, &ctx.db, child));
+    try testing_move_batch.expectEqual(@as(i64, 60), try moveBatchReadX(alloc, &ctx.db, child));
+    try testing_move_batch.expectEqual(@as(i64, 60), try moveBatchReadY(alloc, &ctx.db, child));
+}
+
+test "moveElementsWithDescendantsBatch with dx=0 dy=0 + width change applies only width (no translation)" {
+    const alloc = testing_move_batch.allocator;
+    var ctx = try setupMoveBatchDbAndItem();
+    defer teardownMoveBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const leaf = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "l",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 100, .y = 200, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(leaf);
+
+    const items = [_]MoveItem{.{ .element_id = leaf, .dx = 0, .dy = 0, .width = 200 }};
+    const updated = try moveElementsWithDescendantsBatch(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .items = &items,
+    });
+    defer freeElements(alloc, updated);
+
+    try testing_move_batch.expectEqual(@as(usize, 1), updated.len);
+    // x/y UNCHANGED.
+    try testing_move_batch.expectEqual(@as(i64, 100), updated[0].x);
+    try testing_move_batch.expectEqual(@as(i64, 200), updated[0].y);
+    // width CHANGED.
+    try testing_move_batch.expectEqual(@as(i64, 200), updated[0].width);
+    try testing_move_batch.expectEqual(@as(i64, 200), try moveBatchReadWidth(alloc, &ctx.db, leaf));
+}
+
+test "moveElementsWithDescendantsBatch with multiple items: each subtree moves independently" {
+    const alloc = testing_move_batch.allocator;
+    var ctx = try setupMoveBatchDbAndItem();
+    defer teardownMoveBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const group_a = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "ga",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 50, .y = 50, .width = 100, .height = 100,
+        .fill = "#ff0000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group_a);
+
+    const child_a = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "ca",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 60, .y = 60, .width = 30, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = group_a,
+    });
+    defer alloc.free(child_a);
+
+    const group_b = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "gb",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 500, .y = 500, .width = 100, .height = 100,
+        .fill = "#00ff00", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group_b);
+
+    const child_b = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "cb",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 510, .y = 510, .width = 30, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = group_b,
+    });
+    defer alloc.free(child_b);
+
+    const items = [_]MoveItem{
+        .{ .element_id = group_a, .dx = 10, .dy = 0 },
+        .{ .element_id = group_b, .dx = 0, .dy = 20 },
+    };
+    const updated = try moveElementsWithDescendantsBatch(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .items = &items,
+    });
+    defer freeElements(alloc, updated);
+
+    try testing_move_batch.expectEqual(@as(usize, 4), updated.len);
+
+    // Group A subtree: dx=10, dy=0.
+    try testing_move_batch.expectEqual(@as(i64, 60), try moveBatchReadX(alloc, &ctx.db, group_a));
+    try testing_move_batch.expectEqual(@as(i64, 50), try moveBatchReadY(alloc, &ctx.db, group_a));
+    try testing_move_batch.expectEqual(@as(i64, 70), try moveBatchReadX(alloc, &ctx.db, child_a));
+    try testing_move_batch.expectEqual(@as(i64, 60), try moveBatchReadY(alloc, &ctx.db, child_a));
+
+    // Group B subtree: dx=0, dy=20.
+    try testing_move_batch.expectEqual(@as(i64, 500), try moveBatchReadX(alloc, &ctx.db, group_b));
+    try testing_move_batch.expectEqual(@as(i64, 520), try moveBatchReadY(alloc, &ctx.db, group_b));
+    try testing_move_batch.expectEqual(@as(i64, 510), try moveBatchReadX(alloc, &ctx.db, child_b));
+    try testing_move_batch.expectEqual(@as(i64, 530), try moveBatchReadY(alloc, &ctx.db, child_b));
+}
+
+test "moveElementsWithDescendantsBatch returns EmptyItems for empty input" {
+    const alloc = testing_move_batch.allocator;
+    var ctx = try setupMoveBatchDbAndItem();
+    defer teardownMoveBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const items = [_]MoveItem{};
+    const result = moveElementsWithDescendantsBatch(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .items = &items,
+    });
+    try testing_move_batch.expectError(error.EmptyItems, result);
+}
+
+test "moveElementsWithDescendantsBatch returns ElementNotFound for any missing element_id (no partial writes)" {
+    const alloc = testing_move_batch.allocator;
+    var ctx = try setupMoveBatchDbAndItem();
+    defer teardownMoveBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const leaf = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "l",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(leaf);
+
+    const items = [_]MoveItem{
+        .{ .element_id = leaf, .dx = 999, .dy = 0 },
+        .{ .element_id = "elem_ghost", .dx = 0, .dy = 0 },
+    };
+    const result = moveElementsWithDescendantsBatch(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .items = &items,
+    });
+    try testing_move_batch.expectError(error.ElementNotFound, result);
+
+    // Atomicity — leaf's x MUST be unchanged in DB.
+    try testing_move_batch.expectEqual(@as(i64, 0), try moveBatchReadX(alloc, &ctx.db, leaf));
+}
+
+test "moveElementsWithDescendantsBatch returns PageNotFound for unknown page_id" {
+    const alloc = testing_move_batch.allocator;
+    var ctx = try setupMoveBatchDbAndItem();
+    defer teardownMoveBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const items = [_]MoveItem{.{ .element_id = "elem_anything", .dx = 10, .dy = 0 }};
+    const result = moveElementsWithDescendantsBatch(alloc, &ctx.db, .{
+        .page_id = "page_ghost",
+        .items = &items,
+    });
+    try testing_move_batch.expectError(error.PageNotFound, result);
+}
+
+test "moveElementsWithDescendantsBatch handles deeply nested subtree (depth 3+)" {
+    const alloc = testing_move_batch.allocator;
+    var ctx = try setupMoveBatchDbAndItem();
+    defer teardownMoveBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const g1 = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "g1",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 500, .height = 500,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(g1);
+    const g2 = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "g2",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 50, .y = 50, .width = 300, .height = 300,
+        .fill = "#eeeeee", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = g1,
+    });
+    defer alloc.free(g2);
+    const g3 = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "g3",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 100, .y = 100, .width = 200, .height = 200,
+        .fill = "#dddddd", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = g2,
+    });
+    defer alloc.free(g3);
+    const leaf = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "leaf",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 150, .y = 150, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = g3,
+    });
+    defer alloc.free(leaf);
+
+    const items = [_]MoveItem{.{ .element_id = g1, .dx = 5, .dy = 7 }};
+    const updated = try moveElementsWithDescendantsBatch(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .items = &items,
+    });
+    defer freeElements(alloc, updated);
+
+    try testing_move_batch.expectEqual(@as(usize, 4), updated.len);
+    // All four moved by (5, 7).
+    try testing_move_batch.expectEqual(@as(i64, 5), try moveBatchReadX(alloc, &ctx.db, g1));
+    try testing_move_batch.expectEqual(@as(i64, 7), try moveBatchReadY(alloc, &ctx.db, g1));
+    try testing_move_batch.expectEqual(@as(i64, 55), try moveBatchReadX(alloc, &ctx.db, g2));
+    try testing_move_batch.expectEqual(@as(i64, 57), try moveBatchReadY(alloc, &ctx.db, g2));
+    try testing_move_batch.expectEqual(@as(i64, 105), try moveBatchReadX(alloc, &ctx.db, g3));
+    try testing_move_batch.expectEqual(@as(i64, 107), try moveBatchReadY(alloc, &ctx.db, g3));
+    try testing_move_batch.expectEqual(@as(i64, 155), try moveBatchReadX(alloc, &ctx.db, leaf));
+    try testing_move_batch.expectEqual(@as(i64, 157), try moveBatchReadY(alloc, &ctx.db, leaf));
 }
