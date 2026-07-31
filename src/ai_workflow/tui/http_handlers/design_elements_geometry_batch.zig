@@ -212,9 +212,7 @@ pub fn designElementsGeometryBatchHandler(
         .status_code = 200,
         .data = try std.json.Stringify.valueAlloc(
             allocator,
-            struct {
-                updated: []const design_model.DesignElement = output.updated,
-            }{ .updated = output.updated },
+            struct { updated: []const design_model.DesignElement }{ .updated = output.updated },
             .{},
         ),
     });
@@ -226,9 +224,7 @@ pub fn designElementsGeometryBatchHandler(
 fn makeErrorJson(allocator: std.mem.Allocator, message: []const u8) ![]u8 {
     return try std.json.Stringify.valueAlloc(
         allocator,
-        struct {
-            @"error": []const u8 = message,
-        }{ .@"error" = message },
+        struct { @"error": []const u8 }{ .@"error" = message },
         .{},
     );
 }
