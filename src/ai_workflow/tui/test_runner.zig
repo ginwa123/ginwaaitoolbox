@@ -65,6 +65,7 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("design_model_reparent_test.zig"); // 2026-07-30 — updateElement.reposition + cycle prevention (Chunk 1 Tasks 1.1+1.2)
     _ = @import("http_handlers/design_elements_update_reparent_test.zig"); // 2026-07-30 — handler passes parent_id + reposition + 400 BadReparent (Chunk 1 Task 1.3)
     _ = @import("design_model_reparent_batch_test.zig"); // 2026-07-30 — reparentElements atomic N-element model (Chunk 1b Task 1b.1)
+    _ = @import("http_handlers/design_elements_reparent_test.zig"); // 2026-07-30 — POST .../elements/reparent-batch handler (Chunk 1b Task 1b.2)
     // Inline tests for `updateElementsBatch` live at the bottom of design_model.zig
     // — registered here so zig build test actually runs them.
     _ = @import("design_model.zig");

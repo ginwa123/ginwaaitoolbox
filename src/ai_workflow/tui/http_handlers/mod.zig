@@ -158,6 +158,7 @@ pub const designElementsGeometryBatchHandler = @import("design_elements_geometry
 // docs/superpowers/plans/2026-07-28-grouped-layers.md (Chunk 3).
 pub const designElementsGroupHandler = @import("design_elements_group.zig").designElementsGroupHandler;
 pub const designElementsReorderHandler = @import("design_elements_reorder.zig").designElementsReorderHandler;
+pub const designElementsReparentBatchHandler = @import("design_elements_reparent.zig").designElementsReparentBatchHandler;
 pub const designElementsUngroupHandler = @import("design_elements_ungroup.zig").designElementsUngroupHandler;
 
 // Session to client IDs monitoring
