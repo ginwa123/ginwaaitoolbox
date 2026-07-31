@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const agent = nalarcore.agent;
@@ -3345,6 +3346,44 @@ pub const WorkspaceItemTaskInfo = struct {
     }
 };
 
+/// One distinct tag suggestion for a kanban's autocomplete dropdown
+/// (plan docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md).
+/// Returned by `listKanbanDistinctTags` ordered by frequency DESC then
+/// recency DESC. The slice fields are heap-allocated from the passed
+/// allocator; the caller frees via `KanbanTagSuggestion.deinit`.
+pub const KanbanTagSuggestion = struct {
+    /// The tag value as it appeared in some task's tags JSON array.
+    /// First-occurrence casing wins (matches tags_validation.zig).
+    name: []u8,
+    /// Number of tasks on this kanban whose `tags` JSON array contains
+    /// this value (after json_each expansion).
+    count: u32,
+    /// `updated_at` of the MOST RECENT task that uses this tag, in
+    /// the same `YYYY-MM-DD HH:MM:SS` format the DB stores it in.
+    /// Used as the tie-breaker for sort order. null = no task has
+    /// this tag (shouldn't happen in normal flow).
+    last_used_at: ?[]u8,
+
+    pub fn deinit(self: KanbanTagSuggestion, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        if (self.last_used_at) |s| allocator.free(s);
+    }
+};
+
+/// Result of a single page of tag suggestions. The caller KNOWS the
+/// page size (`limit` arg) so it can detect `has_more` by comparing
+/// `tags.len >= limit`. We also return `has_more` directly so the
+/// HTTP handler doesn't need to know the limit it passed.
+pub const KanbanTagSuggestionsPage = struct {
+    tags: []KanbanTagSuggestion,
+    has_more: bool,
+
+    pub fn deinit(self: KanbanTagSuggestionsPage, allocator: std.mem.Allocator) void {
+        for (self.tags) |t| t.deinit(allocator);
+        allocator.free(self.tags);
+    }
+};
+
 /// Create a new workspace item task
 pub fn createWorkspaceItemTask(
     allocator: std.mem.Allocator,
@@ -3936,6 +3975,103 @@ pub fn listWorkspaceItemTasksWithCursor(
     };
 }
 
+/// Returns one page of distinct tags on tasks belonging to the
+/// given workspace item, ordered by frequency DESC then by
+/// most-recent usage DESC. Used by the kanban task detail dialog
+/// autocomplete dropdown. Pagination: caller passes `limit` (page
+/// size) and `offset` (rows to skip). Returns `has_more=true` when
+/// more rows exist past the requested page.
+///
+/// Defensive against malformed `tags` JSON: rows whose `tags` column
+/// is not a valid JSON array (legacy / corrupted rows) are skipped
+/// via `WHERE json_valid(tags) = 1 AND json_type(tags) = 'array'`.
+///
+/// Returns an empty page (not an error) when the kanban has no tags.
+///
+/// Implementation uses the `LIMIT N+1` trick to compute `has_more`
+/// in a single SQL query: we fetch `limit + 1` rows; if we got back
+/// `limit + 1` rows, there are more, so we trim to `limit` and set
+/// `has_more = true`.
+pub fn listKanbanDistinctTags(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    workspace_item_id: []const u8,
+    limit: u32,
+    offset: u32,
+) anyerror!KanbanTagSuggestionsPage {
+    // Defensive: clamp limit to a sane max even if the caller passes
+    // a huge value. The handler also clamps but defense-in-depth.
+    const clamped_limit: u32 = if (limit == 0) 1 else if (limit > 50) 50 else limit;
+
+    // LIMIT N+1 trick: fetch one extra row so we can detect has_more
+    // in a single query. If the result has <= N rows, has_more=false.
+    const fetch_limit: u32 = clamped_limit + 1;
+
+    // Format the u32 LIMIT/OFFSET to strings for bind. db.query
+    // only binds TEXT, so integers must be string-formatted. SQLite
+    // coerces numeric-looking TEXT in numeric contexts.
+    const limit_str = std.fmt.allocPrint(allocator, "{d}", .{fetch_limit}) catch "";
+    const offset_str = std.fmt.allocPrint(allocator, "{d}", .{offset}) catch "";
+    defer {
+        if (limit_str.len > 0) allocator.free(limit_str);
+        if (offset_str.len > 0) allocator.free(offset_str);
+    }
+
+    // json_each() expands the `tags` JSON array into a virtual table
+    // with one row per element. json_valid + json_type filter out
+    // malformed/non-array rows (legacy / corrupted). GROUP BY value
+    // counts per-tag usage. MAX(updated_at) is the recency tie-breaker.
+    var q = try db.query(allocator,
+        \\SELECT je.value AS tag, COUNT(*) AS cnt, MAX(t.updated_at) AS last_used
+        \\FROM workspace_item_tasks t, json_each(t.tags) je
+        \\WHERE t.workspace_item_id = ?
+        \\  AND json_valid(t.tags) = 1
+        \\  AND json_type(t.tags) = 'array'
+        \\GROUP BY je.value
+        \\ORDER BY cnt DESC, last_used DESC
+        \\LIMIT ?
+        \\OFFSET ?
+    , &.{
+        workspace_item_id,
+        limit_str,
+        offset_str,
+    });
+    defer q.deinit();
+
+    var results: std.ArrayList(KanbanTagSuggestion) = .empty;
+    errdefer {
+        for (results.items) |r| r.deinit(allocator);
+        results.deinit(allocator);
+    }
+
+    while (try q.next()) |row| {
+        defer row.deinit(allocator);
+        const suggestion: KanbanTagSuggestion = .{
+            .name = try allocator.dupe(u8, row.values[0]),
+            .count = std.fmt.parseInt(u32, row.values[1], 10) catch 0,
+            .last_used_at = if (row.values[2].len > 0)
+                try allocator.dupe(u8, row.values[2])
+            else
+                null,
+        };
+        try results.append(allocator, suggestion);
+    }
+
+    // Apply the LIMIT N+1 trick: if we got back more than the
+    // requested limit, truncate and set has_more = true.
+    const has_more = results.items.len > clamped_limit;
+    if (has_more) {
+        // Drop the last (extra) row; we don't want to return it.
+        const last = results.pop().?;
+        last.deinit(allocator);
+    }
+
+    return KanbanTagSuggestionsPage{
+        .tags = try results.toOwnedSlice(allocator),
+        .has_more = has_more,
+    };
+}
+
 /// Get all active sessions for SSE broadcast
 pub fn getSessionsForBroadcast(
     allocator: std.mem.Allocator,
@@ -3990,4 +4126,213 @@ pub fn updateSessionUpdatedAt(allocator: std.mem.Allocator, db: *sqlite.SqliteBa
 pub fn updateWorkspaceUpdatedAt(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) !void {
     const sql = "UPDATE workspace_item_tasks SET updated_at = datetime('now') WHERE id = ?";
     try db.exec(allocator, sql, &.{session_id});
+}
+
+// =====================================================================
+// Tests for listKanbanDistinctTags
+// Plan: docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md
+// Behavioural tests; not static-contract / grep.
+// =====================================================================
+
+fn setupDbWithTagsForKanban() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Minimal schema: workspace_items + workspace_item_tasks with the
+    // tags column (Migration 067). We don't run all 66 prior migrations
+    // — the model fn doesn't depend on them.
+    try db.exec(alloc, "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL)", &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\  id TEXT PRIMARY KEY,
+        \\  workspace_item_id TEXT NOT NULL,
+        \\  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        \\  tags TEXT NOT NULL DEFAULT ''
+        \\)
+    , &.{});
+    try db.exec(alloc, "INSERT INTO workspace_items (id, workspace_id) VALUES ('item_x', 'ws_x')", &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn insertKanbanTask(db: *sqlite.SqliteBackend, alloc: std.mem.Allocator, id: []const u8, item_id: []const u8, tags_json: []const u8) !void {
+    // SqliteBackend.exec binds empty `[]const u8` as SQL NULL — which
+    // would fail the NOT NULL constraint on `tags`. Match the
+    // production pattern (see createWorkspaceItemTask): use a SQL
+    // `''` literal when the value is the empty string.
+    if (tags_json.len == 0) {
+        try db.exec(alloc,
+            "INSERT INTO workspace_item_tasks (id, workspace_item_id, tags) VALUES (?, ?, '')",
+            &.{ id, item_id });
+    } else {
+        try db.exec(alloc,
+            "INSERT INTO workspace_item_tasks (id, workspace_item_id, tags) VALUES (?, ?, ?)",
+            &.{ id, item_id, tags_json });
+    }
+}
+
+fn insertKanbanTaskWithUpdatedAt(
+    db: *sqlite.SqliteBackend,
+    alloc: std.mem.Allocator,
+    id: []const u8,
+    item_id: []const u8,
+    tags_json: []const u8,
+    updated_at: []const u8,
+) !void {
+    try db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, workspace_item_id, tags, updated_at) VALUES (?, ?, ?, ?)",
+        &.{ id, item_id, tags_json, updated_at });
+}
+
+test "listKanbanDistinctTags returns empty page when kanban has no tasks" {
+    var s = try setupDbWithTagsForKanban();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    const alloc = testing.allocator;
+    const page = try listKanbanDistinctTags(alloc, &s.db, "item_x", 8, 0);
+    defer page.deinit(alloc);
+    try testing.expectEqual(@as(usize, 0), page.tags.len);
+    try testing.expectEqual(false, page.has_more);
+}
+
+test "listKanbanDistinctTags returns empty page when tasks exist but none have tags" {
+    var s = try setupDbWithTagsForKanban();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    const alloc = testing.allocator;
+    try insertKanbanTask(&s.db, alloc, "t1", "item_x", "");
+    try insertKanbanTask(&s.db, alloc, "t2", "item_x", "");
+    const page = try listKanbanDistinctTags(alloc, &s.db, "item_x", 8, 0);
+    defer page.deinit(alloc);
+    try testing.expectEqual(@as(usize, 0), page.tags.len);
+    try testing.expectEqual(false, page.has_more);
+}
+
+test "listKanbanDistinctTags returns single tag from one task" {
+    var s = try setupDbWithTagsForKanban();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    const alloc = testing.allocator;
+    try insertKanbanTask(&s.db, alloc, "t1", "item_x", "[\"bug\"]");
+    const page = try listKanbanDistinctTags(alloc, &s.db, "item_x", 8, 0);
+    defer page.deinit(alloc);
+    try testing.expectEqual(@as(usize, 1), page.tags.len);
+    try testing.expectEqualStrings("bug", page.tags[0].name);
+    try testing.expectEqual(@as(u32, 1), page.tags[0].count);
+    try testing.expectEqual(false, page.has_more);
+}
+
+test "listKanbanDistinctTags orders by frequency DESC (most-used first)" {
+    var s = try setupDbWithTagsForKanban();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    const alloc = testing.allocator;
+    // "bug" used by 3 tasks, "urgent" used by 2, "frontend" used by 1.
+    try insertKanbanTask(&s.db, alloc, "t1", "item_x", "[\"bug\",\"urgent\"]");
+    try insertKanbanTask(&s.db, alloc, "t2", "item_x", "[\"bug\",\"frontend\"]");
+    try insertKanbanTask(&s.db, alloc, "t3", "item_x", "[\"bug\",\"urgent\"]");
+    const page = try listKanbanDistinctTags(alloc, &s.db, "item_x", 8, 0);
+    defer page.deinit(alloc);
+    try testing.expectEqual(@as(usize, 3), page.tags.len);
+    try testing.expectEqualStrings("bug", page.tags[0].name);
+    try testing.expectEqual(@as(u32, 3), page.tags[0].count);
+    try testing.expectEqualStrings("urgent", page.tags[1].name);
+    try testing.expectEqual(@as(u32, 2), page.tags[1].count);
+    try testing.expectEqualStrings("frontend", page.tags[2].name);
+    try testing.expectEqual(@as(u32, 1), page.tags[2].count);
+    try testing.expectEqual(false, page.has_more);
+}
+
+test "listKanbanDistinctTags breaks ties on recency (most-recently-used wins)" {
+    var s = try setupDbWithTagsForKanban();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    const alloc = testing.allocator;
+    try insertKanbanTaskWithUpdatedAt(&s.db, alloc, "t1", "item_x", "[\"old-tag\"]", "2025-01-01 00:00:00");
+    try insertKanbanTaskWithUpdatedAt(&s.db, alloc, "t2", "item_x", "[\"new-tag\"]", "2026-12-31 23:59:59");
+    const page = try listKanbanDistinctTags(alloc, &s.db, "item_x", 8, 0);
+    defer page.deinit(alloc);
+    try testing.expectEqual(@as(usize, 2), page.tags.len);
+    try testing.expectEqualStrings("new-tag", page.tags[0].name);
+    try testing.expectEqualStrings("old-tag", page.tags[1].name);
+}
+
+test "listKanbanDistinctTags respects the limit query" {
+    var s = try setupDbWithTagsForKanban();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    const alloc = testing.allocator;
+    // 5 distinct tags but ask for limit=2.
+    try insertKanbanTask(&s.db, alloc, "t1", "item_x", "[\"a\",\"b\",\"c\",\"d\",\"e\"]");
+    const page = try listKanbanDistinctTags(alloc, &s.db, "item_x", 2, 0);
+    defer page.deinit(alloc);
+    try testing.expectEqual(@as(usize, 2), page.tags.len);
+    try testing.expectEqual(true, page.has_more); // 5 > 2, so more available
+}
+
+test "listKanbanDistinctTags has_more=false when result fits in limit" {
+    var s = try setupDbWithTagsForKanban();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    const alloc = testing.allocator;
+    try insertKanbanTask(&s.db, alloc, "t1", "item_x", "[\"a\",\"b\",\"c\"]");
+    const page = try listKanbanDistinctTags(alloc, &s.db, "item_x", 8, 0);
+    defer page.deinit(alloc);
+    try testing.expectEqual(@as(usize, 3), page.tags.len);
+    try testing.expectEqual(false, page.has_more); // 3 <= 8, no more
+}
+
+test "listKanbanDistinctTags paginates with offset (next page fetches distinct tags past the first page)" {
+    var s = try setupDbWithTagsForKanban();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    const alloc = testing.allocator;
+    // Seed 5 distinct tags, all used once. Fetch in pages of 2.
+    try insertKanbanTask(&s.db, alloc, "t1", "item_x", "[\"a\",\"b\",\"c\",\"d\",\"e\"]");
+    // Page 1 (offset=0, limit=2): expect first 2 of {a,b,c,d,e}.
+    const page1 = try listKanbanDistinctTags(alloc, &s.db, "item_x", 2, 0);
+    defer page1.deinit(alloc);
+    try testing.expectEqual(@as(usize, 2), page1.tags.len);
+    try testing.expectEqual(true, page1.has_more);
+    // Page 2 (offset=2, limit=2): expect next 2.
+    const page2 = try listKanbanDistinctTags(alloc, &s.db, "item_x", 2, 2);
+    defer page2.deinit(alloc);
+    try testing.expectEqual(@as(usize, 2), page2.tags.len);
+    try testing.expectEqual(true, page2.has_more);
+    // Page 3 (offset=4, limit=2): expect 1 tag, no more.
+    const page3 = try listKanbanDistinctTags(alloc, &s.db, "item_x", 2, 4);
+    defer page3.deinit(alloc);
+    try testing.expectEqual(@as(usize, 1), page3.tags.len);
+    try testing.expectEqual(false, page3.has_more);
+}
+
+test "listKanbanDistinctTags filters by workspace_item_id (no cross-kanban leakage)" {
+    var s = try setupDbWithTagsForKanban();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    const alloc = testing.allocator;
+    try s.db.exec(alloc, "INSERT INTO workspace_items (id, workspace_id) VALUES ('item_y', 'ws_x')", &.{});
+    try insertKanbanTask(&s.db, alloc, "t1", "item_x", "[\"bug\"]");
+    try insertKanbanTask(&s.db, alloc, "t2", "item_y", "[\"different\"]");
+    const page = try listKanbanDistinctTags(alloc, &s.db, "item_x", 8, 0);
+    defer page.deinit(alloc);
+    try testing.expectEqual(@as(usize, 1), page.tags.len);
+    try testing.expectEqualStrings("bug", page.tags[0].name);
+}
+
+test "listKanbanDistinctTags skips rows with malformed tags JSON (defensive)" {
+    var s = try setupDbWithTagsForKanban();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+    const alloc = testing.allocator;
+    try insertKanbanTask(&s.db, alloc, "t1", "item_x", "[\"good\"]");
+    try insertKanbanTask(&s.db, alloc, "t2", "item_x", "not-a-json-array");
+    const page = try listKanbanDistinctTags(alloc, &s.db, "item_x", 8, 0);
+    defer page.deinit(alloc);
+    try testing.expectEqual(@as(usize, 1), page.tags.len);
+    try testing.expectEqualStrings("good", page.tags[0].name);
 }

@@ -1453,6 +1453,45 @@ export async function moveTask(
   )
 }
 
+/** Plan: docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md */
+
+export interface KanbanTagSuggestion {
+  name: string
+  count: number
+  last_used_at: string | null
+}
+
+export interface KanbanTagSuggestionsResponse {
+  tags: KanbanTagSuggestion[]
+  has_more: boolean
+}
+
+export interface GetKanbanTagSuggestionsOptions {
+  limit?: number
+  offset?: number
+}
+
+export async function getKanbanTagSuggestions(
+  workspaceId: string,
+  itemId: string,
+  options?: GetKanbanTagSuggestionsOptions,
+): Promise<KanbanTagSuggestionsResponse> {
+  const limit = options?.limit ?? 8
+  const offset = options?.offset ?? 0
+  const url = `/workspaces/${encodeURIComponent(workspaceId)}/items/${encodeURIComponent(itemId)}/kanban/tags?limit=${limit}&offset=${offset}`
+  // Graceful degradation: a 5xx returns empty + has_more=false so a
+  // broken server doesn't block the user from typing tags.
+  try {
+    const res = await apiFetch<KanbanTagSuggestionsResponse>(url, { method: 'GET' })
+    return {
+      tags: res.tags ?? [],
+      has_more: res.has_more ?? false,
+    }
+  } catch {
+    return { tags: [], has_more: false }
+  }
+}
+
 // =====================================================================
 // Design Mode API (v6 — Figma-lite, file-backed HTML model)
 // =====================================================================

@@ -551,6 +551,35 @@ pub fn makeRoutinesListResponse(
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
+/// One entry in the kanban tag suggestions dropdown. Returned by
+/// `GET /api/workspaces/:ws/items/:item/kanban/tags` ordered by
+/// frequency DESC, last_used_at DESC.
+/// Plan: docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md
+pub const KanbanTagSuggestionResponse = struct {
+    name: []const u8,
+    count: u32,
+    last_used_at: ?[]const u8 = null,
+};
+
+pub const KanbanTagsListResponse = struct {
+    tags: []const KanbanTagSuggestionResponse,
+    /// True when more tags exist past this page. The frontend uses
+    /// this to decide whether to render the scroll sentinel + load
+    /// another page (or stop paginating).
+    has_more: bool,
+};
+
+pub fn makeKanbanTagsListResponse(
+    allocator: std.mem.Allocator,
+    suggestions: []const KanbanTagSuggestionResponse,
+    has_more: bool,
+) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, KanbanTagsListResponse{
+        .tags = suggestions,
+        .has_more = has_more,
+    }, .{});
+}
+
 // Git status types
 pub const GitStatusResponse = struct { is_git_repo: bool, branch: ?[]const u8 = null, has_changes: bool = false, is_clean: bool = true, status: ?[]const u8 = null };
 

@@ -404,6 +404,13 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/kanban/copy_spec_from/:source_item_id", ai_mod.http_handlers.kanbanCopySpecHandler);
     try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/move", ai_mod.http_handlers.tasksMoveHandler);
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksListHandler);
+    // Kanban task tag autocomplete (Chunk 1 of plan
+    // docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md).
+    // Paginated suggestions for the kanban task detail dialog's tag chip
+    // input. Ordered by frequency DESC, then last_used_at DESC. Query
+    // params: ?limit=N (default 8, max 50) &offset=K. Response:
+    // { tags: [{name,count,last_used_at}], has_more }.
+    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/kanban/tags", ai_mod.http_handlers.kanbanTagsListHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksCreateHandler);
     try gs.router.put("/api/workspaces/tasks/:task_id", ai_mod.http_handlers.tasksUpdateByIdHandler);
     // Kanban task attachment upload (POST) + download (GET wildcard).
