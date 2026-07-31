@@ -26,6 +26,7 @@ const add_design_element_mod = nalarcore.add_design_element;
 const update_design_element_mod = nalarcore.update_design_element;
 const group_design_elements_mod = nalarcore.group_design_elements;
 const set_element_parent_mod = nalarcore.set_element_parent;
+const move_design_element_mod = nalarcore.move_design_element;
 const show_preview_mod = nalarcore.ai_mod.show_preview;
 const remove_agent_mod = nalarcore.remove_agent;
 const remove_file_mod = nalarcore.remove_file;
@@ -74,6 +75,7 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         update_design_element_mod.update_design_element_tool,
         group_design_elements_mod.group_design_element_tool,
         set_element_parent_mod.set_element_parent_tool, // 2026-07-29 — re-parent existing element to new group/frame (Task 5)
+        move_design_element_mod.move_design_element_tool, // 2026-08-06 — translate element by (dx, dy) with optional cascade to descendants
         show_preview_mod.show_preview_tool,
     };
     return allocator.dupe(AgentTool, tools_list) catch return &.{};

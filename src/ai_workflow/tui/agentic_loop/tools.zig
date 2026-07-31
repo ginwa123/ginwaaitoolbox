@@ -35,6 +35,7 @@ pub const execAddElement = @import("tools_exec_add_element.zig").execAddElement;
 pub const execUpdateElement = @import("tools_exec_update_element.zig").execUpdateElement;
 pub const execGroupElements = @import("tools_exec_group_elements.zig").execGroupElements;
 pub const execSetElementParent = @import("tools_exec_set_element_parent.zig").execSetElementParent;
+pub const execMoveDesignElement = @import("tools_exec_move_design_element.zig").execMoveDesignElement;
 pub const execShowPreview = @import("tools_exec_show_preview.zig").execShowPreview;
 pub const execLspDefinition = @import("tools_exec_lsp_definition.zig").execLspDefinition;
 pub const execLspReferences = @import("tools_exec_lsp_references.zig").execLspReferences;
