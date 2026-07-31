@@ -474,7 +474,7 @@ TTL cleanup. Listed in the plan's "Out of scope" section.
 (3 chunks, 27 new tests, frontend-only — no Zig, no backend, no
 migration).
 
-**Branch.** `worktree/chat-scroll-position-persistence` (3 commits).
+**Branch.** `worktree/chat-scroll-position-persistence` (squash-merged as PR #153 → commit `3dfc31fa`).
 
 ### 2026-07-25: Design element drag-and-drop wire repaired
 
