@@ -118,16 +118,6 @@ pub const RunAgenticMultiStepInput = struct {
     logger: *logger_mod.Logger,
     event_bus: *event_bus_mod.EventBus,
     active_loops: *models.ActiveLoops,
-    /// Plan 2026-08-06-live-config-reload — DI context for live
-    /// `LlmConfig` re-reads. The workflow calls
-    /// `nalarcore.getLlmConfig(di)` once per loop iteration so
-    /// changes to the user's profile / model / API key (via
-    /// NalarSettings → PUT /api/config/nalar) take effect on the
-    /// next LLM call without waiting for the workflow to end. The
-    /// returned `*const LlmConfig` is kept alive by
-    /// `LlmConfigHolder.previous` until the workflow run finishes,
-    /// so dereferencing it is memory-safe even if a hot-swap
-    /// happened mid-run.
     di: *nalarcore.ContextIPCTui,
     environment: ?*const std.process.Environ.Map,
 };
@@ -338,24 +328,11 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         .{ params.session_id, params.parent_session_id, params.is_sub_agent, params.message.len, params.allowed_tools.len, params.cwd },
     );
 
-    // ─── Resolve the effective LLM profile (selected_profile_model) ──────
-    // Fallback chain (plan 2026-08-06-set-active-profile-default):
-    //   1. params.selected_profile_model (from POST body) if non-empty AND profile exists
-    //   2. config.active_profile if non-null AND non-empty AND profile exists
-    //   3. top-level LlmConfig (the "default" mode)
-    //
-    // IMPORTANT: `effective_*` are reassigned at the TOP of every
-    // loop iteration (see "Live config re-read" comment inside the
-    // while loop below) so that NalarSettings changes — model swap,
-    // profile switch, API-key rotation — take effect on the next LLM
-    // call without waiting for the workflow to end. The declarations
-    // stay outside the loop so the names remain visible to all
-    // statements below (the inner reassignment is a re-assign of the
-    // outer `var`, not a redeclaration).
-    var effective_api_key: []const u8 = undefined;
-    var effective_model: []const u8 = undefined;
-    var effective_base_url: []const u8 = undefined;
-    var effective_url_style: []const u8 = undefined;
+    var config = nalarcore.getLlmConfig(di.di);
+    var effective_api_key = resolveProfileField("api_key", config, params.selected_profile_model, config.active_profile, config.api_key);
+    var effective_model = resolveProfileField("model", config, params.selected_profile_model, config.active_profile, config.model);
+    var effective_base_url = resolveProfileField("base_url", config, params.selected_profile_model, config.active_profile, config.base_url);
+    var effective_url_style = resolveProfileField("url_style", config, params.selected_profile_model, config.active_profile, config.url_style);
 
     logger.infoFmt(
         "[CHECKPOINT] profile selected_profile_model='{s}' effective_model={s} effective_base_url={s} effective_url_style={s}",
@@ -371,30 +348,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const copy_image_urls = try parent_allocator.dupe(u8, params.image_urls);
     const copy_inherited_context = try parent_allocator.dupe(u8, params.inherited_context);
     const copy_selected_profile_model = try parent_allocator.dupe(u8, params.selected_profile_model);
-
-    // Migration 063 — read the unattended-mode flag ONCE per workflow
-    // invocation. When the flag is "1", the retry_count > 10 bail below
-    // does NOT return error.TooManyRetries; instead it logs, sleeps for
-    // config.retry_delay_ms, and continues. When "0", behavior is
-    // identical to pre-Migration-063.
-    //
-    // The SELECT is wrapped in `blk: { ... break :blk ... }` per the
-    // project's type-unification preference (memory
-    // `zig-orelse-type-unification-mismatch`): keeps the read bounded
-    // inside the entry block while letting the flag escape as a plain
-    // `bool` that's visible to the retry while-loop below.
-    // Uses di.allocator (NOT parent_allocator) because parent_allocator
-    // is per-block — the flag survives the entire function.
-    const is_auto_retry_until_stop: bool = blk: {
-        var flag_rows = db.query(di.allocator, "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{copy_session_id}) catch break :blk false;
-        defer flag_rows.deinit();
-        const flag_row = flag_rows.next() catch break :blk false;
-        if (flag_row) |row| {
-            defer row.deinit(di.allocator);
-            break :blk std.mem.eql(u8, row.values[0], "1");
-        }
-        break :blk false;
-    };
 
     var is_have_queue_message = false;
 
@@ -476,12 +429,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     );
 
     var retry_count: u32 = 0;
-    // Track the most recent retry error so the AI agent can understand WHY
-    // retries were happening when the budget is exhausted. Without this,
-    // "TooManyRetries" is ambiguous — the AI doesn't know if the cause was
-    // network, rate-limit, auth, etc. These are read by the bail block below
-    // (when retry_count exceeds 10) and embedded into a user-facing diagnostic
-    // message that the AI sees on its next turn.
     var last_retry_error: anyerror = error.Unknown;
     var last_retry_source: []const u8 = "unknown";
     var current_max_tokens: usize = 20000;
@@ -514,6 +461,17 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         defer arenaAllocatorWhileLoop.deinit();
         const allocator = arenaAllocatorWhileLoop.allocator();
 
+        const is_auto_retry_until_stop: bool = blk: {
+            var flag_rows = db.query(allocator, "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{copy_session_id}) catch break :blk false;
+            defer flag_rows.deinit();
+            const flag_row = flag_rows.next() catch break :blk false;
+            if (flag_row) |row| {
+                defer row.deinit(allocator);
+                break :blk std.mem.eql(u8, row.values[0], "1");
+            }
+            break :blk false;
+        };
+
         last_iter_start_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
 
         // ─── Live config re-read (plan 2026-08-06-live-config-reload) ───
@@ -524,7 +482,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         // end. `getLlmConfig` is a lock-free single-word pointer load;
         // memory safety is preserved by `LlmConfigHolder.previous`
         // keeping the swapped-out config alive until this run finishes.
-        const config = nalarcore.getLlmConfig(di.di);
+        config = nalarcore.getLlmConfig(di.di);
 
         // Step 1 produces a warning when the named profile is missing.
         // Step 2 (`config.active_profile`) is silent — it's the user's
@@ -770,38 +728,46 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // its next turn. Mirror the pattern the outer catch uses for generic
             // errors so the message shape is consistent.
 
-            try agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true,
+            try agentic_loop_mod.insertLLMHistories(.{
+                .allocator = allocator,
+                .io = io,
+                .db = db,
+                .logger = logger,
+                .event_bus = event_bus,
+                .is_emit_sse = true,
                 // Hard-bail diagnostic should surface in the live chat
                 // stream but NOT pollute the persistent chat history —
                 // the workflow halts immediately after this call so the
                 // diagnostic is purely a UX message, not a follow-up
                 // prompt for the next turn.
                 .is_skip_db = true,
-                .cwd = copy_cwd, .entity = .{
-                .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
-                .session_id = copy_session_id,
-                .model = effective_model,
-                .response_content = diagnostic,
-                .reasoning_content = null,
-                .role = agent.Role.user.to_str(),
-                .finish_reason = "null",
-                .tool_calls_json = "",
-                .tool_call_id = null,
-                .agent = effective_agent_name,
-                .loop_index = loop_counter,
-                .temperature = agent_temperature,
-                .is_thinking = isThinking,
-                .prompt_tokens = 0,
-                .completion_tokens = 0,
-                .total_tokens = 0,
-                .parent_id = copy_parent_session_id,
-                .parent_session_id = copy_parent_session_id,
-                .is_input = true,
-                .is_output = false,
-                .image_urls = null,
-                .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
-                .is_feed_to_llm = false,
-            } });
+                .cwd = copy_cwd,
+                .entity = .{
+                    .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+                    .session_id = copy_session_id,
+                    .model = effective_model,
+                    .response_content = diagnostic,
+                    .reasoning_content = null,
+                    .role = agent.Role.user.to_str(),
+                    .finish_reason = "null",
+                    .tool_calls_json = "",
+                    .tool_call_id = null,
+                    .agent = effective_agent_name,
+                    .loop_index = loop_counter,
+                    .temperature = agent_temperature,
+                    .is_thinking = isThinking,
+                    .prompt_tokens = 0,
+                    .completion_tokens = 0,
+                    .total_tokens = 0,
+                    .parent_id = copy_parent_session_id,
+                    .parent_session_id = copy_parent_session_id,
+                    .is_input = true,
+                    .is_output = false,
+                    .image_urls = null,
+                    .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+                    .is_feed_to_llm = false,
+                },
+            });
 
             return error.TooManyRetries;
         }
