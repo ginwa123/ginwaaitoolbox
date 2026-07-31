@@ -2617,15 +2617,23 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
       'session_created',
       'session_deleted',
       // Design-mode element events (see src/ai_workflow/tui/on_event_sent_design.zig).
-      // All three share the same `DesignElementEvent` payload; the
-      // `action` discriminator tells them apart. The single
-      // `design_element` channel token in `tokens` subscribes to all
-      // three at once — no per-action channel routing needed because
-      // the frontend treats them uniformly (re-fetch the page's
-      // element list).
+      // All granular single-element events share the `DesignElementEvent`
+      // payload; the `action` discriminator tells them apart. The single
+      // `design_element` channel token in `tokens` subscribes to all of
+      // them at once — no per-action channel routing needed because the
+      // frontend treats them uniformly (re-fetch the page's element list).
+      // The BATCH event (`design_elements_geometry_batch_updated`) is
+      // emitted by `updateElementsBatch` AND by `moveElementsWithDescendantsBatch`
+      // — both endpoints share the same SSE event type. Without this
+      // registration, the browser's EventSource drops the event before
+      // our `onEvent` handler ever sees it (see project memory
+      // browser-eventsource-named-events.md), which means the dedupe
+      // check in `stores/designSse.ts` never runs and the local-mutation
+      // skip path is dead code for batch updates.
       'design_element_created',
       'design_element_updated',
       'design_element_deleted',
+      'design_elements_geometry_batch_updated',
     ],
     // Default heartbeat filter (matches backend sse_manager.sendHeartbeat).
     heartbeatData: 'ping',
@@ -2649,17 +2657,23 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
         return
       }
 
-      // Design-mode element events. The backend emits three granular
-      // event names (`design_element_created` / `_updated` / `_deleted`)
-      // — see src/ai_workflow/tui/on_event_sent_design.zig — all
-      // share the same `DesignElementEvent` payload (the `action`
-      // discriminator tells them apart). We dispatch all three to
-      // the same `design` channel; the consumer can switch on
-      // `event.action` if it cares about the distinction.
+      // Design-mode element events. The backend emits four event names:
+      //   - `design_element_created` / `_updated` / `_deleted` — single
+      //     element; all share the same `DesignElementEvent` payload
+      //     (the `action` discriminator tells them apart).
+      //   - `design_elements_geometry_batch_updated` — batch event with
+      //     `element_ids[]` (the `DesignElementEvent` interface has
+      //     `element_ids?: string[]` for this variant). Emitted by
+      //     `updateElementsBatch` AND `moveElementsWithDescendantsBatch`.
+      //   - src/ai_workflow/tui/on_event_sent_design.zig — all four
+      //     are dispatched to the same `design` channel; the consumer
+      //     can switch on `event.action` or check `event.element_ids`
+      //     if it cares about the distinction.
       if (
         eventType === 'design_element_created' ||
         eventType === 'design_element_updated' ||
-        eventType === 'design_element_deleted'
+        eventType === 'design_element_deleted' ||
+        eventType === 'design_elements_geometry_batch_updated'
       ) {
         if (!opts.channels.design) return
         try {

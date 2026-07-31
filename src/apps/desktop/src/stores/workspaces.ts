@@ -1285,7 +1285,47 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     if (!item) return
     try {
       const { elements } = await api.getDesignPage(workspaceId, itemId, pageId)
-      item.design_elements = elements
+      // Mirror in PLACE (per-id replace + splice + append) rather than
+      // `item.design_elements = elements`. Replacing the array
+      // reference creates a window where any in-flight
+      // `moveDesignElementsBatch` mirror that captured the OLD array
+      // reference would write to the OLD array, which the components
+      // would no longer react to. By mutating the same array in place
+      // (with per-index writes and `splice` for deletions), Vue 3's
+      // reactivity tracks the changes consistently, and any
+      // concurrent mirror writes targeting the same ids still land in
+      // the same reactive array.
+      if (!item.design_elements) {
+        item.design_elements = elements
+        return
+      }
+      // Build a Map<id, incomingElement> for O(1) lookup.
+      const incomingById = new Map<string, typeof elements[number]>()
+      for (const el of elements) incomingById.set(el.id, el)
+      // Walk the local array. For each existing row:
+      //   - if its id is in the incoming set, replace in place
+      //   - if its id is NOT in the incoming set, mark for splice
+      // We splice from the end so the live indices stay valid.
+      const toSplice: number[] = []
+      for (let i = 0; i < item.design_elements.length; i++) {
+        const existing = item.design_elements[i]!
+        const next = incomingById.get(existing.id)
+        if (next) {
+          item.design_elements[i] = next
+          incomingById.delete(existing.id)
+        } else {
+          toSplice.push(i)
+        }
+      }
+      // Splice deletions from the end (preserves earlier indices).
+      for (let i = toSplice.length - 1; i >= 0; i--) {
+        item.design_elements.splice(toSplice[i]!, 1)
+      }
+      // Append any incoming elements that weren't already in the
+      // array (newly created elsewhere — LLMs, other tabs).
+      for (const remaining of incomingById.values()) {
+        item.design_elements.push(remaining)
+      }
     } catch (err) {
       console.error('[workspacesStore.fetchDesignElements] API call failed:', err)
       // Leave the existing elements array untouched so the UI
@@ -1511,11 +1551,29 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     const result = await moveDesignElementsBatchApi(workspaceId, itemId, pageId, { items })
     // Mirror every updated row into the local design_elements array
     // (preserves the array's existing order for non-affected elements).
+    // Bug history (2026-08-06): the FIRST drag of a group/frame
+    // visually moved only the group, not the descendants. The
+    // underlying cause was an upstream `fetchDesignElements` REPLACE
+    // (`item.design_elements = elements`) winning a race with the
+    // mirror: the fetch returned the post-cascade state, but the
+    // mirror's writes to the OLD array reference were lost when Vue
+    // re-rendered against the NEW array. The fix above (in-place
+    // mutation in fetchDesignElements) plus the in-place mirror
+    // here closes the loop.
     const item = findItem(workspaceId, itemId)
     if (item?.design_elements) {
+      // Build a Map<id, index> for O(1) lookup; the cascade can
+      // include 10+ elements (group + children + grandchildren) and
+      // repeated findIndex inside the loop is O(n²).
+      const idxById = new Map<string, number>()
+      for (let i = 0; i < item.design_elements.length; i++) {
+        idxById.set(item.design_elements[i]!.id, i)
+      }
       for (const updated of result.updated) {
-        const idx = item.design_elements.findIndex((e) => e.id === updated.id)
-        if (idx !== -1) item.design_elements[idx] = updated
+        const idx = idxById.get(updated.id)
+        if (idx !== undefined) {
+          item.design_elements[idx] = updated
+        }
       }
     }
     // Register all cascaded ids so the SSE handler skips the GET
