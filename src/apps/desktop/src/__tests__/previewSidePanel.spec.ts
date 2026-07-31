@@ -25,7 +25,7 @@ interface PreviewOverrides {
 }
 
 interface PreviewInput {
-  content_type?: 'markdown' | 'text' | 'code' | 'image'
+  content_type?: 'markdown' | 'text' | 'code' | 'image' | 'html'
   content?: string
   title?: string
   language?: string
@@ -488,5 +488,79 @@ describe('PreviewSidePanel', () => {
     await wrapper.find('button[title="Collapse panel"]').trigger('click')
     await nextTick()
     expect(wrapper.find('[data-testid="preview-resize-handle"]').exists()).toBe(false)
+  })
+
+  // ─── html content_type (sandboxed iframe) ───────────────────────────
+  // Feature: show_preview.content_type="html" — renders inside a
+  // sandboxed iframe matching the existing DesignElementPreview.vue
+  // pattern. The iframe MUST have sandbox="allow-scripts" (no
+  // allow-same-origin, no allow-forms) so the user's HTML/JS cannot
+  // read the parent app's cookies or localStorage.
+
+  it('renders html content_type inside a sandboxed iframe', () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: {
+        previews: [
+          {
+            id: 'html-1',
+            content: buildEnvelope({
+              content_type: 'html',
+              content: '<h1>Hello</h1>',
+              title: 'Landing page',
+            }),
+          },
+        ],
+      },
+    })
+    const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]')
+    expect(iframe.exists()).toBe(true)
+    expect(iframe.attributes('sandbox')).toBe('allow-scripts')
+  })
+
+  it('passes the user HTML into the iframe via srcdoc (attribute-escaped)', () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: {
+        previews: [
+          {
+            id: 'html-2',
+            content: buildEnvelope({
+              content_type: 'html',
+              content: '<!DOCTYPE html><html><body><h1>Hi</h1></body></html>',
+            }),
+          },
+        ],
+      },
+    })
+    const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]')
+    expect(iframe.exists()).toBe(true)
+    const srcdoc = iframe.attributes('srcdoc') ?? ''
+    // The HTML must be attribute-escaped (< > & ") before being placed
+    // in the srcdoc attribute, so the wrapping attribute stays valid.
+    // The browser un-escapes when parsing the iframe content.
+    expect(srcdoc).toContain('&lt;!DOCTYPE html&gt;')
+    expect(srcdoc).toContain('&lt;h1&gt;Hi&lt;/h1&gt;')
+  })
+
+  it('attribute-escapes double quotes in the srcdoc so the wrapping attribute stays valid', () => {
+    const wrapper = mount(PreviewSidePanel, {
+      props: {
+        previews: [
+          {
+            id: 'html-3',
+            content: buildEnvelope({
+              content_type: 'html',
+              content: '<a href="x" title="Y">link</a>',
+            }),
+          },
+        ],
+      },
+    })
+    const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]')
+    expect(iframe.exists()).toBe(true)
+    const srcdoc = iframe.attributes('srcdoc') ?? ''
+    // A raw " inside the user's HTML would close the srcdoc attribute early —
+    // the render code must escape it to &quot; so the attribute stays valid.
+    expect(srcdoc).toContain('&quot;x&quot;')
+    expect(srcdoc).toContain('&quot;Y&quot;')
   })
 })
