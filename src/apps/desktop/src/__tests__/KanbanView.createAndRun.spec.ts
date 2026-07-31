@@ -85,12 +85,12 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       description: 'desc',
       task_type: 'standard',
     })
-    vi.spyOn(api, 'sendChatMessage').mockResolvedValue({ status: 'queued' })
+    vi.spyOn(api, 'sendChatMessage').mockResolvedValue({ status: 'send' })
 
     const store = useWorkspacesStore()
     const addSpy = vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
     const moveSpy = vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
-    const runSpy = vi.spyOn(store, 'runAgentOnNewTask').mockResolvedValue({ status: 'queued' })
+    const runSpy = vi.spyOn(store, 'runAgentOnNewTask').mockResolvedValue({ status: 'send' })
 
     const view = await mountView()
     const vm: any = view.vm
@@ -129,14 +129,14 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       description: '',
       task_type: 'standard',
     })
-    vi.spyOn(api, 'sendChatMessage').mockResolvedValue({ status: 'queued' })
+    vi.spyOn(api, 'sendChatMessage').mockResolvedValue({ status: 'send' })
 
     const store = useWorkspacesStore()
     vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
     vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
     const runSpy = vi
       .spyOn(store, 'runAgentOnNewTask')
-      .mockResolvedValue({ status: 'queued' })
+      .mockResolvedValue({ status: 'send' })
 
     const view = await mountView()
     const vm: any = view.vm
@@ -163,14 +163,14 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       description: 'd',
       task_type: 'standard',
     })
-    vi.spyOn(api, 'sendChatMessage').mockResolvedValue({ status: 'queued' })
+    vi.spyOn(api, 'sendChatMessage').mockResolvedValue({ status: 'send' })
 
     const store = useWorkspacesStore()
     vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
     vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
     const runSpy = vi
       .spyOn(store, 'runAgentOnNewTask')
-      .mockResolvedValue({ status: 'queued' })
+      .mockResolvedValue({ status: 'send' })
 
     const view = await mountView()
     const vm: any = view.vm

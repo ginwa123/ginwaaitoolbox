@@ -486,9 +486,12 @@ const handleCreateTaskSave = async (payload: {
           isAutoRetryUntilStop: payload.is_auto_retry_until_stop,
         },
       )
-      if (result?.status === 'queued') {
+      if (result?.status === 'send') {
         // Reuse the existing selectTask emit so the AppLayout ->
         // Sidebar chain handles setActiveTask + router.replace.
+        // 'send' is the backend's status string for a successful
+        // session create (see session_create.zig:115 — the worker
+        // is given the queued message and will start processing).
         emit('selectTask', taskId)
       } else {
         // Partial success: task was created but the agent didn't

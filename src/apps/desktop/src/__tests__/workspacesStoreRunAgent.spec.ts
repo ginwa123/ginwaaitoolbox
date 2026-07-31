@@ -28,7 +28,7 @@ describe('workspacesStore.runAgentOnNewTask', () => {
   it('forwards queueMessage, cwd, and isAutoRetryUntilStop to api.sendChatMessage', async () => {
     const sendSpy = vi
       .spyOn(api, 'sendChatMessage')
-      .mockResolvedValue({ status: 'queued' })
+      .mockResolvedValue({ status: 'send' })
     const store = useWorkspacesStore()
     const result = await store.runAgentOnNewTask('ws_1', 'item_1', 'task_abc', {
       queueMessage: 'Title\n\nBody',
@@ -43,13 +43,13 @@ describe('workspacesStore.runAgentOnNewTask', () => {
       '',
       '1',
     )
-    expect(result).toEqual({ status: 'queued' })
+    expect(result).toEqual({ status: 'send' })
   })
 
   it('forwards empty string when isAutoRetryUntilStop is undefined', async () => {
     const sendSpy = vi
       .spyOn(api, 'sendChatMessage')
-      .mockResolvedValue({ status: 'queued' })
+      .mockResolvedValue({ status: 'send' })
     const store = useWorkspacesStore()
     await store.runAgentOnNewTask('ws_1', 'item_1', 'task_abc', {
       queueMessage: 'Title',
