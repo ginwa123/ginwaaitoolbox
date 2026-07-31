@@ -51,6 +51,15 @@ const UpdateElementBody = struct {
     text_content: ?[]const u8 = null,
     text_style: ?[]const u8 = null,
     image_url: ?[]const u8 = null,
+    /// FK to a `group`/`frame` element on the same page. `null` =
+    /// leave unchanged. Pass `""` (empty string) to clear the parent
+    /// (reparent to top-level).
+    parent_id: ?[]const u8 = null,
+    /// Optional post-update position normalization. Today only
+    /// "last_in_parent" is supported; unrecognized values are
+    /// treated as `null` (no position recompute) by the handler.
+    /// Plan: docs/superpowers/plans/2026-07-30-design-layer-drag-join-or-leave-group.md
+    reposition: ?[]const u8 = null,
 };
 
 /// Domain-level error set for `useCase`. The handler maps each
@@ -75,6 +84,10 @@ pub const DesignElementUpdateError = error{
     /// `design_model.updateElement` returned `FileWriteFailed`
     /// (atomic-rename failed for the new `html` content).
     FileWriteFailed,
+    /// `design_model.updateElement` returned `error.CycleDetected`
+    /// — the requested parent_id is the element's own id or one
+    /// of its transitive descendants. Maps to 400 BadReparent.
+    BadReparent,
     /// `updateElement` failed for some other DB reason.
     DbError,
     /// Update succeeded but the element wasn't visible in the
@@ -103,6 +116,13 @@ pub const UpdateElementInput = struct {
     text_content: ?[]const u8,
     text_style: ?[]const u8,
     image_url: ?[]const u8,
+    /// FK to a `group`/`frame` element on the same page. `null` =
+    /// leave unchanged. Pass `""` (empty string) to clear the
+    /// parent (reparent to top-level).
+    parent_id: ?[]const u8,
+    /// Optional position normalization after the UPDATE. Today only
+    /// `.last_in_parent` is supported; see the model's `RepositionMode`.
+    reposition: ?design_model.RepositionMode,
 };
 
 /// Output of the update-element use-case.
@@ -126,7 +146,7 @@ pub const UpdateElementOutput = struct {
 ///   3. Re-query via `design_model.getElement(...)` to fetch the
 ///      full row.
 ///   4. Return a heap-owned `DesignElement` for the response.
-fn useCase(
+pub fn useCase(
     allocator: std.mem.Allocator,
     db: *nalarcore.sqlite.SqliteBackend,
     input: UpdateElementInput,
@@ -152,7 +172,9 @@ fn useCase(
         input.opacity != null or
         input.text_content != null or
         input.text_style != null or
-        input.image_url != null;
+        input.image_url != null or
+        input.parent_id != null or
+        input.reposition != null;
     if (!any_change) return error.NoChanges;
 
     // 3. Apply the UPDATE.
@@ -174,9 +196,12 @@ fn useCase(
         .text_content = input.text_content,
         .text_style = input.text_style,
         .image_url = input.image_url,
+        .parent_id = input.parent_id,
+        .reposition = input.reposition,
     }) catch |err| switch (err) {
         error.ElementNotFound => return error.ElementNotFound,
         error.FileWriteFailed => return error.FileWriteFailed,
+        error.CycleDetected => return error.BadReparent,
         else => return error.DbError,
     };
     defer allocator.free(updated_id);
@@ -241,6 +266,17 @@ pub fn designElementsUpdateHandler(
         };
     }
 
+    // Translate the wire `reposition` string to the enum (if provided).
+    // Today only "last_in_parent" is supported; any unrecognized value
+    // is silently ignored (treated as `null`) to keep the wire shape
+    // forward-compatible.
+    var reposition: ?design_model.RepositionMode = null;
+    if (parsed.reposition) |r| {
+        if (std.mem.eql(u8, r, "last_in_parent")) {
+            reposition = .last_in_parent;
+        }
+    }
+
     // 2. Delegate to the use-case.
     const output = useCase(allocator, sqlite_db, .{
         .element_id = element_id,
@@ -260,11 +296,14 @@ pub fn designElementsUpdateHandler(
         .text_content = parsed.text_content,
         .text_style = parsed.text_style,
         .image_url = parsed.image_url,
+        .parent_id = parsed.parent_id,
+        .reposition = reposition,
     }) catch |err| {
         const status: u16 = switch (err) {
             error.ElementIdRequired => 400,
             error.InvalidType => 400,
             error.NoChanges => 400,
+            error.BadReparent => 400,
             error.ElementNotFound => 404,
             error.FileWriteFailed => 500,
             error.DbError => 500,
@@ -275,6 +314,7 @@ pub fn designElementsUpdateHandler(
             error.ElementIdRequired => "element_id required",
             error.InvalidType => "type must be one of: rectangle, ellipse, text, image, frame, group",
             error.NoChanges => "No fields to update",
+            error.BadReparent => "Reparenting would create a cycle",
             error.ElementNotFound => "Element not found",
             error.FileWriteFailed => "Failed to write element HTML file",
             error.DbError => "Failed to update element",
