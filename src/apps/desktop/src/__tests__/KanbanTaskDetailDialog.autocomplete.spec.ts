@@ -187,6 +187,7 @@ describe('KanbanTaskDetailDialog — tag autocomplete wiring', () => {
       props: {
         show: true,
         task: TASK_WITH_TAGS,
+        column: COLUMN,  // required so the composable has a valid item_id (graceful degradation skips otherwise)
         workspaceId: 'ws_x',
       },
     })

@@ -115,10 +115,14 @@ const props = withDefaults(
 // without conditional wiring. We source the item id from the column
 // prop (which carries the parent kanban's workspace_item_id) —
 // Task itself doesn't carry workspace_item_id, but every active task
-// in the kanban is reachable via column.workspace_item_id.
+// in the kanban is reachable via column.workspace_item_id. Pass
+// refs (not raw strings) so the composable can react when the
+// column becomes available — earlier we passed raw strings and
+// the composable was permanently bound to empty IDs when the
+// dialog opened before column was resolved.
 const tagSuggestions = useKanbanTagSuggestions(
-  props.workspaceId ?? '',
-  props.column?.workspace_item_id ?? '',
+  computed(() => props.workspaceId ?? ''),
+  computed(() => props.column?.workspace_item_id ?? ''),
 )
 
 const emit = defineEmits<{

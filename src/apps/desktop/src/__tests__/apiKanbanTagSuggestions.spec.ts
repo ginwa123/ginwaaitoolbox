@@ -76,4 +76,18 @@ describe('getKanbanTagSuggestions', () => {
     expect(result.tags).toEqual([])
     expect(result.has_more).toBe(false)
   })
+
+  it('returns empty + has_more=false when workspaceId is empty (no fetch)', async () => {
+    const result = await api.getKanbanTagSuggestions('', 'item_x')
+    expect(result.tags).toEqual([])
+    expect(result.has_more).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('returns empty + has_more=false when itemId is empty (no fetch)', async () => {
+    const result = await api.getKanbanTagSuggestions('ws_x', '')
+    expect(result.tags).toEqual([])
+    expect(result.has_more).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })

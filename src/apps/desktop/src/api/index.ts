@@ -1491,6 +1491,12 @@ export async function getKanbanTagSuggestions(
 ): Promise<KanbanTagSuggestionsResponse> {
   const limit = options?.limit ?? 8
   const offset = options?.offset ?? 0
+  // Defensive: empty args = no-op (returns empty + has_more=false).
+  // Prevents 400s when the caller passes placeholder values during
+  // the render tick (e.g. dialog opens before column is resolved).
+  if (!workspaceId || !itemId) {
+    return { tags: [], has_more: false }
+  }
   const url = `/workspaces/${encodeURIComponent(workspaceId)}/items/${encodeURIComponent(itemId)}/kanban/tags?limit=${limit}&offset=${offset}`
   // Graceful degradation: a 5xx returns empty + has_more=false so a
   // broken server doesn't block the user from typing tags.
