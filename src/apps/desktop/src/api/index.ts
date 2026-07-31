@@ -1731,6 +1731,48 @@ export async function reorderDesignElements(
 }
 
 /**
+ * POST /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/reparent-batch
+ *
+ * NEW (Chunk 1b of drag-to-reparent plan). Atomic N-element reparent
+ * in a single transaction. Used by the LayersPanel drag-and-drop
+ * affordance so dragging 1 or N selected rows into a group uses ONE
+ * round-trip instead of N parallel PUTs. The whole batch is
+ * all-or-nothing — if ANY element would close a cycle, the batch
+ * fails with 400 BadReparent and no DB writes happen.
+ *
+ * Body shape: `{ element_ids: [...], new_parent_id: ... | null,
+ *                reposition: 'last_in_parent' }`.
+ *
+ * Response 200: `{ updated: DesignElement[] }` in input order.
+ *
+ * Error shape: 400 (EmptyElementIds / BadElementId / BadNewParentId /
+ * BadReparent), 404 (PageNotFound), 409 (CrossPageIds).
+ */
+export interface ReparentDesignElementsBatchRequest {
+  element_ids: string[]
+  /** null = top-level (leave any current group). */
+  new_parent_id: string | null
+  /** Currently only "last_in_parent" is supported. */
+  reposition: 'last_in_parent'
+}
+
+export interface ReparentDesignElementsBatchResponse {
+  updated: DesignElement[]
+}
+
+export async function reparentDesignElementsBatch(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  body: ReparentDesignElementsBatchRequest,
+): Promise<ReparentDesignElementsBatchResponse> {
+  return await apiFetch<ReparentDesignElementsBatchResponse>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/reparent-batch`,
+    { method: 'POST', body },
+  )
+}
+
+/**
  * DELETE /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId
  *
  * Idempotent delete. Returns `{ success: true }` whether the row
