@@ -55,6 +55,16 @@ pub fn sessionUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     const di = try root_mod.getSingleton();
     const sqlite_db = di.db;
 
+    // Plan 2026-08-06-set-active-profile-default — ensure the row
+    // exists before any UPDATE. The user can land here by changing
+    // the profile on a brand-new chat: the session_id is in the URL
+    // but the row hasn't been INSERTed yet (no message queued). The
+    // helper auto-creates with defaults so subsequent UPDATEs succeed
+    // and the user's profile choice is preserved for the first real
+    // LLM call. Without this, getSession() below returns null and the
+    // handler 404s with "session not found".
+    _ = try llm_history.ensureSessionExists(allocator, sqlite_db, session_id);
+
     // Update selected_profile_model (always — even if empty, to allow clearing)
     try llm_history.updateSessionSelectedProfileModel(allocator, sqlite_db, session_id, parsed.selected_profile_model);
 

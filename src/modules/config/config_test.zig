@@ -1536,3 +1536,67 @@ test "LlmConfig: top-level defaults are skipped when defaults=null passed" {
     try std.testing.expectEqual(@as(u32, 500000), cfg.maxCapacityForModel(null, null, null, "MiniMax-M3"));
     try std.testing.expectEqual(@as(u8, 80), cfg.compactionThresholdPercent(null, null, null));
 }
+
+// ---------------------------------------------------------------------------
+// `active_profile` round-trip (plan 2026-08-06-set-active-profile-default)
+// ---------------------------------------------------------------------------
+
+test "active_profile: parses top-level 'active_profile' string from JSON" {
+    // Regression for "set_active_profile not work too" — the field
+    // was persisted by the PUT handler but dropped on load, so the
+    // workflow could never see it. With the fix, LlmConfig.init
+    // surfaces it on `cfg.active_profile` as a non-null borrowed slice.
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k",
+        \\  "model": "default-model",
+        \\  "base_url": "https://default.example.com",
+        \\  "active_profile": "alpha"
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expect(cfg.active_profile != null);
+    try std.testing.expectEqualStrings("alpha", cfg.active_profile.?);
+}
+
+test "active_profile: missing key → null (back-compat with legacy configs)" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k",
+        \\  "model": "m",
+        \\  "base_url": "b"
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expect(cfg.active_profile == null);
+}
+
+test "active_profile: empty string normalises to null" {
+    // Defends against manual `""` JSON edits (matches the
+    // `nalar_config_put.zig` PUT coercion: empty string → null).
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k",
+        \\  "model": "m",
+        \\  "base_url": "b",
+        \\  "active_profile": ""
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expect(cfg.active_profile == null);
+}

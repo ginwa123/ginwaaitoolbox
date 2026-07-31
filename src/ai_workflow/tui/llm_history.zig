@@ -2253,6 +2253,34 @@ pub fn create_session(
     };
 }
 
+/// Ensure a session row exists for `session_id`. If no row matches,
+/// INSERT a minimal row with sensible defaults (name='New Session',
+/// is_auto_retry_until_stop='0', empty selected_profile_model).
+///
+/// Returns `true` iff a new row was created, `false` if one already
+/// existed. Used by `session_update.zig` (PUT /api/session/:id) to
+/// make the handler idempotent: the user can land here by changing
+/// the profile on a brand-new chat where the session_id is in the URL
+/// but the row hasn't been INSERTed yet (no message queued).
+/// Pre-creating with defaults lets the profile / name / flag updates
+/// succeed and be preserved for the first real LLM call.
+///
+/// Plan: docs/superpowers/plans/2026-08-06-set-active-profile-default.md
+/// (Bug: "session not found when change profile")
+pub fn ensureSessionExists(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !bool {
+    const existing = (try getSession(allocator, db, session_id)) orelse {
+        const created = try create_session(allocator, db, session_id, "New Session", "0");
+        created.deinit(allocator);
+        return true;
+    };
+    existing.deinit(allocator);
+    return false;
+}
+
 /// Get a session by id
 pub fn getSession(
     allocator: std.mem.Allocator,
