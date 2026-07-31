@@ -189,6 +189,45 @@ describe('DesignElement drag', () => {
     expect(lastUpdate.width).toBe(10)
   })
 
+  // Symptom of the bug fixed in 2026-07-30: when the user clicks a
+  // resize handle, the handle's pointerdown fires startDrag(e, {
+  // resize: handle }) which then bubbles to the wrapper's @pointerdown
+  // (startDrag(e, 'move')). The wrapper's setPointerCapture steals
+  // capture from the handle, and the wrapper's move handler runs
+  // instead of the handle's resize handler. The element MOVES instead
+  // of resizing. The simplest invariant to test is the duplicate
+  // handler invocation: with the bug, both handle and wrapper fire
+  // startDrag, so 'select' is emitted twice. With the fix, only the
+  // handle fires (startDrag calls event.stopPropagation() for any
+  // non-'move' mode), so 'select' is emitted once.
+  it('resize handle pointerdown does NOT bubble to the wrapper (single select emit, no duplicate handler)', async () => {
+    const wrapper = mount(DesignElement, {
+      props: { element: ELEMENT, selected: true, zoom: 1.0 },
+    })
+    const nwHandle = wrapper.find(`[data-testid="design-element-handle-${ELEMENT.id}-nw"]`)
+    const nwEl = nwHandle.element as HTMLElement
+    nwEl.setPointerCapture = () => {}
+    nwEl.releasePointerCapture = () => {}
+    nwEl.hasPointerCapture = (): boolean => true
+    // Deliberately do NOT stub addEventListener on the handle — let
+    // both the handle's and the wrapper's listeners register normally
+    // so we can verify the bubble behaviour. (Stubbing the handle's
+    // addEventListener is what hid the bug in the existing test.)
+
+    nwEl.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true }))
+
+    // Pre-fix: 'select' emitted TWICE (handle + wrapper).
+    // Post-fix: 'select' emitted ONCE (handle only — wrapper's
+    // @pointerdown never fired because the handle called
+    // event.stopPropagation()).
+    const selects = wrapper.emitted('select') ?? []
+    expect(selects).toHaveLength(1)
+    // Also assert 'dragStart' is emitted once (same duplicate-handler
+    // pattern would cause a duplicate dragStart).
+    const dragStarts = wrapper.emitted('dragStart') ?? []
+    expect(dragStarts).toHaveLength(1)
+  })
+
   // Strict throttle test: fires 3 rapid pointermoves within the
   // 50ms throttle window and asserts the trailing patch was applied
   // exactly once (not 3 times). This is the test that proves the
