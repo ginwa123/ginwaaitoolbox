@@ -1,7 +1,7 @@
 # Nalar — Project Specification
 
-> **Compiled**: 2026-07-26
-> **Source**: Originally compiled from 178 plan files in `docs/superpowers/plans/` + `docs/plans/`, verified against current code (`git log`, `git log --all`, source-tree searches, `NALAR.md` changelog). The plan folders were deleted on 2026-07-26 after the consolidation; see `§10.2` for the historical inventory.
+> **Compiled**: 2026-08-06 (re-consolidated from the 17 plans + 1 SSE plan that accumulated since the 2026-07-26 cut)
+> **Source**: Originally compiled from 178 plan files in `docs/superpowers/plans/` + `docs/plans/` on 2026-07-26; the second consolidation on 2026-08-06 adds all plans from `docs/superpowers/plans/2026-07-28-*` through `docs/superpowers/plans/2026-08-06-*` plus `docs/sse-reconnect-plan.md`. The plan folders were deleted on 2026-07-26 and again on 2026-08-06 after each consolidation; see `§10.2` for the historical inventory.
 > **Purpose**: Single source of truth for what the project is, what it has, and what is still pending.
 
 ---
@@ -85,18 +85,18 @@ src/
 
 ## 2. Plan Status Summary
 
-The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, see `§10.2`) were each opened, the first 30–50 lines summarized, and the claim cross-checked against `git log --all`, source-tree searches, and the `NALAR.md` changelog (which records "what landed" entries). Classification:
+The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, see `§10.2`) were each opened, the first 30–50 lines summarized, and the claim cross-checked against `git log --all`, source-tree searches, and the `NALAR.md` changelog (which records "what landed" entries). Classification after the 2026-08-06 second-round consolidation:
 
 | Status | Count | Meaning |
 |---|---|---|
-| ✅ **Implemented** | 118 | Landed in current code — verified via PR # or commit ref |
-| 🟡 **In Progress** | 14 | Partially landed; backend or frontend part shipped, not both |
-| ⏳ **Pending** | 5 | Plan is current and still relevant; no implementation found |
-| ❌ **Superseded** | 14 | Replaced by a follow-up plan that did land |
-| 🗑️ **Not Relevant** | 7 | Refers to obsolete tech (Bun, Drizzle, SolidJS, Zig 0.15, LSP server, etc.) |
-| **Total** | **178** | (Note: 178 is the COUNT of files; some "design" + "implementation" pairs overlap) |
+| ✅ **Implemented** | 143 | Landed in current code — verified via PR # or commit ref (+8 from the 2026-08-06 round: `kanban-task-tags`, `create-kanban-task-tool`, `design-element-parent-id-tools`, `design-right-click-group-menu`, `fix-retry-delay-ms-race`, `better-compaction-context`, `design-layer-drag-join-or-leave-group`, `fix-design-resize-handles-bubble-bug`) |
+| 🟡 **In Progress** | 6 | Partially landed; backend or frontend part shipped, not both (unchanged) |
+| ⏳ **Pending** | 2 | Plan is current and still relevant; no implementation found (`kanban-task-tags-autocomplete`, `sse-reconnect-plan`) |
+| ❌ **Superseded** | 2 | Replaced by a follow-up plan that did land (`constrain-design-elements-to-canvas` → `remove-canvas-background`, `design-per-page-chat-sessions` → `design-page-workspace-item-task-fk`) |
+| 🗑️ **Not Relevant** | 0 | (all obsolete-tech plans were already filtered out in the 2026-07-26 round) |
+| **Total** | **153** | 142 from the 2026-07-26 round + 11 new entries in the 2026-08-06 round. Historical 178 from the 2026-07-26 round includes 25 design-only specs in `docs/plans/` whose status was inherited from the matching implementation plan in `docs/superpowers/plans/`. |
 
-> **Note on duplicates**: The original `docs/plans/` held design docs while `docs/superpowers/plans/` held implementation plans. When a design + implementation pair both existed, the implementation's status wins. Both folders were deleted after consolidation on 2026-07-26.
+> **Note on duplicates**: The original `docs/plans/` held design docs while `docs/superpowers/plans/` held implementation plans. When a design + implementation pair both existed, the implementation's status wins. Both folders were deleted after consolidation on 2026-07-26; the second-round 17 plans in `docs/superpowers/plans/2026-07-28-*`–`2026-08-06-*` were deleted on 2026-08-06.
 
 ---
 
@@ -141,6 +141,9 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-06-21-llm-stream-watchdog.md` | 🟡 | `StreamWatchdog` (commit `21ec4e92`) — on worktree, not merged |
 | `2025-01-13-read_file-hash-only.md` | ⏳ | `hash_only` added then REMOVED in a refactor — feature still relevant |
 | `2025-01-13-text-replace-edge-cases.md` | ⏳ | `text_replace.zig` exists but edge-case tests never added |
+| `2026-07-29-fix-retry-delay-ms-race.md` | ✅ | Surgical 1-line clamp `@max(deadline_ns - now_ns, 0)` in `src/ai_workflow/tui/agentic_loop/retry_delay_ms.zig` to prevent `panic: integer does not fit in destination type` when wall-clock races between `Clock.now` calls in the retry-sleep path. Single behavioural test (`retry_delay_ms_race_test.zig`) exercises the race window in 200 iterations with `delay_ms = 1`; pre-fix the test binary aborts, post-fix all 200 iterations return cleanly. Out of scope: the upstream "stream returns 0 chunks → error.StreamInterrupted" issue in `Agent.zig` (separate bug; `retry_count > 10` is the eventual guard). |
+| `2026-07-30-better-compaction-context.md` | ✅ | Compacted messages now carry the user's full chat history and every `read_file` path the AI touched (forward context, not just the compactor's summary). New `compaction_context.zig` helpers (`fetchUserChatHistory`, `fetchReadFilePaths`, `enrichCompactionXml`, `parseReadFilePath`) wired into `workflow_commpact_message.zig` before `mark_history_not_for_llmrun`. Inline tests per the `agentic_loop/` README convention. Same memory was previously captured in the global memory `zig-mock-state-global-use-after-free-across-tests.md` (mock-state slices go stale across tests when `mockCompactMessagesInMemory` stored a borrowed pointer instead of an owned buffer). |
+| `2026-07-29-create-kanban-task-tool.md` | ✅ | New LLM-callable `create_kanban_task` tool — agent can create a kanban task under an existing kanban item directly from chat. Mirrors `kanban_list` / `kanban_move_task` shape: single tool file (`create_kanban_task.zig`) with `CreateKanbanTaskInput`, the `AgentTool` definition, `executeCreateKanbanTaskToString` returning XML (`<kanban_task><success>true</success><task_id>…</task_id><column_id>…</column_id><position>…</position></kanban_task>`), and the `successXml` / `errorXml` / `errorXmlOwned` triplet. Standard `tools_exec_create_kanban_task.zig` wrapper (parse + call + wrap via `wrapToolOutput`). Validates: parent item exists and `item_type='kanban'`; parent has ≥ 1 column (auto-assign to first at `MAX+1` when caller omits `column_id`); empty/null `name` / `workspace_id` / `item_id` → `<error>`. Registered in `UNIFIED_TOOL_REGISTRY` next to `kanban_list` / `kanban_move_task`. |
 
 ### 3.3 Backend — Routines / Scheduler / Spawn
 
@@ -223,6 +226,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2025-03-30-chatbox-implementation.md` | 🗑️ | SolidJS + Tailwind v4 — replaced by Vue 3 ChatInput |
 | `2025-01-15-sidebar-session-dir-filter.md` | ⏳ | `get_sessions_by_dir` exists; Sidebar doesn't wire filter param |
 | `2026-08-06-chat-scroll-position-persistence.md` | ✅ | `useChatScrollRestore` composable + `VirtualScroller.scrollToPosition()` + ChatView initial-load branch + `isInitialLoad` guard |
+| `sse-reconnect-plan.md` (root) | ⏳ | Frontend SSE auto-reconnect plan — 4 `EventSource` connection sites (`App.vue::initWorkersSse`, `ChatsList.vue::connectSessionsSse`, `ChatView.vue::connectSse` × 2 streams, `Sidebar.vue::connectSessionsSse` stub). Only `App.vue` reconnects (naive `setTimeout(…, 5000)`, contains a bug). Plan calls for exponential backoff + jitter, tab-visibility awareness, online/offline handling, max-retry cap, UI feedback (`onStateChange` channel → "Reconnecting…" badge), per-stream unified protocol. See `docs/sse-reconnect-plan.md` (kept on disk as a protocol reference, not a per-feature plan). |
 
 ### 3.7 Frontend — Kanban (Workspace Item Type)
 
@@ -245,6 +249,8 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-07-01-change-task-to-card-kanban.md` | ✅ | `WorkspaceItemTask` `variant: 'row' \| 'card'` (#57) |
 | `2026-06-27-kanban-status-prompt.md` | ✅ | "Kanban Status Tracking" section in agent prompt |
 | `2026-07-30-kanban-task-search.md` | ✅ | Server-side `?q=` filter on `GET /api/.../items/.../tasks` + compact `<KanbanSearchInput>` in the kanban header. See §3.7.2 below. |
+| `2026-07-28-kanban-task-tags.md` | ✅ | Free-form string-list `tags` on each kanban task. See §3.7.3 below. |
+| `2026-07-30-kanban-task-tags-autocomplete.md` | ⏳ | Plan landed but **not yet implemented**. Backend endpoint + `listKanbanDistinctTags` model + `KanbanTagsInput` autocomplete dropdown are designed. See §3.7.4 below. |
 
 #### 3.7.1 Kanban task "AI finished — awaiting review" notification icon (2026-07-26)
 
@@ -312,6 +318,39 @@ A compact `<KanbanSearchInput>` renders in the kanban board header (to the left 
 
 **Out of scope** — Routine/memory cards (existing routine status dot / memory accent stripe already cover AI state). Per-column "X awaiting review" aggregate badge. Sidebar notification badge. Explicit "Mark as reviewed" button.
 
+#### 3.7.3 Kanban task tags — free-form string list (2026-07-28)
+
+Each kanban task can carry **0+ tags** — short lowercase strings rendered as colored chips on the card and edited via a chip input on the task detail dialog. No managed vocabulary, no tag management page, no filtering — forward-compatible with a future managed-tag migration.
+
+**Data model** — one new column on `workspace_item_tasks` (Migration 067): `tags TEXT NOT NULL DEFAULT ''` — stores a **JSON-encoded array of strings** (e.g. `'["bug","urgent","frontend"]'`); empty string = "no tags". The JSON-on-the-wire shape keeps the DB column as TEXT (matching the existing `description` Migration 062 pattern) and the frontend `string[]` interface unchanged.
+
+**Validation** (`tags_validation.zig::validateAndNormalizeTags`) — char whitelist `[a-zA-Z0-9_-]` (GitHub-label style), per-tag length cap 50, case-insensitive dedupe (first-occurrence casing wins), empty-string rejected. Empty list → wire shape `''` (the SQL `DEFAULT ''` sentinel; the per-handler split-INSERT pattern for the `NOT NULL DEFAULT ''` column is the same one used for `description`).
+
+**Wire shape** — `WorkspaceItemTaskResponse.tags: ?[]const u8` (JSON-encoded string), `TaskCreateRequest.tags: ?[]const u8`, `TaskUpdateRequest.tags: ?[]const u8`. The frontend API wrapper does `JSON.stringify(arr)` on the way out; `normalizeTaskTags(task)` (called at every fetch site) parses the JSON string into `string[]` once per fetch, falling back to `[]` on malformed input (defensive against legacy rows).
+
+**Two list endpoints** needed updates because they bypass `WorkspaceItemTaskInfo`:
+- `tasks_list.zig` — uses `WorkspaceItemTaskInfo` (tags already at index 21); just append `.tags = task.tags`.
+- `workspaces_list.zig` — has its own SELECT; add `t.tags` at column index 9 and `.tags = row.values[9]` in the constructor.
+
+**Frontend UI** — `<KanbanTagsInput>` (chip input, type + Enter to add, ✕ to remove, Backspace on empty removes last chip, 6-color deterministic palette via djb2 hash of lowercase tag). Rendered in `KanbanTaskDetailDialog` (between description and unattended-mode toggle, in both create and edit modes) and as a row of up to 3 colored chips on `WorkspaceItemTaskCard` (with `+N more` link when the task has > 3 tags).
+
+**Why JSON-string-on-the-wire and not JSON-array** — three reasons:
+1. **Single source of truth for JSON shape.** The DB column is TEXT, the wire type is `?[]const u8` (a string). One less transformation: backend reads → parses → validates → re-encodes → writes. Frontend parses → caches.
+2. **Defensive against malformed JSON.** Frontend `normalizeTaskTags` treats `tags` as defensive — if the parse fails, fall back to `[]`. Chip render never crashes on malformed input.
+3. **Forward-compatible with a managed-tag migration.** The JSON-encoded array is the natural source of truth for a future migration that reads `json_each(t.tags)` and creates proper tag rows + a join table.
+
+**Out of scope (v1)** — tag filtering on the kanban board (substring search later if needed); tag management page; tag autocomplete (see §3.7.4 for the planned design); tag rename propagation; per-tag user-chosen colors.
+
+#### 3.7.4 Kanban task tags autocomplete — PLANNED, NOT YET BUILT (2026-07-30)
+
+`docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md` is a fully designed but unimplemented follow-up to §3.7.3. Adds a suggestions dropdown to the `<KanbanTagsInput>` chip input — top-N most-used tags (frequency DESC, then last-used DESC) for the active kanban item, lazily fetched on focus, infinite-scrolled client-side after the first 8, filtered case-insensitive by typed prefix.
+
+**Architecture** — new endpoint `GET /api/workspaces/:ws/items/:item/kanban/tags?limit=8&offset=0` returning `{ tags: [{name, count, last_used_at}], has_more: bool }`. Backend uses `json_each()` over the existing `tags` column with `GROUP BY je.value`, `COUNT(*)`, `MAX(updated_at)`, the `LIMIT N+1 OFFSET K` trick for `has_more` from a single query. Frontend `getKanbanTagSuggestions` API wrapper; the dropdown paginates client-side after the first 8 (no extra fetches for in-memory list).
+
+**Why pending** — the plan landed (2026-07-30) but the implementation never started; the user's priority shifted to design-mode features (group drag, layer DnD, undo/redo) and then to memory compaction. Tracked in §5 Pending as a follow-up that piggybacks on §3.7.3's tag infrastructure.
+
+**Out of scope (planned)** — cross-tag-prefix filtering server-side (only client-side); tag-creation from the dropdown (always uses the existing chip-commit path); tag merge/rename; per-tag-color override.
+
 ### 3.8 Frontend — Design Canvas (Workspace Item Type)
 
 | Plan | Status | Key file / PR |
@@ -329,7 +368,14 @@ A compact `<KanbanSearchInput>` renders in the kanban board header (to the left 
 | `2026-07-28-design-page-workspace-item-task-fk.md` | ✅ | 1:1 FK design_pages.workspace_item_task_id → workspace_item_tasks.id (replaces the brittle name-based lookup) |
 | `2026-07-29-remove-canvas-background.md` | ✅ | Canvas background removed (no visible page rectangle, no W × H header inputs, no drag/nudge clamps, no snap-to-canvas-edges). Pages are purely logical containers; elements can be placed at any coordinates. |
 | `2026-07-30-design-undo-redo.md` | ✅ | Element-level undo/redo (`Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Y` + toolbar buttons). Per-page history stacks (100-entry cap), localStorage-persisted (debounced 500ms, `:v1:` schema version). Captures drag/resize/nudge/PropertiesPanel/delete/reorder/group at gesture boundaries (one entry per gesture; arrow nudge = 1 per keypress). Includes wire-up of 2 silently-dropped emits (LayersPanel ▲/▼, Monaco Save) as prerequisite. |
-| `2026-07-30-design-drag-debounce-batch.md` | ✅ | Backend loads no longer die when the user drags a multi-element selection. Two-layer fix: (a) new `POST .../elements/geometry-batch` handler collapses N per-element PATCHes into one for multi-element drag (5× reduction for a 5-element selection); (b) module-level `recentLocalMutations: Map<element_id, expiry_ms>` in `workspaces.ts` with a 1500 ms TTL — every locally-issued geometry PATCH registers the affected element ids; the SSE handler in `stores/designSse.ts` skips the `fetchDesignElements` GET fan-out when the incoming event is for a locally-mutated element (strict-superset dedupe — any unknown id falls through to the normal fetch path). New SSE event `design_elements_geometry_batch_updated` carries `element_ids[]`. Combined: a 5-element drag drops from ~200 req/sec to ~2 req/sec. A `useDesignDragDebounce` composable (trailing-edge 250 ms debounce + `flush()` on pointerup) is implemented but NOT wired into `DesignElement.vue` — the existing 50 ms throttle stays because the element's visual transform is bound to `props.element.x/y` (no local optimistic state mutation yet), and a pure trailing-edge debounce would freeze the visual until pointerup. The debounce wires up naturally once local optimistic state mutation lands. |### 3.9 Frontend — Settings / Profiles / Nalar
+| `2026-07-30-design-drag-debounce-batch.md` | ✅ | Backend loads no longer die when the user drags a multi-element selection. Two-layer fix: (a) new `POST .../elements/geometry-batch` handler collapses N per-element PATCHes into one for multi-element drag (5× reduction for a 5-element selection); (b) module-level `recentLocalMutations: Map<element_id, expiry_ms>` in `workspaces.ts` with a 1500 ms TTL — every locally-issued geometry PATCH registers the affected element ids; the SSE handler in `stores/designSse.ts` skips the `fetchDesignElements` GET fan-out when the incoming event is for a locally-mutated element (strict-superset dedupe — any unknown id falls through to the normal fetch path). New SSE event `design_elements_geometry_batch_updated` carries `element_ids[]`. Combined: a 5-element drag drops from ~200 req/sec to ~2 req/sec. A `useDesignDragDebounce` composable (trailing-edge 250 ms debounce + `flush()` on pointerup) is implemented but NOT wired into `DesignElement.vue` — the existing 50 ms throttle stays because the element's visual transform is bound to `props.element.x/y` (no local optimistic state mutation yet), and a pure trailing-edge debounce would freeze the visual until pointerup. The debounce wires up naturally once local optimistic state mutation lands. |
+| `2026-07-29-constrain-design-elements-to-canvas.md` | ❌ | Replaced by `2026-07-29-remove-canvas-background.md` — the "canvas as boundary" concept was rejected by the user; no rectangle is rendered, no clamp is applied, no W × H header inputs. See §6. |
+| `2026-07-29-design-element-parent-id-tools.md` | ✅ | Closed three compounding tool gaps that prevented the LLM from correctly nesting elements under an existing `group`/`frame`. (1) `set_design_page` response now emits a `parent_id` attribute per `<element>` block so the LLM can see the existing hierarchy. (2) `add_element` tool gained `parent_id: ?[]const u8 = null` with validation: parent must exist on same page, must be `group` or `frame` (`ParentNotContainer` otherwise); the SQL binds NULL via the `SqliteBackend.exec`-empty-slice-as-NULL trick (see `zig-sqlite-patterns.md` §"empty slice as NULL"). (3) New `set_element_parent` tool with cycle detection via recursive CTE (`WHERE dpe.parent_id IS NOT NULL` bounds the walk). Three layers' worth of TDD-red-then-green tests in `design_model_add_element_parent_test.zig` + `design_model_set_element_parent_test.zig` + `set_design_page_test.zig`. |
+| `2026-07-29-design-right-click-group-menu.md` | ✅ | Right-click context menu on LayersPanel rows AND design canvas. Group selection · Select all · Bring to front · Bring forward · Send backward · Send to back · Delete. Canvas Shift+click now supports multi-select (was always replace). Keyboard shortcuts: `Cmd+A`, `Cmd+[` / `]`, `Cmd+Shift+[` / `]`, `Backspace`. Behind the scenes: introduced the missing `POST /elements/reorder` endpoint so the four "Bring / Send" actions actually persist to the DB (a pre-existing bug — the per-row ▲/▼ buttons on the layers panel only updated the local layer-panel view, not the backend). Plus the `Cmd+Shift+G` Ungroup shortcut wired to `ungroupElements` (reparents children to the group's parent, deletes the group row; 400 on `EmptyGroup` / `NotAGroup`). |
+| `2026-07-30-design-layer-drag-join-or-leave-group.md` | ✅ | Figma-style drag-and-drop in the LayersPanel. Drag a row onto another `group`/`frame` row → join (last-children, preserving multi-selection order); drag onto a top-level drop zone → leave group / move to top-level; multi-select drag drops the whole selection into the same target. `reparentElements(alloc, db, input)` model with cycle preflight (recursive CTE walks `parent_id` upward, rejects any reparent that would close a cycle). New `POST .../elements/reparent-batch` endpoint, `api.reparentDesignElementsBatch`, `useLayerDragDrop` composable, `LayerRow kind="drop-zone"` non-draggable row with `TOP_LEVEL_SENTINEL = '__design_top_level__'` id, and `useDesignHandlers.reparentLayers`. 13-layer file touch map (model, handler, route, API, store, composable, LayerRow, LayersPanel, DesignView, useDesignHandlers) + 6 commits ending `d40e7a19`. |
+| `2026-07-30-fix-design-resize-handles-bubble-bug.md` | ✅ | 1-line fix in `DesignElement.vue::startDrag`: `event.stopPropagation()` whenever `mode !== 'move'` — prevents the parent wrapper's `@pointerdown` from starting a second gesture that steals pointer capture from the handle. Existing tests stub the handle's `addEventListener` and bypass the wrapper, so they couldn't catch the bug; new behavioural regression test counts `select` emits (pre-fix: 2 from both handle + wrapper; post-fix: 1 from handle only). Pattern captured as cross-project memory `design-resize-handle-pointerdown-bubbles-to-wrapper.md` so future agents don't re-introduce the bug when adding new interactive children to gesture-driven components. |
+
+### 3.9 Frontend — Settings / Profiles / Nalar
 
 | Plan | Status | Key file / PR |
 |---|---|---|
@@ -443,6 +489,7 @@ A compact `<KanbanSearchInput>` renders in the kanban board header (to the left 
 | `2025-01-13-read_file-hash-only.md` | `hash_only` read_file option for fast file checksums | Was added then REMOVED in a refactor — feature still relevant |
 | `2025-01-13-text-replace-edge-cases.md` | Edge-case tests for `text_replace.zig` (escapes, unicode, control chars) | Test file exists but specific edge cases never added |
 | `2025-01-15-sidebar-session-dir-filter.md` | Sidebar filter param wired to `session_dir` | `get_sessions_by_dir` exists in backend; UI never wired |
+| `2026-07-30-kanban-task-tags-autocomplete.md` | Suggestions dropdown for `<KanbanTagsInput>` — top-N most-used tags, lazy fetch on focus, infinite-scroll, case-insensitive prefix filter | Plan landed but **not yet implemented**. See §3.7.4 for design. |
 
 ---
 
@@ -465,6 +512,8 @@ A compact `<KanbanSearchInput>` renders in the kanban board header (to the left 
 | `2026-06-18-add-show-file-tool.md` | `2026-07-01-agent-show-preview.md` (renamed/reshaped) |
 | `2026-03-31-tree-dir-tool.md` | tree CLI wrapper |
 | `2026-04-10-tool-parser-zig-tui-migration.md` | TUI removed; tool parser logic in `toolOutputParser.ts` |
+| `2026-07-28-design-per-page-chat-sessions.md` | `2026-07-28-design-page-workspace-item-task-fk.md` (1:1 FK via `design_pages.workspace_item_task_id`) — name-pattern lookup eliminated entirely |
+| `2026-07-29-constrain-design-elements-to-canvas.md` | `2026-07-29-remove-canvas-background.md` (concept of "canvas as boundary" was rejected by the user; the page is now a logical container, no rectangle is rendered, no clamp is applied) |
 
 ---
 
@@ -488,19 +537,21 @@ A compact `<KanbanSearchInput>` renders in the kanban board header (to the left 
 
 ## 8. Implementation-Plan → Spec Reference (renamed to dashboard)
 
-The docs filesystem after the 2026-07-26 consolidation:
+The docs filesystem after the 2026-08-06 consolidation (the second round — first was 2026-07-26):
 
 ```
 docs/
 ├── SPEC.md                        # ← this file (the single source of truth)
 ├── superpowers/
-│   └── specs/                     # Pure design specs (the "why we do it")
+│   └── specs/                     # Pure design specs (the "why we do it") — 5 files
 ├── agent-tools.md                 # Tool registry reference
 ├── ci.md                          # CI pipeline layout
-└── sse-reconnect-plan.md          # SSE auto-reconnect protocol
+└── sse-reconnect-plan.md          # SSE auto-reconnect protocol (this file is still on disk — its content is summarized in §3.6 and the §10.2 inventory)
 ```
 
-> **Heads-up**: `docs/plans/` and `docs/superpowers/plans/` (the original per-feature plan files) were deleted on 2026-07-26. Their content is consolidated into §3 and §10.2 of this SPEC.md. AGENTS.md tells every new agent to read SPEC.md first.
+> **Heads-up**: `docs/plans/` and `docs/superpowers/plans/` (the original per-feature plan files) were deleted on 2026-07-26 (the original 178) and again on 2026-08-06 (the +17 from `2026-07-28-*` to `2026-08-06-*`). Their content is consolidated into §3, §5, §6, §10.2 of this SPEC.md. AGENTS.md tells every new agent to read SPEC.md first.
+
+**`sse-reconnect-plan.md` carve-out**: this root-level doc is NOT a plan file (no per-feature implementation steps), it's a protocol reference for the SSE auto-reconnect subsystem — 4 `EventSource` connection sites enumerated with their current behavior (naive reconnect in `App.vue`, no reconnect in `ChatsList.vue` / `ChatView.vue` × 2 streams, stub in `Sidebar.vue`), and the planned fixes (exponential backoff + jitter, tab-visibility awareness, online/offline handling, max-retry cap, UI feedback, `onStateChange` channel). Kept on disk as a protocol reference; its high-level summary is in §3.6. Reclassification candidate: move to `docs/superpowers/specs/2026-07-31-sse-reconnect-design.md` in a future cleanup round.
 
 **Rule of thumb**: when starting a new feature, look in `docs/SPEC.md` §3 first (the closest architectural neighbor), then `docs/superpowers/specs/` for design rationale, then `docs/ci.md` / `docs/agent-tools.md` / `docs/sse-reconnect-plan.md` for protocol details. Always check `§5 Pending` before proposing — you may be redoing something already planned.
 
@@ -761,6 +812,50 @@ The 71 design documents once held here have been consolidated into this SPEC.md.
 2026-07-19-design-preview-mode-design         ✅ design doc
 2026-07-25-llm-user-identifier-design         ✅ design doc
 ```
+
+#### 10.2.3 `docs/superpowers/plans/` (17 files) — **DELETED 2026-08-06**
+
+The 17 implementation plans added between 2026-07-28 and 2026-08-06 have been consolidated into this SPEC.md. Below is the historical inventory — kept for grep-ability and traceback. (The files themselves are gone.)
+
+```
+2026-07-28-kanban-task-tags                    ✅ NEW §3.7.3 + Migration 067
+2026-07-28-design-page-workspace-item-task-fk  ✅ already in §3.8 (Migration 066) — from prior round
+2026-07-28-design-per-page-chat-sessions       ❌ NEW ❌ entry in §6 (superseded by FK version above)
+2026-07-29-constrain-design-elements-to-canvas ❌ NEW ❌ entry in §3.8 + §6 (superseded by remove-canvas-background)
+2026-07-29-remove-canvas-background            ✅ already in §3.8 (above) — from prior round
+2026-07-29-create-kanban-task-tool            ✅ NEW in §3.2 (create_kanban_task LLM tool)
+2026-07-29-design-element-parent-id-tools     ✅ NEW in §3.8 (3 compounding tool gaps)
+2026-07-29-design-right-click-group-menu      ✅ NEW in §3.8 (context menu + reorder endpoint)
+2026-07-29-fix-retry-delay-ms-race             ✅ NEW in §3.2 (1-line @max clamp)
+2026-07-30-better-compaction-context          ✅ NEW in §3.2 (<user_history> + <read_files>)
+2026-07-30-design-drag-debounce-batch         ✅ already in §3.8 (above) — from prior round
+2026-07-30-design-layer-drag-join-or-leave-group ✅ NEW in §3.8 (POST .../reparent-batch)
+2026-07-30-design-undo-redo                    ✅ already in §3.8 (above) — from prior round
+2026-07-30-fix-design-resize-handles-bubble-bug ✅ NEW in §3.8 (stopPropagation in startDrag)
+2026-07-30-kanban-task-search                  ✅ already in §3.7 (server-side ?q=) — from prior round
+2026-07-30-kanban-task-tags-autocomplete       ⏳ NEW ⏳ entry in §3.7.4 + §5 (designed but not built)
+2026-08-06-chat-scroll-position-persistence    ✅ already in §3.6 (above) — from prior round
+
+NEW entries in this round: 8 ✅ + 2 ❌ + 1 ⏳ = 11 entries total.
+Already-consolidated: 6 plans were folded into existing rows in §3 of this SPEC.md.
+The net addition to §3 / §5 / §6 of this SPEC is 11 rows.
+```
+
+#### 10.2.4 `docs/superpowers/specs/` (5 files) — **DELETED 2026-08-06**
+
+The 5 design specs at consolidation time. Their content is folded into the corresponding plan rows above + §3.7.3 (kanban task tags design rationale) + §3.8 (right-click group menu, undo/redo, chat scroll position design). The one surviving protocol spec is `docs/sse-reconnect-plan.md` (kept on disk as a non-plan reference).
+
+```
+2026-06-07-virtual-scroller-preserve-fix      ✅ design folded into §3.6 (already shipped)
+2026-07-28-kanban-task-tags-design             ✅ design rationale in §3.7.3
+2026-07-29-design-right-click-group-menu      ✅ design rationale in §3.8 row
+2026-07-30-design-undo-redo                    ✅ design rationale in §3.8 row
+2026-07-30-kanban-task-search-design           ✅ design rationale in §3.7.2
+```
+
+#### 10.2.5 `docs/sse-reconnect-plan.md` (root) — **KEPT, NOT DELETED**
+
+This is a protocol reference (not a per-feature implementation plan). Its 4 `EventSource` connection sites + planned auto-reconnect protocol are referenced in §3.6 (the row above the new entries). Reclassification candidate: move to `docs/superpowers/specs/2026-07-31-sse-reconnect-design.md` in a future cleanup round.
 
 ---
 

@@ -1373,23 +1373,30 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     return updated
   }
 
-  // Geometry-only update path (drag/resize fires 60+/sec). The
-  // backend's design_elements_geometry_update PATCH is the
-  // dedicated endpoint — no full element GET is needed. The
-  // response is the same full DesignElement (so the frontend
-  // can sync its local Pinia store).
+  // Geometry-only update path (drag/resize fires at the 50 ms
+  // throttle, i.e. ≤20 Hz). The backend's `design_elements_geometry_
+  // update` PATCH is the dedicated endpoint — no full element GET is
+  // needed; the response is the full DesignElement.
   //
-  // We intentionally DON'T mirror the returned element into the
-  // local `design_elements` array — geometry patches arrive at
-  // 60+/sec, and pushing every response through reactive
-  // watchers would flood the canvas. The drag-end handler in
-  // DesignView.vue (Chunk 7) fires a follow-up
-  // `fetchDesignElements` to reconcile local state once the user
-  // releases the mouse.
+  // MIRROR the response into `item.design_elements[]` so the
+  // DesignElement wrapper's `elementStyle.left/top` (bound to
+  // `props.element.x/y`) updates reactively during drag. The earlier
+  // "don't mirror — drag-end handler reconciles" comment was wrong:
+  // no such handler existed, so single-element drags stayed frozen
+  // at the pointerdown-time position for the entire drag (PATCHes
+  // fired, the element just didn't visually follow the cursor). The
+  // 60+/sec reactivity concern from the original comment is moot —
+  // the 50 ms throttle caps the rate at 20 Hz, the SSE dedupe
+  // (1500 ms TTL) prevents the GET fan-out, and Vue's reactivity is
+  // cheap (just an attribute-style update on the wrapper div).
   //
-  // Chunk 3 (design-drag-debounce-batch): also register the
-  // mutated element_id in `recentLocalMutations` so the SSE
-  // handler can skip the GET fan-out for locally-issued PATCHes.
+  // The batch endpoint (`updateDesignElementsGeometryBatch` below)
+  // already mirrors its response — this action was the asymmetric
+  // exception that bit the single-element drag path.
+  //
+  // Chunk 3 (design-drag-debounce-batch): register the mutated
+  // element_id in `recentLocalMutations` so the SSE handler skips
+  // the GET fan-out for locally-issued PATCHes.
   async function updateDesignElementGeometry(
     workspaceId: string,
     itemId: string,
@@ -1410,6 +1417,13 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       elementId,
       geometry,
     )
+    // Mirror the response into the local cache. Defensive no-op when
+    // the item isn't in the local store (stale SSE callers).
+    const item = findItem(workspaceId, itemId)
+    if (item?.design_elements) {
+      const idx = item.design_elements.findIndex((e) => e.id === elementId)
+      if (idx !== -1) item.design_elements[idx] = result
+    }
     registerRecentLocalMutations([elementId], Date.now() + RECENT_MUTATION_TTL_MS)
     return result
   }

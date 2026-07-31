@@ -260,19 +260,23 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // pointerup emit. The visual position update flows through:
   //   pointermove (60 Hz) → 50 ms throttle → emit('update') →
   //   useDesignHandlers.updateElement → workspacesStore.updateDesignElementGeometry
-  //   (PATCH) → backend emits design_element_updated SSE →
-  //   frontend designSse.ts skips fetchDesignElements (the SSE dedupe
-  //   from Chunk 3 Task 3.4 sees this is a local mutation) → local
-  //   element stays put, props.element.x is unchanged.
+  //   (PATCH) → mirrors the response into item.design_elements[] →
+  //   props.element.x/y updates reactively → elementStyle.left/top
+  //   moves on the next frame → user sees the drag follow the cursor.
   //
-  // The throttle is REQUIRED for visual feedback during drag: the
-  // element's `style.transform` is bound to props.element.x/y, so the
-  // user only sees movement when the PATCH round-trips. A pure
-  // trailing-edge debounce would give zero movement during continuous
-  // drag (deferred to a follow-up that adds local optimistic state
-  // mutation). The 50 ms throttle keeps the visual feedback flow
-  // alive; the SSE dedupe removes the GET cascade that was the
-  // dominant backend cost.
+  // The backend's SSE `design_element_updated` event arrives after
+  // the PATCH. The frontend designSse.ts handler SKIPS
+  // fetchDesignElements (the SSE dedupe Map sees this is a local
+  // mutation within the 1500 ms TTL). So the mirror step above is
+  // the source of truth for the visual position — without it, the
+  // element would stay frozen at its pointerdown-time position for
+  // the entire drag (the bug fixed on 2026-08-06 — the old comment
+  // below incorrectly claimed the PATCH round-trip updated local
+  // state).
+  //
+  // The throttle keeps the PATCH rate at ≤20 Hz (server load).
+  // The SSE dedupe removes the GET fan-out that would otherwise
+  // dominate backend cost.
   event.preventDefault()
 
   const target = event.currentTarget as HTMLElement | null
