@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { ref } from 'vue'
 import { useKanbanTagSuggestions } from '../composables/useKanbanTagSuggestions'
 import * as api from '../api'
 
@@ -121,5 +122,61 @@ describe('useKanbanTagSuggestions', () => {
     expect(c.tags.value).toEqual([])
     expect(c.hasMore.value).toBe(false)
     expect(c.loading.value).toBe(false)
+  })
+
+  it('ensureLoaded() is a no-op when either id is empty (no fetch)', async () => {
+    const spy = vi.spyOn(api, 'getKanbanTagSuggestions')
+    const c = useKanbanTagSuggestions('', 'item_x')
+    await c.ensureLoaded()
+    expect(spy).not.toHaveBeenCalled()
+    expect(c.tags.value).toEqual([])
+    expect(c.hasMore.value).toBe(false)
+    // loaded stays false so the next ensureLoaded() retries when args change.
+
+    const c2 = useKanbanTagSuggestions('ws_x', '')
+    await c2.ensureLoaded()
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('uses reactive args: fetches once the refs become non-empty', async () => {
+    vi.spyOn(api, 'getKanbanTagSuggestions').mockResolvedValue({
+      tags: [{ name: 'bug', count: 1, last_used_at: null }],
+      has_more: false,
+    })
+    const wsId = ref('')
+    const itemId = ref('')
+    const c = useKanbanTagSuggestions(wsId, itemId)
+    // refs start empty → no fetch, but loaded stays false so the
+    // next ensureLoaded() retries when args become available
+    await c.ensureLoaded()
+    expect(api.getKanbanTagSuggestions).not.toHaveBeenCalled()
+    expect(c.loaded.value).toBe(false)
+    // refs become populated → reset + ensureLoaded picks up the new values
+    wsId.value = 'ws_x'
+    itemId.value = 'item_x'
+    c.reset()
+    await c.ensureLoaded()
+    expect(api.getKanbanTagSuggestions).toHaveBeenCalledWith('ws_x', 'item_x', { limit: 8, offset: 0 })
+    expect(c.tags.value).toHaveLength(1)
+  })
+
+  it('uses reactive args: getter functions are re-evaluated on each fetch', async () => {
+    vi.spyOn(api, 'getKanbanTagSuggestions').mockResolvedValue({
+      tags: [{ name: 'a', count: 1, last_used_at: null }],
+      has_more: false,
+    })
+    let currentWs = ''
+    let currentItem = ''
+    const c = useKanbanTagSuggestions(
+      () => currentWs,
+      () => currentItem,
+    )
+    await c.ensureLoaded()
+    expect(api.getKanbanTagSuggestions).not.toHaveBeenCalled()
+    currentWs = 'ws_x'
+    currentItem = 'item_x'
+    c.reset()
+    await c.ensureLoaded()
+    expect(api.getKanbanTagSuggestions).toHaveBeenCalledWith('ws_x', 'item_x', { limit: 8, offset: 0 })
   })
 })

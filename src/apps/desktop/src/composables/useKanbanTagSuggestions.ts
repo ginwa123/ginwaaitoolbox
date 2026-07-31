@@ -16,8 +16,28 @@
  * focus and `loadNextPage()` from an IntersectionObserver on the
  * scroll sentinel. This keeps the composable testable and the
  * "when to fetch" logic in the component.
+ *
+ * Args are REACTIVE: callers can pass plain strings, Vue refs, or
+ * getter functions. The composable reads the live value via `toValue`
+ * on every fetch (NOT wrapped in a cached computed), so that when
+ * the dialog's `column` prop becomes available the next
+ * `ensureLoaded()` picks up the new id and fetches properly.
+ *
+ * Why not wrap in `computed`? A `computed` would CACHE the first
+ * resolved value. For a plain-string arg, that's fine (the value
+ * never changes). For a ref arg, the computed would re-run when the
+ * ref's `.value` changes (because `toValue` accesses `.value` which
+ * subscribes). But for a raw closure that reads a let-variable, the
+ * closure itself doesn't notify Vue's reactivity — the computed
+ * stays cached at the stale value. Reading `toValue` directly on each
+ * fetch sidesteps the cache altogether.
+ *
+ * Graceful degradation: if either `workspaceId` or `itemId` is empty
+ * at the moment of fetch, the call is a no-op (`hasMore = false`,
+ * no network request). This prevents 400s when the dialog passes
+ * placeholder values during the React/Vue render tick.
  */
-import { ref, type Ref } from 'vue'
+import { ref, toValue, type MaybeRefOrGetter, type Ref } from 'vue'
 import { getKanbanTagSuggestions, type KanbanTagSuggestion } from '../api'
 
 export interface UseKanbanTagSuggestionsOptions {
@@ -25,8 +45,8 @@ export interface UseKanbanTagSuggestionsOptions {
 }
 
 export function useKanbanTagSuggestions(
-  workspaceId: string,
-  itemId: string,
+  workspaceId: MaybeRefOrGetter<string>,
+  itemId: MaybeRefOrGetter<string>,
   options?: UseKanbanTagSuggestionsOptions,
 ) {
   const limit = options?.limit ?? 8
@@ -39,10 +59,25 @@ export function useKanbanTagSuggestions(
 
   async function fetchPage(targetOffset: number): Promise<void> {
     if (inFlight) return
+    // Resolve the live values on every fetch — not cached, so the
+    // composable picks up changes when the parent re-renders with
+    // new args (e.g. dialog opens before column is resolved, then
+    // later column becomes available).
+    const wsId = toValue(workspaceId)
+    const realItemId = toValue(itemId)
+    // Graceful degradation: empty args = no-op (no network request).
+    // Avoids 400s when the caller passes placeholder values during
+    // the render tick. Leave `loaded` as false so the next
+    // `ensureLoaded()` call (after the args become available, e.g.
+    // when the dialog's column prop resolves) will retry.
+    if (!wsId || !realItemId) {
+      hasMore.value = false
+      return
+    }
     inFlight = true
     loading.value = true
     try {
-      const page = await getKanbanTagSuggestions(workspaceId, itemId, {
+      const page = await getKanbanTagSuggestions(wsId, realItemId, {
         limit,
         offset: targetOffset,
       })
