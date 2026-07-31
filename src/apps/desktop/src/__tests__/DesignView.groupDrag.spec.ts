@@ -1,17 +1,12 @@
 /**
- * Behavioural tests for the group-drag transitive expansion fix.
+ * Behavioural tests for the group-drag move-batch wire.
  *
- * Before this fix, dragging a `group` element when it was the ONLY
- * selected element moved only the group's bbox; its children stayed
- * put. The fix expands the selection to include the group's
- * transitive descendants for the duration of the drag (Figma parity).
+ * Plan: docs/superpowers/plans/2026-08-06-move-element-with-descendants.md
+ * (Chunk 4, Task 4.3)
  *
- * The tests below exercise the expansion helper by asserting the
- * union bbox / per-element delta computation in DesignView's
- * `handleGroupDrag`. They mount DesignView, select a group, dispatch
- * a pointerdown + pointermove, then verify the store's
- * `updateDesignElementGeometry` spy was called for the GROUP and
- * every descendant (NOT for unrelated elements).
+ * The drag path now uses `moveDesignElementsBatch` (server-side
+ * cascade) instead of `updateDesignElementsGeometryBatch` (frontend
+ * expansion + N x/y pairs). The tests below exercise the new wire.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
@@ -20,7 +15,7 @@ import DesignView from '../components/design/DesignView.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import * as api from '../api'
 
-const { listDesignPagesMock, updateBatchSpy } = vi.hoisted(() => ({
+const { listDesignPagesMock, moveBatchSpy } = vi.hoisted(() => ({
   listDesignPagesMock: vi.fn().mockResolvedValue({
     pages: [
       {
@@ -36,11 +31,7 @@ const { listDesignPagesMock, updateBatchSpy } = vi.hoisted(() => ({
     ],
     count: 1,
   }),
-  updateBatchSpy: vi.fn().mockResolvedValue({ updated: [] }),
-  // Chunk 3: batch endpoint mock. Returns `{ updated: DesignElement[] }`
-  // matching the wire shape. The default implementation returns an
-  // empty array — tests that care about the returned elements can
-  // re-mock this in their beforeEach.
+  moveBatchSpy: vi.fn().mockResolvedValue({ updated: [] }),
 }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -48,8 +39,7 @@ vi.mock('../api', async (importOriginal) => {
   return {
     ...actual,
     listDesignPages: listDesignPagesMock,
-    updateDesignElementGeometry: updateBatchSpy,
-    updateDesignElementsGeometryBatch: updateBatchSpy,
+    moveDesignElementsBatch: moveBatchSpy,
   }
 })
 
@@ -91,13 +81,13 @@ function makeEl(overrides: Record<string, unknown> = {}): any {
 }
 
 
-describe('DesignView group drag — batch geometry endpoint', () => {
-  let batchSpy: any
+describe('DesignView group drag — move-batch (server-side cascade)', () => {
+  let moveSpy: any
 
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
-    batchSpy = vi.fn().mockResolvedValue({
+    moveSpy = vi.fn().mockResolvedValue({
       updated: [
         makeEl({ id: 'el_1', x: 50, y: 70 }),
         makeEl({ id: 'el_2', x: 100, y: 120 }),
@@ -105,14 +95,14 @@ describe('DesignView group drag — batch geometry endpoint', () => {
     })
   })
 
-  it('groupDrag with a 5-element selection fires ONE batch PATCH per pointermove (not N per-element PATCHes)', async () => {
+  it('groupDrag with a 5-element selection fires ONE moveDesignElementsBatch call per pointermove (not N per-element PATCHes)', async () => {
     const _store = useWorkspacesStore()
     _store.setActiveDesignPage('page_1')
 
     // Spy on the SINGLE-element action — must NOT be called during a
     // group drag (the whole point of the batch is to avoid N calls).
     const singleSpy = vi.spyOn(_store, 'updateDesignElementGeometry')
-    vi.spyOn(_store, 'updateDesignElementsGeometryBatch').mockImplementation(batchSpy)
+    vi.spyOn(_store, 'moveDesignElementsBatch').mockImplementation(moveSpy)
 
     const elements = [
       makeEl({ id: 'el_1', x: 0, y: 0 }),
@@ -132,16 +122,18 @@ describe('DesignView group drag — batch geometry endpoint', () => {
     ;(wrapper.vm as any).handleGroupDrag({ dx: 10, dy: 20 })
     await flushPromises()
 
-    expect(batchSpy).toHaveBeenCalledTimes(1)
+    expect(moveSpy).toHaveBeenCalledTimes(1)
     expect(singleSpy).not.toHaveBeenCalled()
   })
 
-  it('groupDrag calls the batch endpoint (not N per-element calls)', async () => {
+  it('groupDrag calls moveDesignElementsBatch with one item per selected element (no client-side expansion)', async () => {
     const _store = useWorkspacesStore()
     _store.setActiveDesignPage('page_1')
-    // The single-element path must NOT be called during a group drag.
     const singleSpy = vi.spyOn(_store, 'updateDesignElementGeometry')
-    vi.spyOn(_store, 'updateDesignElementsGeometryBatch').mockImplementation(batchSpy)
+    // The legacy batch endpoint must NOT be called; the cascade is
+    // server-side now.
+    const geoBatchSpy = vi.spyOn(_store, 'updateDesignElementsGeometryBatch')
+    vi.spyOn(_store, 'moveDesignElementsBatch').mockImplementation(moveSpy)
 
     const elements = [
       makeEl({ id: 'el_1', x: 0, y: 0 }),
@@ -157,7 +149,43 @@ describe('DesignView group drag — batch geometry endpoint', () => {
     ;(wrapper.vm as any).handleGroupDrag({ dx: 10, dy: 20 })
     await flushPromises()
 
-    expect(batchSpy).toHaveBeenCalledTimes(1)
+    expect(moveSpy).toHaveBeenCalledTimes(1)
+    expect(geoBatchSpy).not.toHaveBeenCalled()
     expect(singleSpy).not.toHaveBeenCalled()
+
+    // Wire shape: ONE item per selected element, each carrying the
+    // cursor delta (rounded). Backend cascades the delta to
+    // descendants via the recursive CTE.
+    const callArgs = moveSpy.mock.calls[0]
+    const items = callArgs[3] as Array<{ element_id: string; dx: number; dy: number }>
+    expect(items.length).toBe(3)
+    expect(items[0].element_id).toBe('el_1')
+    expect(items[0].dx).toBe(10)
+    expect(items[0].dy).toBe(20)
+    expect(items[1].element_id).toBe('el_2')
+    expect(items[2].element_id).toBe('el_3')
+  })
+
+  it('groupDrag with a single leaf selection fires moveDesignElementsBatch with one item', async () => {
+    const _store = useWorkspacesStore()
+    _store.setActiveDesignPage('page_1')
+    vi.spyOn(_store, 'moveDesignElementsBatch').mockImplementation(moveSpy)
+
+    const elements = [makeEl({ id: 'el_1', x: 0, y: 0 })]
+    const wrapper = mount(DesignView, {
+      props: { item: { ...ITEM, design_elements: elements }, workspaceId: 'ws_1', itemId: 'item_1' },
+    })
+    await flushPromises()
+    ;(wrapper.vm as any).selectedIds = new Set(['el_1'])
+
+    ;(wrapper.vm as any).handleGroupDrag({ dx: 5, dy: 0 })
+    await flushPromises()
+
+    expect(moveSpy).toHaveBeenCalledTimes(1)
+    const items = (moveSpy.mock.calls[0] as any)[3] as Array<{ element_id: string; dx: number; dy: number }>
+    expect(items.length).toBe(1)
+    expect(items[0].element_id).toBe('el_1')
+    expect(items[0].dx).toBe(5)
+    expect(items[0].dy).toBe(0)
   })
 })

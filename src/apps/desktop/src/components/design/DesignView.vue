@@ -1337,16 +1337,13 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
   // bbox; elements NOT in the selection are the snap targets.
   // The function returns the snap correction + the guides to render.
   //
-  // NEW (group-drag fix): when the selection includes a `group` /
-  // `frame`, also move all of its transitive descendants so dragging
-  // the group's bbox moves the whole subtree (Figma parity). The
-  // expansion is local to this drag — the layers panel still shows
-  // only the user-selected set.
-  const dragIds = expandSelectionWithDescendants(
-    selectedIds.value,
-    elements.value,
-  )
-  const selected = elements.value.filter((e) => dragIds.has(e.id))
+  // NEW (Plan: docs/superpowers/plans/2026-08-06-move-element-with-descendants.md):
+  // The server cascades `dx`/`dy` to every transitive descendant of
+  // each item's element. The frontend no longer pre-expands the
+  // subtree via `expandSelectionWithDescendants` for the drag path;
+  // we just send the user's selection + delta. (expandSelectionWithDescendants
+  // stays in the LayersPanel for display only.)
+  const selected = elements.value.filter((e) => selectedIds.value.has(e.id))
   if (selected.length > 0) {
     // Capture original positions ONCE at the start of the drag. The
     // first pointermove fires before any PATCH round-trips, so the
@@ -1396,46 +1393,29 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
     snapGuides.value = snapResult.guides
     const finalDx = delta.dx + snapResult.dx
     const finalDy = delta.dy + snapResult.dy
-    // ─── CHUNK 3 CHANGE: ONE batch PATCH per pointermove ──────────────
-    // Before this fix, this loop fired N per-element PATCHes per
-    // pointermove tick (N = selection size). With a 5-element
-    // multi-select drag at 50 ms throttle, that's 5 PATCHes per tick
-    // — and each PATCH triggered a SSE fan-out fetchDesignElements,
-    // pushing the backend over the edge (~200 req/sec).
+    // ─── CHUNK 4 CHANGE: server-side cascade via moveDesignElementsBatch
+    // Before this fix, the frontend walked the tree client-side
+    // (expandSelectionWithDescendants) and pre-computed N x/y pairs
+    // for the geometry-batch endpoint. The backend was just a dumb
+    // SET-targets store — it had no knowledge of the parent_id
+    // hierarchy.
     //
-    // The batch endpoint accepts N element geometries in one POST
-    // and runs them in a single SQL transaction. The frontend SSE
-    // dedupe (stores/designSse.ts) then sees ONE `design_elements_
-    // geometry_batch_updated` event with all N element ids and
-    // skips the per-element GET fan-out entirely.
-    void workspacesStore.updateDesignElementsGeometryBatch(
+    // The new endpoint shrinks the wire from N x/y pairs to N
+    // (dx, dy) pairs (typically one — the dragged root). The
+    // backend's recursive CTE walks every transitive descendant of
+    // each item's element and applies the same delta to them all in
+    // one SQL transaction. Independent of subtree depth.
+    void designHandlers.moveElementWithDescendants({
       workspaceId,
       itemId,
       pageId,
-      selected.map((el) => ({
+      items: selected.map((el) => ({
         element_id: el.id,
-        x: Math.round(originalPos(el).x + finalDx),
-        y: Math.round(originalPos(el).y + finalDy),
+        dx: Math.round(finalDx),
+        dy: Math.round(finalDy),
       })),
-    )
+    })
     return
-  }
-
-  // No selection (shouldn't normally reach here given the size check
-  // above, but defensive).
-  for (const id of selectedIds.value) {
-    const el = elements.value.find((e) => e.id === id)
-    if (!el) continue
-    void workspacesStore.updateDesignElementGeometry(
-      workspaceId,
-      itemId,
-      pageId,
-      id,
-      {
-        x: Math.round(el.x + delta.dx),
-        y: Math.round(el.y + delta.dy),
-      },
-    )
   }
 }
 

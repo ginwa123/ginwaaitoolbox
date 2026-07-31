@@ -258,5 +258,44 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
     }
   }
 
-  return { updateElement, deleteElement, groupSelection, ungroupSelection, reparentLayers }
+  /**
+   * NEW (Plan: docs/superpowers/plans/2026-08-06-move-element-with-descendants.md).
+   * Figma-style drag affordance: translate 1 OR N elements by a single
+   * (dx, dy) delta — the backend cascades the delta to every
+   * transitive descendant of each item's element via a recursive CTE.
+   * One HTTP call per pointermove covers arbitrary subtree depth.
+   *
+   * `items` shape mirrors the API wrapper:
+   *   { element_id, dx, dy, width?, height?, rotation? }
+   *   - dx/dy is mandatory (zero is valid for a pure resize)
+   *   - width/height/rotation apply ONLY to the element_id (not descendants)
+   *
+   * On error the store is unchanged and the error propagates as a
+   * notification toast.
+   */
+  async function moveElementWithDescendants(payload: {
+    workspaceId: string
+    itemId: string
+    pageId: string
+    items: Array<{
+      element_id: string
+      dx: number
+      dy: number
+      width?: number
+      height?: number
+      rotation?: number
+    }>
+  }): Promise<void> {
+    const { workspaceId, itemId, pageId, items } = payload
+    if (!workspaceId || !itemId || !pageId) return
+    if (items.length === 0) return
+    try {
+      await workspacesStore.moveDesignElementsBatch(workspaceId, itemId, pageId, items)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      notificationStore.notifyError(message, 'Failed to move element.')
+    }
+  }
+
+  return { updateElement, deleteElement, groupSelection, ungroupSelection, reparentLayers, moveElementWithDescendants }
 }
