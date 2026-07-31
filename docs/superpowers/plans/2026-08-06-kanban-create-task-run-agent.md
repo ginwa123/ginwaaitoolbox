@@ -993,3 +993,16 @@ git push -u origin worktree/kanban-create-task-run-agent
 - **Confirmation modal** — button is enabled whenever name is non-empty (Q2 = 2b).
 - **Backwards-compat with the legacy "Create task" button** — stays as-is. New button is a sibling.
 - **Queueing for routine/memory tasks at create time** — routines have `initial_prompt` already; memories don't run agents.
+
+---
+
+## Implementation Notes (added after execution)
+
+- **Backend session_create status is `"send"`, NOT `"queued"`** — `session_create.zig:115` returns `.status = "send"`. The host (KanbanView) checks `result?.status === 'send'` to navigate. The original plan said `'queued'` (a documentation error caught during live smoke on port 8080); the implementation uses the actual value. Tests updated to match.
+- **Smoke flow validated end-to-end** on port 8080 with the new build:
+  1. `POST /api/workspaces` → workspace_id
+  2. `POST /api/workspaces/:ws/items` (with `path: "/tmp"`) → item_id
+  3. `POST /api/workspaces/:ws/items/:item/kanban/columns` → column_id
+  4. `POST /api/workspaces/:ws/items/:item/tasks` with `name` + `description` → task_id
+  5. `POST /api/llm/session` with `session_id=task_id`, `queue_message="Title\n\nDescription"` → `{"id":"task_id","name":"New Session","status":"send"}`
+- **Frontend test count: 16 new behavioural tests** across 3 new files (3 in `workspacesStoreRunAgent.spec.ts`, 7 in `KanbanTaskDetailDialog.runAgent.spec.ts`, 6 in `KanbanView.createAndRun.spec.ts`). All pass; no regressions in the 271-test Kanban suite.

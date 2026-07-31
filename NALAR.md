@@ -338,6 +338,33 @@ Frontend (commit `daf21418` after rebase, originally `d7a05497`):
 
 ### 2026-07-30: better-compaction-context — enriched XML + use-after-free mock bug
 
+### 2026-08-06: Kanban "Create task & run agent" — single-click task + agent start
+
+**What landed.** Secondary `▶ Create task & run agent` button in the New Task dialog (`KanbanTaskDetailDialog`, `mode: 'create'`). The button creates the task, queues `title + '\n\n' + description` as the first user message via `POST /api/llm/session`, and routes the user to the new task's chat view via the existing `selectTask` emit.
+
+**Files.** 5 (3 NEW tests, 2 EDIT impl). Frontend-only — no backend changes, no migration, no Zig changes. The two endpoints (`POST /api/workspaces/.../tasks` and `POST /api/llm/session`) already exist and compose cleanly.
+
+**Wire.** The dialog adds a sibling `create-and-run` emit with the same payload as `create` but a `mode: 'create_and_run'` discriminator. `KanbanView.handleCreateTaskSave` branches on `mode`:
+- `create` — today's flow (create + move + close dialog).
+- `create_and_run` — also queues the title + description via `api.sendChatMessage`, then reuses the existing `selectTask` emit so the `AppLayout → Sidebar` chain navigates to the new chat view.
+
+**Message composition.** `title + '\n\n' + description` when description is non-empty, else just `title`. Empty description is allowed (the message is just the title). The unattended toggle flows through as `is_auto_retry_until_stop`.
+
+**Partial success.** When `sendChatMessage` fails after the task is created, surface a `notifyError` toast and skip navigation. The user can click the card to retry manually. Never strand the user.
+
+**Tests.** 16 new behavioural tests across 3 new files (3 in `workspacesStoreRunAgent.spec.ts`, 7 in `KanbanTaskDetailDialog.runAgent.spec.ts`, 6 in `KanbanView.createAndRun.spec.ts`). All pass; no regressions in the 271-test Kanban suite. Pre-commit verification: `bun run build` clean, `zig build test` 2145 pass + 6 skip (same as baseline), `zig build install:linux:system` builds 77 MB nalar binary.
+
+**Bug found during live smoke.** The plan/spec said to check `result?.status === 'queued'` but the backend actually returns `status: 'send'` (see `session_create.zig:115`). The host was checking `'queued'` which never matched — the navigation path was dead code. Fix: check `'send'` instead. Verified via live smoke flow on port 8080:
+  1. `POST /api/workspaces` → workspace_id
+  2. `POST /api/workspaces/:ws/items` (with `path: "/tmp"`) → item_id
+  3. `POST /api/workspaces/:ws/items/:item/kanban/columns` → column_id
+  4. `POST /api/workspaces/:ws/items/:item/tasks` → task_id
+  5. `POST /api/llm/session` with `session_id=task_id`, `queue_message="Title\n\nDescription"` → `{"id":"task_id","name":"New Session","status":"send"}`
+
+**Plan:** `docs/superpowers/plans/2026-08-06-kanban-create-task-run-agent.md`
+**Spec:** `docs/superpowers/specs/2026-08-06-kanban-create-task-run-agent-design.md`
+**Branch:** `worktree/kanban-create-task-run-agent`
+
 ### Symptom
 The agent's compaction step (when session history grew past the model's
 window) gave the next iteration of the agent ONLY the compactor's summary.
