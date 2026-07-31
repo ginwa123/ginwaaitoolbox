@@ -213,5 +213,50 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
     }
   }
 
-  return { updateElement, deleteElement, groupSelection, ungroupSelection }
+  /**
+   * NEW (Chunk 2 Task 2.3 of drag-to-reparent plan). Figma-style
+   * drag-and-drop affordance: reparent 1 OR N selected rows into
+   * the same target (a `group`/`frame` row, or top-level). Routes
+   * ALWAYS through the batch endpoint — uniform behaviour
+   * regardless of selection size; the backend handles N=1
+   * efficiently.
+   *
+   * `newParentId` semantics:
+   *   - string = the group/frame id to move into
+   *   - null = leave any current group, become top-level
+   *
+   * Quiet no-op when any of wsId/itemId/pageId is empty OR
+   * `elementIds` is empty (matches the pattern of `updateElement` /
+   * `deleteElement` / `groupSelection`).
+   *
+   * On error (e.g. cycle) the store is unchanged and the error
+   * propagates as a notification toast.
+   */
+  async function reparentLayers(payload: {
+    workspaceId: string
+    itemId: string
+    pageId: string
+    elementIds: string[]
+    newParentId: string | null
+  }): Promise<void> {
+    const { workspaceId, itemId, pageId, elementIds, newParentId } = payload
+    if (!workspaceId || !itemId || !pageId) return
+    if (elementIds.length === 0) return
+    try {
+      await workspacesStore.reparentDesignElementsBatch(
+        workspaceId,
+        itemId,
+        pageId,
+        {
+          element_ids: elementIds,
+          new_parent_id: newParentId,
+        },
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      notificationStore.notifyError(message, 'Failed to reparent layers.')
+    }
+  }
+
+  return { updateElement, deleteElement, groupSelection, ungroupSelection, reparentLayers }
 }

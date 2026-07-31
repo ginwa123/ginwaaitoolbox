@@ -289,8 +289,10 @@ import {
   groupDesignElements as groupDesignElementsApi,
   reorderDesignElements as reorderDesignElementsApi,
   ungroupDesignElements as ungroupDesignElementsApi,
+  reparentDesignElementsBatch as reparentDesignElementsBatchApi,
   type GeometryBatchUpdate,
   type GroupDesignElementsRequest,
+  type ReparentDesignElementsBatchRequest,
   type ReorderMode,
 } from '../api'
 
@@ -1547,6 +1549,41 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     return result
   }
 
+  // Atomic N-element reparent (1 OR many). Used by the LayersPanel
+  // drag-and-drop affordance. The whole batch is all-or-nothing —
+  // the backend rejects with 400 BadReparent if ANY element would
+  // close a cycle, and 0 writes happen. The local state is mirrored
+  // after a successful response; on error the store is unchanged
+  // and the error propagates so the composable can show a toast.
+  //
+  // Mirrors the in-place-replace pattern of groupDesignElements +
+  // updateDesignElementsGeometryBatch: each returned `updated` row
+  // replaces its current row in `design_elements` (preserves the
+  // array's existing order for non-affected elements).
+  async function reparentDesignElementsBatch(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    body: Omit<ReparentDesignElementsBatchRequest, 'reposition'> & {
+      reposition?: ReparentDesignElementsBatchRequest['reposition']
+    },
+  ): Promise<DesignElement[]> {
+    const reposition = body.reposition ?? 'last_in_parent'
+    const result = await reparentDesignElementsBatchApi(workspaceId, itemId, pageId, {
+      element_ids: body.element_ids,
+      new_parent_id: body.new_parent_id,
+      reposition,
+    })
+    const item = findItem(workspaceId, itemId)
+    if (item?.design_elements) {
+      for (const updated of result.updated) {
+        const idx = item.design_elements.findIndex((e) => e.id === updated.id)
+        if (idx !== -1) item.design_elements[idx] = updated
+      }
+    }
+    return result.updated
+  }
+
   // Dissolve a group/frame: reparent its direct children to the
   // group's parent (or top-level if the group had no parent), then
   // delete the group row. Mirrors the in-place-replace pattern of
@@ -2622,6 +2659,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     updateDesignPage,
     groupDesignElements,
     ungroupDesignElements,
+    reparentDesignElementsBatch,
     reorderDesignElements,
     initializeFromSystemFolder,
     onSessionEvent,

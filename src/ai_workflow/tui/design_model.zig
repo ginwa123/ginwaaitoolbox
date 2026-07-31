@@ -730,6 +730,23 @@ pub const UpdateElementInput = struct {
     /// parent (reparent to top-level). See
     /// `docs/superpowers/plans/2026-07-28-grouped-layers.md` Chunk 2.
     parent_id: ?[]const u8 = null,
+    /// Optional post-update position normalization. When set, the
+    /// element's position is recomputed AFTER the SET clause runs —
+    /// used by the drag-to-reparent UX so the moved element lands
+    /// at the bottom of its new parent's children. See
+    /// `docs/superpowers/plans/2026-07-30-design-layer-drag-join-or-leave-group.md`.
+    reposition: ?RepositionMode = null,
+};
+
+/// How to recompute the element's `position` column after a
+/// parent_id change. Currently only one variant; future variants
+/// branch in `updateElement` to do precise-position inserts.
+pub const RepositionMode = enum {
+    /// Land at MAX(position) + 1 of all rows that share the new
+    /// parent (or are top-level when parent_id is empty). The
+    /// element being moved is excluded from the MAX so it lands
+    /// strictly after its new siblings.
+    last_in_parent,
 };
 
 /// Update an element. Each non-null field is SET in the SQL UPDATE;
@@ -837,6 +854,44 @@ pub fn updateElement(
     if (input.text_style) |v| { try sets.append(allocator, "text_style = ?"); try args.append(allocator, v); }
     if (input.image_url) |v| { try sets.append(allocator, "image_url = ?"); try args.append(allocator, v); }
     if (input.parent_id) |v| { try sets.append(allocator, "parent_id = ?"); try args.append(allocator, v); }
+
+    // Cycle prevention for the parent_id assignment. Run BEFORE the
+    // UPDATE so a cycle never reaches the database. Two checks:
+    //   (a) self-cycle (drop the element into itself)
+    //   (b) ancestor-into-descendant (close a cycle via the chain)
+    // Both return `error.CycleDetected`, mapped to HTTP 400 in the
+    // handler. Skip entirely when parent_id is null (no change).
+    if (input.parent_id) |new_pid| {
+        if (std.mem.eql(u8, new_pid, input.element_id)) return error.CycleDetected;
+        if (try wouldCreateCycle(db, allocator, input.element_id, new_pid)) {
+            return error.CycleDetected;
+        }
+    }
+
+    if (input.reposition) |mode| {
+        // Currently only one variant — the `defer _ = mode;` documents
+        // the future branch point for additional RepositionMode variants
+        // (e.g. `before_sibling`, `after_sibling`).
+        defer _ = mode;
+        // The new parent_id is what we just appended to the SET list
+        // (or empty string for top-level). The COALESCE in the SQL
+        // matches the SELECT-side convention used everywhere in the
+        // codebase: NULL → ''. So `COALESCE(parent_id, '') = ?` works
+        // for BOTH top-level (`?` = '') and nested (`?` = group_id).
+        const new_parent_sql: []const u8 = if (input.parent_id) |p| p else "";
+        var max_pos_q = try db.query(allocator,
+            \\SELECT COALESCE(MAX(position), -1) FROM design_page_elements
+            \\WHERE COALESCE(parent_id, '') = ? AND id != ?
+        , &.{ new_parent_sql, input.element_id });
+        defer max_pos_q.deinit();
+        const max_pos_row = (try max_pos_q.next()) orelse unreachable;
+        defer max_pos_row.deinit(allocator);
+        const max_pos_value = std.fmt.parseInt(i64, max_pos_row.values[0], 10) catch 0;
+        const new_position_str = try std.fmt.allocPrint(allocator, "{d}", .{max_pos_value + 1});
+        try owned.append(allocator, new_position_str);
+        try sets.append(allocator, "position = ?");
+        try args.append(allocator, owned.items[owned.items.len - 1]);
+    }
 
     // If html changed, look up file_path, atomic-rewrite the file,
     // and record that we need to UPDATE file_path too if the file
@@ -1458,6 +1513,285 @@ pub fn groupElements(
     return allocator.dupe(u8, new_id);
 }
 
+// ─── reparentElements (Chunk 1b — atomic N-element reparent) ──────────────
+
+pub const ReparentElementsInput = struct {
+    page_id: []const u8,
+    element_ids: []const []const u8,
+    /// null = top-level (no parent). Pass "" also accepted as
+    /// top-level — the SQL COALESCE convention normalises both
+    /// shapes to "no parent".
+    new_parent_id: ?[]const u8,
+    reposition: RepositionMode,
+};
+
+pub const ReparentElementsError = error{
+    PageNotFound,
+    EmptyElementIds,
+    BadElementId,
+    CrossPageIds,
+    CycleDetected,
+    BadNewParentId,
+    DbError,
+    OutOfMemory,
+};
+
+/// Re-parent N elements atomically (single SQL transaction). Used
+/// by the drag-to-reparent UX so dragging 1 or N selected rows into
+/// a group uses one round-trip instead of N parallel PUTs.
+///
+/// Behaviour:
+///   1. Validate `element_ids` is non-empty (EmptyElementIds).
+///   2. Look up the page JOIN (workspace_id, item_id) — needed for
+///      the SSE event payload. PageNotFound on miss.
+///   3. Look up `new_parent_id` (when non-null): validate it exists
+///      on the same page, validate its type is `group` or `frame`
+///      (containers only). BadNewParentId on miss / wrong type /
+///      cross-page.
+///   4. Pre-flight cycle check: for each element_id, walk up from
+///      `new_parent_id` and reject the WHOLE batch if any element_id
+///      appears in the chain (CycleDetected). No writes happen on
+///      rejection — see the SQL transaction below.
+///   5. Begin transaction. For each element_id (in input order):
+///      a. SELECT COALESCE(MAX(position), -1) FROM design_page_elements
+///         WHERE (COALESCE(parent_id, '') = ? OR parent_id IS NULL)
+///         AND id != ?
+///      b. UPDATE design_page_elements SET parent_id = ?, position = ?,
+///         updated_at = datetime('now') WHERE id = ?
+///   6. Commit. On any failure the deferred rollback leaves the DB
+///      unchanged.
+///   7. Re-SELECT the updated rows and return them in input order
+///      (heap-owned; caller frees with `freeElements`).
+///   8. Emit one `design_element_updated` SSE event per affected
+///      element (best-effort).
+///
+/// Returns the slice of updated `DesignElement` rows in input order.
+/// The signature is `anyerror!` so the sqlite-side error unions
+/// from `db.query` / `db.exec` / `db.begin` can flow through
+/// unchanged — the handler maps the documented variants to HTTP
+/// status codes and treats the rest as 500.
+///
+/// Plan: docs/superpowers/plans/2026-07-30-design-layer-drag-join-or-leave-group.md
+pub fn reparentElements(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: ReparentElementsInput,
+) anyerror![]DesignElement {
+    if (input.element_ids.len == 0) return error.EmptyElementIds;
+
+    // 1. Look up the page JOIN (workspace_id, item_id) for the SSE
+    //    event payload. Same JOIN shape as groupElements.
+    const Lookup = struct {
+        workspace_id: []u8,
+        item_id: []u8,
+    };
+    const lookup: Lookup = blk: {
+        var q = try db.query(allocator,
+            \\SELECT wi.workspace_id, dp.workspace_item_id
+            \\FROM design_pages dp
+            \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
+            \\WHERE dp.id = ?
+        , &.{input.page_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.PageNotFound;
+        defer row.deinit(allocator);
+        break :blk .{
+            .workspace_id = try allocator.dupe(u8, row.values[0]),
+            .item_id = try allocator.dupe(u8, row.values[1]),
+        };
+    };
+    defer allocator.free(lookup.workspace_id);
+    defer allocator.free(lookup.item_id);
+
+    // 2. Validate the new parent (when non-null). Same shape as
+    //    updateElement's parent_id cycle check, plus the page match
+    //    and container-type validation that setElementParent already
+    //    does.
+    if (input.new_parent_id) |new_pid| {
+        var q = try db.query(allocator,
+            \\SELECT page_id, type FROM design_page_elements WHERE id = ?
+        , &.{new_pid});
+        defer q.deinit();
+        const row_opt = try q.next();
+        if (row_opt == null) return error.BadNewParentId;
+        var row = row_opt.?;
+        defer row.deinit(allocator);
+        const parent_page_id = row.values[0];
+        const parent_type = row.values[1];
+        if (!std.mem.eql(u8, parent_page_id, input.page_id)) return error.BadNewParentId;
+        if (!std.mem.eql(u8, parent_type, "group") and
+            !std.mem.eql(u8, parent_type, "frame"))
+        {
+            return error.BadNewParentId;
+        }
+    }
+
+    // 3. Build the dynamic IN-list SELECT for the requested elements.
+    //    Same IN-list pattern as groupElements.
+    var in_list_sql: std.ArrayList(u8) = .empty;
+    defer in_list_sql.deinit(allocator);
+    try in_list_sql.appendSlice(allocator, "SELECT page_id FROM design_page_elements WHERE id IN (");
+    var in_args: std.ArrayList([]const u8) = .empty;
+    defer in_args.deinit(allocator);
+    for (input.element_ids, 0..) |eid, i| {
+        if (i > 0) try in_list_sql.append(allocator, ',');
+        try in_list_sql.append(allocator, '?');
+        try in_args.append(allocator, eid);
+    }
+    try in_list_sql.append(allocator, ')');
+
+    // 4. Fetch each element's page_id. Reject BadElementId (count
+    //    mismatch) or CrossPageIds (any element on a different page).
+    var element_pages: std.ArrayList([]u8) = .empty;
+    defer {
+        for (element_pages.items) |p| allocator.free(p);
+        element_pages.deinit(allocator);
+    }
+    {
+        var q = try db.query(allocator, in_list_sql.items, in_args.items);
+        defer q.deinit();
+        while (try q.next()) |row| {
+            defer row.deinit(allocator);
+            try element_pages.append(allocator, try allocator.dupe(u8, row.values[0]));
+        }
+    }
+    if (element_pages.items.len != input.element_ids.len) return error.BadElementId;
+    for (element_pages.items) |p| {
+        if (!std.mem.eql(u8, p, input.page_id)) return error.CrossPageIds;
+    }
+
+    // 5. Pre-flight cycle check for every element. If ANY element_id
+    //    would close a cycle (appears in the ancestor chain starting
+    //    from new_parent_id), reject the whole batch — no DB writes.
+    for (input.element_ids) |eid| {
+        if (try wouldCreateCycle(db, allocator, eid, input.new_parent_id orelse "")) {
+            return error.CycleDetected;
+        }
+    }
+
+    // 6. SQL transaction. defer-rollback guarantees atomicity: if
+    //    any UPDATE fails below, the rollback fires automatically.
+    //    On the success path we commit explicitly and mark
+    //    `committed = true` to suppress the defer rollback.
+    var tx = try db.begin();
+    var committed = false;
+    defer if (!committed) tx.rollback() catch {};
+
+    // 7. Apply per-element UPDATEs. We re-query MAX(position) for
+    //    each so the second element lands at first+1 (not the first
+    //    again), preserving input order in the new parent's children.
+    var updated_rows: std.ArrayList(DesignElement) = .empty;
+    defer {
+        for (updated_rows.items) |e| freeElement(allocator, e);
+        updated_rows.deinit(allocator);
+    }
+    for (input.element_ids, 0..) |eid, i| {
+        _ = i;
+        // Per-element MAX position. The new_parent_id for the query
+        // is what we just verified in step 2.
+        const new_parent_sql: []const u8 = if (input.new_parent_id) |p| p else "";
+        var max_pos_q = try tx.query(allocator,
+            \\SELECT COALESCE(MAX(position), -1) FROM design_page_elements
+            \\WHERE COALESCE(parent_id, '') = ? AND id != ?
+        , &.{ new_parent_sql, eid });
+        defer max_pos_q.deinit();
+        const max_pos_row = (try max_pos_q.next()) orelse return error.DbError;
+        defer max_pos_row.deinit(allocator);
+        const max_pos_value = std.fmt.parseInt(i64, max_pos_row.values[0], 10) catch 0;
+        const new_position = max_pos_value + 1;
+
+        // The new_parent_id to bind: empty string when top-level
+        // (SqliteBackend.exec binds "" as NULL — the COALESCE
+        // convention used everywhere in this codebase).
+        const new_parent_to_bind: []const u8 = if (input.new_parent_id) |p| p else "";
+        const new_position_str = try std.fmt.allocPrint(allocator, "{d}", .{new_position});
+        defer allocator.free(new_position_str);
+
+        try tx.exec(allocator,
+            \\UPDATE design_page_elements
+            \\SET parent_id = ?, position = ?, updated_at = datetime('now')
+            \\WHERE id = ?
+        , &.{ new_parent_to_bind, new_position_str, eid });
+    }
+
+    // 8. Re-SELECT the updated rows (in input order) to return to the
+    //    caller. Use the same SELECT shape as listElements.
+    var row_ptrs: std.ArrayList([]u8) = .empty;
+    defer {
+        for (row_ptrs.items) |p| allocator.free(p);
+        row_ptrs.deinit(allocator);
+    }
+    for (input.element_ids) |eid| try row_ptrs.append(allocator, try allocator.dupe(u8, eid));
+
+    var updated: std.ArrayList(DesignElement) = .empty;
+    defer {
+        for (updated.items) |e| freeElement(allocator, e);
+        updated.deinit(allocator);
+    }
+    for (row_ptrs.items) |eid| {
+        var q = try tx.query(allocator,
+            \\SELECT id, page_id, COALESCE(parent_id, ''),
+            \\       x, y, width, height,
+            \\       z_index, position,
+            \\       name, file_path, type, rotation, fill, stroke,
+            \\       stroke_width, corner_radius, opacity,
+            \\       text_content, text_style, image_url,
+            \\       COALESCE(created_at, ''), COALESCE(updated_at, '')
+            \\FROM design_page_elements
+            \\WHERE id = ?
+        , &.{eid});
+        defer q.deinit();
+        const row_opt = try q.next();
+        if (row_opt == null) return error.DbError;
+        var row = row_opt.?;
+        defer row.deinit(allocator);
+
+        const e: DesignElement = .{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .page_id = try allocator.dupe(u8, row.values[1]),
+            .parent_id = try allocator.dupe(u8, row.values[2]),
+            .x = std.fmt.parseInt(i64, row.values[3], 10) catch 0,
+            .y = std.fmt.parseInt(i64, row.values[4], 10) catch 0,
+            .width = std.fmt.parseInt(i64, row.values[5], 10) catch 0,
+            .height = std.fmt.parseInt(i64, row.values[6], 10) catch 0,
+            .z_index = std.fmt.parseInt(i64, row.values[7], 10) catch 0,
+            .position = std.fmt.parseInt(i64, row.values[8], 10) catch 0,
+            .name = try allocator.dupe(u8, row.values[9]),
+            .file_path = try allocator.dupe(u8, row.values[10]),
+            .elem_type = try allocator.dupe(u8, row.values[11]),
+            .rotation = std.fmt.parseFloat(f64, row.values[12]) catch 0.0,
+            .fill = try allocator.dupe(u8, row.values[13]),
+            .stroke = try allocator.dupe(u8, row.values[14]),
+            .stroke_width = std.fmt.parseInt(i64, row.values[15], 10) catch 0,
+            .corner_radius = std.fmt.parseInt(i64, row.values[16], 10) catch 0,
+            .opacity = std.fmt.parseFloat(f64, row.values[17]) catch 1.0,
+            .text_content = try allocator.dupe(u8, row.values[18]),
+            .text_style = try allocator.dupe(u8, row.values[19]),
+            .image_url = try allocator.dupe(u8, row.values[20]),
+            .created_at = try allocator.dupe(u8, row.values[21]),
+            .updated_at = try allocator.dupe(u8, row.values[22]),
+        };
+        try updated.append(allocator, e);
+    }
+
+    // 9. Emit SSE events (one per element) AFTER the commit so listeners
+    //    see state that's already committed. Best-effort.
+    committed = true;
+    try tx.commit();
+
+    for (input.element_ids) |eid| {
+        on_event_sent_design.onEventSendDesignElementUpdated(allocator, .{
+            .action = "updated",
+            .workspace_id = lookup.workspace_id,
+            .item_id = lookup.item_id,
+            .page_id = input.page_id,
+            .element_id = eid,
+        }) catch {};
+    }
+
+    return updated.toOwnedSlice(allocator);
+}
+
 // ─── reorderElements (Chunk 5 — right-click bring/send z-order) ──────────
 
 pub const ReorderMode = enum {
@@ -2069,6 +2403,49 @@ pub const SetElementParentError = error{
     DbError,
     OutOfMemory,
 };
+
+/// Cycle detection for reparent operations. Returns `true` iff
+/// reparenting `element_id` to be a child of `new_parent_id` would
+/// close a cycle — i.e. `new_parent_id` is already a descendant of
+/// `element_id` (or `element_id` itself, though the self-check is
+/// done separately at the call site).
+///
+/// The recursive CTE walks the parent chain UPWARD from
+/// `new_parent_id`. If `element_id` appears anywhere in that chain,
+/// the new assignment would close a cycle. The
+/// `WHERE dpe.parent_id IS NOT NULL` guard terminates the walk at
+/// top-level rows. `LIMIT 1` short-circuits as soon as the target
+/// is found.
+///
+/// Used by `updateElement` and `reparentElements` to reject reparent
+/// requests that would close a cycle. Same shape as the inline check
+/// in `setElementParent` — extracted so both endpoints share one
+/// canonical implementation.
+///
+/// Plan: docs/superpowers/plans/2026-07-30-design-layer-drag-join-or-leave-group.md
+pub fn wouldCreateCycle(
+    db: *sqlite.SqliteBackend,
+    allocator: std.mem.Allocator,
+    element_id: []const u8,
+    new_parent_id: []const u8,
+) !bool {
+    var q = try db.query(allocator,
+        \\WITH RECURSIVE chain(id) AS (
+        \\    SELECT id FROM design_page_elements WHERE id = ?
+        \\    UNION ALL
+        \\    SELECT dpe.parent_id FROM design_page_elements dpe
+        \\        JOIN chain c ON dpe.id = c.id
+        \\        WHERE dpe.parent_id IS NOT NULL
+        \\)
+        \\SELECT 1 FROM chain WHERE id = ? LIMIT 1
+    , &.{ new_parent_id, element_id });
+    defer q.deinit();
+    if (try q.next()) |row| {
+        defer row.deinit(allocator);
+        return true;
+    }
+    return false;
+}
 
 /// Re-parent `element_id` to `new_parent_id` (or top-level when null).
 ///
@@ -2737,4 +3114,874 @@ test "updateElementsBatch accepts a single field per update (no other fields req
     try testing_geometry.expectEqual(@as(i64, 75), result[0].y);
     try testing_geometry.expectEqual(@as(i64, 200), result[0].width);
     try testing_geometry.expectEqual(@as(i64, 200), result[0].height);
+}
+
+// ─── updateElement: parent_id + reposition + cycle preflight (Chunk 1) ────
+//
+// Pulled in from design_model_reparent_test.zig — the convention on this
+// project (per the maintainer) is one file per impl, with helpers + tests
+// at the bottom.
+
+const testing_reparent = std.testing;
+
+fn setupReparentDbAndItem() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_id: []const u8,
+    item_path: []u8,
+} {
+    const alloc = testing_reparent.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '')
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    UNIQUE (workspace_item_id, name),
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 375, height INTEGER NOT NULL DEFAULT 667,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle', rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '', stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0, opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '', text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '', parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    var tmp = testing_reparent.tmpDir(.{});
+    var tmpdir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_len = try tmp.dir.realPath(testing_reparent.io, &tmpdir_buf);
+    const tmpdir_path = try testing_reparent.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
+
+    const item_id_const = "item_design_reparent";
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)",
+        &.{ item_id_const, tmpdir_path });
+
+    const item_id_slice = try alloc.dupe(u8, item_id_const);
+
+    return .{
+        .db = db,
+        .threaded = threaded,
+        .item_id = item_id_slice,
+        .item_path = tmpdir_path,
+    };
+}
+
+fn teardownReparentDb(db: *sqlite.SqliteBackend, threaded: *std.Io.Threaded) void {
+    db.deinit();
+    threaded.deinit();
+}
+
+test "updateElement with reposition: .last_in_parent sets position to MAX(siblings) + 1 (initially 0)" {
+    const alloc = testing_reparent.allocator;
+    var ctx = try setupReparentDbAndItem();
+    defer teardownReparentDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const group_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "login-card",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 100, .y = 200, .width = 400, .height = 300,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group_id);
+
+    const leaf_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "leaf-a",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 110, .y = 220, .width = 80, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(leaf_id);
+
+    const result_id = try updateElement(alloc, &ctx.db, .{
+        .element_id = leaf_id,
+        .parent_id = group_id,
+        .reposition = .last_in_parent,
+    });
+    defer alloc.free(result_id);
+
+    const got = try getElement(alloc, &ctx.db, leaf_id);
+    defer freeElement(alloc, got);
+    try testing_reparent.expectEqualStrings(group_id, got.parent_id);
+    try testing_reparent.expectEqual(@as(i64, 0), got.position);
+}
+
+test "updateElement with reposition: .last_in_parent chains to MAX+1, MAX+2, MAX+3" {
+    const alloc = testing_reparent.allocator;
+    var ctx = try setupReparentDbAndItem();
+    defer teardownReparentDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const group_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "login-card",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 100, .y = 200, .width = 400, .height = 300,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group_id);
+
+    const a_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "leaf-a",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 110, .y = 220, .width = 80, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(a_id);
+
+    const b_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "leaf-b",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 200, .y = 220, .width = 80, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(b_id);
+
+    const c_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "leaf-c",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 300, .y = 220, .width = 80, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(c_id);
+
+    const ra = try updateElement(alloc, &ctx.db, .{
+        .element_id = a_id,
+        .parent_id = group_id,
+        .reposition = .last_in_parent,
+    });
+    defer alloc.free(ra);
+
+    const rb = try updateElement(alloc, &ctx.db, .{
+        .element_id = b_id,
+        .parent_id = group_id,
+        .reposition = .last_in_parent,
+    });
+    defer alloc.free(rb);
+
+    const rc = try updateElement(alloc, &ctx.db, .{
+        .element_id = c_id,
+        .parent_id = group_id,
+        .reposition = .last_in_parent,
+    });
+    defer alloc.free(rc);
+
+    const got_a = try getElement(alloc, &ctx.db, a_id);
+    defer freeElement(alloc, got_a);
+    const got_b = try getElement(alloc, &ctx.db, b_id);
+    defer freeElement(alloc, got_b);
+    const got_c = try getElement(alloc, &ctx.db, c_id);
+    defer freeElement(alloc, got_c);
+
+    try testing_reparent.expectEqual(@as(i64, 0), got_a.position);
+    try testing_reparent.expectEqual(@as(i64, 1), got_b.position);
+    try testing_reparent.expectEqual(@as(i64, 2), got_c.position);
+}
+
+test "updateElement with parent_id = self returns CycleDetected" {
+    const alloc = testing_reparent.allocator;
+    var ctx = try setupReparentDbAndItem();
+    defer teardownReparentDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const group_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "group",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 100, .y = 200, .width = 400, .height = 300,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group_id);
+
+    const result = updateElement(alloc, &ctx.db, .{
+        .element_id = group_id,
+        .parent_id = group_id,
+    });
+    try testing_reparent.expectError(error.CycleDetected, result);
+}
+
+test "updateElement with parent_id = transitive descendant returns CycleDetected" {
+    const alloc = testing_reparent.allocator;
+    var ctx = try setupReparentDbAndItem();
+    defer teardownReparentDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const group_a_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "group-a",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 100, .y = 200, .width = 400, .height = 300,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group_a_id);
+
+    const group_b_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "group-b",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 200, .y = 300, .width = 200, .height = 200,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group_b_id);
+
+    const leaf_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "leaf",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 300, .y = 400, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(leaf_id);
+
+    const b_into_a = try updateElement(alloc, &ctx.db, .{
+        .element_id = group_b_id,
+        .parent_id = group_a_id,
+    });
+    defer alloc.free(b_into_a);
+    const leaf_into_b = try updateElement(alloc, &ctx.db, .{
+        .element_id = leaf_id,
+        .parent_id = group_b_id,
+    });
+    defer alloc.free(leaf_into_b);
+
+    const cycle_result = updateElement(alloc, &ctx.db, .{
+        .element_id = group_a_id,
+        .parent_id = leaf_id,
+    });
+    try testing_reparent.expectError(error.CycleDetected, cycle_result);
+}
+
+test "updateElement with parent_id = unrelated group succeeds (no false positive on cycle check)" {
+    const alloc = testing_reparent.allocator;
+    var ctx = try setupReparentDbAndItem();
+    defer teardownReparentDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const group_a_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "group-a",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 100, .y = 200, .width = 400, .height = 300,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group_a_id);
+
+    const group_b_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "group-b",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 600, .y = 200, .width = 400, .height = 300,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group_b_id);
+
+    const result_id = try updateElement(alloc, &ctx.db, .{
+        .element_id = group_a_id,
+        .parent_id = group_b_id,
+        .reposition = .last_in_parent,
+    });
+    defer alloc.free(result_id);
+
+    const got = try getElement(alloc, &ctx.db, group_a_id);
+    defer freeElement(alloc, got);
+    try testing_reparent.expectEqualStrings(group_b_id, got.parent_id);
+}
+
+test "updateElement without reposition leaves position unchanged" {
+    const alloc = testing_reparent.allocator;
+    var ctx = try setupReparentDbAndItem();
+    defer teardownReparentDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const group_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "group",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 100, .y = 200, .width = 400, .height = 300,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group_id);
+
+    const leaf_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "leaf",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 110, .y = 220, .width = 80, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(leaf_id);
+
+    const result_id = try updateElement(alloc, &ctx.db, .{
+        .element_id = leaf_id,
+        .parent_id = group_id,
+    });
+    defer alloc.free(result_id);
+
+    const got = try getElement(alloc, &ctx.db, leaf_id);
+    defer freeElement(alloc, got);
+    try testing_reparent.expectEqualStrings(group_id, got.parent_id);
+    // addElement assigns positions sequentially: group=0, leaf=1.
+    // Without reposition, the UPDATE only changes parent_id and
+    // leaves position as-is. So leaf.position stays at 1.
+    try testing_reparent.expectEqual(@as(i64, 1), got.position);
+}
+
+// ─── reparentElements: atomic N-element reparent model (Chunk 1b) ─────────
+//
+// Pulled in from design_model_reparent_batch_test.zig.
+
+const testing_reparent_batch = std.testing;
+
+fn setupReparentBatchDbAndItem() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_id: []const u8,
+    item_path: []u8,
+    page_id: []u8,
+} {
+    const alloc = testing_reparent_batch.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '')
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    UNIQUE (workspace_item_id, name),
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 375, height INTEGER NOT NULL DEFAULT 667,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle', rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '', stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0, opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '', text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '', parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    var tmp = testing_reparent_batch.tmpDir(.{});
+    var tmpdir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_len = try tmp.dir.realPath(testing_reparent_batch.io, &tmpdir_buf);
+    const tmpdir_path = try testing_reparent_batch.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
+
+    const item_id_const = "item_design_reparent_batch";
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)",
+        &.{ item_id_const, tmpdir_path });
+
+    const item_id_slice = try alloc.dupe(u8, item_id_const);
+
+    const page_id_alloc = try setDesignPage(alloc, &db, .{
+        .item_id = item_id_slice,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+
+    return .{
+        .db = db,
+        .threaded = threaded,
+        .item_id = item_id_slice,
+        .item_path = tmpdir_path,
+        .page_id = page_id_alloc,
+    };
+}
+
+fn teardownReparentBatchDb(db: *sqlite.SqliteBackend, threaded: *std.Io.Threaded) void {
+    db.deinit();
+    threaded.deinit();
+}
+
+test "reparentElements moves 3 top-level leaves into a group; positions are 0, 1, 2" {
+    const alloc = testing_reparent_batch.allocator;
+    var ctx = try setupReparentBatchDbAndItem();
+    defer teardownReparentBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const group_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "group",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 100, .y = 200, .width = 400, .height = 300,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group_id);
+
+    const a_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "leaf-a",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 110, .y = 220, .width = 80, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(a_id);
+    const b_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "leaf-b",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 200, .y = 220, .width = 80, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(b_id);
+    const c_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "leaf-c",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 300, .y = 220, .width = 80, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(c_id);
+
+    const ids = [_][]const u8{ a_id, b_id, c_id };
+    const updated = try reparentElements(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .element_ids = &ids,
+        .new_parent_id = group_id,
+        .reposition = .last_in_parent,
+    });
+    defer {
+        for (updated) |e| freeElement(alloc, e);
+        alloc.free(updated);
+    }
+
+    try testing_reparent_batch.expectEqual(@as(usize, 3), updated.len);
+
+    const got_a = try getElement(alloc, &ctx.db, a_id);
+    defer freeElement(alloc, got_a);
+    const got_b = try getElement(alloc, &ctx.db, b_id);
+    defer freeElement(alloc, got_b);
+    const got_c = try getElement(alloc, &ctx.db, c_id);
+    defer freeElement(alloc, got_c);
+
+    try testing_reparent_batch.expectEqualStrings(group_id, got_a.parent_id);
+    try testing_reparent_batch.expectEqual(@as(i64, 0), got_a.position);
+    try testing_reparent_batch.expectEqualStrings(group_id, got_b.parent_id);
+    try testing_reparent_batch.expectEqual(@as(i64, 1), got_b.position);
+    try testing_reparent_batch.expectEqualStrings(group_id, got_c.parent_id);
+    try testing_reparent_batch.expectEqual(@as(i64, 2), got_c.position);
+}
+
+test "reparentElements with new_parent_id = null moves elements to top-level" {
+    const alloc = testing_reparent_batch.allocator;
+    var ctx = try setupReparentBatchDbAndItem();
+    defer teardownReparentBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    try ctx.db.exec(alloc,
+        \\INSERT INTO design_page_elements
+        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at)
+        \\VALUES
+        \\   ('elem_g', ?, 'g', '', 0, 0, 100, 100, 0, 0,
+        \\    'frame', 0.0, '', '', 0, 0, 1.0,
+        \\    '', '', '', NULL, datetime('now'), datetime('now')),
+        \\   ('elem_nested_1', ?, 'n1', '', 0, 0, 50, 50, 0, 0,
+        \\    'rectangle', 0.0, '', '', 0, 0, 1.0,
+        \\    '', '', '', 'elem_g', datetime('now'), datetime('now')),
+        \\   ('elem_nested_2', ?, 'n2', '', 0, 0, 50, 50, 0, 1,
+        \\    'rectangle', 0.0, '', '', 0, 0, 1.0,
+        \\    '', '', '', 'elem_g', datetime('now'), datetime('now'))
+    , &.{ctx.page_id, ctx.page_id, ctx.page_id});
+
+    const ids = [_][]const u8{ "elem_nested_1", "elem_nested_2" };
+    const updated = try reparentElements(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .element_ids = &ids,
+        .new_parent_id = null,
+        .reposition = .last_in_parent,
+    });
+    defer {
+        for (updated) |e| freeElement(alloc, e);
+        alloc.free(updated);
+    }
+
+    try testing_reparent_batch.expectEqual(@as(usize, 2), updated.len);
+
+    const got1 = try getElement(alloc, &ctx.db, "elem_nested_1");
+    defer freeElement(alloc, got1);
+    const got2 = try getElement(alloc, &ctx.db, "elem_nested_2");
+    defer freeElement(alloc, got2);
+
+    // COALESCE(parent_id, '') returns '' for NULL parent_ids.
+    try testing_reparent_batch.expectEqual(@as(usize, 0), got1.parent_id.len);
+    try testing_reparent_batch.expectEqual(@as(usize, 0), got2.parent_id.len);
+}
+
+test "reparentElements returns CycleDetected if ANY element would cycle, rejecting the whole batch" {
+    const alloc = testing_reparent_batch.allocator;
+    var ctx = try setupReparentBatchDbAndItem();
+    defer teardownReparentBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    try ctx.db.exec(alloc,
+        \\INSERT INTO design_page_elements
+        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at)
+        \\VALUES
+        \\   ('elem_a', ?, 'a', '', 0, 0, 100, 100, 0, 0,
+        \\    'frame', 0.0, '', '', 0, 0, 1.0,
+        \\    '', '', '', NULL, datetime('now'), datetime('now')),
+        \\   ('elem_b', ?, 'b', '', 0, 0, 100, 100, 0, 0,
+        \\    'frame', 0.0, '', '', 0, 0, 1.0,
+        \\    '', '', '', 'elem_a', datetime('now'), datetime('now')),
+        \\   ('elem_leaf', ?, 'leaf', '', 0, 0, 50, 50, 0, 0,
+        \\    'rectangle', 0.0, '', '', 0, 0, 1.0,
+        \\    '', '', '', 'elem_b', datetime('now'), datetime('now'))
+    , &.{ctx.page_id, ctx.page_id, ctx.page_id});
+
+    const ids = [_][]const u8{ "elem_leaf", "elem_a" };
+    const result = reparentElements(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .element_ids = &ids,
+        .new_parent_id = "elem_b",
+        .reposition = .last_in_parent,
+    });
+    try testing_reparent_batch.expectError(error.CycleDetected, result);
+
+    const got_a = try getElement(alloc, &ctx.db, "elem_a");
+    defer freeElement(alloc, got_a);
+    try testing_reparent_batch.expectEqual(@as(usize, 0), got_a.parent_id.len);
+
+    const got_leaf = try getElement(alloc, &ctx.db, "elem_leaf");
+    defer freeElement(alloc, got_leaf);
+    try testing_reparent_batch.expectEqualStrings("elem_b", got_leaf.parent_id);
+}
+
+test "reparentElements returns CrossPageIds when any element is on a different page" {
+    const alloc = testing_reparent_batch.allocator;
+    var ctx = try setupReparentBatchDbAndItem();
+    defer teardownReparentBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const page2_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Second",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page2_id);
+
+    const leaf1 = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "leaf-on-page-1",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(leaf1);
+
+    const leaf2 = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page2_id,
+        .name = "leaf-on-page-2",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(leaf2);
+
+    const group = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "group",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 100, .y = 100, .width = 100, .height = 100,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group);
+
+    const ids = [_][]const u8{ leaf1, leaf2 };
+    const result = reparentElements(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .element_ids = &ids,
+        .new_parent_id = group,
+        .reposition = .last_in_parent,
+    });
+    try testing_reparent_batch.expectError(error.CrossPageIds, result);
+}
+
+test "reparentElements returns BadNewParentId when the new parent is a leaf type" {
+    const alloc = testing_reparent_batch.allocator;
+    var ctx = try setupReparentBatchDbAndItem();
+    defer teardownReparentBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const a_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "leaf-a",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(a_id);
+
+    const b_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "leaf-b",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 60, .y = 0, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(b_id);
+
+    const ids = [_][]const u8{ a_id, b_id };
+    const result = reparentElements(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .element_ids = &ids,
+        .new_parent_id = a_id,
+        .reposition = .last_in_parent,
+    });
+    try testing_reparent_batch.expectError(error.BadNewParentId, result);
+}
+
+test "reparentElements returns BadNewParentId when the new parent does not exist" {
+    const alloc = testing_reparent_batch.allocator;
+    var ctx = try setupReparentBatchDbAndItem();
+    defer teardownReparentBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const a_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "leaf-a",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(a_id);
+
+    const ids = [_][]const u8{a_id};
+    const result = reparentElements(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .element_ids = &ids,
+        .new_parent_id = "elem_nonexistent",
+        .reposition = .last_in_parent,
+    });
+    try testing_reparent_batch.expectError(error.BadNewParentId, result);
+}
+
+test "reparentElements returns EmptyElementIds for an empty input list" {
+    const alloc = testing_reparent_batch.allocator;
+    var ctx = try setupReparentBatchDbAndItem();
+    defer teardownReparentBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const ids = [_][]const u8{};
+    const result = reparentElements(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .element_ids = &ids,
+        .new_parent_id = null,
+        .reposition = .last_in_parent,
+    });
+    try testing_reparent_batch.expectError(error.EmptyElementIds, result);
+}
+
+test "reparentElements returns BadElementId when an id does not exist" {
+    const alloc = testing_reparent_batch.allocator;
+    var ctx = try setupReparentBatchDbAndItem();
+    defer teardownReparentBatchDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.page_id);
+
+    const a_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.page_id,
+        .name = "leaf-a",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(a_id);
+
+    const ids = [_][]const u8{ a_id, "elem_nonexistent" };
+    const result = reparentElements(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .element_ids = &ids,
+        .new_parent_id = null,
+        .reposition = .last_in_parent,
+    });
+    try testing_reparent_batch.expectError(error.BadElementId, result);
 }

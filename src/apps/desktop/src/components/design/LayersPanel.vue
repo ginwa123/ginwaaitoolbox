@@ -40,6 +40,7 @@ import type { DesignElement } from '../../api'
 import LayerRow, { type LayerTreeNode } from './LayerRow.vue'
 import DesignContextMenu from './DesignContextMenu.vue'
 import { useDesignContextMenu } from '../../composables/useDesignContextMenu'
+import { useLayerDragDrop, TOP_LEVEL_SENTINEL } from '../../composables/useLayerDragDrop'
 import { useWorkspacesStore } from '../../stores/workspaces'
 
 // Read the active workspace + item + page at call time. Mirrors the
@@ -78,6 +79,11 @@ const emit = defineEmits<{
   selectAll: []
   bringToFront: [targetIds: string[]]
   bringForward: [targetIds: string[]]
+  // NEW (Chunk 4 Task 4.2 of drag-to-reparent plan): payload from a
+  // drop event. `elementIds` is the FULL selection when the dragged
+  // row is in the selection (multi-drag). `newParentId` is the
+  // group/frame id to reparent under, or null for "leave group".
+  reparent: [payload: { elementIds: string[]; newParentId: string | null }]
   sendBackward: [targetIds: string[]]
   sendToBack: [targetIds: string[]]
   contextMenuDelete: [targetIds: string[]]
@@ -188,6 +194,36 @@ function findNode(
  * references (no need to copy those — only the tree structure
  * mutates).
  */
+// ─── Drag-and-drop state (Chunk 4 Task 4.2) ────────────────────────────
+//
+// LayersPanel owns the drag state machine via `useLayerDragDrop`.
+// The composable returns the drag handlers + per-row visual state
+// predicates; we pass those down to each <LayerRow>.
+//
+// Top-level drop zones (above the first top-level row, between each
+// pair, below the last) use the TOP_LEVEL_SENTINEL id — the same
+// sentinel the composable treats as "leave any group".
+//
+// Multi-drag: when the dragged row is in `selectedIds` AND the
+// selection has > 1 element, the composable sets draggedIds to the
+// FULL set. The LayerRow's per-row visual flags (`isBeingDragged`)
+// reflect that — every selected row gets the dragging class.
+
+const dragDrop = useLayerDragDrop({
+  elements: () => props.elements,
+  selectedIds: () => new Set(props.selectedIds),
+})
+
+// Forward a drop event from any LayerRow / drop-zone to the
+// composable. The composable resolves the cycle check + elementIds
+// resolution; we just relay the payload to DesignView via emit.
+function handleReparentDrop(targetId: string, _event: DragEvent | Event): void {
+  const result = dragDrop.handlers.onDrop(targetId, _event)
+  if (result) {
+    emit('reparent', result)
+  }
+}
+
 function cloneTree(nodes: LayerTreeNode[]): LayerTreeNode[] {
   return nodes.map((n) => ({
     element: n.element,
@@ -300,20 +336,59 @@ const handleMoveDown = (elementId: string): void => {
       class="flex-1 overflow-y-auto"
       style="scrollbar-width: thin;"
     >
+      <template v-for="(node, idx) in layerTree" :key="node.element.id">
+        <LayerRow
+          :node="node"
+          :depth="0"
+          :selected-ids="selectedIds"
+          :collapsed-ids="collapsedIds"
+          :readonly="readonly"
+          :is-being-dragged="dragDrop.state.isBeingDragged(node.element.id)"
+          :is-drop-target="dragDrop.state.isDropTarget(node.element.id)"
+          :on-layer-drag-start="dragDrop.handlers.onDragStart"
+          :on-layer-drag-over="dragDrop.handlers.onDragOver"
+          :on-layer-drag-leave="dragDrop.handlers.onDragLeave"
+          :on-layer-drop="handleReparentDrop"
+          :on-layer-drag-end="dragDrop.handlers.onDragEnd"
+          @select="(p) => emit('select', p)"
+          @delete="(id) => emit('delete', id)"
+          @toggle-collapse="toggleCollapse"
+          @move-up="handleMoveUp"
+          @move-down="handleMoveDown"
+          @contextmenu="handleLayerContextMenu"
+        />
+        <!-- Top-level drop zone AFTER each top-level row. -->
+        <LayerRow
+          v-if="!readonly"
+          :key="`dropzone-after-${node.element.id}`"
+          kind="drop-zone"
+          :node="{ element: { id: TOP_LEVEL_SENTINEL, page_id: '', type: 'rectangle', parent_id: '', name: '', x: 0, y: 0, width: 0, height: 0, z_index: 0, position: 0, fill: '', stroke: '', stroke_width: 0, corner_radius: 0, rotation: 0, opacity: 1.0, text_content: '', text_style: '', image_url: '', file_path: '', created_at: '', updated_at: '' }, children: [] }"
+          :depth="0"
+          :selected-ids="selectedIds"
+          :collapsed-ids="collapsedIds"
+          :readonly="readonly"
+          :is-drop-target="dragDrop.state.isDropTarget(TOP_LEVEL_SENTINEL)"
+          :on-layer-drop="handleReparentDrop"
+          :on-layer-drag-over="dragDrop.handlers.onDragOver"
+          :on-layer-drag-leave="dragDrop.handlers.onDragLeave"
+          :on-layer-drag-end="dragDrop.handlers.onDragEnd"
+        />
+      </template>
+      <!-- ONE drop zone BEFORE the first top-level row — "above all". -->
       <LayerRow
-        v-for="node in layerTree"
-        :key="node.element.id"
-        :node="node"
+        v-if="!readonly && layerTree.length > 0"
+        key="dropzone-before-first"
+        kind="drop-zone"
+        :node="{ element: { id: TOP_LEVEL_SENTINEL, page_id: '', type: 'rectangle', parent_id: '', name: '', x: 0, y: 0, width: 0, height: 0, z_index: 0, position: 0, fill: '', stroke: '', stroke_width: 0, corner_radius: 0, rotation: 0, opacity: 1.0, text_content: '', text_style: '', image_url: '', file_path: '', created_at: '', updated_at: '' }, children: [] }"
         :depth="0"
         :selected-ids="selectedIds"
         :collapsed-ids="collapsedIds"
         :readonly="readonly"
-        @select="(p) => emit('select', p)"
-        @delete="(id) => emit('delete', id)"
-        @toggle-collapse="toggleCollapse"
-        @move-up="handleMoveUp"
-        @move-down="handleMoveDown"
-        @contextmenu="handleLayerContextMenu"
+        :is-drop-target="dragDrop.state.isDropTarget(TOP_LEVEL_SENTINEL)"
+        :on-layer-drop="handleReparentDrop"
+        :on-layer-drag-over="dragDrop.handlers.onDragOver"
+        :on-layer-drag-leave="dragDrop.handlers.onDragLeave"
+        :on-layer-drag-end="dragDrop.handlers.onDragEnd"
       />
     </div>
     <!-- Right-click context menu (full item table lands in Chunk 5;
