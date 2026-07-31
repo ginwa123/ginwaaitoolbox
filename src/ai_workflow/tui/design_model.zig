@@ -1513,6 +1513,285 @@ pub fn groupElements(
     return allocator.dupe(u8, new_id);
 }
 
+// ─── reparentElements (Chunk 1b — atomic N-element reparent) ──────────────
+
+pub const ReparentElementsInput = struct {
+    page_id: []const u8,
+    element_ids: []const []const u8,
+    /// null = top-level (no parent). Pass "" also accepted as
+    /// top-level — the SQL COALESCE convention normalises both
+    /// shapes to "no parent".
+    new_parent_id: ?[]const u8,
+    reposition: RepositionMode,
+};
+
+pub const ReparentElementsError = error{
+    PageNotFound,
+    EmptyElementIds,
+    BadElementId,
+    CrossPageIds,
+    CycleDetected,
+    BadNewParentId,
+    DbError,
+    OutOfMemory,
+};
+
+/// Re-parent N elements atomically (single SQL transaction). Used
+/// by the drag-to-reparent UX so dragging 1 or N selected rows into
+/// a group uses one round-trip instead of N parallel PUTs.
+///
+/// Behaviour:
+///   1. Validate `element_ids` is non-empty (EmptyElementIds).
+///   2. Look up the page JOIN (workspace_id, item_id) — needed for
+///      the SSE event payload. PageNotFound on miss.
+///   3. Look up `new_parent_id` (when non-null): validate it exists
+///      on the same page, validate its type is `group` or `frame`
+///      (containers only). BadNewParentId on miss / wrong type /
+///      cross-page.
+///   4. Pre-flight cycle check: for each element_id, walk up from
+///      `new_parent_id` and reject the WHOLE batch if any element_id
+///      appears in the chain (CycleDetected). No writes happen on
+///      rejection — see the SQL transaction below.
+///   5. Begin transaction. For each element_id (in input order):
+///      a. SELECT COALESCE(MAX(position), -1) FROM design_page_elements
+///         WHERE (COALESCE(parent_id, '') = ? OR parent_id IS NULL)
+///         AND id != ?
+///      b. UPDATE design_page_elements SET parent_id = ?, position = ?,
+///         updated_at = datetime('now') WHERE id = ?
+///   6. Commit. On any failure the deferred rollback leaves the DB
+///      unchanged.
+///   7. Re-SELECT the updated rows and return them in input order
+///      (heap-owned; caller frees with `freeElements`).
+///   8. Emit one `design_element_updated` SSE event per affected
+///      element (best-effort).
+///
+/// Returns the slice of updated `DesignElement` rows in input order.
+/// The signature is `anyerror!` so the sqlite-side error unions
+/// from `db.query` / `db.exec` / `db.begin` can flow through
+/// unchanged — the handler maps the documented variants to HTTP
+/// status codes and treats the rest as 500.
+///
+/// Plan: docs/superpowers/plans/2026-07-30-design-layer-drag-join-or-leave-group.md
+pub fn reparentElements(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: ReparentElementsInput,
+) anyerror![]DesignElement {
+    if (input.element_ids.len == 0) return error.EmptyElementIds;
+
+    // 1. Look up the page JOIN (workspace_id, item_id) for the SSE
+    //    event payload. Same JOIN shape as groupElements.
+    const Lookup = struct {
+        workspace_id: []u8,
+        item_id: []u8,
+    };
+    const lookup: Lookup = blk: {
+        var q = try db.query(allocator,
+            \\SELECT wi.workspace_id, dp.workspace_item_id
+            \\FROM design_pages dp
+            \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
+            \\WHERE dp.id = ?
+        , &.{input.page_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.PageNotFound;
+        defer row.deinit(allocator);
+        break :blk .{
+            .workspace_id = try allocator.dupe(u8, row.values[0]),
+            .item_id = try allocator.dupe(u8, row.values[1]),
+        };
+    };
+    defer allocator.free(lookup.workspace_id);
+    defer allocator.free(lookup.item_id);
+
+    // 2. Validate the new parent (when non-null). Same shape as
+    //    updateElement's parent_id cycle check, plus the page match
+    //    and container-type validation that setElementParent already
+    //    does.
+    if (input.new_parent_id) |new_pid| {
+        var q = try db.query(allocator,
+            \\SELECT page_id, type FROM design_page_elements WHERE id = ?
+        , &.{new_pid});
+        defer q.deinit();
+        const row_opt = try q.next();
+        if (row_opt == null) return error.BadNewParentId;
+        var row = row_opt.?;
+        defer row.deinit(allocator);
+        const parent_page_id = row.values[0];
+        const parent_type = row.values[1];
+        if (!std.mem.eql(u8, parent_page_id, input.page_id)) return error.BadNewParentId;
+        if (!std.mem.eql(u8, parent_type, "group") and
+            !std.mem.eql(u8, parent_type, "frame"))
+        {
+            return error.BadNewParentId;
+        }
+    }
+
+    // 3. Build the dynamic IN-list SELECT for the requested elements.
+    //    Same IN-list pattern as groupElements.
+    var in_list_sql: std.ArrayList(u8) = .empty;
+    defer in_list_sql.deinit(allocator);
+    try in_list_sql.appendSlice(allocator, "SELECT page_id FROM design_page_elements WHERE id IN (");
+    var in_args: std.ArrayList([]const u8) = .empty;
+    defer in_args.deinit(allocator);
+    for (input.element_ids, 0..) |eid, i| {
+        if (i > 0) try in_list_sql.append(allocator, ',');
+        try in_list_sql.append(allocator, '?');
+        try in_args.append(allocator, eid);
+    }
+    try in_list_sql.append(allocator, ')');
+
+    // 4. Fetch each element's page_id. Reject BadElementId (count
+    //    mismatch) or CrossPageIds (any element on a different page).
+    var element_pages: std.ArrayList([]u8) = .empty;
+    defer {
+        for (element_pages.items) |p| allocator.free(p);
+        element_pages.deinit(allocator);
+    }
+    {
+        var q = try db.query(allocator, in_list_sql.items, in_args.items);
+        defer q.deinit();
+        while (try q.next()) |row| {
+            defer row.deinit(allocator);
+            try element_pages.append(allocator, try allocator.dupe(u8, row.values[0]));
+        }
+    }
+    if (element_pages.items.len != input.element_ids.len) return error.BadElementId;
+    for (element_pages.items) |p| {
+        if (!std.mem.eql(u8, p, input.page_id)) return error.CrossPageIds;
+    }
+
+    // 5. Pre-flight cycle check for every element. If ANY element_id
+    //    would close a cycle (appears in the ancestor chain starting
+    //    from new_parent_id), reject the whole batch — no DB writes.
+    for (input.element_ids) |eid| {
+        if (try wouldCreateCycle(db, allocator, eid, input.new_parent_id orelse "")) {
+            return error.CycleDetected;
+        }
+    }
+
+    // 6. SQL transaction. defer-rollback guarantees atomicity: if
+    //    any UPDATE fails below, the rollback fires automatically.
+    //    On the success path we commit explicitly and mark
+    //    `committed = true` to suppress the defer rollback.
+    var tx = try db.begin();
+    var committed = false;
+    defer if (!committed) tx.rollback() catch {};
+
+    // 7. Apply per-element UPDATEs. We re-query MAX(position) for
+    //    each so the second element lands at first+1 (not the first
+    //    again), preserving input order in the new parent's children.
+    var updated_rows: std.ArrayList(DesignElement) = .empty;
+    defer {
+        for (updated_rows.items) |e| freeElement(allocator, e);
+        updated_rows.deinit(allocator);
+    }
+    for (input.element_ids, 0..) |eid, i| {
+        _ = i;
+        // Per-element MAX position. The new_parent_id for the query
+        // is what we just verified in step 2.
+        const new_parent_sql: []const u8 = if (input.new_parent_id) |p| p else "";
+        var max_pos_q = try tx.query(allocator,
+            \\SELECT COALESCE(MAX(position), -1) FROM design_page_elements
+            \\WHERE COALESCE(parent_id, '') = ? AND id != ?
+        , &.{ new_parent_sql, eid });
+        defer max_pos_q.deinit();
+        const max_pos_row = (try max_pos_q.next()) orelse return error.DbError;
+        defer max_pos_row.deinit(allocator);
+        const max_pos_value = std.fmt.parseInt(i64, max_pos_row.values[0], 10) catch 0;
+        const new_position = max_pos_value + 1;
+
+        // The new_parent_id to bind: empty string when top-level
+        // (SqliteBackend.exec binds "" as NULL — the COALESCE
+        // convention used everywhere in this codebase).
+        const new_parent_to_bind: []const u8 = if (input.new_parent_id) |p| p else "";
+        const new_position_str = try std.fmt.allocPrint(allocator, "{d}", .{new_position});
+        defer allocator.free(new_position_str);
+
+        try tx.exec(allocator,
+            \\UPDATE design_page_elements
+            \\SET parent_id = ?, position = ?, updated_at = datetime('now')
+            \\WHERE id = ?
+        , &.{ new_parent_to_bind, new_position_str, eid });
+    }
+
+    // 8. Re-SELECT the updated rows (in input order) to return to the
+    //    caller. Use the same SELECT shape as listElements.
+    var row_ptrs: std.ArrayList([]u8) = .empty;
+    defer {
+        for (row_ptrs.items) |p| allocator.free(p);
+        row_ptrs.deinit(allocator);
+    }
+    for (input.element_ids) |eid| try row_ptrs.append(allocator, try allocator.dupe(u8, eid));
+
+    var updated: std.ArrayList(DesignElement) = .empty;
+    defer {
+        for (updated.items) |e| freeElement(allocator, e);
+        updated.deinit(allocator);
+    }
+    for (row_ptrs.items) |eid| {
+        var q = try tx.query(allocator,
+            \\SELECT id, page_id, COALESCE(parent_id, ''),
+            \\       x, y, width, height,
+            \\       z_index, position,
+            \\       name, file_path, type, rotation, fill, stroke,
+            \\       stroke_width, corner_radius, opacity,
+            \\       text_content, text_style, image_url,
+            \\       COALESCE(created_at, ''), COALESCE(updated_at, '')
+            \\FROM design_page_elements
+            \\WHERE id = ?
+        , &.{eid});
+        defer q.deinit();
+        const row_opt = try q.next();
+        if (row_opt == null) return error.DbError;
+        var row = row_opt.?;
+        defer row.deinit(allocator);
+
+        const e: DesignElement = .{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .page_id = try allocator.dupe(u8, row.values[1]),
+            .parent_id = try allocator.dupe(u8, row.values[2]),
+            .x = std.fmt.parseInt(i64, row.values[3], 10) catch 0,
+            .y = std.fmt.parseInt(i64, row.values[4], 10) catch 0,
+            .width = std.fmt.parseInt(i64, row.values[5], 10) catch 0,
+            .height = std.fmt.parseInt(i64, row.values[6], 10) catch 0,
+            .z_index = std.fmt.parseInt(i64, row.values[7], 10) catch 0,
+            .position = std.fmt.parseInt(i64, row.values[8], 10) catch 0,
+            .name = try allocator.dupe(u8, row.values[9]),
+            .file_path = try allocator.dupe(u8, row.values[10]),
+            .elem_type = try allocator.dupe(u8, row.values[11]),
+            .rotation = std.fmt.parseFloat(f64, row.values[12]) catch 0.0,
+            .fill = try allocator.dupe(u8, row.values[13]),
+            .stroke = try allocator.dupe(u8, row.values[14]),
+            .stroke_width = std.fmt.parseInt(i64, row.values[15], 10) catch 0,
+            .corner_radius = std.fmt.parseInt(i64, row.values[16], 10) catch 0,
+            .opacity = std.fmt.parseFloat(f64, row.values[17]) catch 1.0,
+            .text_content = try allocator.dupe(u8, row.values[18]),
+            .text_style = try allocator.dupe(u8, row.values[19]),
+            .image_url = try allocator.dupe(u8, row.values[20]),
+            .created_at = try allocator.dupe(u8, row.values[21]),
+            .updated_at = try allocator.dupe(u8, row.values[22]),
+        };
+        try updated.append(allocator, e);
+    }
+
+    // 9. Emit SSE events (one per element) AFTER the commit so listeners
+    //    see state that's already committed. Best-effort.
+    committed = true;
+    try tx.commit();
+
+    for (input.element_ids) |eid| {
+        on_event_sent_design.onEventSendDesignElementUpdated(allocator, .{
+            .action = "updated",
+            .workspace_id = lookup.workspace_id,
+            .item_id = lookup.item_id,
+            .page_id = input.page_id,
+            .element_id = eid,
+        }) catch {};
+    }
+
+    return updated.toOwnedSlice(allocator);
+}
+
 // ─── reorderElements (Chunk 5 — right-click bring/send z-order) ──────────
 
 pub const ReorderMode = enum {
