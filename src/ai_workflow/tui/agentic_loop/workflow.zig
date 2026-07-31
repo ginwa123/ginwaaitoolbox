@@ -46,7 +46,6 @@ pub const CallbackAiWorkerFlow = struct {
         const db = di.db;
         const io = di.io;
         const session_id = data.session_id;
-        const config = nalarcore.getLlmConfig(di);
         const cwd = data.cwd;
         const environment = di.environment;
 
@@ -57,7 +56,10 @@ pub const CallbackAiWorkerFlow = struct {
             .logger = logger,
             .event_bus = event_bus,
             .active_loops = active_loops,
-            .llm_config = config,
+            // Live DI handle: re-read inside the workflow loop so
+            // NalarSettings changes take effect per iteration
+            // (plan 2026-08-06-live-config-reload).
+            .di = di,
             .environment = environment,
         }, data) catch |err| {
             logger.errFmt("[{s}] Failed to run agentic workflow: {s}\n", .{ keyword, @errorName(err) });
@@ -104,7 +106,7 @@ pub const CallbackAiWorkerFlow = struct {
             const created_at = std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}) catch return;
             defer allocator.free(created_at);
 
-            agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{ .id = id, .session_id = session_id, .model = config.model, .response_content = error_message, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = initial_agent, .loop_index = 0, .temperature = initial_agent_state.temperature, .is_thinking = initial_agent_state.is_thinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = session_id, .parent_session_id = session_id, .is_input = true, .is_output = false, .is_feed_to_llm = false, .image_urls = null, .created_at = created_at } }) catch return;
+            agentic_loop_mod.insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{ .id = id, .session_id = session_id, .model = nalarcore.getLlmConfig(di).model, .response_content = error_message, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = initial_agent, .loop_index = 0, .temperature = initial_agent_state.temperature, .is_thinking = initial_agent_state.is_thinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = session_id, .parent_session_id = session_id, .is_input = true, .is_output = false, .is_feed_to_llm = false, .image_urls = null, .created_at = created_at } }) catch return;
         };
     }
 };
@@ -116,7 +118,17 @@ pub const RunAgenticMultiStepInput = struct {
     logger: *logger_mod.Logger,
     event_bus: *event_bus_mod.EventBus,
     active_loops: *models.ActiveLoops,
-    llm_config: *config_mod.LlmConfig,
+    /// Plan 2026-08-06-live-config-reload — DI context for live
+    /// `LlmConfig` re-reads. The workflow calls
+    /// `nalarcore.getLlmConfig(di)` once per loop iteration so
+    /// changes to the user's profile / model / API key (via
+    /// NalarSettings → PUT /api/config/nalar) take effect on the
+    /// next LLM call without waiting for the workflow to end. The
+    /// returned `*const LlmConfig` is kept alive by
+    /// `LlmConfigHolder.previous` until the workflow run finishes,
+    /// so dereferencing it is memory-safe even if a hot-swap
+    /// happened mid-run.
+    di: *nalarcore.ContextIPCTui,
     environment: ?*const std.process.Environ.Map,
 };
 
@@ -319,7 +331,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const active_loops = di.active_loops;
     const event_bus = di.event_bus;
     const io = di.io;
-    const config = di.llm_config;
     const environment = di.environment;
 
     logger.infoFmt(
@@ -332,20 +343,19 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     //   1. params.selected_profile_model (from POST body) if non-empty AND profile exists
     //   2. config.active_profile if non-null AND non-empty AND profile exists
     //   3. top-level LlmConfig (the "default" mode)
-    // All four slices borrow from the LlmConfig; they live for the whole workflow run.
     //
-    // Step 1 produces a warning when the named profile is missing (matches
-    // pre-existing behaviour). Step 2 is silent — `active_profile` is the
-    // user's default, so a typo there is a normal fall-through to top-level.
-    if (params.selected_profile_model.len > 0 and
-        config.getProfile(params.selected_profile_model) == null)
-    {
-        logger.warnFmt("WORKFLOW: selected_profile_model '{s}' not found in LlmConfig.profiles_models, using top-level config", .{params.selected_profile_model});
-    }
-    var effective_api_key: []const u8 = resolveProfileField("api_key", config, params.selected_profile_model, config.active_profile, config.api_key);
-    var effective_model: []const u8 = resolveProfileField("model", config, params.selected_profile_model, config.active_profile, config.model);
-    var effective_base_url: []const u8 = resolveProfileField("base_url", config, params.selected_profile_model, config.active_profile, config.base_url);
-    var effective_url_style: []const u8 = resolveProfileField("url_style", config, params.selected_profile_model, config.active_profile, config.url_style);
+    // IMPORTANT: `effective_*` are reassigned at the TOP of every
+    // loop iteration (see "Live config re-read" comment inside the
+    // while loop below) so that NalarSettings changes — model swap,
+    // profile switch, API-key rotation — take effect on the next LLM
+    // call without waiting for the workflow to end. The declarations
+    // stay outside the loop so the names remain visible to all
+    // statements below (the inner reassignment is a re-assign of the
+    // outer `var`, not a redeclaration).
+    var effective_api_key: []const u8 = undefined;
+    var effective_model: []const u8 = undefined;
+    var effective_base_url: []const u8 = undefined;
+    var effective_url_style: []const u8 = undefined;
 
     logger.infoFmt(
         "[CHECKPOINT] profile selected_profile_model='{s}' effective_model={s} effective_base_url={s} effective_url_style={s}",
@@ -478,8 +488,13 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     var loop_counter: u32 = 0;
     var last_iter_start_ns: i128 = 0;
 
+    // One-shot config read for the once-per-workflow setup (MCP tool
+    // list). The per-iteration LLM-call fields are re-read inside the
+    // loop body — see "Live config re-read" below.
+    const initial_config = nalarcore.getLlmConfig(di.di);
+
     // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
-    const mcp_tools_fetched = (build_msg_prompt.buildMCPToolsRun(parent_allocator, io, config.mcpServers() orelse .null) catch |err| blk: {
+    const mcp_tools_fetched = (build_msg_prompt.buildMCPToolsRun(parent_allocator, io, initial_config.mcpServers() orelse .null) catch |err| blk: {
         logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
         break :blk null;
     }) orelse &[_]agent.AgentTool{};
@@ -500,9 +515,33 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         const allocator = arenaAllocatorWhileLoop.allocator();
 
         last_iter_start_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+
+        // ─── Live config re-read (plan 2026-08-06-live-config-reload) ───
+        // Re-fetch the LlmConfig pointer from the holder once per
+        // iteration so user-initiated changes (model switch, profile
+        // change, API-key rotation via NalarSettings) take effect on
+        // the next LLM call without waiting for the workflow run to
+        // end. `getLlmConfig` is a lock-free single-word pointer load;
+        // memory safety is preserved by `LlmConfigHolder.previous`
+        // keeping the swapped-out config alive until this run finishes.
+        const config = nalarcore.getLlmConfig(di.di);
+
+        // Step 1 produces a warning when the named profile is missing.
+        // Step 2 (`config.active_profile`) is silent — it's the user's
+        // default, so a typo there is a normal fall-through to top-level.
+        if (params.selected_profile_model.len > 0 and
+            config.getProfile(params.selected_profile_model) == null)
+        {
+            logger.warnFmt("WORKFLOW: selected_profile_model '{s}' not found in LlmConfig.profiles_models, using top-level config", .{params.selected_profile_model});
+        }
+        effective_api_key = resolveProfileField("api_key", config, params.selected_profile_model, config.active_profile, config.api_key);
+        effective_model = resolveProfileField("model", config, params.selected_profile_model, config.active_profile, config.model);
+        effective_base_url = resolveProfileField("base_url", config, params.selected_profile_model, config.active_profile, config.base_url);
+        effective_url_style = resolveProfileField("url_style", config, params.selected_profile_model, config.active_profile, config.url_style);
+
         logger.infoFmt(
-            "[CHECKPOINT] loop iter start session_id={s} loop_counter={d} retry_count={d}",
-            .{ copy_session_id, loop_counter, retry_count },
+            "[CHECKPOINT] loop iter start session_id={s} loop_counter={d} retry_count={d} effective_model={s}",
+            .{ copy_session_id, loop_counter, retry_count, effective_model },
         );
 
         // Check cancellation using DB
