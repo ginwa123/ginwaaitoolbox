@@ -207,6 +207,7 @@ const renderedContent = computed<string>(() => {
     const lang = activeArgs.value.language ?? 'plaintext'
     return `<pre><code class="language-${escapeHtml(lang)}">${escapeHtml(c)}</code></pre>`
   }
+  // 'image' and 'html' have dedicated template branches below — no content via v-html.
   return ''
 })
 
@@ -217,7 +218,28 @@ const imageSrc = computed<string | null>(() => {
   return null
 })
 
-const ICONS: Record<string, string> = { markdown: 'M', text: 'T', code: 'C', image: 'I' }
+/**
+ * Attribute-escape the user HTML for the iframe's `srcdoc` attribute.
+ * Only needs to escape the four characters that would break the wrapping
+ * attribute (`< > & "`) — NOT a full HTML sanitizer. The iframe sandbox
+ * is the security boundary, not escape quality.
+ *
+ * Also wraps the HTML in a tiny `<style>` reset so the preview doesn't
+ * get a default-margin surprise from the browser body. Mirrors the pattern
+ * in DesignElementPreview.vue:45-50.
+ */
+const htmlSrcDoc = computed<string | null>(() => {
+  if (activeContentType.value !== 'html') return null
+  const raw = activeArgs.value.content ?? ''
+  const escaped = raw
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+  return `<style>html,body{margin:0;padding:0;background:#fff;}</style>${escaped}`
+})
+
+const ICONS: Record<string, string> = { markdown: 'M', text: 'T', code: 'C', image: 'I', html: 'H' }
 
 function tabLabel(p: PreviewItem): string {
   const ct = findTag(p.content, 'content_type') ?? 'text'
@@ -308,6 +330,15 @@ const dismiss = () => { emit('dismiss') }
         <div v-if="activeContentType === 'image'" class="flex justify-center bg-black/[0.04] p-2 rounded">
           <img v-if="imageSrc" :src="imageSrc" :alt="activeArgs.title || activeArgs.caption || 'Preview image'" class="max-w-full max-h-96 object-contain" @error="(e) => { (e.target as HTMLImageElement).style.display = 'none' }" />
           <div v-else class="text-xs text-red-500 italic">Image source invalid (expected data: URL or http(s) URL)</div>
+        </div>
+        <div v-else-if="activeContentType === 'html' && htmlSrcDoc" class="h-full min-h-[480px] rounded overflow-hidden border border-[var(--color-border)] bg-white">
+          <iframe
+            sandbox="allow-scripts"
+            :srcdoc="htmlSrcDoc"
+            class="w-full h-full min-h-[480px] border-0 block"
+            :title="activeArgs.title || 'HTML preview'"
+            data-testid="preview-html-iframe"
+          />
         </div>
         <div v-else class="text-xs text-[var(--semantic-text)] markdown-content" v-html="renderedContent" />
         <div v-if="activeArgs.caption" class="mt-2 pt-2 text-xs italic text-[var(--semantic-text-muted)] border-t border-dashed border-[var(--color-border)]">

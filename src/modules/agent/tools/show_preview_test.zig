@@ -324,3 +324,67 @@ test "executeShowPreviewToString sanitizes invalid UTF-8 in content (no error, c
     // content_length is the post-sanitization byte count
     try testing.expect(std.mem.indexOf(u8, xml, "<content_length>5</content_length>") != null);
 }
+
+test "validateContentType accepts 'html' alongside the existing 4 types" {
+    const alloc = testing.allocator;
+
+    // All 4 pre-existing types must continue to pass (regression check).
+    try testing.expect(try show_preview.validateContentType(alloc, "markdown") == null);
+    try testing.expect(try show_preview.validateContentType(alloc, "text") == null);
+    try testing.expect(try show_preview.validateContentType(alloc, "code") == null);
+    try testing.expect(try show_preview.validateContentType(alloc, "image") == null);
+
+    // The new "html" type must also pass — this is the fix.
+    try testing.expect(try show_preview.validateContentType(alloc, "html") == null);
+
+    // Make sure the new "html" doesn't accidentally accept "htmlx" or similar.
+    {
+        const err = try show_preview.validateContentType(alloc, "htmlx");
+        defer if (err) |e| alloc.free(e);
+        try testing.expect(err != null);
+    }
+}
+
+test "executeShowPreviewToString returns success envelope for html input" {
+    const alloc = testing.allocator;
+    var threaded = setupIo();
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const input = show_preview.ShowPreviewInput{
+        .content_type = "html",
+        .content = "<!DOCTYPE html><html><body><h1>Hello</h1></body></html>",
+        .title = "Landing page",
+    };
+    var preview_id: []u8 = undefined;
+    const xml = try show_preview.executeShowPreviewToString(alloc, io, input, &preview_id);
+    defer alloc.free(xml);
+    defer alloc.free(preview_id);
+
+    try testing.expect(std.mem.indexOf(u8, xml, "<status>shown</status>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<content_type>html</content_type>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<error>") == null);
+}
+
+test "executeShowPreviewToString accepts html content with embedded script and closing slashes" {
+    const alloc = testing.allocator;
+    var threaded = setupIo();
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Real-world landing pages have <script> blocks (GA, animations).
+    // The tool must accept them and put the content_length in the envelope
+    // without the "</script>" sequence corrupting the response shape.
+    const input = show_preview.ShowPreviewInput{
+        .content_type = "html",
+        .content = "<html><body><script>console.log('hi');</script></body></html>",
+        .title = "with script",
+    };
+    var preview_id: []u8 = undefined;
+    const xml = try show_preview.executeShowPreviewToString(alloc, io, input, &preview_id);
+    defer alloc.free(xml);
+    defer alloc.free(preview_id);
+
+    try testing.expect(std.mem.indexOf(u8, xml, "<status>shown</status>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<content_type>html</content_type>") != null);
+}
