@@ -1219,6 +1219,21 @@ const handleLayerSelect = (payload: { elementId: string; additive: boolean }): v
   handleElementToggle(payload.elementId, payload.additive)
 }
 
+// NEW (Chunk 4 Task 4.3 of drag-to-reparent plan): the LayersPanel
+// emits `reparent` after a successful drag-and-drop. The payload
+// is the raw composable result `{ elementIds, newParentId }` — we
+// just relay it to `designHandlers.reparentLayers`, which routes
+// through the batch endpoint and handles errors via toast.
+const handleLayerReparent = (payload: { elementIds: string[]; newParentId: string | null }): void => {
+  void designHandlers.reparentLayers({
+    workspaceId: props.workspaceId,
+    itemId: effectiveItemId.value,
+    pageId: activePageId.value,
+    elementIds: payload.elementIds,
+    newParentId: payload.newParentId,
+  })
+}
+
 // NEW (Chunk 2 of the right-click group menu plan): when the
 // layers panel emits `group` from the context menu, mirror the
 // Cmd+G path: inject the targetIds into the local `selectedIds`
@@ -2106,6 +2121,7 @@ watch(
             :selected-ids="Array.from(selectedIds)"
             :readonly="isPreviewMode"
             @select="handleLayerSelect"
+            @reparent="handleLayerReparent"
             @reorder="handleReorderElements"
             @delete="handleElementDelete"
             @group="handleDesignGroupFromContextMenu"
