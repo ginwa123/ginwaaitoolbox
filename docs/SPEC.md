@@ -222,6 +222,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2025-03-27-session-messages-lazy-scroll.md` | 🟡 | Cursor-based lazy scroll landed (via Vue 3 VirtualScroller, not SolidJS) |
 | `2025-03-30-chatbox-implementation.md` | 🗑️ | SolidJS + Tailwind v4 — replaced by Vue 3 ChatInput |
 | `2025-01-15-sidebar-session-dir-filter.md` | ⏳ | `get_sessions_by_dir` exists; Sidebar doesn't wire filter param |
+| `2026-08-06-chat-scroll-position-persistence.md` | ✅ | `useChatScrollRestore` composable + `VirtualScroller.scrollToPosition()` + ChatView initial-load branch + `isInitialLoad` guard |
 
 ### 3.7 Frontend — Kanban (Workspace Item Type)
 

@@ -2,6 +2,7 @@
 import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Ref } from 'vue'
 import { marked } from 'marked'
 import * as api from '../../api'
+import { useChatScrollRestore } from '../../composables/useChatScrollRestore'
 import { getThinkingTags, isThinkingTags, stripThinkingTags, VirtualScroller } from '@/helpers'
 import {
   buildScrollContext,
@@ -136,7 +137,7 @@ const copyCodeContent = async (codeContent: string) => {
 // Setup copy buttons on code blocks after render
 const setupCodeBlockCopyButtons = () => {
   nextTick(() => {
-    const container = virtualScrollerRef.value?.containerRef.value
+    const container = virtualScrollerRef.value?.containerRef
     if (!container) return
     const codeBlocks = container.querySelectorAll('.markdown-content pre')
     codeBlocks.forEach((block) => {
@@ -450,19 +451,54 @@ const queuedMessages = ref<api.QueuedMessage[]>([])
 // `InstanceType<typeof VirtualScroller>` doesn't resolve cleanly for a generic
 // Vue SFC component (the compiler infers a function signature that doesn't
 // satisfy Vue's component-ref constructor constraint).
+//
+// Note: `containerRef` and the `isX`/`effectiveX` refs are AUTO-UNWRAPPED
+// by `defineExpose` — the exposed property is the ref's `.value`, not
+// the ref object. The existing `handleVirtualScroll` reads
+// `.containerRef.value` (double-unwrapped, which returns undefined);
+// it falls back to the event `target` so the bug is invisible. The
+// scroll-restore composable reads `.containerRef` directly.
 interface VirtualScrollerExposed {
   scrollToIndex: (index: number, behavior?: ScrollBehavior) => void
   scrollToTop: (behavior?: ScrollBehavior) => void
   scrollToBottom: (behavior?: ScrollBehavior) => void
+  scrollToPosition: (scrollTop: number, behavior?: ScrollBehavior) => void
   scrollToItem: (index: number, behavior?: ScrollBehavior) => void
   beginPreserve: (newItemsCount: number) => void
   endPreserve: () => Promise<void>
   preserveScrollPosition: () => Promise<void>
-  containerRef: { value: HTMLElement | null }
-  isPreservingScroll: { value: boolean }
-  effectiveLoadMoreThreshold: { value: number }
+  containerRef: HTMLElement | null
+  isPreservingScroll: boolean
+  effectiveLoadMoreThreshold: number
 }
 const virtualScrollerRef = ref<VirtualScrollerExposed | null>(null)
+
+// Persist chat scroll position per-task across mount/unmount. The
+// composable attaches its own scroll/scrollend listeners to the
+// VirtualScroller's container ref (via the computed `scrollerContainerRef`
+// below) and flushes pending writes on unmount. The storage key is
+// `chat-scroll-<taskId>` — same identity as the session id per the
+// project's task.id == session.id convention (migration 052).
+//
+// Note: `virtualScrollerRef.value.containerRef` is the HTMLElement
+// directly (NOT a ref object), because `defineExpose` in
+// VirtualScroller.vue auto-unwraps refs. The existing code in
+// `handleVirtualScroll` reads `.containerRef.value` (double-unwrapped),
+// which silently returns undefined — the code falls back to the
+// event `target` so the bug is invisible. Don't copy that pattern.
+const scrollerContainerRef = computed<HTMLElement | null>(
+  () => virtualScrollerRef.value?.containerRef ?? null,
+)
+const chatScrollStorageKey = computed(() => `chat-scroll-${sessionId.value || props.chatId}`)
+const chatScrollRestore = useChatScrollRestore(scrollerContainerRef, chatScrollStorageKey)
+
+// Guard flag for the messages-length watcher's auto-stick. During
+// the initial load, the loadChatHistory branch handles the scroll
+// explicitly (either restore a saved position via scrollToPosition
+// or land at the bottom via scrollToBottom). Without this guard,
+// the watcher would yank the user back to the bottom immediately
+// after the restore — defeating the feature.
+let isInitialLoad = false
 
 // Ref to the outer flex wrapper around the VirtualScroller. The logger
 // reads this so it can report "did the layout chain reach the
@@ -503,7 +539,7 @@ let spacerObserver: MutationObserver | null = null
 
 const onSpacersResized = () => {
   spacerRafId = null
-  const container = virtualScrollerRef.value?.containerRef.value
+  const container = virtualScrollerRef.value?.containerRef
   if (!container) return
   const newScrollHeight = container.scrollHeight
   // Only re-stick if the scrollHeight actually changed (a measurement
@@ -561,7 +597,7 @@ const onSpacersResized = () => {
 }
 
 const setupSpacerObserver = () => {
-  const container = virtualScrollerRef.value?.containerRef.value
+  const container = virtualScrollerRef.value?.containerRef
   if (!container) return
   lastObservedScrollHeight = container.scrollHeight
   spacerObserver = new MutationObserver(() => {
@@ -1167,7 +1203,7 @@ const loadChatHistory = async (loadMore = false) => {
       // beginPreserve must be called BEFORE mutating the array so the anchor
       // element's offsetTop is captured while it's still in the DOM.
       const newCount = newMessages.length
-      const containerBefore = virtualScrollerRef.value?.containerRef.value
+      const containerBefore = virtualScrollerRef.value?.containerRef
       const beforeCtx = buildScrollContext(containerBefore, {
         chatId: sessionId.value || props.chatId,
         messages: messages.value.length,
@@ -1189,7 +1225,7 @@ const loadChatHistory = async (loadMore = false) => {
       // handleVirtualScroll knows.
       scrollLogger.markProgrammatic()
       await virtualScrollerRef.value?.endPreserve()
-      const containerAfter = virtualScrollerRef.value?.containerRef.value
+      const containerAfter = virtualScrollerRef.value?.containerRef
       const afterCtx = buildScrollContext(containerAfter, {
         chatId: sessionId.value || props.chatId,
         messages: messages.value.length,
@@ -1222,37 +1258,66 @@ const loadChatHistory = async (loadMore = false) => {
       // "measurement update" and re-trigger the stick path.
       setupSpacerObserver()
     } else {
-      messages.value = newMessages.slice().reverse()
-    }
+      // Initial load path. Set isInitialLoad BEFORE the messages
+      // assignment so the messages-length watcher's sync callback
+      // sees the flag and skips its own scrollToBottom (which would
+      // yank the user back to the bottom right after we restore a
+      // saved position).
+      isInitialLoad = true
+      try {
+        messages.value = newMessages.slice().reverse()
+        messageCursor.value = data.next_cursor
+        hasMoreMessages.value = data.has_more
 
-    messageCursor.value = data.next_cursor
-    hasMoreMessages.value = data.has_more
+        const initialContainer = virtualScrollerRef.value?.containerRef
+        const initialCtx = buildScrollContext(initialContainer, {
+          chatId: sessionId.value || props.chatId,
+          messages: messages.value.length,
+          isAtBottom: isAtBottom.value,
+          virtualScrollerRef,
+          wrapperRef: messagesWrapperRef,
+        })
+        scrollLogger.info({
+          ...initialCtx,
+          caller: 'loadChatHistory',
+          reason: 'scroll-to-bottom-forced',
+          extra: { trigger: 'initial-load' },
+        })
+        await nextTick()
+        // Wait one paint frame so the browser has actually laid out the
+        // VirtualScroller items (nextTick alone only waits for Vue's DOM
+        // update, not for layout/paint). After this, the MutationObserver
+        // set up in onMounted takes over: whenever spacers resize (from
+        // measurement updates) it'll re-stick to the bottom as long as the
+        // user hasn't scrolled up.
+        await new Promise<void>((r) => requestAnimationFrame(() => r()))
 
-    if (!loadMore) {
-      const initialContainer = virtualScrollerRef.value?.containerRef.value
-      const initialCtx = buildScrollContext(initialContainer, {
-        chatId: sessionId.value || props.chatId,
-        messages: messages.value.length,
-        isAtBottom: isAtBottom.value,
-        virtualScrollerRef,
-        wrapperRef: messagesWrapperRef,
-      })
-      scrollLogger.info({
-        ...initialCtx,
-        caller: 'loadChatHistory',
-        reason: 'scroll-to-bottom-forced',
-        extra: { trigger: 'initial-load' },
-      })
-      await nextTick()
-      // Wait one paint frame so the browser has actually laid out the
-      // VirtualScroller items (nextTick alone only waits for Vue's DOM
-      // update, not for layout/paint). After this, the MutationObserver
-      // set up in onMounted takes over: whenever spacers resize (from
-      // measurement updates) it'll re-stick to the bottom as long as the
-      // user hasn't scrolled up.
-      await new Promise<void>((r) => requestAnimationFrame(() => r()))
-      scrollToBottom(true, 'initial-load')
-      setupCodeBlockCopyButtons()
+        // Try to restore the user's previous scroll position (set by
+        // useChatScrollRestore when they last closed this task). If
+        // no saved position exists OR the saved position is "near
+        // bottom" (within BOTTOM_THRESHOLD_PX of max), restore()
+        // returns null and we fall through to the existing
+        // scrollToBottom behavior. This is the chat-specific
+        // counterpart of the kanban composable's restore-on-mount
+        // path.
+        const savedScrollTop = chatScrollRestore.restore()
+        if (savedScrollTop !== null) {
+          scrollLogger.markProgrammatic()
+          virtualScrollerRef.value?.scrollToPosition(savedScrollTop, 'auto')
+          scrollLogger.info({
+            ...initialCtx,
+            caller: 'loadChatHistory',
+            reason: 'scroll-position-restored',
+            extra: { savedScrollTop, trigger: 'initial-load' },
+          })
+        } else {
+          scrollToBottom(true, 'initial-load')
+        }
+
+        setupCodeBlockCopyButtons()
+      } finally {
+        isInitialLoad = false
+      }
     }
   } catch (err) {
     console.error('Failed to load chat history:', err)
@@ -1274,10 +1339,10 @@ const scrollToBottom = async (force = false, trigger: string = 'unspecified') =>
   // here fights that adjustment and produces visible jitter. The
   // preserve window is short (<100ms typically) so suppressing is
   // safe — the next SSE chunk will trigger a fresh scrollToBottom.
-  if (virtualScrollerRef.value?.isPreservingScroll?.value) return
+  if (virtualScrollerRef.value?.isPreservingScroll) return
   if (virtualScrollerRef.value) {
     if (force || isAtBottom.value) {
-      const container = virtualScrollerRef.value.containerRef.value
+      const container = virtualScrollerRef.value.containerRef
       const ctx = buildScrollContext(container, {
         chatId: sessionId.value || props.chatId,
         messages: messages.value.length,
@@ -1315,7 +1380,7 @@ const handleLoadMore = () => {
   // the same scroller/wrapper/geometry state. The container may
   // be null (the VirtualScroller was just unmounted, or the ref
   // never bound) — `buildScrollContext` handles that.
-  const container = virtualScrollerRef.value?.containerRef.value
+  const container = virtualScrollerRef.value?.containerRef
   const ctx = buildScrollContext(container, {
     chatId: sessionId.value || props.chatId,
     messages: messages.value.length,
@@ -1391,7 +1456,7 @@ const handleLoadMore = () => {
   // All guards passed — log the threshold reached and fetch.
   // The extra includes the LLM/scroll state so the log line
   // answers "was this a streaming-time loadMore?" in one glance.
-  const effectiveThreshold = virtualScrollerRef.value?.effectiveLoadMoreThreshold.value ?? 200
+  const effectiveThreshold = virtualScrollerRef.value?.effectiveLoadMoreThreshold ?? 200
   scrollLogger.info({
     ...ctx,
     caller: 'handleLoadMore',
@@ -1419,7 +1484,7 @@ const handleLoadMore = () => {
 // The `source: 'VirtualScroller'` field in `extra` distinguishes
 // these from ChatView-side suppressions when you're grepping.
 const handleLoadMoreSuppressed = (guard: string) => {
-  const container = virtualScrollerRef.value?.containerRef.value
+  const container = virtualScrollerRef.value?.containerRef
   const ctx = buildScrollContext(container, {
     chatId: sessionId.value || props.chatId,
     messages: messages.value.length,
@@ -1466,7 +1531,7 @@ const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target
   // Prefer the event target — it's the actual DOM element that
   // dispatched the scroll event, so the browser guarantees it
   // exists for the lifetime of this handler. The ref chain
-  // (`virtualScrollerRef.value?.containerRef.value`) is null during
+  // (`virtualScrollerRef.value?.containerRef`) is null during
   // mount/remount races (chat switch, initial mount before Vue
   // binds the template ref, v-if toggle), but the target is
   // always live. See the `scroll` emit JSDoc in
@@ -1474,7 +1539,7 @@ const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target
   //
   // The ref chain is kept as a defensive fallback for any future
   // caller that doesn't supply a target (none today).
-  const container = target ?? virtualScrollerRef.value?.containerRef.value
+  const container = target ?? virtualScrollerRef.value?.containerRef
   if (!container) {
     // Tripwire — with the target in hand this branch should be
     // unreachable. If it ever fires, the VirtualScroller stopped
@@ -1942,6 +2007,7 @@ watch(
 watch(
   () => messages.value.length,
   () => {
+    if (isInitialLoad) return // initial-load branch handled scroll explicitly
     scrollLogger.markProgrammatic()
     // Any push to `messages` triggers an auto-stick (scrollToBottom
     // below). Mark the timestamp synchronously so the loadMore gate

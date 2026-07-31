@@ -140,6 +140,7 @@ export type ScrollReason =
   | 'load-more-suppressed'
   | 'scroll-to-bottom-forced'
   | 'scroll-to-bottom-conditional'
+  | 'scroll-position-restored'
   | 'spacer-resize-stick'
   | 'spacer-resize-skip'
   | 'load-more-preserve-start'

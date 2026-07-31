@@ -395,6 +395,87 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Chat scroll position persistence (close → reopen keeps position)
+
+**Symptom (pre-fix).** Open a task from the kanban sidebar → ChatView
+mounts and scrolls to the bottom (most recent message). Scroll up to
+read older history. Click the ✕ button to close the chatview. Reopen
+the same task → ChatView remounts and scrolls back to the bottom. The
+user's reading position is gone every time.
+
+**Root cause.** ChatView's `:key="task-<id>"` in the parent
+`v-if/v-else-if` chain (AppLayout.vue:1813) makes the component
+re-mount on every chat switch, even the same chat. Vue 3 does not
+reuse component instances across keys at different DOM parents. The
+new instance's `VirtualScroller` container starts at `scrollTop = 0`
+and the existing `scrollToBottom(true, 'initial-load')` in
+`loadChatHistory` (line 1255) yanks the user to the bottom.
+
+**Fix.** Three new pieces, mirroring the existing
+`useKanbanScrollRestore` pattern (kanban columns row, but for the
+chat's vertical scroll + a chat-specific "near bottom" detection):
+
+1. `useChatScrollRestore` composable
+   (`src/apps/desktop/src/composables/useChatScrollRestore.ts`):
+   - 16 tests in `__tests__/useChatScrollRestore.spec.ts`.
+   - Mirrors the kanban composable's save contract: scrollend
+     fires synchronous write, scroll fires 250ms debounced write,
+     unmount flushes pending writes.
+   - New `restore()` return: `null` if the saved position is 0,
+     not set, not scrollable, OR within `BOTTOM_THRESHOLD_PX = 40`
+     of `scrollHeight - clientHeight` (the chat-specific "near
+     bottom" branch — user closed while at the bottom, so reopen
+     should land at the genuine bottom, not a stale edge).
+   - New `restorePosition(value)` helper that clamps + applies.
+   - Watches the container ref to attach listeners when the
+     VirtualScroller finally mounts (the chat's v-if keeps the
+     scroller off-DOM during the early phase of onMounted).
+
+2. `VirtualScroller.scrollToPosition(value, behavior?)` method
+   (`src/apps/desktop/src/helpers/VirtualScroller.vue`):
+   - 4 tests in `__tests__/VirtualScroller.scrollToPosition.spec.ts`.
+   - Public method that clamps the given value to
+     `[0, scrollHeight - clientHeight]` and applies it. Closes a
+     gap in the existing public API (scrollToTop / scrollToBottom
+     / scrollToIndex existed but no "arbitrary scroll position").
+   - Reads `clientHeight` directly (not the cached `containerHeight`
+     ref) so it always reflects the current container geometry.
+
+3. `ChatView.vue` integration:
+   - 7 tests in `__tests__/views/ChatView.scrollRestore.spec.ts`.
+   - Wires the composable + a per-task storage key
+     (`chat-scroll-<task_id>`, same identity as session_id per
+     migration 052).
+   - The initial-load branch in `loadChatHistory` calls
+     `chatScrollRestore.restore()` AFTER the messages render +
+     one rAF tick. If non-null and not "near bottom", calls
+     `virtualScrollerRef.value.scrollToPosition(saved, 'auto')`
+     INSTEAD of `scrollToBottom(true, 'initial-load')`.
+   - Added `isInitialLoad` guard to the messages-length watcher
+     so its auto-stick doesn't yank the user back to the bottom
+     immediately after a restore.
+   - **Bug found + fixed during integration**: the
+     `VirtualScrollerExposed` interface in ChatView.vue
+     incorrectly typed `containerRef` as `{ value: HTMLElement }`
+     (a ref), but `defineExpose` auto-unwraps refs at runtime, so
+     `virtualScrollerRef.value.containerRef` IS the HTMLElement
+     directly. The existing 12 call sites used
+     `.containerRef.value` (double-unwrapped → undefined) and
+     silently relied on fallbacks (e.g. `target` from the scroll
+     event). Fixed all 12 call sites AND updated the interface
+     to match runtime. This is a pre-existing latent bug surfaced
+     by my new tests requiring the ref chain to actually work.
+
+**Out of scope** (deferred): cross-tab sync, server-side
+persistence, restore by message id, BFCache navigation, localStorage
+TTL cleanup. Listed in the plan's "Out of scope" section.
+
+**Plan.** `docs/superpowers/plans/2026-08-06-chat-scroll-position-persistence.md`
+(3 chunks, 27 new tests, frontend-only — no Zig, no backend, no
+migration).
+
+**Branch.** `worktree/chat-scroll-position-persistence` (3 commits).
+
 ### 2026-07-25: Design element drag-and-drop wire repaired
 
 **Symptom (pre-fix).** Click on a design element → violet outline + 8
