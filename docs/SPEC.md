@@ -589,6 +589,7 @@ For each plan file in the 178-file input set:
 #52  fix(sse-manager): TOCTOU + heartbeat + POLL.NVAL
 #55  feat(agent): show_preview tool + PreviewSidePanel
 #56  feat(frontend): ShowPreview card component
+#TBD feat(agent): show_preview 'html' content_type (sandboxed iframe)
 #57  feat(frontend): task variant: 'row' | 'card'
 #58  ci: 2-cell nalar-desktop-build matrix
 #60  refactor: is_input/is_output JSON boolean (#60)

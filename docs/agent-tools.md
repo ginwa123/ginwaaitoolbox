@@ -7,7 +7,7 @@ This document lists the agent tools that the nalar LLM can call.
 Show a visual preview to the user in the side panel of the chat.
 
 **Input** (JSON object):
-- `content_type` (required): one of `"markdown"`, `"text"`, `"code"`, `"image"`
+- `content_type` (required): one of `"markdown"`, `"text"`, `"code"`, `"image"`, `"html"`
 - `content` (required): the content to display (string, up to 1 MB)
 - `title` (optional): human-readable title shown above the preview
 - `language` (required when `content_type='code'`): programming language for syntax highlighting
@@ -23,7 +23,7 @@ Show a visual preview to the user in the side panel of the chat.
 
 **Error cases** (return `success=false` to the LLM):
 - Empty or missing `content_type` / `content`
-- `content_type` not one of the four supported values
+- `content_type` not one of the five supported values
 - `content` exceeds 1 MB
 - `content_type='code'` with no `language` (or empty `language`)
 
@@ -35,6 +35,7 @@ Show a visual preview to the user in the side panel of the chat.
 - `text` → preserved whitespace in a `<pre>` block
 - `code` → syntax-highlighted via `<pre><code class="language-X">`
 - `image` → `<img>` with `data:` or `http(s):` URL only (XSS protection)
+- `html` → rendered inside an `<iframe sandbox="allow-scripts" srcdoc="...">`. The iframe gets a null origin, so its JS cannot read the parent app's cookies, localStorage, or window. Forms render but cannot submit; `window.open()` from the iframe is blocked. The HTML is attribute-escaped into the `srcdoc` (no HTML sanitization — the iframe sandbox is the security boundary).
 
 **Example usage:**
 
@@ -61,4 +62,13 @@ Show a visual preview to the user in the side panel of the chat.
   "content": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
   "title": "Generated chart"
 }
+```
+
+```json
+{
+  "content_type": "html",
+  "content": "<!DOCTYPE html>\n<html>\n  <body style=\"font-family: sans-serif; padding: 2rem;\">\n    <h1>Welcome</h1>\n    <p>Landing pages are a common preview target.</p>\n    <button onclick=\"alert('clicked')\">Click me</button>\n  </body>\n</html>",
+  "title": "Landing page preview"
+}
+```
 ```
