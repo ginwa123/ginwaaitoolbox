@@ -634,6 +634,47 @@ user manually creates an empty task before the canonical.
 
 **Pitfalls.** (1) Always escape user input `%`/`_`/`\` before LIKE binding (otherwise `%` matches everything). (2) Reset cursor to `undefined` on every query change — mixing page-1-old-query with page-2-new-query gives inconsistent results. (3) SSE handlers MUST forward the active q via `activeSearchQueries` — otherwise a remote task move during a search silently resets the user's narrowed view. (4) The "tags" substring match on JSON text means `bug` matches `["debug"]` and `["bugfix"]` — accepted as the typical kanban-search UX.
 
+### 2026-07-31: Design layer drag-to-join-or-leave-group (Figma-style) — [#151 squash-merge](https://github.com/ginwa123/ginwaaitoolbox/pull/151)
+
+End-to-end Figma-style drag-and-drop affordance in the design
+LayersPanel: drag a row onto another `group`/`frame` row to join
+it; drag any row onto a top-level drop zone to leave its current
+group. Multi-select drag drops the whole selection into the same
+target.
+
+**Wire.** Backend `reparentElements` (atomic N-element reparent with
+cycle preflight) → `POST .../elements/reparent-batch` →
+`api.reparentDesignElementsBatch` → `useDesignHandlers.reparentLayers`
+→ `useLayerDragDrop.onDrop` (cycle check + multi-drag expansion)
+→ `LayersPanel` → `DesignView.handleLayerReparent`. Cycle preflight
+walks `parent_id` chain via recursive CTE to reject any reparent
+that would close a cycle.
+
+**Implementation note — one-file-per-impl convention.** All Zig
+tests live at the bottom of their impl files (`design_model.zig`,
+`http_handlers/design_elements_update.zig`,
+`http_handlers/design_elements_reparent.zig`). Each test suite
+aliases `std.testing` to a namespaced name (`testing_reparent`,
+`testing_update_reparent`, etc.) to avoid colliding with the
+pre-existing `testing_geometry` alias in `design_model.zig`.
+Test helper functions are namespaced per suite
+(`setupReparentDbAndItem`, `setupReparentBatchDbAndItem`,
+`setupUpdateReparentDbAndItem`, `setupReparentHandlerDbAndItem`)
+so multiple suites can coexist in the same file without shadowing.
+
+**Live smoke (port 8080):** reparent child1+child2 into group g1
+→ `parent_id` updated; reparent back to top-level → `parent_id=''`;
+cycle preflight → 400; bad parent type → 400; empty batch → 400.
+
+**Verification (squash commit `c23d6a5c`):** vue-tsc clean; bun
+run build clean (1.75s); vitest 1800/1801 (1 pre-existing nudge
+clamp failure on main, unrelated); zig build test 2101/2107 (1
+pre-existing `design_model_set_element_parent_test` leak,
+unrelated); zig build install:linux:system builds 102 MB nalar
+binary + 35 MB nalar-desktop.
+
+**Plan:** `docs/superpowers/plans/2026-07-30-design-layer-drag-join-or-leave-group.md`
+
 ---
 
 ## 📖 Related documentation
