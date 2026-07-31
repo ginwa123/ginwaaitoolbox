@@ -156,14 +156,14 @@ describe('DesignView group drag — move-batch (server-side cascade)', () => {
     // Wire shape: ONE item per selected element, each carrying the
     // cursor delta (rounded). Backend cascades the delta to
     // descendants via the recursive CTE.
-    const callArgs = moveSpy.mock.calls[0]
+    const callArgs = moveSpy.mock.calls[0] as any[]
     const items = callArgs[3] as Array<{ element_id: string; dx: number; dy: number }>
     expect(items.length).toBe(3)
-    expect(items[0].element_id).toBe('el_1')
-    expect(items[0].dx).toBe(10)
-    expect(items[0].dy).toBe(20)
-    expect(items[1].element_id).toBe('el_2')
-    expect(items[2].element_id).toBe('el_3')
+    expect(items[0]!.element_id).toBe('el_1')
+    expect(items[0]!.dx).toBe(10)
+    expect(items[0]!.dy).toBe(20)
+    expect(items[1]!.element_id).toBe('el_2')
+    expect(items[2]!.element_id).toBe('el_3')
   })
 
   it('groupDrag with a single leaf selection fires moveDesignElementsBatch with one item', async () => {
@@ -184,8 +184,8 @@ describe('DesignView group drag — move-batch (server-side cascade)', () => {
     expect(moveSpy).toHaveBeenCalledTimes(1)
     const items = (moveSpy.mock.calls[0] as any)[3] as Array<{ element_id: string; dx: number; dy: number }>
     expect(items.length).toBe(1)
-    expect(items[0].element_id).toBe('el_1')
-    expect(items[0].dx).toBe(5)
-    expect(items[0].dy).toBe(0)
+    expect(items[0]!.element_id).toBe('el_1')
+    expect(items[0]!.dx).toBe(5)
+    expect(items[0]!.dy).toBe(0)
   })
 })
