@@ -1163,6 +1163,17 @@ const loadChatHistory = async (loadMore = false) => {
       gitWorktreeCwd.value = data.git_worktree_cwd
     }
 
+    // 2026-08-07-profile-persist-read — load the persisted profile
+    // selection from the messages endpoint response. The watch on
+    // sessionId.value (below) ALSO reads it from getSession() (which
+    // calls the same endpoint), but the watch is `immediate: false`
+    // and races with loadChatHistory on initial mount. Reading it here
+    // is the authoritative source: whichever finishes first, the value
+    // is the same. The watch's later update will agree and not clobber.
+    if (!loadMore && data.selected_profile_model !== undefined) {
+      selectedProfile.value = data.selected_profile_model || null
+    }
+
     if (!loadMore) {
       if (data.max_total_tokens !== undefined) {
         maxTotalTokens.value = data.max_total_tokens

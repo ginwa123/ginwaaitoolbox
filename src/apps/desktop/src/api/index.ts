@@ -821,6 +821,15 @@ export async function getChatHistory(
   next_cursor: string | null
   cwd?: string
   git_worktree_cwd?: string
+  /// Session's selected profile name (empty/missing = "Default", i.e.
+  /// no profile selected). Mirrors the backend `sessions.selected_profile_model`
+  /// column. Populated by the backend's `GET /api/llm/session/:id/messages`
+  /// handler so the chatview's profile chip survives a page refresh
+  /// (fixes "profiles in chatview not persistent" — the chatview
+  /// dropdown writes via PUT /api/llm/session/:id but the read endpoint
+  /// never returned the value, so the chip reset to "Default" on
+  /// refresh).
+  selected_profile_model?: string
   max_total_tokens?: number
   max_capacity_total_tokens?: number
   total_count?: number
@@ -869,6 +878,12 @@ export async function getChatHistory(
       next_cursor: data.next_cursor,
       cwd: data.cwd,
       git_worktree_cwd: data.git_worktree_cwd,
+      // 2026-08-07-profile-persist-read — read the per-session
+      // selected profile name so the chatview chip can show the
+      // persisted selection on page refresh. Empty string from the
+      // backend (= "no profile set") is preserved here; ChatView
+      // coerces empty → null before assigning to selectedProfile.
+      selected_profile_model: data.selected_profile_model,
       max_total_tokens: data.max_total_tokens,
       max_capacity_total_tokens: data.max_capacity_total_tokens,
       total_count: data.total_count,
@@ -883,6 +898,11 @@ export async function getChatHistory(
       next_cursor: null,
       cwd: undefined,
       git_worktree_cwd: undefined,
+      // 2026-08-07-profile-persist-read — preserve the field shape on
+      // the error path so ChatView's `loadChatHistory` branch can
+      // safely read `data.selected_profile_model` (it'll be
+      // `undefined`, which ChatView coerces to `null`).
+      selected_profile_model: undefined,
       max_total_tokens: undefined,
       max_capacity_total_tokens: undefined,
       total_count: undefined,
@@ -1138,6 +1158,13 @@ export async function getSession(sessionId: string): Promise<Session | null> {
     const data = await apiFetch<{
       cwd?: string
       messages?: { session_name?: string }[]
+      // 2026-08-07-profile-persist-read — extract the per-session
+      // selected profile name. Without this, the watch in ChatView
+      // that loads `selectedProfile` from `getSession()` would always
+      // see undefined and clobber any value loaded earlier from
+      // `getChatHistory()`. The backend's GET messages endpoint
+      // returns it via `SessionMessageResponse.selected_profile_model`.
+      selected_profile_model?: string
     }>(`/llm/session/${sessionId}/messages?limit=1`, { silent: true })
     // The session info is in the cwd field - construct session object
     return {
@@ -1146,6 +1173,11 @@ export async function getSession(sessionId: string): Promise<Session | null> {
       createdAt: '',
       agent: '',
       sessionName: data.messages?.[0]?.session_name || '',
+      // 2026-08-07-profile-persist-read — pass through the persisted
+      // profile name. Empty string (= "no profile set" from the
+      // backend's COALESCE-on-NULL) is preserved here; ChatView
+      // coerces empty → null.
+      selectedProfile: data.selected_profile_model,
     }
   } catch (error) {
     console.error('Failed to get session:', error)

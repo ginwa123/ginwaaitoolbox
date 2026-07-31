@@ -90,6 +90,12 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
         .next_cursor = msg_response.next_cursor,
         .cwd = msg_response.cwd,
         .git_worktree_cwd = msg_response.git_worktree_cwd,
+        // 2026-08-07-profile-persist-read — pass the per-session
+        // selected profile name through so the frontend's profile chip
+        // survives a page refresh. Without this the chip resets to
+        // "Default" because the read endpoint never returned the field
+        // that PUT /api/llm/session/:id persists.
+        .selected_profile_model = msg_response.selected_profile_model,
         .skills = msg_response.skills,
         .max_total_tokens = msg_response.max_total_tokens,
         .max_capacity_total_tokens = msg_response.max_capacity_total_tokens,

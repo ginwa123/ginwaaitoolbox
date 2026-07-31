@@ -521,6 +521,15 @@ pub const SessionMessageResponse = struct {
     /// worktree's branch/path in the chat status bar from the moment
     /// the chat loads (not just after the user re-fetches).
     git_worktree_cwd: ?[]const u8 = null,
+    /// Session's selected profile name (NULL/empty when no profile is
+    /// selected). Mirrors `sessions.selected_profile_model`. Added by
+    /// the 2026-08-07-profile-persist-read fix so the frontend can
+    /// render the chat's profile chip from the messages endpoint
+    /// response (not just after the user re-fetches). Bug: the chip
+    /// used to reset to "Default" on every page refresh because the
+    /// read endpoint never returned the field that PUT
+    /// `/api/llm/session/:id` writes.
+    selected_profile_model: ?[]const u8 = null,
     max_total_tokens: u32 = 0,
     max_capacity_total_tokens: u32 = 0,
     total_count: ?u32 = null, // Total count of messages in session (for VirtualScroller)
@@ -587,7 +596,8 @@ pub fn getSessionMessagesSorted(
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''),
-            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, '')
+            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
+            \\       COALESCE(s.selected_profile_model, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s}{s} LIMIT ?
         , .{ cursor_cmp, order_part });
@@ -605,7 +615,8 @@ pub fn getSessionMessagesSorted(
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''),
-            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, '')
+            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
+            \\       COALESCE(s.selected_profile_model, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s} LIMIT ?
         , .{order_part});
@@ -625,12 +636,19 @@ pub fn getSessionMessagesSorted(
     // Get cwd from first row (same for all rows since we filter by session_id)
     var cwd: ?[]u8 = null;
     var git_worktree_cwd: ?[]u8 = null;
+    // 2026-08-07-profile-persist-read: also extract
+    // `selected_profile_model` from the joined sessions row so the
+    // frontend's profile chip survives a page refresh.
+    var selected_profile_model: ?[]u8 = null;
 
     while (try rows.next()) |row| {
-        // Extract cwd + git_worktree_cwd from the first row (same for all
-        // rows since we filter by session_id). Column indices match the
-        // SELECT list above: cwd at 9, git_worktree_cwd at 10,
-        // reasoning_content at 11, diffview_before at 12, ...
+        // Extract cwd + git_worktree_cwd + selected_profile_model from the
+        // first row (same for all rows since we filter by session_id).
+        // Column indices match the SELECT list above: cwd at 9,
+        // git_worktree_cwd at 10, reasoning_content at 11,
+        // diffview_before at 12, diffview_after at 13, image_url at 14,
+        // tool_call_id at 15, tool_calls_json at 16,
+        // selected_profile_model at 17.
         if (cwd == null) {
             const cwd_val = row.values[9];
             if (cwd_val.len > 0) {
@@ -641,6 +659,12 @@ pub fn getSessionMessagesSorted(
             const wt_val = row.values[10];
             if (wt_val.len > 0) {
                 git_worktree_cwd = try allocator.dupe(u8, wt_val);
+            }
+        }
+        if (selected_profile_model == null) {
+            const spm_val = row.values[17];
+            if (spm_val.len > 0) {
+                selected_profile_model = try allocator.dupe(u8, spm_val);
             }
         }
 
@@ -688,7 +712,15 @@ pub fn getSessionMessagesSorted(
     else
         null;
 
-    // Return only limit messages if has_more
+    // Return only limit messages if has_more. NOTE: the caller MUST
+    // `m.deinit(allocator)` for each entry to free the inner strings;
+    // the outer `items` slice itself is intentionally NOT freed here.
+    // Production callers (e.g. `sessionMessagesHandler`) run under a
+    // per-request arena allocator that reclaims everything at the end
+    // of the request. Tests that need to validate the cleanup contract
+    // should mirror the same pattern: free each message's inner state
+    // via `deinit` and accept that the outer buffer is reclaimed by
+    // the allocator's test harness (e.g. `std.heap.ArenaAllocator`).
     const result_messages = if (has_more) messages.items[0..limit] else messages.items;
 
     // Get total count of messages for this session
@@ -703,6 +735,7 @@ pub fn getSessionMessagesSorted(
         .next_cursor = next_cursor,
         .cwd = cwd,
         .git_worktree_cwd = git_worktree_cwd,
+        .selected_profile_model = selected_profile_model,
         .max_total_tokens = getMaxTotalTokensForSession(allocator, db, session_id) catch 0,
         .max_capacity_total_tokens = blk: {
             // Resolve the per-config override when the singleton is alive,

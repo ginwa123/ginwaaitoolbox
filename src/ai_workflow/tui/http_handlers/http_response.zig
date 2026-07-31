@@ -226,6 +226,14 @@ pub const SessionMessagesResponse = struct {
     /// `sessionMessagesHandler` from `llm_history.SessionMessageResponse`.
     /// See Chunk 1 of the git-worktree-cwd-pr plan.
     git_worktree_cwd: ?[]const u8 = null,
+    /// Session's selected profile name (NULL/empty when no profile is
+    /// selected). Mirrors `sessions.selected_profile_model`. Populated by
+    /// `sessionMessagesHandler` from `llm_history.SessionMessageResponse`.
+    /// Without this field the frontend's profile chip resets to "Default"
+    /// on every page refresh because the read endpoint never returned
+    /// the value that PUT `/api/llm/session/:id` writes. Bug fix:
+    /// 2026-08-07-profile-persist-read.
+    selected_profile_model: ?[]const u8 = null,
     max_total_tokens: u32 = 0,
     max_capacity_total_tokens: u32 = 0,
     total: ?u32 = null, // Total count of messages for VirtualScroller
