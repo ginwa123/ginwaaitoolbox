@@ -454,6 +454,7 @@ interface VirtualScrollerExposed {
   scrollToIndex: (index: number, behavior?: ScrollBehavior) => void
   scrollToTop: (behavior?: ScrollBehavior) => void
   scrollToBottom: (behavior?: ScrollBehavior) => void
+  scrollToPosition: (scrollTop: number, behavior?: ScrollBehavior) => void
   scrollToItem: (index: number, behavior?: ScrollBehavior) => void
   beginPreserve: (newItemsCount: number) => void
   endPreserve: () => Promise<void>

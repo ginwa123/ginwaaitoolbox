@@ -599,6 +599,14 @@ const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
     behavior,
   })
 }
+const scrollToPosition = (scrollTop: number, behavior: ScrollBehavior = 'auto') => {
+  if (!containerRef.value) return
+  const clientHeight = containerRef.value.clientHeight
+  const max = containerRef.value.scrollHeight - clientHeight
+  if (max <= 0) return
+  const clamped = Math.max(0, Math.min(scrollTop, max))
+  containerRef.value.scrollTo({ top: clamped, behavior })
+}
 const scrollToItem = (index: number, behavior: ScrollBehavior = 'auto') =>
   scrollToIndex(index, behavior)
 
@@ -625,6 +633,7 @@ defineExpose({
   scrollToIndex,
   scrollToTop,
   scrollToBottom,
+  scrollToPosition,
   scrollToItem,
   beginPreserve,
   endPreserve,
