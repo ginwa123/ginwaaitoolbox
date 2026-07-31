@@ -150,6 +150,27 @@ type ResizeHandle =
 const isDragging = ref(false)
 
 const startDrag = (event: PointerEvent, mode: DragMode): void => {
+  // The 8 resize handles are children of the .design-element wrapper.
+  // The wrapper also has a @pointerdown handler (for 'move'). Without
+  // stopping propagation, clicking a handle would bubble to the wrapper
+  // and start TWO gestures: the resize (on the handle) and a move
+  // (on the wrapper). The wrapper's setPointerCapture then steals
+  // capture from the handle — the W3C Pointer Events spec says most
+  // recent setPointerCapture wins — leaving the resize handler starved
+  // and the move handler running instead. Result: the element MOVES
+  // instead of resizing. Symptom: "design mode, when user want to
+  // resize the element move too".
+  //
+  // Fix: stopPropagation on any non-'move' gesture. The check runs
+  // before the readonly/previewMode/button early-returns so even an
+  // early-returning handle click doesn't bubble (defensive — the
+  // bubble decision is independent of gesture eligibility). The
+  // canvas's @contextmenu (right-click menu) is a separate event and
+  // unaffected by pointerdown propagation, so right-click handling
+  // still works.
+  if (mode !== 'move') {
+    event.stopPropagation()
+  }
   if (props.readonly) return
   // In Preview mode, the canvas is "playing" the mockup — clicks
   // on element bodies are absorbed by the inner iframe (typed text,
