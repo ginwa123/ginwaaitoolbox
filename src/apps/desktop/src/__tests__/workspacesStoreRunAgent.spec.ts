@@ -1,0 +1,77 @@
+/**
+ * Tests for workspacesStore.runAgentOnNewTask — the store action that
+ * wraps api.sendChatMessage for the kanban "Create task & run agent"
+ * flow. Behavioural coverage: forwards the queue message + cwd +
+ * unattended flag; returns the backend status on success; returns
+ * undefined when the API throws (the host falls back to "task created
+ * but agent didn't start" UX).
+ *
+ * Plan: docs/superpowers/plans/2026-08-06-kanban-create-task-run-agent.md
+ *   Task 1 / Step 1.1
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setActivePinia, createPinia } from 'pinia'
+
+import { useWorkspacesStore } from '@/stores/workspaces'
+import * as api from '@/api'
+
+describe('workspacesStore.runAgentOnNewTask', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.restoreAllMocks()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('forwards queueMessage, cwd, and isAutoRetryUntilStop to api.sendChatMessage', async () => {
+    const sendSpy = vi
+      .spyOn(api, 'sendChatMessage')
+      .mockResolvedValue({ status: 'queued' })
+    const store = useWorkspacesStore()
+    const result = await store.runAgentOnNewTask('ws_1', 'item_1', 'task_abc', {
+      queueMessage: 'Title\n\nBody',
+      cwd: '/home/u/project',
+      isAutoRetryUntilStop: '1',
+    })
+    expect(sendSpy).toHaveBeenCalledWith(
+      'task_abc',
+      'Title\n\nBody',
+      '/home/u/project',
+      undefined,
+      '',
+      '1',
+    )
+    expect(result).toEqual({ status: 'queued' })
+  })
+
+  it('forwards empty string when isAutoRetryUntilStop is undefined', async () => {
+    const sendSpy = vi
+      .spyOn(api, 'sendChatMessage')
+      .mockResolvedValue({ status: 'queued' })
+    const store = useWorkspacesStore()
+    await store.runAgentOnNewTask('ws_1', 'item_1', 'task_abc', {
+      queueMessage: 'Title',
+      cwd: '/cwd',
+    })
+    expect(sendSpy).toHaveBeenCalledWith(
+      'task_abc',
+      'Title',
+      '/cwd',
+      undefined,
+      '',
+      '',
+    )
+  })
+
+  it('returns undefined when api.sendChatMessage throws', async () => {
+    vi.spyOn(api, 'sendChatMessage').mockRejectedValue(new Error('network down'))
+    const store = useWorkspacesStore()
+    const result = await store.runAgentOnNewTask('ws_1', 'item_1', 'task_abc', {
+      queueMessage: 'msg',
+      cwd: '/cwd',
+    })
+    expect(result).toBeUndefined()
+  })
+})
