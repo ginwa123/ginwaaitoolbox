@@ -163,6 +163,20 @@ const emit = defineEmits<{
   // BEFORE the optimistic UI flip so the host can capture the
   // pre-toggle value (in case it needs to roll back on PUT failure).
   'update-unattended': [payload: { value: '0' | '1'; previous: '0' | '1' }]
+  // NEW (plan: 2026-08-06-kanban-create-task-run-agent). Emitted
+  // when the user clicks "Create task & run agent" in create mode.
+  // Same payload shape as `create` but with mode='create_and_run'
+  // so the host can branch on it. The host (KanbanView) handles
+  // the create + move + run + navigate dance.
+  'create-and-run': [
+    payload: {
+      mode: 'create_and_run'
+      name: string
+      description: string
+      is_auto_retry_until_stop: '0' | '1'
+      tags: string[]
+    },
+  ]
 }>()
 
 // ─── Form state ──────────────────────────────────────────────────────────
@@ -275,6 +289,10 @@ const isDirty = computed<boolean>(() => {
 
 const isValid = computed<boolean>(() => name.value.trim().length > 0)
 const canSave = computed<boolean>(() => isDirty.value && isValid.value)
+// "Create task & run agent" requires only a name (description is
+// optional — empty description degrades to a queued message that is
+// just the title). The unattended toggle flows through separately.
+const canRunAgent = computed<boolean>(() => isValid.value)
 
 // ─── Handlers ───────────────────────────────────────────────────────────
 
@@ -328,6 +346,24 @@ const handleClose = () => {
   //   - :show + @close (KanbanSettingsDialog-style) listens for `close`
   emit('update:show', false)
   emit('close')
+}
+
+// NEW (plan: 2026-08-06-kanban-create-task-run-agent). Mirror of
+// handleSave but for the "Create task & run agent" button. Emits
+// `create-and-run` with mode='create_and_run' so the host can
+// branch. Same payload as `create` (same fields, different mode
+// discriminator) so the host's single handler can switch on mode.
+const handleRunAgent = () => {
+  if (!canRunAgent.value) return
+  tagsInputRef.value?.commitDraft()
+  if (!canRunAgent.value) return
+  emit('create-and-run', {
+    mode: 'create_and_run',
+    name: name.value.trim(),
+    description: description.value,
+    is_auto_retry_until_stop: unattended.value,
+    tags: tags.value,
+  })
 }
 
 // Commit any draft tag typed in the chip input the moment the user
@@ -714,6 +750,31 @@ const filteredTagSuggestions = computed<string[]>(() => {
               "
             >
               {{ isCreateMode ? 'Create task' : 'Save' }}
+            </button>
+            <!-- NEW (plan: 2026-08-06-kanban-create-task-run-agent).
+                 Outlined secondary button only in create mode. Sibling
+                 to the primary "Create task" button — visually
+                 subordinate so the safe default stays discoverable. The
+                 ▶ play-icon prefix mirrors the routine "Run now" card
+                 button for muscle memory. Disabled when name is empty;
+                 description is NOT required (empty description degrades
+                 to a queued message that is just the title). -->
+            <button
+              v-if="isCreateMode"
+              type="button"
+              @click="handleRunAgent"
+              :disabled="!canRunAgent"
+              data-testid="kanban-task-detail-create-and-run"
+              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              style="
+                background-color: transparent;
+                border: 1px solid var(--color-border);
+                color: var(--semantic-text);
+              "
+              title="Create the task and start the agent. The title + description becomes the first user message."
+            >
+              <span aria-hidden="true">▶</span>
+              <span class="ml-1">Create task &amp; run agent</span>
             </button>
           </div>
         </div>
