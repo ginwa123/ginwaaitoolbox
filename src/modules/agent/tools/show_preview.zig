@@ -74,7 +74,7 @@ pub const show_preview_tool = AgentTool{
         .description =
             \\Render rich content (markdown, plain text, source code, or an image) in the chat's side panel. Use this tool when the user asks to "show", "display", "preview", "render", or "visualize" something — markdown summaries, formatted code blocks, generated diagrams, images, etc. The content is rendered ONLY in the side panel (NOT appended to the chat transcript), so the tool is best for ephemeral / visualization purposes.
             \\
-            \\The content_type must be one of "markdown", "text", "code", or "image". For "code", you MUST also pass the language field (e.g. "zig", "python", "javascript") so the side panel can apply syntax highlighting. Optional `title` renders above the content (a short heading), and optional `caption` renders below (a longer description). The content payload is capped at 1 MiB; for larger content, split across multiple calls.
+            \\The content_type must be one of "markdown", "text", "code", "image", or "html". For "code", you MUST also pass the language field (e.g. "zig", "python", "javascript") so the side panel can apply syntax highlighting. For "html", the content is rendered inside a sandboxed iframe with allow-scripts enabled (no allow-forms, no allow-same-origin) — so it can run JS but cannot read the app's cookies, submit forms, or navigate the parent window. Optional `title` renders above the content (a short heading), and optional `caption` renders below (a longer description). The content payload is capped at 1 MiB; for larger content, split across multiple calls.
             \\
             \\This tool does NOT save anything to the chat history, to a memory file, or to the workspace. It only renders in the side panel. If the user wants the content to persist (e.g. as a saved note, a saved file, or a chat-attached message), use a different tool such as `add_memory` or `write_file` instead.
             ,
@@ -84,7 +84,7 @@ pub const show_preview_tool = AgentTool{
                 .{
                     .name = "content_type",
                     .type = "string",
-                    .description = "One of: \"markdown\", \"text\", \"code\", \"image\". Determines how the side panel renders the content.",
+                    .description = "One of: \"markdown\", \"text\", \"code\", \"image\", \"html\". Determines how the side panel renders the content.",
                 },
                 .{
                     .name = "content",
@@ -213,9 +213,10 @@ pub fn validateContentType(
     if (std.mem.eql(u8, content_type, "text")) return null;
     if (std.mem.eql(u8, content_type, "code")) return null;
     if (std.mem.eql(u8, content_type, "image")) return null;
+    if (std.mem.eql(u8, content_type, "html")) return null;
     return try std.fmt.allocPrint(
         allocator,
-        \\invalid content_type '{s}'. Must be one of: "markdown", "text", "code", "image".
+        \\invalid content_type '{s}'. Must be one of: "markdown", "text", "code", "image", "html".
     , .{content_type});
 }
 
