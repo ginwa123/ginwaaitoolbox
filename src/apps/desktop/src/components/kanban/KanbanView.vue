@@ -61,6 +61,7 @@ import KanbanSearchInput from './KanbanSearchInput.vue'
 import KanbanTaskDetailDialog from './KanbanTaskDetailDialog.vue'
 import InlineEditableText from '../preview/InlineEditableText.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
+import { useNotificationStore } from '../../stores/notifications'
 import { useKanbanScrollRestore } from '../../composables/useKanbanScrollRestore'
 import type { WorkspaceItem, Task, KanbanColumn as KanbanColumnType } from '../../stores/workspaces'
 
@@ -416,12 +417,21 @@ const handleViewCreateTask = (columnId: string) => {
   showCreateDialog.value = true
 }
 
-// Create-task submit handler. Called by the dialog's `@create` emit.
-// On success: close the dialog + clear the target column. On error:
-// keep the dialog open and surface the error message via the dialog's
-// `errorMessage` prop (the user can retry without re-typing).
+// Create-task submit handler. Called by the dialog's `@create` or
+// `@create-and-run` emit. The mode discriminator drives the second
+// half of the flow:
+//   - 'create'           — today's behavior (create + move + close)
+//   - 'create_and_run'   — also queues title + description as the
+//                          first user message and routes to the chat
+//                          view via the existing selectTask emit.
+//
+// On error: keep the dialog open and surface the error message via
+// the dialog's `errorMessage` prop (the user can retry without
+// re-typing).
+//
+// Plan: docs/superpowers/plans/2026-08-06-kanban-create-task-run-agent.md
 const handleCreateTaskSave = async (payload: {
-  mode: 'create'
+  mode: 'create' | 'create_and_run'
   name: string
   description: string
   is_auto_retry_until_stop?: '0' | '1'
@@ -454,6 +464,43 @@ const handleCreateTaskSave = async (payload: {
     // backend's auto-assign put it in the first column; moveTaskToColumn
     // overwrites that. Position 0 = top of the column.
     await workspacesStore.moveTaskToColumn(wsId, itId, taskId, desiredColumnId, 0)
+
+    // NEW (plan: 2026-08-06-kanban-create-task-run-agent). When the
+    // user clicked "Create task & run agent", queue the title +
+    // description as the first user message and route to the chat
+    // view. The queued message is `title + "\n\n" + description` when
+    // description is non-empty, else just the title (Q1 = B, Q2 = 2b
+    // from the brainstorm).
+    if (payload.mode === 'create_and_run') {
+      const queueMessage =
+        payload.description.trim() !== ''
+          ? `${payload.name}\n\n${payload.description}`
+          : payload.name
+      const result = await workspacesStore.runAgentOnNewTask(
+        wsId,
+        itId,
+        taskId,
+        {
+          queueMessage,
+          cwd: props.item.path || '',
+          isAutoRetryUntilStop: payload.is_auto_retry_until_stop,
+        },
+      )
+      if (result?.status === 'queued') {
+        // Reuse the existing selectTask emit so the AppLayout ->
+        // Sidebar chain handles setActiveTask + router.replace.
+        emit('selectTask', taskId)
+      } else {
+        // Partial success: task was created but the agent didn't
+        // start. Surface a toast so the user knows to click the
+        // card to retry manually. Never strand the user.
+        useNotificationStore().notifyError(
+          'Task created — agent did not start',
+          'Click the card to retry, or check the nalar logs.',
+        )
+      }
+    }
+
     showCreateDialog.value = false
     activeCreateColumnId.value = null
   } catch (err) {
@@ -653,7 +700,8 @@ const handleCreateTaskSave = async (payload: {
     :cwd="item.path || ''"
     :workspace-id="workspaceId"
     :error-message="createError"
-    @create="handleCreateTaskSave"
+    @create="(payload) => handleCreateTaskSave({ ...payload, mode: 'create' })"
+    @create-and-run="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_and_run' })"
   />
 </template>
 
