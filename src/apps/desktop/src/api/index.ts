@@ -475,6 +475,15 @@ export async function reorderWorkspaceItems(
  *                       renamed task first). The backend uses this for
  *                       both ORDER BY and the cursor value.
  * @param direction    - 'asc' | 'desc'. Default: 'desc'.
+ * @param q            - optional case-insensitive substring filter
+ *                       applied at the SQL level against `name`,
+ *                       `description`, and `tags`. Pass undefined or
+ *                       '' to disable the filter. The backend escapes
+ *                       `%`/`_`/`\` in the input before binding, so a
+ *                       user typing `%` matches a literal `%` in the
+ *                       data (not every row). Pagination advances
+ *                       through the filtered set, not the unfiltered
+ *                       set, when q is set.
  * @returns `{ tasks, has_more, next_cursor }`. `next_cursor` is null
  *          when there are no more pages.
  */
@@ -485,6 +494,7 @@ export async function getTasks(
   cursor?: string,
   sortBy: 'created_at' | 'updated_at' | 'name' = 'updated_at',
   direction: 'asc' | 'desc' = 'desc',
+  q?: string,
 ): Promise<{
   tasks: Task[]
   has_more: boolean
@@ -496,6 +506,9 @@ export async function getTasks(
   params.set('direction', direction)
   if (cursor) {
     params.set('cursor', cursor)
+  }
+  if (q && q.length > 0) {
+    params.set('q', q)
   }
   const data = await apiFetch<{
     tasks: Task[]

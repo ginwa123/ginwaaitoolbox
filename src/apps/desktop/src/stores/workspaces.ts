@@ -325,6 +325,19 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     activeDesignPageId.value = pageId
   }
 
+  // NEW (kanban task search feature, plan:
+  // docs/superpowers/plans/2026-07-30-kanban-task-search.md Chunk 4).
+  // Map<itemId, q> — the active search query per board. Read by
+  // `loadMoreTasks` (to forward q on "Load more" clicks) and by the
+  // SSE handler that re-fetches tasks on `kanban_task.*` events (so a
+  // remote move/edit during a search keeps the user's narrowed view).
+  // Written by `fetchKanbanTasks(ws, item, limit, cursor, q)`:
+  // q === undefined / '' → DELETE; otherwise → SET. Plain Map (not
+  // reactive ref) — the SSE handler reads synchronously after each
+  // mutation; no UI depends on this state for rendering (the input
+  // v-model is component-local in KanbanView.vue).
+  const activeSearchQueries: Map<string, string> = new Map()
+
   // System folder info from API
   const systemFolderInfo = ref<SystemFolderInfo | null>(null)
   const systemFolderLoading = ref(false)
@@ -1027,6 +1040,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   async function fetchKanbanTasks(
     workspaceId: string,
     itemId: string,
+    limit = 100,
+    cursor?: string,
+    q?: string,
   ): Promise<void> {
     const item = findItem(workspaceId, itemId)
     if (!item) return
@@ -1036,10 +1052,22 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // limit → backend default 20) silently truncated kanbans with >
       // 20 tasks so columns showed partial data with no "Load more"
       // affordance. Keep this in sync with tasks_list.zig::MAX_PAGE_SIZE.
+      //
+      // Kanban task search (Chunk 4 of plan):
+      // docs/superpowers/plans/2026-07-30-kanban-task-search.md — `q`
+      // is the active search query. Server-side filter on name +
+      // description + tags. When q changes, the cursor resets to
+      // undefined (page 1 of the filtered set) — the caller is
+      // responsible for that, we don't track cursor+q consistency
+      // here.
       const { tasks, has_more, next_cursor } = await api.getTasks(
         workspaceId,
         itemId,
-        100, // MAX_PAGE_SIZE — single round-trip for typical kanbans
+        limit,
+        cursor,
+        'updated_at',
+        'desc',
+        q,
       )
       // Migration 067 — normalize tags from wire string to in-memory
       // string[]. The card UI reads task.tags directly; if the wire
@@ -1048,6 +1076,16 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       item.tasks = (tasks ?? []).map(normalizeTaskTags)
       item.hasMoreTasks = has_more
       item.tasksNextCursor = next_cursor
+
+      // Track the active q so SSE handlers + loadMoreTasks can
+      // forward it on subsequent refetches. Empty / undefined =
+      // "no search active" → DELETE the entry (preserves Map size
+      // bounded by the number of boards with active searches).
+      if (q && q.length > 0) {
+        activeSearchQueries.set(itemId, q)
+      } else {
+        activeSearchQueries.delete(itemId)
+      }
     } catch (err) {
       console.error('[workspacesStore.fetchKanbanTasks] API call failed:', err)
       // Leave the existing tasks array untouched so the UI doesn't
@@ -1819,11 +1857,19 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
     item.isLoadingMoreTasks = true
     try {
+      // Kanban task search (Chunk 4): forward the active q so
+      // "Load more" fetches the next page of MATCHES, not the next
+      // page of everything. Read from activeSearchQueries (set by
+      // fetchKanbanTasks(q)).
+      const activeQ = activeSearchQueries.get(itemId)
       const { tasks, has_more, next_cursor } = await api.getTasks(
         workspaceId,
         itemId,
         20, // PAGE_SIZE — keep in sync with the default in api/index.ts
         item.tasksNextCursor,
+        'updated_at',
+        'desc',
+        activeQ,
       )
       // Append the new page to the existing list. We push (not unshift)
       // because tasks are ordered newest-first, so older tasks go at
@@ -2494,6 +2540,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // active design page id, mirrored from DesignView so AppLayout's
     // design handlers can route PATCH/PUT/DELETE to the right page.
     activeDesignPageId,
+    // Kanban task search (Chunk 4): exposed so SSE handlers can read
+    // the active q and forward it on refetch.
+    activeSearchQueries,
     systemFolderInfo,
     systemFolderLoading,
     systemFolderError,

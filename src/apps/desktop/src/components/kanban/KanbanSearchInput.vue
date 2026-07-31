@@ -1,0 +1,75 @@
+<!--
+  KanbanSearchInput — compact search input for the kanban board header.
+
+  Public API (purely presentational):
+    props:  modelValue: string   (v-model)
+    emits:  update:modelValue [value: string]
+
+  Behaviour:
+    - Compact input (w-48 ≈ 192px). Sits to the LEFT of the ⚙️ Settings
+      button in the kanban header.
+    - Placeholder: "🔍 Search tasks…".
+    - On input → emits update:modelValue with the new value.
+    - On Esc keydown → emits update:modelValue with '' (clears).
+    - ✕ clear button appears inside the input when value is non-empty;
+      click → emits update:modelValue with ''.
+
+  The component is stateless — the host (KanbanView.vue) owns the
+  debounce + refetch logic. Keeps this component trivially testable.
+
+  Plan: docs/superpowers/plans/2026-07-30-kanban-task-search.md Chunk 5
+-->
+<script setup lang="ts">
+const props = defineProps<{ modelValue: string }>()
+const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
+
+const onInput = (e: Event) => {
+  const value = (e.target as HTMLInputElement).value
+  emit('update:modelValue', value)
+}
+
+const clear = () => {
+  emit('update:modelValue', '')
+}
+
+const onKeyDown = (e: KeyboardEvent) => {
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    clear()
+  }
+}
+</script>
+
+<template>
+  <div
+    class="relative flex items-center"
+    data-testid="kanban-search-input-container"
+  >
+    <input
+      :value="modelValue"
+      @input="onInput"
+      @keydown="onKeyDown"
+      type="text"
+      placeholder="🔍 Search tasks…"
+      class="w-48 px-2 py-1 pr-7 rounded text-xs outline-none focus:ring-1"
+      style="
+        background-color: var(--semantic-card-bg);
+        border: 1px solid var(--color-border);
+        color: var(--semantic-text);
+      "
+      data-testid="kanban-search-input"
+      aria-label="Search tasks by name, description, or tags"
+    />
+    <button
+      v-if="modelValue"
+      type="button"
+      @click="clear"
+      class="absolute right-1 w-5 h-5 flex items-center justify-center rounded hover:opacity-80"
+      style="color: var(--semantic-text-dim);"
+      data-testid="kanban-search-input-clear"
+      aria-label="Clear search"
+    >
+      <span aria-hidden="true">✕</span>
+    </button>
+  </div>
+</template>
