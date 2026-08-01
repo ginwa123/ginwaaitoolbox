@@ -610,6 +610,7 @@ pub const SseManager = struct {
             // which made the sweep blind to actual staleness.
             if (writeChunkedFrame(client.fd, ping)) |_| {
                 client.last_heartbeat = timestamp(self.io);
+                log.debug("heartbeat sent fd={d} id={x}", .{ client.fd, client.id });
             } else |_| {
                 log.info("heartbeat write FAILED fd={d} id={x}", .{ client.fd, client.id });
                 dead_ids.append(self.allocator, client.id) catch break;
