@@ -117,6 +117,8 @@ describe('KanbanTaskDetailDialog — Create task & run agent', () => {
         tags: [],
         // NEW (plan: 2026-08-06-kanban-task-profile-selector)
         selectedProfile: '',
+        // NEW (plan: 2026-08-06-kanban-no-base64-in-desc).
+        pendingFiles: [],
       },
     ])
   })

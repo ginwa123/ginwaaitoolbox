@@ -64,6 +64,7 @@ import InlineEditableText from '../preview/InlineEditableText.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useNotificationStore } from '../../stores/notifications'
 import { useKanbanScrollRestore } from '../../composables/useKanbanScrollRestore'
+import type { PreviewFile } from '../file/FilePreview.vue'
 import type { WorkspaceItem, Task, KanbanColumn as KanbanColumnType } from '../../stores/workspaces'
 
 const props = withDefaults(
@@ -372,7 +373,7 @@ const handleOpenSettings = () => {
 // action). It hides once a path is set. The picker reuses the
 // AddKanbanDialog's picker to keep the UX consistent — same data
 // source, same select-pick-cancel flow.
-import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
+import { getSystemFolder, listFolder, type FolderEntry, uploadTaskAttachment } from '../../api'
 import { updateSession as apiUpdateSession } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
 
@@ -561,6 +562,7 @@ const handleViewCreateTask = (columnId: string) => {
 // re-typing).
 //
 // Plan: docs/superpowers/plans/2026-08-06-kanban-create-task-run-agent.md
+//   + 2026-08-06-kanban-no-base64-in-desc (pendingFiles upload step)
 const handleCreateTaskSave = async (payload: {
   mode: 'create' | 'create_and_run'
   name: string
@@ -572,6 +574,13 @@ const handleCreateTaskSave = async (payload: {
   // through to runAgentOnNewTask only (Path A — plain create doesn't
   // persist the choice; user can set from chatview later).
   selectedProfile?: string
+  // NEW (plan: 2026-08-06-kanban-no-base64-in-desc). Files the
+  // dialog staged in create mode (KanbanDescriptionEditor.pendingFiles).
+  // The editor never writes the base64 payload into `description` —
+  // we upload each file here AFTER `addTask` returns the new
+  // taskId, then PATCH the description with `![name](<url>)` markdown.
+  // Empty array (not undefined) when no images were attached.
+  pendingFiles?: PreviewFile[]
 }) => {
   if (!activeCreateColumnId.value) return
   createBusy.value = true
@@ -596,6 +605,45 @@ const handleCreateTaskSave = async (payload: {
       createError.value = 'Failed to create task — please retry.'
       return
     }
+
+    // NEW (plan: 2026-08-06-kanban-no-base64-in-desc). Upload each
+    // pending file the user pasted/picked while in create mode,
+    // then patch the description with the server URLs. The
+    // dialog's `description` was passed as text-only (no base64) —
+    // we append the `![name](<url>)` markdown lines here so the
+    // final description is self-contained.
+    //
+    // Failure mode: if the upload throws, we abort the move / run
+    // flow (the task exists but with no description patch yet) and
+    // surface the error via createError so the dialog stays open.
+    // The user can retry without re-typing.
+    const pendingFiles = payload.pendingFiles ?? []
+    if (pendingFiles.length > 0) {
+      const markdownLines: string[] = []
+      for (const entry of pendingFiles) {
+        try {
+          const { url } = await uploadTaskAttachment(taskId, entry.file)
+          markdownLines.push(`![${entry.file.name}](${url})`)
+        } catch (err) {
+          console.error(
+            '[handleCreateTaskSave] attachment upload failed:',
+            err,
+          )
+          createError.value = `Image upload failed (${entry.file.name}): ${
+            err instanceof Error ? err.message : String(err)
+          }`
+          return
+        }
+      }
+      const finalDescription =
+        payload.description.trim() === ''
+          ? markdownLines.join('\n')
+          : `${payload.description}\n${markdownLines.join('\n')}`
+      await workspacesStore.updateTaskDetails(wsId, itId, taskId, {
+        description: finalDescription,
+      })
+    }
+
     // Move the new task to the column the user clicked. The
     // backend's auto-assign put it in the first column; moveTaskToColumn
     // overwrites that. Position 0 = top of the column.

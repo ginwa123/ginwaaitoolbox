@@ -539,11 +539,17 @@ describe('KanbanTaskDetailDialog — create mode', () => {
     expect(saveBtn?.hasAttribute('disabled')).toBe(false)
   })
 
-  it('emits create (not save) with { mode: "create", name, description, is_auto_retry_until_stop }', async () => {
+  it('emits create (not save) with { mode: "create", name, description, is_auto_retry_until_stop, pendingFiles }', async () => {
     // The create payload now carries is_auto_retry_until_stop
     // (Option A: backend atomically inserts a sessions row when
     // this is '1'). Default value at dialog open is '0' — the
     // toggle hasn't been flipped yet.
+    //
+    // NEW (plan: 2026-08-06-kanban-no-base64-in-desc): the create
+    // emit also carries `pendingFiles: PreviewFile[]` (always an
+    // array — empty when no images were staged) so the host's
+    // create-then-upload orchestrator can upload attachments AFTER
+    // the task exists.
     const w = mountCreateDialog()
     await flushPromises()
     setInputValue('[data-testid="kanban-task-detail-create-name"]', '  New task  ')
@@ -566,6 +572,8 @@ describe('KanbanTaskDetailDialog — create mode', () => {
         tags: [],
         // NEW (plan: 2026-08-06-kanban-task-profile-selector)
         selectedProfile: '',
+        // NEW (plan: 2026-08-06-kanban-no-base64-in-desc).
+        pendingFiles: [],
       },
     ])
   })
@@ -596,6 +604,8 @@ describe('KanbanTaskDetailDialog — create mode', () => {
         tags: [],
         // NEW (plan: 2026-08-06-kanban-task-profile-selector)
         selectedProfile: '',
+        // NEW (plan: 2026-08-06-kanban-no-base64-in-desc).
+        pendingFiles: [],
       },
     ])
   })

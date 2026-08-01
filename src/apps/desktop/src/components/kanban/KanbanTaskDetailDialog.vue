@@ -162,6 +162,14 @@ const emit = defineEmits<{
       // `create-and-run`; Path A only threads it through to the
       // backend when the user clicks "Create task & run agent".
       selectedProfile: string
+      // NEW (plan: 2026-08-06-kanban-no-base64-in-desc). Files the
+      // dialog's editor staged in create mode (no base64 ever written
+      // into `description`). Always present — empty array when no
+      // images were pasted/picked. Host uploads each via
+      // `api.uploadTaskAttachment(taskId, file)` AFTER addTask
+      // returns the new taskId, then patches the description with
+      // `![name](<url>)` markdown via `updateTaskDetails`.
+      pendingFiles: PreviewFile[]
     },
   ]
   // Emitted in edit mode when the user flips the unattended toggle.
@@ -187,6 +195,9 @@ const emit = defineEmits<{
       // runAgentOnNewTask so the agent runs with the chosen
       // profile.
       selectedProfile: string
+      // NEW (plan: 2026-08-06-kanban-no-base64-in-desc). Mirror of
+      // the `pendingFiles` field on the `create` emit above.
+      pendingFiles: PreviewFile[]
     },
   ]
 }>()
