@@ -665,6 +665,7 @@ For each plan file in the 178-file input set:
 #149 feat(workflow): better compaction context (enriched XML envelope)
 #150 feat(design): right-click group/ungroup menu (Cmd+Shift+G ungroup)
 #151 feat(design): layer drag-to-join-or-leave-group (Figma-style)
+#152 feat(design): leave-group menu item (Figma "Pull out of group")
 #153 feat(chat): scroll position persistence (close → reopen keeps scroll)
 #154 feat(kanban): task notification icon (orange dot / green check)
 #155 feat(service): OS-level crash signal handler (POSIX + Win32)
