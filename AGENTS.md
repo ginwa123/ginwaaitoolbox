@@ -795,55 +795,6 @@ binary + 35 MB nalar-desktop.
 
 **Plan:** `docs/superpowers/plans/2026-07-30-design-layer-drag-join-or-leave-group.md`
 
-### 2026-08-06: Design pages list — moved from top tabs to left sidebar (#167)
-
-**Symptom (pre-fix).** User reported: *"change pages position, design
-mode. currently the list pages, is on the top, i want you to move that
-to the left"*. The page tab strip (AI Chat View, Kanban Mode, Chat
-View In Progress, Workspaces Sidebar, Task Dialog, Task Dialog with
-Attachments, + Page) was rendered as a horizontal tab strip across the
-TOP of DesignView — visible in every screenshot above the chat
-toolbar. Figma/Sketch convention is a vertical list on the LEFT, so
-the canvas can use the full viewport width and the page list has more
-room to grow past ~7 tabs without horizontal scrolling.
-
-**What landed.** Frontend-only — no backend, DB, or migration changes.
-
-- **`DesignPageTabs.vue`**: CSS flip from horizontal (`flex
-  items-center overflow-x-auto`, 2px `border-bottom` on active tab)
-  to vertical (`flex flex-col overflow-y-auto`, 3px `border-left` on
-  active tab). Long names get `text-overflow: ellipsis`. Props,
-  emits, and data-testids preserved (back-compat).
-- **`DesignView.vue`**: removed the top `<DesignPageTabs>` block;
-  mounted it as a new LEFT column inside the main split. Main split
-  is now `[LEFT pages sidebar] | [resize handle] | [canvas] |
-  [resize handle] | [right sidebar]`. New drag-vertical resize
-  handle between pages sidebar and canvas; width persists to
-  `localStorage` under the new key `design-view-pages-sidebar-width`
-  (separate from the right sidebar's key, separate min/max: 180–400
-  px vs the right sidebar's 220–600 px).
-- The empty-state `+ Add the first page` button picked up
-  `data-testid="design-add-page"` so existing tests that target
-  the + Page affordance still find it when `pages.length === 0` —
-  the tabs strip now only renders when pages exist.
-
-**Tests.** +11 net new behavioural tests:
-- 8 in new `DesignView.pagesSidebar.spec.ts` (left-of-canvas
-  invariant, NOT inside top toolbar regression test, resize handle
-  presence, + Page still wires to POST /pages, etc.)
-- 5 source-grep tests in `DesignPageTabs.spec.ts` converted to 8
-  behavioural tests per the project-wide no-static-contract rule
-  (2026-07-29). Net +3 there.
-
-**Verification.** `bun run build` clean; `bunx vitest run` 1914/1922
-pass. The 8 failures are PRE-EXISTING on `main` (5 undoHidden + 1
-DesignElement static contract + 1 nudge clamp + 1 AppLayout
-translateResize) — verified by running the same suite against
-`b7993b52` (main HEAD before this PR).
-
-**Branch.** `worktree/design-pages-left` (commit `c1bf5e89`)
-**Plan.** `docs/superpowers/plans/2026-08-06-design-pages-left-sidebar.md`
-
 ### 2026-08-06: Compaction prompt — extract `buildCompactMessagePrompt` for unit testing (#165)
 
 **Symptom (pre-fix).** `callCompactAgent` in

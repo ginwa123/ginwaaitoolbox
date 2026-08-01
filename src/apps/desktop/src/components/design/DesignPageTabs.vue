@@ -1,28 +1,11 @@
 <!--
-  DesignPageTabs — vertical page list in the LEFT sidebar of DesignView
-  (Figma / Sketch convention).
+  DesignPageTabs — horizontal tab strip at the top of DesignView.
 
   Renders one button per page (with the active page highlighted by a
-  3px violet LEFT edge) plus a "+ Page" button at the bottom. Pure
-  presentation — emits `selectPage` / `addPage` / `deletePage`
-  upward; DesignView decides what to do (call the store action, open
-  the AddDesignElementDialog, etc.).
-
-  Layout history. This component used to be a horizontal tab strip
-  rendered at the TOP of DesignView (`flex items-center overflow-x-auto`
-  with a 2px bottom border on the active tab). After the user's
-  request "move pages list from top to left" (see plan
-  docs/superpowers/plans/2026-08-06-design-pages-left-sidebar.md), the
-  wrapper class changed to `flex flex-col overflow-y-auto` and the
-  active accent moved to the left edge.
-
-  The component name stays `DesignPageTabs` (renaming would force
-  churn across imports + spec files for no functional benefit). The
-  data-testid set is preserved for back-compat:
-    - root container: design-page-tabs
-    - per-page tab:   design-page-tab-${pageId}
-    - per-page ×:     design-delete-page-${pageId}
-    - + Page button:  design-add-page
+  violet bottom border) plus a "+ Page" button at the end. Pure
+  presentation — emits `selectPage` / `addPage` / `deletePage` upward;
+  DesignView decides what to do (call the store action, open the
+  AddDesignElementDialog, etc.).
 
   Public API:
     props:
@@ -34,6 +17,10 @@
       selectPage    [pageId: string]
       addPage       []
       deletePage    [pageId: string]
+
+  Test contract: each tab has data-testid="design-page-tab-${pageId}"
+  so the test can target a specific page button. The "+ Page" button
+  has data-testid="design-add-page".
 -->
 <script setup lang="ts">
 import type { DesignPage } from '../../api'
@@ -66,28 +53,27 @@ const handleDelete = (pageId: string, event: MouseEvent): void => {
 
 <template>
   <div
-    class="flex flex-col overflow-y-auto"
-    style="background-color: var(--semantic-sidebar-bg); border-right: 1px solid var(--color-border);"
+    class="flex items-center border-b shrink-0 overflow-x-auto"
+    style="border-color: var(--color-border); background-color: var(--semantic-sidebar-bg);"
     data-testid="design-page-tabs"
   >
     <button
       v-for="page in pages"
       :key="page.id"
       type="button"
-      class="px-3 py-2 text-sm font-medium flex items-center gap-2 transition-colors hover:bg-[var(--semantic-active-bg)] text-left w-full min-w-0"
+      class="px-3 py-2 text-sm font-medium whitespace-nowrap flex items-center gap-2 transition-colors hover:bg-[var(--semantic-active-bg)]"
       :style="page.id === activePageId
-        ? 'border-left: 3px solid var(--color-violet); color: var(--semantic-text); padding-left: calc(0.75rem - 3px);'
-        : 'border-left: 3px solid transparent; color: var(--semantic-text-dim); padding-left: calc(0.75rem - 3px);'"
+        ? 'border-bottom: 2px solid var(--color-violet); color: var(--semantic-text); margin-bottom: -1px;'
+        : 'color: var(--semantic-text-dim); border-bottom: 2px solid transparent; margin-bottom: -1px;'"
       :data-testid="`design-page-tab-${page.id}`"
-      :data-active-page-id="page.id === activePageId ? page.id : undefined"
       @click="handleSelect(page.id)"
     >
-      <span class="flex-1 truncate min-w-0">{{ page.name }}</span>
+      <span>{{ page.name }}</span>
       <span
         v-if="pages.length > 1"
         role="button"
         aria-label="Delete page"
-        class="text-xs opacity-60 hover:opacity-100 shrink-0"
+        class="text-xs opacity-60 hover:opacity-100"
         style="color: inherit;"
         :data-testid="`design-delete-page-${page.id}`"
         @click="(e) => handleDelete(page.id, e)"
@@ -95,8 +81,8 @@ const handleDelete = (pageId: string, event: MouseEvent): void => {
     </button>
     <button
       type="button"
-      class="px-3 py-2 text-sm whitespace-nowrap transition-colors hover:bg-[var(--semantic-active-bg)] text-left w-full border-left: 3px solid transparent;"
-      style="color: var(--semantic-text-dim); padding-left: calc(0.75rem - 3px);"
+      class="px-3 py-2 text-sm whitespace-nowrap transition-colors hover:bg-[var(--semantic-active-bg)]"
+      style="color: var(--semantic-text-dim);"
       data-testid="design-add-page"
       @click="emit('addPage')"
     >
