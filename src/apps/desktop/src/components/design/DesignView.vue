@@ -101,6 +101,13 @@ const emit = defineEmits<{
   reorderElements: [orderedElementIds: string[]]
   createElement: [body: { name: string; type: DesignElementApi['type']; html: string }]
   updateElement: [elementId: string, patch: Partial<DesignElementApi>]
+  // NEW (2026-08-06, split-move-resize plan) — typed translate/resize
+  // events. The `updateElement` event is kept for back-compat with any
+  // caller still using the PATCH /geometry shape; new code emits
+  // `translateElement` (POST /translate, delta, cascades for groups) or
+  // `resizeElement` (POST /resize, absolute, no cascade).
+  translateElement: [elementId: string, dx: number, dy: number]
+  resizeElement: [elementId: string, patch: Partial<DesignElementApi>]
   deleteElement: [elementId: string]
   htmlChanged: [elementId: string, html: string]
   // NEW: top-right chat toggle. AppLayout finds or creates a
@@ -1189,6 +1196,36 @@ const handleElementUpdate = (patch: Partial<DesignElementApi>): void => {
   }
 }
 
+/**
+ * NEW (2026-08-06, split-move-resize plan) — handler for the
+ * `translate` event fired by DesignElement during a single-element
+ * drag (move mode). The payload is the cursor DELTA in design-px.
+ *
+ * Routes through `useDesignHandlers.translateElement` → POST
+ * /translate. The backend handles cascade-to-descendants for
+ * groups, so we just forward the delta + the element id.
+ */
+const handleElementTranslate = (delta: { dx: number; dy: number }): void => {
+  if (selectedIds.value.size !== 1) return
+  const id = selectedIds.value.values().next().value as string
+  emit('translateElement', id, delta.dx, delta.dy)
+}
+
+/**
+ * NEW (2026-08-06, split-move-resize plan) — handler for the
+ * `resize` event fired by DesignElement during a resize gesture.
+ * The payload is the absolute target geometry after applying the
+ * cursor delta.
+ *
+ * Routes through `useDesignHandlers.resizeElement` → POST /resize.
+ * Resize never cascades (Figma convention).
+ */
+const handleElementResize = (patch: Partial<DesignElementApi>): void => {
+  if (selectedIds.value.size !== 1) return
+  const id = selectedIds.value.values().next().value as string
+  emit('resizeElement', id, patch)
+}
+
 const handleElementHtmlChanged = (html: string): void => {
   if (selectedIds.value.size !== 1) return
   // HTML body editing only applies to a single selected element —
@@ -1994,6 +2031,8 @@ watch(
               :preview-mode="isPreviewMode"
               @select="(payload) => handleElementToggle(payload.elementId, payload.additive)"
               @update="handleElementUpdate"
+              @translate="handleElementTranslate"
+              @resize="handleElementResize"
               @group-drag="handleGroupDrag"
               @drag-end="handleDragEnd"
               @drag-start="handleDragStart"

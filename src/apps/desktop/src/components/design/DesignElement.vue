@@ -100,12 +100,39 @@ const emit = defineEmits<{
   // Shift+click can toggle membership in the multi-selection Set
   // (Figma parity with the layers panel which already supports it).
   select: [payload: { elementId: string; additive: boolean }]
+  /**
+   * DEPRECATED — replaced by `translate` (move) and `resize` (Figma
+   * parity with the backend's POST /translate + POST /resize split —
+   * see `docs/superpowers/plans/2026-08-06-split-move-resize.md`).
+   * Kept for back-compat; new callers MUST emit the typed events.
+   */
   update: [patch: Partial<DesignElement>]
+  /**
+   * NEW (2026-08-06) — fires on every pointermove during a drag for
+   * a SINGLE element (leaf OR a single-element drag of a group that
+   * didn't trigger the group-drag path). Payload is the CURSOR
+   * DELTA `(dx, dy)` in design-px — the parent is responsible for
+   * adding it to the element's start position before calling
+   * `workspacesStore.translateDesignElement`.
+   *
+   * Replaces `update` for the move use case.
+   */
+  translate: [delta: { dx: number; dy: number }]
+  /**
+   * NEW (2026-08-06) — fires on every pointermove during a RESIZE
+   * gesture (dragging one of the 8 resize handles). Payload carries
+   * the absolute target `(x, y, width, height, rotation)` after
+   * applying the cursor delta to the start geometry. Parent calls
+   * `workspacesStore.resizeDesignElement` with this absolute patch.
+   *
+   * Replaces `update` for the resize use case.
+   */
+  resize: [patch: Partial<DesignElement>]
   // Chunk 2: when the user drags an element that's part of a
   // multi-selection, the WHOLE selection moves. The parent
   // (DesignView) applies the dx/dy to every selected element's
   // start position; this component only reports the cursor delta.
-  // The parent calls workspacesStore.updateDesignElementGeometry
+  // The parent calls workspacesStore.moveDesignElementsBatch
   // (or the AppLayout handler) on each element.
   groupDrag: [delta: { dx: number; dy: number }]
   // Chunk 3: emit on drag-end (pointerup or pointercancel) so the
@@ -291,31 +318,43 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     width: props.element.width, height: props.element.height,
   }
 
-  // The latest patch we intend to emit. Throttled: we only emit when
-  // either (a) 50ms has elapsed since the last emit, or (b) pointerup
-  // fires (the trailing emit captures the final position even if the
-  // throttle window hasn't elapsed).
-  let pendingPatch: Partial<DesignElement> | null = null
+  // The latest pending event we intend to emit. Throttled: we only
+  // emit when either (a) 50ms has elapsed since the last emit, or
+  // (b) pointerup fires (the trailing emit captures the final
+  // position even if the throttle window hasn't elapsed).
+  //
+  // For mode='move' we emit `translate` with the cursor delta — the
+  // parent is responsible for adding the delta to the start
+  // position and calling `workspacesStore.translateDesignElement`
+  // (POST /translate). The backend handles the cascade for groups.
+  //
+  // For mode='resize' we emit `resize` with the absolute target
+  // patch — the parent calls `workspacesStore.resizeDesignElement`
+  // (POST /resize). Resize never cascades.
+  let pendingTranslate: { dx: number; dy: number } | null = null
+  let pendingResize: Partial<DesignElement> | null = null
   let lastEmitMs = 0
   const THROTTLE_MS = 50
 
   const flushEmit = (): void => {
-    if (pendingPatch) {
-      emit('update', pendingPatch)
-      pendingPatch = null
+    if (pendingTranslate) {
+      emit('translate', pendingTranslate)
+      pendingTranslate = null
+      lastEmitMs = performance.now()
+    }
+    if (pendingResize) {
+      emit('resize', pendingResize)
+      pendingResize = null
       lastEmitMs = performance.now()
     }
   }
 
-  const computePatch = (dx: number, dy: number): Partial<DesignElement> => {
-    if (mode === 'move') {
-      return {
-        x: Math.round(start.x + dx),
-        y: Math.round(start.y + dy),
-      }
-    }
+  const computeResizePatch = (dx: number, dy: number): Partial<DesignElement> => {
     const patch: Partial<DesignElement> = {}
-    const h = mode.resize
+    // Narrowing: at this point `mode` must be the `{ resize: ResizeHandle }`
+    // variant because the `if (mode === 'move')` branch above returned.
+    const resizeMode = mode as { resize: ResizeHandle }
+    const h = resizeMode.resize
     if (h.includes('e')) patch.width = Math.max(10, Math.round(start.width + dx))
     if (h.includes('s')) patch.height = Math.max(10, Math.round(start.height + dy))
     if (h.includes('w')) {
@@ -333,7 +372,11 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     const inv = 1 / Math.max(0.01, props.zoom)
     const dx = (e.clientX - startX) * inv
     const dy = (e.clientY - startY) * inv
-    pendingPatch = computePatch(dx, dy)
+    if (mode === 'move') {
+      pendingTranslate = { dx: Math.round(dx), dy: Math.round(dy) }
+    } else {
+      pendingResize = computeResizePatch(dx, dy)
+    }
     const now = performance.now()
     if (now - lastEmitMs >= THROTTLE_MS) {
       flushEmit()

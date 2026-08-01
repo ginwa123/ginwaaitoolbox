@@ -68,6 +68,9 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
       console.warn('[useDesignHandlers.updateElement] no activeDesignPageId; ignoring patch', { workspaceId, itemId, elementId, patch })
       return
     }
+    // DEPRECATED path — kept for back-compat. New callers should use
+    // `translateElement` (move) or `resizeElement` (resize). See
+    // `docs/superpowers/plans/2026-08-06-split-move-resize.md`.
     const keys = Object.keys(patch)
     const isGeometryOnly = keys.length > 0 && keys.every((k) => k === 'x' || k === 'y' || k === 'width' || k === 'height' || k === 'rotation')
     try {
@@ -84,6 +87,65 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       notificationStore.notifyError('Failed to update element', message)
+    }
+  }
+
+  /**
+   * NEW (2026-08-06, split-move-resize plan) — translate (move) a
+   * single element by a (dx, dy) delta. Routes to POST /translate.
+   * The backend cascades the delta to every transitive descendant
+   * when the target is a `group`/`frame` — callers don't need to
+   * know about the cascade. For leaves the cascade is a no-op.
+   */
+  async function translateElement(
+    workspaceId: string,
+    itemId: string,
+    elementId: string,
+    dx: number,
+    dy: number,
+  ): Promise<void> {
+    const pageId = workspacesStore.activeDesignPageId
+    if (!pageId) {
+      console.warn('[useDesignHandlers.translateElement] no activeDesignPageId; ignoring', { workspaceId, itemId, elementId, dx, dy })
+      return
+    }
+    try {
+      await workspacesStore.translateDesignElement(workspaceId, itemId, pageId, elementId, dx, dy)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      notificationStore.notifyError('Failed to translate element', message)
+    }
+  }
+
+  /**
+   * NEW (2026-08-06, split-move-resize plan) — resize a single
+   * element with absolute x/y/width/height/rotation fields. Routes
+   * to POST /resize. Resize NEVER cascades (Figma convention —
+   * only the dragged element's bounding box changes; children keep
+   * their own positions).
+   */
+  async function resizeElement(
+    workspaceId: string,
+    itemId: string,
+    elementId: string,
+    patch: {
+      x?: number
+      y?: number
+      width?: number
+      height?: number
+      rotation?: number
+    },
+  ): Promise<void> {
+    const pageId = workspacesStore.activeDesignPageId
+    if (!pageId) {
+      console.warn('[useDesignHandlers.resizeElement] no activeDesignPageId; ignoring', { workspaceId, itemId, elementId, patch })
+      return
+    }
+    try {
+      await workspacesStore.resizeDesignElement(workspaceId, itemId, pageId, elementId, patch)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      notificationStore.notifyError('Failed to resize element', message)
     }
   }
 
@@ -297,5 +359,14 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
     }
   }
 
-  return { updateElement, deleteElement, groupSelection, ungroupSelection, reparentLayers, moveElementWithDescendants }
+  return {
+    updateElement,
+    translateElement,
+    resizeElement,
+    deleteElement,
+    groupSelection,
+    ungroupSelection,
+    reparentLayers,
+    moveElementWithDescendants,
+  }
 }

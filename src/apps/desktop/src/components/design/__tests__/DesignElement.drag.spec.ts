@@ -33,7 +33,7 @@ describe('DesignElement drag', () => {
     setActivePinia(createPinia())
   })
 
-  it('emits update with x/y patch on pointermove', async () => {
+  it('emits translate with dx/dy delta on pointermove (move mode)', async () => {
     const wrapper = mount(DesignElement, {
       props: { element: ELEMENT, selected: true, zoom: 1.0 },
     })
@@ -63,12 +63,12 @@ describe('DesignElement drag', () => {
     // Within the throttle window — may or may not have emitted yet.
     // Use the wrapper's emitted() after waiting.
     await new Promise((r) => setTimeout(r, 300))  // wait past the 250 ms trailing-edge debounce (Chunk 3)
-    const updates = wrapper.emitted('update') ?? []
-    const lastUpdate = updates[updates.length - 1]?.[0] as any
-    expect(lastUpdate).toMatchObject({ x: 150, y: 130 })
+    const translates = wrapper.emitted('translate') ?? []
+    const lastTranslate = translates[translates.length - 1]?.[0] as any
+    expect(lastTranslate).toMatchObject({ dx: 50, dy: 30 })
   })
 
-  it('emits a trailing update on pointerup with the final position', async () => {
+  it('emits a trailing translate on pointerup with the final delta', async () => {
     const wrapper = mount(DesignElement, {
       props: { element: ELEMENT, selected: true, zoom: 1.0 },
     })
@@ -88,11 +88,11 @@ describe('DesignElement drag', () => {
     // Fire pointerup immediately (within throttle window).
     upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
 
-    // The trailing emit must include the final position even if the
+    // The trailing emit must include the final delta even if the
     // throttle hadn't fired.
-    const updates = wrapper.emitted('update') ?? []
-    const lastUpdate = updates[updates.length - 1]?.[0] as any
-    expect(lastUpdate).toMatchObject({ x: 999, y: 999 })
+    const translates = wrapper.emitted('translate') ?? []
+    const lastTranslate = translates[translates.length - 1]?.[0] as any
+    expect(lastTranslate).toMatchObject({ dx: 899, dy: 899 })
   })
 
   it('applies 1/zoom to the delta so zoomed canvases stay 1:1 with cursor', async () => {
@@ -112,11 +112,12 @@ describe('DesignElement drag', () => {
     root.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true }))
     moveHandler(new PointerEvent('pointermove', { clientX: 200, clientY: 100, pointerId: 1 }))
     // 100 screen-px move at 50% zoom = 200 design-px move.
-    // Start: x=100, dx = (200-100)/0.5 = 200 → x = 100+200 = 300
+    // emit('translate', {dx: (200-100)/0.5 = 200, dy: 0})
     await new Promise((r) => setTimeout(r, 300))
-    const updates = wrapper.emitted('update') ?? []
-    const lastUpdate = updates[updates.length - 1]?.[0] as any
-    expect(lastUpdate.x).toBe(300)
+    const translates = wrapper.emitted('translate') ?? []
+    const lastTranslate = translates[translates.length - 1]?.[0] as any
+    expect(lastTranslate.dx).toBe(200)
+    expect(lastTranslate.dy).toBe(0)
   })
 
   it('preview mode swallows drag (no emit)', async () => {
@@ -137,7 +138,7 @@ describe('DesignElement drag', () => {
     expect(wrapper.emitted('update')).toBeUndefined()
   })
 
-  it('resize handle emits width/height patch with sign flip', async () => {
+  it('resize handle emits resize patch with sign flip', async () => {
     const wrapper = mount(DesignElement, {
       props: { element: ELEMENT, selected: true, zoom: 1.0 },
     })
@@ -157,12 +158,12 @@ describe('DesignElement drag', () => {
     // x shrinks by 30, y shrinks by 40.
     moveHandler(new PointerEvent('pointermove', { clientX: 70, clientY: 60, pointerId: 1 }))
     await new Promise((r) => setTimeout(r, 300))
-    const updates = wrapper.emitted('update') ?? []
-    const lastUpdate = updates[updates.length - 1]?.[0] as any
-    expect(lastUpdate.width).toBe(230)   // 200 + 30
-    expect(lastUpdate.height).toBe(240)  // 200 + 40
-    expect(lastUpdate.x).toBe(70)        // 100 - 30
-    expect(lastUpdate.y).toBe(60)        // 100 - 40
+    const resizes = wrapper.emitted('resize') ?? []
+    const lastResize = resizes[resizes.length - 1]?.[0] as any
+    expect(lastResize.width).toBe(230)   // 200 + 30
+    expect(lastResize.height).toBe(240)  // 200 + 40
+    expect(lastResize.x).toBe(70)        // 100 - 30
+    expect(lastResize.y).toBe(60)        // 100 - 40
   })
 
   it('resize clamps width/height to minimum 10px', async () => {
@@ -184,9 +185,9 @@ describe('DesignElement drag', () => {
     // Drag E handle -1000px left: width would go to -800, clamped to 10.
     moveHandler(new PointerEvent('pointermove', { clientX: -900, clientY: 100, pointerId: 1 }))
     await new Promise((r) => setTimeout(r, 300))
-    const updates = wrapper.emitted('update') ?? []
-    const lastUpdate = updates[updates.length - 1]?.[0] as any
-    expect(lastUpdate.width).toBe(10)
+    const resizes = wrapper.emitted('resize') ?? []
+    const lastResize = resizes[resizes.length - 1]?.[0] as any
+    expect(lastResize.width).toBe(10)
   })
 
   // Symptom of the bug fixed in 2026-07-30: when the user clicks a
@@ -235,7 +236,7 @@ describe('DesignElement drag', () => {
   // against the pre-fix unthrottled code because each one's last
   // emit happens to be the final patch anyway. This 8th test catches
   // the bug.
-  it('throttles rapid pointermoves: 3 moves within 50ms emit at most 1 update before pointerup', async () => {
+  it('throttles rapid pointermoves: 3 moves within 50ms emit at most 1 translate before pointerup', async () => {
     const wrapper = mount(DesignElement, {
       props: { element: ELEMENT, selected: true, zoom: 1.0 },
     })
@@ -253,13 +254,13 @@ describe('DesignElement drag', () => {
     moveHandler(new PointerEvent('pointermove', { clientX: 120, clientY: 120, pointerId: 1 }))
     moveHandler(new PointerEvent('pointermove', { clientX: 130, clientY: 130, pointerId: 1 }))
     // Snapshot BEFORE pointerup — the trailing emit happens on pointerup.
-    const emitsBeforeUp = (wrapper.emitted('update') ?? []).length
+    const emitsBeforeUp = (wrapper.emitted('translate') ?? []).length
     // Throttled: 0 emits (none past the 50ms window). Unthrottled: 3 emits.
     expect(emitsBeforeUp).toBeLessThanOrEqual(1)
     upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
-    const updates = wrapper.emitted('update') ?? []
-    const lastUpdate = updates[updates.length - 1]?.[0] as any
-    expect(lastUpdate).toMatchObject({ x: 130, y: 130 })
+    const translates = wrapper.emitted('translate') ?? []
+    const lastTranslate = translates[translates.length - 1]?.[0] as any
+    expect(lastTranslate).toMatchObject({ dx: 30, dy: 30 })
   })
 
   // ─── Chunk 2: multi-select ────────────────────────────────────────
@@ -327,9 +328,10 @@ describe('DesignElement drag', () => {
   })
 
   // Counterpart: a single-element drag (no multi-selection context)
-  // emits `update` as before — the existing Chunk 1 behavior is
-  // preserved for backward compat.
-  it('drag with empty selectedIds still emits update (single-element path)', async () => {
+  // emits `translate` (delta-based) — the new typed event replacing
+  // the old conflated `update` event. See
+  // docs/superpowers/plans/2026-08-06-split-move-resize.md.
+  it('drag with empty selectedIds still emits translate (single-element path)', async () => {
     const wrapper = mount(DesignElement, {
       props: { element: ELEMENT, selectedIds: [], selected: true, zoom: 1.0 },
     })
@@ -346,10 +348,10 @@ describe('DesignElement drag', () => {
     upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
 
     // Empty selectedIds means no group-drag — the single-element
-    // throttled path runs, emitting `update` with x/y patch.
-    const updates = wrapper.emitted('update') ?? []
-    const lastUpdate = updates[updates.length - 1]?.[0] as any
-    expect(lastUpdate).toMatchObject({ x: 150, y: 130 })
+    // throttled path runs, emitting `translate` with the cursor delta.
+    const translates = wrapper.emitted('translate') ?? []
+    const lastTranslate = translates[translates.length - 1]?.[0] as any
+    expect(lastTranslate).toMatchObject({ dx: 50, dy: 30 })
     // groupDrag should NOT fire in single-element mode.
     expect(wrapper.emitted('groupDrag')).toBeUndefined()
   })

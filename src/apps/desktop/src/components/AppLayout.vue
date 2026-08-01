@@ -1440,7 +1440,42 @@ const handleDesignUpdateElement = async (
   const ws = activeWorkspace.value
   const item = activeWorkspaceItem.value
   if (!ws || !item) return
+  // Deprecated back-compat path (PATCH /geometry). New typed events
+  // emit translateElement / resizeElement instead — see below.
   await designHandlers.updateElement(ws.id, item.id, elementId, patch)
+}
+
+/**
+ * NEW (2026-08-06, split-move-resize plan) — handler for the
+ * `translateElement` event fired by DesignView during a single-element
+ * drag (move mode). Routes to useDesignHandlers.translateElement →
+ * POST /translate. Backend handles cascade-to-descendants for groups.
+ */
+const handleDesignTranslateElement = async (
+  elementId: string,
+  dx: number,
+  dy: number,
+): Promise<void> => {
+  const ws = activeWorkspace.value
+  const item = activeWorkspaceItem.value
+  if (!ws || !item) return
+  await designHandlers.translateElement(ws.id, item.id, elementId, dx, dy)
+}
+
+/**
+ * NEW (2026-08-06, split-move-resize plan) — handler for the
+ * `resizeElement` event fired by DesignView during a resize gesture.
+ * Routes to useDesignHandlers.resizeElement → POST /resize. Resize
+ * never cascades (Figma convention).
+ */
+const handleDesignResizeElement = async (
+  elementId: string,
+  patch: Partial<{ x: number; y: number; width: number; height: number; rotation: number; [k: string]: unknown }>,
+): Promise<void> => {
+  const ws = activeWorkspace.value
+  const item = activeWorkspaceItem.value
+  if (!ws || !item) return
+  await designHandlers.resizeElement(ws.id, item.id, elementId, patch)
 }
 
 const handleDesignDeleteElement = async (elementId: string): Promise<void> => {
@@ -1924,6 +1959,8 @@ watch(chatSessionCwd, (newCwd) => {
             @select-page="handleDesignSelectPage"
             @select-element="handleDesignSelectElement"
             @update-element="handleDesignUpdateElement"
+            @translate-element="handleDesignTranslateElement"
+            @resize-element="handleDesignResizeElement"
             @delete-element="handleDesignDeleteElement"
             @open-chat="handleDesignOpenChat"
           />
