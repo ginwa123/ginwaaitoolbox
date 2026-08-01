@@ -532,6 +532,34 @@ watch(
 
 // watch(activePageId) → fetch elements for the new page (mirrors
 // KanbanView's loadColumns pattern).
+//
+// NEW (design-page-sync fix, 2026-08-06, post-#170): the local
+// `activePageId` ref is the source-of-truth for DesignView's
+// internal watchers (elements fetch, canvas rendering, undo/redo).
+// But when the user clicks a different page in the workspace
+// sidebar tree, the workspace store's `activeDesignPageId` changes
+// WITHOUT going through this watcher (the sidebar tree emits a
+// navigate event, AppLayout routes to ?view=workspace&pageId=B,
+// DesignView's keyed-by-item-id Vue component is REUSED — same
+// instance). Without a sync from the store → local ref, the canvas
+// stays stuck on the originally-mounted page.
+//
+// Fix: watch the STORE's activeDesignPageId (single source of
+// truth from the sidebar) and mirror it into the local ref. We
+// guard with `!isInitialLoad` to avoid a feedback loop with the
+// `watch(activePageId)` below — both would fire when
+// loadPages() sets the initial page, causing a duplicate
+// elements fetch on first mount.
+const storeActiveDesignPageId = computed(() => workspacesStore.activeDesignPageId)
+watch(storeActiveDesignPageId, (pageId, oldPageId) => {
+  // No-op if the page hasn't actually changed (prevents feedback
+  // with setActiveDesignPage calls inside this component).
+  if (pageId === oldPageId) return
+  // No-op when the store value already matches the local ref
+  // (e.g. loadPages just set both to the same page).
+  if (pageId === activePageId.value) return
+  activePageId.value = pageId
+})
 watch(activePageId, (pageId) => {
   // Mirror to the store FIRST so AppLayout's design handlers
   // (handleDesignUpdateElement / handleDesignDeleteElement) always
