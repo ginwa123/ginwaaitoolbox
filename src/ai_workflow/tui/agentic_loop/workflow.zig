@@ -448,12 +448,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     // Note: mcp_tools_fetched memory is managed by allocator
 
     // Filter and merge tools based on allowed_tools setting
-    const merged_tools = try filterAndMergeTools(parent_allocator, mcp_tools_fetched, copy_allowed_tools, copy_is_sub_agent);
-
-    logger.infoFmt(
-        "[CHECKPOINT] tools resolved mcp_count={d} merged_count={d} allowed_tools_len={d} is_sub_agent={}",
-        .{ mcp_tools_fetched.len, merged_tools.len, copy_allowed_tools.len, copy_is_sub_agent },
-    );
 
     while (true) {
         _ = active_loops.tryInsert(io, copy_session_id);
@@ -807,6 +801,12 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         if (loop_counter == 1 and is_task_kanban == false) {
             generateSessionNameNew(db_messages, allocator, effective_api_key, effective_model, effective_base_url, copy_session_id, logger, io, db, event_bus);
         }
+
+        const merged_tools = try filterAndMergeTools(allocator, mcp_tools_fetched, copy_allowed_tools, copy_is_sub_agent);
+        logger.infoFmt(
+            "[CHECKPOINT] tools resolved mcp_count={d} merged_count={d} allowed_tools_len={d} is_sub_agent={}",
+            .{ mcp_tools_fetched.len, merged_tools.len, copy_allowed_tools.len, copy_is_sub_agent },
+        );
 
         const initialMessages = try build_msg_prompt.buildMessages(allocator, io, db, copy_cwd, copy_session_id, copy_parent_session_id, db_messages, merged_tools, copy_inherited_context, sub_agent_system_prompt);
 

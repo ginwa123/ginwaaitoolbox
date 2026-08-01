@@ -1,15 +1,15 @@
 const std = @import("std");
 const json = std.json;
-const tree1_mod = @import("nalarcore");
-const agent = tree1_mod.agent;
+const nalarcore = @import("nalarcore");
+const agent = nalarcore.agent;
 const llm_history = @import("llm_history.zig");
 const session_helpers = llm_history;
-const sqlite = tree1_mod.sqlite;
-const prompt = tree1_mod.prompt;
+const sqlite = nalarcore.sqlite;
+const prompt = nalarcore.prompt;
 const TUIHistory = @import("models.zig").TUIHistory;
-const tool_models = tree1_mod.tool_models;
-const config_mod = tree1_mod.config;
-const http_client = tree1_mod.http_client;
+const tool_models = nalarcore.tool_models;
+const config_mod = nalarcore.config;
+const http_client = nalarcore.http_client;
 const background_process = @import("background_process.zig");
 const ProcessInfo = background_process.ProcessInfo;
 const inherited_context = @import("inherited_context.zig");
@@ -22,6 +22,48 @@ const ToolParameters = tool_models.ToolParameters;
 const ToolProperty = tool_models.ToolProperty;
 const agentic_loop = @import("agentic_loop/mod.zig");
 
+const bash_tool_mod = nalarcore.bash_tool;
+const read_file_mod = nalarcore.read_file;
+const text_replace_mod = nalarcore.text_replace_tool;
+const write_file_mod = nalarcore.write_file;
+const list_skills_mod = nalarcore.list_skills_tool;
+const memories_mod = nalarcore.memories;
+const list_memory_mod = nalarcore.list_memory_tool;
+const search_history_mod = nalarcore.search_history_tool;
+const get_skill_mod = nalarcore.get_skill_tool;
+const view_skill_mod = nalarcore.view_skill_tool;
+const remove_skill_mod = nalarcore.remove_skill_tool;
+const list_agents_mod = nalarcore.list_agents;
+const add_skill_mod = nalarcore.add_skill;
+const edit_skill_mod = nalarcore.edit_skill;
+const set_git_worktree_mod = nalarcore.set_git_worktree;
+const kanban_list_mod = nalarcore.kanban_list;
+const kanban_move_task_mod = nalarcore.kanban_move_task;
+const set_design_page_mod = nalarcore.set_design_page;
+const add_design_element_mod = nalarcore.add_design_element;
+const update_design_element_mod = nalarcore.update_design_element;
+const group_design_elements_mod = nalarcore.group_design_elements;
+const set_element_parent_mod = nalarcore.set_element_parent;
+const move_design_element_mod = nalarcore.move_design_element;
+const show_preview_mod = nalarcore.ai_mod.show_preview;
+const remove_agent_mod = nalarcore.remove_agent;
+const remove_file_mod = nalarcore.remove_file;
+const change_agent_mod = nalarcore.change_agent;
+const lsp_definition_mod = nalarcore.tools.lsp_definition;
+const lsp_references_mod = nalarcore.tools.lsp_references;
+const lsp_workspace_symbol_mod = nalarcore.tools.lsp_workspace_symbol;
+const lsp_document_symbol_mod = nalarcore.tools.lsp_document_symbol;
+const lsp_hover_mod = nalarcore.tools.lsp_hover;
+const set_agent_properties_mod = nalarcore.set_agent_properties;
+const web_search_mod = nalarcore.web_search;
+const nalar_browser_mod = nalarcore.nalar_browser;
+const update_activity_mod = nalarcore.update_activity;
+const glob_tool_mod = nalarcore.glob_tool;
+const search_tool_mod = nalarcore.search_tool;
+const semantic_search_mod = nalarcore.semantic_search;
+const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
+
+
 pub fn buildMessages(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -32,23 +74,6 @@ pub fn buildMessages(
     historyMessages: []agentic_loop.LLMHistory,
     tools: []tool_models.AgentTool,
     inherited_context_mode: []const u8,
-    /// Optional explicit "active agent configuration" to inject as
-    /// the `## Your Active Agent Configuration` section of the
-    /// system prompt. When non-empty, this is used verbatim and
-    /// `BuildDynamicAgentContent` is NOT called. When empty (the
-    /// default), the function falls back to
-    /// `BuildDynamicAgentContent(db, session_id)` to read the list
-    /// of agents loaded via `change_agent` for this session.
-    ///
-    /// Use cases:
-    ///   - Main agent flow: caller passes `""` to use the
-    ///     `session_agents` table contents.
-    ///   - Sub-agent flow with a config-driven system_prompt:
-    ///     caller passes the resolved `SubAgentConfig.system_prompt`
-    ///     and it appears as the sub-agent's "active configuration".
-    ///   - Sub-agent flow with random fallback: caller passes `""`
-    ///     so the sub-agent gets the default scaffold with no
-    ///     specialized configuration.
     activeAgentContent: []const u8,
 ) ![]agent.AgentMessage {
     // Build content strings internally
@@ -79,7 +104,7 @@ pub fn buildMessages(
 
     // Resolve environment for the Global Knowledge loader. The singleton
     // is the single source of truth for the process-level environment map.
-    const di = try tree1_mod.getSingleton();
+    const di = try nalarcore.getSingleton();
     const environment = di.environment;
 
     // Build the "Available Sub-Agents" listing from the current
@@ -104,7 +129,10 @@ pub fn buildMessages(
     // expectations before the tool listing. Pass `tools` so the
     // helper can append the optional "Follow-up Tasks" hint when
     // the create_kanban_task tool is equipped.
-    const kanbanStatusContent = try agentic_loop.prompts_mod.makeKanbanContext(allocator, db, session_id, tools);
+
+    const filtered_tools = try filteringTools(allocator, db, session_id, tools);
+
+    const kanbanStatusContent = try agentic_loop.prompts_mod.makeKanbanContext(allocator, db, session_id, filtered_tools);
     defer allocator.free(kanbanStatusContent);
 
     // Build the "Design Canvas" status section (v6 — 3 LLM tools).
@@ -115,7 +143,7 @@ pub fn buildMessages(
     const designStatusContent = try BuildDesignCanvasPrompt(allocator, db, session_id);
     defer allocator.free(designStatusContent);
 
-    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, tools, activity_info, environment, sub_agents_listing, workspaceContext, kanbanStatusContent, designStatusContent);
+    const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, filtered_tools, activity_info, environment, sub_agents_listing, workspaceContext, kanbanStatusContent, designStatusContent);
 
     // Render inherited parent conversation history (if requested) and append
     // it to the system prompt as a labelled, read-only block.
@@ -232,7 +260,6 @@ pub fn formatRelativeTime(seconds: i64) []const u8 {
         return "> 24h";
     }
 }
-
 
 /// Strip SSE "data:" prefix from response body if present
 /// MCP servers may return responses in SSE format: "data: {...}\n\n"
@@ -542,7 +569,6 @@ pub fn parseProperties(
     return try properties.toOwnedSlice(allocator);
 }
 
-
 /// Build background processes content string from database for system prompt
 pub fn BuildBackgroundProcessPrompt(
     allocator: std.mem.Allocator,
@@ -679,8 +705,8 @@ fn BuildSubAgentsListing(
     // 2. Get the LlmConfig from the singleton. Graceful fallback
     // when the singleton is unreachable (e.g. tests that
     // don't initialize it).
-    const di = tree1_mod.getSingleton() catch return allocator.dupe(u8, "");
-    const config = tree1_mod.getLlmConfig(di);
+    const di = nalarcore.getSingleton() catch return allocator.dupe(u8, "");
+    const config = nalarcore.getLlmConfig(di);
 
     // 3. Resolve which list to render. Per-profile first (when a
     // profile is selected AND has sub_agents configured), else
@@ -748,6 +774,68 @@ fn BuildSubAgentsListing(
 // `MAX_KANBAN_COLUMNS` (10) — small enough to keep the prompt compact,
 // large enough to cover most multi-page designs.
 const MAX_DESIGN_PAGES: u32 = 10;
+
+
+fn removeTools(tools: []tool_models.AgentTool, names: []const []const u8) []tool_models.AgentTool {
+    var count: usize = 0;
+    for (tools) |tool| {
+        var keep = true;
+        for (names) |name| {
+            if (std.mem.eql(u8, tool.function.name, name)) {
+                keep = false;
+                break;
+            }
+        }
+        if (keep) {
+            tools[count] = tool;
+            count += 1;
+        }
+    }
+    return tools[0..count];
+}
+
+pub fn filteringTools(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8, tools: []tool_models.AgentTool) ![]tool_models.AgentTool {
+    const ctx = (llm_history.getWorkspaceContext(allocator, db, session_id) catch |err| {
+        std.log.warn("BuildDesignCanvasPrompt: getWorkspaceContext failed: {}", .{err});
+        return tools;
+    }) orelse return tools;
+    defer ctx.deinit(allocator);
+
+    var result = tools;
+
+    if (std.mem.eql(u8, ctx.self_item_type, "design")) {
+        result = removeTools(result, &.{
+            kanban_list_mod.kanban_list_tool.function.name,
+            kanban_move_task_mod.kanban_move_task_tool.function.name,
+        });
+    }
+
+    if (std.mem.eql(u8, ctx.self_item_type, "folder")) {
+        result = removeTools(result, &.{
+            kanban_list_mod.kanban_list_tool.function.name,
+            kanban_move_task_mod.kanban_move_task_tool.function.name,
+            set_design_page_mod.set_design_page_tool.function.name,
+            add_design_element_mod.add_design_element_tool.function.name,
+            update_design_element_mod.update_design_element_tool.function.name,
+            group_design_elements_mod.group_design_element_tool.function.name,
+            set_element_parent_mod.set_element_parent_tool.function.name,
+            move_design_element_mod.move_design_element_tool.function.name,
+        });
+    }
+
+    if (std.mem.eql(u8, ctx.self_item_type, "kanban")) {
+        result = removeTools(result, &.{
+            set_design_page_mod.set_design_page_tool.function.name,
+            add_design_element_mod.add_design_element_tool.function.name,
+            update_design_element_mod.update_design_element_tool.function.name,
+            group_design_elements_mod.group_design_element_tool.function.name,
+            set_element_parent_mod.set_element_parent_tool.function.name,
+            move_design_element_mod.move_design_element_tool.function.name,
+        });
+    }
+
+    return result;
+}
 
 /// Render the "Design Canvas" markdown block — workflow expectations
 /// for the LLM when the session's parent item is a design canvas
@@ -1052,7 +1140,8 @@ pub fn BuildDesignCanvasPrompt(
                     try out.appendSlice(allocator, ")\n");
                 }
                 if (elements.len > 8) {
-                    const footer = try std.fmt.allocPrint(allocator,
+                    const footer = try std.fmt.allocPrint(
+                        allocator,
                         "    … and {d} more elements on this page.\n",
                         .{elements.len - 8},
                     );
@@ -1062,7 +1151,8 @@ pub fn BuildDesignCanvasPrompt(
             }
         }
         if (pages.len > MAX_DESIGN_PAGES) {
-            const footer = try std.fmt.allocPrint(allocator,
+            const footer = try std.fmt.allocPrint(
+                allocator,
                 "… and {d} more pages (cap: {d} shown).\n",
                 .{ pages.len - MAX_DESIGN_PAGES, MAX_DESIGN_PAGES },
             );
