@@ -1926,6 +1926,11 @@ export async function updateDesignElementHtml(
 /**
  * PATCH /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId/geometry
  *
+ * ⚠️  DEPRECATED — replaced by `translateDesignElement` (move) and
+ * `resizeDesignElement` (resize). Kept for back-compat with any
+ * existing client still wired to the old endpoint. See
+ * `docs/superpowers/plans/2026-08-06-split-move-resize.md`.
+ *
  * Geometry-only update path — separate from the full PUT for two
  * reasons: (1) drag/resize fires 60+/sec, so the smaller payload +
  * sparser validation saves backend CPU; (2) the SSE event is
@@ -1945,6 +1950,63 @@ export async function updateDesignElementGeometry(
   return await apiFetch<DesignElement>(
     `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/${elementId}/geometry`,
     { method: 'PATCH', body: geometry },
+  )
+}
+
+/**
+ * POST /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId/translate
+ *
+ * NEW (2026-08-06) — single-element translate (move). The body
+ * carries a `(dx, dy)` DELTA (not absolute `x, y`). If the target
+ * element is a `group`/`frame`, the server cascades the delta to
+ * every transitive descendant via the existing recursive CTE.
+ *
+ * Returns `{updated: [DesignElement, ...]}`:
+ *   - 1 element for leaves
+ *   - 1 + N elements for group/frame cascade (root + every cascadee)
+ *
+ * Replaces `updateDesignElementGeometry` for the move use case
+ * (delta-based). See
+ * `docs/superpowers/plans/2026-08-06-split-move-resize.md`.
+ */
+export async function translateDesignElement(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  elementId: string,
+  dx: number,
+  dy: number,
+): Promise<{ updated: DesignElement[] }> {
+  return await apiFetch<{ updated: DesignElement[] }>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/${elementId}/translate`,
+    { method: 'POST', body: { dx, dy } },
+  )
+}
+
+/**
+ * POST /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId/elements/:elementId/resize
+ *
+ * NEW (2026-08-06) — single-element resize. The body carries
+ * absolute `(x, y, width, height, rotation?)` fields. At least one
+ * field is required. Resize NEVER cascades (Figma convention — only
+ * the dragged element's bounding box changes; children keep their
+ * own positions).
+ *
+ * Returns the single updated DesignElement.
+ *
+ * Replaces `updateDesignElementGeometry` for the resize use case.
+ * See `docs/superpowers/plans/2026-08-06-split-move-resize.md`.
+ */
+export async function resizeDesignElement(
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  elementId: string,
+  geometry: DesignElementGeometry,
+): Promise<DesignElement> {
+  return await apiFetch<DesignElement>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}/elements/${elementId}/resize`,
+    { method: 'POST', body: geometry },
   )
 }
 

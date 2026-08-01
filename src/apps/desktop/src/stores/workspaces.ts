@@ -285,6 +285,11 @@ import {
   deleteDesignPage as deleteDesignPageApi,
   updateDesignElementGeometry as updateDesignElementGeometryApi,
   updateDesignElementsGeometryBatch as updateDesignElementsGeometryBatchApi,
+  // NEW (2026-08-06) — replace the conflated /geometry endpoint with
+  // two distinct endpoints: /translate (move) and /resize. See
+  // `docs/superpowers/plans/2026-08-06-split-move-resize.md`.
+  translateDesignElement as translateDesignElementApi,
+  resizeDesignElement as resizeDesignElementApi,
   updateDesignPage as updateDesignPageApi,
   groupDesignElements as groupDesignElementsApi,
   reorderDesignElements as reorderDesignElementsApi,
@@ -1420,6 +1425,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // update` PATCH is the dedicated endpoint — no full element GET is
   // needed; the response is the full DesignElement.
   //
+  // ⚠️  DEPRECATED wrapper around `updateDesignElementGeometryApi`
+  // (PATCH /geometry). New code should call `translateDesignElement`
+  // (move) or `resizeDesignElement` (resize) — see
+  // `docs/superpowers/plans/2026-08-06-split-move-resize.md`.
+  //
   // MIRROR the response into `item.design_elements[]` so the
   // DesignElement wrapper's `elementStyle.left/top` (bound to
   // `props.element.x/y`) updates reactively during drag. The earlier
@@ -1461,6 +1471,87 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     )
     // Mirror the response into the local cache. Defensive no-op when
     // the item isn't in the local store (stale SSE callers).
+    const item = findItem(workspaceId, itemId)
+    if (item?.design_elements) {
+      const idx = item.design_elements.findIndex((e) => e.id === elementId)
+      if (idx !== -1) item.design_elements[idx] = result
+    }
+    registerRecentLocalMutations([elementId], Date.now() + RECENT_MUTATION_TTL_MS)
+    return result
+  }
+
+  // NEW (2026-08-06, split-move-resize plan) — single-element
+  // translate (move). Body carries a (dx, dy) DELTA. If the target
+  // is a `group`/`frame`, the server cascades to every transitive
+  // descendant via the existing recursive CTE.
+  //
+  // Response is `{updated: [DesignElement, ...]}` — 1 element for
+  // leaves, 1 + N for group/frame cascade (root + every cascadee).
+  // The local mirror mirrors ALL returned ids so the children move
+  // too (this is the bug-fix guarantee — see
+  // `workspacesStoreMoveBatch.spec.ts` for the same race-regression
+  // test on `move-batch`).
+  async function translateDesignElement(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    elementId: string,
+    dx: number,
+    dy: number,
+  ): Promise<DesignElement[]> {
+    const result = await translateDesignElementApi(
+      workspaceId,
+      itemId,
+      pageId,
+      elementId,
+      dx,
+      dy,
+    )
+    // Build a Map<id, index> for O(1) lookup; cascade can return
+    // 10+ elements (group + children + grandchildren).
+    const item = findItem(workspaceId, itemId)
+    if (item?.design_elements) {
+      const idxById = new Map<string, number>()
+      for (let i = 0; i < item.design_elements.length; i++) {
+        idxById.set(item.design_elements[i]!.id, i)
+      }
+      for (const updated of result.updated) {
+        const idx = idxById.get(updated.id)
+        if (idx !== undefined) item.design_elements[idx] = updated
+      }
+    }
+    registerRecentLocalMutations(
+      result.updated.map((e) => e.id),
+      Date.now() + RECENT_MUTATION_TTL_MS,
+    )
+    return result.updated
+  }
+
+  // NEW (2026-08-06, split-move-resize plan) — single-element
+  // resize. Body carries absolute x/y/width/height/rotation fields.
+  // Server returns a single DesignElement. Resize never cascades
+  // (Figma convention — only the dragged element's bounding box
+  // changes; children keep their own positions).
+  async function resizeDesignElement(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    elementId: string,
+    geometry: {
+      x?: number
+      y?: number
+      width?: number
+      height?: number
+      rotation?: number
+    },
+  ): Promise<DesignElement> {
+    const result = await resizeDesignElementApi(
+      workspaceId,
+      itemId,
+      pageId,
+      elementId,
+      geometry,
+    )
     const item = findItem(workspaceId, itemId)
     if (item?.design_elements) {
       const idx = item.design_elements.findIndex((e) => e.id === elementId)
@@ -2768,6 +2859,8 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     addDesignElement,
     updateDesignElement,
     updateDesignElementGeometry,
+    translateDesignElement,
+    resizeDesignElement,
     updateDesignElementsGeometryBatch,
     moveDesignElementsBatch,
     updateDesignElementHtml,
