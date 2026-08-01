@@ -2005,6 +2005,19 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // When set, the chatview's picker will reflect the chosen
       // profile immediately on landing.
       selectedProfile?: string
+      // NEW (plan: 2026-08-06-kanban-image-base64-in-chatview, replaces
+      // 2026-08-06-kanban-image-attach-in-chatview). Base64 data URLs
+      // of images the user pasted in the create-mode description. The
+      // chatview's user-message template (ChatView.vue:2062-2080)
+      // renders these as clickable thumbnails above the text content.
+      // Simplification vs the older upload-then-URL approach: no
+      // attachment upload, no `![name](url)` markdown in the
+      // description, no GET-attachment endpoint. Just plain base64 in
+      // the chat message's image_urls field (same shape ChatView uses
+      // for its in-chat paste-into-input flow). Omit or pass `[]` to
+      // skip; the host (KanbanView) wires this from the conversion
+      // loop over pendingFiles.
+      imageUrls?: string[]
     },
   ): Promise<{ status: string } | undefined> {
     try {
@@ -2012,7 +2025,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         taskId,
         params.queueMessage,
         params.cwd,
-        undefined, // imageUrls
+        params.imageUrls, // was: undefined (bug — see plan)
         params.selectedProfile ?? '', // CHANGED — was ''
         params.isAutoRetryUntilStop ?? '', // forwards '1' when toggle ON, else ''
       )

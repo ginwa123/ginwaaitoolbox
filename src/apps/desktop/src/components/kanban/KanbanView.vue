@@ -373,7 +373,7 @@ const handleOpenSettings = () => {
 // action). It hides once a path is set. The picker reuses the
 // AddKanbanDialog's picker to keep the UX consistent — same data
 // source, same select-pick-cancel flow.
-import { getSystemFolder, listFolder, type FolderEntry, uploadTaskAttachment } from '../../api'
+import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
 import { updateSession as apiUpdateSession } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
 
@@ -574,11 +574,18 @@ const handleCreateTaskSave = async (payload: {
   // through to runAgentOnNewTask only (Path A — plain create doesn't
   // persist the choice; user can set from chatview later).
   selectedProfile?: string
-  // NEW (plan: 2026-08-06-kanban-no-base64-in-desc). Files the
-  // dialog staged in create mode (KanbanDescriptionEditor.pendingFiles).
-  // The editor never writes the base64 payload into `description` —
-  // we upload each file here AFTER `addTask` returns the new
-  // taskId, then PATCH the description with `![name](<url>)` markdown.
+  // NEW (plan: 2026-08-06-kanban-image-base64-in-chatview, replaces
+  // 2026-08-06-kanban-no-base64-in-desc). Files the dialog staged
+  // in create mode (KanbanDescriptionEditor.pendingFiles). The editor
+  // never writes the base64 payload into `description` — we
+  // convert each file to a `data:<mime>;base64,...` URL here AFTER
+  // `addTask` returns the new taskId, and pass the array as
+  // `imageUrls` to runAgentOnNewTask when mode === 'create_and_run'.
+  // The description stays plain text — no upload, no `![name](url)`
+  // markdown. Simplification vs the older upload-then-URL flow:
+  //   - no GET attachment endpoint hit (avoids the wildcard route bug)
+  //   - no broken-image placeholder on the kanban card
+  //   - chatview still renders thumbnails (from message.image_urls)
   // Empty array (not undefined) when no images were attached.
   pendingFiles?: PreviewFile[]
 }) => {
@@ -606,42 +613,45 @@ const handleCreateTaskSave = async (payload: {
       return
     }
 
-    // NEW (plan: 2026-08-06-kanban-no-base64-in-desc). Upload each
-    // pending file the user pasted/picked while in create mode,
-    // then patch the description with the server URLs. The
-    // dialog's `description` was passed as text-only (no base64) —
-    // we append the `![name](<url>)` markdown lines here so the
-    // final description is self-contained.
+    // NEW (plan: 2026-08-06-kanban-image-base64-in-chatview, replaces
+    // 2026-08-06-kanban-no-base64-in-desc). Convert each pending file
+    // the user pasted/picked while in create mode to a base64 data
+    // URL via FileReader.readAsDataURL, collecting them in upload
+    // order. We do NOT upload, we do NOT patch the description — the
+    // description stays plain text, and the data URLs are forwarded
+    // as imageUrls to runAgentOnNewTask below (create_and_run mode).
+    // The chatview's user-message template (ChatView.vue:2062-2080)
+    // renders them as clickable thumbnails above the text — same UX
+    // as pasting an image directly into the chat input.
     //
-    // Failure mode: if the upload throws, we abort the move / run
-    // flow (the task exists but with no description patch yet) and
-    // surface the error via createError so the dialog stays open.
-    // The user can retry without re-typing.
+    // Failure mode: if a FileReader throws (rare — disk/file
+    // corruption), we abort the move / run flow and surface the error
+    // via createError so the dialog stays open. The user can retry
+    // without re-typing.
     const pendingFiles = payload.pendingFiles ?? []
-    if (pendingFiles.length > 0) {
-      const markdownLines: string[] = []
-      for (const entry of pendingFiles) {
-        try {
-          const { url } = await uploadTaskAttachment(taskId, entry.file)
-          markdownLines.push(`![${entry.file.name}](${url})`)
-        } catch (err) {
-          console.error(
-            '[handleCreateTaskSave] attachment upload failed:',
-            err,
-          )
-          createError.value = `Image upload failed (${entry.file.name}): ${
-            err instanceof Error ? err.message : String(err)
-          }`
-          return
-        }
-      }
-      const finalDescription =
-        payload.description.trim() === ''
-          ? markdownLines.join('\n')
-          : `${payload.description}\n${markdownLines.join('\n')}`
-      await workspacesStore.updateTaskDetails(wsId, itId, taskId, {
-        description: finalDescription,
+    const fileToBase64 = (file: File): Promise<string> =>
+      new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = reject
+        reader.readAsDataURL(file)
       })
+    let uploadedImageUrls: string[] = []
+    if (pendingFiles.length > 0) {
+      try {
+        uploadedImageUrls = await Promise.all(
+          pendingFiles.map((entry) => fileToBase64(entry.file)),
+        )
+      } catch (err) {
+        console.error(
+          '[handleCreateTaskSave] file-to-base64 conversion failed:',
+          err,
+        )
+        createError.value = `Image conversion failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+        return
+      }
     }
 
     // Move the new task to the column the user clicked. The
@@ -671,6 +681,16 @@ const handleCreateTaskSave = async (payload: {
           // NEW (plan: 2026-08-06-kanban-task-profile-selector).
           // Empty/undefined defaults to '' (= backend default).
           selectedProfile: payload.selectedProfile ?? '',
+          // NEW (plan: 2026-08-06-kanban-image-base64-in-chatview).
+          // Base64 data URLs for the images the user pasted in the
+          // create-mode description. The store forwards them to
+          // api.sendChatMessage as image_urls (4th arg), and the
+          // chatview renders them as clickable thumbnails above the
+          // text content. Empty array when no images — the store
+          // forwards it as-is (NOT coerced to undefined), which the
+          // API contract accepts as "zero attachments". See
+          // workspacesStoreRunAgentImageUrls.spec.ts for the wire.
+          imageUrls: uploadedImageUrls,
         },
       )
       if (result?.status === 'send') {
