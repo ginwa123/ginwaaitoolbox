@@ -77,6 +77,7 @@ import KanbanDescriptionEditor from './KanbanDescriptionEditor.vue'
 import KanbanTagsInput from './KanbanTagsInput.vue'
 import MarkdownDescription from './MarkdownDescription.vue'
 import FilePreviewModal from './FilePreviewModal.vue'
+import * as api from '../../api'
 
 const props = withDefaults(
   defineProps<{
@@ -155,6 +156,12 @@ const emit = defineEmits<{
       // tag strings. Empty array = no tags. Host forwards via
       // api.createTask's `tags` param; backend validates + persists.
       tags: string[]
+      // NEW (plan: 2026-08-06-kanban-task-profile-selector). Selected
+      // profile-model name (empty string = backend default / top-level
+      // config). Forwarded to the host for both `create` and
+      // `create-and-run`; Path A only threads it through to the
+      // backend when the user clicks "Create task & run agent".
+      selectedProfile: string
     },
   ]
   // Emitted in edit mode when the user flips the unattended toggle.
@@ -175,6 +182,11 @@ const emit = defineEmits<{
       description: string
       is_auto_retry_until_stop: '0' | '1'
       tags: string[]
+      // NEW (plan: 2026-08-06-kanban-task-profile-selector). See
+      // note on the `create` emit above. Threaded through to
+      // runAgentOnNewTask so the agent runs with the chosen
+      // profile.
+      selectedProfile: string
     },
   ]
 }>()
@@ -200,6 +212,21 @@ const DESCRIPTION_MAX = 5000
 //   - A "Preview" toggle flips to <MarkdownDescription> for a rendered
 //     view without leaving the form.
 const isPreviewingDescription = ref(false)
+
+// NEW (plan: 2026-08-06-kanban-task-profile-selector). Profile-model
+// picker state (create mode only). selectedProfile='' = backend
+// default / "Default (top-level config)". Loaded from LlmConfig
+// profiles; mirrors ChatView's picker pattern.
+interface ProfileEntry {
+  name: string
+  model: string
+  base_url: string
+}
+const selectedProfile = ref('')
+const isProfilePickerOpen = ref(false)
+const profilePickerRef = ref<HTMLElement | null>(null)
+const availableProfiles = ref<ProfileEntry[]>([])
+const profilesLoading = ref(false)
 
 // File preview modal state. Opened when the user clicks a file-path
 // chip in either the inline MarkdownDescription (display mode) or the
@@ -229,6 +256,7 @@ watch(
       description.value = ''
       unattended.value = '0'
       tags.value = []  // NEW: start with empty tags in create mode
+      selectedProfile.value = ''  // NEW: profile selector defaults to backend default
       isPreviewingDescription.value = false
     } else if (props.task) {
       name.value = props.task.name
@@ -256,6 +284,13 @@ watch(
     // focus call on a network round-trip for no benefit.
     if (props.task && props.workspaceId) {
       void tagSuggestions.ensureLoaded()
+    }
+    // NEW (plan: 2026-08-06-kanban-task-profile-selector). Fetch
+    // profiles for the picker in create mode. Same fire-and-forget
+    // pattern as tagSuggestions — the dropdown only opens when the
+    // user clicks it.
+    if (isCreateMode.value) {
+      void loadProfiles()
     }
   },
   { immediate: true },
@@ -328,6 +363,11 @@ const handleSave = () => {
         // current tags array. The KanbanTagsInput already
         // validates + dedupes, so the array is ready to persist.
         tags: tags.value,
+        // NEW (plan: 2026-08-06-kanban-task-profile-selector).
+        // Empty string = backend default. Host captures but does
+        // NOT persist on plain create (Path A — the backend's
+        // task_create.zig has no selected_profile_model field).
+        selectedProfile: selectedProfile.value,
       })
     } else {
       emit('save', {
@@ -363,6 +403,12 @@ const handleRunAgent = () => {
     description: description.value,
     is_auto_retry_until_stop: unattended.value,
     tags: tags.value,
+    // NEW (plan: 2026-08-06-kanban-task-profile-selector). Empty
+    // string = backend default. Host threads through to
+    // runAgentOnNewTask which sets selected_profile_model on the
+    // session at creation time so the chatview's picker reflects
+    // it on landing.
+    selectedProfile: selectedProfile.value,
   })
 }
 
@@ -402,6 +448,41 @@ const handleUnattendedToggle = (event: Event) => {
   // rollback in the host) will correct it on the next paint.
   unattended.value = newValue
   emit('update-unattended', { value: newValue, previous })
+}
+
+// NEW (plan: 2026-08-06-kanban-task-profile-selector). Load profiles
+// from LlmConfig (mirrors ChatView.loadProfiles). Called on dialog
+// open in create mode; failure -> empty list (the picker still
+// works, just only shows "Default").
+const loadProfiles = async () => {
+  if (!isCreateMode.value) return
+  profilesLoading.value = true
+  try {
+    const config = await api.getNalarConfig()
+    const profiles = (config.profiles ?? {}) as Record<
+      string,
+      { model?: string; base_url?: string }
+    >
+    availableProfiles.value = Object.entries(profiles).map(([name, p]) => ({
+      name,
+      model: p.model ?? '',
+      base_url: p.base_url ?? '',
+    }))
+  } catch (err) {
+    console.error('Failed to load profiles:', err)
+    availableProfiles.value = []
+  } finally {
+    profilesLoading.value = false
+  }
+}
+
+const toggleProfilePicker = () => {
+  isProfilePickerOpen.value = !isProfilePickerOpen.value
+}
+
+const selectProfile = (name: string) => {
+  selectedProfile.value = name
+  isProfilePickerOpen.value = false
 }
 
 // ─── Metadata helpers ───────────────────────────────────────────────────
@@ -676,7 +757,130 @@ const filteredTagSuggestions = computed<string[]>(() => {
                  inserts a `sessions` row + sets the flag in one
                  transaction). Either way, the flag persists from
                  the moment the task is created. -->
+            <!-- Create mode: combined Profile + Unattended row (Q2 = 2a).
+                 Same row keeps the dialog compact; visually pairs the
+                 two controls (both shape how the agent runs). The
+                 picker is only in create mode (Q1 = 1a). -->
             <div
+              v-if="isCreateMode"
+              class="mt-4 pt-4 flex items-center gap-4"
+              style="border-top: 1px solid var(--color-border);"
+              data-testid="kanban-task-detail-unattended"
+            >
+              <!-- NEW (plan: 2026-08-06-kanban-task-profile-selector).
+                   Profile-model picker. Loads from LlmConfig; mirrors
+                   ChatView's picker pattern. -->
+              <div ref="profilePickerRef" class="relative shrink-0">
+                <button
+                  type="button"
+                  @click.stop="toggleProfilePicker"
+                  class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 hover:opacity-80"
+                  style="
+                    background-color: var(--semantic-sidebar-bg);
+                    border: 1px solid var(--color-border);
+                    color: var(--semantic-text);
+                  "
+                  :title="
+                    selectedProfile
+                      ? `Using profile: ${selectedProfile}`
+                      : 'Using default (top-level config)'
+                  "
+                  data-testid="kanban-task-detail-profile-picker"
+                >
+                  <span aria-hidden="true">🤖</span>
+                  <span class="ml-1">{{ selectedProfile || 'Default' }}</span>
+                  <span class="ml-1 text-[10px]">▾</span>
+                </button>
+                <div
+                  v-if="isProfilePickerOpen"
+                  class="absolute bottom-full mb-2 left-0 min-w-[240px] rounded-lg shadow-lg z-20 overflow-hidden"
+                  style="
+                    background-color: var(--semantic-card-bg);
+                    border: 1px solid var(--color-border);
+                  "
+                  data-testid="kanban-task-detail-profile-picker-dropdown"
+                  @click.stop
+                >
+                  <button
+                    type="button"
+                    @click="selectProfile('')"
+                    class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between"
+                    style="color: var(--semantic-text);"
+                    data-testid="kanban-task-detail-profile-picker-item"
+                  >
+                    <span class="font-medium">Default (top-level config)</span>
+                    <span v-if="selectedProfile === ''">✓</span>
+                  </button>
+                  <button
+                    v-for="p in availableProfiles"
+                    :key="p.name"
+                    type="button"
+                    @click="selectProfile(p.name)"
+                    class="w-full text-left px-3 py-2 text-xs hover:opacity-80"
+                    style="
+                      color: var(--semantic-text);
+                      border-top: 1px solid var(--color-border);
+                    "
+                    data-testid="kanban-task-detail-profile-picker-item"
+                  >
+                    <div class="flex items-center justify-between">
+                      <span class="font-medium">{{ p.name }}</span>
+                      <span v-if="selectedProfile === p.name">✓</span>
+                    </div>
+                    <div class="text-[10px] mt-0.5" style="color: var(--semantic-text-muted)">
+                      {{ p.model }} · {{ p.base_url }}
+                    </div>
+                  </button>
+                  <div
+                    v-if="!profilesLoading && availableProfiles.length === 0"
+                    class="px-3 py-2 text-xs"
+                    style="color: var(--semantic-text-muted)"
+                    data-testid="kanban-task-detail-profile-picker-empty"
+                  >
+                    No profiles configured. Add one in Settings.
+                  </div>
+                </div>
+              </div>
+
+              <!-- Unattended mode (existing toggle, unchanged) -->
+              <div class="flex-1 min-w-0 flex items-center justify-between gap-3">
+                <div class="flex-1 min-w-0">
+                  <div class="text-xs font-medium" style="color: var(--semantic-text-dim);">
+                    Unattended mode
+                  </div>
+                  <div class="text-[11px] mt-0.5" style="color: var(--semantic-text-dim);">
+                    Keep retrying past the 10-error limit for overnight
+                    runs. Off = stop on too-many-retries.
+                  </div>
+                </div>
+                <label
+                  class="relative inline-flex items-center cursor-pointer shrink-0"
+                  style="color: var(--semantic-text);"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="unattended === '1'"
+                    @change="handleUnattendedToggle"
+                    class="sr-only peer"
+                    data-testid="kanban-task-detail-unattended-toggle"
+                  />
+                  <div
+                    class="w-11 h-6 rounded-full transition-colors duration-200"
+                    style="background-color: var(--semantic-text-dim);"
+                    :style="unattended === '1' ? { backgroundColor: '#f59e0b' } : {}"
+                  />
+                  <div
+                    class="absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform duration-200"
+                    style="background-color: white;"
+                    :class="unattended === '1' ? 'translate-x-5' : ''"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <!-- Edit mode: just the unattended toggle (unchanged) -->
+            <div
+              v-else
               class="mt-4 pt-4 flex items-center justify-between gap-3"
               style="border-top: 1px solid var(--color-border);"
               data-testid="kanban-task-detail-unattended"
@@ -701,10 +905,6 @@ const filteredTagSuggestions = computed<string[]>(() => {
                   class="sr-only peer"
                   data-testid="kanban-task-detail-unattended-toggle"
                 />
-                <!-- Toggle track. peer-checked styles the background
-                     to amber (#f59e0b) when on; dark when off. The
-                     thumb slides 20px on check, matching the iOS-style
-                     toggle convention. -->
                 <div
                   class="w-11 h-6 rounded-full transition-colors duration-200"
                   style="background-color: var(--semantic-text-dim);"

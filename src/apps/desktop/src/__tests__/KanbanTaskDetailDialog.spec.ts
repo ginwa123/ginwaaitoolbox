@@ -558,7 +558,15 @@ describe('KanbanTaskDetailDialog — create mode', () => {
     const emitted = w!.emitted('create')
     expect(emitted).toBeTruthy()
     expect(emitted![0]).toEqual([
-      { mode: 'create', name: 'New task', description: 'Some description', is_auto_retry_until_stop: '0', tags: [] },
+      {
+        mode: 'create',
+        name: 'New task',
+        description: 'Some description',
+        is_auto_retry_until_stop: '0',
+        tags: [],
+        // NEW (plan: 2026-08-06-kanban-task-profile-selector)
+        selectedProfile: '',
+      },
     ])
   })
 
@@ -580,7 +588,15 @@ describe('KanbanTaskDetailDialog — create mode', () => {
     const emitted = w!.emitted('create')
     expect(emitted).toBeTruthy()
     expect(emitted![0]).toEqual([
-      { mode: 'create', name: 'Overnight run', description: '', is_auto_retry_until_stop: '1', tags: [] },
+      {
+        mode: 'create',
+        name: 'Overnight run',
+        description: '',
+        is_auto_retry_until_stop: '1',
+        tags: [],
+        // NEW (plan: 2026-08-06-kanban-task-profile-selector)
+        selectedProfile: '',
+      },
     ])
   })
 
