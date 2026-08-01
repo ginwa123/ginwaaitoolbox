@@ -566,8 +566,16 @@ const handlePinnedDrop = (event: DragEvent) => {
       <!-- Tasks List (shown when expanded - allows multiple). Per-task
            row lives in <WorkspaceItemTaskRow> (extracted 2026-06-10);
            events bubble up via the pass-through handlers in the
-           <script setup> block. -->
-      <div v-if="isExpanded && item.tasks && item.tasks.length > 0" class="ml-8 mt-1.5 space-y-0.5 pl-2 border-l border-[--color-border]/30">
+           <script setup> block.
+
+           NEW (2026-08-06): design items have chat tasks linked 1:1
+           to their design pages (FK from design_pages → workspace_item_tasks).
+           Showing those chat tasks here would be noise — the user
+           already sees the pages below, and clicking a chat task
+           routes to the SAME page (per the per-page chat scoping plan).
+           Hide the tasks section entirely for design items so the
+           sidebar shows ONLY the design pages. -->
+      <div v-if="isExpanded && item.item_type !== 'design' && item.tasks && item.tasks.length > 0" class="ml-8 mt-1.5 space-y-0.5 pl-2 border-l border-[--color-border]/30">
         <!-- Pinned region: drag-and-drop reorders only within this
              list. The drop handler calls handleReorderPinnedTasks.
              Only rendered when at least one task is pinned (so the
