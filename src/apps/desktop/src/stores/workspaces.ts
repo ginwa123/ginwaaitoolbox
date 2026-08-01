@@ -520,16 +520,35 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Get active task details
   const activeTask = computed(() => {
     if (!activeTaskId.value || !activeWorkspaceItemId.value) return null
-    
+
     const workspace = workspaces.value.find((ws) =>
       ws.items.some((item) => item.id === activeWorkspaceItemId.value)
     )
     if (!workspace) return null
-    
+
     const item = workspace.items.find((i) => i.id === activeWorkspaceItemId.value)
     if (!item?.tasks) return null
-    
+
     return item.tasks.find((t) => t.id === activeTaskId.value) || null
+  })
+
+  // NEW (kanban-embed-chatview plan, Task 1): "which item owns the
+  // active task". Walks every workspace's items + tasks looking for
+  // activeTaskId; returns the containing item's id or null. Used by
+  // (a) AppLayout's v-else-if guard for the kanban|chatview 3-column
+  // branch, and (b) KanbanView's chat-pane branch — single source of
+  // truth instead of duplicating the lookup in both consumers.
+  const activeTaskWorkspaceItemId = computed(() => {
+    const taskId = activeTaskId.value
+    if (!taskId) return null
+    for (const ws of workspaces.value) {
+      for (const item of ws.items) {
+        if (item.tasks?.some((t) => t.id === taskId)) {
+          return item.id
+        }
+      }
+    }
+    return null
   })
 
   // Actions
@@ -2832,6 +2851,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     activeWorkspaceItem,
     activeWorkspace,
     activeTask,
+    activeTaskWorkspaceItemId,
     // Actions
     init,
     toggleWorkspace,

@@ -698,18 +698,7 @@ const activeTask = computed(() => workspacesStore.activeTask)
 // workspace's tasks looking for `activeTaskId`; returns the
 // containing item's id or null. Cheap O(W) where W = number of
 // tasks across all workspaces.
-const activeTaskWorkspaceItemId = computed(() => {
-  const taskId = workspacesStore.activeTaskId
-  if (!taskId) return null
-  for (const ws of workspacesStore.workspaces) {
-    for (const item of ws.items) {
-      if (item.tasks?.some((t) => t.id === taskId)) {
-        return item.id
-      }
-    }
-  }
-  return null
-})
+const activeTaskWorkspaceItemId = computed(() => workspacesStore.activeTaskWorkspaceItemId)
 
 // Close the chatview column (the 3-column layout's right pane).
 // Triggered by the ChatView's ✕ header button. Clears the active
@@ -759,132 +748,6 @@ const handleCloseTaskView = () => {
   }
   router.replace({ path: '/app', query })
 }
-
-// ─── Kanban column resize (3-column layout: sidebar | kanban | chatview) ──
-//
-// The 3-column layout's kanban column is drag-resizable. The user grabs
-// the 1px handle between the kanban and the chatview, drags left/right,
-// and the kanban grows/shrinks within a clamped range. The chatview
-// column absorbs the leftover space (it has `flex: 1 1 0`). The width
-// persists to localStorage so a refresh keeps the user's preferred
-// layout.
-//
-// Pattern mirrors Sidebar.vue's resize handling
-// (lines 162-194: startResize / handleResize / stopResize), which
-// uses raw `mousemove` listeners on `document` (not on the handle
-// itself — the cursor can outrun the handle during a fast drag,
-// and listening on `document` is the only way to catch every move).
-//
-// Bounds rationale:
-//   - MIN 0px: the user can collapse the kanban column entirely,
-//     letting the chat view absorb the full main area. The 1px
-//     resize handle stays grabbable at width=0 so the kanban can
-//     be brought back by dragging right. (Floor was previously
-//     280px to keep kanban columns readable; user feedback
-//     2026-07-04 preferred unbounded.)
-//   - MAX 720px: beyond this the chatview shrinks to <30% of the
-//     main area on typical 1080p+ displays, making the chat feel
-//     cramped. The chat needs at least 480px to be usable.
-const KANBAN_MIN_WIDTH = 0
-const KANBAN_MAX_WIDTH = 720
-const KANBAN_DEFAULT_WIDTH = 40 // % of main area, used when no localStorage value exists
-const KANBAN_WIDTH_STORAGE_KEY = 'kanban-column-width'
-
-// Load the persisted kanban width. Returns a px value (int) or
-// null when no value exists. The caller falls back to a percentage
-// layout in that case (see kanbanColumnStyle below). We deliberately
-// do NOT clamp here — clamping belongs in the resize handler, so
-// that an out-of-range value from a future bug doesn't silently
-// shrink the kanban on load.
-const loadKanbanColumnWidth = (): number | null => {
-  if (typeof localStorage === 'undefined') return null
-  const saved = localStorage.getItem(KANBAN_WIDTH_STORAGE_KEY)
-  if (saved === null) return null
-  const parsed = parseInt(saved, 10)
-  if (isNaN(parsed) || parsed <= 0) return null
-  return parsed
-}
-
-const kanbanColumnWidth = ref<number | null>(loadKanbanColumnWidth())
-const isKanbanResizing = ref(false)
-const kanbanResizeStartX = ref(0)
-const kanbanResizeStartWidth = ref(0)
-
-const startKanbanResize = (e: MouseEvent | TouchEvent) => {
-  isKanbanResizing.value = true
-  const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
-  kanbanResizeStartX.value = clientX
-  // If the kanban is currently percentage-sized (no persisted
-  // width yet), measure the rendered column width as the drag
-  // start point. Otherwise use the persisted px value. Without
-  // this, dragging from a 40% layout would snap to a 280px start.
-  const rendered = kanbanResizeStartWidth.value
-  if (rendered <= 0) {
-    const el = document.querySelector(
-      '[data-kanban-three-column] > :first-child',
-    ) as HTMLElement | null
-    kanbanResizeStartWidth.value = el?.getBoundingClientRect().width ?? 400
-  }
-  document.addEventListener('mousemove', handleKanbanResize)
-  document.addEventListener('mouseup', stopKanbanResize)
-  document.body.style.userSelect = 'none'
-  document.body.style.cursor = 'col-resize'
-  e.preventDefault()
-}
-
-const handleKanbanResize = (e: MouseEvent | TouchEvent) => {
-  if (!isKanbanResizing.value) return
-  const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
-  const deltaX = clientX - kanbanResizeStartX.value
-  const newWidth = Math.max(
-    KANBAN_MIN_WIDTH,
-    Math.min(KANBAN_MAX_WIDTH, kanbanResizeStartWidth.value + deltaX),
-  )
-  kanbanColumnWidth.value = newWidth
-}
-
-const stopKanbanResize = () => {
-  if (!isKanbanResizing.value) return
-  isKanbanResizing.value = false
-  document.removeEventListener('mousemove', handleKanbanResize)
-  document.removeEventListener('mouseup', stopKanbanResize)
-  document.body.style.userSelect = ''
-  document.body.style.cursor = ''
-  // Persist on release (not during drag — dragging fires 60+
-  // mousemove events per second, and localStorage.setItem is
-  // synchronous + slow enough to noticeably drag the resize
-  // interaction). One write per gesture is enough.
-  if (kanbanColumnWidth.value !== null) {
-    try {
-      localStorage.setItem(KANBAN_WIDTH_STORAGE_KEY, String(kanbanColumnWidth.value))
-    } catch {
-      // localStorage may throw in private-mode or quota-exceeded
-      // scenarios; silently ignore so the in-memory drag still
-      // works for the current session.
-    }
-  }
-}
-
-// Inline style for the kanban column. When a width is persisted
-// (in px), use it directly (the user resized the column). When
-// no width is persisted yet, fall back to the default 40% flex
-// so first-time users see a balanced layout. Returns a CSSStyleDeclaration-compatible
-// object — Vue handles kebab-case keys natively in `:style`.
-const kanbanColumnStyle = computed(() => {
-  if (kanbanColumnWidth.value !== null) {
-    return {
-      width: `${kanbanColumnWidth.value}px`,
-      'min-width': `${KANBAN_MIN_WIDTH}px`,
-      'max-width': `${KANBAN_MAX_WIDTH}px`,
-      'flex-shrink': '0',
-    }
-  }
-  return {
-    flex: `0 1 ${KANBAN_DEFAULT_WIDTH}%`,
-    'min-width': `${KANBAN_MIN_WIDTH}px`,
-    'max-width': `${KANBAN_MAX_WIDTH}px`,
-  }
-})
 
 // ─── Design 3-column resize (separate from kanban) ─────────────────────
 //
@@ -1759,105 +1622,39 @@ watch(chatSessionCwd, (newCwd) => {
         />
       </div>
 
-      <!-- 3-column kanban layout: sidebar | kanban | chatview.
-           Rendered when (a) the active workspace item is a kanban
-           AND (b) a task is currently selected under that kanban.
-           Both columns are mounted simultaneously so the user
-           can see the kanban context while chatting. The kanban
-           column is flexed to ~40% of the remaining width (after
-           the sidebar) and the chat takes the rest. The :key on
+      <!-- Kanban view (kanban-embed-chatview plan, Task 5). The kanban
+           now owns the chat pane + resize handle internally — the old
+           3-column sibling-of-KanbanView branch (was at lines
+           1716-1814) is GONE. KanbanView renders the full-width board
+           when no task is active, or the board+chat side-by-side when
+           a task belonging to this kanban is selected. The :key on
            KanbanView forces a fresh mount when the user navigates
-           from one kanban to another; the ChatView :key uses
-           'task-<id>' so switching to a different task in the
-           SAME kanban remounts the chat (clean state, no stale
-           scroll position from the previous task). -->
-      <div
-        v-else-if="
-          activeTask &&
-          activeWorkspaceItem &&
-          activeWorkspaceItem.item_type === 'kanban' &&
-          activeTaskWorkspaceItemId === activeWorkspaceItem.id
-        "
-        class="flex-1 flex min-h-0"
-        data-kanban-three-column
-      >
-        <div
-          class="flex flex-col h-full min-h-0"
-          :style="kanbanColumnStyle"
-          style="border-right: 1px solid var(--color-border)"
-        >
-          <KanbanView
-            :key="'kanban-' + activeWorkspaceItem.id"
-            :item="activeWorkspaceItem"
-            :workspace-id="activeWorkspace?.id ?? ''"
-            :item-id="activeWorkspaceItem.id"
-            @move-task="handleKanbanMoveTask"
-            @add-column="handleKanbanAddColumn"
-            @rename-column="handleKanbanRenameColumn"
-            @delete-column="handleKanbanDeleteColumn"
-            @reorder-column="handleKanbanReorderColumn"
-            @request-rename-column="handleKanbanRequestRenameColumn"
-            @request-delete-column="handleKanbanRequestDeleteColumn"
-            @select-task="handleKanbanSelectTask"
-            @delete-task="handleKanbanDeleteTask"
-            @rename-task="handleKanbanRenameTask"
-            @edit-routine="handleKanbanEditRoutine"
-            @run-routine="handleKanbanRunRoutine"
-            @pin-task="handleKanbanPinTask"
-            @open-settings="handleOpenKanbanSettings"
-            @rename-item="handleKanbanRenameItem"
-          />
-        </div>
-        <!--
-          Resize handle between the kanban column and the chatview
-          column. A 4px-wide hit area (w-1 in Tailwind = 4px) with
-          a 1px visual bar centered in it; the bar turns violet on
-          hover and during an active drag so the user knows the
-          handle is grabbable. Mirrors Sidebar.vue's resize handle
-          (line 949): same cursor, same opacity-on-hover pattern,
-          same data-kanban-resize-handle test selector.
-
-          The drag is owned by startKanbanResize (mousedown handler
-          below) which adds document-level mousemove/mouseup
-          listeners so a fast drag that outruns the handle still
-          tracks correctly.
-        -->
-        <div
-          class="shrink-0 w-2 cursor-col-resize relative flex items-center justify-center bg-[var(--color-violet)]/15 hover:bg-[var(--color-violet)]/40 transition-colors"
-          :class="isKanbanResizing ? '!bg-[var(--color-violet)]/60' : ''"
-          data-kanban-resize-handle
-          data-testid="kanban-resize-handle"
-          title="Drag to resize"
-          @mousedown="startKanbanResize"
-        >
-          <svg
-            width="14"
-            height="2"
-            viewBox="0 0 14 2"
-            fill="currentColor"
-            class="text-[var(--color-violet)] opacity-70"
-            aria-hidden="true"
-          >
-            <circle cx="3" cy="1" r="1" />
-            <circle cx="7" cy="1" r="1" />
-            <circle cx="11" cy="1" r="1" />
-          </svg>
-        </div>
-        <div class="flex-1 flex flex-col h-full min-w-0 min-h-0">
-          <ChatView
-            :key="'task-' + activeTask.id"
-            :chat-id="activeTask.id"
-            :chat-name="activeTask.name"
-            :type="'task'"
-            :cwd="activeWorkspaceItem.path || ''"
-            :task-id="activeTask.id"
-            :task-name="activeTask.name"
-            :project-name="activeWorkspaceItem.name || ''"
-            :show-header="true"
-            @close="handleCloseTaskView"
-          />
-        </div>
-      </div>
+           from one kanban to another (KanbanView fetches columns on
+           mount). `@close-chat` fires when ChatView's close button is
+           clicked — AppLayout handles URL routing + state cleanup. -->
+      <KanbanView
+        v-else-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'kanban'"
+        :key="'kanban-' + activeWorkspaceItem.id"
+        :item="activeWorkspaceItem"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
+        @move-task="handleKanbanMoveTask"
+        @add-column="handleKanbanAddColumn"
+        @rename-column="handleKanbanRenameColumn"
+        @delete-column="handleKanbanDeleteColumn"
+        @reorder-column="handleKanbanReorderColumn"
+        @request-rename-column="handleKanbanRequestRenameColumn"
+        @request-delete-column="handleKanbanRequestDeleteColumn"
+        @select-task="handleKanbanSelectTask"
+        @delete-task="handleKanbanDeleteTask"
+        @rename-task="handleKanbanRenameTask"
+        @edit-routine="handleKanbanEditRoutine"
+        @run-routine="handleKanbanRunRoutine"
+        @pin-task="handleKanbanPinTask"
+        @open-settings="handleOpenKanbanSettings"
+        @rename-item="handleKanbanRenameItem"
+        @close-chat="handleCloseTaskView"
+      />
       <!-- Task view (non-kanban parents, e.g. chat tasks): single
            column, no header. Preserved for backward compatibility. -->
       <ChatView

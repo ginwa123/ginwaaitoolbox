@@ -397,6 +397,20 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Kanban — embed ChatView inside KanbanView (pure relocation)
+
+**Symptom (pre-fix).** AppLayout.vue mounted `<KanbanView>` TWICE as siblings of itself: standalone (line 1847) and inside a 3-column block (lines 1739-1825) that glued a `<ChatView>` + resize handle next to the kanban. The 3-column block also owned the entire kanban resize state machine (~130 lines, lines 763-895). The same `<KanbanView>` component + the same 12 `:on` event handlers were duplicated in both mounts.
+
+**What landed (pure relocation — UX identical).** Single `<KanbanView>` mount in AppLayout. KanbanView internally branches its template: `!showChatPane` → full-width board; `showChatPane` → board + chat side-by-side (with the resize handle). The resize state machine + listener handlers + `kanbanColumnStyle` computed move from AppLayout into KanbanView's `<script setup>`. The "which kanban item owns the active task" lookup (`activeTaskWorkspaceItemId`) moves from AppLayout's local computed into the `workspaces` Pinia store as a getter. URL routing stays in AppLayout — KanbanView emits `closeChat` (camelCase in defineEmits, kebab-case `@close-chat` in templates) which AppLayout's `handleCloseTaskView` handles.
+
+**Selectors.** `data-kanban-three-column` (the old 3-column wrapper in AppLayout) → `data-kanban-with-chat` (the new chat-pane branch wrapper inside KanbanView). The handle testid `data-kanban-resize-handle` is unchanged.
+
+**Out of scope.** Design + chat 3-column (AppLayout.vue:1904) — structurally identical, but design chats are per-page (not per-task). A separate plan can apply the same refactor.
+
+**Net diff.** AppLayout.vue -240 lines, KanbanView.vue +150 lines, ~16 tests added (`KanbanView.chatPane.spec.ts` 8 tests + `workspaces.store.activeTaskWorkspaceItemId.spec.ts` 3 tests + updated AppLayout tests). Static-contract tests in `DesignChatCollapse.spec.ts` (entire file) + 1 test in `DesignChatToggle.spec.ts` deleted — banned by project's no-static-contract-tests rule (their assertions used `expect(source).toMatch(...)` against AppLayout.vue's source, which legitimately moved). `AppLayout.kanbanScrollPreservation.spec.ts` deleted — its layout-transition tests no longer apply at the AppLayout level.
+
+**Plan + spec.** `docs/superpowers/plans/2026-08-06-kanban-embed-chatview.md` + `docs/superpowers/specs/2026-08-06-kanban-embed-chatview-design.md`.
+
 ### 2026-08-06: Design move-with-descendants — server-side cascade (group drag)
 
 **Symptom (pre-fix).** When the user drags a `group`/`frame`, the frontend's `handleGroupDrag` walked the design-element tree client-side via `expandSelectionWithDescendants` and pre-computed N x/y pairs per pointermove. The backend just stored SET-targets — it had no knowledge of the `parent_id` hierarchy. Two related issues:
