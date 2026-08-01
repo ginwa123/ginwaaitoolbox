@@ -112,13 +112,22 @@ const emit = defineEmits<{
    * NEW (2026-08-06) — fires on every pointermove during a drag for
    * a SINGLE element (leaf OR a single-element drag of a group that
    * didn't trigger the group-drag path). Payload is the CURSOR
-   * DELTA `(dx, dy)` in design-px — the parent is responsible for
-   * adding it to the element's start position before calling
+   * DELTA `(dx, dy)` in design-px PLUS the source element's id —
+   * the parent is responsible for adding the delta to the element's
+   * start position before calling
    * `workspacesStore.translateDesignElement`.
+   *
+   * The `elementId` was added 2026-08-06 (post-#162 fix) because the
+   * single-element drag wire previously relied on `selectedIds.size === 1`
+   * to identify the dragged element. That check is fragile: if the
+   * user shift-clicked to deselect (toggling removed the dragged id),
+   * or if a multi-select from earlier wasn't cleared, the parent's
+   * `handleElementTranslate` bailed early — the element never moved.
+   * Carrying the id in the event makes the wire self-contained.
    *
    * Replaces `update` for the move use case.
    */
-  translate: [delta: { dx: number; dy: number }]
+  translate: [payload: { elementId: string; dx: number; dy: number }]
   /**
    * NEW (2026-08-06) — fires on every pointermove during a RESIZE
    * gesture (dragging one of the 8 resize handles). Payload carries
@@ -170,10 +179,7 @@ const elementStyle = computed(() => ({
 
 type DragMode = 'move' | { resize: ResizeHandle }
 
-type ResizeHandle =
-  | 'nw' | 'n' | 'ne'
-  | 'w'  |        'e'
-  | 'sw' | 's' | 'se'
+type ResizeHandle = 'nw' | 'n' | 'ne' | 'w' | 'e' | 'sw' | 's' | 'se'
 
 const isDragging = ref(false)
 
@@ -196,15 +202,20 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // canvas's @contextmenu (right-click menu) is a separate event and
   // unaffected by pointerdown propagation, so right-click handling
   // still works.
+  console.log('GIL START DDRAGGING', mode)
+
   if (mode !== 'move') {
     event.stopPropagation()
   }
+  console.log('GIL START DDRAGGING props', props)
+
   if (props.readonly) {
     designLogger.debug({
       reason: 'drag:noop:readonly',
       caller: 'DesignElement.startDrag',
       element: abbrevElement(props.element),
     })
+
     return
   }
   // In Preview mode, the canvas is "playing" the mockup — clicks
@@ -227,6 +238,7 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
       caller: 'DesignElement.startDrag',
       element: abbrevElement(props.element),
     })
+    console.log('GIL START DDRAGGING button', event)
     return
   }
   emit('select', {
@@ -245,11 +257,10 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // drag, the captured set is [this element]. For group drag (below),
   // we re-emit with the full selection BEFORE setting up the move
   // handler. This way the parent's pre-state read happens once.
-  const groupDragIds = props.selectedIds.length > 1
-    && props.selectedIds.includes(props.element.id)
-    && mode === 'move'
-    ? props.selectedIds
-    : [props.element.id]
+  const groupDragIds =
+    props.selectedIds.length > 1 && props.selectedIds.includes(props.element.id) && mode === 'move'
+      ? props.selectedIds
+      : [props.element.id]
   emit('dragStart', groupDragIds)
   designLogger.info({
     reason: 'emit:dragStart',
@@ -270,16 +281,17 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // transitively (drag-moves the whole subtree — Figma parity).
   // For non-group elements in a single-element selection, the drag
   // stays per-element (no behavioural change).
-  const isGroupLike =
-    props.element.type === 'group' || props.element.type === 'frame'
-  const inMultiselect =
-    props.selectedIds.length > 1 &&
-    props.selectedIds.includes(props.element.id)
+  const isGroupLike = props.element.type === 'group' || props.element.type === 'frame'
+  const inMultiselect = props.selectedIds.length > 1 && props.selectedIds.includes(props.element.id)
   const triggerGroupDrag = (inMultiselect || isGroupLike) && mode === 'move'
   if (triggerGroupDrag) {
+    console.log('GIL START DDRAGGING trigger group drags', triggerGroupDrag)
     event.preventDefault()
     const target = event.currentTarget as HTMLElement | null
-    if (!target) return
+    if (!target) {
+      console.log('GIL START DDRAGGING trigger group drags null target', target)
+      return
+    }
     target.setPointerCapture(event.pointerId)
     isDragging.value = true
     const startClientX = event.clientX
@@ -396,8 +408,10 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   const startX = event.clientX
   const startY = event.clientY
   const start = {
-    x: props.element.x, y: props.element.y,
-    width: props.element.width, height: props.element.height,
+    x: props.element.x,
+    y: props.element.y,
+    width: props.element.width,
+    height: props.element.height,
   }
   // Overwrite the drag:start:move info above with a more-specific
   // reason (resize vs move) using `mode`. The earlier info line is
@@ -433,7 +447,14 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
 
   const flushEmit = (): void => {
     if (pendingTranslate) {
-      emit('translate', pendingTranslate)
+      // Carry the source elementId in the event so the parent doesn't
+      // have to fish it out of `selectedIds` (which can be wrong —
+      // see the doc on the `translate` emit type).
+      emit('translate', {
+        elementId: props.element.id,
+        dx: pendingTranslate.dx,
+        dy: pendingTranslate.dy,
+      })
       designLogger.debug({
         reason: 'emit:translate',
         caller: 'DesignElement.startDrag',
@@ -622,14 +643,17 @@ const handleKeydown = (e: KeyboardEvent): void => {
   if (e.key !== 'Delete' && e.key !== 'Backspace') return
   // Don't intercept Delete when the user is typing in a form input.
   const target = e.target as HTMLElement | null
-  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+  if (
+    target &&
+    (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+  ) {
     return
   }
   e.preventDefault()
   // Emit one `delete` per selected id. When only the legacy `selected`
   // flag is set (no multi-selection context), fall back to deleting
   // just this element so the back-compat path still works.
-  for (const id of (props.selectedIds.length > 0 ? props.selectedIds : [props.element.id])) {
+  for (const id of props.selectedIds.length > 0 ? props.selectedIds : [props.element.id]) {
     emit('delete', id)
   }
 }
@@ -646,7 +670,7 @@ onUnmounted(() => {
   <div
     class="design-element absolute"
     :class="[
-      (selected || selectedIds.includes(element.id)) ? 'selected' : '',
+      selected || selectedIds.includes(element.id) ? 'selected' : '',
       readonly ? 'cursor-default' : 'cursor-move',
       isDragging ? 'dragging' : '',
     ]"
@@ -667,9 +691,7 @@ onUnmounted(() => {
       :style="{
         backgroundColor: element.fill || 'transparent',
         borderRadius: `${element.corner_radius}px`,
-        border: element.stroke
-          ? `${element.stroke_width}px solid ${element.stroke}`
-          : 'none',
+        border: element.stroke ? `${element.stroke_width}px solid ${element.stroke}` : 'none',
       }"
     >
       <!-- The HTML body is fetched on mount (and re-fetched when
@@ -703,7 +725,7 @@ onUnmounted(() => {
       <div
         v-else-if="isLoadingHtml"
         class="absolute inset-0 flex items-center justify-center text-[10px]"
-        style="color: var(--semantic-text-dim);"
+        style="color: var(--semantic-text-dim)"
         data-testid="design-element-loading"
       >
         loading…
@@ -756,7 +778,7 @@ onUnmounted(() => {
          is small / fill is invisible. -->
     <div
       class="absolute -top-5 left-0 text-[10px] pointer-events-none whitespace-nowrap"
-      style="color: var(--semantic-text-dim);"
+      style="color: var(--semantic-text-dim)"
       v-if="selected && !previewMode"
     >
       {{ element.name }}
@@ -788,7 +810,7 @@ onUnmounted(() => {
     <div
       v-if="selected && !previewMode"
       class="absolute inset-0 pointer-events-none"
-      style="outline: 2px solid var(--color-violet); outline-offset: 0;"
+      style="outline: 2px solid var(--color-violet); outline-offset: 0"
     />
 
     <!-- Resize handles (8 total: 4 corners + 4 edge midpoints) —
@@ -796,7 +818,7 @@ onUnmounted(() => {
     <template v-if="selected && !readonly && !previewMode">
       <!-- Corners -->
       <div
-        v-for="handle in (['nw', 'ne', 'sw', 'se'] as ResizeHandle[])"
+        v-for="handle in ['nw', 'ne', 'sw', 'se'] as ResizeHandle[]"
         :key="handle"
         class="design-element-handle absolute"
         :class="{
@@ -810,7 +832,7 @@ onUnmounted(() => {
       />
       <!-- Edges -->
       <div
-        v-for="handle in (['n', 'e', 's', 'w'] as ResizeHandle[])"
+        v-for="handle in ['n', 'e', 's', 'w'] as ResizeHandle[]"
         :key="handle"
         class="design-element-handle absolute"
         :class="{

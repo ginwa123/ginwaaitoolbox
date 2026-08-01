@@ -18,4 +18,6 @@ test {
     _ = @import("complex_cases_test.zig");
     _ = @import("complex_cases_extra_test.zig");
     _ = @import("main_static_html_test.zig");
+    // 60s soak test for the SSE-keepalive bug
+    _ = @import("sse_keepalive_test.zig");
 }

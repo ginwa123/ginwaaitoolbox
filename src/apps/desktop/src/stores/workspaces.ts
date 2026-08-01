@@ -302,6 +302,7 @@ import {
   type GroupDesignElementsRequest,
   type ReparentDesignElementsBatchRequest,
   type ReorderMode,
+  normalizeDesignElementType,
 } from '../api'
 
 export const useWorkspacesStore = defineStore('workspaces', () => {
@@ -1749,6 +1750,15 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // re-rendered against the NEW array. The fix above (in-place
     // mutation in fetchDesignElements) plus the in-place mirror
     // here closes the loop.
+    //
+    // ALSO (2026-08-06): the move-batch endpoint historically emitted
+    // `elem_type` (the Zig struct field name) instead of `type`. After
+    // a single move-batch, every cascaded element in the local store
+    // had `type === undefined`, which broke `isGroupLike` →
+    // `triggerGroupDrag = false` on every subsequent drag. The
+    // frontend-side normalize step below accepts both shapes so the
+    // canvas works against old + new backends. See
+    // `api.normalizeDesignElementType` for the full rationale.
     const item = findItem(workspaceId, itemId)
     if (item?.design_elements) {
       // Build a Map<id, index> for O(1) lookup; the cascade can
@@ -1761,7 +1771,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       for (const updated of result.updated) {
         const idx = idxById.get(updated.id)
         if (idx !== undefined) {
-          item.design_elements[idx] = updated
+          // Normalize `type` from either `type` (canonical) or
+          // `elem_type` (legacy). Without this the local mirror
+          // clobbers the element's `type` field with `undefined`,
+          // which silently disables the cascade path on every drag
+          // after the first (BUG 2026-08-06).
+          item.design_elements[idx] = normalizeDesignElementType(updated) as DesignElement
         }
       }
     }

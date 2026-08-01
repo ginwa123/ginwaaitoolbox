@@ -1200,32 +1200,51 @@ const handleElementUpdate = (patch: Partial<DesignElementApi>): void => {
 /**
  * NEW (2026-08-06, split-move-resize plan) — handler for the
  * `translate` event fired by DesignElement during a single-element
- * drag (move mode). The payload is the cursor DELTA in design-px.
+ * drag (move mode). The payload is the cursor DELTA in design-px
+ * PLUS the source element id.
  *
  * Routes through `useDesignHandlers.translateElement` → POST
  * /translate. The backend handles cascade-to-descendants for
  * groups, so we just forward the delta + the element id.
+ *
+ * BUG FIX (2026-08-06): previously bailed with `selectedIds.size !== 1`
+ * — relying on the parent's selectedIds state. That was fragile:
+ * if the user shift-clicked to deselect (toggle removed the dragged
+ * id) or if a stale multi-select from earlier wasn't cleared, the
+ * single-element drag would silently no-op. Now we trust the
+ * elementId from the event payload and only fall back to
+ * `selectedIds` for back-compat.
  */
-const handleElementTranslate = (delta: { dx: number; dy: number }): void => {
-  if (selectedIds.value.size !== 1) {
+const handleElementTranslate = (payload: { elementId?: string; dx: number; dy: number }): void => {
+  // Prefer the elementId from the event (the drag SOURCE knows what it is).
+  // Fall back to selectedIds only if the event doesn't carry it (older
+  // callers that emit `{ dx, dy }` without elementId).
+  let id: string | undefined = payload.elementId
+  if (!id && selectedIds.value.size === 1) {
+    id = selectedIds.value.values().next().value as string
+  }
+  if (!id) {
     designLogger.warn({
       reason: 'handle:translateElement',
       caller: 'DesignView.handleElementTranslate',
-      dx: delta.dx,
-      dy: delta.dy,
-      extra: { selectedIdsSize: selectedIds.value.size, reason: 'no single selection' },
+      dx: payload.dx,
+      dy: payload.dy,
+      extra: {
+        selectedIdsSize: selectedIds.value.size,
+        selectedIdsContents: Array.from(selectedIds.value),
+        reason: 'no elementId in event and selectedIds is not exactly 1',
+      },
     })
     return
   }
-  const id = selectedIds.value.values().next().value as string
   designLogger.info({
     reason: 'handle:translateElement',
     caller: 'DesignView.handleElementTranslate',
-    dx: delta.dx,
-    dy: delta.dy,
+    dx: payload.dx,
+    dy: payload.dy,
     extra: { id },
   })
-  emit('translateElement', id, delta.dx, delta.dy)
+  emit('translateElement', id, payload.dx, payload.dy)
 }
 
 /**
@@ -1392,6 +1411,7 @@ const handleDesignUngroupFromContextMenu = (elementId: string): void => {
 let dragStartPositions: Map<string, { x: number; y: number }> | null = null
 
 const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
+  console.log('[handleGroupDrag] called', { delta, selectedCount: selectedIds.value.size })
   if (selectedIds.value.size === 0) return
   if (!props.workspaceId || !effectiveItemId.value) return
   if (!activePageId.value) return
@@ -1400,30 +1420,18 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
   const workspaceId = props.workspaceId
 
   // ─── Snap (Chunk 3) ───────────────────────────────────────────────
-  // Compute the union bbox of the selection at the cursor's current
-  // position. computeSnapDelta treats the union as a single moving
-  // bbox; elements NOT in the selection are the snap targets.
-  // The function returns the snap correction + the guides to render.
-  //
-  // NEW (Plan: docs/superpowers/plans/2026-08-06-move-element-with-descendants.md):
-  // The server cascades `dx`/`dy` to every transitive descendant of
-  // each item's element. The frontend no longer pre-expands the
-  // subtree via `expandSelectionWithDescendants` for the drag path;
-  // we just send the user's selection + delta. (expandSelectionWithDescendants
-  // stays in the LayersPanel for display only.)
   const selected = elements.value.filter((e) => selectedIds.value.has(e.id))
+  console.log('[handleGroupDrag] selected elements', selected.map((e) => e.id))
   if (selected.length > 0) {
-    // Capture original positions ONCE at the start of the drag. The
-    // first pointermove fires before any PATCH round-trips, so the
-    // snapshot reflects the pointerdown-time positions. On subsequent
-    // pointermoves, SSE may have rewritten `elements.value`, but the
-    // snapshot stays stable — that's the source of truth for the
-    // PATCH math. (`dragStartPositions` is reset on dragEnd below.)
     if (dragStartPositions === null) {
       dragStartPositions = new Map()
       for (const el of selected) {
         dragStartPositions.set(el.id, { x: el.x, y: el.y })
       }
+      console.log('[handleGroupDrag] snapshot created (fresh)', {
+        size: dragStartPositions.size,
+        ids: Array.from(dragStartPositions.keys()),
+      })
       designLogger.info({
         reason: 'handle:dragStart:resetSnapshot',
         caller: 'DesignView.handleGroupDrag',
@@ -1432,8 +1440,10 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
         extra: { ids: Array.from(dragStartPositions.keys()) },
       })
     } else {
-      // Stale snapshot — the suspected second-drag bug. Log loudly so
-      // a DevTools scan flags it immediately.
+      console.warn('[handleGroupDrag] STALE SNAPSHOT detected', {
+        size: dragStartPositions.size,
+        ids: Array.from(dragStartPositions.keys()),
+      })
       designLogger.warn({
         reason: 'handle:dragStart:resetSnapshot',
         caller: 'DesignView.handleGroupDrag',
@@ -1448,10 +1458,6 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
     const originalPos = (e: DesignElementApi): { x: number; y: number } =>
       dragStartPositions!.get(e.id) ?? { x: e.x, y: e.y }
 
-    // Snap math uses ORIGINAL positions + delta (NOT the live
-    // `el.x` which may have been updated by SSE). Without this,
-    // the union bbox reflects the SSE'd els + delta — wrong by the
-    // accumulated delta so far.
     const minX = Math.min(...selected.map((e) => originalPos(e).x + delta.dx))
     const minY = Math.min(...selected.map((e) => originalPos(e).y + delta.dy))
     const maxX = Math.max(
@@ -1467,32 +1473,24 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
       width: maxX - minX,
       height: maxY - minY,
     }
+    console.log('[handleGroupDrag] unionBbox', unionBbox)
+
     const others = elements.value.filter((e) => !selectedIds.value.has(e.id))
-    // Canvas background feature has been removed — no canvas-edge
-    // snap targets and no canvas-edge clamp. The third argument to
-    // computeSnapDelta is now omitted; snap-to-element-edges is the
-    // only remaining snap target.
+    console.log('[handleGroupDrag] snap targets (others) count', others.length)
+
     const snapResult = computeSnapDelta(
       [unionBbox, ...others],
       '__union__',
       0,
       0,
     )
+    console.log('[handleGroupDrag] snapResult', snapResult)
+
     snapGuides.value = snapResult.guides
     const finalDx = delta.dx + snapResult.dx
     const finalDy = delta.dy + snapResult.dy
-    // ─── CHUNK 4 CHANGE: server-side cascade via moveDesignElementsBatch
-    // Before this fix, the frontend walked the tree client-side
-    // (expandSelectionWithDescendants) and pre-computed N x/y pairs
-    // for the geometry-batch endpoint. The backend was just a dumb
-    // SET-targets store — it had no knowledge of the parent_id
-    // hierarchy.
-    //
-    // The new endpoint shrinks the wire from N x/y pairs to N
-    // (dx, dy) pairs (typically one — the dragged root). The
-    // backend's recursive CTE walks every transitive descendant of
-    // each item's element and applies the same delta to them all in
-    // one SQL transaction. Independent of subtree depth.
+    console.log('[handleGroupDrag] finalDx/finalDy', { finalDx, finalDy, rounded: { dx: Math.round(finalDx), dy: Math.round(finalDy) } })
+
     void designHandlers.moveElementWithDescendants({
       workspaceId,
       itemId,
@@ -1503,6 +1501,13 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
         dy: Math.round(finalDy),
       })),
     })
+    console.log('[handleGroupDrag] moveElementWithDescendants dispatched', {
+      workspaceId,
+      itemId,
+      pageId,
+      count: selected.length,
+    })
+
     designLogger.info({
       reason: 'handle:groupDrag',
       caller: 'DesignView.handleGroupDrag',

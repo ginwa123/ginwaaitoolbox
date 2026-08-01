@@ -127,4 +127,158 @@ describe('DesignView single-element drag → translate emit', () => {
       wrapper.unmount()
     }
   })
+
+  /**
+   * REGRESSION (2026-08-06, design-mode-cannot-move bug): the
+   * single-element drag wire previously bailed with
+   * `selectedIds.value.size !== 1` — if the user had a stale multi-
+   * select from earlier (e.g. multi-clicked to deselect, or never
+   * reset), the drag silently no-op'd. The wire was rewired to trust
+   * the `elementId` carried in the `translate` event instead of
+   * fishing it out of `selectedIds`. This test pins the new contract.
+   *
+   * Scenario: element is dragged after `selectedIds` was wiped (size
+   * 0). The drag still fires the `translateElement` emit because the
+   * source emits `translate` with `{ elementId, dx, dy }` (the
+   * post-#162 fix).
+   */
+  it('sends translate emit even when selectedIds is empty (drag source carries elementId)', async () => {
+    const _store = useWorkspacesStore()
+    _store.setActiveDesignPage('page_1')
+
+    const wrapper = mount(DesignView, {
+      props: {
+        item: { ...ITEM, design_elements: [ELEMENT] },
+        workspaceId: 'ws_1',
+        itemId: 'item_1',
+      },
+    })
+    try {
+      await flushPromises()
+
+      // Force the designLogger on so the warn log we expect shows up
+      // in test output (the spec is most useful when it surfaces
+      // those warns in a future regression hunt).
+      const { setDesignLoggerEnabled } = await import('../../../helpers/designLogger')
+      setDesignLoggerEnabled(true)
+
+      // Simulate the bug condition: wipe the local selection so the
+      // OLD wire would have bailed with selectedIds.size === 0.
+      ;(wrapper.vm as any).selectedIds = new Set<string>()
+
+      const elementEl = wrapper.find('[data-design-element]').element as HTMLElement
+      elementEl.setPointerCapture = () => {}
+      elementEl.releasePointerCapture = () => {}
+      elementEl.hasPointerCapture = (): boolean => true
+
+      let moveHandler: ((e: PointerEvent) => void) | null = null
+      let upHandler: ((e: PointerEvent) => void) | null = null
+      ;(elementEl as any).addEventListener = (type: string, cb: any) => {
+        if (type === 'pointermove') moveHandler = cb
+        if (type === 'pointerup') upHandler = cb
+      }
+      ;(elementEl as any).removeEventListener = () => {}
+
+      // pointerdown — fires emit('select', ...) which replaces
+      // selectedIds with {el_1}, then enters single-element drag path.
+      elementEl.dispatchEvent(new PointerEvent('pointerdown', {
+        button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true,
+      }))
+      await flushPromises()
+
+      expect(moveHandler).toBeTypeOf('function')
+      expect(upHandler).toBeTypeOf('function')
+
+      // Drag right by 20, down by 10.
+      moveHandler!(new PointerEvent('pointermove', {
+        clientX: 120, clientY: 110, pointerId: 1,
+      }))
+      upHandler!(new PointerEvent('pointerup', { pointerId: 1 }))
+      await flushPromises()
+
+      // EXPECT: the drag still calls the store action even though we
+      // wiped selectedIds before the gesture started. The wire must
+      // rely on the event-carried elementId, not on selectedIds state.
+      const translates = wrapper.emitted('translateElement') ?? []
+      expect(translates.length).toBeGreaterThan(0)
+      const last = translates[translates.length - 1]
+      expect(last).toEqual(['el_1', 20, 10])
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  /**
+   * Regression: the OLD wire bailed when selectedIds had 2+ elements
+   * (the old assumption was "single-element drag ⇒ exactly one
+   * selected"); the NEW wire still fires because the `translate`
+   * event carries the elementId directly. The drag SOURCE is the
+   * drag source — not the selection set.
+   */
+  it('still fires translate when selectedIds has multiple ids (drag source carries elementId)', async () => {
+    const _store = useWorkspacesStore()
+    _store.setActiveDesignPage('page_1')
+
+    // Add a second element so the multi-select is real.
+    const other: any = {
+      ...ELEMENT,
+      id: 'el_2',
+      name: 'Other',
+      type: 'rectangle',
+      x: 400, y: 100,
+    }
+
+    const wrapper = mount(DesignView, {
+      props: {
+        item: { ...ITEM, design_elements: [ELEMENT, other] },
+        workspaceId: 'ws_1',
+        itemId: 'item_1',
+      },
+    })
+    try {
+      await flushPromises()
+
+      const { setDesignLoggerEnabled } = await import('../../../helpers/designLogger')
+      setDesignLoggerEnabled(true)
+
+      // OLD wire would have bailed here (size === 2).
+      ;(wrapper.vm as any).selectedIds = new Set<string>(['el_1', 'el_2'])
+
+      const elementEl = wrapper.findAll('[data-design-element]')[0]!.element as HTMLElement
+      elementEl.setPointerCapture = () => {}
+      elementEl.releasePointerCapture = () => {}
+      elementEl.hasPointerCapture = (): boolean => true
+
+      let moveHandler: ((e: PointerEvent) => void) | null = null
+      let upHandler: ((e: PointerEvent) => void) | null = null
+      ;(elementEl as any).addEventListener = (type: string, cb: any) => {
+        if (type === 'pointermove') moveHandler = cb
+        if (type === 'pointerup') upHandler = cb
+      }
+      ;(elementEl as any).removeEventListener = () => {}
+
+      elementEl.dispatchEvent(new PointerEvent('pointerdown', {
+        button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true,
+      }))
+      await flushPromises()
+
+      expect(moveHandler).toBeTypeOf('function')
+
+      // Drag right by 10, down by 5.
+      moveHandler!(new PointerEvent('pointermove', {
+        clientX: 110, clientY: 105, pointerId: 1,
+      }))
+      upHandler!(new PointerEvent('pointerup', { pointerId: 1 }))
+      await flushPromises()
+
+      const translates = wrapper.emitted('translateElement') ?? []
+      expect(translates.length).toBeGreaterThan(0)
+      const last = translates[translates.length - 1]
+      // The dragged element is el_1 (the one we dispatched on), even
+      // though el_2 was also selected.
+      expect(last).toEqual(['el_1', 10, 5])
+    } finally {
+      wrapper.unmount()
+    }
+  })
 })
