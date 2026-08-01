@@ -36,6 +36,12 @@ const emit = defineEmits<{
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
+  // NEW (design-pages-in-workspace-tree plan, 2026-08-06): design
+  // page events from <WorkspaceItem> (which forwards them from
+  // <DesignPageRow>). Sidebar handles the actual store calls.
+  selectDesignPage: [workspaceId: string, itemId: string, pageId: string]
+  deleteDesignPage: [workspaceId: string, itemId: string, pageId: string]
+  addDesignPage: [workspaceId: string, itemId: string]
   // NEW (Chunk 7 of task-routines plan): emitted by
   // <WorkspaceItem> when the routine-task branch in
   // <WorkspaceItemTask> fires the routine's pencil or Run Now
@@ -586,6 +592,9 @@ const handleItemDragEnd = () => {
             @load-more-tasks="handleLoadMoreTasks"
             @pin-task="(ws, item, task, isPinned) => emit('pinTask', ws, item, task, isPinned)"
             @reorder-pinned-tasks="(ws, item, orderedIds) => emit('reorderPinnedTasks', ws, item, orderedIds)"
+            @select-design-page="(ws, item, pageId) => emit('selectDesignPage', ws, item, pageId)"
+            @delete-design-page="(ws, item, pageId) => emit('deleteDesignPage', ws, item, pageId)"
+            @add-design-page="(ws, item) => emit('addDesignPage', ws, item)"
           />
           <!-- Add Item Button. Minimal: bare text "+ Add Item" with
                a subtle opacity transition on hover. NO SVG, NO

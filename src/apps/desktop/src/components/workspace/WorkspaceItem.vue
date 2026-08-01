@@ -3,6 +3,8 @@ import { computed, inject, ref, type Ref } from 'vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import type { WorkspaceItem } from '../../stores/workspaces'
 import WorkspaceItemTaskRow from './WorkspaceItemTaskRow.vue'
+import DesignPageRow from './DesignPageRow.vue'
+import type { DesignPage } from '../../api'
 
 const workspacesStore = useWorkspacesStore()
 
@@ -61,6 +63,13 @@ const emit = defineEmits<{
   // handleReorderPinnedTasks below.
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
   reorderPinnedTasks: [workspaceId: string, itemId: string, orderedIds: string[]]
+  // NEW (design-pages-in-workspace-tree plan, 2026-08-06): design
+  // page events from <DesignPageRow> (children of expanded design
+  // items). WorkspaceList forwards them to Sidebar which calls the
+  // store actions.
+  selectDesignPage: [workspaceId: string, itemId: string, pageId: string]
+  deleteDesignPage: [workspaceId: string, itemId: string, pageId: string]
+  addDesignPage: [workspaceId: string, itemId: string]
 }>()
 
 // Computed: check if item is expanded (tasks visible)
@@ -99,6 +108,28 @@ const handleClick = () => {
   // Always emit click for external handling (e.g., navigation to
   // the kanban board via activeWorkspaceItemId).
   emit('click', props.item)
+}
+
+// NEW (design-pages-in-workspace-tree plan, 2026-08-06): the chevron
+// itself (▶) toggles expand for design items WITHOUT activating
+// them. Activating happens on the row body (handleClick above) —
+// keeping the two concerns separate matches the Figma sidebar
+// pattern (chevron=expand, row=activate).
+const handleChevronToggle = (event: Event) => {
+  // Stop propagation so the chevron click doesn't ALSO fire the
+  // outer row's @click handler (which would activate the design
+  // item AND expand it). Pre-fix this was the same behaviour for
+  // folders via the click handler, but for design items we want
+  // activation only on the row body, not the chevron.
+  event.stopPropagation()
+  workspacesStore.toggleExpandedItem(props.item.id)
+  // Lazy fetch design pages on first expand. The cache lives in
+  // `workspacesStore.designPagesByItemId`; if it's already populated
+  // or a fetch is in-flight, the store action is a no-op beyond
+  // returning the cached promise — no double-fetch on rapid toggle.
+  if (workspacesStore.expandedItemIds[props.item.id] === true) {
+    void workspacesStore.fetchDesignPages(props.workspaceId, props.item.id)
+  }
 }
 
 const handleDelete = (event: Event) => {
@@ -188,6 +219,54 @@ const handlePinTask = (
 const handleReorderPinnedTasks = (orderedIds: string[]) => {
   emit('reorderPinnedTasks', props.workspaceId, props.item.id, orderedIds)
 }
+
+// NEW (design-pages-in-workspace-tree plan, 2026-08-06): pass-through
+// handlers for design-page events emitted by <DesignPageRow>. Sidebar
+// receives them and calls the matching store actions
+// (`setActiveDesignPage` / `setActiveWorkspaceItem` /
+// `deleteDesignPage` / `addDesignPage`).
+//
+// For `selectDesignPage` we ALSO activate the parent design item so
+// the main content area switches to DesignView — otherwise the page
+// would be "selected" but the canvas would still show whatever was
+// previously active. The two-step state change mirrors what
+// DesignView's chat toggle does (openChat also fires both events).
+const handleSelectDesignPage = (page: DesignPage) => {
+  // 1. Set the page as active first so the click handler in the
+  // store's setActiveWorkspaceItem flow doesn't race.
+  workspacesStore.setActiveDesignPage(page.id)
+  // 2. Activate the design item (which fires the click emit that
+  // WorkspaceList → Sidebar route to the design view). Only do this
+  // if it's not already active — otherwise we re-emit and trigger
+  // an unnecessary watcher in AppLayout.
+  if (workspacesStore.activeWorkspaceItemId !== props.item.id) {
+    workspacesStore.setActiveWorkspaceItem(props.item.id)
+  }
+  // 3. Bubble the event up for any external listener (tests).
+  emit('selectDesignPage', props.workspaceId, props.item.id, page.id)
+}
+
+const handleDeleteDesignPage = (page: DesignPage) => {
+  emit('deleteDesignPage', props.workspaceId, props.item.id, page.id)
+}
+
+// "+ Add Page" — emits to Sidebar which calls the store action.
+// The store handles the API call + cache update + setting the new
+// page as active. WorkspaceList / Sidebar manage the actual fetch
+// rather than this component, mirroring how `addTask` is wired
+// (this component never calls the store directly for mutations).
+const handleAddDesignPage = (event: Event) => {
+  event.stopPropagation()
+  emit('addDesignPage', props.workspaceId, props.item.id)
+}
+
+// Reactive view of the design-pages cache for THIS design item.
+// Empty array while the fetch is in-flight or for an item that
+// hasn't been expanded yet.
+const designPages = computed<DesignPage[]>(() => {
+  if (props.item.item_type !== 'design') return []
+  return workspacesStore.designPagesByItemId[props.item.id] ?? []
+})
 
 // Capture the dragged task's id from the data-task-id attribute on
 // the row's root button (added in WorkspaceItemTaskRow.vue). The
@@ -391,12 +470,22 @@ const handlePinnedDrop = (event: DragEvent) => {
                WorkspaceList chevron style for visual consistency.
                data-testid="item-row-chevron" so tests can verify
                DOM-order position relative to the spinner (was an
-               SVG path before the minimalist-rewrite). -->
+               SVG path before the minimalist-rewrite).
+               NEW (design-pages-in-workspace-tree plan, 2026-08-06):
+               for `design` items the chevron is its own click target
+               (calls handleChevronToggle) — toggles expand WITHOUT
+               activating the item. Row body click is still activation.
+               Other item types use the click-handler toggle
+               (handleClick above) since they don't have nested
+               content to navigate to. -->
           <span
-            class="text-xs shrink-0 transition-transform duration-200"
+            v-if="item.item_type !== 'kanban'"
+            class="text-xs shrink-0 transition-transform duration-200 cursor-pointer"
+            :class="item.item_type === 'design' ? 'hover:opacity-100 opacity-80' : ''"
             data-testid="item-row-chevron"
             :style="{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
             aria-hidden="true"
+            @click="item.item_type === 'design' ? handleChevronToggle($event) : null"
           >▶</span>
           <!-- Item Name. Fall back to "Untitled project" when the
                DB row has an empty name (legacy data that predates
@@ -548,6 +637,71 @@ const handlePinnedDrop = (event: DragEvent) => {
             ></div>
           </span>
           <span>{{ item.isLoadingMoreTasks ? 'Loading…' : 'Load more' }}</span>
+        </button>
+      </div>
+
+      <!--
+        NEW (design-pages-in-workspace-tree plan, 2026-08-06):
+
+        Design Pages section — rendered for `design` items when the
+        user expands them. The pre-fix design pages lived as a
+        horizontal tab strip inside DesignView (later moved to a left
+        sidebar in DesignView via PR #167, both rejected by the user).
+        They now live HERE, indented under their parent design item,
+        with the same visual rhythm as the per-task rows above so the
+        sidebar reads as a single consistent navigation surface.
+
+        Why a separate section instead of extending the tasks list?
+        Design items don't have tasks, so the tasks list block above
+        doesn't render for them. Adding design pages to the same
+        container would force a single block to handle both the
+        pin/unpin/drag-reorder task code AND the page-list code,
+        which is what we wanted to avoid by extracting the per-row
+        component.
+
+        Behaviour:
+          - The chevron toggles expand (handler above).
+          - On first expand, `fetchDesignPages` populates the cache.
+          - Click a page → `handleSelectDesignPage` (sets active page
+            + activates the design item → AppLayout routes to
+            DesignView).
+          - Click × on a page → `handleDeleteDesignPage` (Sidebar
+            calls `workspacesStore.deleteDesignPage`, which updates
+            the cache + clears `activeDesignPageId` if needed).
+          - "+ Add Page" button → `handleAddDesignPage` (Sidebar
+            calls `workspacesStore.addDesignPage`, which returns the
+            new page and we set it as active so the canvas shows the
+            empty new page).
+      -->
+      <div
+        v-if="isExpanded && item.item_type === 'design'"
+        class="ml-8 mt-1.5 space-y-0.5 pl-2 border-l border-[--color-border]/30"
+        data-testid="design-pages-section"
+      >
+        <!-- Per-page rows -->
+        <DesignPageRow
+          v-for="page in designPages"
+          :key="page.id"
+          :page="page"
+          :workspace-id="workspaceId"
+          :item-id="item.id"
+          :is-active-page="workspacesStore.activeDesignPageId === page.id"
+          @select-page="handleSelectDesignPage"
+          @delete-page="handleDeleteDesignPage"
+        />
+        <!-- "+ Add Page" button (bare text + hover, matching the
+             kanban column "+ Add column" pattern in WorkspaceList's
+             "+ Add Item" button). The new page becomes active so the
+             user immediately sees the empty canvas. -->
+        <button
+          type="button"
+          @click="handleAddDesignPage"
+          class="w-full text-left px-3 py-1 rounded text-xs transition-colors hover:bg-[--semantic-active-bg]"
+          style="color: var(--semantic-text-dim); opacity: 0.7;"
+          data-testid="design-sidebar-add-page-button"
+          :title="`Add a new page to ${item.name}`"
+        >
+          + Add Page
         </button>
       </div>
     </div>

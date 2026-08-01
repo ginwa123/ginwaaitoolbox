@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
+import { useNotificationStore } from '../../stores/notifications'
 import WorkspaceList from '../workspace/WorkspaceList.vue'
 import ChatsList from '../views/ChatsList.vue'
 import WorkspaceModal from '../dialogs/WorkspaceModal.vue'
@@ -829,6 +830,109 @@ const handlePinTask = (
   workspacesStore.pinTask(workspaceId, itemId, taskId, isPinned)
 }
 
+// NEW (design-pages-in-workspace-tree plan, 2026-08-06): the design
+// page events from the sidebar tree. WorkspaceItem already set
+// activeDesignPageId + activeWorkspaceItemId on `select-design-page`
+// (so the store is in the right state before this handler runs);
+// we just need to navigate AppLayout to the design view. The
+// design-view mount reads the activeDesignPageId from the store
+// and renders the page.
+const handleSelectDesignPage = (
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+) => {
+  // WorkspaceItem already activated the item + set the page; we
+  // intentionally don't re-call setActiveWorkspaceItem here to
+  // avoid duplicate AppLayout re-renders.
+  // (WorkspaceItem's handler guards the setActiveWorkspaceItem call
+  // on activeWorkspaceItemId !== item.id, so it's a no-op if the
+  // item was already active.)
+  void workspaceId
+  void itemId
+  void pageId
+}
+
+// The store's `deleteDesignPage` action already updates the cache
+// + falls back `activeDesignPageId` to a sensible next page. We
+// only need to surface errors via the notification store so a
+// failed backend DELETE isn't silent.
+const handleDeleteDesignPage = async (
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+) => {
+  try {
+    await workspacesStore.deleteDesignPage(workspaceId, itemId, pageId)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    useNotificationStore().notifyError('Failed to delete page', message)
+  }
+}
+
+// "+ Add Page" button. The store's `addDesignPage` action returns
+// the new page object; we set it as active so the canvas shows the
+// empty new page (matching DesignView's pre-fix handleAddPage
+// behaviour). Also expands the design item if it isn't already
+// (otherwise the new page row appears collapsed inside the
+// sidebar, which is confusing for the user).
+const handleAddDesignPage = async (
+  workspaceId: string,
+  itemId: string,
+) => {
+  // Expand first so the user sees the new row appear.
+  if (workspacesStore.expandedItemIds[itemId] !== true) {
+    workspacesStore.toggleExpandedItem(itemId)
+  }
+  // Pick the next untitled name (mirrors DesignView's pre-fix
+  // `computeNextUntitledName` — same high-water-mark + 1 rule).
+  const pages = workspacesStore.designPagesByItemId[itemId] ?? []
+  const name = computeNextUntitledName(pages)
+  try {
+    const created = await workspacesStore.addDesignPage(workspaceId, itemId, name)
+    if (created) {
+      // The store's `addDesignPage` action already set the new page
+      // as active (matches pre-fix DesignView handleAddPage). We
+      // only need to activate the design item so AppLayout routes
+      // to DesignView.
+      if (workspacesStore.activeWorkspaceItemId !== itemId) {
+        workspacesStore.setActiveWorkspaceItem(itemId)
+      }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    useNotificationStore().notifyError('Failed to add page', message)
+  }
+}
+
+// Compute the next untitled name (mirrors DesignView's pre-fix
+// `computeNextUntitledName`). Copied here to keep the sidebar logic
+// independent of DesignView — the function is 20 lines and
+// Sidebar/DesignView don't share a common parent module.
+const UNTITLED_BASE = 'Untitled'
+const UNTITLED_PATTERN = /^Untitled (\d+)$/
+function computeNextUntitledName(
+  existingPages: ReadonlyArray<{ name: string }>,
+): string {
+  let hasUnnumbered = false
+  let maxNumbered = 0
+  for (const p of existingPages) {
+    if (p.name === UNTITLED_BASE) {
+      hasUnnumbered = true
+      continue
+    }
+    const match = UNTITLED_PATTERN.exec(p.name)
+    if (match && match[1]) {
+      const n = Number.parseInt(match[1], 10)
+      if (Number.isFinite(n) && n > 0 && n > maxNumbered) {
+        maxNumbered = n
+      }
+    }
+  }
+  if (!hasUnnumbered && maxNumbered === 0) return UNTITLED_BASE
+  return `${UNTITLED_BASE} ${maxNumbered + 1}`
+}
+
 const handleReorderPinnedTasks = (
   workspaceId: string,
   itemId: string,
@@ -1150,6 +1254,9 @@ defineExpose({
           @reorder-workspace-items="handleReorderWorkspaceItems"
           @pin-task="handlePinTask"
           @reorder-pinned-tasks="handleReorderPinnedTasks"
+          @select-design-page="handleSelectDesignPage"
+          @delete-design-page="handleDeleteDesignPage"
+          @add-design-page="handleAddDesignPage"
         />
         <!-- Collapsed workspaces: minimal text-driven monograms.
              Each workspace is rendered as a 1-2 letter monogram

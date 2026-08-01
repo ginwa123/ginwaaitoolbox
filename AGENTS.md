@@ -795,6 +795,119 @@ binary + 35 MB nalar-desktop.
 
 **Plan:** `docs/superpowers/plans/2026-07-30-design-layer-drag-join-or-leave-group.md`
 
+### 2026-08-06: Design pages list — moved into the workspace sidebar tree (#168, supersedes #167)
+
+**Symptom (pre-fix).** User reported (after PR #167 landed, which put
+the pages in a left sidebar INSIDE the design canvas): *"i mean pages
+move inside workpace item, 'design' like config agentic ai"*. They
+wanted the design-mode page list to live **in the workspace sidebar
+tree**, under the design workspace item — the same way `llls` shows
+up indented under `config agentic ai`. NOT in a separate left
+sidebar inside the design canvas.
+
+**What landed.** Frontend-only — no backend, DB, or migration
+changes. This PR REVERTS PR #167 entirely (commit `63c287f8`) and
+implements the correct UX:
+
+- **`DesignPageTabs.vue` + spec DELETED** — no longer used.
+- **NEW** `DesignPageRow.vue` (`workspace/`): single page row with
+  click → select, hover → × delete. Reuses the visual rhythm of
+  `WorkspaceItemTaskRow` for consistency.
+- **`WorkspaceItem.vue`**: when `item_type === 'design'` AND
+  `isExpanded`, render `<DesignPageRow>` per page + `+ Add Page`
+  button. The chevron click toggles expand **without** activating
+  the item (row body click still activates — preserves the
+  established "click design → enter design view" UX).
+- **Workspaces store**: new `designPagesByItemId` cache +
+  `fetchDesignPages` / `addDesignPage` actions. Single source of
+  truth shared between the sidebar tree and `DesignView`. The
+  cache is reset on `init()` so re-inits don't show stale pages
+  from the previous session. Concurrent fetches for the same item
+  share a single in-flight promise (no double-fetch race on
+  sidebar-expand + canvas-mount).
+- **`deleteDesignPage`** picks a sensible next-active page (same
+  index as the deleted one; previous if last; empty if none).
+- **`Sidebar.vue`**: handlers for `selectDesignPage` /
+  `deleteDesignPage` / `addDesignPage` wired through the store.
+  `computeNextUntitledName` copy for the `Untitled N`
+  auto-increment pattern.
+
+**Tests.** +11 net new behavioural tests:
+
+- 6 in new `DesignPageRow.spec.ts`
+- 5 in new `workspacesStoreDesignPages.spec.ts` (migrated from
+  `DesignView.spec.ts` — the page-CRUD UI tests triggered
+  `design-add-page` / `design-delete-page-*` testids that no
+  longer exist in `DesignView`).
+- `DesignView.spec.ts`: removed 5 page-CRUD tests + 2 static-
+  contract tests that asserted `<DesignPageTabs` was in the
+  source.
+
+**Verification.** `bun run build` clean; `bunx vitest run` 1946/1954
+pass. The 8 failures are PRE-EXISTING on `main` (verified against
+`b7993b52`): 5 undoHidden + 1 DesignElement static + 1 nudge clamp +
+1 AppLayout translateResize.
+
+**Branch.** `worktree/design-pages-in-tree` (commit `219b1832` +
+revert `63c287f8`)
+**Plan.** `docs/superpowers/plans/2026-08-06-design-pages-in-workspace-tree.md`
+
+### 2026-08-06: Design pages list — moved from top tabs to left sidebar (#167) — SUPERSEDED
+
+**Symptom (pre-fix).** User reported: *"change pages position, design
+mode. currently the list pages, is on the top, i want you to move that
+to the left"*. The page tab strip (AI Chat View, Kanban Mode, Chat
+View In Progress, Workspaces Sidebar, Task Dialog, Task Dialog with
+Attachments, + Page) was rendered as a horizontal tab strip across the
+TOP of DesignView — visible in every screenshot above the chat
+
+**Symptom (pre-fix).** User reported: *"change pages position, design
+mode. currently the list pages, is on the top, i want you to move that
+to the left"*. The page tab strip (AI Chat View, Kanban Mode, Chat
+View In Progress, Workspaces Sidebar, Task Dialog, Task Dialog with
+Attachments, + Page) was rendered as a horizontal tab strip across the
+TOP of DesignView — visible in every screenshot above the chat
+toolbar. Figma/Sketch convention is a vertical list on the LEFT, so
+the canvas can use the full viewport width and the page list has more
+room to grow past ~7 tabs without horizontal scrolling.
+
+**What landed.** Frontend-only — no backend, DB, or migration changes.
+
+- **`DesignPageTabs.vue`**: CSS flip from horizontal (`flex
+  items-center overflow-x-auto`, 2px `border-bottom` on active tab)
+  to vertical (`flex flex-col overflow-y-auto`, 3px `border-left` on
+  active tab). Long names get `text-overflow: ellipsis`. Props,
+  emits, and data-testids preserved (back-compat).
+- **`DesignView.vue`**: removed the top `<DesignPageTabs>` block;
+  mounted it as a new LEFT column inside the main split. Main split
+  is now `[LEFT pages sidebar] | [resize handle] | [canvas] |
+  [resize handle] | [right sidebar]`. New drag-vertical resize
+  handle between pages sidebar and canvas; width persists to
+  `localStorage` under the new key `design-view-pages-sidebar-width`
+  (separate from the right sidebar's key, separate min/max: 180–400
+  px vs the right sidebar's 220–600 px).
+- The empty-state `+ Add the first page` button picked up
+  `data-testid="design-add-page"` so existing tests that target
+  the + Page affordance still find it when `pages.length === 0` —
+  the tabs strip now only renders when pages exist.
+
+**Tests.** +11 net new behavioural tests:
+- 8 in new `DesignView.pagesSidebar.spec.ts` (left-of-canvas
+  invariant, NOT inside top toolbar regression test, resize handle
+  presence, + Page still wires to POST /pages, etc.)
+- 5 source-grep tests in `DesignPageTabs.spec.ts` converted to 8
+  behavioural tests per the project-wide no-static-contract rule
+  (2026-07-29). Net +3 there.
+
+**Verification.** `bun run build` clean; `bunx vitest run` 1914/1922
+pass. The 8 failures are PRE-EXISTING on `main` (5 undoHidden + 1
+DesignElement static contract + 1 nudge clamp + 1 AppLayout
+translateResize) — verified by running the same suite against
+`b7993b52` (main HEAD before this PR).
+
+**Branch.** `worktree/design-pages-left` (commit `c1bf5e89`)
+**Plan.** `docs/superpowers/plans/2026-08-06-design-pages-left-sidebar.md`
+
 ### 2026-08-06: Compaction prompt — extract `buildCompactMessagePrompt` for unit testing (#165)
 
 **Symptom (pre-fix).** `callCompactAgent` in
