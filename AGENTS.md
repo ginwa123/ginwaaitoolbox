@@ -1100,6 +1100,38 @@ Commits: `a4c0749f` (composable + renderer), `f33fdf0a`
 (PreviewSidePanel toggle UI), `8342f68d` (ShowPreview inline +
 ChatView wiring).
 
+### 2026-08-06: `show_preview` inline mode was broken in production (fixed) + default flipped to `inline`
+
+**Symptom (user report, with screenshots).** *"only side preview work but i want show in history chat session, like other tool output"*. After clicking the new Side / Inline toggle to switch to inline mode, the chat bubble still showed only the header (no rich content body). The side panel had correctly hidden, but the preview content was nowhere to be seen.
+
+**Root cause.** `ShowPreview.vue::previewArgs` tried to unwrap `props.content` looking for a `<tool>...</tool>` wrapper, then extracted the `<parameters>` tag. But ChatView.vue:1069-1080 already does the unwrap and passes:
+
+- `props.content` = `innerToolData(msg)` = `unwrapped.data` (inner data envelope, e.g. `<show_preview><status>...</status></show_preview>`)
+- `props.parameters` = `getParametersForMessage(msg)` = `unwrapped.parameters` (JSON-string of the tool-call args)
+
+So `tryUnwrapToolOutput(props.content)` always returned `null`, `previewArgs` ended up as `{}`, and the inline content body was never mounted.
+
+The test suite didn't catch this because the test fixture (in `src/__tests__/ShowPreview.spec.ts`) passed a `<tool>`-wrapped envelope in `content` — which unwrapped correctly — masking the production bug. The fixture didn't match production data shape.
+
+**Fix.**
+
+1. `ShowPreview.vue`: drop the `tryUnwrapToolOutput` path on `props.content`. JSON.parse `props.parameters` directly (it's already the JSON string). Fall back to `{}` on invalid JSON (legacy / malformed envelopes).
+2. Updated the `makeShowPreviewMessage` fixture in `src/__tests__/ShowPreview.spec.ts` to match production shape: inner envelope in `content`, JSON string in `parameters`. This makes the test reliably reproduce the production bug if it regresses.
+3. Flipped `DEFAULT_MODE` in `usePreviewDisplayMode.ts` from `'side'` to `'inline'`. The preview now renders inline in the chat history by default — matching the user's mental model and the behaviour of every other tool output (`read_file`, `bash`, etc.). The side panel is now opt-in via the toggle in the panel header.
+4. Updated 5 test files to set `localStorage` to `'side'` in `beforeEach` where needed (preserving the existing side-mode assertions in the OLD `src/components/tool_outputs/__tests__/ShowPreview.spec.ts` file and `chatViewShowPreviewBubble.spec.ts`). Also flipped default assertions in `usePreviewDisplayMode.spec.ts` and `previewSidePanel.spec.ts`.
+
+**Lesson.** Test fixtures MUST match production data shape, or the test only validates the test's invented shape. The `<tool>`-wrapped envelope in the original fixture was a convenient fiction — production never sends that. Future contributors: if a prop is named "the inner envelope", don't try to unwrap it as "the outer envelope".
+
+**Verification.**
+
+- `bun run build`: clean (vue-tsc + vite, 2.31s)
+- `bunx vitest run`: 1956 pass / 12 fail — all 12 are PRE-EXISTING on main (verified by `git stash` + re-run), unrelated to this fix: 5 `DesignView.undoHidden`, 1 `DesignElement` static contract, 1 `DesignView.nudge` clamp, 1 `AppLayout.translateResize`, 4 `AppLayout.memoriesGate`.
+- Related test files (composable + renderer + toggle + ShowPreview + ChatView): 80/80 pass.
+
+**Commits** (`worktree/show-preview-render-inline`):
+- `d5cd8317` — fix(preview): render ShowPreview inline content in production
+- `1e850a8c` — test(preview): update test suite for default=inline + production-shape fixture
+
 ### 2026-08-06: filteringTools — filter LLM tool list by parent item_type + 11 unit tests
 
 **Symptom (background).** Every session received the SAME 56-tool

@@ -8,15 +8,56 @@
  *    human-friendly content_length + ✓ status badge
  *  - error path renders ✗ + error message inline
  *  - click emits `open` event with the message id (the parent uses it to
- *    focus the side panel)
+ *    focus the side panel) — ONLY in 'side' display mode
  *  - parameters prop (JSON-stringified tool args) is parsed and the title
  *    is rendered when present
  *  - falls back gracefully when parameters is malformed JSON
+ *
+ * NOTE: These tests pre-date the `usePreviewDisplayMode` toggle
+ * (2026-08-06). They assume the card is always clickable (the OLD
+ * 'side' default behavior). Per the project rule of no static-contract
+ * tests, we keep them as behavioural tests but pin localStorage to
+ * 'side' in beforeEach so the card is in the clickable state.
+ *
+ * For tests covering the NEW default (`inline` mode — content renders
+ * directly in the chat bubble, card is not clickable), see
+ * `src/__tests__/ShowPreview.spec.ts`.
  */
 import { mount } from '@vue/test-utils'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import ShowPreview from '../ShowPreview.vue'
+
+// Always run these tests in 'side' mode so the card is clickable
+// (the original behavior this spec was written for).
+const SIDE_MODE_STORAGE_KEY = 'nalar-preview-display-mode'
+
+function makeLocalStorageStub(): Storage {
+  const store: Record<string, string> = {}
+  return {
+    getItem: (k: string) => (k in store ? store[k] : null),
+    setItem: (k: string, v: string) => { store[k] = String(v) },
+    removeItem: (k: string) => { delete store[k] },
+    clear: () => { for (const k in store) delete store[k] },
+    key: () => null,
+    length: 0,
+  } as Storage
+}
+
+beforeEach(() => {
+  // Re-install a fresh localStorage stub. Other test files may have
+  // deleted localStorage (e.g. SSR-safe tests), so we can't rely on
+  // it being defined here.
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: makeLocalStorageStub(),
+    writable: true,
+    configurable: true,
+  })
+  localStorage.setItem(SIDE_MODE_STORAGE_KEY, 'side')
+})
+afterEach(() => {
+  localStorage.removeItem(SIDE_MODE_STORAGE_KEY)
+})
 
 // ────────────────────────────────────────────────────────────────────────
 // Test helpers

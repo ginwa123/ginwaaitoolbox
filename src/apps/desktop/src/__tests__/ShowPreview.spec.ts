@@ -41,9 +41,15 @@ function makeLocalStorageStub(): Storage {
   } as Storage
 }
 
-// Build the `<tool>...</tool>` envelope the backend stores in
-// `llm_history.response_content`. Mirrors makeShowPreviewMessage
-// in chatViewShowPreviewBubble.spec.ts.
+// Build the inner data envelope (no `<tool>` wrapper) + parameters
+// JSON-string. Mirrors what ChatView.vue:1069-1080 passes to the
+// component in production:
+//   - content       = innerToolData(msg)       = unwrapped.data
+//   - parameters    = getParametersForMessage  = unwrapped.parameters
+// The previous fixture in this spec used a `<tool>`-wrapped envelope
+// for `content`, which masked a real production bug (the bug was
+// that the inline mode tried to unwrap `content` looking for the
+// `<tool>` wrapper, but `content` only carries the INNER envelope).
 function makeShowPreviewMessage(opts: {
   id: string
   contentType: 'markdown' | 'text' | 'code' | 'image' | 'html'
@@ -62,14 +68,17 @@ function makeShowPreviewMessage(opts: {
   if (opts.caption) params.caption = opts.caption
 
   const isSuccess = opts.isSuccess ?? true
+  // Inner data — what's inside <data>...</data> in the full <tool>
+  // envelope. ChatView unwraps the <tool> and passes this as content.
   const innerData = isSuccess
     ? `<show_preview><status>shown</status><preview_id>pv_${opts.id}</preview_id><content_type>${opts.contentType}</content_type><content_length>${opts.content.length}</content_length></show_preview>`
     : `<show_preview><error>something went wrong</error></show_preview>`
 
-  const envelope = `<tool><name>show_preview</name><parameters>${JSON.stringify(params)}</parameters><success>${isSuccess ? 'true' : 'false'}</success><data>${innerData}</data></tool>`
   return {
     id: opts.id,
-    content: envelope,
+    // content = inner data envelope (NO <tool> wrapper)
+    content: innerData,
+    // parameters = JSON-string of the show_preview tool-call args
     parameters: JSON.stringify(params),
     messageId: opts.id,
   }
@@ -86,12 +95,12 @@ describe('ShowPreview card', () => {
     setActivePinia(createPinia())
   })
 
-  describe('side mode (default)', () => {
-    it('renders the header with title + content_type badge', () => {
+  describe('inline mode (default — matches other tool outputs)', () => {
+    it('renders the header + inline content body with the markdown via <h1>', () => {
       const msg = makeShowPreviewMessage({
-        id: 'msg-side-1',
+        id: 'msg-inline-1',
         contentType: 'markdown',
-        content: '# Plan',
+        content: '# Inline Title',
         title: 'Migration Plan',
       })
       const wrapper = mount(ShowPreview, {
@@ -101,91 +110,12 @@ describe('ShowPreview card', () => {
           messageId: msg.id,
         },
       })
+      // Header (always visible)
       expect(wrapper.html()).toContain('show_preview')
       expect(wrapper.html()).toContain('Migration Plan')
       expect(wrapper.html()).toContain('markdown')
       expect(wrapper.html()).toContain('✓')
-    })
-
-    it('does NOT render the inline content body in side mode', () => {
-      const msg = makeShowPreviewMessage({
-        id: 'msg-side-2',
-        contentType: 'markdown',
-        content: '# Plan',
-        title: 'Plan',
-      })
-      const wrapper = mount(ShowPreview, {
-        props: {
-          content: msg.content,
-          parameters: msg.parameters,
-          messageId: msg.id,
-        },
-      })
-      // No inline content body — only the header is rendered.
-      expect(
-        wrapper.find('[data-testid="show-preview-inline-content"]').exists(),
-      ).toBe(false)
-    })
-
-    it('clicking the card in side mode emits "open" with the message id', async () => {
-      const msg = makeShowPreviewMessage({
-        id: 'msg-side-3',
-        contentType: 'markdown',
-        content: '# x',
-      })
-      const wrapper = mount(ShowPreview, {
-        props: {
-          content: msg.content,
-          parameters: msg.parameters,
-          messageId: msg.id,
-        },
-      })
-      const card = wrapper.find(`[data-testid="show-preview-card-msg-side-3"]`)
-      expect(card.exists()).toBe(true)
-      await card.trigger('click')
-      expect(wrapper.emitted('open')).toBeTruthy()
-      expect(wrapper.emitted('open')?.[0]).toEqual(['msg-side-3'])
-    })
-
-    it('renders as a clickable role="button" with tabindex="0" in side mode', () => {
-      const msg = makeShowPreviewMessage({
-        id: 'msg-side-4',
-        contentType: 'markdown',
-        content: '# x',
-      })
-      const wrapper = mount(ShowPreview, {
-        props: {
-          content: msg.content,
-          parameters: msg.parameters,
-          messageId: msg.id,
-        },
-      })
-      const card = wrapper.find(`[data-testid="show-preview-card-msg-side-4"]`)
-      expect(card.attributes('role')).toBe('button')
-      expect(card.attributes('tabindex')).toBe('0')
-    })
-  })
-
-  describe('inline mode', () => {
-    beforeEach(() => {
-      // Set the mode BEFORE mounting so the composable reads it on init.
-      localStorage.setItem(PREVIEW_DISPLAY_MODE_STORAGE_KEY, 'inline')
-    })
-
-    it('renders the inline content body with the markdown via <h1>', () => {
-      const msg = makeShowPreviewMessage({
-        id: 'msg-inline-1',
-        contentType: 'markdown',
-        content: '# Inline Title',
-        title: 'Plan',
-      })
-      const wrapper = mount(ShowPreview, {
-        props: {
-          content: msg.content,
-          parameters: msg.parameters,
-          messageId: msg.id,
-        },
-      })
+      // Inline content body
       expect(
         wrapper.find('[data-testid="show-preview-inline-content"]').exists(),
       ).toBe(true)
@@ -246,7 +176,7 @@ describe('ShowPreview card', () => {
       expect(iframe.attributes('sandbox')).toBe('allow-scripts')
     })
 
-    it('clicking the card in inline mode does NOT emit "open"', async () => {
+    it('inline mode does NOT emit "open" on card click (content already visible)', async () => {
       const msg = makeShowPreviewMessage({
         id: 'msg-inline-5',
         contentType: 'markdown',
@@ -284,16 +214,102 @@ describe('ShowPreview card', () => {
       expect(card.attributes('tabindex')).toBeUndefined()
     })
 
+    it('error responses do NOT render inline content (only the header + error body)', () => {
+      const msg = makeShowPreviewMessage({
+        id: 'msg-inline-err',
+        contentType: 'markdown',
+        content: '# x',
+        isSuccess: false,
+      })
+      const wrapper = mount(ShowPreview, {
+        props: {
+          content: msg.content,
+          parameters: msg.parameters,
+          messageId: msg.id,
+        },
+      })
+      // Even in inline mode, an error card doesn't render the
+      // rich content body — the error message itself is shown
+      // in the dedicated error body section.
+      expect(
+        wrapper.find('[data-testid="show-preview-inline-content"]').exists(),
+      ).toBe(false)
+      expect(wrapper.html()).toContain('something went wrong')
+    })
+  })
+
+  describe('side mode (opt-in alternative — user toggled via PreviewSidePanel header)', () => {
+    beforeEach(() => {
+      // Opt into side mode for these tests (default is inline).
+      localStorage.setItem(PREVIEW_DISPLAY_MODE_STORAGE_KEY, 'side')
+    })
+
+    it('renders only the header in side mode (no inline content body)', () => {
+      const msg = makeShowPreviewMessage({
+        id: 'msg-side-1',
+        contentType: 'markdown',
+        content: '# Plan',
+        title: 'Plan',
+      })
+      const wrapper = mount(ShowPreview, {
+        props: {
+          content: msg.content,
+          parameters: msg.parameters,
+          messageId: msg.id,
+        },
+      })
+      expect(wrapper.html()).toContain('show_preview')
+      expect(wrapper.html()).toContain('Plan')
+      // No inline content body — the user has opted to see previews in the side panel.
+      expect(
+        wrapper.find('[data-testid="show-preview-inline-content"]').exists(),
+      ).toBe(false)
+    })
+
+    it('clicking the card in side mode emits "open" with the message id (parent focuses side panel)', async () => {
+      const msg = makeShowPreviewMessage({
+        id: 'msg-side-2',
+        contentType: 'markdown',
+        content: '# x',
+      })
+      const wrapper = mount(ShowPreview, {
+        props: {
+          content: msg.content,
+          parameters: msg.parameters,
+          messageId: msg.id,
+        },
+      })
+      const card = wrapper.find(`[data-testid="show-preview-card-msg-side-2"]`)
+      expect(card.exists()).toBe(true)
+      await card.trigger('click')
+      expect(wrapper.emitted('open')).toBeTruthy()
+      expect(wrapper.emitted('open')?.[0]).toEqual(['msg-side-2'])
+    })
+
+    it('renders as a clickable role="button" with tabindex="0" in side mode', () => {
+      const msg = makeShowPreviewMessage({
+        id: 'msg-side-3',
+        contentType: 'markdown',
+        content: '# x',
+      })
+      const wrapper = mount(ShowPreview, {
+        props: {
+          content: msg.content,
+          parameters: msg.parameters,
+          messageId: msg.id,
+        },
+      })
+      const card = wrapper.find(`[data-testid="show-preview-card-msg-side-3"]`)
+      expect(card.attributes('role')).toBe('button')
+      expect(card.attributes('tabindex')).toBe('0')
+    })
+
     it('flipping mode to inline AFTER mount renders the content (reactive)', async () => {
       const msg = makeShowPreviewMessage({
-        id: 'msg-inline-7',
+        id: 'msg-side-4',
         contentType: 'markdown',
         content: '# Reactive',
       })
-      // Start in side mode by clearing localStorage for this test.
-      // (The describe-block beforeEach sets 'inline' — we override.)
-      localStorage.removeItem(PREVIEW_DISPLAY_MODE_STORAGE_KEY)
-
       const wrapper = mount(ShowPreview, {
         props: {
           content: msg.content,
@@ -319,29 +335,6 @@ describe('ShowPreview card', () => {
       expect(
         wrapper.find('[data-testid="show-preview-inline-content"]').exists(),
       ).toBe(true)
-    })
-
-    it('error responses do NOT render inline content (only the header + error body)', () => {
-      const msg = makeShowPreviewMessage({
-        id: 'msg-inline-err',
-        contentType: 'markdown',
-        content: '# x',
-        isSuccess: false,
-      })
-      const wrapper = mount(ShowPreview, {
-        props: {
-          content: msg.content,
-          parameters: msg.parameters,
-          messageId: msg.id,
-        },
-      })
-      // Even in inline mode, an error card doesn't render the
-      // rich content body — the error message itself is shown
-      // in the dedicated error body section.
-      expect(
-        wrapper.find('[data-testid="show-preview-inline-content"]').exists(),
-      ).toBe(false)
-      expect(wrapper.html()).toContain('something went wrong')
     })
   })
 })

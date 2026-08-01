@@ -165,6 +165,12 @@ describe('ChatView show_preview bubble click', () => {
       localStorage.clear()
     }
 
+    // Default to 'side' mode for these tests — the existing tests in
+    // this file predate the 2026-08-06 default flip to 'inline' and
+    // were written assuming the side panel is the default. The NEW
+    // 'inline mode' describe block sets 'inline' explicitly.
+    localStorage.setItem('nalar-preview-display-mode', 'side')
+
     setActivePinia(createPinia())
 
     __resetSseBus()

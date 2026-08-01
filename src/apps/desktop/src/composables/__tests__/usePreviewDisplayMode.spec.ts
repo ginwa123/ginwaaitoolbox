@@ -46,28 +46,18 @@ describe('usePreviewDisplayMode', () => {
     vi.restoreAllMocks()
   })
 
-  it('defaults to "side" when localStorage is empty', () => {
-    const { mode } = usePreviewDisplayMode()
-    expect(mode.value).toBe('side')
-  })
-
-  it('reads existing "inline" value from localStorage (survives reload)', () => {
-    localStorage.setItem(STORAGE_KEY, 'inline')
+  it('defaults to "inline" when localStorage is empty (matches other tool outputs)', () => {
     const { mode } = usePreviewDisplayMode()
     expect(mode.value).toBe('inline')
   })
 
-  it('setMode("inline") flips the reactive ref AND writes to localStorage', async () => {
-    const { mode, setMode } = usePreviewDisplayMode()
+  it('reads existing "side" value from localStorage (survives reload)', () => {
+    localStorage.setItem(STORAGE_KEY, 'side')
+    const { mode } = usePreviewDisplayMode()
     expect(mode.value).toBe('side')
-    setMode('inline')
-    await nextTick()
-    expect(mode.value).toBe('inline')
-    expect(localStorage.getItem(STORAGE_KEY)).toBe('inline')
   })
 
-  it('setMode("side") flips back AND writes to localStorage', async () => {
-    localStorage.setItem(STORAGE_KEY, 'inline')
+  it('setMode("side") flips the reactive ref AND writes to localStorage', async () => {
     const { mode, setMode } = usePreviewDisplayMode()
     expect(mode.value).toBe('inline')
     setMode('side')
@@ -76,19 +66,29 @@ describe('usePreviewDisplayMode', () => {
     expect(localStorage.getItem(STORAGE_KEY)).toBe('side')
   })
 
-  it('falls back to "side" when localStorage contains an invalid value (e.g. "sidebar")', () => {
+  it('setMode("inline") flips back AND writes to localStorage', async () => {
+    localStorage.setItem(STORAGE_KEY, 'side')
+    const { mode, setMode } = usePreviewDisplayMode()
+    expect(mode.value).toBe('side')
+    setMode('inline')
+    await nextTick()
+    expect(mode.value).toBe('inline')
+    expect(localStorage.getItem(STORAGE_KEY)).toBe('inline')
+  })
+
+  it('falls back to "inline" when localStorage contains an invalid value (e.g. "sidebar")', () => {
     localStorage.setItem(STORAGE_KEY, 'sidebar')
     const { mode } = usePreviewDisplayMode()
-    expect(mode.value).toBe('side')
+    expect(mode.value).toBe('inline')
   })
 
-  it('falls back to "side" when localStorage contains an empty string', () => {
+  it('falls back to "inline" when localStorage contains an empty string', () => {
     localStorage.setItem(STORAGE_KEY, '')
     const { mode } = usePreviewDisplayMode()
-    expect(mode.value).toBe('side')
+    expect(mode.value).toBe('inline')
   })
 
-  it('SSR-safe: returns "side" without throwing when localStorage is undefined', () => {
+  it('SSR-safe: returns "inline" without throwing when localStorage is undefined', () => {
     // Simulate a non-browser environment by REPLACING localStorage
     // with `undefined` via a configurable property descriptor. We
     // can't `delete globalThis.localStorage` because jsdom installs
@@ -102,11 +102,11 @@ describe('usePreviewDisplayMode', () => {
 
     try {
       const { mode, setMode } = usePreviewDisplayMode()
-      expect(mode.value).toBe('side')
+      expect(mode.value).toBe('inline')
       // setMode should also work (in-memory flip) even though it
       // can't persist anywhere.
-      setMode('inline')
-      expect(mode.value).toBe('inline')
+      setMode('side')
+      expect(mode.value).toBe('side')
     } finally {
       // Restore the stub for subsequent tests via beforeEach — but
       // do it eagerly here too, in case vitest runs the next test

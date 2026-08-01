@@ -50,7 +50,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { usePreviewDisplayMode } from '@/composables/usePreviewDisplayMode'
-import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
 import PreviewContentRenderer from '@/components/preview/PreviewContentRenderer.vue'
 
 interface Props {
@@ -160,34 +159,37 @@ const title = computed(() => {
 // When the user has flipped the global display mode to 'inline' via
 // the PreviewSidePanel header toggle (or the ChatView restore button),
 // this card mounts the shared PreviewContentRenderer inside the chat
-// bubble so the rich content is visible inline. In 'side' mode (the
-// default), the card stays minimal — click to open the side panel.
+// bubble so the rich content is visible inline. In 'side' mode
+// (the opt-in alternative), the card stays minimal — click to open
+// the side panel.
 //
-// Args extracted from the parameters tag: title / language / caption /
-// content. Same shape as PreviewSidePanel.activeArgs.
+// Args extracted from the parameters JSON prop. ChatView passes
+// `parameters` as a JSON-string of the show_preview tool-call args
+// (e.g. `{"content_type":"markdown","content":"# Plan","title":"Plan"}`).
+// The `content` prop, by contrast, carries the INNER envelope
+// (just `<show_preview><status>...</status>...</show_preview>`) — NOT
+// the `<tool>` wrapper. So we read directly from `props.parameters`
+// (the JSON) instead of trying to unwrap `props.content` (which
+// would always return null in production).
 
 const { isInline } = usePreviewDisplayMode()
 
-const previewArgs = computed(() => {
-  // Try the <tool> envelope first (modern pipeline), then fall back
-  // to plain JSON.parse (legacy raw-JSON rows).
-  const unwrapped: UnwrappedToolOutput | null = tryUnwrapToolOutput(props.content)
-  if (unwrapped?.parameters) {
-    const paramsXml = unwrapped.parameters
-    const fromXml: Record<string, string | undefined> = {
-      content_type: findTag(paramsXml, 'content_type') ?? undefined,
-      content: findTag(paramsXml, 'content') ?? undefined,
-      title: findTag(paramsXml, 'title') ?? undefined,
-      language: findTag(paramsXml, 'language') ?? undefined,
-      caption: findTag(paramsXml, 'caption') ?? undefined,
-    }
-    if (fromXml.content) return fromXml
-    try {
-      const parsed = JSON.parse(paramsXml) as Record<string, string | undefined>
-      if (parsed && typeof parsed === 'object') return parsed
-    } catch {
-      /* not JSON */
-    }
+interface PreviewParameters {
+  content_type?: string
+  content?: string
+  title?: string
+  language?: string
+  caption?: string
+}
+
+const previewArgs = computed<PreviewParameters>(() => {
+  try {
+    const parsed = JSON.parse(props.parameters) as PreviewParameters
+    if (parsed && typeof parsed === 'object') return parsed
+  } catch {
+    // parameters may be invalid JSON (legacy messages, malformed
+    // envelope) — silently fall through to an empty object. The
+    // header still renders; only the inline content body is empty.
   }
   return {}
 })

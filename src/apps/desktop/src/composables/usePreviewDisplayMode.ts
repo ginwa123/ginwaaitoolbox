@@ -2,13 +2,17 @@
  * usePreviewDisplayMode — single source of truth for the user-controlled
  * toggle that decides where `show_preview` agent tool outputs render:
  *
- *   - 'side'   → PreviewSidePanel (default — current behaviour)
  *   - 'inline' → rich content renders inside the chat message bubble
+ *                (default — matches the behaviour of every other tool
+ *                output like read_file, bash, etc., so previews are
+ *                visible in the chat history).
+ *   - 'side'   → PreviewSidePanel — opt-in alternative for users who
+ *                prefer a dedicated sidebar over inline rendering.
  *
  * The toggle lives in the PreviewSidePanel header (when panel is open)
- * and in a small floating "Open preview panel" button in ChatView
- * (when panel is dismissed). The choice persists in localStorage
- * under the key `nalar-preview-display-mode`.
+ * and in a small floating "Show in side panel" button in ChatView
+ * (when in inline mode + panel is dismissed). The choice persists
+ * in localStorage under the key `nalar-preview-display-mode`.
  *
  * SSR-safe: when `localStorage` is undefined (e.g. jsdom test that
  * explicitly removes it, or a non-browser bundler target), the
@@ -30,21 +34,22 @@ export type PreviewDisplayMode = 'side' | 'inline'
 export const PREVIEW_DISPLAY_MODE_STORAGE_KEY = 'nalar-preview-display-mode'
 
 const VALID_MODES: ReadonlySet<PreviewDisplayMode> = new Set(['side', 'inline'])
+const DEFAULT_MODE: PreviewDisplayMode = 'inline'
 
 function isPreviewDisplayMode(value: unknown): value is PreviewDisplayMode {
   return typeof value === 'string' && VALID_MODES.has(value as PreviewDisplayMode)
 }
 
 function loadInitial(): PreviewDisplayMode {
-  if (typeof localStorage === 'undefined') return 'side'
+  if (typeof localStorage === 'undefined') return DEFAULT_MODE
   try {
     const raw = localStorage.getItem(PREVIEW_DISPLAY_MODE_STORAGE_KEY)
-    if (!isPreviewDisplayMode(raw)) return 'side'
+    if (!isPreviewDisplayMode(raw)) return DEFAULT_MODE
     return raw
   } catch {
     // localStorage may throw in some browsers (SecurityError in
     // cross-origin frames). Fall back to the safe default.
-    return 'side'
+    return DEFAULT_MODE
   }
 }
 

@@ -33,16 +33,19 @@ mode" below).
 The user chooses where previews render via a 2-button segmented
 control in the side panel header (`Side` / `Inline`). The choice
 persists across reloads via `localStorage['nalar-preview-display-mode']`.
-Default: `side` (matches existing behaviour).
+Default: `inline` — matches the behaviour of every other tool
+output (`read_file`, `bash`, etc.), so previews are visible in
+the chat history without an extra click.
 
 | Mode | Where it renders |
 |---|---|
-| `side` (default) | The right-side `<PreviewSidePanel>` — current behaviour. |
-| `inline` | Rich content renders directly inside the chat message bubble (in `<ShowPreview>`). The side panel auto-hides. |
+| `inline` (default) | Rich content renders directly inside the chat message bubble (in `<ShowPreview>`). |
+| `side` (opt-in) | The right-side `<PreviewSidePanel>` — for users who prefer a dedicated sidebar over inline rendering. |
 
-When the side panel is hidden (inline mode + zero previews), a
-floating "📋 Open preview panel" button appears at top-right of
-the chat area. Click → flips mode back to `side`.
+In inline mode, the side panel auto-hides. A floating "📋 Open
+preview panel" button appears at top-right of the chat area when
+the user wants to switch to side mode. Click → flips mode back
+to `side`.
 
 The LLM does NOT pick the display mode per-call — only the user
 decides. Same UX model as `<DiffView>`'s split/unified toggle.
