@@ -1099,3 +1099,106 @@ backend wire.
 Commits: `a4c0749f` (composable + renderer), `f33fdf0a`
 (PreviewSidePanel toggle UI), `8342f68d` (ShowPreview inline +
 ChatView wiring).
+
+### 2026-08-06: filteringTools — filter LLM tool list by parent item_type + 11 unit tests
+
+**Symptom (background).** Every session received the SAME 56-tool
+tool listing, regardless of whether the agent's parent item was a
+kanban, a design canvas, or a folder. That meant a design-session
+agent saw `kanban_list` + `kanban_move_task` (and would routinely call
+them by mistake), a folder-session agent saw `set_design_page` +
+`add_element` + etc. (would try to render designs inside a folder),
+and a kanban-session agent saw every design tool it could never
+use. The agent's mental model was cluttered with inapplicable affordances.
+
+**The mental model.** Strip the tool listing per session based on the
+parent item's `item_type`:
+
+| Parent `item_type` | Removed tools |
+|---|---|
+| `design` | `kanban_list`, `kanban_move_task` |
+| `folder` | `kanban_list`, `kanban_move_task`, `set_design_page`, `add_element`, `update_element`, `group_elements`, `set_element_parent`, `move_design_element` (8 tools) |
+| `kanban` | `set_design_page`, `add_element`, `update_element`, `group_elements`, `set_element_parent`, `move_design_element` (6 tools) |
+| anything else (`chat`, etc.) | (no-op — tools pass through unchanged) |
+| empty / unbound `session_id` | (no-op — `getWorkspaceContext` returns null) |
+
+The three branches are **mutually exclusive** — only ONE can match per
+call. The session-id short-circuit at the top of `filteringTools`
+makes the no-op case also explicit.
+
+**What landed.**
+
+- `src/ai_workflow/tui/build_messages_for_agent_prompt.zig`:
+  - Promote `tree1_mod` → `nalarcore` (housekeeping, was inconsistent
+    with the rest of the file).
+  - Add module imports for the 8 kanban / design tool modules whose
+    `*_tool` constants drive the filter (`kanban_list`,
+    `kanban_move_task`, `set_design_page`, `add_design_element`,
+    `update_design_element`, `group_design_elements`,
+    `set_element_parent`, `move_design_element`).
+  - Add `pub fn filteringTools(...)` — the per-item-type filter
+    helper (originally `fn`, made `pub` so unit tests can call it
+    directly without going through `buildMessages`).
+  - Wire `filteringTools` into `buildMessages` between the `tools`
+    argument and the `makeKanbanContext` / `build_agent_prompt`
+    consumers.
+- `src/ai_workflow/tui/agentic_loop/workflow.zig`:
+  - Move `filterAndMergeTools(...)` from being hoisted BEFORE the
+    agentic loop to inside the loop body. The previous hoist meant
+    the merge only ran once; if the equipped-tools list changed
+    mid-run (allowed_tools toggle, MCP fetch), the change was
+    ignored until the next session.
+- `src/ai_workflow/tui/agentic_loop/tools_equipped.zig`:
+  - Regroup the augmented tool list so the `// kanban only` /
+    `// design only` comment markers sit ABOVE each group instead of
+    inline (cosmetic, but makes the partitioning obvious to future
+    readers).
+
+**Tests (11 cases, behavioural).** New file
+`src/ai_workflow/tui/build_messages_for_agent_prompt_filtering_tools_test.zig`,
+registered in `src/ai_workflow/tui/test_runner.zig`:
+
+1. Design parent drops kanban tools; keeps design + mock tools.
+2. Folder parent drops all 8 kanban+design tools; keeps only the 2 mocks.
+3. Kanban parent drops the 6 design tools; keeps kanban + mocks.
+4. Chat parent — no branch matches → no filter applied (length 10).
+5. Empty `session_id` → returns tools unchanged (`getWorkspaceContext` short-circuits to null).
+6. Unbound `session_id` (no matching task) → returns tools unchanged (null anchor row).
+7. Empty tools list → returns empty slice regardless of parent type.
+8. Kanban-only tools + design parent → empty (all dropped).
+9. Design-only tools + kanban parent → empty (all dropped).
+10. Filter outcome is independent of input order — same 10 tools in
+    reversed order produce the same sorted multiset of remaining names.
+11. Folder branch and the design-only branches never both fire (mutex
+    regression guard).
+
+The fixture uses the **actual `*_tool` constants** from each module
+(not hard-coded name strings) so a future rename of `kanban_list_tool`
+to `list_kanban` (etc.) would surface here as a real test failure,
+not a silent string drift.
+
+**Verification (worktree `worktree/unit-test-filtering-tools`).**
+
+- `zig build test --summary all`: **2179 pass, 6 skip, 0 fail** (was
+  2168/2174 before, +11 new tests).
+- 2 leaks reported — **PRE-EXISTING** in
+  `design_model_set_element_parent_test.zig` cycle-rejection test;
+  verified by `git stash` + run, leaks count unchanged on
+  `b065d3ef`'s parent commit.
+- `zig build install:linux:system` + `rm -rf zig-out/bin && zig build`
+  both succeed — produces both `nalarcore-linux-x86_64` and
+  `nalar-desktop` binaries.
+- Cross-compile smoke: `zig build-obj -fno-emit-bin -target
+  x86_64-windows-gnu` and `-target aarch64-macos` both PASS (no
+  errors), so the new code compiles for Windows + macOS too.
+
+**Out of scope (deferred).**
+
+- LLM-side filtering (LLM is never asked to filter tools itself) —
+  this is purely a server-side trim of the request payload.
+- Per-call mixing (e.g. "this tool only in this prompt, not that
+  one") — single global per-item-type filter for v1.
+- Storing the active item_type in session metadata (currently derived
+  on every call via `getWorkspaceContext`).
+
+**Commit.** `b065d3ef` (squash on `worktree/unit-test-filtering-tools`).
