@@ -3,7 +3,7 @@
 **Branch:** `worktree/design-ungroup`
 **Date:** 2026-08-06
 **Owner:** session `task_1785595978987`
-**PR:** pending (squash target: `main`)
+**PR:** #166 → https://github.com/ginwa123/ginwaaitoolbox/pull/166
 
 ---
 
