@@ -95,6 +95,7 @@ vi.mock('../../api', async (importOriginal) => {
 
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useDesignHandlers } from '../../composables/useDesignHandlers'
+import { setDesignLoggerEnabled } from '../../helpers/designLogger'
 
 describe('useDesignHandlers.translateElement → store → POST /translate', () => {
   beforeEach(() => {
@@ -125,6 +126,7 @@ describe('useDesignHandlers.translateElement → store → POST /translate', () 
   })
 
   it('is a no-op when activeDesignPageId is empty (warns)', async () => {
+    setDesignLoggerEnabled(true)
     const store = useWorkspacesStore()
     store.activeDesignPageId = ''
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})

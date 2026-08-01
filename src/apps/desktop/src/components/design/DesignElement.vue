@@ -45,6 +45,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import type { DesignElement } from '../../api'
 import { getDesignElementHtml } from '../../api'
 import DesignElementPreview from './DesignElementPreview.vue'
+import { abbrevElement, designLogger } from '../../helpers/designLogger'
 
 const props = withDefaults(
   defineProps<{
@@ -198,18 +199,45 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   if (mode !== 'move') {
     event.stopPropagation()
   }
-  if (props.readonly) return
+  if (props.readonly) {
+    designLogger.debug({
+      reason: 'drag:noop:readonly',
+      caller: 'DesignElement.startDrag',
+      element: abbrevElement(props.element),
+    })
+    return
+  }
   // In Preview mode, the canvas is "playing" the mockup — clicks
   // on element bodies are absorbed by the inner iframe (typed text,
   // button activations). Don't start a drag, don't emit select.
-  if (props.previewMode) return
+  if (props.previewMode) {
+    designLogger.debug({
+      reason: 'drag:noop:preview',
+      caller: 'DesignElement.startDrag',
+      element: abbrevElement(props.element),
+    })
+    return
+  }
   // Don't initiate a drag if the click was on an interactive child
   // (e.g. the iframe content) — pointer-events:none on the iframe
   // already prevents that, but we double-check.
-  if (event.button !== 0) return
+  if (event.button !== 0) {
+    designLogger.debug({
+      reason: 'drag:noop:button≠0',
+      caller: 'DesignElement.startDrag',
+      element: abbrevElement(props.element),
+    })
+    return
+  }
   emit('select', {
     elementId: props.element.id,
     additive: event.shiftKey,
+  })
+  designLogger.info({
+    reason: 'emit:select',
+    caller: 'DesignElement.startDrag',
+    element: abbrevElement(props.element),
+    extra: { additive: event.shiftKey, mode },
   })
 
   // Undo/redo plan (Chunk 4): emit drag-start BEFORE the gesture
@@ -223,6 +251,12 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     ? props.selectedIds
     : [props.element.id]
   emit('dragStart', groupDragIds)
+  designLogger.info({
+    reason: 'emit:dragStart',
+    caller: 'DesignElement.startDrag',
+    element: abbrevElement(props.element),
+    extra: { groupDragIds: [...groupDragIds], mode },
+  })
 
   // Group drag (Chunk 2): when this element is part of a multi-selection,
   // dragging moves the ENTIRE selection. The parent applies the same
@@ -254,6 +288,14 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     let pendingDy = 0
     let lastEmitMs = 0
     const THROTTLE_MS = 50
+    designLogger.info({
+      reason: 'drag:start:group',
+      caller: 'DesignElement.startDrag',
+      element: abbrevElement(props.element),
+      isGroup: true,
+      startClientX,
+      startClientY,
+    })
     const onMove = (e: PointerEvent): void => {
       const inv = 1 / Math.max(0.01, props.zoom)
       pendingDx = (e.clientX - startClientX) * inv
@@ -262,6 +304,16 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
       if (now - lastEmitMs >= THROTTLE_MS) {
         emit('groupDrag', { dx: pendingDx, dy: pendingDy })
         lastEmitMs = now
+        designLogger.debug({
+          reason: 'drag:throttled-emit',
+          caller: 'DesignElement.startDrag',
+          element: abbrevElement(props.element),
+          dx: pendingDx,
+          dy: pendingDy,
+          startClientX,
+          startClientY,
+          isGroup: true,
+        })
       }
     }
     const onUp = (e: PointerEvent): void => {
@@ -271,8 +323,23 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
       isDragging.value = false
       // Trailing emit: capture the final position regardless of throttle.
       emit('groupDrag', { dx: pendingDx, dy: pendingDy })
+      designLogger.info({
+        reason: 'drag:trailing-emit',
+        caller: 'DesignElement.startDrag',
+        element: abbrevElement(props.element),
+        dx: pendingDx,
+        dy: pendingDy,
+        startClientX,
+        startClientY,
+        isGroup: true,
+      })
       // Chunk 3: tell the parent to clear its snap guides.
       emit('dragEnd')
+      designLogger.info({
+        reason: 'emit:dragEnd',
+        caller: 'DesignElement.startDrag',
+        element: abbrevElement(props.element),
+      })
       target.removeEventListener('pointermove', onMove)
       target.removeEventListener('pointerup', onUp)
       target.removeEventListener('pointercancel', onUp)
@@ -282,6 +349,21 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     target.addEventListener('pointercancel', onUp)
     return
   }
+
+  // ─── Single-element drag path log ──────────────────────────────────
+  // The triggerGroupDrag branch above already returned for groups /
+  // frames / multi-select. Falls through here for leaves (rectangle,
+  // ellipse, text, image). The "drag:start:move" line below is what
+  // proves the leaf element actually started a drag — without it,
+  // "I clicked but nothing moved" can't be localised.
+  designLogger.info({
+    reason: 'drag:start:move',
+    caller: 'DesignElement.startDrag',
+    element: abbrevElement(props.element),
+    isGroup: false,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+  })
 
   // Single-element drag. 50 ms leading-edge throttle + trailing
   // pointerup emit. The visual position update flows through:
@@ -317,6 +399,19 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     x: props.element.x, y: props.element.y,
     width: props.element.width, height: props.element.height,
   }
+  // Overwrite the drag:start:move info above with a more-specific
+  // reason (resize vs move) using `mode`. The earlier info line is
+  // a redundancy safety net in case this code path throws before
+  // reaching here.
+  designLogger.info({
+    reason: mode === 'move' ? 'drag:start:move' : 'drag:start:resize',
+    caller: 'DesignElement.startDrag',
+    element: abbrevElement(props.element),
+    isGroup: false,
+    startClientX: startX,
+    startClientY: startY,
+    extra: { mode: typeof mode === 'string' ? mode : mode.resize },
+  })
 
   // The latest pending event we intend to emit. Throttled: we only
   // emit when either (a) 50ms has elapsed since the last emit, or
@@ -339,11 +434,30 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   const flushEmit = (): void => {
     if (pendingTranslate) {
       emit('translate', pendingTranslate)
+      designLogger.debug({
+        reason: 'emit:translate',
+        caller: 'DesignElement.startDrag',
+        element: abbrevElement(props.element),
+        dx: pendingTranslate.dx,
+        dy: pendingTranslate.dy,
+        startClientX: startX,
+        startClientY: startY,
+        isGroup: false,
+      })
       pendingTranslate = null
       lastEmitMs = performance.now()
     }
     if (pendingResize) {
       emit('resize', pendingResize)
+      designLogger.debug({
+        reason: 'emit:resize',
+        caller: 'DesignElement.startDrag',
+        element: abbrevElement(props.element),
+        patch: pendingResize,
+        startClientX: startX,
+        startClientY: startY,
+        isGroup: false,
+      })
       pendingResize = null
       lastEmitMs = performance.now()
     }
@@ -392,6 +506,11 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     flushEmit()
     // Chunk 3: tell the parent to clear its snap guides.
     emit('dragEnd')
+    designLogger.info({
+      reason: 'emit:dragEnd',
+      caller: 'DesignElement.startDrag',
+      element: abbrevElement(props.element),
+    })
     target.removeEventListener('pointermove', onMove)
     target.removeEventListener('pointerup', onUp)
     target.removeEventListener('pointercancel', onUp)

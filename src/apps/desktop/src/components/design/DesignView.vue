@@ -72,6 +72,7 @@ import DesignContextMenu from './DesignContextMenu.vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import { useNotificationStore } from '../../stores/notifications'
 import { useDesignHandlers } from '../../composables/useDesignHandlers'
+import { designLogger } from '../../helpers/designLogger'
 import { useDesignHistory } from '../../composables/useDesignHistory'
 import DesignHistoryButtons from './DesignHistoryButtons.vue'
 import { useDesignContextMenu } from '../../composables/useDesignContextMenu'
@@ -1206,8 +1207,24 @@ const handleElementUpdate = (patch: Partial<DesignElementApi>): void => {
  * groups, so we just forward the delta + the element id.
  */
 const handleElementTranslate = (delta: { dx: number; dy: number }): void => {
-  if (selectedIds.value.size !== 1) return
+  if (selectedIds.value.size !== 1) {
+    designLogger.warn({
+      reason: 'handle:translateElement',
+      caller: 'DesignView.handleElementTranslate',
+      dx: delta.dx,
+      dy: delta.dy,
+      extra: { selectedIdsSize: selectedIds.value.size, reason: 'no single selection' },
+    })
+    return
+  }
   const id = selectedIds.value.values().next().value as string
+  designLogger.info({
+    reason: 'handle:translateElement',
+    caller: 'DesignView.handleElementTranslate',
+    dx: delta.dx,
+    dy: delta.dy,
+    extra: { id },
+  })
   emit('translateElement', id, delta.dx, delta.dy)
 }
 
@@ -1221,8 +1238,22 @@ const handleElementTranslate = (delta: { dx: number; dy: number }): void => {
  * Resize never cascades (Figma convention).
  */
 const handleElementResize = (patch: Partial<DesignElementApi>): void => {
-  if (selectedIds.value.size !== 1) return
+  if (selectedIds.value.size !== 1) {
+    designLogger.warn({
+      reason: 'handle:resizeElement',
+      caller: 'DesignView.handleElementResize',
+      patch,
+      extra: { selectedIdsSize: selectedIds.value.size, reason: 'no single selection' },
+    })
+    return
+  }
   const id = selectedIds.value.values().next().value as string
+  designLogger.info({
+    reason: 'handle:resizeElement',
+    caller: 'DesignView.handleElementResize',
+    patch,
+    extra: { id },
+  })
   emit('resizeElement', id, patch)
 }
 
@@ -1393,6 +1424,26 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
       for (const el of selected) {
         dragStartPositions.set(el.id, { x: el.x, y: el.y })
       }
+      designLogger.info({
+        reason: 'handle:dragStart:resetSnapshot',
+        caller: 'DesignView.handleGroupDrag',
+        snapshotFresh: true,
+        snapshotSize: dragStartPositions.size,
+        extra: { ids: Array.from(dragStartPositions.keys()) },
+      })
+    } else {
+      // Stale snapshot — the suspected second-drag bug. Log loudly so
+      // a DevTools scan flags it immediately.
+      designLogger.warn({
+        reason: 'handle:dragStart:resetSnapshot',
+        caller: 'DesignView.handleGroupDrag',
+        snapshotFresh: false,
+        snapshotSize: dragStartPositions.size,
+        extra: {
+          ids: Array.from(dragStartPositions.keys()),
+          note: 'dragStartPositions was NOT null on entry — likely a leaked snapshot from the previous drag',
+        },
+      })
     }
     const originalPos = (e: DesignElementApi): { x: number; y: number } =>
       dragStartPositions!.get(e.id) ?? { x: e.x, y: e.y }
@@ -1452,6 +1503,16 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
         dy: Math.round(finalDy),
       })),
     })
+    designLogger.info({
+      reason: 'handle:groupDrag',
+      caller: 'DesignView.handleGroupDrag',
+      ids: selected.map((el) => el.id),
+      dx: Math.round(finalDx),
+      dy: Math.round(finalDy),
+      workspaceId,
+      itemId,
+      pageId,
+    })
     return
   }
 }
@@ -1480,6 +1541,11 @@ const handleDragStart = (ids: string[]): void => {
   void history.capturePreState(ids)
 }
 const handleDragEnd = (): void => {
+  designLogger.info({
+    reason: 'handle:dragEnd:snapshot=null',
+    caller: 'DesignView.handleDragEnd',
+    extra: { previousSnapshotSize: 'reset to null' },
+  })
   dragStartPositions = null
   void history.capturePostState(
     // For single-element drag, ids is implicit (just this element).
