@@ -318,6 +318,18 @@ const handleNavigate = (
   taskId?: string,
   workspaceId?: string,
   itemId?: string,
+  // NEW (design-pages-in-workspace-tree plan, 2026-08-06): the
+  // 6th positional arg lets the caller pin a specific design page
+  // when navigating to `view: 'workspace'`. Empty / undefined
+  // means "no page pinned" (DesignView falls back to the first
+  // page in the cache). Pre-fix, the workspace branch only wrote
+  // workspaceId + itemId to the URL — a click on a design page
+  // navigated correctly into DesignView (the store had the page
+  // id) but the URL lost it on the next reload, so a refresh
+  // restored the wrong page. Now the URL is the source of truth
+  // for reload, matching the existing `activeDesignPageId` mirror
+  // on line 188.
+  pageId?: string,
 ) => {
   if (view.startsWith('chat-')) {
     const chatSessionId = view.replace(/^chat-/, '')
@@ -345,6 +357,11 @@ const handleNavigate = (
     if (workspaceId && itemId) {
       query.workspaceId = workspaceId
       query.itemId = itemId
+      // NEW (design-pages-in-workspace-tree plan, 2026-08-06):
+      // also mirror pageId when present so a reload of the
+      // design view restores the same page (URL is source of
+      // truth, matching the activeDesignPageId mirror on line 188).
+      if (pageId) query.pageId = pageId
     }
     router.replace({ path: '/app', query })
   } else if (view === 'task') {
