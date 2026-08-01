@@ -5,14 +5,23 @@
 
   Items (in display order):
     1. Group selection      (Cmd+G)
-    2. Select all           (Cmd+A)
+    2. Leave group          (no shortcut — drag-out affordance only)
+    3. Ungroup              (Cmd+Shift+G)
+    4. Select all           (Cmd+A)
     ─── separator
-    3. Bring to front       (Cmd+Shift+])
-    4. Bring forward        (Cmd+])
-    5. Send backward        (Cmd+[)
-    6. Send to back         (Cmd+Shift+[)
+    5. Bring to front       (Cmd+Shift+])
+    6. Bring forward        (Cmd+])
+    7. Send backward        (Cmd+[)
+    8. Send to back         (Cmd+Shift+[)
     ─── separator
-    7. Delete               (Backspace)
+    9. Delete               (Backspace)
+
+  Leave group is the inverse of the drag-to-join-group affordance
+  (PR #151). It pulls the SINGLE selected element out of its current
+  parent group/frame to top-level — the group itself is preserved
+  (other children stay nested). Distinct from Ungroup, which
+  *dissolves* the selected group/frame and reparents ITS children to
+  the group's parent.
 
   Why Teleport to body: the menu must float above the design canvas
   (which has `transform: scale()` for zoom + `overflow: auto`). A
@@ -39,14 +48,22 @@ const props = defineProps<{
    * whether the current `targetIds` selection contains exactly one
    * group/frame (the only state in which Ungroup can fire —
    * matches Figma: Ungroup is greyed out unless the single selection
-   * is a group).
+   * is a group), and whether the single selection has a `parent_id`
+   * set (the only state in which Leave group can fire — matches
+   * Figma: "Pull out of group" is greyed out for top-level elements).
    */
-  elements: ReadonlyArray<{ id: string; type: string }>
+  // `parent_id` accepts the same shape the API returns: a non-empty
+  // string means the element is currently inside a group/frame;
+  // empty string (`COALESCE(parent_id, '')`) or null/undefined means
+  // top-level. The canLeaveGroup computed treats empty/null/
+  // undefined the same way (no parent → button is disabled).
+  elements: ReadonlyArray<{ id: string; type: string; parent_id?: string | null }>
 }>()
 
 const emit = defineEmits<{
   close: []
   group: [targetIds: string[]]
+  leaveGroup: [targetId: string]
   ungroup: [targetId: string]
   selectAll: []
   bringToFront: [targetIds: string[]]
@@ -64,6 +81,25 @@ const acc = (mac: string, linux: string): string => (isMac.value ? mac : linux)
 
 const hasSelection = computed(() => props.targetIds.length >= 1)
 const canGroup = computed(() => props.targetIds.length >= 2)
+
+// Leave group is enabled only when EXACTLY ONE element is selected
+// AND that element has a non-empty `parent_id` (it's currently nested
+// inside a group or frame). Mirrors Figma's "Pull out of group" — the
+// affordance is greyed out for already top-level rows. Independent of
+// `canUngroup`: a group/frame can ALSO be inside another group
+// (nested), in which case both Leave group AND Ungroup can fire.
+const canLeaveGroup = computed(() => {
+  if (props.targetIds.length !== 1) return false
+  const targetId = props.targetIds[0]
+  if (!targetId) return false
+  const target = props.elements.find((e) => e.id === targetId)
+  if (!target) return false
+  // `parent_id` arrives as '' (empty string) for top-level elements
+  // (the backend uses COALESCE(parent_id, '')) or is undefined when
+  // the API returned an older shape. Both count as "not inside a
+  // group" → disabled.
+  return !!target.parent_id && target.parent_id !== ''
+})
 
 // Ungroup is enabled only when EXACTLY ONE element is selected AND
 // that element's type is 'group' or 'frame'. Mirrors Figma's
@@ -89,11 +125,11 @@ const reorderItems = computed(() => [
 ])
 
 // Estimated menu footprint for viewport edge clamping. Counted
-// from the items[] below: 8 buttons + 2 separators = 10 rows × 40px
+// from the items[] below: 9 buttons + 2 separators = 11 rows × 40px
 // tall; 220px wide minimum.
 const MENU_WIDTH = 220
 const MENU_ROW_HEIGHT = 40
-const MENU_ROWS = 10
+const MENU_ROWS = 11
 const VIEWPORT_MARGIN = 8
 
 const edgeClampedStyle = computed(() => {
@@ -149,6 +185,17 @@ function dispatchReorder(item: typeof reorderItems.value[number]): void {
       >
         <span>Group selection</span>
         <span class="text-xs" style="color: var(--semantic-text-dim);">{{ acc('⌘G', 'Ctrl+G') }}</span>
+      </button>
+      <button
+        type="button"
+        class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
+        style="color: var(--semantic-text);"
+        :disabled="!canLeaveGroup"
+        data-testid="design-context-menu-leave-group"
+        @click="emit('leaveGroup', targetIds[0]!)"
+      >
+        <span>Leave group</span>
+        <span class="text-xs" style="color: var(--semantic-text-dim);">&nbsp;</span>
       </button>
       <button
         type="button"

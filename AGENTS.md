@@ -397,6 +397,38 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Design — Leave group menu item (Figma "Pull out of group")
+
+**Symptom (user report).** Right-clicking a child row in the design LayersPanel and clicking **Ungroup** did nothing — or, worse, returned a backend `400 EmptyGroup` error when the user actually wanted to *pull the selected element out of its parent group*, not *dissolve the parent group*. The two actions looked identical because Ungroup was the only menu item relevant to nested elements, and the menu label "Ungroup" reads as "leave the group" to anyone who hasn't memorised Figma's distinction.
+
+**The mental model.** Two separate operations:
+
+| Operation | What it does | When the menu enables it |
+|---|---|---|
+| **Leave group** (NEW) | Pulls the SINGLE selected element out of its current parent group/frame → top-level. The parent group survives (other children stay nested). | Single selected AND `parent_id` is non-empty |
+| **Ungroup** (existing) | Dissolves the SINGLE selected group/frame → its children move to the group's parent, the group itself is deleted. | Single selected AND type is `group`/`frame` AND it has children |
+
+The same element can be eligible for BOTH (a nested group/frame with siblings inside it): Leave group pulls the group out to top-level; Ungroup dissolves it. Unrelated, complementary actions.
+
+**What landed.** Surgical frontend change — no backend or DB touch needed (the drag-out affordance from PR #151 already wires `POST .../elements/reparent-batch` with `new_parent_id: null` for top-level drops; this just exposes the same endpoint via the right-click menu).
+
+- **`DesignContextMenu.vue`**: added `Leave group` menu item between `Group selection` and `Ungroup`, with `data-testid="design-context-menu-leave-group"`. New `canLeaveGroup` computed: enabled when exactly 1 selected AND `parent_id` is non-empty (string `""` or `null`/`undefined` count as top-level). New `leaveGroup[elementId: string]` emit. Element prop type widened from `parent_id` omitted to `parent_id?: string | null` to accept the wire shape (the backend's `COALESCE(parent_id, '')` returns empty string, the API surface also admits `null`/`undefined`). Menu rows count `10` → `11`.
+- **`LayersPanel.vue`**: forward `leaveGroup` from the menu's `@leave-group` emit to the parent's `@leaveGroup` event (LayersPanel does NOT change the wire — it just bubbles).
+- **`DesignView.vue`**: new handler `handleDesignLeaveGroupFromContextMenu(elementId)` that calls `designHandlers.leaveGroup(elementId)`. Wired at BOTH the canvas's `DesignContextMenu` mount AND the `LayersPanel` mount — same fire-once contract.
+- **`useDesignHandlers.ts`**: new `leaveGroup(elementId: string)` composable function. Mirrors `ungroupSelection` shape (args-driven ids, silent no-op on missing args, try/catch around the store call, success toast via `notificationStore.notifyError`, error toast on failure). Clears `selectedIds.value` on success (Figma parity). Internally calls the existing `workspacesStore.reparentDesignElementsBatch` with `{ element_ids: [id], new_parent_id: null }`.
+
+**Tests.** 8 new behavioural tests (matching user rule `2026-07-29` — no static-contract):
+- 7 in `DesignContextMenu.spec.ts`: enabled/disabled for single-vs-multi select, top-level-vs-nested, click emits `leaveGroup`, disabled click does NOT emit, nested group/frame leaves both Leave group + Ungroup enabled (orthogonal actions), canUngroup is unaffected by Leave group.
+- 1 in `LayersPanel.contextMenu.spec.ts`: end-to-end right-click on a child row → click Leave group → LayersPanel emits `leaveGroup` with the right id.
+
+Update to existing "renders all 8 menu items" test → "renders all 9 menu items" with `design-context-menu-leave-group` added to the expected list between `group` and `ungroup`.
+
+**Verification (worktree `worktree/design-ungroup`).** `bun run build` clean (type-check pass). Full test suite: `1901 passed / 8 failed`. The 8 failures are PRE-EXISTING on `main` (verified via `git stash` + run) and unrelated: `DesignView.undoHidden.spec.ts` (5 — locks in "undo/redo feature is hidden" invariant), `DesignElement.vue static contract` (1 — `expect(source).toMatch(...)`, banned but not deleted yet), `DesignView.nudge.spec.ts` (1 — pre-existing `arrow nudge clamps element to canvas bounds` flake), `AppLayout.translateResize.spec.ts` (1 — pre-existing `POST /translate` flake). Zig test summary: 2160/2166 pass (same on `main`, no regressions). 
+
+**Out of scope.** Data-desync investigation: `chat-area` looked nested under `Group 5` in the user's screenshot, but the backend said `EmptyGroup` when Ungroup tried to dissolve it — visual tree builder in `LayersPanel.vue` shows `input-area`/`state-transition` indented under `chat-area` even though their `parent_id` may be empty. Likely a stale SSE response or a drag-to-leave that updated the visual tree but not the DB. Separate plan / bug.
+
+**No keyboard shortcut.** Figma doesn't have one; `Cmd+Shift+G` is taken by Ungroup. Drag-out (PR #151) is still available for mouse users.
+
 ### 2026-08-06: Kanban — embed ChatView inside KanbanView (pure relocation)
 
 **Symptom (pre-fix).** AppLayout.vue mounted `<KanbanView>` TWICE as siblings of itself: standalone (line 1847) and inside a 3-column block (lines 1739-1825) that glued a `<ChatView>` + resize handle next to the kanban. The 3-column block also owned the entire kanban resize state machine (~130 lines, lines 763-895). The same `<KanbanView>` component + the same 12 `:on` event handlers were duplicated in both mounts.

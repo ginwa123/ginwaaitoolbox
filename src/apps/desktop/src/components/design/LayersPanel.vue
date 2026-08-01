@@ -76,6 +76,12 @@ const emit = defineEmits<{
   // appropriate handlers (useDesignHandlers, store actions).
   group: [targetIds: string[]]
   ungroup: [elementId: string]
+  // NEW (2026-08-06, design-leave-group plan): pull the SINGLE
+  // selected element out of its current parent group/frame to
+  // top-level. Wired through DesignView → useDesignHandlers →
+  // workspacesStore.reparentDesignElementsBatch. Independent of the
+  // Ungroup action (which dissolves the selected group itself).
+  leaveGroup: [elementId: string]
   selectAll: []
   bringToFront: [targetIds: string[]]
   bringForward: [targetIds: string[]]
@@ -402,6 +408,7 @@ const handleMoveDown = (elementId: string): void => {
       :elements="elements"
       @group="(ids) => emit('group', ids)"
       @ungroup="(id) => emit('ungroup', id)"
+      @leave-group="(id) => emit('leaveGroup', id)"
       @select-all="emit('selectAll')"
       @bring-to-front="(ids) => emit('bringToFront', ids)"
       @bring-forward="(ids) => emit('bringForward', ids)"

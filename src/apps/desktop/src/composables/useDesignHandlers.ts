@@ -315,6 +315,66 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
   }
 
   /**
+   * NEW (2026-08-06, design-leave-group plan). Figma-style "Pull
+   * out of group" affordance: pull the SINGLE selected element out
+   * of its current parent group/frame to top-level. Distinct from
+   * `ungroupSelection` (which dissolves the selected group itself).
+   * The parent group survives and any other children stay nested.
+   *
+   * Routes through the same reparent-batch endpoint used by the
+   * drag-out affordance (PR #151), with `newParentId: null` (top-
+   * level). The backend's cycle preflight is a no-op here (no
+   * parent_id is being set), so the only failure mode is network /
+   * server-side validation.
+   *
+   * Quiet no-op when args are missing or any of workspaceId /
+   * itemId / pageId / elementId is empty (matches the pattern of
+   * every sibling handler — see `ungroupSelection` above).
+   *
+   * On success: clears `args.selectedIds.value` and shows a toast
+   * so the user knows the action succeeded (the store mirrors the
+   * server response into the local `elements` ref automatically).
+   *
+   * On error: the store's error surfaces via `notificationStore.
+   * notifyError(...)`.
+   */
+  async function leaveGroup(elementId: string): Promise<void> {
+    if (!args) {
+      console.warn('[useDesignHandlers.leaveGroup] no args provided; skipping')
+      return
+    }
+    const workspaceId = readId(args.workspaceId)
+    const itemId = readId(args.itemId)
+    const pageId = readId(args.pageId)
+    if (!workspaceId || !itemId || !pageId || !elementId) {
+      // Missing ids — quiet no-op.
+      return
+    }
+    try {
+      await workspacesStore.reparentDesignElementsBatch(
+        workspaceId,
+        itemId,
+        pageId,
+        {
+          element_ids: [elementId],
+          new_parent_id: null,
+        },
+      )
+      // Clear selection so the user can immediately Leave group
+      // again on a fresh selection (Figma behavior — the just-
+      // pulled-out element stays highlighted through spurious
+      // context menus unless we clear).
+      args.selectedIds.value = new Set()
+      notificationStore.notifyError(
+        'Left group. Element moved to top-level.',
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      notificationStore.notifyError(message, 'Failed to leave group.')
+    }
+  }
+
+  /**
    * NEW (Chunk 2 Task 2.3 of drag-to-reparent plan). Figma-style
    * drag-and-drop affordance: reparent 1 OR N selected rows into
    * the same target (a `group`/`frame` row, or top-level). Routes
@@ -417,6 +477,7 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
     deleteElement,
     groupSelection,
     ungroupSelection,
+    leaveGroup,
     reparentLayers,
     moveElementWithDescendants,
   }

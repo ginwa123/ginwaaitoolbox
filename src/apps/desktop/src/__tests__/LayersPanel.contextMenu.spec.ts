@@ -222,4 +222,44 @@ describe('LayersPanel context menu', () => {
     const vm = wrapper.findComponent({ name: 'DesignContextMenu' })
     expect(vm.props('targetIds')).toEqual(['elem_a', 'elem_b', 'elem_c'])
   })
+
+  // ─── Leave group (2026-08-06, design-leave-group plan) ────────────────
+  //
+  // The LayersPanel forwards the menu's @leave-group emit upward as
+  // the @leaveGroup emit. The test confirms the forward works — the
+  // actual reparent is in DesignView (out of scope here).
+
+  it('forwards the menu leaveGroup click as a top-level @leaveGroup emit with the single id', async () => {
+    // `elem_b` is a child of `elem_a` (parent_id set). Right-click,
+    // then click the menu's Leave-group button. LayersPanel must
+    // emit `leaveGroup` with ['elem_b'].
+    const elements = [
+      makeElement({ id: 'elem_a', z_index: 1 }),
+      makeElement({ id: 'elem_b', z_index: 0, parent_id: 'elem_a' }),
+    ]
+    wrapper = mount(LayersPanel, {
+      props: { elements, selectedIds: ['elem_b'], readonly: false },
+      attachTo: document.body,
+    })
+    await nextTick()
+
+    // Open the menu on elem_b's row.
+    const row = wrapper.find('[data-testid="design-layer-elem_b"]')
+    await row.trigger('contextmenu', { clientX: 100, clientY: 200 })
+    await nextTick()
+
+    // Click Leave group.
+    const btn = document.querySelector<HTMLButtonElement>(
+      '[data-testid="design-context-menu-leave-group"]',
+    )!
+    expect(btn).not.toBeNull()
+    expect(btn.disabled).toBe(false)
+    btn.click()
+    await nextTick()
+
+    // The forward reaches LayersPanel's emit.
+    const emits = wrapper.emitted('leaveGroup')
+    expect(emits).toBeTruthy()
+    expect(emits?.[0]).toEqual(['elem_b'])
+  })
 })

@@ -1380,6 +1380,19 @@ const handleDesignUngroupFromContextMenu = (elementId: string): void => {
   void designHandlers.ungroupSelection(elementId)
 }
 
+// NEW (2026-08-06, design-leave-group plan): pull the SINGLE
+// selected element out of its current parent group/frame to
+// top-level. Distinct from Ungroup (which dissolves the selected
+// group itself) — the parent group survives and any other children
+// stay nested. Figma parity for "Pull out of group". Routes through
+// the same reparent-batch endpoint used by the drag-out affordance
+// (PR #151), with newParentId=null.
+const handleDesignLeaveGroupFromContextMenu = (elementId: string): void => {
+  if (!elementId) return
+  if (!props.workspaceId || !effectiveItemId.value || !activePageId.value) return
+  void designHandlers.leaveGroup(elementId)
+}
+
 // Chunk 2: group drag. When the user drags any element that's part of
 // a multi-selection, DesignElement emits `groupDrag` with the cursor
 // delta (design-px, zoom-adjusted). We translate that into N individual
@@ -2216,6 +2229,7 @@ watch(
             @delete="handleElementDelete"
             @group="handleDesignGroupFromContextMenu"
             @ungroup="handleDesignUngroupFromContextMenu"
+            @leave-group="handleDesignLeaveGroupFromContextMenu"
             @select-all="handleDesignSelectAll"
             @bring-to-front="() => dispatchReorder('bring_to_front')"
             @bring-forward="() => dispatchReorder('bring_forward')"
@@ -2273,6 +2287,7 @@ watch(
       :elements="elements"
       @group="handleDesignGroupFromContextMenu"
       @ungroup="handleDesignUngroupFromContextMenu"
+      @leave-group="handleDesignLeaveGroupFromContextMenu"
       @select-all="handleDesignSelectAll"
       @bring-to-front="() => dispatchReorder('bring_to_front')"
       @bring-forward="() => dispatchReorder('bring_forward')"
