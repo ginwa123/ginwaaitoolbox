@@ -102,10 +102,16 @@ function parseLogCalls(): Array<{ msg: string; extra?: Record<string, unknown> }
     const line = String(c[0])
     const m = line.match(/\] (\w[\w ]*?)(?: (\{.*\})|$)/)
     if (m) {
+      // Group 1 is required by the regex pattern (the `m !== null` check
+      // already proves group 1 matched a non-empty run); TypeScript's
+      // RegExpMatchArray type still types captures as `string | undefined`,
+      // so the `!` asserts what the regex guarantees.
+      const msg = m[1]!
+      const json = m[2]
       try {
-        out.push({ msg: m[1], extra: m[2] ? JSON.parse(m[2]) : undefined })
+        out.push({ msg, extra: json ? JSON.parse(json) : undefined })
       } catch {
-        out.push({ msg: m[1] })
+        out.push({ msg })
       }
     }
   }
@@ -135,9 +141,11 @@ describe('SseClient deep v2 logger — per-message timing', () => {
     const calls = parseLogCalls()
     const heartbeats = calls.filter((c) => c.msg === 'heartbeat')
     expect(heartbeats.length).toBeGreaterThanOrEqual(2)
-    // 2nd heartbeat reports ~5000ms since the 1st
-    expect(heartbeats[1].extra?.sinceLastEventMs).toBeGreaterThanOrEqual(4_500)
-    expect(heartbeats[1].extra?.sinceLastEventMs).toBeLessThan(6_000)
+    // 2nd heartbeat reports ~5000ms since the 1st. The length check
+    // above proves `heartbeats[1]` exists, so the `!` is safe.
+    const second = heartbeats[1]!
+    expect(second.extra?.sinceLastEventMs).toBeGreaterThanOrEqual(4_500)
+    expect(second.extra?.sinceLastEventMs).toBeLessThan(6_000)
   })
 
   it('counts heartbeats and named events separately', () => {
