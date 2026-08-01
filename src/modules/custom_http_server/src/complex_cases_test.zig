@@ -958,7 +958,7 @@ test "sse: register 100 clients then remove all — no FD leaks" {
 
     // Remove all clients — verify count drops to 0 with no leak.
     for (socket_pairs.items) |fds| {
-        _ = mgr.removeClientByFd(fds[0]);
+        _ = mgr.removeClientByFd(fds[0], .test_only);
     }
 
     try expectEqual(@as(usize, 0), mgr.clientCount());
@@ -1020,10 +1020,10 @@ test "sse: remove same fd twice returns null on second call" {
 
     _ = try mgr.registerClient(pair[0]);
 
-    const first = mgr.removeClientByFd(pair[0]);
+    const first = mgr.removeClientByFd(pair[0], .test_only);
     try expect(first != null);
 
-    const second = mgr.removeClientByFd(pair[0]);
+    const second = mgr.removeClientByFd(pair[0], .test_only);
     try expect(second == null);
 }
 

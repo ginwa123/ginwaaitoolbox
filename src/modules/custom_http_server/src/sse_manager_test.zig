@@ -50,7 +50,7 @@ test "SseManager: register and remove single client" {
     try std.testing.expect(mgr.clientCount() == 1);
 
     // Remove client by fd
-    const removed_id = mgr.removeClientByFd(pair[0]);
+    const removed_id = mgr.removeClientByFd(pair[0], .test_only);
     try std.testing.expect(removed_id != null);
     try std.testing.expect(mgr.clientCount() == 0);
 }
@@ -92,13 +92,13 @@ test "SseManager: register and remove multiple clients" {
     try std.testing.expect(mgr.clientCount() == 3);
 
     // Remove each client one by one
-    _ = mgr.removeClientByFd(pair2[0]);
+    _ = mgr.removeClientByFd(pair2[0], .test_only);
     try std.testing.expect(mgr.clientCount() == 2);
 
-    _ = mgr.removeClientByFd(pair1[0]);
+    _ = mgr.removeClientByFd(pair1[0], .test_only);
     try std.testing.expect(mgr.clientCount() == 1);
 
-    _ = mgr.removeClientByFd(pair3[0]);
+    _ = mgr.removeClientByFd(pair3[0], .test_only);
     try std.testing.expect(mgr.clientCount() == 0);
 }
 
@@ -129,7 +129,7 @@ test "SseManager: remove by ID works correctly" {
     try std.testing.expect(mgr.clientCount() == 1);
 
     // Remove by ID
-    mgr.removeClient(id);
+    mgr.removeClient(id, .test_only);
     try std.testing.expect(mgr.clientCount() == 0);
 }
 
@@ -151,7 +151,7 @@ test "SseManager: remove non-existent client returns null" {
     defer mgr.deinit();
 
     // Try to remove a client that doesn't exist
-    const result = mgr.removeClientByFd(9999);
+    const result = mgr.removeClientByFd(9999, .test_only);
     try std.testing.expect(result == null);
 }
 
@@ -224,12 +224,12 @@ test "SseManager: removeClientByFd then removeClient (race condition test)" {
     _ = try mgr.registerClient(pair[0]);
 
     // First removal by fd
-    const removed = mgr.removeClientByFd(pair[0]);
+    const removed = mgr.removeClientByFd(pair[0], .test_only);
     try std.testing.expect(removed != null);
     try std.testing.expect(mgr.clientCount() == 0);
 
     // Second removal by id should be a no-op
-    mgr.removeClient(removed.?);
+    mgr.removeClient(removed.?, .test_only);
     try std.testing.expect(mgr.clientCount() == 0);
 }
 
@@ -259,11 +259,11 @@ test "SseManager: removeClient then removeClientByFd (race condition test)" {
     const id = try mgr.registerClient(pair[0]);
 
     // First removal by id
-    mgr.removeClient(id);
+    mgr.removeClient(id, .test_only);
     try std.testing.expect(mgr.clientCount() == 0);
 
     // Second removal by fd should be a no-op
-    const removed = mgr.removeClientByFd(pair[0]);
+    const removed = mgr.removeClientByFd(pair[0], .test_only);
     try std.testing.expect(removed == null);
     try std.testing.expect(mgr.clientCount() == 0);
 }
@@ -363,7 +363,7 @@ test "SseManager: stress test - rapid add/remove" {
     // Remove all in reverse order
     for (0..10) |i| {
         const idx = 10 - 1 - i;
-        _ = mgr.removeClientByFd(socket_pairs.items[idx][0]);
+        _ = mgr.removeClientByFd(socket_pairs.items[idx][0], .test_only);
     }
 
     try std.testing.expect(mgr.clientCount() == 0);

@@ -605,10 +605,10 @@ test "stress: register and remove 1000 clients in mixed order" {
     var front = true;
     while (i <= j) {
         if (front) {
-            _ = mgr.removeClientByFd(socket_pairs.items[i][0]);
+            _ = mgr.removeClientByFd(socket_pairs.items[i][0], .test_only);
             i += 1;
         } else {
-            _ = mgr.removeClientByFd(socket_pairs.items[j][0]);
+            _ = mgr.removeClientByFd(socket_pairs.items[j][0], .test_only);
             j -= 1;
         }
         front = !front;
