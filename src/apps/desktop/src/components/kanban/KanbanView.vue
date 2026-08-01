@@ -436,6 +436,11 @@ const handleCreateTaskSave = async (payload: {
   description: string
   is_auto_retry_until_stop?: '0' | '1'
   tags?: string[]
+  // NEW (plan: 2026-08-06-kanban-task-profile-selector). Empty
+  // string = backend default / "Default (top-level config)". Threaded
+  // through to runAgentOnNewTask only (Path A — plain create doesn't
+  // persist the choice; user can set from chatview later).
+  selectedProfile?: string
 }) => {
   if (!activeCreateColumnId.value) return
   createBusy.value = true
@@ -484,6 +489,9 @@ const handleCreateTaskSave = async (payload: {
           queueMessage,
           cwd: props.item.path || '',
           isAutoRetryUntilStop: payload.is_auto_retry_until_stop,
+          // NEW (plan: 2026-08-06-kanban-task-profile-selector).
+          // Empty/undefined defaults to '' (= backend default).
+          selectedProfile: payload.selectedProfile ?? '',
         },
       )
       if (result?.status === 'send') {
