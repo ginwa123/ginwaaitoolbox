@@ -1768,6 +1768,36 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Kanban "create task & run agent" flow (plan:
+  // docs/superpowers/plans/2026-08-06-kanban-create-task-run-agent.md).
+  // Wraps api.sendChatMessage so KanbanView doesn't import the wire
+  // shape directly. Returns the backend status so the host can decide
+  // whether to navigate to the chat view.
+  async function runAgentOnNewTask(
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+    params: {
+      queueMessage: string
+      cwd: string
+      isAutoRetryUntilStop?: '0' | '1'
+    },
+  ): Promise<{ status: string } | undefined> {
+    try {
+      return await api.sendChatMessage(
+        taskId,
+        params.queueMessage,
+        params.cwd,
+        undefined, // imageUrls
+        '', // selectedProfile
+        params.isAutoRetryUntilStop ?? '', // forwards '1' when toggle ON, else ''
+      )
+    } catch (err) {
+      console.error('Failed to run agent on new task:', err)
+      return undefined
+    }
+  }
+
   // PATCH-equivalent for routine tasks. The backend's
   // updateTaskSimple accepts name + routine fields, so this is
   // a thin wrapper that calls the API and updates the local
@@ -2742,6 +2772,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // instead of the value cached at workspaces store init().
     refreshTask,
     runRoutine,
+    runAgentOnNewTask,
     updateRoutine,
     pinTask,
     reorderPinnedTasks,

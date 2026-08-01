@@ -89,7 +89,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 
 | Status | Count | Meaning |
 |---|---|---|
-| ✅ **Implemented** | 143 | Landed in current code — verified via PR # or commit ref (+8 from the 2026-08-06 round: `kanban-task-tags`, `create-kanban-task-tool`, `design-element-parent-id-tools`, `design-right-click-group-menu`, `fix-retry-delay-ms-race`, `better-compaction-context`, `design-layer-drag-join-or-leave-group`, `fix-design-resize-handles-bubble-bug`) |
+| ✅ **Implemented** | 144 | Landed in current code — verified via PR # or commit ref (+1 from the 2026-08-06 round: `kanban-create-task-run-agent`) |
 | 🟡 **In Progress** | 6 | Partially landed; backend or frontend part shipped, not both (unchanged) |
 | ⏳ **Pending** | 2 | Plan is current and still relevant; no implementation found (`kanban-task-tags-autocomplete`, `sse-reconnect-plan`) |
 | ❌ **Superseded** | 2 | Replaced by a follow-up plan that did land (`constrain-design-elements-to-canvas` → `remove-canvas-background`, `design-per-page-chat-sessions` → `design-page-workspace-item-task-fk`) |
@@ -251,6 +251,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-07-30-kanban-task-search.md` | ✅ | Server-side `?q=` filter on `GET /api/.../items/.../tasks` + compact `<KanbanSearchInput>` in the kanban header. See §3.7.2 below. |
 | `2026-07-28-kanban-task-tags.md` | ✅ | Free-form string-list `tags` on each kanban task. See §3.7.3 below. |
 | `2026-07-30-kanban-task-tags-autocomplete.md` | ⏳ | Plan landed but **not yet implemented**. Backend endpoint + `listKanbanDistinctTags` model + `KanbanTagsInput` autocomplete dropdown are designed. See §3.7.4 below. |
+| `2026-08-06-kanban-create-task-run-agent.md` | ✅ | "Create task & run agent" button: primary flow collapses create-task + queue-first-message + navigate into one click. See §3.7.5 below. |
 
 #### 3.7.1 Kanban task "AI finished — awaiting review" notification icon (2026-07-26)
 
@@ -350,6 +351,25 @@ Each kanban task can carry **0+ tags** — short lowercase strings rendered as c
 **Why pending** — the plan landed (2026-07-30) but the implementation never started; the user's priority shifted to design-mode features (group drag, layer DnD, undo/redo) and then to memory compaction. Tracked in §5 Pending as a follow-up that piggybacks on §3.7.3's tag infrastructure.
 
 **Out of scope (planned)** — cross-tag-prefix filtering server-side (only client-side); tag-creation from the dropdown (always uses the existing chip-commit path); tag merge/rename; per-tag-color override.
+
+#### 3.7.5 "Create task & run agent" button (2026-08-06)
+
+The New Task dialog (`KanbanTaskDetailDialog`, `mode: 'create'`) gets a secondary `▶ Create task & run agent` button next to the primary `Create task` button. The new button collapses the three-step ceremony (create task → click card → type description into chatbox) into one click.
+
+**Wire.** The dialog adds a new `create-and-run` emit with the same payload as `create` (different `mode: 'create_and_run'` discriminator). The host (`KanbanView.handleCreateTaskSave`) branches on `mode`:
+
+| Mode | Flow |
+|---|---|
+| `create` | Today's behavior: `addTask` → `moveTaskToColumn` → close dialog |
+| `create_and_run` | `addTask` → `moveTaskToColumn` → `runAgentOnNewTask` (wraps `api.sendChatMessage`) → on `status: 'send'`, emit `selectTask(taskId)` so the existing `AppLayout → Sidebar` chain does `setActiveTask` + `router.replace` to the new chat view. On failure, surface a `notifyError` toast and skip navigation. |
+
+**Queued message composition.** `title + '\n\n' + description` when description is non-empty, else just `title`. The title is the first line the LLM sees; the description is the body. Empty description is allowed (the message is just the title).
+
+**Unattended toggle.** The dialog's existing `is_auto_retry_until_stop` toggle flows through as `is_auto_retry_until_stop` to `api.sendChatMessage`. Same as the routine task fire path.
+
+**Files.** 5 (3 NEW tests, 2 EDIT impl). Frontend-only — no backend changes, no migration, no Zig changes. The two endpoints (`POST /api/workspaces/:ws/items/:item/tasks` and `POST /api/llm/session`) already exist and compose cleanly.
+
+**Plan:** `docs/superpowers/plans/2026-08-06-kanban-create-task-run-agent.md`
 
 ### 3.8 Frontend — Design Canvas (Workspace Item Type)
 
@@ -617,6 +637,26 @@ For each plan file in the 178-file input set:
 #126 feat(design): wire tab-strip × button delete
 #128 feat(tests): functional tests with real data
 #136 feat(design): grouped layers (frame/group nesting) on design canvas
+#138 feat(design): per-page chat sessions (each design page → one task)
+#139 feat(design): 1:1 FK design_pages.workspace_item_task_id
+#140 feat(design): remove canvas background (no visible rectangle, no clamps)
+#141 feat(design): element-level undo/redo (Cmd+Z / Cmd+Shift+Z / Cmd+Y)
+#142 feat(design): drag debounce batch (5× reduction for multi-element drag)
+#143 feat(design): resize handles pointerdown bubble fix
+#144 feat(kanban): task tags (free-form string list, JSON column)
+#146 feat(kanban): task search (server-side ?q= filter)
+#147 feat(design): element parent_id tooling (set_parent + add_element.parent_id)
+#148 feat(agent): create_kanban_task tool (LLM can create kanban tasks)
+#149 feat(workflow): better compaction context (enriched XML envelope)
+#150 feat(design): right-click group/ungroup menu (Cmd+Shift+G ungroup)
+#151 feat(design): layer drag-to-join-or-leave-group (Figma-style)
+#153 feat(chat): scroll position persistence (close → reopen keeps scroll)
+#154 feat(kanban): task notification icon (orange dot / green check)
+#155 feat(service): OS-level crash signal handler (POSIX + Win32)
+#156 feat(agent): show_preview 'html' content_type (sandboxed iframe)
+#157 feat(config): set_active_profile default
+#158 feat(profile): chatview profile persists across page refresh
+#TBD feat(kanban): Create task & run agent (this PR)
 ```
 
 ### 10.2 Plan file inventory (all 178 files)
