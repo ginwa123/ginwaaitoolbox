@@ -60,6 +60,7 @@ pub const isWorkerRunning = is_worker_running_mod.isWorkerRunning;
 const compaction_mod = @import("compaction.zig");
 pub const CallCompactAgentInput = compaction_mod.CallCompactAgentInput;
 pub const callCompactAgent = compaction_mod.callCompactAgent;
+pub const buildCompactMessagePrompt = compaction_mod.buildCompactMessagePrompt;
 
 const compaction_context_mod = @import("compaction_context.zig");
 pub const fetchUserChatHistory = compaction_context_mod.fetchUserChatHistory;

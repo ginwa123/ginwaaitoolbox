@@ -33,4 +33,5 @@ test {
     _ = @import("tools_wrap_output.zig");
     _ = @import("workflow_commpact_message.zig");
     _ = @import("compaction_context.zig"); // 2026-07-30-better-compaction-context — parseReadFilePath + fetchUserChatHistory + fetchReadFilePaths + enrichCompactionXml
+    _ = @import("compaction.zig"); // 2026-08-06-encapsulate-compaction-prompt — buildCompactMessagePrompt inline tests
 }

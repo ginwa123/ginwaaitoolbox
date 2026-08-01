@@ -497,6 +497,7 @@ The New Task dialog (create mode) gains a profile-model picker. Loads profiles v
 
 | Plan | Block | Open piece |
 |---|---|---|
+| `2026-08-06-encapsulate-compaction-prompt.md` | Worktree branch | `worktree/encapsulate-compaction-prompt` — extracts `buildCompactMessagePrompt` from `callCompactAgent` + 8 inline tests + 3 leak fixes |
 | `2026-04-08-multifolder-session-dir.md` | Backend partial | `session_dirs: ?[][]const u8` array — only single `session_dir` filter shipped |
 | `2026-06-20-compaction-output-long-context.md` | Done via different tool | `read_compacted_messages` → `search_history` |
 | `2026-06-24-fix-compaction-envelope-id-mismatch.md` | Worktree branch | `36abea33` — real-DB-IDs + role-aware previews (worktree, not merged) |

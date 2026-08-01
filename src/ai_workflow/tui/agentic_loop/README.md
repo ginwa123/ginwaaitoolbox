@@ -94,9 +94,10 @@ If you do create a new `_test.zig`, register it in
 | `sse_on_event_send_llm_history.zig` | ✅ 6 (event type, JSON fields, content sanitize × 2, null content, central broadcast) |
 | `sse_on_event_send_queue_message.zig` | (placeholder — empty file, no tests needed) |
 | `compaction_context.zig` | ✅ 10 (parseReadFilePath × 4, fetchUserChatHistory, fetchReadFilePaths, enrichCompactionXml × 4) |
+| `compaction.zig` | ✅ 8 (`buildCompactMessagePrompt` happy path, first+last excluded, tool_calls formatted, null content skipped, empty middle, newline join, ownership, 2-message) |
 | `test_runner.zig` | (none — just imports the test-bearing files for discovery) |
 
-**Total: 107 inline test "..." blocks + 1 `test_runner.test_0` = 108 tests
+**Total: 115 inline test "..." blocks + 1 `test_runner.test_0` = 116 tests
 discovered in this directory.** Run
 `zig build test --summary all` from the project root to execute them.
 
