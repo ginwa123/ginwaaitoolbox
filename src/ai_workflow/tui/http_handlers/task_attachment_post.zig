@@ -111,7 +111,18 @@ pub fn taskAttachmentPostHandler(
     };
     defer allocator.free(full_path);
 
-    const tmp_path = std.fs.path.join(allocator, &.{ full_path, ".tmp" }) catch {
+    // Atomic write: place the tmp file in `attachments_dir` itself
+    // (a sibling of `chosen_name`), NOT inside the not-yet-existent
+    // target file. `path.join([full_path, ".tmp"])` would otherwise
+    // produce `<dir>/1.png/.tmp` — i.e. a path through a directory
+    // named `1.png`, which doesn't exist, so `createFile` returns
+    // `FileNotFound`. Putting `.tmp.<name>` next to the target file
+    // is the right path layout for the rename dance below.
+    const tmp_filename = std.fmt.allocPrint(allocator, ".tmp.{s}", .{chosen_name}) catch {
+        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }) });
+    };
+    defer allocator.free(tmp_filename);
+    const tmp_path = std.fs.path.join(allocator, &.{ attachments_dir, tmp_filename }) catch {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }) });
     };
     defer allocator.free(tmp_path);
