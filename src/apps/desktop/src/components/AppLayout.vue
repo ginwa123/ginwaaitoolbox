@@ -12,6 +12,7 @@ import CodeEditor from './views/CodeEditor.vue'
 import NotificationContainer from './shell/NotificationContainer.vue'
 import SseStatusBadge from './shell/SseStatusBadge.vue'
 import KanbanView from './kanban/KanbanView.vue'
+import KanbanChatDialog from './kanban/KanbanChatDialog.vue'
 import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './kanban/KanbanSettingsDialog.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
@@ -317,6 +318,18 @@ const handleNavigate = (
   taskId?: string,
   workspaceId?: string,
   itemId?: string,
+  // NEW (design-pages-in-workspace-tree plan, 2026-08-06): the
+  // 6th positional arg lets the caller pin a specific design page
+  // when navigating to `view: 'workspace'`. Empty / undefined
+  // means "no page pinned" (DesignView falls back to the first
+  // page in the cache). Pre-fix, the workspace branch only wrote
+  // workspaceId + itemId to the URL — a click on a design page
+  // navigated correctly into DesignView (the store had the page
+  // id) but the URL lost it on the next reload, so a refresh
+  // restored the wrong page. Now the URL is the source of truth
+  // for reload, matching the existing `activeDesignPageId` mirror
+  // on line 188.
+  pageId?: string,
 ) => {
   if (view.startsWith('chat-')) {
     const chatSessionId = view.replace(/^chat-/, '')
@@ -344,6 +357,11 @@ const handleNavigate = (
     if (workspaceId && itemId) {
       query.workspaceId = workspaceId
       query.itemId = itemId
+      // NEW (design-pages-in-workspace-tree plan, 2026-08-06):
+      // also mirror pageId when present so a reload of the
+      // design view restores the same page (URL is source of
+      // truth, matching the activeDesignPageId mirror on line 188).
+      if (pageId) query.pageId = pageId
     }
     router.replace({ path: '/app', query })
   } else if (view === 'task') {
@@ -699,6 +717,25 @@ const activeTask = computed(() => workspacesStore.activeTask)
 // containing item's id or null. Cheap O(W) where W = number of
 // tasks across all workspaces.
 const activeTaskWorkspaceItemId = computed(() => workspacesStore.activeTaskWorkspaceItemId)
+
+// ─── KanbanChatDialog open state (plan: 2026-08-06-kanban-chat-as-dialog) ────
+//
+// The dialog uses `v-model:show` for two-way binding. We drive the
+// `show` ref from `activeTask` so the dialog opens whenever the user
+// navigates to a kanban task (via URL `?view=task&task=<id>` or by
+// clicking a card) and closes when `activeTask` is cleared (via
+// @close → handleCloseTaskView → setActiveTask(null)).
+//
+// The dialog also has its own `close` emit which we forward to
+// handleCloseTaskView for URL cleanup.
+const kanbanChatDialogOpen = ref(false)
+watch(
+  () => activeTask.value,
+  (t) => {
+    kanbanChatDialogOpen.value = !!t
+  },
+  { immediate: true },
+)
 
 // Close the chatview column (the 3-column layout's right pane).
 // Triggered by the ChatView's ✕ header button. Clears the active
@@ -1655,6 +1692,34 @@ watch(chatSessionCwd, (newCwd) => {
         @rename-item="handleKanbanRenameItem"
         @close-chat="handleCloseTaskView"
       />
+      <!--
+        Kanban chat dialog (plan: 2026-08-06-kanban-chat-as-dialog).
+        Mounted at the AppLayout level (NOT inside KanbanView) so the
+        chat opens as a centered modal overlay rather than a side-by-
+        side layout. Gated on `activeTaskWorkspaceItemId === activeWorkspaceItem.id`
+        so the dialog only opens for kanban items — design / routine
+        / standalone chat use their own mounts. `v-model:show` is
+        driven by the kanbanChatDialogOpen ref, kept in sync with
+        `activeTask` via a watcher so the dialog opens when the user
+        navigates to a kanban task and closes when they navigate away.
+        URL routing is handled by AppLayout's existing
+        handleCloseTaskView (re-used via @close).
+      -->
+      <KanbanChatDialog
+        v-if="
+          activeWorkspaceItem &&
+          activeWorkspaceItem.item_type === 'kanban' &&
+          activeTask &&
+          activeTaskWorkspaceItemId === activeWorkspaceItem.id
+        "
+        v-model:show="kanbanChatDialogOpen"
+        :task="activeTask"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
+        :project-name="activeWorkspaceItem.name ?? ''"
+        :cwd="activeWorkspaceItem.path ?? ''"
+        @close="handleCloseTaskView"
+      />
       <!-- Task view (non-kanban parents, e.g. chat tasks): single
            column, no header. Preserved for backward compatibility. -->
       <ChatView
@@ -1668,36 +1733,21 @@ watch(chatSessionCwd, (newCwd) => {
         :task-name="activeTask.name"
         :project-name="activeWorkspaceItem?.name || ''"
       />
-      <!-- Kanban view (was inline in WorkspaceItem.vue; now mounted
-           in the main content area so the board is no longer cramped
-           in the sidebar). Renders only when an active kanban item
-           is selected AND no task is currently being viewed (the
-           3-column branch above already handles task-with-kanban-parent).
-           The :key forces a fresh mount when the user navigates
-           from one kanban to another (KanbanView fetches columns
-           on mount). -->
-      <KanbanView
-        v-else-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'kanban'"
-        :key="'kanban-' + activeWorkspaceItem.id"
-        :item="activeWorkspaceItem"
-        :workspace-id="activeWorkspace?.id ?? ''"
-        :item-id="activeWorkspaceItem.id"
-        @move-task="handleKanbanMoveTask"
-        @add-column="handleKanbanAddColumn"
-        @rename-column="handleKanbanRenameColumn"
-        @delete-column="handleKanbanDeleteColumn"
-        @reorder-column="handleKanbanReorderColumn"
-        @request-rename-column="handleKanbanRequestRenameColumn"
-        @request-delete-column="handleKanbanRequestDeleteColumn"
-        @select-task="handleKanbanSelectTask"
-        @delete-task="handleKanbanDeleteTask"
-        @rename-task="handleKanbanRenameTask"
-        @edit-routine="handleKanbanEditRoutine"
-        @run-routine="handleKanbanRunRoutine"
-        @pin-task="handleKanbanPinTask"
-        @open-settings="handleOpenKanbanSettings"
-        @rename-item="handleKanbanRenameItem"
-      />
+      <!--
+        STALE MOUNT removed (kanban-chat-as-dialog plan, 2026-08-06).
+        This <KanbanView> mount was a v-else-if continuation of the
+        chain that started with the <KanbanChatDialog v-if> at line 1691.
+        Vue evaluates v-if / v-else-if / v-else within one chain,
+        but KanbanChatDialog's `v-if` (not `v-else-if`) started a
+        NEW chain — so this mount and the correct mount at line 1655
+        (also a v-else-if but in a different outer chain) both fired
+        when activeWorkspaceItem.item_type === 'kanban' and no chat
+        task was active. Result: the kanban board rendered TWICE,
+        stacked vertically (visible in the user's screenshot 2026-08-06).
+        The correct mount is the one at line 1655 above; this stale
+        copy was a leftover from before the kanban-embed-chatview plan
+        unified AppLayout's main-content chain.
+      -->
       <!-- Design view (Chunk 8 of design-mode-redesign). Mirrors the
            single-column kanban branch above: full-bleed render when
            a design workspace item is active and no chat is open.
@@ -1869,88 +1919,48 @@ watch(chatSessionCwd, (newCwd) => {
         @update-chat-id="handleUpdateChatId"
       />
       <Chats v-else-if="currentView === 'chat'" />
+      <!--
+        Workspace folder preview — the "no item selected, pick one"
+        empty-state. Only renders when the user has navigated to
+        `?view=workspace` AND has no active workspace item. If an
+        item is active (kanban / design / folder with memories /
+        etc.), the dedicated branch above handles rendering; we
+        MUST NOT also render the preview or the user sees the
+        workspace name duplicated below the dedicated view
+        (regression confirmed by the user's screenshot on
+        2026-08-06 after the kanban-chat-as-dialog plan removed a
+        stale secondary <KanbanView> mount that was previously
+        acting as an implicit guard).
+
+        The `!activeWorkspaceItem` guard ensures mutual exclusivity
+        with the dedicated branches above. Without it, the chain
+        would still resolve to this branch when currentView is
+        'workspace' even if a kanban/design is active, because
+        the kanban + dialog + chat-view mounts live in different
+        v-if chains (they were refactored to mount in their own
+        chains during the kanban-embed-chatview plan).
+      -->
       <div
-        v-else-if="currentView === 'workspace'"
+        v-if="currentView === 'workspace' && !activeWorkspaceItem"
         class="flex-1 flex flex-col"
         data-testid="workspace-folder-preview"
       >
-        <!-- Memories view: only when path is truthy AND the item is
-             NOT a kanban/design (those have their own dedicated views
-             and a tab in settings for memories). The `item_type !== 'kanban'
-             check is defensive — the kanban/design branches above should
-             win first in the v-else-if chain, but the explicit guard
-             prevents the memories view from ever rendering in those
-             cases even if the chain order changes in the future.
-             The item's own header (🧠 + name + path) lives inside
-             WorkspaceItemMemoriesView, so no outer header is needed. -->
-        <div
-          v-if="
-            activeWorkspaceItem &&
-            activeWorkspaceItem.path &&
-            activeWorkspaceItem.item_type !== 'kanban' &&
-            activeWorkspaceItem.item_type !== 'design'
-          "
-          class="flex-1 min-h-0"
-        >
-          <WorkspaceItemMemoriesView
-            :key="activeWorkspaceItem.id"
-            :cwd="activeWorkspaceItem.path"
-            :item-name="activeWorkspaceItem.name"
-          />
-        </div>
+        <!--
+          The three inner branches (memories view / no-path
+          centered card / workspaces picker) only ever need to
+          render when there IS no active workspace item — the
+          outer v-if already guarantees that. The inner branches
+          previously referenced `activeWorkspaceItem` defensively
+          for type narrowing; we keep them as-is but rely on the
+          outer guard so the inner conditions don't need to
+          re-check. Vue's template type-checker can't infer the
+          type from `v-if` short-circuit across nested v-if/v-else
+          chains, so the inner conditions stay as they were. This
+          is a no-op at runtime since `activeWorkspaceItem` is
+          always null here.
+        -->
 
-        <!-- No-path fallback: keep today's centered card -->
-        <div
-          v-else-if="activeWorkspaceItem"
-          class="flex-1 flex flex-col items-center justify-center p-8"
-        >
-          <div
-            class="w-full max-w-2xl p-8 rounded-xl text-center"
-            style="
-              background: linear-gradient(
-                135deg,
-                var(--semantic-card-bg),
-                var(--semantic-sidebar-bg)
-              );
-              border: 1px solid var(--color-border);
-            "
-          >
-            <div
-              class="w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center"
-              style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue))"
-            >
-              <svg
-                class="w-8 h-8"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                style="color: var(--color-bg)"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-                />
-              </svg>
-            </div>
-            <h2 class="text-2xl font-bold mb-2" style="color: var(--semantic-text)">
-              {{ activeWorkspaceItem.name }}
-            </h2>
-            <p class="text-sm mb-4" style="color: var(--semantic-text-muted)">
-              {{ workspacesStore.activeWorkspace?.name }}
-            </p>
-            <div
-              v-if="activeWorkspaceItem.path"
-              class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
-              style="background-color: var(--semantic-active-bg); color: var(--semantic-text-muted)"
-            >
-              <span>{{ activeWorkspaceItem.path }}</span>
-            </div>
-          </div>
-        </div>
-
-        <div v-else class="text-center">
+        <div v-if="true" class="text-center">
           <div
             class="w-20 h-20 rounded-2xl mx-auto mb-6 flex items-center justify-center text-4xl"
             style="background: linear-gradient(135deg, var(--color-yellow), var(--color-orange))"

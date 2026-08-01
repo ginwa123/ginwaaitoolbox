@@ -89,12 +89,12 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 
 | Status | Count | Meaning |
 |---|---|---|
-| ✅ **Implemented** | 145 | Landed in current code — verified via PR # or commit ref (+1 from the 2026-08-06 round: `kanban-task-profile-selector`, PR #161) |
+| ✅ **Implemented** | 146 | Landed in current code — verified via PR # or commit ref (+2 from the 2026-08-06 round: `kanban-task-profile-selector` PR #161, `kanban-chat-as-dialog` worktree branch) |
 | 🟡 **In Progress** | 6 | Partially landed; backend or frontend part shipped, not both (unchanged) |
 | ⏳ **Pending** | 2 | Plan is current and still relevant; no implementation found (`kanban-task-tags-autocomplete`, `sse-reconnect-plan`) |
 | ❌ **Superseded** | 2 | Replaced by a follow-up plan that did land (`constrain-design-elements-to-canvas` → `remove-canvas-background`, `design-per-page-chat-sessions` → `design-page-workspace-item-task-fk`) |
 | 🗑️ **Not Relevant** | 0 | (all obsolete-tech plans were already filtered out in the 2026-07-26 round) |
-| **Total** | **153** | 142 from the 2026-07-26 round + 11 new entries in the 2026-08-06 round. Historical 178 from the 2026-07-26 round includes 25 design-only specs in `docs/plans/` whose status was inherited from the matching implementation plan in `docs/superpowers/plans/`. |
+| **Total** | **154** | 142 from the 2026-07-26 round + 12 new entries in the 2026-08-06 round. Historical 178 from the 2026-07-26 round includes 25 design-only specs in `docs/plans/` whose status was inherited from the matching implementation plan in `docs/superpowers/plans/`. |
 
 > **Note on duplicates**: The original `docs/plans/` held design docs while `docs/superpowers/plans/` held implementation plans. When a design + implementation pair both existed, the implementation's status wins. Both folders were deleted after consolidation on 2026-07-26; the second-round 17 plans in `docs/superpowers/plans/2026-07-28-*`–`2026-08-06-*` were deleted on 2026-08-06.
 
@@ -253,6 +253,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-07-30-kanban-task-tags-autocomplete.md` | ⏳ | Plan landed but **not yet implemented**. Backend endpoint + `listKanbanDistinctTags` model + `KanbanTagsInput` autocomplete dropdown are designed. See §3.7.4 below. |
 | `2026-08-06-kanban-create-task-run-agent.md` | ✅ | "Create task & run agent" button: primary flow collapses create-task + queue-first-message + navigate into one click. See §3.7.5 below. |
 | `2026-08-06-kanban-task-profile-selector.md` | ✅ | Profile-model picker in the New Task dialog (create mode). See §3.7.6 below. |
+| `2026-08-06-kanban-chat-as-dialog.md` | ✅ | Kanban chat converted from side-by-side pane to centered modal dialog. See §3.7.7 below. |
 
 #### 3.7.1 Kanban task "AI finished — awaiting review" notification icon (2026-07-26)
 
@@ -385,6 +386,50 @@ The New Task dialog (create mode) gains a profile-model picker. Loads profiles v
 **Edit mode.** Not included in this iteration (Q1 = 1a). The chatview picker already covers edit-mode profile selection.
 
 **Plan:** `docs/superpowers/plans/2026-08-06-kanban-task-profile-selector.md`
+
+#### 3.7.7 Kanban chat — side-by-side pane → centered modal dialog (2026-08-06)
+
+The kanban chat is no longer a side-by-side pane. It opens as a centered modal dialog on top of the full-width kanban board.
+
+**Layout.**
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│ ░░░░░░░░░░ dimmed + blurred backdrop ░░░░░░░░░░░░░░░░░░░░░░░░░ │
+│ ░░░░░░░░░░┌──────────────────────────────────┐░░░░░░░░░░░░░░░░░░░░ │
+│ ░░░░░░░░░░│ 💬 <task name>             [✕]   │░░░░░░░░░░░░░░░░░░░░ │
+│ ░░░░░░░░░░├──────────────────────────────────┤░░░░░░░░░░░░░░░░░░░░ │
+│ ░░░░░░░░░░│  <ChatView with show-header=false>│░░░░░░░░░░░░░░░░░░░░ │
+│ ░░░░░░░░░░│                                  │░░░░░░░░░░░░░░░░░░░░ │
+│ ░░░░░░░░░░│  (history scrolls vertically)    │░░░░░░░░░░░░░░░░░░░░ │
+│ ░░░░░░░░░░│  (input box pinned at bottom)    │░░░░░░░░░░░░░░░░░░░░ │
+│ ░░░░░░░░░░└──────────────────────────────────┘░░░░░░░░░░░░░░░░░░░░ │
+└────────────────────────────────────────────────────────────────┘
+```
+
+**Close affordances (standard modal pattern).**
+
+| Action | Behaviour |
+|---|---|
+| Click backdrop | Dialog closes; URL strips `?view=task&task=<id>` |
+| `Esc` keydown | Dialog closes (same path) |
+| Click `✕` in dialog header | Dialog closes (same path) |
+| Click inside dialog (not backdrop) | No close — `@click.stop` on panel |
+| Click a different task card while dialog is open | Dialog stays open; content swaps via `:key="'task-' + newTask.id"` (Notion/Linear pattern) |
+
+**Size.** 80vw × 80vh, max 1100×800px, min 480×320px. Centered with `flex items-center justify-center p-4`.
+
+**Wiring.** `<KanbanChatDialog>` is mounted at the `<AppLayout>` level (NOT inside `<KanbanView>`). Gated on `activeTaskWorkspaceItemId === activeWorkspaceItem.id` so the dialog only opens for kanban items — design + routine + standalone chat use their own mounts. URL routing (`?view=task&task=<id>`) is unchanged — `AppLayout.handleCloseTaskView` is reused for the close path.
+
+**Click-different-task-while-open.** The dialog stays open and the content swaps via `:key="'task-' + task.id"` on `<ChatView>`. This is the same key contract that the side-by-side layout used, so chat scroll position (via `useChatScrollRestore`'s `chat-scroll-<task_id>` localStorage key) is preserved across task switches.
+
+**`<KanbanView>` changes.** Pure deletion — the chat-pane branch (`v-else` block, the resize handle, the `KanbanColumnStyle` state machine, the `kanbanColumnWidth` localStorage key, the `ChatView` import) all go away. The component reverts to the single full-width board layout that existed before 2026-08-06. Net: KanbanView 1056 → 815 lines.
+
+**Out of scope.** Design chat (`AppLayout.vue:1864` + `:1904`) stays as 3-column with resize handle — different chat-per-page model, separate plan can apply the same refactor when desired. Body scroll lock, focus trap, drag-resize, animation choreography — all intentionally omitted to match the existing `KanbanTaskDetailDialog` behavior (no lock, no trap, fixed size, default fade+scale).
+
+**Files.** 7 (2 NEW, 4 EDIT, 1 DELETE). Frontend-only — no backend, no migration, no Zig changes.
+
+**Plan:** `docs/superpowers/plans/2026-08-06-kanban-chat-as-dialog.md`
 
 ### 3.8 Frontend — Design Canvas (Workspace Item Type)
 
@@ -678,6 +723,7 @@ For each plan file in the 178-file input set:
 #158 feat(profile): chatview profile persists across page refresh
 #160 feat(kanban): Create task & run agent
 #161 feat(kanban): profile picker in New Task dialog
+#TBD feat(prompt): filter LLM tool list by parent item_type (design/folder/kanban) + 11 unit tests
 ```
 
 ### 10.2 Plan file inventory (all 178 files)

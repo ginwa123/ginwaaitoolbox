@@ -52,7 +52,6 @@ const ToolExecResult = mod.tools.ToolExecResult;
 
 pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
     const tools_list = comptime &[_]AgentTool{
-        // set_agent_properties_mod.set_agent_properties_tool,
         spawn_sub_agent_tool.spawn_sub_agent_tool,
         update_activity_mod.update_activity_tool,
         list_skills_mod.list_skills_tool,
@@ -72,15 +71,19 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         search_tool_mod.search_tool,
         nalar_browser_mod.nalar_browser_tool,
         set_git_worktree_mod.set_git_worktree_tool,
+        show_preview_mod.show_preview_tool,
+
+        // kanban only
         kanban_list_mod.kanban_list_tool,
         kanban_move_task_mod.kanban_move_task_tool,
+
+        // design only
         set_design_page_mod.set_design_page_tool,
         add_design_element_mod.add_design_element_tool,
         update_design_element_mod.update_design_element_tool,
         group_design_elements_mod.group_design_element_tool,
-        set_element_parent_mod.set_element_parent_tool, // 2026-07-29 — re-parent existing element to new group/frame (Task 5)
-        move_design_element_mod.move_design_element_tool, // 2026-08-06 — translate element by (dx, dy) with optional cascade to descendants
-        show_preview_mod.show_preview_tool,
+        set_element_parent_mod.set_element_parent_tool,
+        move_design_element_mod.move_design_element_tool,
     };
     return allocator.dupe(AgentTool, tools_list) catch return &.{};
 }

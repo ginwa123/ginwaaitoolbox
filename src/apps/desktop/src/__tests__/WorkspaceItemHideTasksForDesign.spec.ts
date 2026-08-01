@@ -50,25 +50,25 @@ function makeDesignItem(overrides: Partial<WorkspaceItemType> = {}): WorkspaceIt
         id: 'task_design_chat_1',
         name: 'Design Chat: AI Chat View',
         description: '',
-        tags: '',
-        created_at: '',
-        updated_at: '',
-        workspace_item_id: ITEM_ID,
+        tags: [],
+        
+        
+        
         is_pinned: false,
         task_type: 'standard',
-        column_id: null,
+        kanban_column_id: null,
       },
       {
         id: 'task_design_chat_2',
         name: 'fix-layout',
         description: '',
-        tags: '',
-        created_at: '',
-        updated_at: '',
-        workspace_item_id: ITEM_ID,
+        tags: [],
+        
+        
+        
         is_pinned: false,
         task_type: 'standard',
-        column_id: null,
+        kanban_column_id: null,
       },
     ],
     ...overrides,
@@ -86,13 +86,13 @@ function makeKanbanItem(overrides: Partial<WorkspaceItemType> = {}): WorkspaceIt
         id: 'task_k1',
         name: 'Task Alpha',
         description: '',
-        tags: '',
-        created_at: '',
-        updated_at: '',
-        workspace_item_id: ITEM_ID,
+        tags: [],
+        
+        
+        
         is_pinned: false,
         task_type: 'standard',
-        column_id: null,
+        kanban_column_id: null,
       },
     ],
     ...overrides,
@@ -110,13 +110,13 @@ function makeFolderItem(overrides: Partial<WorkspaceItemType> = {}): WorkspaceIt
         id: 'task_f1',
         name: 'task in folder',
         description: '',
-        tags: '',
-        created_at: '',
-        updated_at: '',
-        workspace_item_id: ITEM_ID,
+        tags: [],
+        
+        
+        
         is_pinned: false,
         task_type: 'standard',
-        column_id: null,
+        kanban_column_id: null,
       },
     ],
     ...overrides,
