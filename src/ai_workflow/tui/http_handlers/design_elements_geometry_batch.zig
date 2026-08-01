@@ -1,5 +1,17 @@
 //! `POST /api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/geometry-batch`.
 //!
+//! ⚠️  DEPRECATED — replaced by `POST .../elements/move-batch` (server-
+//! side cascade via recursive CTE) for multi-element translation.
+//! The new endpoint:
+//!   - cascades dx/dy to every transitive descendant for free
+//!   - accepts delta (dx, dy) instead of absolute (x, y)
+//!   - one SSE event per request carrying the deduped union of ids
+//!
+//! This handler is kept for back-compat with any client (e.g. the
+//! old LLM `update_element` tool, or a 3rd-party integration) still
+//! wired to the old endpoint. New code MUST use /move-batch.
+//! See `docs/superpowers/plans/2026-08-06-split-move-resize.md`.
+//!
 //! Atomic N-element geometry update. Used by the canvas drag/resize
 //! handlers when multiple elements are selected (multi-element drag,
 //! a `group`/`frame` element being moved). Single SQL transaction
@@ -21,7 +33,10 @@
 //!   - 500 DB failure (DbError)
 //!
 //! Plan: docs/superpowers/plans/2026-07-30-design-drag-debounce-batch.md
-//!   (Chunk 1, Task 1.3)
+//!   (Chunk 1, Task 1.3) — original endpoint.
+//! Plan: docs/superpowers/plans/2026-08-06-split-move-resize.md
+//!   (Task 2: deprecation — keep working but route new clients to
+//!   /move-batch).
 
 const std = @import("std");
 const nalarcore = @import("nalarcore");
