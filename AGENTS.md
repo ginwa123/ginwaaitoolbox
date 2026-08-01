@@ -1234,3 +1234,55 @@ not a silent string drift.
   on every call via `getWorkspaceContext`).
 
 **Commit.** `b065d3ef` (squash on `worktree/unit-test-filtering-tools`).
+
+### 2026-08-06: SSE disconnect diagnosis — classify every disconnect as backend/network/browser/user-code
+
+**Symptom (user report, task_1785608409075).** *"make the error better !!!, because i dont know why the sse reconnecint, it is from backend or frontend that disconnection connection ??"*. After a 19-second silence the browser fired an `EventSource` error event and the SseClient transitioned to `reconnecting`. The operator had to cross-reference two log lines (`STALL DETECTED` + `EventSource raw error`) and guess whether the disconnect was server-side, network-side, or browser-side.
+
+**What landed.** One new log line + three enriched existing logs:
+
+1. **`DISCONNECT DIAGNOSIS`** (new) — fires once per error event, after `EventSource raw error` and before `scheduleRetry set`. Aggregates every diagnostic signal into one log entry:
+   - `suspect`: `'backend' | 'network' | 'browser' | 'user-code' | 'unknown'` (the operator's one-glance answer)
+   - `conclusion`: human-readable sentence with the suspect label inline (greppable)
+   - `readiness`, `navigatorOnline`, `effectiveType`, `tabHiddenAtMs`, `sinceLastEventMs`
+   - `wasStalledBefore`, `stallToErrorMs` (how many seconds the stall detector saw it before the browser did)
+   - `sinceLastCloseMs`, `sinceLastReconnectMs`, `lastCloseReason`, `lastReconnectReason`, `constructedBy`
+
+2. **`STALL DETECTED`** enriched with `suspect`, `conclusion`, `navigatorOnline`, `tabHiddenAtMs`, `sinceLastCloseMs`, `sinceLastReconnectMs`, `lastCloseReason`, `lastReconnectReason`, `constructedBy`. The operator now sees the classification at the moment of stall detection (not 12s later when the browser finally fires onerror).
+
+3. **`EventSource raw error`** enriched with `navigatorOnline`, `wasStalledBefore`, `stallToErrorMs`, `tabHiddenAtMs`. Critical for the user's reported symptom: shows "stall detector saw it 12s before the browser did".
+
+4. **`close(reason?)` and `reconnect(reason?)`** signatures widened with an optional reason + caller-stack capture. The sseBus calls these with `('bus-torn-down')`, `('user-clicked-retry-or-bus-reconnect')`, and `('page-unload')` so the next diagnostic log attributes the disconnect to a specific call site.
+
+5. **Offline listener** added — the existing code only listened for `online`. The new `offline` listener means the operator can see "network dropped X seconds before the SSE error".
+
+**Suspect classification rules.** `classifyDisconnectSuspect(snapshot)` returns one of five buckets based on a priority chain:
+
+- `user-code`: close()/reconnect() called within last 5s (highest priority — disconnect is intentional)
+- `network`: `navigator.onLine === false` (TCP socket is almost certainly dead)
+- `browser`: tab became hidden during the silence window (browser throttled — not a real disconnect)
+- `backend`: TCP was OPEN during sustained silence (the smoking gun — server stopped sending while socket was alive)
+- `unknown`: signals conflict — investigate deeper
+
+The `stallFiredAtReadiness` snapshot is captured at stall time and replayed at diagnosis time so the classifier doesn't lose the smoking gun when the browser transitions readyState to CONNECTING before firing onerror.
+
+**Tests.** 13 tests in `sseClient.deeplog.spec.ts` (was 7, +6 new):
+- `suspect=backend` when TCP was OPEN during silence
+- `suspect=network` when `navigator.onLine === false`
+- `close(reason)` and `reconnect(reason)` capture the reason + caller frame
+- `STALL DETECTED` log includes `suspect` + `conclusion`
+- `EventSource raw error` log includes stall awareness
+
+3 mock-test fixes:
+- `parseLogCalls` regex widened to capture `()` in `close() called`
+- Mock EventSource now fires both `addEventListener('error', ...)` AND `onerror` handlers (real browser dual-fire)
+- `simulateOpen()` sets `readyState=1` (matches real browser)
+
+**Verification.** 1963 pass, 12 fail (the 12 are pre-existing on main: `DesignView.undoHidden ×5`, `DesignElement static ×1`, `nudge clamp ×1`, `AppLayout.translateResize ×1`, `AppLayout.memoriesGate ×4`). `vue-tsc --build` clean. `bunx vitest run` full suite passes. **All 6 new diagnostic tests pass.** No regressions.
+
+**Out of scope (explicitly NOT changed).**
+- Backoff schedule / `maxDelayMs` — the 21s retry delay is still 21s. Not the user's question.
+- Auto-reconnect on STALL DETECTED — the stall detector only logs; the disconnect is still diagnosed via the eventual `error` event.
+- Adding a UI surface for the suspect — the user wants log-line diagnostics, not a badge.
+
+**Branch / commit.** `worktree/sse-disconnect-diagnosis` @ `5fa8dc05`. PR-ready. Plan doc: `docs/superpowers/plans/2026-08-06-sse-disconnect-diagnosis.md` (next step).

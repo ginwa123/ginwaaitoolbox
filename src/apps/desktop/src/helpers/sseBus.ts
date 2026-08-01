@@ -200,7 +200,11 @@ export function installSseBus(_app?: App): SseBus {
       // null after a `close()` followed by `reconnectGlobal()` on a
       // torn-down bus (which `SseBus.close()` already protects
       // against by nulling `_instance`, but tests sometimes poke this).
-      _globalClient?.reconnect()
+      // NEW (sse-disconnect-diagnosis): pass a human-readable
+      // reason so the next DISCONNECT DIAGNOSIS log attributes the
+      // reconnect to "user clicked Retry" instead of an unknown
+      // caller.
+      _globalClient?.reconnect('user-clicked-retry-or-bus-reconnect')
     },
     close(): void {
       // Read through the module-level `_globalClient` handle at call
@@ -211,7 +215,11 @@ export function installSseBus(_app?: App): SseBus {
       // that nulled `_globalClient` via `__resetSseBus` between
       // install and close still gets the original closed.
       const gc = _globalClient ?? globalClient
-      gc.close()
+      // NEW (sse-disconnect-diagnosis): pass a reason so the
+      // subsequent state log knows "bus was torn down" — useful
+      // when correlating SSE disconnects with App.vue unmount or
+      // HMR re-mounts.
+      gc.close('bus-torn-down')
       // Detach the state-mirror listener and clear the test-only
       // handles so a subsequent `installSseBus` starts clean (and
       // `__getSseBusGlobalClient()` returns null after close).
