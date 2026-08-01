@@ -44,6 +44,12 @@ const emit = defineEmits<{
     taskId?: string,
     workspaceId?: string,
     itemId?: string,
+    // NEW (design-pages-in-workspace-tree plan, 2026-08-06):
+    // optional 6th arg — page id for the design-view navigation
+    // (so a click on a design page in the sidebar tree switches
+    // the URL off `?view=task` back to `?view=workspace&pageId=Z`).
+    // Matches the matching AppLayout.handleNavigate signature.
+    pageId?: string,
   ]
   'toggle-collapse': []
   resize: [width: number]
@@ -837,20 +843,40 @@ const handlePinTask = (
 // we just need to navigate AppLayout to the design view. The
 // design-view mount reads the activeDesignPageId from the store
 // and renders the page.
+//
+// FIX (2026-08-06, post-#169 fix): the previous implementation
+// was a no-op — it relied on AppLayout's URL-sync watcher (line
+// 237 in AppLayout.vue) to mirror the store change into the URL.
+// But that watcher has a guard `currentView !== 'workspace' &&
+// currentView !== undefined → return` — meaning it REFUSES to
+// overwrite the URL when the user is on a different view (e.g.
+// `?view=task&task=X`). So when the user was on a chat task
+// view (their last navigation), clicked a page in the sidebar,
+// the store updated but the URL stayed at `?view=task&task=X`
+// and the canvas didn't switch to DesignView. The user reported:
+// *"when i click its not go to design mode"*.
+//
+// The fix: explicitly emit `navigate` to switch the URL to
+// `?view=workspace&workspaceId=X&itemId=Y&pageId=Z`. AppLayout's
+// `handleNavigate('workspace', ...)` does `router.replace(...)`
+// which switches the URL view off task/chat back to workspace.
+// Once on workspace view, the watcher syncs pageId too.
 const handleSelectDesignPage = (
   workspaceId: string,
   itemId: string,
   pageId: string,
 ) => {
-  // WorkspaceItem already activated the item + set the page; we
-  // intentionally don't re-call setActiveWorkspaceItem here to
-  // avoid duplicate AppLayout re-renders.
-  // (WorkspaceItem's handler guards the setActiveWorkspaceItem call
-  // on activeWorkspaceItemId !== item.id, so it's a no-op if the
-  // item was already active.)
-  void workspaceId
-  void itemId
-  void pageId
+  // WorkspaceItem already activated the item + set the page.
+  // We intentionally don't re-call setActiveWorkspaceItem here
+  // to avoid duplicate AppLayout re-renders (WorkspaceItem's
+  // handler guards that call on activeWorkspaceItemId !== item.id).
+  //
+  // Emit `navigate` with view='workspace' + workspaceId + itemId +
+  // pageId to switch the URL off the current view (e.g. ?view=task)
+  // and into the design view, with the page id preserved in the
+  // URL for reload resilience. AppLayout.handleNavigate now reads
+  // the 6th positional arg (pageId) and writes it to the query.
+  emit('navigate', 'workspace', undefined, undefined, workspaceId, itemId, pageId)
 }
 
 // The store's `deleteDesignPage` action already updates the cache
