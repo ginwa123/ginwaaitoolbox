@@ -144,8 +144,10 @@ pub fn taskAttachmentPostHandler(
     const body = std.fmt.allocPrint(allocator, "{{\"success\":true,\"url\":\"{s}\",\"size\":{d}}}", .{ escaped_url, req.body.len }) catch {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }) });
     };
-    defer allocator.free(body);
-
+    // The body buffer's ownership transfers to the returned HttpResponse
+    // (the per-request arena reaps it). DO NOT `defer allocator.free(body)`
+    // — that would double-free when the arena deinits after the response
+    // is sent. See lesson: zig-http-handler-ownership.
     return res.jsonResponse(.{ .status_code = 200, .data = body });
 }
 
