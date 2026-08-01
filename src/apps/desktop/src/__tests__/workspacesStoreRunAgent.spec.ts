@@ -74,4 +74,45 @@ describe('workspacesStore.runAgentOnNewTask', () => {
     })
     expect(result).toBeUndefined()
   })
+
+  // NEW (plan: 2026-08-06-kanban-task-profile-selector)
+  it('forwards selectedProfile to api.sendChatMessage when provided', async () => {
+    const sendSpy = vi
+      .spyOn(api, 'sendChatMessage')
+      .mockResolvedValue({ status: 'send' })
+    const store = useWorkspacesStore()
+    await store.runAgentOnNewTask('ws_1', 'item_1', 'task_abc', {
+      queueMessage: 'Title',
+      cwd: '/cwd',
+      selectedProfile: '900r1bu',
+    })
+    expect(sendSpy).toHaveBeenCalledWith(
+      'task_abc',
+      'Title',
+      '/cwd',
+      undefined,
+      '900r1bu',
+      '',
+    )
+  })
+
+  // NEW (plan: 2026-08-06-kanban-task-profile-selector)
+  it('forwards empty string when selectedProfile is undefined', async () => {
+    const sendSpy = vi
+      .spyOn(api, 'sendChatMessage')
+      .mockResolvedValue({ status: 'send' })
+    const store = useWorkspacesStore()
+    await store.runAgentOnNewTask('ws_1', 'item_1', 'task_abc', {
+      queueMessage: 'Title',
+      cwd: '/cwd',
+    })
+    expect(sendSpy).toHaveBeenCalledWith(
+      'task_abc',
+      'Title',
+      '/cwd',
+      undefined,
+      '',
+      '',
+    )
+  })
 })

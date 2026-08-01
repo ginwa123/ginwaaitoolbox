@@ -89,7 +89,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 
 | Status | Count | Meaning |
 |---|---|---|
-| ✅ **Implemented** | 144 | Landed in current code — verified via PR # or commit ref (+1 from the 2026-08-06 round: `kanban-create-task-run-agent`) |
+| ✅ **Implemented** | 145 | Landed in current code — verified via PR # or commit ref (+1 from the 2026-08-06 round: `kanban-task-profile-selector`, PR #161) |
 | 🟡 **In Progress** | 6 | Partially landed; backend or frontend part shipped, not both (unchanged) |
 | ⏳ **Pending** | 2 | Plan is current and still relevant; no implementation found (`kanban-task-tags-autocomplete`, `sse-reconnect-plan`) |
 | ❌ **Superseded** | 2 | Replaced by a follow-up plan that did land (`constrain-design-elements-to-canvas` → `remove-canvas-background`, `design-per-page-chat-sessions` → `design-page-workspace-item-task-fk`) |
@@ -252,6 +252,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-07-28-kanban-task-tags.md` | ✅ | Free-form string-list `tags` on each kanban task. See §3.7.3 below. |
 | `2026-07-30-kanban-task-tags-autocomplete.md` | ⏳ | Plan landed but **not yet implemented**. Backend endpoint + `listKanbanDistinctTags` model + `KanbanTagsInput` autocomplete dropdown are designed. See §3.7.4 below. |
 | `2026-08-06-kanban-create-task-run-agent.md` | ✅ | "Create task & run agent" button: primary flow collapses create-task + queue-first-message + navigate into one click. See §3.7.5 below. |
+| `2026-08-06-kanban-task-profile-selector.md` | ✅ | Profile-model picker in the New Task dialog (create mode). See §3.7.6 below. |
 
 #### 3.7.1 Kanban task "AI finished — awaiting review" notification icon (2026-07-26)
 
@@ -370,6 +371,20 @@ The New Task dialog (`KanbanTaskDetailDialog`, `mode: 'create'`) gets a secondar
 **Files.** 5 (3 NEW tests, 2 EDIT impl). Frontend-only — no backend changes, no migration, no Zig changes. The two endpoints (`POST /api/workspaces/:ws/items/:item/tasks` and `POST /api/llm/session`) already exist and compose cleanly.
 
 **Plan:** `docs/superpowers/plans/2026-08-06-kanban-create-task-run-agent.md`
+
+#### 3.7.6 New Task dialog — profile-model picker (2026-08-06)
+
+The New Task dialog (create mode) gains a profile-model picker. Loads profiles via `api.getNalarConfig()`; mirrors `ChatView.vue`'s picker pattern. Selected profile is threaded through `POST /api/llm/session` and persisted on the new session via `sessions.selected_profile_model` (per PR #158 — chatview profile persists across page refresh).
+
+**Layout.** Same row as the Unattended-mode toggle (compact 2-column, Q2 = 2a). Picker on the left, toggle on the right.
+
+**Default.** `''` = backend default ("Default (top-level config)"). User opts in.
+
+**Persistence (Path A).** Profile is set only when the user clicks "Create task & run agent" (which calls `runAgentOnNewTask` → `api.sendChatMessage(selectedProfile)` → backend `POST /api/llm/session`). Plain "Create task" without an agent run captures the choice in the payload but does NOT persist (the backend's `task_create.zig` has no `selected_profile_model` field — deferred to follow-up if needed). The chatview's profile picker reflects the new profile immediately when the user lands on the new chat.
+
+**Edit mode.** Not included in this iteration (Q1 = 1a). The chatview picker already covers edit-mode profile selection.
+
+**Plan:** `docs/superpowers/plans/2026-08-06-kanban-task-profile-selector.md`
 
 ### 3.8 Frontend — Design Canvas (Workspace Item Type)
 
@@ -656,7 +671,8 @@ For each plan file in the 178-file input set:
 #156 feat(agent): show_preview 'html' content_type (sandboxed iframe)
 #157 feat(config): set_active_profile default
 #158 feat(profile): chatview profile persists across page refresh
-#TBD feat(kanban): Create task & run agent (this PR)
+#160 feat(kanban): Create task & run agent
+#161 feat(kanban): profile picker in New Task dialog
 ```
 
 ### 10.2 Plan file inventory (all 178 files)

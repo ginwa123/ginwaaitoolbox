@@ -363,7 +363,18 @@ Frontend (commit `daf21418` after rebase, originally `d7a05497`):
 
 **Plan:** `docs/superpowers/plans/2026-08-06-kanban-create-task-run-agent.md`
 **Spec:** `docs/superpowers/specs/2026-08-06-kanban-create-task-run-agent-design.md`
-**Branch:** `worktree/kanban-create-task-run-agent`
+**Branch:** `worktree/kanban-create-task-run-agent` (PR #160)
+
+### 2026-08-06: Kanban new task profile picker
+
+**What landed.** Profile-model picker in the New Task dialog (create mode only). Mirrors ChatView's picker pattern. Loads profiles via `api.getNalarConfig`; renders a dropdown with "Default (top-level config)" + each profile. Selection updates a local `selectedProfile` ref; both `create` and `create-and-run` emits carry `selectedProfile`. Same row as Unattended-mode toggle (Q2 = 2a — compact 2-column layout).
+
+**Persistence (Path A).** Profile is set only when the user clicks "Create task & run agent" (which calls `runAgentOnNewTask` → `api.sendChatMessage(selectedProfile)`). Plain "Create task" without an agent run captures the choice but does NOT persist (the backend's `task_create.zig` has no `selected_profile_model` field — deferred to follow-up). The chatview's profile picker reflects the new profile immediately when the user lands on the new chat.
+
+**Files.** 6 (1 NEW test, 5 EDIT impl+tests). Frontend-only — no backend changes, no migration, no Zig changes.
+
+**Plan:** `docs/superpowers/plans/2026-08-06-kanban-task-profile-selector.md`
+**Branch:** `worktree/kanban-create-task-run-agent` (PR #161)
 
 ### Symptom
 The agent's compaction step (when session history grew past the model's

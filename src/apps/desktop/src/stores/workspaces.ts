@@ -1872,6 +1872,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       queueMessage: string
       cwd: string
       isAutoRetryUntilStop?: '0' | '1'
+      // NEW (plan: 2026-08-06-kanban-task-profile-selector). Empty /
+      // undefined = backend default ("Default (top-level config)").
+      // When set, the chatview's picker will reflect the chosen
+      // profile immediately on landing.
+      selectedProfile?: string
     },
   ): Promise<{ status: string } | undefined> {
     try {
@@ -1880,7 +1885,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         params.queueMessage,
         params.cwd,
         undefined, // imageUrls
-        '', // selectedProfile
+        params.selectedProfile ?? '', // CHANGED — was ''
         params.isAutoRetryUntilStop ?? '', // forwards '1' when toggle ON, else ''
       )
     } catch (err) {

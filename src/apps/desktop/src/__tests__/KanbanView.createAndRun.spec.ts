@@ -111,11 +111,19 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     expect(moveOrder).toBeLessThan(runOrder)
 
     // Queue message is title + "\n\n" + description
-    expect(runSpy).toHaveBeenCalledWith('ws_1', 'item_1', 'task_new', {
-      queueMessage: 'My task\n\ndesc',
-      cwd: '/home/u/proj',
-      isAutoRetryUntilStop: '0',
-    })
+    // NEW (plan: 2026-08-06-kanban-task-profile-selector): use
+    // objectContaining so the new selectedProfile field doesn't
+    // break this assertion (default empty string).
+    expect(runSpy).toHaveBeenCalledWith(
+      'ws_1',
+      'item_1',
+      'task_new',
+      expect.objectContaining({
+        queueMessage: 'My task\n\ndesc',
+        cwd: '/home/u/proj',
+        isAutoRetryUntilStop: '0',
+      }),
+    )
     // Reuses the existing selectTask emit so the AppLayout -> Sidebar
     // chain handles setActiveTask + router.replace (D1 from the plan).
     expect(view.emitted('selectTask')).toBeTruthy()
@@ -149,11 +157,16 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     })
     await flushPromises()
 
-    expect(runSpy).toHaveBeenCalledWith('ws_1', 'item_1', 'task_new', {
-      queueMessage: 'Just title',
-      cwd: '/home/u/proj',
-      isAutoRetryUntilStop: '0',
-    })
+    expect(runSpy).toHaveBeenCalledWith(
+      'ws_1',
+      'item_1',
+      'task_new',
+      expect.objectContaining({
+        queueMessage: 'Just title',
+        cwd: '/home/u/proj',
+        isAutoRetryUntilStop: '0',
+      }),
+    )
   })
 
   it('forwards unattended toggle value', async () => {
@@ -182,11 +195,16 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       tags: [],
     })
     await flushPromises()
-    expect(runSpy).toHaveBeenCalledWith('ws_1', 'item_1', 'task_new', {
-      queueMessage: 'My task\n\nd',
-      cwd: '/home/u/proj',
-      isAutoRetryUntilStop: '1',
-    })
+    expect(runSpy).toHaveBeenCalledWith(
+      'ws_1',
+      'item_1',
+      'task_new',
+      expect.objectContaining({
+        queueMessage: 'My task\n\nd',
+        cwd: '/home/u/proj',
+        isAutoRetryUntilStop: '1',
+      }),
+    )
   })
 
   it('does NOT navigate when runAgentOnNewTask returns undefined (partial success)', async () => {
@@ -270,5 +288,44 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     await flushPromises()
     expect(runAgentSpy).not.toHaveBeenCalled()
     expect(view.emitted('selectTask')).toBeUndefined()
+  })
+
+  // NEW (plan: 2026-08-06-kanban-task-profile-selector)
+  it('forwards selectedProfile from dialog emit to runAgentOnNewTask', async () => {
+    vi.spyOn(api, 'createTask').mockResolvedValue({
+      id: 'task_new',
+      name: 'My task',
+      description: 'desc',
+      task_type: 'standard',
+    })
+    vi.spyOn(api, 'sendChatMessage').mockResolvedValue({ status: 'send' })
+
+    const store = useWorkspacesStore()
+    vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
+    vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
+    const runSpy = vi
+      .spyOn(store, 'runAgentOnNewTask')
+      .mockResolvedValue({ status: 'send' })
+
+    const view = await mountView()
+    const vm: any = view.vm
+    await vm.handleCreateTaskSave({
+      mode: 'create_and_run',
+      name: 'My task',
+      description: 'desc',
+      is_auto_retry_until_stop: '0',
+      tags: [],
+      selectedProfile: '900r1bu',
+    })
+    await flushPromises()
+
+    expect(runSpy).toHaveBeenCalledWith(
+      'ws_1',
+      'item_1',
+      'task_new',
+      expect.objectContaining({
+        selectedProfile: '900r1bu',
+      }),
+    )
   })
 })

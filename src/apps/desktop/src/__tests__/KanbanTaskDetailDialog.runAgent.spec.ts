@@ -115,6 +115,8 @@ describe('KanbanTaskDetailDialog — Create task & run agent', () => {
         description: 'Body of the task',
         is_auto_retry_until_stop: '0',
         tags: [],
+        // NEW (plan: 2026-08-06-kanban-task-profile-selector)
+        selectedProfile: '',
       },
     ])
   })
