@@ -42,6 +42,7 @@ import ShowPreview from '../tool_outputs/ShowPreview.vue'
 import SearchHistory from '../tool_outputs/SearchHistory.vue'
 import PreviewSidePanel from '../preview/PreviewSidePanel.vue'
 import SubAgentPeekPanel from '../nalar/SubAgentPeekPanel.vue'
+import { usePreviewDisplayMode } from '@/composables/usePreviewDisplayMode'
 import { useNavigationStore } from '../../stores/navigation'
 import { useSubAgentPeek } from '../../composables/useSubAgentPeek'
 import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
@@ -663,6 +664,44 @@ const previewPanelDismissed = ref(false)
 // (avoids stale focus id from the previous chat dictating the
 // new chat's panel tab).
 const previewToShowId = ref<string | null>(null)
+
+// ─── Display mode (user-controlled sidebar/inline toggle, 2026-08-06) ──
+//
+// The user picks between two rendering modes for `show_preview` outputs
+// via the PreviewSidePanel header toggle (when the panel is visible)
+// or the ChatView restore button (when in inline mode + panel hidden).
+// Default: 'side' (matches existing behaviour).
+//
+// When the mode is 'inline':
+//   - We hide the side panel by setting `previewPanelDismissed = true`.
+//     The user's existing dismiss preference is preserved so we can
+//     restore it when they switch back to 'side'.
+//   - ShowPreview cards render rich content directly inside the chat
+//     bubble (see ShowPreview.vue).
+//
+// When the mode is 'side':
+//   - The side panel's visibility follows the user's normal
+//     collapsed/dismissed state. We do NOT auto-show the panel just
+//     because they flipped to 'side' — if they had explicitly
+//     dismissed it before, it stays dismissed until they click the
+//     toggle or restore button.
+const { isInline, setMode } = usePreviewDisplayMode()
+const previewPanelWasDismissedBeforeInline = ref(false) // remember user intent
+
+watch(isInline, (nowInline) => {
+  if (nowInline) {
+    // Switching INTO inline mode: remember whether the user had
+    // explicitly dismissed the panel, then dismiss it for the
+    // duration of inline mode.
+    previewPanelWasDismissedBeforeInline.value = previewPanelDismissed.value
+    previewPanelDismissed.value = true
+  } else {
+    // Switching back to side mode: restore the user's previous
+    // dismiss preference. If they had explicitly dismissed before,
+    // leave it dismissed; otherwise the panel becomes visible again.
+    previewPanelDismissed.value = previewPanelWasDismissedBeforeInline.value
+  }
+}, { immediate: true })
 
 // Click handler for `show_preview` message bubbles in the chat.
 // The bubble is rendered *collapsed* (no expand toggle — that would
@@ -2922,6 +2961,28 @@ const compactSession = async () => {
       v-model:collapsed="previewPanelCollapsed"
       @dismiss="previewPanelDismissed = true"
     />
+
+    <!--
+      Restore button — floating top-right of the chat area, only
+      visible when:
+        1. Display mode is 'inline' (side panel is hidden), AND
+        2. There is at least one `show_preview` message in this chat.
+      Click → flips mode back to 'side', which re-shows the panel
+      (via the watch above). Mirrors the "back to sidebar" affordance
+      users expect when content renders inline. Sits next to the
+      chat so it's discoverable without scrolling.
+    -->
+    <button
+      v-if="isInline && showPreviewMessages.length > 0"
+      type="button"
+      class="absolute top-2 right-2 z-20 px-2 py-1 rounded-md text-xs font-mono border border-[var(--color-border)] bg-[var(--semantic-card-bg)] text-[var(--semantic-text)] cursor-pointer shadow-sm hover:border-[var(--color-violet)]/40 hover:text-[var(--color-violet)] transition-colors flex items-center gap-1"
+      data-testid="restore-preview-panel-button"
+      title="Open preview side panel"
+      @click="setMode('side')"
+    >
+      <span aria-hidden="true">📋</span>
+      <span>Open preview panel</span>
+    </button>
   </div>
 </template>
 

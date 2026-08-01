@@ -795,7 +795,71 @@ binary + 35 MB nalar-desktop.
 
 **Plan:** `docs/superpowers/plans/2026-07-30-design-layer-drag-join-or-leave-group.md`
 
-### 2026-08-06: Design pages list — moved from top tabs to left sidebar (#167)
+### 2026-08-06: Design pages list — moved into the workspace sidebar tree (#168, supersedes #167)
+
+**Symptom (pre-fix).** User reported (after PR #167 landed, which put
+the pages in a left sidebar INSIDE the design canvas): *"i mean pages
+move inside workpace item, 'design' like config agentic ai"*. They
+wanted the design-mode page list to live **in the workspace sidebar
+tree**, under the design workspace item — the same way `llls` shows
+up indented under `config agentic ai`. NOT in a separate left
+sidebar inside the design canvas.
+
+**What landed.** Frontend-only — no backend, DB, or migration
+changes. This PR REVERTS PR #167 entirely (commit `63c287f8`) and
+implements the correct UX:
+
+- **`DesignPageTabs.vue` + spec DELETED** — no longer used.
+- **NEW** `DesignPageRow.vue` (`workspace/`): single page row with
+  click → select, hover → × delete. Reuses the visual rhythm of
+  `WorkspaceItemTaskRow` for consistency.
+- **`WorkspaceItem.vue`**: when `item_type === 'design'` AND
+  `isExpanded`, render `<DesignPageRow>` per page + `+ Add Page`
+  button. The chevron click toggles expand **without** activating
+  the item (row body click still activates — preserves the
+  established "click design → enter design view" UX).
+- **Workspaces store**: new `designPagesByItemId` cache +
+  `fetchDesignPages` / `addDesignPage` actions. Single source of
+  truth shared between the sidebar tree and `DesignView`. The
+  cache is reset on `init()` so re-inits don't show stale pages
+  from the previous session. Concurrent fetches for the same item
+  share a single in-flight promise (no double-fetch race on
+  sidebar-expand + canvas-mount).
+- **`deleteDesignPage`** picks a sensible next-active page (same
+  index as the deleted one; previous if last; empty if none).
+- **`Sidebar.vue`**: handlers for `selectDesignPage` /
+  `deleteDesignPage` / `addDesignPage` wired through the store.
+  `computeNextUntitledName` copy for the `Untitled N`
+  auto-increment pattern.
+
+**Tests.** +11 net new behavioural tests:
+
+- 6 in new `DesignPageRow.spec.ts`
+- 5 in new `workspacesStoreDesignPages.spec.ts` (migrated from
+  `DesignView.spec.ts` — the page-CRUD UI tests triggered
+  `design-add-page` / `design-delete-page-*` testids that no
+  longer exist in `DesignView`).
+- `DesignView.spec.ts`: removed 5 page-CRUD tests + 2 static-
+  contract tests that asserted `<DesignPageTabs` was in the
+  source.
+
+**Verification.** `bun run build` clean; `bunx vitest run` 1946/1954
+pass. The 8 failures are PRE-EXISTING on `main` (verified against
+`b7993b52`): 5 undoHidden + 1 DesignElement static + 1 nudge clamp +
+1 AppLayout translateResize.
+
+**Branch.** `worktree/design-pages-in-tree` (commit `219b1832` +
+revert `63c287f8`)
+**Plan.** `docs/superpowers/plans/2026-08-06-design-pages-in-workspace-tree.md`
+
+### 2026-08-06: Design pages list — moved from top tabs to left sidebar (#167) — SUPERSEDED
+
+**Symptom (pre-fix).** User reported: *"change pages position, design
+mode. currently the list pages, is on the top, i want you to move that
+to the left"*. The page tab strip (AI Chat View, Kanban Mode, Chat
+View In Progress, Workspaces Sidebar, Task Dialog, Task Dialog with
+Attachments, + Page) was rendered as a horizontal tab strip across the
+TOP of DesignView — visible in every screenshot above the chat
 
 **Symptom (pre-fix).** User reported: *"change pages position, design
 mode. currently the list pages, is on the top, i want you to move that
@@ -928,3 +992,90 @@ Re-exported `buildCompactMessagePrompt` from `agentic_loop/mod.zig`.
 - `.nalar/memories/nalar-frontend-patterns.md` — frontend (Vue 3) patterns
 - `.nalar/memories/nalar-infra-and-build.md` — CI, build vendor lib patterns
 - `.nalar/memories/nalar-data-and-routines.md` — schema/migration/routine patterns
+
+### 2026-08-06: `show_preview` user-controlled sidebar/inline display-mode toggle
+
+**Symptom (user report).** The `show_preview` agent tool renders
+its content only in the right-side `PreviewSidePanel` (480px). For
+short, conversational content (a tiny table, a code snippet, a
+quick diagram), it's disruptive to have to look across the chat
+column — users want the option to render some previews inline
+with the chat flow.
+
+**The mental model.** A user-clickable toggle (in the side panel
+header + a restore button in ChatView) that flips the rendering
+mode between two values:
+
+| Mode | Where | Restore affordance |
+|---|---|---|
+| `side` (default) | `<PreviewSidePanel>` (existing) | Side panel visible |
+| `inline` | `<ShowPreview>` card expands to render content inline | Floating "📋 Open preview panel" button (top-right of chat area) |
+
+Mirrors the existing `<DiffView>` split/unified toggle — UX-driven,
+NOT LLM-driven. Default is `side` for back-compat.
+
+**What landed.** Surgical frontend-only changes — no Zig, no DB, no
+backend wire.
+
+- New composable `usePreviewDisplayMode()` in
+  `src/composables/usePreviewDisplayMode.ts` — module-level
+  singleton ref + `setMode(...)`, persists under localStorage
+  key `nalar-preview-display-mode`, SSR-safe (no throw when
+  localStorage is undefined). Re-syncs from localStorage on
+  every call (testability + idempotent in production).
+- New component `<PreviewContentRenderer>` extracted from
+  `PreviewSidePanel.vue` — handles all 5 content types
+  (markdown / text / code / image / html) using the same logic
+  that was inline in PreviewSidePanel. Both `PreviewSidePanel`
+  (active tab) and `ShowPreview` (inline mode) mount it.
+- `PreviewSidePanel.vue`: 5-branch inline template replaced
+  with `<PreviewContentRenderer>`. New 2-button segmented
+  control in the header (`Side` / `Inline`, testid
+  `preview-display-mode-toggle`). Active button has violet tint.
+- `ShowPreview.vue`: when `isInline` is true, mounts
+  `<PreviewContentRenderer>` directly below the header. Card
+  drops `role=button` / `tabindex` and stops emitting `open`
+  on click (nothing to navigate to).
+- `ChatView.vue`: watches `isInline`. Switching TO inline
+  auto-dismisses the side panel; switching back restores the
+  user's previous dismiss preference. Floating "Open preview
+  panel" button (`data-testid="restore-preview-panel-button"`)
+  appears at top-right when `isInline AND showPreviewMessages.length > 0`.
+
+**Tests.** 38 new behavioural tests across 5 files:
+
+| File | New | Pre-existing | Status |
+|---|---|---|---|
+| `composables/__tests__/usePreviewDisplayMode.spec.ts` (new) | 9 | 0 | All pass |
+| `__tests__/PreviewContentRenderer.spec.ts` (new) | 10 | 0 | All pass |
+| `__tests__/previewSidePanel.spec.ts` | 6 | 23 | All pass |
+| `__tests__/ShowPreview.spec.ts` (new) | 12 | 0 | All pass |
+| `__tests__/chatViewShowPreviewBubble.spec.ts` | 6 | 5 | All pass |
+
+**Verification (worktree `worktree/show-preview-display-mode`).**
+
+- `bun run build` clean (vue-tsc --build, 1.82s)
+- `bunx vitest run`: 1946 pass / 8 fail
+- 8 failures are PRE-EXISTING on `main` (verified via `git stash`
+  + re-run): `DesignView.undoHidden ×5`, `DesignElement static
+  contract ×1`, `DesignView.nudge clamp ×1`, `AppLayout
+  translateResize ×1`. Unrelated to this change.
+- `zig build test --summary all`: 2168/2174 pass (2 pre-existing
+  leaks in `design_model_set_element_parent_test`, unrelated —
+  documented in project memory).
+
+**Out of scope.**
+
+- LLM-controlled `display_mode` param — explicitly rejected (UX
+  model, not LLM-driven).
+- Per-call mixing (some previews in side, some inline) — single
+  global toggle.
+- Animation when switching modes — abrupt flip is fine for v1.
+- Keyboard shortcut for the toggle — could add `Cmd/Ctrl+Shift+P`.
+- Refactor: extract `<SandboxedIframe>` shared component —
+  separate refactor (now 2 consumers would share it).
+
+**Plan + spec.** `docs/superpowers/specs/2026-08-06-show-preview-display-mode-design.md`.
+Commits: `a4c0749f` (composable + renderer), `f33fdf0a`
+(PreviewSidePanel toggle UI), `8342f68d` (ShowPreview inline +
+ChatView wiring).

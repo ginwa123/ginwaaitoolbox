@@ -283,6 +283,15 @@ import {
   updateDesignElement as updateDesignElementApi,
   updateDesignElementHtml as updateDesignElementHtmlApi,
   deleteDesignElement as deleteDesignElementApi,
+  // NEW (design-pages-in-workspace-tree plan, 2026-08-06): the store
+  // owns a `designPagesByItemId` cache so both the sidebar tree and
+  // DesignView read from the same source. listDesignPages is now
+  // called from `fetchDesignPages` (defined below in this file)
+  // instead of the per-component `loadPages` helper that lived in
+  // DesignView. createDesignPage / deleteDesignPage continue to be
+  // called here so the cache stays authoritative after a mutation.
+  listDesignPages as listDesignPagesApi,
+  createDesignPage as createDesignPageApi,
   deleteDesignPage as deleteDesignPageApi,
   updateDesignElementGeometry as updateDesignElementGeometryApi,
   updateDesignElementsGeometryBatch as updateDesignElementsGeometryBatchApi,
@@ -334,6 +343,36 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   const activeDesignPageId = ref<string>('')
   function setActiveDesignPage(pageId: string): void {
     activeDesignPageId.value = pageId
+  }
+
+  // NEW (design-pages-in-workspace-tree plan, 2026-08-06): single
+  // source of truth for design pages, keyed by workspace item id.
+  // Both the sidebar tree (WorkspaceItem.vue) and the design canvas
+  // (DesignView.vue) read from this map. Pre-fix, DesignView had its
+  // own `pages` local ref + per-instance fetch, which meant the
+  // sidebar tree couldn't show pages without duplicate fetches.
+  //
+  // The map is intentionally a `ref<Record<...>>` (reactive) so the
+  // sidebar's expanded-section re-renders when the user adds /
+  // deletes a page from anywhere. The values are plain arrays; we
+  // mutate via spread (`{ ...designPagesByItemId.value, [id]: x }`)
+  // to keep Vue's reactivity happy.
+  const designPagesByItemId = ref<Record<string, DesignPage[]>>({})
+
+  // In-flight guard for `fetchDesignPages` — if a fetch is already
+  // pending for the same workspaceItemId, return its promise
+  // instead of starting a second one. Concurrent expand + canvas
+  // mount was the obvious race; the sidebar's expand handler and
+  // DesignView's onMounted would otherwise hit the network twice
+  // for the same item.
+  const designPagesInFlight = new Map<string, Promise<DesignPage[]>>()
+
+  // Reset design-pages cache for an item. Used on store init so a
+  // re-init doesn't show stale pages from the previous session.
+  // Currently called from `init()` at the bottom of the file.
+  function resetDesignPagesCache(): void {
+    designPagesByItemId.value = {}
+    designPagesInFlight.clear()
   }
 
   // NEW (kanban task search feature, plan:
@@ -428,6 +467,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   async function init() {
     isLoading.value = true
     loadingError.value = null
+
+    // NEW (design-pages-in-workspace-tree plan, 2026-08-06): wipe the
+    // design-pages cache so re-inits don't show stale pages from the
+    // previous session. Per-key refetch happens lazily on expand.
+    resetDesignPagesCache()
 
     // Install the bus-backed session-event listeners (idempotent —
     // safe to call on every init, including HMR re-mounts). The bus
@@ -1946,23 +1990,93 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   }
 
   // Delete a page. Idempotent on the backend (404 = already gone).
-  // Note: DesignView manages its own local `pages` array (fetched
-  // via `listDesignPages`); there is no `design_pages` field on the
-  // WorkspaceItem type. So the store's only responsibility here is
-  // to clear `activeDesignPageId` if it matches the deleted page —
-  // DesignView's own `watch(activePageId)` picks up the change and
-  // re-fetches via `listDesignPages`, which returns the new (smaller)
-  // page list. The next-page-active pick uses DesignView's own
-  // first-page-defaults-to-empty convention.
+  //
+  // NEW (design-pages-in-workspace-tree plan, 2026-08-06): the
+  // store now owns the `designPagesByItemId` cache, so this action
+  // also removes the page from the cache so the sidebar tree's
+  // nested rows update without a refetch. If the deleted page was
+  // the active one, we pick a sensible next-active (the previous
+  // page in the same item's list, falling back to the new first
+  // page) before clearing `activeDesignPageId` — same UX as
+  // DesignView's pre-fix `handleDeletePage`.
   async function deleteDesignPage(
     workspaceId: string,
     itemId: string,
     pageId: string,
   ): Promise<void> {
     await deleteDesignPageApi(workspaceId, itemId, pageId)
-    if (activeDesignPageId.value === pageId) {
-      activeDesignPageId.value = ''
+    // 1. Drop from cache (sidebar tree re-renders without the row).
+    const cached = designPagesByItemId.value[itemId] ?? []
+    const idx = cached.findIndex((p) => p.id === pageId)
+    const remaining = cached.filter((p) => p.id !== pageId)
+    designPagesByItemId.value = {
+      ...designPagesByItemId.value,
+      [itemId]: remaining,
     }
+    // 2. If the deleted page was active, fall back to a sensible
+    // next page. The pre-fix convention (VS Code / Figma parity):
+    // prefer the page AT THE SAME INDEX in the OLD order (i.e. what
+    // used to be next), or the previous one if we deleted the last.
+    if (activeDesignPageId.value === pageId) {
+      if (remaining.length === 0) {
+        activeDesignPageId.value = ''
+      } else {
+        const nextIdx = idx >= remaining.length ? remaining.length - 1 : idx
+        activeDesignPageId.value = remaining[nextIdx]?.id ?? ''
+      }
+    }
+  }
+
+  // NEW (design-pages-in-workspace-tree plan, 2026-08-06). Fetch
+  // pages for a design workspace item from the backend and cache
+  // them in `designPagesByItemId`. Concurrent calls for the same
+  // item share the same in-flight promise (no double-fetch on
+  // sidebar-expand + DesignView-mount race).
+  async function fetchDesignPages(
+    workspaceId: string,
+    itemId: string,
+  ): Promise<DesignPage[]> {
+    const inFlight = designPagesInFlight.get(itemId)
+    if (inFlight) return await inFlight
+    const p = (async (): Promise<DesignPage[]> => {
+      try {
+        const { pages } = await listDesignPagesApi(workspaceId, itemId)
+        designPagesByItemId.value = {
+          ...designPagesByItemId.value,
+          [itemId]: pages,
+        }
+        return pages
+      } finally {
+        designPagesInFlight.delete(itemId)
+      }
+    })()
+    designPagesInFlight.set(itemId, p)
+    return await p
+  }
+
+  // NEW: append a new design page to the cache + mirror it on the
+  // server, AND set it as the active page so the user immediately
+  // sees the empty canvas they can start populating. Returns the
+  // created page (with backend-assigned id, timestamps) on success,
+  // or `undefined` on failure.
+  //
+  // The Sidebar's `+ Add Page` handler no longer needs to set
+  // activeDesignPageId after the action returns — the store does it
+  // here, so the contract is single-source-of-truth (DesignView's
+  // pre-fix `handleAddPage` did the same thing — see commit a4c0749).
+  async function addDesignPage(
+    workspaceId: string,
+    itemId: string,
+    name: string,
+  ): Promise<DesignPage | undefined> {
+    const created = await createDesignPageApi(workspaceId, itemId, name)
+    const existing = designPagesByItemId.value[itemId] ?? []
+    designPagesByItemId.value = {
+      ...designPagesByItemId.value,
+      [itemId]: [...existing, created],
+    }
+    activeDesignPageId.value = created.id
+    return created
   }
 
   // Manually fire a routine. Returns the backend's
@@ -2985,6 +3099,14 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // active design page id from DesignView. Called on mount + tab
     // switch, and cleared on unmount.
     setActiveDesignPage,
+    // NEW (design-pages-in-workspace-tree plan, 2026-08-06): the
+    // design-pages cache + the actions that mutate it. Both
+    // WorkspaceItem.vue (sidebar tree) and DesignView.vue consume
+    // `designPagesByItemId.value[itemId]` directly.
+    designPagesByItemId,
+    fetchDesignPages,
+    addDesignPage,
+    resetDesignPagesCache,
     addWorkspace,
     addWorkspaceItem,
     removeWorkspaceItem,

@@ -2,24 +2,26 @@
   DesignView — top-level design canvas for a `item_type === 'design'`
   workspace item.
 
-  Layout (NEW — 2026-08-06, plan
-  docs/superpowers/plans/2026-08-06-design-pages-left-sidebar.md):
-    1. <toolbar> (top): item name + 💬 chat toggle.
+  Layout (top → bottom):
+    1. Top toolbar: item name + 💬 chat toggle.
     2. Main split (horizontal, flex row):
-       - LEFT sidebar (NEW): vertical page list <DesignPageTabs> with a
-         drag-vertical resize handle between it and the canvas column.
-         Mirrors Figma / Sketch convention.
-       - Canvas column (flex-1): renders <DesignElement v-for> over an
-         auto-grow viewport (the canvas div wraps the union bbox of all
-         elements). The canvas-background feature (a fixed W × H page
-         rectangle with drag/nudge clamps + snap-to-canvas-edges) has
-         been removed; elements can be placed at any coordinates.
-       - Right sidebar: <LayersPanel> on top + resize handle +
-         <PropertiesPanel> on bottom.
+       - Canvas (flex-1, on the left): renders <DesignElement v-for>
+         over an auto-grow viewport (the canvas div wraps the union
+         bbox of all elements). The canvas-background feature (a fixed
+         W × H page rectangle with drag/nudge clamps + snap-to-canvas-
+         edges) has been removed; elements can be placed at any
+         coordinates.
+       - Right sidebar split (vertical):
+         - <LayersPanel> on top
+         - Resize handle (drag to resize)
+         - <PropertiesPanel> on bottom
+    3. Canvas header bar (inside the canvas, top): + Element button +
+       active page name + element count.
 
-  Loading / error / empty states (no pages yet) render FULL-page instead
-  of inside the main split — matches the pre-fix behaviour so the user
-  always sees one of the four states regardless of pages state.
+  Page list is NOT rendered inside DesignView. Pages live in the
+  workspace sidebar tree (see WorkspaceItem.vue's design-pages
+  section). The canvas header bar shows the active page name so the
+  user knows which page they're on.
 
   State (all local — no Pinia here, the parent AppLayout wires the
   store actions):
@@ -29,8 +31,10 @@
     selectedElementId  string | null
     rightSidebarWidth  number     persisted via localStorage
 
-  On mount: fetch design pages via api.listDesignPages; default
-  activePageId to the first page; fetch elements for that page via
+  On mount: the workspaces store's `fetchDesignPages` populates
+  `designPagesByItemId[item.id]` (single source of truth shared
+  with the sidebar tree). Default activePageId to the first page
+  in the cache; fetch elements for that page via
   workspacesStore.fetchDesignElements.
 
   watch(activePageId): re-fetch elements for the new page.
@@ -66,7 +70,6 @@
 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import DesignPageTabs from './DesignPageTabs.vue'
 import DesignElement from './DesignElement.vue'
 import LayersPanel from './LayersPanel.vue'
 import PropertiesPanel from './PropertiesPanel.vue'
@@ -80,10 +83,15 @@ import { useDesignHistory } from '../../composables/useDesignHistory'
 import DesignHistoryButtons from './DesignHistoryButtons.vue'
 import { useDesignContextMenu } from '../../composables/useDesignContextMenu'
 import {
-  listDesignPages,
-  createDesignPage as createDesignPageApi,
-  deleteDesignPage as deleteDesignPageApi,
+  // NEW (design-pages-in-workspace-tree plan, 2026-08-06): the
+  // sidebar tree now owns the page list via `designPagesByItemId`
+  // in the workspaces store. The local `listDesignPages` /
+  // `createDesignPage` / `deleteDesignPage` API calls below are
+  // removed — `loadPages` now calls `workspacesStore.fetchDesignPages`
+  // and the + Page / × delete buttons route through the store
+  // actions so the cache stays authoritative.
   type DesignElement as DesignElementApi,
+  type DesignPage,
 } from '../../api'
 import { computeSnapDelta, type SnapGuide } from './useSnapGuides'
 
@@ -227,7 +235,17 @@ const effectiveItemId = computed(() => props.itemId || props.item.id)
 
 // ─── Pages state ───────────────────────────────────────────────────────
 
-const pages = ref<import('../../api').DesignPage[]>([])
+// NEW (design-pages-in-workspace-tree plan, 2026-08-06): pages now
+// live in the workspaces store's `designPagesByItemId` cache, NOT
+// in DesignView-local state. The sidebar tree (WorkspaceItem.vue)
+// and the canvas header both read from the same map. DesignView
+// only mirrors `activeDesignPageId` from the store into its local
+// `activePageId` ref so the existing watch on `activePageId` (which
+// fetches elements for the new page) doesn't need to change.
+const pages = computed<DesignPage[]>(() => {
+  if (!effectiveItemId.value) return []
+  return workspacesStore.designPagesByItemId[effectiveItemId.value] ?? []
+})
 const activePageId = ref('')
 const pagesLoading = ref(false)
 const pagesError = ref<string | null>(null)
@@ -394,77 +412,6 @@ const startSidebarResize = (event: MouseEvent): void => {
   document.addEventListener('mouseup', onUp)
 }
 
-// ─── Pages sidebar width (drag-resize handle, 2026-08-06) ──────────────
-//
-// NEW: the page list (formerly horizontal tabs at the top) is now a
-// vertical sidebar on the left edge of DesignView. Width is
-// resizable. Mirrors the right-sidebar pattern above — separate
-// localStorage key, separate min/max bounds so the two sidebars can
-// coexist and be sized independently. The min is narrower than the
-// right sidebar's (180 vs 220) because vertical page names truncate
-// aggressively with `text-overflow: ellipsis`, while the right
-// sidebar's layers panel needs room for type icons + chevrons.
-const PAGES_SIDEBAR_WIDTH_KEY = 'design-view-pages-sidebar-width'
-const PAGES_SIDEBAR_DEFAULT_WIDTH = 220
-const PAGES_SIDEBAR_MIN_WIDTH = 180
-const PAGES_SIDEBAR_MAX_WIDTH = 400
-
-const loadPagesSidebarWidth = (): number => {
-  try {
-    const raw = localStorage.getItem(PAGES_SIDEBAR_WIDTH_KEY)
-    if (!raw) return PAGES_SIDEBAR_DEFAULT_WIDTH
-    const n = Number(raw)
-    if (!Number.isFinite(n)) return PAGES_SIDEBAR_DEFAULT_WIDTH
-    return Math.max(
-      PAGES_SIDEBAR_MIN_WIDTH,
-      Math.min(PAGES_SIDEBAR_MAX_WIDTH, n),
-    )
-  } catch {
-    return PAGES_SIDEBAR_DEFAULT_WIDTH
-  }
-}
-const savePagesSidebarWidth = (n: number): void => {
-  try {
-    localStorage.setItem(PAGES_SIDEBAR_WIDTH_KEY, String(n))
-  } catch {
-    /* no-op — localStorage may be disabled */
-  }
-}
-
-const pagesSidebarWidth = ref<number>(loadPagesSidebarWidth())
-const isPagesSidebarResizing = ref(false)
-
-const startPagesSidebarResize = (event: MouseEvent): void => {
-  event.preventDefault()
-  const startX = event.clientX
-  const startWidth = pagesSidebarWidth.value
-  isPagesSidebarResizing.value = true
-  document.body.style.cursor = 'col-resize'
-  document.body.style.userSelect = 'none'
-
-  const onMove = (e: MouseEvent): void => {
-    // Dragging RIGHT grows the sidebar (handle sits on the LEFT side
-    // of the canvas column, so rightward mouse motion = dx > 0 =
-    // wider sidebar).
-    const dx = e.clientX - startX
-    const next = Math.max(
-      PAGES_SIDEBAR_MIN_WIDTH,
-      Math.min(PAGES_SIDEBAR_MAX_WIDTH, startWidth + dx),
-    )
-    pagesSidebarWidth.value = next
-  }
-  const onUp = (): void => {
-    isPagesSidebarResizing.value = false
-    document.body.style.cursor = ''
-    document.body.style.userSelect = ''
-    savePagesSidebarWidth(pagesSidebarWidth.value)
-    document.removeEventListener('mousemove', onMove)
-    document.removeEventListener('mouseup', onUp)
-  }
-  document.addEventListener('mousemove', onMove)
-  document.addEventListener('mouseup', onUp)
-}
-
 // ─── Vertical split between Layers and Properties (within sidebar) ─────
 
 const LAYERS_HEIGHT_KEY = 'design-view-layers-height'
@@ -534,11 +481,15 @@ const loadPages = async (): Promise<void> => {
   pagesLoading.value = true
   pagesError.value = null
   try {
-    const { pages: fetched } = await listDesignPages(
+    // NEW (design-pages-in-workspace-tree plan, 2026-08-06): the
+    // store owns the cache. fetchDesignPages is idempotent via an
+    // in-flight guard, so concurrent calls (sidebar expand + canvas
+    // mount) share the same network request. The `pages` computed
+    // above updates from the cached value once the promise resolves.
+    const fetched = await workspacesStore.fetchDesignPages(
       props.workspaceId,
       effectiveItemId.value,
     )
-    pages.value = fetched
     // Pick the active page in this priority:
     //   1. The store's activeDesignPageId (set by AppLayout's URL restore
     //      watcher when the page reloads with ?pageId=Z) — wins over
@@ -562,7 +513,6 @@ const loadPages = async (): Promise<void> => {
     }
   } catch (err) {
     pagesError.value = err instanceof Error ? err.message : String(err)
-    pages.value = []
     activePageId.value = ''
   } finally {
     pagesLoading.value = false
@@ -1124,12 +1074,12 @@ const computeNextUntitledName = (
 
 // Add a new design page.
 //
-// Owns the API call + local state mutation directly (NOT a bounce
-// through AppLayout). The previous design emitted `addPage` upward,
-// AppLayout called api.createDesignPage, and DesignView's local
-// `pages.value` was never updated — the new tab silently didn't
-// appear until the user refreshed the page. Fix: call the API,
-// mutate the local array, surface errors via the notification store.
+// NEW (design-pages-in-workspace-tree plan, 2026-08-06): routes
+// through the workspaces store so the sidebar tree's DesignPageRow
+// array updates without a refetch. The store's `addDesignPage`
+// action returns the new page object; we set it as active and
+// update the local `activePageId` ref so the watcher (which
+// fetches elements) fires.
 //
 // Returns the new page id for test convenience.
 const handleAddPage = async (): Promise<string | undefined> => {
@@ -1137,16 +1087,16 @@ const handleAddPage = async (): Promise<string | undefined> => {
   if (addPageInFlight.value) return undefined
   addPageInFlight.value = true
   try {
-    const newPage = await createDesignPageApi(
+    const newPage = await workspacesStore.addDesignPage(
       props.workspaceId,
       effectiveItemId.value,
       computeNextUntitledName(pages.value),
     )
-    pages.value = [...pages.value, newPage]
-    // New page becomes active so the user immediately sees the empty
-    // canvas they can start populating.
-    activePageId.value = newPage.id
-    return newPage.id
+    if (newPage) {
+      activePageId.value = newPage.id
+      return newPage.id
+    }
+    return undefined
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     useNotificationStore().notifyError('Failed to add page', message)
@@ -1163,27 +1113,27 @@ const handleAddPage = async (): Promise<string | undefined> => {
 const addPageInFlight = ref<boolean>(false)
 
 const handleSelectPage = (pageId: string): void => {
+  // Mirror to the store first so AppLayout's design handlers
+  // (handleDesignUpdateElement / handleDesignDeleteElement) always
+  // see the latest selection, even if the page-change early-returns
+  // below. The store ref is the single source of truth from the
+  // sidebar tree's click handler too.
+  workspacesStore.setActiveDesignPage(pageId)
   if (pageId !== activePageId.value) {
     activePageId.value = pageId
   }
+  // Re-emit for any external listener (AppLayout's @select-page
+  // does nothing today, but the contract is preserved).
   emit('selectPage', pageId)
 }
 
 // Delete a design page.
 //
-// Owns the API call + local state mutation directly (NOT a bounce
-// through AppLayout). The previous design emitted `deletePage`
-// upward, AppLayout called api.deleteDesignPage, and DesignView's
-// local `pages.value` was never updated — the deleted tab silently
-// stayed in place until the user refreshed the page.
-//
-// Active-page fallback: if the user deletes the page they're
-// currently viewing, switch to a sensible next page. We pick the
-// page BEFORE the deleted one in the current order; if there is no
-// such page, fall back to the new first page; if there are no pages
-// left, leave `activePageId` empty (the empty-state UI handles
-// this). Native `confirm()` dialog matches the existing
-// deleteElement flow in `useDesignHandlers.ts`.
+// NEW (design-pages-in-workspace-tree plan, 2026-08-06): routes
+// through the store so the cache + `activeDesignPageId` fallback
+// happen in one place. The store's `deleteDesignPage` action picks
+// the next-active page (same index as the deleted one, falling
+// back to the previous; or empty if the item now has no pages).
 const handleDeletePage = async (pageId: string): Promise<void> => {
   if (!props.workspaceId || !effectiveItemId.value) return
   if (deletePageInFlight.value) return
@@ -1195,28 +1145,15 @@ const handleDeletePage = async (pageId: string): Promise<void> => {
     return
   }
   deletePageInFlight.value = true
-  const wasActive = activePageId.value === pageId
   try {
-    await deleteDesignPageApi(
+    await workspacesStore.deleteDesignPage(
       props.workspaceId,
       effectiveItemId.value,
       pageId,
     )
-    const idx = pages.value.findIndex((p) => p.id === pageId)
-    pages.value = pages.value.filter((p) => p.id !== pageId)
-    if (wasActive) {
-      // Prefer the page that was at the same index before deletion
-      // (i.e. the next page in the old order), falling back to the
-      // previous page if we deleted the last tab. This mirrors how
-      // VS Code / Figma behave when closing a tab.
-      const remaining = pages.value
-      if (remaining.length === 0) {
-        activePageId.value = ''
-      } else {
-        const nextIdx = idx >= remaining.length ? remaining.length - 1 : idx
-        activePageId.value = remaining[nextIdx]?.id ?? ''
-      }
-    }
+    // The store already picked the next-active page. Mirror it into
+    // the local ref so the watcher (which fetches elements) fires.
+    activePageId.value = workspacesStore.activeDesignPageId
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     useNotificationStore().notifyError('Failed to delete page', message)
@@ -1979,11 +1916,13 @@ watch(
     </div>
 
     <!--
-      (2026-08-06): The page-tabs row used to live here as a horizontal
-      strip ABOVE the canvas. It moved into the main split as a vertical
-      left sidebar — see <div data-testid="design-pages-sidebar"> below.
-      The component itself is unchanged (props, emits, testids) — only
-      its position within the tree and its CSS orientation flipped.
+      (2026-08-06): the <DesignPageTabs> row at the top of DesignView
+      is removed. Pages now live in the workspace sidebar tree
+      (WorkspaceItem.vue renders DesignPageRow under expanded design
+      items). The canvas header still shows the active page name so
+      the user knows which page they're on. The empty state below
+      ("+ Add the first page") is preserved for users who navigate
+      into DesignView before expanding the tree (e.g. via deep link).
     -->
 
     <!-- ─── Loading state for pages ───────────────────────────────── -->
@@ -2021,7 +1960,6 @@ watch(
           type="button"
           class="px-3 py-1.5 rounded-lg text-sm font-medium"
           style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
-          data-testid="design-add-page"
           @click="handleAddPage"
         >
           + Add the first page
@@ -2029,58 +1967,8 @@ watch(
       </div>
     </div>
 
-    <!-- ─── Main split (pages sidebar | canvas | right sidebar) ── -->
+    <!-- ─── Main split (canvas + right sidebar) ──────────────────── -->
     <div v-else class="flex-1 flex min-h-0">
-      <!--
-        LEFT sidebar: vertical page list (NEW, 2026-08-06). The page
-        list used to sit as horizontal tabs at the TOP of DesignView.
-        Now it lives here as a left-edge vertical list (Figma /
-        Sketch convention). Width is resizable via the drag handle
-        to its right; persisted to localStorage with key
-        'design-view-pages-sidebar-width'.
-      -->
-      <div
-        class="shrink-0 flex flex-col h-full min-h-0"
-        :style="{ width: `${pagesSidebarWidth}px` }"
-        data-testid="design-pages-sidebar"
-      >
-        <DesignPageTabs
-          :pages="pages"
-          :active-page-id="activePageId"
-          :workspace-id="workspaceId"
-          :item-id="itemId || item.id"
-          @select-page="handleSelectPage"
-          @add-page="handleAddPage"
-          @delete-page="handleDeletePage"
-        />
-      </div>
-
-      <!-- Drag-vertical resize handle between pages sidebar and canvas -->
-      <div
-        class="shrink-0 w-2 cursor-col-resize relative flex items-center justify-center transition-colors"
-        :class="
-          isPagesSidebarResizing
-            ? '!bg-[var(--color-violet)]/60'
-            : 'bg-[var(--color-violet)]/15 hover:bg-[var(--color-violet)]/40'
-        "
-        data-testid="design-pages-resize-handle"
-        title="Drag to resize"
-        @mousedown="startPagesSidebarResize"
-      >
-        <svg
-          width="14"
-          height="2"
-          viewBox="0 0 14 2"
-          fill="currentColor"
-          class="text-[var(--color-violet)] opacity-70"
-          aria-hidden="true"
-        >
-          <circle cx="3" cy="1" r="1" />
-          <circle cx="7" cy="1" r="1" />
-          <circle cx="11" cy="1" r="1" />
-        </svg>
-      </div>
-
       <!-- Canvas column -->
       <div
         class="flex-1 flex flex-col min-w-0 min-h-0"

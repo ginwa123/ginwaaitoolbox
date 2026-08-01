@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from 'vue'
-import { marked } from 'marked'
 import { tryUnwrapToolOutput } from '@/helpers/unwrapToolOutput'
+import { usePreviewDisplayMode, type PreviewDisplayMode } from '@/composables/usePreviewDisplayMode'
+import PreviewContentRenderer from './PreviewContentRenderer.vue'
 
 // ─── Resize state (preview-panel-resize design) ─────────────────────────
 //
@@ -192,58 +193,23 @@ const activeArgs = computed<Args>(() => {
   return {}
 })
 
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-}
-
-const renderedContent = computed<string>(() => {
-  const ct = activeContentType.value
-  const c = activeArgs.value.content ?? ''
-  if (ct === 'markdown') {
-    try { return marked.parse(c, { async: false }) as string } catch { return `<pre>${escapeHtml(c)}</pre>` }
-  }
-  if (ct === 'text') return `<pre class="whitespace-pre-wrap break-all">${escapeHtml(c)}</pre>`
-  if (ct === 'code') {
-    const lang = activeArgs.value.language ?? 'plaintext'
-    return `<pre><code class="language-${escapeHtml(lang)}">${escapeHtml(c)}</code></pre>`
-  }
-  // 'image' and 'html' have dedicated template branches below — no content via v-html.
-  return ''
-})
-
-const imageSrc = computed<string | null>(() => {
-  if (activeContentType.value !== 'image') return null
-  const c = activeArgs.value.content ?? ''
-  if (c.startsWith('data:') || c.startsWith('http://') || c.startsWith('https://')) return c
-  return null
-})
-
-/**
- * Build the iframe's `srcdoc` value from the user HTML.
- *
- * CRITICAL: do NOT manually escape `<`, `>`, `&`, `"` here. The browser's
- * `setAttribute('srcdoc', value)` path automatically encodes those four
- * characters for the attribute value, then the iframe's own parser
- * decodes them back when loading the document. Manually escaping here
- * produces DOUBLE-escaped HTML — the iframe renders the literal text
- * `&lt;p&gt;Hello&lt;/p&gt;` instead of the rendered `<p>Hello</p>`.
- *
- * The user's HTML is bound via `:srcdoc="htmlSrcDoc"` (Vue's reactive
- * binding), which calls `setAttribute` for us. The browser then handles
- * the encoding/encoding pair. Quotes inside the user's HTML are handled
- * by setAttribute's own quoting (no manual escaping needed).
- *
- * Also wraps the HTML in a tiny `<style>` reset so the preview doesn't
- * get a default-margin surprise from the browser body. Mirrors the
- * pattern in DesignElementPreview.vue:45-50.
- */
-const htmlSrcDoc = computed<string | null>(() => {
-  if (activeContentType.value !== 'html') return null
-  const raw = activeArgs.value.content ?? ''
-  return `<style>html,body{margin:0;padding:0;background:#fff;}</style>${raw}`
-})
-
 const ICONS: Record<string, string> = { markdown: 'M', text: 'T', code: 'C', image: 'I', html: 'H' }
+
+// ─── Display mode (user-controlled sidebar/inline toggle) ───────────
+//
+// The 2-button segmented control in the panel header lets the user
+// flip between rendering `show_preview` outputs in this side panel
+// (`'side'`, default) versus inline in the chat bubble
+// (`'inline'`). The choice persists in localStorage via the
+// `usePreviewDisplayMode` composable. ChatView reads the same
+// state to decide whether to hide this panel + render content
+// inline instead.
+const { mode, setMode } = usePreviewDisplayMode()
+
+function selectMode(next: PreviewDisplayMode) {
+  if (next === mode.value) return
+  setMode(next)
+}
 
 function tabLabel(p: PreviewItem): string {
   const ct = findTag(p.content, 'content_type') ?? 'text'
@@ -282,6 +248,41 @@ const dismiss = () => { emit('dismiss') }
       <div class="flex items-center gap-1 px-2 py-1 border-b border-[var(--color-border)]">
         <button class="px-1 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] hover:text-[var(--color-violet)] text-sm" title="Collapse panel" @click="toggleCollapse">&#9664;</button>
         <span class="text-[var(--color-violet)] font-semibold text-xs flex-1 truncate">Preview</span>
+        <!--
+          Display mode toggle: 'side' (default, this panel) vs 'inline'
+          (render content inside chat bubbles). Click switches modes.
+          Persists via usePreviewDisplayMode. Same shape as
+          DiffView's split/unified toggle.
+        -->
+        <div
+          class="inline-flex rounded border border-[var(--color-border)] overflow-hidden text-[0.65rem] font-mono"
+          role="group"
+          aria-label="Preview display mode"
+          data-testid="preview-display-mode-toggle"
+        >
+          <button
+            type="button"
+            class="px-1.5 py-0.5 border-none cursor-pointer transition-colors"
+            :class="mode === 'side'
+              ? 'bg-[var(--color-violet)]/20 text-[var(--color-violet)]'
+              : 'bg-transparent text-[var(--semantic-text-muted)] hover:bg-[var(--color-violet)]/10'"
+            :aria-pressed="mode === 'side'"
+            data-testid="preview-display-mode-side"
+            title="Render previews in the side panel"
+            @click="selectMode('side')"
+          >Side</button>
+          <button
+            type="button"
+            class="px-1.5 py-0.5 border-none border-l border-[var(--color-border)] cursor-pointer transition-colors"
+            :class="mode === 'inline'
+              ? 'bg-[var(--color-violet)]/20 text-[var(--color-violet)]'
+              : 'bg-transparent text-[var(--semantic-text-muted)] hover:bg-[var(--color-violet)]/10'"
+            :aria-pressed="mode === 'inline'"
+            data-testid="preview-display-mode-inline"
+            title="Render previews inline in chat messages"
+            @click="selectMode('inline')"
+          >Inline</button>
+        </div>
         <span class="text-[0.65rem] text-[var(--semantic-text-muted)]">{{ activeIndex + 1 }} of {{ previews.length }}</span>
         <button class="px-1 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] hover:text-red-500" title="Dismiss panel" @click="dismiss">&#10005;</button>
       </div>
@@ -327,27 +328,16 @@ const dismiss = () => { emit('dismiss') }
         >{{ tabLabel(p) }}</button>
       </div>
       <div v-if="activePreview" class="flex-1 overflow-y-auto p-3">
-        <div v-if="activeArgs.title" class="text-sm font-semibold text-[var(--semantic-text)] mb-2 pb-2 border-b border-dashed border-[var(--color-border)]">
-          {{ activeArgs.title }}
-          <span v-if="activeArgs.language" class="ml-2 text-xs text-[var(--semantic-text-muted)] font-normal">[{{ activeArgs.language }}]</span>
-        </div>
-        <div v-if="activeContentType === 'image'" class="flex justify-center bg-black/[0.04] p-2 rounded">
-          <img v-if="imageSrc" :src="imageSrc" :alt="activeArgs.title || activeArgs.caption || 'Preview image'" class="max-w-full max-h-96 object-contain" @error="(e) => { (e.target as HTMLImageElement).style.display = 'none' }" />
-          <div v-else class="text-xs text-red-500 italic">Image source invalid (expected data: URL or http(s) URL)</div>
-        </div>
-        <div v-else-if="activeContentType === 'html' && htmlSrcDoc" class="h-full min-h-[480px] rounded overflow-hidden border border-[var(--color-border)] bg-white">
-          <iframe
-            sandbox="allow-scripts"
-            :srcdoc="htmlSrcDoc"
-            class="w-full h-full min-h-[480px] border-0 block"
-            :title="activeArgs.title || 'HTML preview'"
-            data-testid="preview-html-iframe"
-          />
-        </div>
-        <div v-else class="text-xs text-[var(--semantic-text)] markdown-content" v-html="renderedContent" />
-        <div v-if="activeArgs.caption" class="mt-2 pt-2 text-xs italic text-[var(--semantic-text-muted)] border-t border-dashed border-[var(--color-border)]">
-          {{ activeArgs.caption }}
-        </div>
+        <!--
+          Render the rich content via the shared PreviewContentRenderer.
+          The renderer handles all 5 content types (markdown, text,
+          code, image, html) including the iframe sandbox for html
+          and the XSS guard for image URLs.
+        -->
+        <PreviewContentRenderer
+          :content-type="(activeContentType as 'markdown' | 'text' | 'code' | 'image' | 'html')"
+          :args="activeArgs"
+        />
         <div class="mt-3 pt-2 text-[0.65rem] text-[var(--semantic-text-dim)] font-mono">
           {{ activeContentType }} · preview_id: {{ activePreviewId }}
         </div>
@@ -355,16 +345,3 @@ const dismiss = () => { emit('dismiss') }
     </template>
   </div>
 </template>
-
-<style scoped>
-.markdown-content :deep(pre) { background: var(--color-code-bg, rgba(0,0,0,0.05)); padding: 0.5rem; border-radius: 0.25rem; overflow-x: auto; }
-.markdown-content :deep(code) { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.75rem; }
-.markdown-content :deep(h1) { font-size: 1.25rem; font-weight: 700; margin: 0.5rem 0; }
-.markdown-content :deep(h2) { font-size: 1.1rem; font-weight: 600; margin: 0.4rem 0; }
-.markdown-content :deep(h3) { font-size: 1rem; font-weight: 600; margin: 0.3rem 0; }
-.markdown-content :deep(p) { margin: 0.25rem 0; line-height: 1.4; }
-.markdown-content :deep(ul), .markdown-content :deep(ol) { margin: 0.25rem 0 0.25rem 1.5rem; }
-.markdown-content :deep(a) { color: var(--color-violet); text-decoration: underline; }
-.markdown-content :deep(table) { border-collapse: collapse; margin: 0.5rem 0; }
-.markdown-content :deep(th), .markdown-content :deep(td) { border: 1px solid var(--color-border); padding: 0.25rem 0.5rem; }
-</style>
