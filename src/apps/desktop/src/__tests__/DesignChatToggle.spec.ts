@@ -204,10 +204,16 @@ describe('AppLayout design+chat 3-column layout branch', () => {
     expect(slice).toMatch(/:chat-id="activeTask\.id"/)
   })
 
-  it('uses separate resize handlers for kanban vs design columns', () => {
-    const kanbanRegex = /data-kanban-resize-handle[^>]*@mousedown="startKanbanResize"/g
-    const designRegex = /data-design-resize-handle[^>]*@mousedown="startDesignResize"/g
-    expect((source.match(kanbanRegex) ?? []).length).toBeGreaterThanOrEqual(1)
-    expect((source.match(designRegex) ?? []).length).toBeGreaterThanOrEqual(1)
-  })
+  // The static-contract test "uses separate resize handlers for kanban
+  // vs design columns" was deleted as part of the kanban-embed-chatview
+  // refactor (plan Task 5): the kanban resize state machine moved from
+  // AppLayout.vue into KanbanView.vue. The architectural fact (kanban
+  // and design have separate resize state + separate localStorage keys)
+  // is now verified behaviourally by:
+  //   - src/__tests__/KanbanView.chatPane.spec.ts (kanban drag + persist)
+  //   - The remaining design tests in this file (design drag still
+  //     in AppLayout.vue with its own DESIGN_WIDTH_STORAGE_KEY)
+  // Static-contract assertions like `expect(source).toMatch(/...
+  // @mousedown="startKanbanResize"/)` are explicitly banned by the
+  // project's no-static-contract-tests rule.
 })

@@ -9,10 +9,33 @@ pub const HandlerFn = *const fn (ctx: http_parser.HttpContext, req: http_parser.
 /// SSE streaming handler
 pub const SseHandlerFn = *const fn (ctx: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse;
 
+/// WebSocket handler.
+///
+/// Unlike SSE handlers, the WebSocket handler is invoked AFTER the
+/// transport handshake has completed (the 101 response has already been
+/// sent). The handler receives the parsed `HttpRequest` (so it can read
+/// headers / query / params), the GinwaServer pointer (so it can read
+/// frames and broadcast via the WsManager), the client fd, and the
+/// client's 16-byte id (so it can send targeted messages or remove the
+/// client early).
+///
+/// The handler runs in the same per-connection thread as the read loop
+/// (the listen loop spawns the handler on the worker thread). When the
+/// handler returns, the WebSocket close handshake is initiated and the
+/// client is removed from the WsManager.
+pub const WsHandlerFn = *const fn (
+    ctx: http_parser.HttpContext,
+    req: http_parser.HttpRequest,
+    server: *anyopaque,
+    client_fd: i32,
+    client_id: *[16]u8,
+) anyerror!void;
+
 /// Route type to distinguish SSE from regular handlers
 pub const RouteType = enum {
     regular,
     sse,
+    websocket,
 };
 
 pub const Router = Self;
@@ -25,6 +48,7 @@ pub const Route = struct {
     path: []const u8 = "",
     handler: HandlerFn = defaultHandler,
     sse_handler: ?SseHandlerFn = null,
+    ws_handler: ?WsHandlerFn = null,
     route_type: RouteType = .regular,
 };
 
@@ -80,6 +104,17 @@ pub fn sse(self: *Self, path: []const u8, handler: anytype) !void {
     });
 }
 
+/// Add a WebSocket route. WebSocket routes are always GET (per RFC 6455 §4.1).
+pub fn ws(self: *Self, path: []const u8, handler: anytype) !void {
+    try self.routes.append(self.arena, Route{
+        .method = "GET",
+        .path = path,
+        .handler = undefined,
+        .ws_handler = handler,
+        .route_type = .websocket,
+    });
+}
+
 /// Generic internal route adder
 fn addRouteInternal(self: *Self, method: []const u8, path: []const u8, handler: anytype) !void {
     try self.routes.append(self.arena, Route{
@@ -101,6 +136,10 @@ pub const RouteResult = union(enum) {
         handler: SseHandlerFn,
         ctx: http_parser.HttpContext,
     },
+    websocket: struct {
+        handler: WsHandlerFn,
+        ctx: http_parser.HttpContext,
+    },
 };
 
 /// Route matching and execution - returns handler to execute
@@ -108,6 +147,9 @@ pub fn matchRoute(self: *Self, req_method: []const u8, req_path: []const u8, req
     for (self.routes.items) |route| {
         // Try exact match first
         if (std.mem.eql(u8, req_method, route.method) and std.mem.eql(u8, req_path, route.path)) {
+            if (route.ws_handler) |wsHandler| {
+                return .{ .websocket = .{ .handler = wsHandler, .ctx = ctx } };
+            }
             if (route.sse_handler) |sseHandler| {
                 return .{ .sse = .{ .handler = sseHandler, .ctx = ctx } };
             }
@@ -117,6 +159,9 @@ pub fn matchRoute(self: *Self, req_method: []const u8, req_path: []const u8, req
 
         // Try pattern matching with params (e.g., /hello/:name)
         if (std.mem.eql(u8, req_method, route.method) and matchPathWithParams(route.path, req_path, &req.params)) {
+            if (route.ws_handler) |wsHandler| {
+                return .{ .websocket = .{ .handler = wsHandler, .ctx = ctx } };
+            }
             if (route.sse_handler) |sseHandler| {
                 return .{ .sse = .{ .handler = sseHandler, .ctx = ctx } };
             }
@@ -133,6 +178,7 @@ pub fn handleRoute(self: *Self, req_method: []const u8, req_path: []const u8, re
         switch (result) {
             .handler => |res_data| return res_data.res,
             .sse => return http_parser.notFound(std.heap.page_allocator),
+            .websocket => return http_parser.notFound(std.heap.page_allocator),
         }
     }
     return http_parser.notFound(std.heap.page_allocator);

@@ -241,6 +241,38 @@ test "HTTP server: SSE response sets X-Accel-Buffering: no" {
     }
 }
 
+test "HTTP server: SSE response says Connection: close (NOT keep-alive)" {
+    // Regression for the "SSE drops every 30s" bug under Vite / WebKitGTK /
+    // WKWebView. Sending `Connection: keep-alive` on an SSE response is a
+    // lie — the connection is never reused for a follow-up request — and
+    // Node.js's HTTP server stamps `Keep-Alive: timeout=5` on keep-alive
+    // responses, which some browsers enforce aggressively (closing the
+    // upstream socket ~5s after the last heartbeat). Empirically this
+    // matches the user's reported pattern of heartbeats stopping after
+    // ~30s in the browser DevTools. The correct header is `Connection:
+    // close` — telling intermediaries this stream ends when the socket
+    // closes — combined with `Transfer-Encoding: chunked` (so HTTP/1.1
+    // knows the body is chunk-bounded rather than connection-bounded).
+    //
+    // NOTE: We search for the literal header NAME without the trailing
+    // `\r\n` because in the Zig source the `\r\n` is an escape sequence
+    // (4 source bytes: `\`, `r`, `\`, `n`) rather than 2 real CR+LF
+    // bytes. That's enough to disambiguate from comments / docstrings.
+    const source = try readHttpServerSource(std.testing.allocator);
+    defer std.testing.allocator.free(source);
+
+    // The SSE arm must declare `Connection: close`.
+    if (std.mem.indexOf(u8, source, "\"Connection: close\\r\\n\"") == null) {
+        std.debug.print("\n!! http_server.zig SSE arm missing '\"Connection: close\\\\r\\\\n\"' string literal !!\n", .{});
+        return error.SseConnectionCloseMissing;
+    }
+    // The SSE arm must NOT declare `Connection: keep-alive`.
+    if (std.mem.indexOf(u8, source, "\"Connection: keep-alive\\r\\n\"") != null) {
+        std.debug.print("\n!! http_server.zig SSE arm still sends 'Connection: keep-alive' (causes ~30s drop under Vite) !!\n", .{});
+        return error.SseConnectionKeepAliveStillPresent;
+    }
+}
+
 // ============================================================================
 // Task 4 (long-period fix #1): sendHeartbeat must take the SseManager lock
 // when snapshotting client pointers.

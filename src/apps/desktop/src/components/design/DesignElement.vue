@@ -45,6 +45,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import type { DesignElement } from '../../api'
 import { getDesignElementHtml } from '../../api'
 import DesignElementPreview from './DesignElementPreview.vue'
+import { abbrevElement, designLogger } from '../../helpers/designLogger'
 
 const props = withDefaults(
   defineProps<{
@@ -111,13 +112,22 @@ const emit = defineEmits<{
    * NEW (2026-08-06) — fires on every pointermove during a drag for
    * a SINGLE element (leaf OR a single-element drag of a group that
    * didn't trigger the group-drag path). Payload is the CURSOR
-   * DELTA `(dx, dy)` in design-px — the parent is responsible for
-   * adding it to the element's start position before calling
+   * DELTA `(dx, dy)` in design-px PLUS the source element's id —
+   * the parent is responsible for adding the delta to the element's
+   * start position before calling
    * `workspacesStore.translateDesignElement`.
+   *
+   * The `elementId` was added 2026-08-06 (post-#162 fix) because the
+   * single-element drag wire previously relied on `selectedIds.size === 1`
+   * to identify the dragged element. That check is fragile: if the
+   * user shift-clicked to deselect (toggling removed the dragged id),
+   * or if a multi-select from earlier wasn't cleared, the parent's
+   * `handleElementTranslate` bailed early — the element never moved.
+   * Carrying the id in the event makes the wire self-contained.
    *
    * Replaces `update` for the move use case.
    */
-  translate: [delta: { dx: number; dy: number }]
+  translate: [payload: { elementId: string; dx: number; dy: number }]
   /**
    * NEW (2026-08-06) — fires on every pointermove during a RESIZE
    * gesture (dragging one of the 8 resize handles). Payload carries
@@ -169,10 +179,7 @@ const elementStyle = computed(() => ({
 
 type DragMode = 'move' | { resize: ResizeHandle }
 
-type ResizeHandle =
-  | 'nw' | 'n' | 'ne'
-  | 'w'  |        'e'
-  | 'sw' | 's' | 'se'
+type ResizeHandle = 'nw' | 'n' | 'ne' | 'w' | 'e' | 'sw' | 's' | 'se'
 
 const isDragging = ref(false)
 
@@ -195,21 +202,54 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // canvas's @contextmenu (right-click menu) is a separate event and
   // unaffected by pointerdown propagation, so right-click handling
   // still works.
+  console.log('GIL START DDRAGGING', mode)
+
   if (mode !== 'move') {
     event.stopPropagation()
   }
-  if (props.readonly) return
+  console.log('GIL START DDRAGGING props', props)
+
+  if (props.readonly) {
+    designLogger.debug({
+      reason: 'drag:noop:readonly',
+      caller: 'DesignElement.startDrag',
+      element: abbrevElement(props.element),
+    })
+
+    return
+  }
   // In Preview mode, the canvas is "playing" the mockup — clicks
   // on element bodies are absorbed by the inner iframe (typed text,
   // button activations). Don't start a drag, don't emit select.
-  if (props.previewMode) return
+  if (props.previewMode) {
+    designLogger.debug({
+      reason: 'drag:noop:preview',
+      caller: 'DesignElement.startDrag',
+      element: abbrevElement(props.element),
+    })
+    return
+  }
   // Don't initiate a drag if the click was on an interactive child
   // (e.g. the iframe content) — pointer-events:none on the iframe
   // already prevents that, but we double-check.
-  if (event.button !== 0) return
+  if (event.button !== 0) {
+    designLogger.debug({
+      reason: 'drag:noop:button≠0',
+      caller: 'DesignElement.startDrag',
+      element: abbrevElement(props.element),
+    })
+    console.log('GIL START DDRAGGING button', event)
+    return
+  }
   emit('select', {
     elementId: props.element.id,
     additive: event.shiftKey,
+  })
+  designLogger.info({
+    reason: 'emit:select',
+    caller: 'DesignElement.startDrag',
+    element: abbrevElement(props.element),
+    extra: { additive: event.shiftKey, mode },
   })
 
   // Undo/redo plan (Chunk 4): emit drag-start BEFORE the gesture
@@ -217,12 +257,17 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // drag, the captured set is [this element]. For group drag (below),
   // we re-emit with the full selection BEFORE setting up the move
   // handler. This way the parent's pre-state read happens once.
-  const groupDragIds = props.selectedIds.length > 1
-    && props.selectedIds.includes(props.element.id)
-    && mode === 'move'
-    ? props.selectedIds
-    : [props.element.id]
+  const groupDragIds =
+    props.selectedIds.length > 1 && props.selectedIds.includes(props.element.id) && mode === 'move'
+      ? props.selectedIds
+      : [props.element.id]
   emit('dragStart', groupDragIds)
+  designLogger.info({
+    reason: 'emit:dragStart',
+    caller: 'DesignElement.startDrag',
+    element: abbrevElement(props.element),
+    extra: { groupDragIds: [...groupDragIds], mode },
+  })
 
   // Group drag (Chunk 2): when this element is part of a multi-selection,
   // dragging moves the ENTIRE selection. The parent applies the same
@@ -236,32 +281,78 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // transitively (drag-moves the whole subtree — Figma parity).
   // For non-group elements in a single-element selection, the drag
   // stays per-element (no behavioural change).
-  const isGroupLike =
-    props.element.type === 'group' || props.element.type === 'frame'
-  const inMultiselect =
-    props.selectedIds.length > 1 &&
-    props.selectedIds.includes(props.element.id)
+  const isGroupLike = props.element.type === 'group' || props.element.type === 'frame'
+  const inMultiselect = props.selectedIds.length > 1 && props.selectedIds.includes(props.element.id)
   const triggerGroupDrag = (inMultiselect || isGroupLike) && mode === 'move'
   if (triggerGroupDrag) {
+    console.log('GIL START DDRAGGING trigger group drags', triggerGroupDrag)
     event.preventDefault()
     const target = event.currentTarget as HTMLElement | null
-    if (!target) return
+    if (!target) {
+      console.log('GIL START DDRAGGING trigger group drags null target', target)
+      return
+    }
     target.setPointerCapture(event.pointerId)
     isDragging.value = true
     const startClientX = event.clientX
     const startClientY = event.clientY
     let pendingDx = 0
     let pendingDy = 0
+    // BUG FIX (2026-08-06, design-mode-moves-so-fast v2): send
+    // INCREMENTAL dx/dy (delta since last emit), NOT the cumulative
+    // cursor distance from drag-start. The wire `dx` is interpreted by
+    // the backend as "set x = x + dx" (UPDATE x = x + ?), so the
+    // previous wire — which sent `dx = e.clientX - startClientX` per
+    // tick — caused the server to compound: after N ticks of cursor
+    // movement d, the element ends up at d·N·(N+1)/2 instead of d.
+    // A 100px drag in 20 ticks landed the element at ~1050 design-px.
+    //
+    // Tracking the last-emitted value (initialised to 0 at drag start)
+    // makes the wire send exactly the delta since the previous emit,
+    // including the trailing pointerup emit. Server still ADDS, but
+    // the cumulative effect is now `d·1 + d·1 + ... + d·1 = d·N`,
+    // which is what the cursor moved.
+    let lastEmittedDx = 0
+    let lastEmittedDy = 0
     let lastEmitMs = 0
     const THROTTLE_MS = 50
+    designLogger.info({
+      reason: 'drag:start:group',
+      caller: 'DesignElement.startDrag',
+      element: abbrevElement(props.element),
+      isGroup: true,
+      startClientX,
+      startClientY,
+    })
     const onMove = (e: PointerEvent): void => {
       const inv = 1 / Math.max(0.01, props.zoom)
       pendingDx = (e.clientX - startClientX) * inv
       pendingDy = (e.clientY - startClientY) * inv
       const now = performance.now()
       if (now - lastEmitMs >= THROTTLE_MS) {
-        emit('groupDrag', { dx: pendingDx, dy: pendingDy })
+        // INCREMENTAL delta — server ADDs this to the current
+        // position. End-of-drag total = cumulative cursor delta.
+        const incDx = pendingDx - lastEmittedDx
+        const incDy = pendingDy - lastEmittedDy
+        emit('groupDrag', { dx: incDx, dy: incDy })
+        lastEmittedDx = pendingDx
+        lastEmittedDy = pendingDy
         lastEmitMs = now
+        designLogger.debug({
+          reason: 'drag:throttled-emit',
+          caller: 'DesignElement.startDrag',
+          element: abbrevElement(props.element),
+          dx: incDx,
+          dy: incDy,
+          // Also log the cumulative so debugging is easier.
+          extra: {
+            cumulativeDx: pendingDx,
+            cumulativeDy: pendingDy,
+            startClientX,
+            startClientY,
+          },
+          isGroup: true,
+        })
       }
     }
     const onUp = (e: PointerEvent): void => {
@@ -270,9 +361,35 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
       }
       isDragging.value = false
       // Trailing emit: capture the final position regardless of throttle.
-      emit('groupDrag', { dx: pendingDx, dy: pendingDy })
+      // Use INCREMENTAL delta so the server's last ADD lands exactly
+      // on the cursor's end position. Without this the trailing emit
+      // would re-apply the FULL cumulative (compounding again).
+      const incDx = pendingDx - lastEmittedDx
+      const incDy = pendingDy - lastEmittedDy
+      emit('groupDrag', { dx: incDx, dy: incDy })
+      lastEmittedDx = pendingDx
+      lastEmittedDy = pendingDy
+      designLogger.info({
+        reason: 'drag:trailing-emit',
+        caller: 'DesignElement.startDrag',
+        element: abbrevElement(props.element),
+        dx: incDx,
+        dy: incDy,
+        extra: {
+          cumulativeDx: pendingDx,
+          cumulativeDy: pendingDy,
+          startClientX,
+          startClientY,
+        },
+        isGroup: true,
+      })
       // Chunk 3: tell the parent to clear its snap guides.
       emit('dragEnd')
+      designLogger.info({
+        reason: 'emit:dragEnd',
+        caller: 'DesignElement.startDrag',
+        element: abbrevElement(props.element),
+      })
       target.removeEventListener('pointermove', onMove)
       target.removeEventListener('pointerup', onUp)
       target.removeEventListener('pointercancel', onUp)
@@ -282,6 +399,21 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     target.addEventListener('pointercancel', onUp)
     return
   }
+
+  // ─── Single-element drag path log ──────────────────────────────────
+  // The triggerGroupDrag branch above already returned for groups /
+  // frames / multi-select. Falls through here for leaves (rectangle,
+  // ellipse, text, image). The "drag:start:move" line below is what
+  // proves the leaf element actually started a drag — without it,
+  // "I clicked but nothing moved" can't be localised.
+  designLogger.info({
+    reason: 'drag:start:move',
+    caller: 'DesignElement.startDrag',
+    element: abbrevElement(props.element),
+    isGroup: false,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+  })
 
   // Single-element drag. 50 ms leading-edge throttle + trailing
   // pointerup emit. The visual position update flows through:
@@ -314,19 +446,43 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   const startX = event.clientX
   const startY = event.clientY
   const start = {
-    x: props.element.x, y: props.element.y,
-    width: props.element.width, height: props.element.height,
+    x: props.element.x,
+    y: props.element.y,
+    width: props.element.width,
+    height: props.element.height,
   }
+  // Overwrite the drag:start:move info above with a more-specific
+  // reason (resize vs move) using `mode`. The earlier info line is
+  // a redundancy safety net in case this code path throws before
+  // reaching here.
+  designLogger.info({
+    reason: mode === 'move' ? 'drag:start:move' : 'drag:start:resize',
+    caller: 'DesignElement.startDrag',
+    element: abbrevElement(props.element),
+    isGroup: false,
+    startClientX: startX,
+    startClientY: startY,
+    extra: { mode: typeof mode === 'string' ? mode : mode.resize },
+  })
 
   // The latest pending event we intend to emit. Throttled: we only
   // emit when either (a) 50ms has elapsed since the last emit, or
   // (b) pointerup fires (the trailing emit captures the final
   // position even if the throttle window hasn't elapsed).
   //
-  // For mode='move' we emit `translate` with the cursor delta — the
-  // parent is responsible for adding the delta to the start
-  // position and calling `workspacesStore.translateDesignElement`
+  // For mode='move' we emit `translate` with the INCREMENTAL cursor
+  // delta (delta since the last emit) — the parent adds it to the
+  // current server position via `workspacesStore.translateDesignElement`
   // (POST /translate). The backend handles the cascade for groups.
+  //
+  // BUG FIX (2026-08-06, design-mode-moves-so-fast v2): the wire used to
+  // carry the CUMULATIVE cursor delta from drag-start (`dx =
+  // e.clientX - startX`). The backend interprets `dx` as
+  // "set x = x + dx", so each throttled emit compounded: after N
+  // ticks the element landed at d·N·(N+1)/2 design-px instead of d.
+  // Tracking lastEmittedDx and sending the delta since the last emit
+  // makes the cumulative effect = d·1·N = d·N, which is what the
+  // cursor moved. Same fix as the group-drag branch above.
   //
   // For mode='resize' we emit `resize` with the absolute target
   // patch — the parent calls `workspacesStore.resizeDesignElement`
@@ -334,16 +490,49 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   let pendingTranslate: { dx: number; dy: number } | null = null
   let pendingResize: Partial<DesignElement> | null = null
   let lastEmitMs = 0
+  let lastEmittedTranslateDx = 0
+  let lastEmittedTranslateDy = 0
   const THROTTLE_MS = 50
 
   const flushEmit = (): void => {
     if (pendingTranslate) {
-      emit('translate', pendingTranslate)
+      const incDx = pendingTranslate.dx - lastEmittedTranslateDx
+      const incDy = pendingTranslate.dy - lastEmittedTranslateDy
+      // Carry the source elementId in the event so the parent doesn't
+      // have to fish it out of `selectedIds` (which can be wrong —
+      // see the doc on the `translate` emit type).
+      emit('translate', {
+        elementId: props.element.id,
+        dx: incDx,
+        dy: incDy,
+      })
+      lastEmittedTranslateDx = pendingTranslate.dx
+      lastEmittedTranslateDy = pendingTranslate.dy
+      designLogger.debug({
+        reason: 'emit:translate',
+        caller: 'DesignElement.startDrag',
+        element: abbrevElement(props.element),
+        dx: incDx,
+        dy: incDy,
+        startClientX: startX,
+        startClientY: startY,
+        extra: { cumulativeDx: pendingTranslate.dx, cumulativeDy: pendingTranslate.dy },
+        isGroup: false,
+      })
       pendingTranslate = null
       lastEmitMs = performance.now()
     }
     if (pendingResize) {
       emit('resize', pendingResize)
+      designLogger.debug({
+        reason: 'emit:resize',
+        caller: 'DesignElement.startDrag',
+        element: abbrevElement(props.element),
+        patch: pendingResize,
+        startClientX: startX,
+        startClientY: startY,
+        isGroup: false,
+      })
       pendingResize = null
       lastEmitMs = performance.now()
     }
@@ -392,6 +581,11 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     flushEmit()
     // Chunk 3: tell the parent to clear its snap guides.
     emit('dragEnd')
+    designLogger.info({
+      reason: 'emit:dragEnd',
+      caller: 'DesignElement.startDrag',
+      element: abbrevElement(props.element),
+    })
     target.removeEventListener('pointermove', onMove)
     target.removeEventListener('pointerup', onUp)
     target.removeEventListener('pointercancel', onUp)
@@ -503,14 +697,17 @@ const handleKeydown = (e: KeyboardEvent): void => {
   if (e.key !== 'Delete' && e.key !== 'Backspace') return
   // Don't intercept Delete when the user is typing in a form input.
   const target = e.target as HTMLElement | null
-  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+  if (
+    target &&
+    (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+  ) {
     return
   }
   e.preventDefault()
   // Emit one `delete` per selected id. When only the legacy `selected`
   // flag is set (no multi-selection context), fall back to deleting
   // just this element so the back-compat path still works.
-  for (const id of (props.selectedIds.length > 0 ? props.selectedIds : [props.element.id])) {
+  for (const id of props.selectedIds.length > 0 ? props.selectedIds : [props.element.id]) {
     emit('delete', id)
   }
 }
@@ -527,7 +724,7 @@ onUnmounted(() => {
   <div
     class="design-element absolute"
     :class="[
-      (selected || selectedIds.includes(element.id)) ? 'selected' : '',
+      selected || selectedIds.includes(element.id) ? 'selected' : '',
       readonly ? 'cursor-default' : 'cursor-move',
       isDragging ? 'dragging' : '',
     ]"
@@ -548,9 +745,7 @@ onUnmounted(() => {
       :style="{
         backgroundColor: element.fill || 'transparent',
         borderRadius: `${element.corner_radius}px`,
-        border: element.stroke
-          ? `${element.stroke_width}px solid ${element.stroke}`
-          : 'none',
+        border: element.stroke ? `${element.stroke_width}px solid ${element.stroke}` : 'none',
       }"
     >
       <!-- The HTML body is fetched on mount (and re-fetched when
@@ -584,7 +779,7 @@ onUnmounted(() => {
       <div
         v-else-if="isLoadingHtml"
         class="absolute inset-0 flex items-center justify-center text-[10px]"
-        style="color: var(--semantic-text-dim);"
+        style="color: var(--semantic-text-dim)"
         data-testid="design-element-loading"
       >
         loading…
@@ -637,7 +832,7 @@ onUnmounted(() => {
          is small / fill is invisible. -->
     <div
       class="absolute -top-5 left-0 text-[10px] pointer-events-none whitespace-nowrap"
-      style="color: var(--semantic-text-dim);"
+      style="color: var(--semantic-text-dim)"
       v-if="selected && !previewMode"
     >
       {{ element.name }}
@@ -669,7 +864,7 @@ onUnmounted(() => {
     <div
       v-if="selected && !previewMode"
       class="absolute inset-0 pointer-events-none"
-      style="outline: 2px solid var(--color-violet); outline-offset: 0;"
+      style="outline: 2px solid var(--color-violet); outline-offset: 0"
     />
 
     <!-- Resize handles (8 total: 4 corners + 4 edge midpoints) —
@@ -677,7 +872,7 @@ onUnmounted(() => {
     <template v-if="selected && !readonly && !previewMode">
       <!-- Corners -->
       <div
-        v-for="handle in (['nw', 'ne', 'sw', 'se'] as ResizeHandle[])"
+        v-for="handle in ['nw', 'ne', 'sw', 'se'] as ResizeHandle[]"
         :key="handle"
         class="design-element-handle absolute"
         :class="{
@@ -691,7 +886,7 @@ onUnmounted(() => {
       />
       <!-- Edges -->
       <div
-        v-for="handle in (['n', 'e', 's', 'w'] as ResizeHandle[])"
+        v-for="handle in ['n', 'e', 's', 'w'] as ResizeHandle[]"
         :key="handle"
         class="design-element-handle absolute"
         :class="{

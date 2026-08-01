@@ -176,6 +176,36 @@ export interface DesignPage {
  * `tagName` string; the backend maps it back to the enum at the
  * handler boundary.
  */
+/**
+ * Normalize the `type` field on a design element from the wire.
+ *
+ * The `GET /design/pages/:page_id` endpoint emits `type` (matches the
+ * frontend contract). The `POST .../elements/move-batch` endpoint
+ * historically emitted `elem_type` (a Zig struct field name — see
+ * the `makeDesignElementResponse` doc in
+ * `http_handlers/http_response.zig`). After a single move-batch the
+ * local store was mirrored with elements missing `type`, so
+ * `props.element.type === undefined` on every subsequent drag →
+ * `isGroupLike = false` → `triggerGroupDrag = false` → the cascade
+ * path silently switched to the single-element translate path.
+ *
+ * This function accepts BOTH shapes: `type` wins when present,
+ * `elem_type` falls back. Once the backend lands the
+ * `makeDesignElementResponse` change for move-batch, the
+ * `elem_type` branch is dead code — but we keep it as defense in
+ * depth so legacy backends (e.g. an old build that didn't get
+ * the fix) can't break the canvas again.
+ */
+export const normalizeDesignElementType = <
+  T extends { type?: DesignElementType; elem_type?: string },
+>(
+  e: T,
+): T & { type: DesignElementType } => {
+  const fallback: DesignElementType =
+    (e.elem_type as DesignElementType) ?? 'rectangle'
+  return { ...e, type: e.type ?? fallback }
+}
+
 export type DesignElementType =
   | 'rectangle'
   | 'ellipse'

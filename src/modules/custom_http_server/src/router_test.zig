@@ -164,6 +164,9 @@ test "Router.matchRoute exact match returns handler result" {
         .sse => {
             try std.testing.expect(false); // Should not be SSE
         },
+        .websocket => {
+            try std.testing.expect(false); // Should not be WebSocket
+        },
     }
 }
 
@@ -417,6 +420,9 @@ test "Router.sse route returns sse result" {
         .sse => |sse| {
             _ = sse;
         },
+        .websocket => {
+            try std.testing.expect(false); // Should not be WebSocket
+        },
     }
 }
 
@@ -536,6 +542,9 @@ test "Router matches correct route among multiple" {
             try std.testing.expectEqual(@as(u16, 200), res_data.res.status_code);
         },
         .sse => {
+            try std.testing.expect(false);
+        },
+        .websocket => {
             try std.testing.expect(false);
         },
     }

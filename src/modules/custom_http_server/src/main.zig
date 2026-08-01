@@ -386,6 +386,106 @@ fn sseStreamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: g
     return error.WouldBlock; // Handler should not complete - connection stays open
 }
 
+// ============================================================================
+// WebSocket echo handler — demonstrates the WebSocket transport end-to-end.
+//
+// This is the canonical "echo + broadcast" pattern for a custom HTTP
+// server with WebSocket support:
+//
+//   1. The handler is invoked AFTER the 101 Switching Protocols response
+//      has been sent. It receives (ctx, req, server_ptr, client_fd).
+//
+//   2. We run a read loop: each incoming frame is parsed and either
+//      echoed back (text frames) or used as a broadcast trigger
+//      (a message starting with "/broadcast "). Other opcodes:
+//        - ping   → reply with pong carrying the same payload
+//        - close  → exit the loop (the server sends its own close frame)
+//        - binary → ignore
+//
+//   3. On loop exit, the server sends a close frame and closes the fd.
+//
+// See websocket_frames.zig for the wire format and websocket_handshake.zig
+// for the upgrade flow. This handler is intentionally self-contained —
+// production handlers would split the read loop into a helper function
+// for testability.
+// ============================================================================
+
+const ws_frames = @import("websocket_frames.zig");
+
+fn wsEchoHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, server_ptr: *anyopaque, client_fd: i32, client_id: *[16]u8) !void {
+    const server: *gserverz.GinwaServer = @ptrCast(@alignCast(server_ptr));
+    _ = req;
+
+    var buf: [4096]u8 = undefined;
+
+    while (true) {
+        const n = server.recvFromClient(client_fd, &buf) catch |err| {
+            std.debug.print("ws echo recv error: {s}\n", .{@errorName(err)});
+            return;
+        };
+        if (n == 0) return; // peer closed
+
+        // Parse the first complete frame in buf. For multi-frame
+        // messages this loop would need to handle continuations; for
+        // the demo we only handle single-frame messages.
+        var frame = ws_frames.parseFrame(ctx.allocator, buf[0..n]) catch |err| switch (err) {
+            error.IncompleteFrame => {
+                // For simplicity, we don't buffer partial frames here.
+                // A real implementation would accumulate into a growable
+                // ArrayList and re-parse.
+                std.debug.print("ws echo: incomplete frame\n", .{});
+                continue;
+            },
+            else => {
+                std.debug.print("ws echo: parse error {s}\n", .{@errorName(err)});
+                return;
+            },
+        };
+        defer frame.deinit(ctx.allocator);
+
+        switch (frame.opcode) {
+            .text => {
+                // Echo the frame back to the sender.
+                const echo = ws_frames.encodeFrame(ctx.allocator, .{
+                    .opcode = .text,
+                    .payload = frame.payload,
+                }) catch continue;
+                defer ctx.allocator.free(echo);
+                _ = server.sendToClient(client_fd, echo) catch return;
+
+                // Special-case: a message beginning with "/broadcast "
+                // is sent to all connected WebSocket clients (including
+                // this one) via the WsManager broadcast path. This
+                // demonstrates the fan-out use case (chat rooms,
+                // notifications, etc.).
+                if (std.mem.startsWith(u8, frame.payload, "/broadcast ")) {
+                    server.ws_manager.broadcast(frame.payload["/broadcast ".len..]) catch {};
+                    // The sender also sees the broadcast; we already
+                    // echoed above, so the sender gets the message twice.
+                    // (Acceptable for the demo; real apps would skip the
+                    // echo for broadcast-triggered messages.)
+                }
+
+                // Special-case: "/echo <id>" sends an extra message
+                // targeted at the named client id (no id→fd lookup in
+                // this demo, just illustrates the sendToClient path).
+                _ = client_id;
+            },
+            .ping => {
+                // Reply with a pong carrying the same payload (RFC 6455 §5.5.3).
+                const pong = ws_frames.encodeFrame(ctx.allocator, .{
+                    .opcode = .pong,
+                    .payload = frame.payload,
+                }) catch continue;
+                defer ctx.allocator.free(pong);
+                _ = server.sendToClient(client_fd, pong) catch return;
+            },
+            .close => return, // peer wants to close — exit the loop
+            else => {}, // binary / continuation / pong — ignore
+        }
+    }
+}
+
 pub fn run(init: std.process.Init) !void {
     // const arena_allocator = init.arena;
     // defer arena_allocator.deinit();
@@ -433,6 +533,10 @@ pub fn run(init: std.process.Init) !void {
     // Static HTML page — served by landingPageHandler. See LANDING_PAGE_HTML above.
     try gs.router.get("/", landingPageHandler);
     try gs.router.sse("/stream", sseStreamHandler);
+    // WebSocket endpoint — echo + broadcast demo. See wsEchoHandler above.
+    try gs.router.ws("/ws", wsEchoHandler);
+
+    std.debug.print("WebSocket listening on ws://127.0.0.1:29590/ws\n", .{});
 
     try gs.listen();
 }

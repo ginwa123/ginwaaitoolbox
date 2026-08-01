@@ -232,10 +232,34 @@ const handleDragEnd = (event: DragEvent): void => {
 </script>
 
 <template>
+  <!-- Drop-zone rows: synthetic inert rows used as drag-drop targets
+       between top-level element rows (one BEFORE the first element +
+       one AFTER every element). They are NOT real element rows and
+       MUST NOT render any of the row chrome (chevron, type icon,
+       "(unnamed)" name placeholder, action buttons). The handler
+       attrs above still bind @dragover/@drop/@dragleave/@dragend
+       through the `<div>` below — only the visible chrome is gated. -->
+  <div
+    v-if="kind === 'drop-zone'"
+    :class="[
+      'layer-row-drop-zone-base',
+      isDropTarget && 'layer-row-drop-target',
+      isDropTargetBlocked && 'layer-row-drop-target-blocked',
+    ]"
+    :data-testid="'design-layer-drop-zone-top-level'"
+    @click.stop
+    @contextmenu.stop
+    @dragover.prevent="handleDragOver"
+    @dragleave="handleDragLeave"
+    @drop="handleDrop"
+    @dragend="handleDragEnd"
+  ></div>
+
   <!-- The row itself. paddingLeft scales by depth so children
        visually nest under their parent. -->
   <div
-    :draggable="!readonly && kind === 'row'"
+    v-else
+    :draggable="!readonly"
     :class="[
       'flex items-center gap-2 px-2 py-1.5 text-sm cursor-pointer transition-colors',
       isBeingDragged && 'layer-row-dragging',
@@ -251,7 +275,7 @@ const handleDragEnd = (event: DragEvent): void => {
         ? 'var(--semantic-text)'
         : 'var(--semantic-text-dim)',
     }"
-    :data-testid="kind === 'drop-zone' ? 'design-layer-drop-zone-top-level' : `design-layer-${node.element.id}`"
+    :data-testid="`design-layer-${node.element.id}`"
     @click="handleSelect"
     @contextmenu="handleContextMenu"
     @dragstart="handleDragStart"
@@ -283,8 +307,11 @@ const handleDragEnd = (event: DragEvent): void => {
       style="color: var(--color-violet);"
     >{{ typeIcon(node.element.type) }}</span>
 
-    <!-- Element name (or "(unnamed)" placeholder for legacy rows). -->
-    <span class="flex-1 truncate">{{ node.element.name || '(unnamed)' }}</span>
+    <!-- Element name. (The "(unnamed)" placeholder used to live here,
+         but it leaked into the drop-zone rows that share this template
+         — see the v-if above. Real element rows now just render the
+         name; empty names render as an empty string.) -->
+    <span class="flex-1 truncate">{{ node.element.name }}</span>
 
     <!-- Action buttons (reorder + delete). Hidden in readonly. -->
     <div
@@ -354,5 +381,24 @@ const handleDragEnd = (event: DragEvent): void => {
 .layer-row-drop-target-blocked {
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+/* Drop-zone rows: an invisible 6px-tall spacer between element rows
+   that acts as a drag-drop target. On hover/drag, `layer-row-drop-target`
+   (above) lights up the full row with a violet outline. The visual
+   treatment is intentionally subtle so the drop target only appears
+   when the user is actively dragging — see Chunk 4 Task 4.2 of the
+   design-layer-drag-join-or-leave-group plan. */
+.layer-row-drop-zone-base {
+  height: 6px;
+  cursor: default;
+  margin: 0;
+  padding: 0;
+  /* Subtle hint that this is a drop target even when idle. */
+  background-color: transparent;
+  transition: background-color 120ms ease;
+}
+.layer-row-drop-zone-base:hover {
+  background-color: rgba(127, 0, 255, 0.04);
 }
 </style>

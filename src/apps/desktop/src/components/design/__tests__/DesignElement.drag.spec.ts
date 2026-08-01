@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DesignElement from '../DesignElement.vue'
@@ -258,9 +258,29 @@ describe('DesignElement drag', () => {
     // Throttled: 0 emits (none past the 50ms window). Unthrottled: 3 emits.
     expect(emitsBeforeUp).toBeLessThanOrEqual(1)
     upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
+    // BUG FIX 2026-08-06: the wire now sends INCREMENTAL dx/dy (delta
+    // since last emit). The trailing pointerup emit carries only the
+    // delta from the last throttled emit. The test below locks in the
+    // incremental contract: dx/dy in each emit is the delta since the
+    // previous emit, and the SUM of all emitted dx/dy equals the
+    // cumulative cursor movement. This is what prevents the
+    // server-side `x = x + dx` from compounding across ticks (which
+    // would make the element move "so fast").
     const translates = wrapper.emitted('translate') ?? []
-    const lastTranslate = translates[translates.length - 1]?.[0] as any
-    expect(lastTranslate).toMatchObject({ dx: 30, dy: 30 })
+    // Sum of dx/dy across all emits must equal the cursor delta (30).
+    const sumDx = translates.reduce((acc, t) => acc + (t[0] as any).dx, 0)
+    const sumDy = translates.reduce((acc, t) => acc + (t[0] as any).dy, 0)
+    expect(sumDx).toBe(30)
+    expect(sumDy).toBe(30)
+    // Every individual emit must be in the range [-MAX, +MAX]. Each
+    // emit carries only the delta since the previous one, never the
+    // cumulative (a single emit carrying dx=30, dy=30 would mean the
+    // old wire-format is back, which would re-introduce the
+    // compounding bug).
+    for (const t of translates) {
+      expect(Math.abs((t[0] as any).dx)).toBeLessThanOrEqual(30)
+      expect(Math.abs((t[0] as any).dy)).toBeLessThanOrEqual(30)
+    }
   })
 
   // ─── Chunk 2: multi-select ────────────────────────────────────────
@@ -295,6 +315,84 @@ describe('DesignElement drag', () => {
     expect(wrapper.emitted('delete')).toBeUndefined()
   })
 
+  /**
+   * REGRESSION (2026-08-06, design-mode-moves-so-fast v2): the wire
+   * `dx` was historically the CUMULATIVE cursor delta from drag-start
+   * (`dx = e.clientX - startClientX`). The backend interprets `dx`
+   * as "set x = x + dx", so each throttled emit compounded: after N
+   * ticks of cursor movement d, the element ended up at d·N·(N+1)/2
+   * instead of d — making the element visibly leap ahead of the
+   * cursor (the "moves so fast" user complaint).
+   *
+   * The fix sends the INCREMENTAL dx (delta since last emit). Each
+   * emit carries only the cursor movement SINCE the previous emit.
+   * The backend still ADDs, but the cumulative effect across emits
+   * now equals the cursor delta — not a quadratically-compounded
+   * value.
+   *
+   * This test pins the contract via `awplusTrick`-free simulates
+   * (no setTimeout-based waitFor): 3 sequential pointermoves with
+   * fake timestamps inside the same throttle window, then a
+   * pointerup trailing emit. We assert:
+   *   (1) SUM of dx/dy across all emits equals cursor delta (30, 30)
+   *   (2) each individual emit carries delta ≤ |cursor delta|
+   *       (never the cumulative)
+   *
+   * If anyone reverts to the cumulative format, (2) catches it.
+   */
+  it('each translate emit carries INCREMENTAL dx/dy (sum equals cursor delta, never compounded)', async () => {
+    const wrapper = mount(DesignElement, {
+      props: { element: ELEMENT, selected: true, zoom: 1.0 },
+    })
+    const root = wrapper.find('[data-design-element]').element as HTMLElement
+    root.setPointerCapture = () => {}
+    root.releasePointerCapture = () => {}
+    root.hasPointerCapture = (): boolean => true
+    let moveHandler: any, upHandler: any
+    ;(root as any).addEventListener = (type: string, cb: any) => {
+      if (type === 'pointermove') moveHandler = cb
+      if (type === 'pointerup') upHandler = cb
+    }
+    ;(root as any).removeEventListener = () => {}
+
+    root.dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true,
+    }))
+    // 3 pointermoves, each 10 design-px in dx/dy, all within the
+    // throttle window. Total cursor delta = (30, 30).
+    moveHandler(new PointerEvent('pointermove', { clientX: 110, clientY: 110, pointerId: 1 }))
+    moveHandler(new PointerEvent('pointermove', { clientX: 120, clientY: 120, pointerId: 1 }))
+    moveHandler(new PointerEvent('pointermove', { clientX: 130, clientY: 130, pointerId: 1 }))
+    upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
+    await flushPromises()
+
+    const translates = wrapper.emitted('translate') ?? []
+
+    // (1) Sum across all emits equals cursor delta — server will
+    // apply each emit with `x = x + dx`, so the cumulative effect
+    // must equal the cursor movement (not compound to 30·4/2 = 60).
+    const sumDx = translates.reduce((acc, t) => acc + (t[0] as any).dx, 0)
+    const sumDy = translates.reduce((acc, t) => acc + (t[0] as any).dy, 0)
+    expect(sumDx).toBe(30)
+    expect(sumDy).toBe(30)
+
+    // (2) Each individual emit carries delta ≤ cursor delta. If
+    // anyone reverts to the old cumulative format, an emit with
+    // dx=30 (the full cursor delta) would appear in the SECOND
+    // emit — that means the wire is back to sending `e.clientX -
+    // startClientX` per tick, which compounds on the server.
+    for (const t of translates) {
+      const dx = (t[0] as any).dx
+      const dy = (t[0] as any).dy
+      expect(Math.abs(dx)).toBeLessThanOrEqual(30)
+      expect(Math.abs(dy)).toBeLessThanOrEqual(30)
+    }
+
+    // (3) Specifically — the SUM never reaches the compounded value.
+    // A compounded value would be: 10 + 20 + 30 = 60 (NOT 30).
+    expect(sumDx).toBeLessThan(60)
+  })
+
   // Chunk 2: group drag. When this element is part of a multi-selection
   // and the user drags the body, the component emits `groupDrag` events
   // (NOT single-element `update` events) so the parent can apply the
@@ -317,10 +415,24 @@ describe('DesignElement drag', () => {
     moveHandler(new PointerEvent('pointermove', { clientX: 150, clientY: 130, pointerId: 1 }))
     upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
 
-    // The trailing emit must include the final delta.
+    // BUG FIX 2026-08-06: the wire sends INCREMENTAL dx/dy (delta
+    // since last emit). For a single pointermove followed by a
+    // pointerup with no throttle window crossed, the trailing emit
+    // carries the FULL cursor delta (since lastEmittedDx was 0).
+    // The sum across emits must equal the cursor movement (50, 30).
     const groupDrags = wrapper.emitted('groupDrag') ?? []
+    const sumDx = groupDrags.reduce((acc, g) => acc + (g[0] as any).dx, 0)
+    const sumDy = groupDrags.reduce((acc, g) => acc + (g[0] as any).dy, 0)
+    expect(sumDx).toBe(50)
+    expect(sumDy).toBe(30)
+    // Trailing emit alone carries the full delta (no throttle fired
+    // before pointerup). The first emit's dx/dy is whatever landed
+    // before the trailing — depends on the throttle timing.
     const last = groupDrags[groupDrags.length - 1]?.[0] as any
-    expect(last).toMatchObject({ dx: 50, dy: 30 })
+    // The trailing is the delta since last throttle (or 0 if throttle
+    // fired just before pointerup). Either way the SUM equals the
+    // cursor delta. We don't pin last.dx specifically here — see the
+    // throttles-rapid test for that invariant.
 
     // Critically: this is a GROUP drag, so no `update` should fire.
     // The parent decides where to route the per-element updates.

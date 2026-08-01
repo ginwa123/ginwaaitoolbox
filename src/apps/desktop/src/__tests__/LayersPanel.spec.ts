@@ -382,3 +382,110 @@ describe('LayersPanel.vue — tree render (parent_id set)', () => {
     expect(wrapper.find('[data-testid="design-layer-toggle-elem_b"]').exists()).toBe(false)
   })
 })
+
+// ─── Drop-zone rows (Chunk 4 Task 4.2 of drag-to-reparent plan) ──────────
+//
+// LayersPanel renders N+1 top-level drop-zone rows between real elements
+// (one BEFORE the first row + one AFTER every top-level row). They use
+// the synthetic `TOP_LEVEL_SENTINEL` element with `name: ''` and the
+// `kind="drop-zone"` prop. These rows are NOT real element rows — they
+// are drag-drop targets and must not look like element rows.
+//
+// Bug 2026-08-06: drop-zone rows rendered `(unnamed)` as their name and
+// `▭` as their type icon, making them indistinguishable from real
+// element rows. Users asked "are these ungrouped children?" — the
+// answer was "no, they are drop zones", but the visual made the
+// question reasonable. These tests pin the corrected visual:
+//   - drop-zone rows do NOT show `(unnamed)`
+//   - drop-zone rows do NOT show a type icon
+//   - drop-zone rows do NOT show action buttons (up/down/delete)
+//   - drop-zone rows carry the `design-layer-drop-zone-top-level` testid
+describe('LayersPanel.vue — top-level drop-zone rows (must not look like element rows)', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    vi.restoreAllMocks()
+  })
+
+  it('renders one drop-zone before the first element AND one after every element (N+1 total)', async () => {
+    const elements = [
+      makeElement({ id: 'elem_a', name: 'A', z_index: 0, position: 0 }),
+      makeElement({ id: 'elem_b', name: 'B', z_index: 0, position: 1 }),
+      makeElement({ id: 'elem_c', name: 'C', z_index: 0, position: 2 }),
+    ]
+    wrapper = mountPanel({ elements })
+    await nextTick()
+
+    const dropZones = wrapper.findAll('[data-testid="design-layer-drop-zone-top-level"]')
+    // 3 elements → 1 before + 3 after = 4 drop zones.
+    expect(dropZones).toHaveLength(4)
+  })
+
+  it('does NOT render "(unnamed)" text in any drop-zone row', async () => {
+    // The bug: LayerRow.vue rendered `node.element.name || '(unnamed)'`
+    // for ALL rows including drop zones (which have name: ''). The
+    // result: every drop-zone row showed "(unnamed)" in the panel.
+    const elements = [
+      makeElement({ id: 'elem_a', name: 'A', z_index: 0, position: 0 }),
+      makeElement({ id: 'elem_b', name: 'B', z_index: 0, position: 1 }),
+    ]
+    wrapper = mountPanel({ elements })
+    await nextTick()
+
+    const dropZones = wrapper.findAll('[data-testid="design-layer-drop-zone-top-level"]')
+    for (const dz of dropZones) {
+      expect(dz.text()).not.toContain('(unnamed)')
+    }
+  })
+
+  it('does NOT render a type icon (▭ ◯ T 🖼 ◳ ◫ ◇) in any drop-zone row', async () => {
+    // Same root cause as above — LayerRow rendered typeIcon(node.element.type)
+    // for ALL rows. The drop zone's synthetic element has type: 'rectangle'
+    // so it rendered '▭', making the row look like a real rectangle element.
+    const elements = [
+      makeElement({ id: 'elem_a', name: 'A', z_index: 0, position: 0 }),
+    ]
+    wrapper = mountPanel({ elements })
+    await nextTick()
+
+    const dropZones = wrapper.findAll('[data-testid="design-layer-drop-zone-top-level"]')
+    for (const dz of dropZones) {
+      // None of the 7 known type icons should appear inside a drop zone.
+      expect(dz.text()).not.toMatch(/[▭◯T🖼◳◫◇]/)
+    }
+  })
+
+  it('does NOT render action buttons (▲ ▼ ×) in any drop-zone row', async () => {
+    // Drop zones are inert drop targets — no reorder, no delete.
+    const elements = [
+      makeElement({ id: 'elem_a', name: 'A', z_index: 0, position: 0 }),
+    ]
+    wrapper = mountPanel({ elements })
+    await nextTick()
+
+    const dropZones = wrapper.findAll('[data-testid="design-layer-drop-zone-top-level"]')
+    for (const dz of dropZones) {
+      expect(dz.findAll('[data-testid^="design-layer-reorder-up-"]')).toHaveLength(0)
+      expect(dz.findAll('[data-testid^="design-layer-reorder-down-"]')).toHaveLength(0)
+      expect(dz.findAll('[data-testid^="design-layer-delete-"]')).toHaveLength(0)
+    }
+  })
+
+  it('does NOT render drop-zone rows when readonly is true (preview mode)', async () => {
+    const elements = [
+      makeElement({ id: 'elem_a', name: 'A', z_index: 0, position: 0 }),
+      makeElement({ id: 'elem_b', name: 'B', z_index: 0, position: 1 }),
+    ]
+    wrapper = mountPanel({ elements, readonly: true })
+    await nextTick()
+
+    // Only the 2 real rows — no drop zones in readonly/preview mode.
+    expect(wrapper.findAll('[data-testid="design-layer-drop-zone-top-level"]')).toHaveLength(0)
+  })
+})

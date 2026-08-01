@@ -210,7 +210,13 @@ pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator, _: std.Io, c
     var lines = std.mem.splitScalar(u8, header_section, '\n');
 
     const first_line = lines.next() orelse return error.MissingRequestLine;
-    const trimmed_line = if (first_line.len > 0 and first_line[0] == '\r') first_line[1..] else first_line;
+    var trimmed_line: []const u8 = if (first_line.len > 0 and first_line[0] == '\r') first_line[1..] else first_line;
+    // Strip the trailing CR/LF that splitScalar('\n') leaves behind. The
+    // request line is "GET /path HTTP/1.1\r"; without this trim the
+    // version field would be "HTTP/1.1\r" and fail any string compare.
+    if (trimmed_line.len > 0 and trimmed_line[trimmed_line.len - 1] == '\r') {
+        trimmed_line = trimmed_line[0 .. trimmed_line.len - 1];
+    }
     var first_parts = std.mem.splitScalar(u8, trimmed_line, ' ');
     const method = first_parts.next() orelse return error.InvalidRequestLine;
     const path_with_query = first_parts.next() orelse return error.InvalidRequestLine;
@@ -229,7 +235,14 @@ pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator, _: std.Io, c
 
     var headers = std.StringHashMap([]const u8).init(allocator);
     while (lines.next()) |line| {
-        const clean_line = if (line.len > 0 and line[0] == '\r') line[1..] else line;
+        // Strip optional leading CR (handles the first line which can
+        // start with \r if the request was read verbatim).
+        var clean_line: []const u8 = if (line.len > 0 and line[0] == '\r') line[1..] else line;
+        // Strip optional trailing CR/LF (splitScalar('\n') leaves the
+        // CR on each line, which would otherwise leak into header values).
+        if (clean_line.len > 0 and clean_line[clean_line.len - 1] == '\r') {
+            clean_line = clean_line[0 .. clean_line.len - 1];
+        }
         if (clean_line.len == 0) break;
         if (std.mem.indexOf(u8, clean_line, ":")) |colon| {
             const key = std.mem.trim(u8, clean_line[0..colon], " ");

@@ -39,6 +39,7 @@ import { ref, watch } from 'vue'
 import { useSseBus } from '../helpers/sseBus'
 import type { DesignElementEvent } from '../api'
 import { useWorkspacesStore, isRecentLocalMutation } from './workspaces'
+import { designLogger } from '../helpers/designLogger'
 
 export const useDesignSseStore = defineStore('designSse', () => {
   // Mutable ref so `setActiveWorkspaceId` can update the filter
@@ -117,12 +118,41 @@ export const useDesignSseStore = defineStore('designSse', () => {
       // the GET fan-out that was the dominant cost of the old
       // 50 ms-throttled drag (~200 req/sec for a 5-element drag).
       const eventElementIds = extractElementIds(event)
+      designLogger.info({
+        reason: 'sse:received',
+        caller: 'designSse.handleDesignElementEvent',
+        sseEventType: event.action,
+        sseEventIds: eventElementIds,
+        workspaceId: event.workspace_id,
+        itemId: event.item_id,
+        pageId: event.page_id,
+      })
       if (eventElementIds.length > 0) {
         const allLocal = eventElementIds.every((id) => isRecentLocalMutation(id))
         if (allLocal) {
           // Skip the GET — the local store already mirrors the truth.
+          designLogger.info({
+            reason: 'sse:dedupe-hit',
+            caller: 'designSse.handleDesignElementEvent',
+            sseEventType: event.action,
+            sseEventIds: eventElementIds,
+            sseDecision: 'skip',
+            workspaceId: event.workspace_id,
+            itemId: event.item_id,
+            pageId: event.page_id,
+          })
           return
         }
+        designLogger.info({
+          reason: 'sse:dedupe-miss',
+          caller: 'designSse.handleDesignElementEvent',
+          sseEventType: event.action,
+          sseEventIds: eventElementIds,
+          sseDecision: 'fetch',
+          workspaceId: event.workspace_id,
+          itemId: event.item_id,
+          pageId: event.page_id,
+        })
       }
       const ws = useWorkspacesStore()
       // Re-fetch the elements for the page named in the event. The
@@ -137,6 +167,14 @@ export const useDesignSseStore = defineStore('designSse', () => {
       // `void` here: the consumer doesn't care about the resolved
       // value of the fetch; any error is logged inside the action.
       void ws.fetchDesignElements(event.workspace_id, event.item_id, event.page_id)
+      designLogger.info({
+        reason: 'fetch:response',
+        caller: 'designSse.handleDesignElementEvent',
+        endpoint: '/design/pages/:page_id (GET)',
+        workspaceId: event.workspace_id,
+        itemId: event.item_id,
+        pageId: event.page_id,
+      })
       // Defensive: unknown event shapes are silently dropped. The
       // backend's on_event_sent_design.zig emits three shapes
       // (`created` / `updated` / `deleted`) but they share the same

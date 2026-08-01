@@ -1,12 +1,13 @@
 # Custom HTTP Server
 
-A lightweight, pure Zig HTTP server implementation with routing, SSE support, and JSON handling.
+A lightweight, pure Zig HTTP server implementation with routing, SSE support, WebSocket support, and JSON handling.
 
 ## Features
 
 - **HTTP Server**: Pure Zig implementation using low-level POSIX sockets
 - **Routing**: RESTful routing with path parameters (e.g., `/hello/:name`)
 - **SSE (Server-Sent Events)**: Built-in SSE manager with heartbeat and broadcasting
+- **WebSocket**: RFC 6455 WebSocket transport with frame parsing/encoding, handshake, and a client manager (broadcast + targeted send)
 - **JSON Handling**: JSON request/response parsing and generation
 - **Concurrent**: Per-connection request handling with arena allocators
 - **Cross-Platform**: Linux, macOS, BSD, and Windows support
@@ -50,6 +51,11 @@ curl -X POST http://127.0.0.1:29590/users \
 # SSE streaming
 curl http://127.0.0.1:29590/stream
 # → Receives server-sent events with heartbeat pings
+
+# WebSocket echo + broadcast (use any WS client)
+# wscat -c ws://127.0.0.1:29590/ws
+# > hello                           # → echoed back
+# > /broadcast ping from one client  # → broadcast to every connected client
 ```
 
 ### Static HTML in `main.zig`
@@ -87,6 +93,9 @@ src/
 ├── http_parser.zig           # HTTP request/response parsing
 ├── router.zig                # Route matching with parameter extraction
 ├── sse_manager.zig           # SSE client management and event loop
+├── websocket_frames.zig      # RFC 6455 frame parser/encoder (text, binary, ping, pong, close)
+├── websocket_handshake.zig   # RFC 6455 §4 HTTP upgrade handshake + SHA-1 + base64
+├── websocket_manager.zig     # WebSocket client registry: register, broadcast, remove
 ├── main_static_html_test.zig # Static-contract tests for LANDING_PAGE_HTML
 └── build.zig                 # Build configuration
 ```
@@ -109,6 +118,23 @@ src/
 - Heartbeat mechanism with configurable interval
 - Thread-safe client management with lock
 
+**websocket_frames.zig**
+- `parseFrame(allocator, wire)` — parse a complete WebSocket frame (RFC 6455 §5)
+- `encodeFrame(allocator, input)` — encode an unmasked server-to-client frame
+- `decodeClosePayload` — extract close status code + reason
+- `generateMaskKey` — 4 random bytes for client-side masking
+- `mask` / `unmask` — XOR with 4-byte rotating key
+
+**websocket_handshake.zig**
+- `computeAcceptKey(client_key)` — `base64(SHA1(key + MAGIC_GUID))`
+- `buildAcceptResponse(allocator, key)` — full 101 response bytes
+- `isWebSocketRequest(req)` — case-insensitive header validation
+- `extractWebSocketKey(req)` — case-insensitive key lookup
+
+**websocket_manager.zig**
+- `WsManager`: thread-safe client registry (register, remove, broadcast, sendToClient)
+- `WsClient`: per-client state (id, fd, arena, write callback)
+
 **http_parser.zig**
 - `HttpRequest`: Parsed request with method, path, headers, body
 - `HttpResponse`: Response builder with body and JSON support
@@ -124,6 +150,39 @@ try gs.router.put("/path", handler);
 try gs.router.delete("/path", handler);
 try gs.router.patch("/path", handler);
 try gs.router.sse("/stream", sseHandler);
+try gs.router.ws("/ws", wsHandler);
+```
+
+### WebSocket Handler
+
+```zig
+const ws_frames = @import("websocket_frames.zig");
+
+fn wsEchoHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    server_ptr: *anyopaque,
+    client_fd: i32,
+) !void {
+    const server: *gserverz.GinwaServer = @ptrCast(@alignCast(server_ptr));
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const n = try server.recvFromClient(client_fd, &buf);
+        if (n == 0) return; // peer closed
+        var frame = try ws_frames.parseFrame(ctx.allocator, buf[0..n]);
+        defer frame.deinit(ctx.allocator);
+        switch (frame.opcode) {
+            .text => {
+                const echo = try ws_frames.encodeFrame(ctx.allocator, .{ .opcode = .text, .payload = frame.payload });
+                defer ctx.allocator.free(echo);
+                try server.sendToClient(client_fd, echo);
+            },
+            .ping => { /* reply with pong */ },
+            .close => return,
+            else => {},
+        }
+    }
+}
 ```
 
 ### Handler Signature
