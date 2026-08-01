@@ -601,6 +601,19 @@ describe('createUnifiedSseConnection: pre-registers all granular event names', (
     'worker_deleted',
     'session_created',
     'session_deleted',
+    // Design-mode events (src/ai_workflow/tui/on_event_sent_design.zig):
+    //   - design_element_created / _updated / _deleted — single
+    //   - design_elements_geometry_batch_updated — batch (emitted
+    //     by `updateElementsBatch` AND `moveElementsWithDescendantsBatch`).
+    // Without this registration the browser's EventSource drops the
+    // event before our handler ever sees it (see project memory
+    // browser-eventsource-named-events.md), which means the dedupe
+    // check in `stores/designSse.ts` never runs and the local-mutation
+    // skip path is dead code for batch updates.
+    'design_element_created',
+    'design_element_updated',
+    'design_element_deleted',
+    'design_elements_geometry_batch_updated',
   ]
 
   const spy = vi.spyOn(sseClient, 'createSseClient')
@@ -645,5 +658,52 @@ describe('createUnifiedSseConnection: pre-registers all granular event names', (
 
     expect(capturedAdditionalEventTypes).not.toBeNull()
     expect(capturedAdditionalEventTypes).not.toContain('queue_message')
+  })
+
+  it('dispatches design_elements_geometry_batch_updated to opts.channels.design', () => {
+    // Bug history (2026-08-06): the move-batch endpoint emitted
+    // `design_elements_geometry_batch_updated` SSE events, but the
+    // dispatcher's if-chain only handled the three singular event
+    // names. The browser dropped the batch event before our
+    // handler ran (no listener registered for that event type),
+    // AND the dispatcher would have ignored it anyway. The dedupe
+    // check in `stores/designSse.ts` therefore never ran for batch
+    // updates. Fix: register the event type AND dispatch it to
+    // the same `design` channel.
+    let capturedOnEvent: ((raw: string, type: string) => void) | null = null
+    spy.mockImplementation(((opts: sseClient.SseClientOptions) => {
+      capturedOnEvent = opts.onEvent
+      return {
+        close: vi.fn(),
+        reconnect: vi.fn(),
+        getState: () => 'open' as const,
+        onStateChange: () => {},
+      }
+    }) as unknown as typeof sseClient.createSseClient)
+
+    const designCb = vi.fn()
+    createUnifiedSseConnection({
+      channels: { design: designCb },
+    })
+
+    expect(capturedOnEvent).not.toBeNull()
+    capturedOnEvent!(
+      JSON.stringify({
+        workspace_id: 'ws-1',
+        item_id: 'item-1',
+        page_id: 'page-1',
+        element_ids: ['elem-root', 'elem-child1'],
+        updated_at: 0,
+      }),
+      'design_elements_geometry_batch_updated',
+    )
+
+    expect(designCb).toHaveBeenCalledTimes(1)
+    expect(designCb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspace_id: 'ws-1',
+        element_ids: ['elem-root', 'elem-child1'],
+      }),
+    )
   })
 })

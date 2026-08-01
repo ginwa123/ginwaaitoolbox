@@ -209,4 +209,74 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
       items: [{ element_id: 'elem_root', dx: 0, dy: 0, width: 500, height: 300, rotation: 0.5 }],
     })
   })
+
+  it('local mirror survives a fetchDesignElements array replace (race regression)', async () => {
+    // Bug history (2026-08-06): the first drag of a group/frame moved
+    // only the group, not the descendants. Root cause: an upstream
+    // `fetchDesignElements` did `item.design_elements = elements`
+    // (REPLACE), and a concurrent `moveDesignElementsBatch` mirror
+    // captured the OLD array reference. The mirror's writes to the
+    // OLD array were lost when Vue re-rendered against the NEW
+    // array. The fix: fetchDesignElements mutates in place, AND the
+    // mirror uses the same array reference (locked via the
+    // `findItem` lookup, which always returns the current
+    // `workspace.items[idx].design_elements`).
+    const store = makeWorkspacesStore()
+
+    // Initial baseline: stub getDesignPage to return the same
+    // elements array reference (NOT replaced by fetch).
+    const baseline = (store.workspaces[0] as any).items[0].design_elements
+    expect(baseline.length).toBe(3)
+
+    // Mock the API to return the cascade — group + 2 children,
+    // each with new x/y.
+    vi.spyOn(await import('../api'), 'moveDesignElementsBatch').mockResolvedValueOnce({
+      updated: [
+        {
+          id: 'elem_root', page_id: 'page_1', parent_id: '',
+          type: 'frame', name: 'root',
+          x: 100, y: 50, width: 200, height: 200,
+          z_index: 0, position: 0,
+          fill: '', stroke: '', stroke_width: 0, corner_radius: 0, rotation: 0,
+          opacity: 1.0, text_content: '', text_style: '',
+          image_url: '', file_path: '', created_at: '', updated_at: '',
+        },
+        {
+          id: 'elem_child1', page_id: 'page_1', parent_id: 'elem_root',
+          type: 'rectangle', name: 'c1',
+          x: 110, y: 60, width: 50, height: 50,
+          z_index: 0, position: 0,
+          fill: '', stroke: '', stroke_width: 0, corner_radius: 0, rotation: 0,
+          opacity: 1.0, text_content: '', text_style: '',
+          image_url: '', file_path: '', created_at: '', updated_at: '',
+        },
+        {
+          id: 'elem_child2', page_id: 'page_1', parent_id: 'elem_root',
+          type: 'rectangle', name: 'c2',
+          x: 200, y: 150, width: 50, height: 50,
+          z_index: 0, position: 1,
+          fill: '', stroke: '', stroke_width: 0, corner_radius: 0, rotation: 0,
+          opacity: 1.0, text_content: '', text_style: '',
+          image_url: '', file_path: '', created_at: '', updated_at: '',
+        },
+      ] as never,
+    })
+
+    await store.moveDesignElementsBatch('ws_1', 'item_1', 'page_1', [
+      { element_id: 'elem_root', dx: 100, dy: 50 },
+    ])
+
+    // CRITICAL: the design_elements array must be the SAME reference
+    // after the mirror (Vue 3 reactivity depends on per-index writes
+    // to the same reactive array).
+    const after = (store.workspaces[0] as any).items[0].design_elements
+    expect(after).toBe(baseline)
+    // All 3 elements were updated in place.
+    expect(after[0].x).toBe(100)
+    expect(after[0].y).toBe(50)
+    expect(after[1].x).toBe(110)
+    expect(after[1].y).toBe(60)
+    expect(after[2].x).toBe(200)
+    expect(after[2].y).toBe(150)
+  })
 })

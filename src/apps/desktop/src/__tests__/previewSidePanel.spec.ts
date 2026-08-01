@@ -517,7 +517,7 @@ describe('PreviewSidePanel', () => {
     expect(iframe.attributes('sandbox')).toBe('allow-scripts')
   })
 
-  it('passes the user HTML into the iframe via srcdoc (attribute-escaped)', () => {
+  it('passes the user HTML into the iframe via srcdoc (raw HTML, browser handles encoding)', () => {
     const wrapper = mount(PreviewSidePanel, {
       props: {
         previews: [
@@ -534,14 +534,18 @@ describe('PreviewSidePanel', () => {
     const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]')
     expect(iframe.exists()).toBe(true)
     const srcdoc = iframe.attributes('srcdoc') ?? ''
-    // The HTML must be attribute-escaped (< > & ") before being placed
-    // in the srcdoc attribute, so the wrapping attribute stays valid.
-    // The browser un-escapes when parsing the iframe content.
-    expect(srcdoc).toContain('&lt;!DOCTYPE html&gt;')
-    expect(srcdoc).toContain('&lt;h1&gt;Hi&lt;/h1&gt;')
+    // CRITICAL: the raw HTML must be present UN-escaped. The browser's
+    // setAttribute() encodes < > & " for the attribute value, then the
+    // iframe parser decodes them back when loading the document. If the
+    // implementation manually escapes here, the iframe renders the
+    // LITERAL text "&lt;p&gt;..." instead of the rendered "<p>...".
+    // vue-test-utils' `.attributes('srcdoc')` returns the post-decode
+    // value (per the HTML spec), so we see the raw HTML.
+    expect(srcdoc).toContain('<!DOCTYPE html>')
+    expect(srcdoc).toContain('<h1>Hi</h1>')
   })
 
-  it('attribute-escapes double quotes in the srcdoc so the wrapping attribute stays valid', () => {
+  it('keeps double quotes in the user HTML intact (browser setAttribute handles them)', () => {
     const wrapper = mount(PreviewSidePanel, {
       props: {
         previews: [
@@ -558,9 +562,10 @@ describe('PreviewSidePanel', () => {
     const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]')
     expect(iframe.exists()).toBe(true)
     const srcdoc = iframe.attributes('srcdoc') ?? ''
-    // A raw " inside the user's HTML would close the srcdoc attribute early —
-    // the render code must escape it to &quot; so the attribute stays valid.
-    expect(srcdoc).toContain('&quot;x&quot;')
-    expect(srcdoc).toContain('&quot;Y&quot;')
+    // The raw double quotes are preserved in the decoded attribute value.
+    // The browser's setAttribute() encodes them as &quot; for the wire
+    // format, but .attributes() returns the decoded text.
+    expect(srcdoc).toContain('href="x"')
+    expect(srcdoc).toContain('title="Y"')
   })
 })
