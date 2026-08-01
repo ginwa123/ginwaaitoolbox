@@ -20,4 +20,8 @@ test {
     _ = @import("main_static_html_test.zig");
     // 60s soak test for the SSE-keepalive bug
     _ = @import("sse_keepalive_test.zig");
+    // WebSocket support (RFC 6455) — frames, handshake, manager
+    _ = @import("websocket_frames_test.zig");
+    _ = @import("websocket_handshake_test.zig");
+    _ = @import("websocket_manager_test.zig");
 }

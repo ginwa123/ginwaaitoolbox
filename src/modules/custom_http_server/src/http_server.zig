@@ -5,11 +5,17 @@ const builtin = @import("builtin");
 pub const http_parser = @import("http_parser.zig");
 const router = @import("router.zig");
 pub const sse_manager = @import("sse_manager.zig");
+pub const ws_manager = @import("websocket_manager.zig");
+pub const ws_frames = @import("websocket_frames.zig");
+pub const ws_handshake = @import("websocket_handshake.zig");
 pub const HttpRequest = http_parser.HttpRequest;
 pub const HttpResponse = http_parser.HttpResponse;
 pub const HttpContext = http_parser.HttpContext;
 pub const response = http_parser;
 pub const SseManager = sse_manager.SseManager;
+pub const WsManager = ws_manager.WsManager;
+pub const WsOpcode = ws_frames.Opcode;
+pub const WsConnection = ws_manager.WsClient;
 
 /// Platform abstraction for socket operations
 /// On POSIX: uses std.posix.system (low-level socket API)
@@ -199,6 +205,7 @@ pub const GinwaServer = struct {
     address: Address,
     router: router.Router,
     sse_manager: SseManager,
+    ws_manager: *WsManager,
     ctx: ?*anyopaque = null,
     environment: ?*const std.process.Environ.Map = null,
     is_running: bool = false,
@@ -237,6 +244,7 @@ pub const GinwaServer = struct {
             .address = address,
             .router = router.Router.init(allocator),
             .sse_manager = try SseManager.init(allocator, allocator, io),
+            .ws_manager = try WsManager.init(allocator, allocator, io),
             .ctx = null,
             .environment = null,
         };
@@ -265,6 +273,7 @@ pub const GinwaServer = struct {
     pub fn deinit(self: *GinwaServer) void {
         self.sse_manager.gracefulShutdown();
         self.sse_manager.deinit();
+        self.ws_manager.destroy();
         self.router.deinit();
     }
 
@@ -343,6 +352,74 @@ pub const GinwaServer = struct {
                                     _ = server.sendToClient(fd, res_bytes) catch {
                                         std.debug.print("Failed to send response\n", .{});
                                     };
+                                },
+                                .websocket => |ws| {
+                                    // WebSocket upgrade path. We must:
+                                    //   1. Validate the request is a valid upgrade (RFC 6455 §4.1).
+                                    //   2. Send the 101 response with the computed Accept.
+                                    //   3. Register the client with the WsManager (so broadcasts
+                                    //      and targeted sends work).
+                                    //   4. Run the handler in the current per-connection worker.
+                                    //   5. Send a close frame and remove from registry on return.
+                                    if (!ws_handshake.isWebSocketRequest(&req)) {
+                                        const bad = http_parser.badRequest("WebSocket upgrade required", allocator);
+                                        const bytes = bad.toBytes() catch {
+                                            _ = closeFd(fd);
+                                            return;
+                                        };
+                                        defer bad.allocator.free(bytes);
+                                        _ = server.sendToClient(fd, bytes) catch {};
+                                        _ = closeFd(fd);
+                                        return;
+                                    }
+
+                                    const key = ws_handshake.extractWebSocketKey(&req) catch {
+                                        _ = closeFd(fd);
+                                        return;
+                                    };
+                                    const accept_resp = ws_handshake.buildAcceptResponse(allocator, key) catch {
+                                        _ = closeFd(fd);
+                                        return;
+                                    };
+                                    defer allocator.free(accept_resp);
+
+                                    _ = server.sendToClient(fd, accept_resp) catch {
+                                        _ = closeFd(fd);
+                                        return;
+                                    };
+
+                                    // Register the client with the WsManager. The write callback bridges
+                                    // the manager's `fn(ctx, fd, data)` API to the server's
+                                    // `sendToClient` method via the ctx pointer.
+                                    const WriteAdapter = struct {
+                                        fn w(ctx: ?*anyopaque, target_fd: i32, data: []const u8) anyerror!usize {
+                                            const server_ptr: *GinwaServer = @ptrCast(@alignCast(ctx.?));
+                                            return server_ptr.sendToClient(target_fd, data);
+                                        }
+                                    }.w;
+                                    var client_id = server.ws_manager.registerClient(fd, WriteAdapter, @ptrCast(server)) catch {
+                                        _ = closeFd(fd);
+                                        return;
+                                    };
+
+                                    // Run the user handler.
+                                    ws.handler(ws.ctx, req, @ptrCast(server), fd, &client_id) catch |err| {
+                                        std.debug.print("WebSocket handler error: {s}\n", .{@errorName(err)});
+                                    };
+
+                                    // Send a close frame and remove from registry. The client
+                                    // arena is freed by removeClient.
+                                    const close_payload = "\x03\xe8"; // status 1000 normal closure
+                                    const close_frame = ws_frames.encodeFrame(allocator, .{
+                                        .opcode = .close,
+                                        .payload = close_payload,
+                                    }) catch null;
+                                    if (close_frame) |cf| {
+                                        defer allocator.free(cf);
+                                        _ = server.sendToClient(fd, cf) catch {};
+                                    }
+                                    server.ws_manager.removeClient(&client_id, .explicit);
+                                    return;
                                 },
                                 .sse => |sse| {
                                     const headers = "HTTP/1.1 200 OK\r\n" ++

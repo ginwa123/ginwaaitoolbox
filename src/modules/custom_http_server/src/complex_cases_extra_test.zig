@@ -292,6 +292,7 @@ test "router: duplicate route registration — first match wins" {
             try expectEqualStrings("FIRST", final_res.body);
         },
         .sse => return error.UnexpectedSse,
+        .websocket => return error.UnexpectedWebSocket,
     }
 }
 
