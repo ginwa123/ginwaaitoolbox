@@ -2,21 +2,24 @@
   DesignView — top-level design canvas for a `item_type === 'design'`
   workspace item.
 
-  Layout (top → bottom):
-    1. <DesignPageTabs> — page tab strip
-    2. Main split (horizontal):
-       - Canvas (flex-1, on the left): renders <DesignElement v-for>
-         over an auto-grow viewport (the canvas div wraps the union
-         bbox of all elements). The canvas-background feature (a fixed
-         W × H page rectangle with drag/nudge clamps + snap-to-canvas-
-         edges) has been removed; elements can be placed at any
-         coordinates.
-       - Right sidebar split (vertical):
-         - <LayersPanel> on top
-         - Resize handle (drag to resize)
-         - <PropertiesPanel> on bottom
-    3. Canvas header bar (inside the canvas, top): + Element button +
-       active page name + element count.
+  Layout (NEW — 2026-08-06, plan
+  docs/superpowers/plans/2026-08-06-design-pages-left-sidebar.md):
+    1. <toolbar> (top): item name + 💬 chat toggle.
+    2. Main split (horizontal, flex row):
+       - LEFT sidebar (NEW): vertical page list <DesignPageTabs> with a
+         drag-vertical resize handle between it and the canvas column.
+         Mirrors Figma / Sketch convention.
+       - Canvas column (flex-1): renders <DesignElement v-for> over an
+         auto-grow viewport (the canvas div wraps the union bbox of all
+         elements). The canvas-background feature (a fixed W × H page
+         rectangle with drag/nudge clamps + snap-to-canvas-edges) has
+         been removed; elements can be placed at any coordinates.
+       - Right sidebar: <LayersPanel> on top + resize handle +
+         <PropertiesPanel> on bottom.
+
+  Loading / error / empty states (no pages yet) render FULL-page instead
+  of inside the main split — matches the pre-fix behaviour so the user
+  always sees one of the four states regardless of pages state.
 
   State (all local — no Pinia here, the parent AppLayout wires the
   store actions):
@@ -384,6 +387,77 @@ const startSidebarResize = (event: MouseEvent): void => {
     document.body.style.cursor = ''
     document.body.style.userSelect = ''
     saveSidebarWidth(sidebarWidth.value)
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
+// ─── Pages sidebar width (drag-resize handle, 2026-08-06) ──────────────
+//
+// NEW: the page list (formerly horizontal tabs at the top) is now a
+// vertical sidebar on the left edge of DesignView. Width is
+// resizable. Mirrors the right-sidebar pattern above — separate
+// localStorage key, separate min/max bounds so the two sidebars can
+// coexist and be sized independently. The min is narrower than the
+// right sidebar's (180 vs 220) because vertical page names truncate
+// aggressively with `text-overflow: ellipsis`, while the right
+// sidebar's layers panel needs room for type icons + chevrons.
+const PAGES_SIDEBAR_WIDTH_KEY = 'design-view-pages-sidebar-width'
+const PAGES_SIDEBAR_DEFAULT_WIDTH = 220
+const PAGES_SIDEBAR_MIN_WIDTH = 180
+const PAGES_SIDEBAR_MAX_WIDTH = 400
+
+const loadPagesSidebarWidth = (): number => {
+  try {
+    const raw = localStorage.getItem(PAGES_SIDEBAR_WIDTH_KEY)
+    if (!raw) return PAGES_SIDEBAR_DEFAULT_WIDTH
+    const n = Number(raw)
+    if (!Number.isFinite(n)) return PAGES_SIDEBAR_DEFAULT_WIDTH
+    return Math.max(
+      PAGES_SIDEBAR_MIN_WIDTH,
+      Math.min(PAGES_SIDEBAR_MAX_WIDTH, n),
+    )
+  } catch {
+    return PAGES_SIDEBAR_DEFAULT_WIDTH
+  }
+}
+const savePagesSidebarWidth = (n: number): void => {
+  try {
+    localStorage.setItem(PAGES_SIDEBAR_WIDTH_KEY, String(n))
+  } catch {
+    /* no-op — localStorage may be disabled */
+  }
+}
+
+const pagesSidebarWidth = ref<number>(loadPagesSidebarWidth())
+const isPagesSidebarResizing = ref(false)
+
+const startPagesSidebarResize = (event: MouseEvent): void => {
+  event.preventDefault()
+  const startX = event.clientX
+  const startWidth = pagesSidebarWidth.value
+  isPagesSidebarResizing.value = true
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+
+  const onMove = (e: MouseEvent): void => {
+    // Dragging RIGHT grows the sidebar (handle sits on the LEFT side
+    // of the canvas column, so rightward mouse motion = dx > 0 =
+    // wider sidebar).
+    const dx = e.clientX - startX
+    const next = Math.max(
+      PAGES_SIDEBAR_MIN_WIDTH,
+      Math.min(PAGES_SIDEBAR_MAX_WIDTH, startWidth + dx),
+    )
+    pagesSidebarWidth.value = next
+  }
+  const onUp = (): void => {
+    isPagesSidebarResizing.value = false
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+    savePagesSidebarWidth(pagesSidebarWidth.value)
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
   }
@@ -1904,16 +1978,13 @@ watch(
       </button>
     </div>
 
-    <!-- ─── Tabs row ─────────────────────────────────────────────── -->
-    <DesignPageTabs
-      :pages="pages"
-      :active-page-id="activePageId"
-      :workspace-id="workspaceId"
-      :item-id="itemId || item.id"
-      @select-page="handleSelectPage"
-      @add-page="handleAddPage"
-      @delete-page="handleDeletePage"
-    />
+    <!--
+      (2026-08-06): The page-tabs row used to live here as a horizontal
+      strip ABOVE the canvas. It moved into the main split as a vertical
+      left sidebar — see <div data-testid="design-pages-sidebar"> below.
+      The component itself is unchanged (props, emits, testids) — only
+      its position within the tree and its CSS orientation flipped.
+    -->
 
     <!-- ─── Loading state for pages ───────────────────────────────── -->
     <div
@@ -1950,6 +2021,7 @@ watch(
           type="button"
           class="px-3 py-1.5 rounded-lg text-sm font-medium"
           style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
+          data-testid="design-add-page"
           @click="handleAddPage"
         >
           + Add the first page
@@ -1957,8 +2029,58 @@ watch(
       </div>
     </div>
 
-    <!-- ─── Main split (canvas + right sidebar) ──────────────────── -->
+    <!-- ─── Main split (pages sidebar | canvas | right sidebar) ── -->
     <div v-else class="flex-1 flex min-h-0">
+      <!--
+        LEFT sidebar: vertical page list (NEW, 2026-08-06). The page
+        list used to sit as horizontal tabs at the TOP of DesignView.
+        Now it lives here as a left-edge vertical list (Figma /
+        Sketch convention). Width is resizable via the drag handle
+        to its right; persisted to localStorage with key
+        'design-view-pages-sidebar-width'.
+      -->
+      <div
+        class="shrink-0 flex flex-col h-full min-h-0"
+        :style="{ width: `${pagesSidebarWidth}px` }"
+        data-testid="design-pages-sidebar"
+      >
+        <DesignPageTabs
+          :pages="pages"
+          :active-page-id="activePageId"
+          :workspace-id="workspaceId"
+          :item-id="itemId || item.id"
+          @select-page="handleSelectPage"
+          @add-page="handleAddPage"
+          @delete-page="handleDeletePage"
+        />
+      </div>
+
+      <!-- Drag-vertical resize handle between pages sidebar and canvas -->
+      <div
+        class="shrink-0 w-2 cursor-col-resize relative flex items-center justify-center transition-colors"
+        :class="
+          isPagesSidebarResizing
+            ? '!bg-[var(--color-violet)]/60'
+            : 'bg-[var(--color-violet)]/15 hover:bg-[var(--color-violet)]/40'
+        "
+        data-testid="design-pages-resize-handle"
+        title="Drag to resize"
+        @mousedown="startPagesSidebarResize"
+      >
+        <svg
+          width="14"
+          height="2"
+          viewBox="0 0 14 2"
+          fill="currentColor"
+          class="text-[var(--color-violet)] opacity-70"
+          aria-hidden="true"
+        >
+          <circle cx="3" cy="1" r="1" />
+          <circle cx="7" cy="1" r="1" />
+          <circle cx="11" cy="1" r="1" />
+        </svg>
+      </div>
+
       <!-- Canvas column -->
       <div
         class="flex-1 flex flex-col min-w-0 min-h-0"
