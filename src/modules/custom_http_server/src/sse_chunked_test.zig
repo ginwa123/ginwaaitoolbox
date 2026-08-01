@@ -253,16 +253,21 @@ test "HTTP server: SSE response says Connection: close (NOT keep-alive)" {
     // close` — telling intermediaries this stream ends when the socket
     // closes — combined with `Transfer-Encoding: chunked` (so HTTP/1.1
     // knows the body is chunk-bounded rather than connection-bounded).
+    //
+    // NOTE: We search for the literal header NAME without the trailing
+    // `\r\n` because in the Zig source the `\r\n` is an escape sequence
+    // (4 source bytes: `\`, `r`, `\`, `n`) rather than 2 real CR+LF
+    // bytes. That's enough to disambiguate from comments / docstrings.
     const source = try readHttpServerSource(std.testing.allocator);
     defer std.testing.allocator.free(source);
 
     // The SSE arm must declare `Connection: close`.
-    if (std.mem.indexOf(u8, source, "Connection: close\r\n") == null) {
-        std.debug.print("\n!! http_server.zig SSE arm missing 'Connection: close' header !!\n", .{});
+    if (std.mem.indexOf(u8, source, "\"Connection: close\\r\\n\"") == null) {
+        std.debug.print("\n!! http_server.zig SSE arm missing '\"Connection: close\\\\r\\\\n\"' string literal !!\n", .{});
         return error.SseConnectionCloseMissing;
     }
     // The SSE arm must NOT declare `Connection: keep-alive`.
-    if (std.mem.indexOf(u8, source, "Connection: keep-alive\r\n") != null) {
+    if (std.mem.indexOf(u8, source, "\"Connection: keep-alive\\r\\n\"") != null) {
         std.debug.print("\n!! http_server.zig SSE arm still sends 'Connection: keep-alive' (causes ~30s drop under Vite) !!\n", .{});
         return error.SseConnectionKeepAliveStillPresent;
     }
