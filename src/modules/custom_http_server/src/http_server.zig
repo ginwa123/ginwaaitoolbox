@@ -348,7 +348,20 @@ pub const GinwaServer = struct {
                                     const headers = "HTTP/1.1 200 OK\r\n" ++
                                         "Content-Type: text/event-stream\r\n" ++
                                         "Cache-Control: no-cache\r\n" ++
-                                        "Connection: keep-alive\r\n" ++
+                                        // Connection: close (NOT keep-alive). SSE is a single-use,
+                                        // long-lived stream — the connection is never reused for a
+                                        // follow-up request, so advertising keep-alive confuses
+                                        // intermediaries. Vite (Node.js) in dev mode stamps
+                                        // `Keep-Alive: timeout=5` on keep-alive responses, and some
+                                        // browser/webview engines (Chromium, WebKitGTK, WKWebView)
+                                        // enforce that timeout aggressively — closing the upstream
+                                        // socket ~5s after the last heartbeat. Empirically this
+                                        // matches the user's reported pattern of heartbeats
+                                        // stopping after ~30s in the browser DevTools. Telling
+                                        // intermediaries this connection will close on EOF keeps
+                                        // the stream open for as long as the backend keeps
+                                        // sending chunked frames.
+                                        "Connection: close\r\n" ++
                                         // Required by HTTP/1.1: a response with neither Content-Length
                                         // nor Transfer-Encoding is implicitly framed by connection-close.
                                         // For SSE we never close the connection voluntarily, so we MUST

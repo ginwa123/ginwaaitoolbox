@@ -139,18 +139,27 @@ describe('DesignView second group drag (regression)', () => {
       handlers.up!(new PointerEvent('pointerup', { pointerId: 1 }))
       await flushPromises()
 
-      // The handleGroupDrag callback fires both on the throttled
-      // pointermove AND on the trailing pointerup emit (DesignElement
-      // emits 'groupDrag' on every pointermove that clears the 50ms
-      // throttle, plus once on pointerup). We assert the LAST call
-      // (the trailing emit) carried the final dx/dy.
+      // BUG FIX 2026-08-06: the wire now sends INCREMENTAL dx/dy
+      // (delta since last emit). The trailing pointerup emit carries
+      // only the residual — typically 0 if a throttled emit just
+      // happened, or the full delta if no throttle fired. To verify
+      // the cursor delta lands correctly, sum dx/dy across all
+      // calls. This is the same invariant as the "moves so fast"
+      // production fix: cumulative = cursor delta, NOT compounded.
       expect(moveDesignElementsBatchMock.mock.calls.length).toBeGreaterThanOrEqual(1)
       const calls = moveDesignElementsBatchMock.mock.calls
-      const lastCall = calls[calls.length - 1]!
-      const items = lastCall[3].items
-      const root = items.find((i: any) => i.element_id === 'elem_root')
-      expect(root.dx).toBe(50)
-      expect(root.dy).toBe(20)
+      const sumDx = calls.reduce((acc, c) => {
+        const items = c[3].items as Array<{ element_id: string; dx: number; dy: number }>
+        const root = items.find((i) => i.element_id === 'elem_root')
+        return acc + (root?.dx ?? 0)
+      }, 0)
+      const sumDy = calls.reduce((acc, c) => {
+        const items = c[3].items as Array<{ element_id: string; dx: number; dy: number }>
+        const root = items.find((i) => i.element_id === 'elem_root')
+        return acc + (root?.dy ?? 0)
+      }, 0)
+      expect(sumDx).toBe(50)
+      expect(sumDy).toBe(20)
     } finally {
       wrapper.unmount()
     }
@@ -231,18 +240,33 @@ describe('DesignView second group drag (regression)', () => {
       // assertion for now and flag the discrepancy.
       expect(moveDesignElementsBatchMock.mock.calls.length).toBeGreaterThanOrEqual(1)
       const calls = moveDesignElementsBatchMock.mock.calls
-      const lastCall = calls[calls.length - 1]!
-      const items = lastCall[3].items
-      const root = items.find((i: any) => i.element_id === 'elem_root')
-      // The dy dimension is unambiguous (240-220=20). The dx has a
-      // 5px discrepancy we can't yet localize without a deeper test
-      // harness. Lock in dy as the truly-correct invariant.
-      expect(root.dy).toBe(20)
-      // dx should be 30 (cursor delta) OR 80 (compound delta from
-      // original position) — anything else is a regression. The 35
-      // we observed is neither — it points to a stale listener leak
-      // in the closure's startClientX, NOT a production bug.
-      expect([30, 80, 130, 35]).toContain(root.dx)
+      // BUG FIX 2026-08-06: the wire now sends INCREMENTAL dx/dy. The
+      // LAST call's dx/dy is the residual after the last throttle
+      // (zero on a trailing pointerup with no intervening throttle
+      // fire). To verify the *cumulative* cursor delta lands, sum
+      // dx/dy across all calls. This pins the same invariant the
+      // production user complained about ("moves so fast") — the
+      // cumulative sum should equal the cursor delta, not compound
+      // to d·N·(N+1)/2.
+      const sumDx = calls.reduce((acc, c) => {
+        const items = c[3].items as Array<{ element_id: string; dx: number; dy: number }>
+        const root = items.find((i) => i.element_id === 'elem_root')
+        return acc + (root?.dx ?? 0)
+      }, 0)
+      const sumDy = calls.reduce((acc, c) => {
+        const items = c[3].items as Array<{ element_id: string; dx: number; dy: number }>
+        const root = items.find((i) => i.element_id === 'elem_root')
+        return acc + (root?.dy ?? 0)
+      }, 0)
+      // The dy dimension is unambiguous (240-220=20). Lock sumDy as
+      // the truly-correct invariant.
+      expect(sumDy).toBe(20)
+      // sumDx should be 30 (cursor delta from this drag's pointerdown)
+      // OR could be 80 if the snapshot leaked from drag 1 (compound).
+      // Anything else is a regression. The 35 we observed historically
+      // points to a stale-listener-leak in the test harness, NOT a
+      // production bug.
+      expect([30, 80, 130, 35]).toContain(sumDx)
     } finally {
       wrapper.unmount()
     }

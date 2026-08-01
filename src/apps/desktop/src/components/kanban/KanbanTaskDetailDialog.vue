@@ -74,8 +74,8 @@ import { ref, computed, watch, nextTick } from 'vue'
 import type { Task, KanbanColumn } from '../../stores/workspaces'
 import { useKanbanTagSuggestions } from '../../composables/useKanbanTagSuggestions'
 import KanbanDescriptionEditor from './KanbanDescriptionEditor.vue'
+import type { PreviewFile } from '../file/FilePreview.vue'
 import KanbanTagsInput from './KanbanTagsInput.vue'
-import MarkdownDescription from './MarkdownDescription.vue'
 import FilePreviewModal from './FilePreviewModal.vue'
 import * as api from '../../api'
 
@@ -203,15 +203,23 @@ const tags = ref<string[]>([])
 // The component's @blur handler covers the normal case; this is the
 // explicit "click Save without leaving the field" safety net.
 const tagsInputRef = ref<{ commitDraft: () => void } | null>(null)
+// Template ref for the description editor — used in CREATE MODE to
+// read the staged image files (pendingFiles) so the dialog can hand
+// them to the host's create-then-upload orchestrator. The editor
+// exposes pendingFiles via defineExpose; see
+// KanbanDescriptionEditor.vue for the contract.
+const descriptionEditorRef = ref<{ pendingFiles: PreviewFile[] } | null>(null)
 const nameInput = ref<HTMLInputElement | null>(null)
 const DESCRIPTION_MAX = 5000
-// Description render mode:
-//   - Both modes default to the editor (textarea + paperclip + char
-//     counter). The textarea is always available so existing test
-//     selectors + form-state machinery keep working.
-//   - A "Preview" toggle flips to <MarkdownDescription> for a rendered
-//     view without leaving the form.
-const isPreviewingDescription = ref(false)
+// The description is ALWAYS shown as the editor (textarea + paperclip +
+// char counter). A "Preview" toggle used to flip to <MarkdownDescription>
+// for a rendered view, but the toggle was removed per user feedback —
+// the dialog stays focused on the editor. Image/file-paths in the
+// description still render correctly when the task is viewed elsewhere
+// (e.g. <WorkspaceItemTaskCard> on the kanban board, the chat view's
+// task description render).
+//
+// (plan: 2026-08-06-kanban-no-base64-in-desc) — see also.
 
 // NEW (plan: 2026-08-06-kanban-task-profile-selector). Profile-model
 // picker state (create mode only). selectedProfile='' = backend
@@ -257,7 +265,6 @@ watch(
       unattended.value = '0'
       tags.value = []  // NEW: start with empty tags in create mode
       selectedProfile.value = ''  // NEW: profile selector defaults to backend default
-      isPreviewingDescription.value = false
     } else if (props.task) {
       name.value = props.task.name
       description.value = props.task.description ?? ''
@@ -265,7 +272,6 @@ watch(
       // Migration 067 — prefill tags from the loaded task. tags?
       // is optional (legacy tasks may lack it); fallback to [].
       tags.value = props.task.tags ?? []
-      isPreviewingDescription.value = false
     }
     await nextTick()
     nameInput.value?.focus()
@@ -368,6 +374,17 @@ const handleSave = () => {
         // NOT persist on plain create (Path A — the backend's
         // task_create.zig has no selected_profile_model field).
         selectedProfile: selectedProfile.value,
+        // NEW (plan: 2026-08-06-kanban-no-base64-in-desc). Create
+        // mode image attachments: the editor never writes base64
+        // into `description`. Instead it stages pasted/picked
+        // images in `pendingFiles`. The host (KanbanView.
+        // handleCreateTaskSave) reads them after `addTask`
+        // returns the new taskId, uploads each via
+        // `api.uploadTaskAttachment(taskId, file)`, then patches
+        // the description with `![name](<url>)` markdown. Empty
+        // array (not undefined) so the host can use the length
+        // without a guard.
+        pendingFiles: [...(descriptionEditorRef.value?.pendingFiles ?? [])],
       })
     } else {
       emit('save', {
@@ -409,6 +426,10 @@ const handleRunAgent = () => {
     // session at creation time so the chatview's picker reflects
     // it on landing.
     selectedProfile: selectedProfile.value,
+    // NEW (plan: 2026-08-06-kanban-no-base64-in-desc). Mirror of
+    // handleSave's pendingFiles — see that handler for the
+    // orchestration contract.
+    pendingFiles: [...(descriptionEditorRef.value?.pendingFiles ?? [])],
   })
 }
 
@@ -676,9 +697,13 @@ const filteredTagSuggestions = computed<string[]>(() => {
                 </span>
               </label>
 
-              <!-- Editor: shown by default in BOTH create + edit modes. -->
+              <!-- Editor: shown in BOTH create + edit modes. The
+                   previous "Preview" toggle button (which flipped to
+                   <MarkdownDescription>) was removed per user
+                   feedback — the dialog stays focused on the editor.
+                   Plan: 2026-08-06-kanban-no-base64-in-desc. -->
               <KanbanDescriptionEditor
-                v-show="!isPreviewingDescription"
+                ref="descriptionEditorRef"
                 v-model="description"
                 :cwd="cwd"
                 :task-id="props.task?.id ?? ''"
@@ -686,41 +711,6 @@ const filteredTagSuggestions = computed<string[]>(() => {
                 :test-id="isCreateMode ? 'kanban-task-detail-create-description' : 'kanban-task-detail-description'"
                 data-testid="kanban-task-detail-description-editor"
               />
-
-              <!-- Preview: opt-in via the toggle button below. Renders
-                   the description as Markdown via <MarkdownDescription>. -->
-              <div
-                v-if="isPreviewingDescription"
-                class="px-3 py-2.5 rounded-lg text-sm"
-                style="
-                  background-color: var(--semantic-sidebar-bg);
-                  border: 1px solid var(--color-border);
-                  color: var(--semantic-text);
-                  min-height: 160px;
-                "
-                data-testid="kanban-task-detail-description-preview"
-              >
-                <MarkdownDescription
-                  :source="description"
-                  :cwd="cwd"
-                  :test-id="`kanban-task-detail-description-preview-rendered`"
-                  @file-click="openFilePreview"
-                />
-              </div>
-
-              <button
-                type="button"
-                class="mt-2 text-xs px-2 py-1 rounded transition-colors"
-                style="
-                  background-color: var(--semantic-card-bg);
-                  border: 1px solid var(--color-border);
-                  color: var(--semantic-text-muted);
-                "
-                data-testid="kanban-task-detail-description-preview-toggle"
-                @click="isPreviewingDescription = !isPreviewingDescription"
-              >
-                {{ isPreviewingDescription ? 'Edit description' : 'Preview' }}
-              </button>
             </div>
 
             <!-- Tags (Migration 067 — kanban task tags feature).

@@ -298,6 +298,22 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     const startClientY = event.clientY
     let pendingDx = 0
     let pendingDy = 0
+    // BUG FIX (2026-08-06, design-mode-moves-so-fast v2): send
+    // INCREMENTAL dx/dy (delta since last emit), NOT the cumulative
+    // cursor distance from drag-start. The wire `dx` is interpreted by
+    // the backend as "set x = x + dx" (UPDATE x = x + ?), so the
+    // previous wire — which sent `dx = e.clientX - startClientX` per
+    // tick — caused the server to compound: after N ticks of cursor
+    // movement d, the element ends up at d·N·(N+1)/2 instead of d.
+    // A 100px drag in 20 ticks landed the element at ~1050 design-px.
+    //
+    // Tracking the last-emitted value (initialised to 0 at drag start)
+    // makes the wire send exactly the delta since the previous emit,
+    // including the trailing pointerup emit. Server still ADDS, but
+    // the cumulative effect is now `d·1 + d·1 + ... + d·1 = d·N`,
+    // which is what the cursor moved.
+    let lastEmittedDx = 0
+    let lastEmittedDy = 0
     let lastEmitMs = 0
     const THROTTLE_MS = 50
     designLogger.info({
@@ -314,16 +330,27 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
       pendingDy = (e.clientY - startClientY) * inv
       const now = performance.now()
       if (now - lastEmitMs >= THROTTLE_MS) {
-        emit('groupDrag', { dx: pendingDx, dy: pendingDy })
+        // INCREMENTAL delta — server ADDs this to the current
+        // position. End-of-drag total = cumulative cursor delta.
+        const incDx = pendingDx - lastEmittedDx
+        const incDy = pendingDy - lastEmittedDy
+        emit('groupDrag', { dx: incDx, dy: incDy })
+        lastEmittedDx = pendingDx
+        lastEmittedDy = pendingDy
         lastEmitMs = now
         designLogger.debug({
           reason: 'drag:throttled-emit',
           caller: 'DesignElement.startDrag',
           element: abbrevElement(props.element),
-          dx: pendingDx,
-          dy: pendingDy,
-          startClientX,
-          startClientY,
+          dx: incDx,
+          dy: incDy,
+          // Also log the cumulative so debugging is easier.
+          extra: {
+            cumulativeDx: pendingDx,
+            cumulativeDy: pendingDy,
+            startClientX,
+            startClientY,
+          },
           isGroup: true,
         })
       }
@@ -334,15 +361,26 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
       }
       isDragging.value = false
       // Trailing emit: capture the final position regardless of throttle.
-      emit('groupDrag', { dx: pendingDx, dy: pendingDy })
+      // Use INCREMENTAL delta so the server's last ADD lands exactly
+      // on the cursor's end position. Without this the trailing emit
+      // would re-apply the FULL cumulative (compounding again).
+      const incDx = pendingDx - lastEmittedDx
+      const incDy = pendingDy - lastEmittedDy
+      emit('groupDrag', { dx: incDx, dy: incDy })
+      lastEmittedDx = pendingDx
+      lastEmittedDy = pendingDy
       designLogger.info({
         reason: 'drag:trailing-emit',
         caller: 'DesignElement.startDrag',
         element: abbrevElement(props.element),
-        dx: pendingDx,
-        dy: pendingDy,
-        startClientX,
-        startClientY,
+        dx: incDx,
+        dy: incDy,
+        extra: {
+          cumulativeDx: pendingDx,
+          cumulativeDy: pendingDy,
+          startClientX,
+          startClientY,
+        },
         isGroup: true,
       })
       // Chunk 3: tell the parent to clear its snap guides.
@@ -432,10 +470,19 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // (b) pointerup fires (the trailing emit captures the final
   // position even if the throttle window hasn't elapsed).
   //
-  // For mode='move' we emit `translate` with the cursor delta — the
-  // parent is responsible for adding the delta to the start
-  // position and calling `workspacesStore.translateDesignElement`
+  // For mode='move' we emit `translate` with the INCREMENTAL cursor
+  // delta (delta since the last emit) — the parent adds it to the
+  // current server position via `workspacesStore.translateDesignElement`
   // (POST /translate). The backend handles the cascade for groups.
+  //
+  // BUG FIX (2026-08-06, design-mode-moves-so-fast v2): the wire used to
+  // carry the CUMULATIVE cursor delta from drag-start (`dx =
+  // e.clientX - startX`). The backend interprets `dx` as
+  // "set x = x + dx", so each throttled emit compounded: after N
+  // ticks the element landed at d·N·(N+1)/2 design-px instead of d.
+  // Tracking lastEmittedDx and sending the delta since the last emit
+  // makes the cumulative effect = d·1·N = d·N, which is what the
+  // cursor moved. Same fix as the group-drag branch above.
   //
   // For mode='resize' we emit `resize` with the absolute target
   // patch — the parent calls `workspacesStore.resizeDesignElement`
@@ -443,26 +490,33 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   let pendingTranslate: { dx: number; dy: number } | null = null
   let pendingResize: Partial<DesignElement> | null = null
   let lastEmitMs = 0
+  let lastEmittedTranslateDx = 0
+  let lastEmittedTranslateDy = 0
   const THROTTLE_MS = 50
 
   const flushEmit = (): void => {
     if (pendingTranslate) {
+      const incDx = pendingTranslate.dx - lastEmittedTranslateDx
+      const incDy = pendingTranslate.dy - lastEmittedTranslateDy
       // Carry the source elementId in the event so the parent doesn't
       // have to fish it out of `selectedIds` (which can be wrong —
       // see the doc on the `translate` emit type).
       emit('translate', {
         elementId: props.element.id,
-        dx: pendingTranslate.dx,
-        dy: pendingTranslate.dy,
+        dx: incDx,
+        dy: incDy,
       })
+      lastEmittedTranslateDx = pendingTranslate.dx
+      lastEmittedTranslateDy = pendingTranslate.dy
       designLogger.debug({
         reason: 'emit:translate',
         caller: 'DesignElement.startDrag',
         element: abbrevElement(props.element),
-        dx: pendingTranslate.dx,
-        dy: pendingTranslate.dy,
+        dx: incDx,
+        dy: incDy,
         startClientX: startX,
         startClientY: startY,
+        extra: { cumulativeDx: pendingTranslate.dx, cumulativeDy: pendingTranslate.dy },
         isGroup: false,
       })
       pendingTranslate = null

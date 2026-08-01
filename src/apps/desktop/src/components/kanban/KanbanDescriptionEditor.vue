@@ -26,6 +26,18 @@
     description (text + data URLs) is NOT capped here — the DB TEXT
     column accepts multi-MB; the text cap protects the form's UX
     (char counter is text-only).
+
+  Create mode (taskId=''):
+    The dialog opens this editor with taskId='' before the task
+    exists on the server. Pasted/picked images are STAGED in
+    `previewFiles` (visual) and `pendingFiles` (data, exposed via
+    defineExpose). The textarea is NOT modified — we never write
+    `data:image/png;base64,…` into the description, which would
+    blow past the 5000-char cap and store multi-MB base64 in the
+    DB TEXT column. After the task is created, the dialog's host
+    reads `pendingFiles`, uploads each via `api.uploadTaskAttachment`,
+    and patches the description with `![name](<url>)` markdown.
+    See docs/superpowers/plans/2026-08-06-kanban-no-base64-in-desc.md.
 -->
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
@@ -68,6 +80,12 @@ const emit = defineEmits<{
 
 const text = ref(props.modelValue)
 const previewFiles = ref<PreviewFile[]>([])
+// Files staged in CREATE mode (taskId='') — uploaded by the host AFTER
+// the task exists. Mirrors previewFiles but exists only for the
+// create-mode flow; in edit mode it stays empty because uploads happen
+// inline (see addImageFile). Exposed via defineExpose so the parent
+// dialog can hand it to the host's create-then-upload orchestrator.
+const pendingFiles = ref<PreviewFile[]>([])
 const showFilePicker = ref(false)
 const fileQuery = ref('')
 const fileList = ref<FileEntry[]>([])
@@ -260,21 +278,36 @@ const addImageFile = async (file: File) => {
   if (!isImageFile(file)) return
   const downscaled = await downscaleIfTooLarge(file)
 
-  // Show a "uploading..." preview slot so the user sees feedback
-  // while the upload is in flight.
+  // Show a preview slot so the user sees the image they just pasted.
+  // The blob URL is cheap and revoked on preview-removal (see
+  // handlePreviewUpdate).
   const previewUrl = URL.createObjectURL(downscaled)
-  const uploadingIdx = previewFiles.value.length
-  previewFiles.value.push({ file: downscaled, previewUrl })
+  const previewEntry: PreviewFile = { file: downscaled, previewUrl }
+  previewFiles.value.push(previewEntry)
 
   if (!props.taskId) {
-    // No taskId yet (create mode before the task exists). Fall back
-    // to inline data URL — the user can save later and the editor
-    // will re-upload on next edit. Better UX than failing silently.
-    const dataUrl = await fileToDataUrl(downscaled)
-    insertMarkdown(`![${downscaled.name}](${dataUrl})`)
+    // CREATE MODE — the task doesn't exist on the server yet, so
+    // there's no taskId to upload to. We MUST NOT inject the base64
+    // payload into the description text:
+    //   - It would blow past the 5000-char text cap (a 4 MB image
+    //     base64-encodes to ~5.5 MB).
+    //   - It would store multi-MB raw base64 in the DB TEXT column,
+    //     which then propagates into the chat view's render of the
+    //     task description (see the bug screenshot — 487 052/5000).
+    //
+    // Instead, stage the file in `pendingFiles` (exposed via
+    // defineExpose). The dialog's host (KanbanView.handleCreateTaskSave)
+    // reads pendingFiles after `addTask` returns the new taskId,
+    // uploads each via `api.uploadTaskAttachment(taskId, file)`, then
+    // patches the description with `![name](<url>)` markdown.
+    pendingFiles.value.push(previewEntry)
     return
   }
 
+  // EDIT MODE — upload immediately. Inline `![name](<url>)` is
+  // inserted into the description text so the user sees the image
+  // right away and can save with one click.
+  const uploadingIdx = previewFiles.value.length - 1
   try {
     const { url } = await api.uploadTaskAttachment(props.taskId, downscaled)
     insertMarkdown(`![${downscaled.name}](${url})`)
@@ -373,18 +406,23 @@ const handlePreviewUpdate = (newFiles: PreviewFile[]) => {
     previewFiles.value = newFiles
     return
   }
-  // Strip each removed file's markdown block from the description.
-  // Matches both:
-  //   - Inline data URLs (legacy / fallback): `![name](data:...)`
-  //   - Server URLs: `![name](/api/workspaces/tasks/<id>/attachments/<n>.<ext>)`
-  // The pattern matches the URL portion by `[^)]+` (anything until
-  // the closing paren).
   for (const r of removed) {
     if (r.previewUrl.startsWith('blob:')) URL.revokeObjectURL(r.previewUrl)
+    // In edit mode the description carries an `![name](<url>)` block
+    // we need to strip — same logic as before. In create mode the
+    // description never received a markdown block (the file is only
+    // in previewFiles/pendingFiles), so the regex find/replace is a
+    // safe no-op (nothing matches).
     const fileName = r.file.name
     const escapedName = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const blockRegex = new RegExp(`!\\[${escapedName}\\]\\([^)]+\\)`, 'g')
     text.value = text.value.replace(blockRegex, '').replace(/[ \t]+(\n|$)/g, '$1')
+    // Drop the corresponding entry from pendingFiles (create mode).
+    // The user's intent on removing a preview is "don't upload this
+    // either" — otherwise the host would silently upload a file the
+    // user already discarded.
+    const pendingIdx = pendingFiles.value.findIndex((p) => p.previewUrl === r.previewUrl)
+    if (pendingIdx !== -1) pendingFiles.value.splice(pendingIdx, 1)
   }
   previewFiles.value = newFiles
 }
@@ -504,6 +542,13 @@ const autoResize = (event: Event) => {
   target.style.height = 'auto'
   target.style.height = `${Math.min(target.scrollHeight, 400)}px`
 }
+
+// Expose `pendingFiles` to the parent dialog so it can pass the staged
+// files up to the host's create-then-upload orchestrator. Vue auto-unwraps
+// refs in defineExpose, so `wrapper.vm.pendingFiles` returns the raw
+// array (not a Ref). See KanbanDescriptionEditor.spec.ts for the
+// pendingFiles contract (5 tests).
+defineExpose({ pendingFiles })
 </script>
 
 <template>

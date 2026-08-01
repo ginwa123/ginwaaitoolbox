@@ -207,3 +207,215 @@ describe('KanbanDescriptionEditor', () => {
     expect(wrapper.text()).toContain('2 / 200')
   })
 })
+
+/**
+ * Tests for create-mode image paste (no taskId yet).
+ *
+ * Bug: when the dialog opens in create mode (taskId=''), pasting an image
+ * used to fall back to writing the inline `data:image/png;base64,…` payload
+ * into the description text. A 4 MB image → ~5.5 MB of base64 → the
+ * counter showed 487 052 / 5000 and the task couldn't be saved.
+ *
+ * Fix: in create mode, the editor stages pasted images in a `pendingFiles`
+ * array exposed via defineExpose. The description textarea is NOT modified.
+ * The host (KanbanView.handleCreateTaskSave) reads pendingFiles AFTER the
+ * task is created (and has a real taskId), uploads each via the existing
+ * `api.uploadTaskAttachment` endpoint, then PATCHes the description with
+ * appended `![name](url)` markdown.
+ *
+ * These tests exercise the editor's side of the contract: no base64 in the
+ * description, the file lands in pendingFiles, removing the preview drops
+ * the file from pendingFiles, and editing the existing task still uploads
+ * inline (the legacy contract from before this fix).
+ */
+describe('KanbanDescriptionEditor — create-mode image paste (no taskId)', () => {
+  // Minimal valid PNG (1x1 transparent) so the editor does not try to
+  // decode/parse anything during the test — we only care about the
+  // (description, previewFiles, pendingFiles) state machine.
+  const TINY_PNG = new Uint8Array([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+    0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+    0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+  ])
+
+  function makeFile(name = 'pasted-image.png'): File {
+    return new File([TINY_PNG], name, { type: 'image/png' })
+  }
+
+  /**
+   * Build a minimal DataTransferItem-like object. jsdom doesn't expose
+   * DataTransferItem constructor in the test env, so we use the closest
+   * shape and rely on the handler's duck-typing checks (kind, type,
+   * getAsFile()).
+   */
+  function fakeImageItem(
+    file: File,
+  ): {
+    kind: string
+    type: string
+    getAsFile: () => File
+  } {
+    return {
+      kind: 'file',
+      type: file.type || 'image/png',
+      getAsFile: () => file,
+    }
+  }
+
+  /**
+   * Build a synthetic ClipboardEvent with a fake clipboardData. jsdom
+   * doesn't expose a ClipboardEvent constructor (DOM v0.x), so we use
+   * `new Event('paste', …)` and define `clipboardData` as a property.
+   * Mirrors the same pattern used in FileInput.spec.ts.
+   */
+  function fakeClipboardEvent(file: File): ClipboardEvent {
+    const item = fakeImageItem(file)
+    const dataTransfer = {
+      items: [item],
+      get length() {
+        return 1
+      },
+      files: [file],
+      types: [file.type],
+    } as unknown as DataTransfer
+    const ev = new Event('paste', { bubbles: true, cancelable: true }) as unknown as ClipboardEvent
+    Object.defineProperty(ev, 'clipboardData', { value: dataTransfer })
+    return ev
+  }
+
+  // Simulate the editor's `handlePaste` flow: dispatch a synthetic PasteEvent
+  // with the file item, which keeps the test scoped to the public API
+  // and avoids depending on internal function names.
+  async function pasteImage(wrapper: ReturnType<typeof mount>, file: File) {
+    const event = fakeClipboardEvent(file)
+    const textarea = wrapper.find('textarea').element as HTMLTextAreaElement
+    textarea.dispatchEvent(event)
+    // addImageFile awaits FileReader.onload which fires on the next
+    // macrotask (not microtask) tick — flushPromises alone isn't
+    // enough. A short setTimeout gives FileReader time to encode the
+    // File into a data URL before we read the textarea.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    await flushPromises()
+  }
+
+  beforeEach(() => {
+    fetchMock.mockReset()
+    global.fetch = fetchMock as unknown as typeof fetch
+  })
+
+  afterEach(() => {
+    global.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it('does NOT insert base64 into the description when pasting in create mode', async () => {
+    // taskId defaults to '' in mountEditor → create-mode editor.
+    const wrapper = await mountEditor({ modelValue: '' })
+    await pasteImage(wrapper, makeFile('screenshot.png'))
+
+    const textarea = wrapper.find('textarea').element as HTMLTextAreaElement
+    expect(textarea.value).toBe('')
+    expect(textarea.value).not.toContain('data:image/')
+    expect(textarea.value).not.toContain('base64')
+  })
+
+  it('stages pasted image in pendingFiles (defineExpose) without modifying text', async () => {
+    const wrapper = await mountEditor({ modelValue: '' })
+    await pasteImage(wrapper, makeFile('screenshot.png'))
+
+    const exposed = wrapper.vm as unknown as {
+      pendingFiles: Array<{ file: File; previewUrl: string }>
+    }
+    // pendingFiles is exposed for the host to upload after task creation.
+    expect(exposed.pendingFiles).toBeTruthy()
+    expect(Array.isArray(exposed.pendingFiles)).toBe(true)
+    expect(exposed.pendingFiles.length).toBe(1)
+    expect(exposed.pendingFiles[0]?.file.name).toBe('screenshot.png')
+    expect(exposed.pendingFiles[0]?.previewUrl).toMatch(/^blob:/)
+  })
+
+  it('renders a preview row in create mode (so the user sees the image)', async () => {
+    const wrapper = await mountEditor({ modelValue: '' }, { attachTo: true })
+    await pasteImage(wrapper, makeFile('screenshot.png'))
+
+    expect(wrapper.findAll('.preview-item').length).toBe(1)
+  })
+
+  it('removes file from pendingFiles when the user deletes the preview', async () => {
+    const wrapper = await mountEditor({ modelValue: '' }, { attachTo: true })
+    await pasteImage(wrapper, makeFile('screenshot.png'))
+
+    const exposed = wrapper.vm as unknown as {
+      pendingFiles: Array<{ file: File; previewUrl: string }>
+    }
+    expect(exposed.pendingFiles.length).toBe(1)
+
+    const removeBtn = wrapper.find('.remove-btn')
+    expect(removeBtn.exists()).toBe(true)
+    await removeBtn.trigger('click')
+    await flushPromises()
+
+    expect(exposed.pendingFiles.length).toBe(0)
+    expect(wrapper.findAll('.preview-item').length).toBe(0)
+  })
+
+  it('stages multiple pastes (multiple files accumulate in pendingFiles)', async () => {
+    const wrapper = await mountEditor({ modelValue: '' })
+    await pasteImage(wrapper, makeFile('one.png'))
+    await pasteImage(wrapper, makeFile('two.png'))
+    await pasteImage(wrapper, makeFile('three.png'))
+
+    const exposed = wrapper.vm as unknown as {
+      pendingFiles: Array<{ file: File; previewUrl: string }>
+    }
+    expect(exposed.pendingFiles.length).toBe(3)
+    expect(exposed.pendingFiles.map((p) => p.file.name)).toEqual([
+      'one.png',
+      'two.png',
+      'three.png',
+    ])
+    // Description still untouched.
+    const textarea = wrapper.find('textarea').element as HTMLTextAreaElement
+    expect(textarea.value).toBe('')
+  })
+
+  it('keeps typed text intact when an image is pasted alongside it', async () => {
+    const wrapper = await mountEditor({ modelValue: '' })
+    await wrapper.find('textarea').setValue('User typed description')
+    await pasteImage(wrapper, makeFile('chart.png'))
+
+    const textarea = wrapper.find('textarea').element as HTMLTextAreaElement
+    expect(textarea.value).toBe('User typed description')
+    expect(textarea.value).not.toContain('data:image/')
+
+    const exposed = wrapper.vm as unknown as {
+      pendingFiles: Array<{ file: File; previewUrl: string }>
+    }
+    expect(exposed.pendingFiles.length).toBe(1)
+  })
+
+  it('keeps pendingFiles empty in edit mode (real taskId uploads inline)', async () => {
+    // Edit-mode behavior remains unchanged: image uploads immediately,
+    // the URL is inserted as `![name](<url>)` markdown. pendingFiles
+    // should stay empty because there's nothing staged for upload-after-create.
+    fetchMock.mockResolvedValue(
+      jsonResponse({ success: true, url: '/api/workspaces/tasks/task_x/attachments/1.png', size: 1 }),
+    )
+    const wrapper = await mountEditor({ modelValue: '', taskId: 'task_x' })
+    await pasteImage(wrapper, makeFile('inline.png'))
+
+    const exposed = wrapper.vm as unknown as {
+      pendingFiles: Array<{ file: File; previewUrl: string }>
+    }
+    expect(exposed.pendingFiles.length).toBe(0)
+
+    const textarea = wrapper.find('textarea').element as HTMLTextAreaElement
+    // URL inserted in markdown (NOT base64), so textarea contains the URL.
+    expect(textarea.value).toContain('/api/workspaces/tasks/task_x/attachments/1.png')
+    expect(textarea.value).not.toContain('data:image/')
+    expect(textarea.value).not.toContain('base64,')
+  })
+})

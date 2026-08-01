@@ -1856,6 +1856,8 @@ watch(chatSessionCwd, (newCwd) => {
         @select-page="handleDesignSelectPage"
         @select-element="handleDesignSelectElement"
         @update-element="handleDesignUpdateElement"
+        @translate-element="handleDesignTranslateElement"
+        @resize-element="handleDesignResizeElement"
         @delete-element="handleDesignDeleteElement"
         @open-chat="handleDesignOpenChat"
       />
