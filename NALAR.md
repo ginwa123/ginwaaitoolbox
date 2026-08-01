@@ -374,7 +374,7 @@ Frontend (commit `daf21418` after rebase, originally `d7a05497`):
 **Files.** 6 (1 NEW test, 5 EDIT impl+tests). Frontend-only — no backend changes, no migration, no Zig changes.
 
 **Plan:** `docs/superpowers/plans/2026-08-06-kanban-task-profile-selector.md`
-**Branch:** `worktree/kanban-create-task-run-agent` (PR #160, squashed with `Create task & run agent`)
+**Branch:** `worktree/kanban-create-task-run-agent` (PR #161)
 
 ### Symptom
 The agent's compaction step (when session history grew past the model's

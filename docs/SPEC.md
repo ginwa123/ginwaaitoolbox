@@ -89,7 +89,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 
 | Status | Count | Meaning |
 |---|---|---|
-| ✅ **Implemented** | 145 | Landed in current code — verified via PR # or commit ref (+1 from the 2026-08-06 round: `kanban-create-task-run-agent` + `kanban-task-profile-selector`, both in PR #160) |
+| ✅ **Implemented** | 145 | Landed in current code — verified via PR # or commit ref (+1 from the 2026-08-06 round: `kanban-task-profile-selector`, PR #161) |
 | 🟡 **In Progress** | 6 | Partially landed; backend or frontend part shipped, not both (unchanged) |
 | ⏳ **Pending** | 2 | Plan is current and still relevant; no implementation found (`kanban-task-tags-autocomplete`, `sse-reconnect-plan`) |
 | ❌ **Superseded** | 2 | Replaced by a follow-up plan that did land (`constrain-design-elements-to-canvas` → `remove-canvas-background`, `design-per-page-chat-sessions` → `design-page-workspace-item-task-fk`) |
@@ -671,7 +671,8 @@ For each plan file in the 178-file input set:
 #156 feat(agent): show_preview 'html' content_type (sandboxed iframe)
 #157 feat(config): set_active_profile default
 #158 feat(profile): chatview profile persists across page refresh
-#160 feat(kanban): Create task & run agent + profile picker
+#160 feat(kanban): Create task & run agent
+#161 feat(kanban): profile picker in New Task dialog
 ```
 
 ### 10.2 Plan file inventory (all 178 files)

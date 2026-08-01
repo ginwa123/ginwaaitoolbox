@@ -765,7 +765,7 @@ const filteredTagSuggestions = computed<string[]>(() => {
               v-if="isCreateMode"
               class="mt-4 pt-4 flex items-center gap-4"
               style="border-top: 1px solid var(--color-border);"
-              data-testid="kanban-task-detail-unattended"
+              data-testid="kanban-task-detail-profile-and-unattended"
             >
               <!-- NEW (plan: 2026-08-06-kanban-task-profile-selector).
                    Profile-model picker. Loads from LlmConfig; mirrors
