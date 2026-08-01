@@ -397,6 +397,26 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Kanban chat — side-by-side pane → centered modal dialog
+
+**Symptom (pre-fix).** Opening a kanban task reshaped the layout into `[kanban 40%][resize-handle][ChatView 60%]` (kanban-embed-chatview, 2026-08-06). The board shrank every time a task was opened, and closing meant "back to full width but the chat pane was the default UX." For a focused kanban, the board is the hero and the chat is a focused event.
+
+**What landed.** New `KanbanChatDialog.vue` component (Teleport to body, fixed inset-0 backdrop, Esc + backdrop + ✕ close paths) wraps `<ChatView :show-header="false">`. Mounted at `<AppLayout>` level, driven by the existing `activeTask` + `activeTaskWorkspaceItemId` getters. Gated on `activeTaskWorkspaceItemId === activeWorkspaceItem.id` so the dialog only opens for kanban items (design + routine + standalone chat use their own mounts). `<KanbanView>` loses its chat-pane branch + resize state machine + ChatView import — net 1056 → 815 lines (-242). URL routing is unchanged (AppLayout's existing `handleCloseTaskView` reused for close).
+
+**Click-different-task-while-open** swaps content via `:key="'task-' + newTask.id"` (Notion/Linear pattern); the dialog itself stays open. Chat scroll position is preserved across open/close via `useChatScrollRestore` (same per-task-id storage; the VirtualScroller inside ChatView is the same in dialog mode).
+
+**Selectors.** Old `data-kanban-with-chat` / `data-kanban-resize-handle` (kanban-embed-chatview) → removed. New `data-testid="kanban-chat-dialog"` + `kanban-chat-dialog-backdrop` + `kanban-chat-dialog-close` + `kanban-chat-dialog-title`. Backwards-compatible v-model:show + explicit `close` emit (same pattern as `KanbanTaskDetailDialog`).
+
+**Tests.** 13 new behavioural tests across 2 files:
+- `KanbanChatDialog.spec.ts` (9) — open, close on backdrop/Esc/✕, content swap on task change, show=false no-render path, task=null waiting state, v-model:show + close both emitted.
+- `AppLayout.kanbanChatDialog.spec.ts` (4) — open/close gating + header content.
+
+**Verification.** vue-tsc clean; `bunx vitest run` 1908/1916 pass (8 failures are pre-existing on main per the recent changelog — unrelated DesignView/DesignElement/AppLayout specs). `zig build test --summary all` 2168/2174 (same as main; 2 pre-existing leaks). Cross-compile `zig build-obj -target x86_64-windows-gnu` + `aarch64-macos` clean. Frontend `bun run build` clean.
+
+**Out of scope.** Design mode chat (`AppLayout.vue:1864` + `:1904`) stays as 3-column with resize handle — different chat-per-page model, separate plan can apply the same refactor when desired. Body scroll lock, focus trap, drag-resize, animation choreography — all intentionally omitted to match the existing `KanbanTaskDetailDialog` behaviour (no lock, no trap, fixed size, default fade+scale).
+
+**Branch.** `worktree/kanban-chat-dialog` (4 commits: spec, plan, KanbanChatDialog + tests, AppLayout mount + tests, KanbanView refactor, obsolete-test delete).
+
 ### 2026-08-06: Design — Leave group menu item (Figma "Pull out of group")
 
 **Symptom (user report).** Right-clicking a child row in the design LayersPanel and clicking **Ungroup** did nothing — or, worse, returned a backend `400 EmptyGroup` error when the user actually wanted to *pull the selected element out of its parent group*, not *dissolve the parent group*. The two actions looked identical because Ungroup was the only menu item relevant to nested elements, and the menu label "Ungroup" reads as "leave the group" to anyone who hasn't memorised Figma's distinction.
