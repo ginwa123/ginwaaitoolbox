@@ -763,6 +763,78 @@ binary + 35 MB nalar-desktop.
 
 **Plan:** `docs/superpowers/plans/2026-07-30-design-layer-drag-join-or-leave-group.md`
 
+### 2026-08-06: Compaction prompt — extract `buildCompactMessagePrompt` for unit testing (#165)
+
+**Symptom (pre-fix).** `callCompactAgent` in
+`src/ai_workflow/tui/agentic_loop/compaction.zig` was a 195-line function
+that bundled 4 unrelated concerns: extract `original_system_prompt`,
+label+join the conversation history, build the handoff-prompt template,
+and finally invoke the LLM with `callStreaming`. Steps 1-3 were
+pure data transformation; step 4 was the only thing requiring a real
+LLM. The whole function was untestable in isolation because
+`callStreaming` needs `std.Io.Threaded`, an `Agent`, and an LLM
+endpoint — a unit test would have spun up the entire stack just to
+verify "label a row as `[user]: hi`".
+
+**What landed.** Extract steps 1-3 into a new pub fn
+`buildCompactMessagePrompt(allocator, logger, messages, original_system_prompt) ?[]const u8`
+(same file, lines 105-245). `callCompactAgent` drops from 195 → 101
+lines and now calls the helper:
+
+```zig
+const compact_message = buildCompactMessagePrompt(
+    allocator, logger, messages, original_system_prompt,
+) orelse return null;
+defer allocator.free(compact_message);
+```
+
+**Caller owns the returned string.** Must free with `allocator.free`.
+Returns `null` on alloc failure (after logging via `logger`).
+
+**3 pre-existing leaks fixed (surfaced by the new tests).** Writing
+the unit tests caught `testing.allocator.detectLeaks()` failures:
+
+1. `parts.append` failure after successful `allocPrint` of `labeled`
+   content → free `labeled` before `return null`.
+2. `parts.append` failure after successful `allocPrint` of `tc_str`
+   → free `tc_str` before `continue`.
+3. `history_str` allocated via `std.mem.join`, which **copies** the
+   segments into a fresh buffer — the `parts.items` originals are now
+   orphans → `defer for (parts.items) |part| allocator.free(part)`.
+
+The original code dropped `parts` without freeing the originals — a
+per-compaction leak invisible in production (arena reaps everything)
+but caught once we wrote a test under `testing.allocator`.
+
+**8 inline tests added** at the bottom of `compaction.zig`:
+1. happy path embeds system prompt and labeled history
+2. first AND last messages are excluded from history (slice semantics)
+3. tool_calls formatted as `[tool_call]: name(args)`
+4. message with content=null and no tool_calls is skipped silently
+5. empty middle history (only system + last) returns valid prompt
+6. history rows joined with `\n`, order preserved
+7. returns a heap-allocated, caller-owned string (ownership contract)
+8. empty-messages list (only system + 1 user) — 2-message edge case
+
+Registered `compaction.zig` in `test_runner.zig` (the silent no-run
+hazard the `agentic_loop/README.md` warns about — the file was
+previously NOT imported by the runner; tests would have compiled but
+never executed).
+
+Re-exported `buildCompactMessagePrompt` from `agentic_loop/mod.zig`.
+
+**Verified.**
+- `zig build test --summary all` → 2168/2174 pass, **+8 from this PR**, 0 failed
+- `zig build install:linux:system` → compile succeeds
+- `rm -rf zig-out/bin && zig build` → both `nalarcore-linux-x86_64` + `nalar-desktop` produced
+- Cross-compile `zig build-obj -target x86_64-windows-gnu` and `-target aarch64-macos` → pre-existing harness limitation (recursive `nalarcore` import, affects `callCompactAgent` identically — NOT a regression)
+- 2 leaks reported, both pre-existing in `design_model_set_element_parent_test` (unrelated)
+
+**Plan:** `docs/superpowers/plans/2026-08-06-encapsulate-compaction-prompt.md`
+**TDD trace.** RED (8 tests, undeclared identifier) → GREEN
+(implementation extracted) → RED (leak detector) → GREEN (3 frees).
+**Commit:** `2fcfbd40` (squashed via PR #165).
+
 ---
 
 ## 📖 Related documentation
