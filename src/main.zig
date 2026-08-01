@@ -443,8 +443,11 @@ pub fn main(init: std.process.Init) !void {
     //   DELETE /design/pages/:pid/elements/:eid             — delete element
     //   GET    /design/pages/:pid/elements/:eid/html        — get HTML body
     //   PATCH  /design/pages/:pid/elements/:eid/html        — update HTML body
-    //   PATCH  /design/pages/:pid/elements/:eid/geometry    — update geometry
-    // See docs/superpowers/plans/2026-07-08-design-mode-redesign.md (Chunk 3.5).
+    //   PATCH  /design/pages/:pid/elements/:eid/geometry    — DEPRECATED, use /translate or /resize
+    //   POST   /design/pages/:pid/elements/:eid/translate   — single-element move (cascades for groups)
+    //   POST   /design/pages/:pid/elements/:eid/resize     — single-element resize (no cascade)
+    // See docs/superpowers/plans/2026-07-08-design-mode-redesign.md (Chunk 3.5)
+    // and docs/superpowers/plans/2026-08-06-split-move-resize.md.
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/design/pages", ai_mod.http_handlers.designPagesListHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages", ai_mod.http_handlers.designPagesCreateHandler);
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id", ai_mod.http_handlers.designPagesGetHandler);
@@ -463,8 +466,13 @@ try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:p
     try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id", ai_mod.http_handlers.designElementsDeleteHandler);
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/html", ai_mod.http_handlers.designElementsHtmlGetHandler);
     try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/html", ai_mod.http_handlers.designElementsHtmlUpdateHandler);
+    // DEPRECATED — see design_elements_translate.zig + design_elements_resize.zig.
     try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/geometry", ai_mod.http_handlers.designElementsGeometryUpdateHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/geometry-batch", ai_mod.http_handlers.designElementsGeometryBatchHandler);
+    // NEW (2026-08-06) — replaces /geometry with two distinct endpoints:
+    // /translate (move) and /resize.
+    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/translate", ai_mod.http_handlers.designElementsTranslateHandler);
+    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/resize", ai_mod.http_handlers.designElementsResizeHandler);
     // Server-side cascade move. Each item's (dx, dy) recursively applies
     // to every transitive descendant of that item's element in one
     // SQL transaction. See

@@ -380,6 +380,23 @@ export interface SseClient {
  *   client.close()
  */
 export function createSseClient(opts: SseClientOptions): SseClient {
+  // Diagnostic logger — prefix every line with `[sse-client]` so
+  // the stream of state transitions is greppable from the DevTools
+  // console alongside the backend's `[sse]` lines. Cheapest possible
+  // implementation: one console.log per state event, no allocations
+  // beyond the timestamp string. Toggled by setting the
+  // `__sseDebug` global to `false` at runtime (see helpers/sseClient
+  // notes).
+  const debugOn: boolean = (globalThis as { __sseDebug?: boolean }).__sseDebug !== false
+  const log = (msg: string, extra?: Record<string, unknown>): void => {
+    if (!debugOn) return
+    const ts = new Date().toISOString()
+    const extra_ = extra ? ' ' + JSON.stringify(extra) : ''
+    // eslint-disable-next-line no-console
+    console.log(`[sse-client ${ts}] ${msg}${extra_}`)
+  }
+  log('createSseClient', { url: opts.url })
+
   const baseDelayMs = opts.baseDelayMs ?? 1_000
   const maxDelayMs = opts.maxDelayMs ?? 30_000
   const maxAttempts = opts.maxAttempts ?? Infinity
@@ -437,6 +454,13 @@ export function createSseClient(opts: SseClientOptions): SseClient {
 
   function emitState(next: SseState, info: SseStateInfo): void {
     state = next
+    if (next !== 'open') {
+      // 'open' is logged by the 'connected' event listener at the
+      // exact moment we receive the server handshake (more
+      // diagnostic value than logging every state transition once
+      // the connection is stable).
+      log('state', { next, attempt: info.attempt, reason: info.reason, nextDelayMs: info.nextDelayMs })
+    }
     for (const cb of subscribers) {
       try {
         cb(next, info)
@@ -462,12 +486,14 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     clearRetry()
 
     attempt += 1
+    log('start', { attempt, url: opts.url })
     emitState('connecting', { attempt, reason: 'manual' })
 
     let instance: EventSource
     try {
       instance = new EventSourceCtor(opts.url)
     } catch (err) {
+      log('EventSource ctor THREW', { err: String(err) })
       // The constructor itself threw synchronously (e.g. invalid
       // URL). Treat as a first-attempt fatal error.
       handleError(
@@ -478,6 +504,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
       return
     }
     es = instance
+    log('EventSource constructed', { readyState: instance.readyState })
 
     instance.addEventListener(connectedEventName, (e: Event) => {
       // Server explicitly confirmed the stream is live. This is
@@ -533,6 +560,25 @@ export function createSseClient(opts: SseClientOptions): SseClient {
       }
     })
 
+    // Raw EventSource lifecycle hooks — separate from the SSE
+    // 'connected' named event above. Logged so the dev console can
+    // distinguish a) the HTTP/TLS 'open' (200 + headers) from b) the
+    // SSE 'connected' (protocol handshake) from c) 'error' (the
+    // browser fired onerror). Without this, all three fire through
+    // a single onerror callback and we can't tell them apart.
+    instance.addEventListener('open', () => {
+      log('EventSource raw open', { readyState: instance.readyState })
+    })
+    instance.addEventListener('error', () => {
+      log('EventSource raw error', {
+        readyState: instance.readyState,
+        // readyState 0 = CONNECTING, 1 = OPEN, 2 = CLOSED. CLOSED
+        // here is the smoking gun: the browser thinks the SSE
+        // endpoint is gone.
+        readyStateLabel: ['CONNECTING', 'OPEN', 'CLOSED'][instance.readyState] ?? 'UNKNOWN',
+      })
+    })
+
     // Register listeners for any additional named event types the
     // consumer declared (e.g. 'queue_message'). Each one is
     // dispatched to `onEvent` with the event name as the type
@@ -566,6 +612,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     // internal retry attempt — we want exactly one error → one
     // attempt counter increment.
     if (es) {
+      log('es.close() before handleError path', { attempt, infoReason: info.reason })
       try {
         es.close()
       } catch {
@@ -578,6 +625,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     // recoverable by retrying. The server actively rejected us
     // (or the URL is wrong). Going into a backoff loop here would
     // just hammer the server.
+    log('handleError branch', { hasBeenOpen, attempt, infoReason: info.reason })
     if (!hasBeenOpen) {
       emitState('failed', {
         attempt,
@@ -612,6 +660,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     // can set `pauseWhenHidden: false` and pre-set
     // `visibilityTarget.hidden = false` (jsdom default).
     if (pauseWhenHidden && visibilityTarget && visibilityTarget.hidden) {
+      log('scheduleRetry paused (tab hidden)', { reason: reasonInfo.reason })
       emitState('reconnecting', {
         attempt,
         reason: 'error', // we are paused, but the cause was still the error
@@ -629,12 +678,14 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     const jitter = 0.5 + 0.5 * random()
     const delay = exp * jitter
 
+    log('scheduleRetry set', { attempt, delayMs: Math.round(delay), reason: reasonInfo.reason })
     emitState('reconnecting', {
       attempt,
       nextDelayMs: delay,
       reason: reasonInfo.reason,
     })
     retryTimer = setTimeoutFn(() => {
+      log('retryTimer fired', { attempt })
       retryTimer = null
       start()
     }, delay)
@@ -765,6 +816,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
 
     reconnect(): void {
       if (closed) return
+      log('reconnect() called by consumer')
       if (es) {
         try {
           es.close()

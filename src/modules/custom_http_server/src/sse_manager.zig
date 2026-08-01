@@ -15,6 +15,42 @@ const is_bsd = switch (builtin.os.tag) {
 
 const LOOP_COUNT = 4;
 
+/// Scoped logger for all SSE-manager diagnostics. Output goes to stderr.
+/// Prefixed with `[sse]` so the stream of disconnects is greppable in
+/// the nalar log without needing to filter every log line.
+const log = std.log.scoped(.sse);
+
+/// Why a client was removed. Required parameter on every remove path so
+/// we can correlate the disconnects the frontend sees with the actual
+/// reason nalar dropped the connection. Add new variants here whenever
+/// you add a new removal path — the diagnostic goal is for the log
+/// line to be self-explanatory without reading the source.
+pub const RemoveReason = enum {
+    /// POLL.HUP — peer closed its side of the socket (TCP FIN or RST).
+    poll_hup,
+    /// POLL.ERR — kernel marked the socket as errored.
+    poll_err,
+    /// POLL.NVAL — fd was already closed (race or leak indicator).
+    poll_nval,
+    /// `read()` returned 0 (EOF) on a still-poll-able socket — peer sent
+    /// FIN and we caught the EOF before HUP fired.
+    eof_read,
+    /// `sendHeartbeat` → `writeChunkedFrame` failed — peer is gone
+    /// from the server's perspective (EPIPE / ECONNRESET / EBADF).
+    heartbeat_write_failed,
+    /// `sendToClient` → `writeChunkedFrame` failed mid-event.
+    send_to_client_failed,
+    /// `broadcast` / `broadcastTyped` → `writeChunkedFrame` failed.
+    broadcast_write_failed,
+    /// `sweepStaleClients` removed the client because last_heartbeat
+    /// exceeded 3 heartbeat cycles (15 s by default).
+    sweep_stale,
+    /// `gracefulShutdown` / `deinit` — explicit, server-side intent.
+    explicit_shutdown,
+    /// Test code path that bypassed normal removal logic.
+    test_only,
+};
+
 pub const Self = @This();
 
 pub const SseClient = struct {
@@ -163,6 +199,8 @@ pub const SseManager = struct {
         try self.clients.put(self.server_allocator, id, client);
         try self.fd_to_id.put(self.server_allocator, fd, id);
 
+        log.info("register fd={d} id={x} total_clients={d}", .{ fd, id, self.clients.count() });
+
         // Wake up all event loops so they pick up the new client
         self.notifyLoops();
 
@@ -192,12 +230,16 @@ pub const SseManager = struct {
         return id;
     }
 
-    pub fn removeClient(self: *SseManager, id: [16]u8) void {
+    pub fn removeClient(self: *SseManager, id: [16]u8, reason: RemoveReason) void {
         self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
 
         if (self.clients.fetchRemove(id)) |entry| {
             _ = self.fd_to_id.remove(entry.value.*.fd);
+            const fd = entry.value.*.fd;
+            log.info("remove fd={d} id={x} reason={s} remaining={d}", .{
+                fd, id, @tagName(reason), self.clients.count(),
+            });
             // Send the chunked-encoding terminator (0\r\n\r\n) BEFORE
             // closing the fd so intermediaries (Vite, browser) can
             // finalize their chunked-decoding state cleanly. The
@@ -210,13 +252,16 @@ pub const SseManager = struct {
         }
     }
 
-    pub fn removeClientByFd(self: *SseManager, fd: i32) ?[16]u8 {
+    pub fn removeClientByFd(self: *SseManager, fd: i32, reason: RemoveReason) ?[16]u8 {
         self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
 
         if (self.fd_to_id.fetchRemove(fd)) |entry| {
             const id = entry.value;
             if (self.clients.fetchRemove(id)) |client_entry| {
+                log.info("remove fd={d} id={x} reason={s} remaining={d}", .{
+                    fd, id, @tagName(reason), self.clients.count(),
+                });
                 // Same as removeClient: send terminator BEFORE close.
                 _ = sendAll(client_entry.value.*.fd, "0\r\n\r\n");
                 client_entry.value.*.deinit();
@@ -285,6 +330,7 @@ pub const SseManager = struct {
             _ = sendAll(fd, "0\r\n\r\n");
         }
 
+        log.info("gracefulShutdown removing={d}", .{self.clients.count()});
         while (self.clients.count() > 0) {
             var it2 = self.clients.iterator();
             if (it2.next()) |entry| {
@@ -424,7 +470,14 @@ pub const SseManager = struct {
                 const poll_in = @as(u16, @intCast(posix.POLL.IN));
 
                 if (revents & (poll_err | poll_hup | poll_nval) != 0) {
-                    _ = self.removeClientByFd(pfd.fd);
+                    log.debug("poll revents fd={d} revents=0x{x}", .{ pfd.fd, revents });
+                    if (revents & poll_hup != 0) {
+                        _ = self.removeClientByFd(pfd.fd, .poll_hup);
+                    } else if (revents & poll_err != 0) {
+                        _ = self.removeClientByFd(pfd.fd, .poll_err);
+                    } else {
+                        _ = self.removeClientByFd(pfd.fd, .poll_nval);
+                    }
                     continue;
                 }
 
@@ -438,7 +491,8 @@ pub const SseManager = struct {
                         var buf: [64]u8 = undefined;
                         const n = socket.read(pfd.fd, &buf, buf.len);
                         if (n <= 0) {
-                            _ = self.removeClientByFd(pfd.fd);
+                            log.debug("read() returned {d} on fd={d} (EOF or error)", .{ n, pfd.fd });
+                            _ = self.removeClientByFd(pfd.fd, .eof_read);
                         }
                     }
                 }
@@ -497,6 +551,9 @@ pub const SseManager = struct {
             if (self.clients.fetchRemove(id)) |entry| {
                 const fd = entry.value.*.fd;
                 _ = self.fd_to_id.remove(fd);
+                log.info("sweepStale fd={d} id={x} age_ms={d} threshold_ms={d}", .{
+                    fd, id, now -| entry.value.*.last_heartbeat, max_stale_ms,
+                });
                 _ = sendAll(fd, "0\r\n\r\n");
                 entry.value.*.deinit();
                 self.server_allocator.destroy(entry.value);
@@ -554,12 +611,13 @@ pub const SseManager = struct {
             if (writeChunkedFrame(client.fd, ping)) |_| {
                 client.last_heartbeat = timestamp(self.io);
             } else |_| {
+                log.info("heartbeat write FAILED fd={d} id={x}", .{ client.fd, client.id });
                 dead_ids.append(self.allocator, client.id) catch break;
             }
         }
 
         for (dead_ids.items) |id| {
-            self.removeClient(id);
+            self.removeClient(id, .heartbeat_write_failed);
         }
     }
 
@@ -592,6 +650,7 @@ pub const SseManager = struct {
         if (writeChunkedFrame(client.fd, data)) |_| {
             // success
         } else |_| {
+            log.info("sendToClient write FAILED fd={d} id={x}", .{ client.fd, id });
             // Failed write — inline the remove logic so we don't
             // try to re-acquire `self.lock` (which we already hold).
             // Mirrors the close-before-deinit pattern in `removeClient`
@@ -599,6 +658,9 @@ pub const SseManager = struct {
             // `ERR_INCOMPLETE_CHUNKED_ENCODING` in the browser.
             if (self.clients.fetchRemove(id)) |entry| {
                 const fd = entry.value.*.fd;
+                log.info("remove fd={d} id={x} reason={s} remaining={d}", .{
+                    fd, id, @tagName(RemoveReason.send_to_client_failed), self.clients.count(),
+                });
                 _ = self.fd_to_id.remove(fd);
                 _ = sendAll(fd, "0\r\n\r\n");
                 entry.value.*.deinit();
@@ -634,7 +696,8 @@ pub const SseManager = struct {
             if (writeChunkedFrame(client.fd, event)) {
                 // success
             } else |_| {
-                self.removeClient(client.id);
+                log.info("broadcast write FAILED fd={d} id={x}", .{ client.fd, client.id });
+                self.removeClient(client.id, .broadcast_write_failed);
             }
         }
     }
@@ -661,7 +724,8 @@ pub const SseManager = struct {
             if (writeChunkedFrame(client.fd, event)) {
                 // success
             } else |_| {
-                self.removeClient(client.id);
+                log.info("broadcastTyped write FAILED fd={d} id={x}", .{ client.fd, client.id });
+                self.removeClient(client.id, .broadcast_write_failed);
             }
         }
     }

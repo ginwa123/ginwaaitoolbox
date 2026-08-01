@@ -104,6 +104,13 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     _ = @import("http_handlers/design_elements_html_get_test.zig");
     _ = @import("http_handlers/design_elements_html_update_test.zig");
     _ = @import("http_handlers/design_elements_geometry_update_test.zig");
+    // NEW (2026-08-06) — translate endpoint replaces /geometry for moves.
+    // Behavioural tests for `POST /translate` (cascade to descendants for
+    // groups). See docs/superpowers/plans/2026-08-06-split-move-resize.md.
+    _ = @import("http_handlers/design_elements_translate_test.zig");
+    // NEW (2026-08-06) — resize endpoint replaces /geometry for resizes.
+    // Behavioural tests for `POST /resize` (no cascade, per-element only).
+    _ = @import("http_handlers/design_elements_resize_test.zig");
     // Inline tests for the geometry-batch handler `useCase` live at the
     // bottom of design_elements_geometry_batch.zig — registered here so
     // zig build test actually runs them.

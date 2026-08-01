@@ -151,8 +151,27 @@ pub const designElementsUpdateHandler = @import("design_elements_update.zig").de
 pub const designElementsDeleteHandler = @import("design_elements_delete.zig").designElementsDeleteHandler;
 pub const designElementsHtmlGetHandler = @import("design_elements_html_get.zig").designElementsHtmlGetHandler;
 pub const designElementsHtmlUpdateHandler = @import("design_elements_html_update.zig").designElementsHtmlUpdateHandler;
+// DEPRECATED — PATCH .../geometry. Use POST .../translate (move) or
+// POST .../resize (resize) instead. Kept for back-compat with
+// any client still wired to the old single endpoint.
 pub const designElementsGeometryUpdateHandler = @import("design_elements_geometry_update.zig").designElementsGeometryUpdateHandler;
+// DEPRECATED — POST .../geometry-batch. Replaced by POST .../move-batch
+// (server-side cascade) for multi-element translation. Kept for
+// back-compat with any client still wired to the old endpoint.
 pub const designElementsGeometryBatchHandler = @import("design_elements_geometry_batch.zig").designElementsGeometryBatchHandler;
+// NEW (2026-08-06) — POST .../translate. Single-element move with
+// delta. Cascades to descendants when the element is a group/frame.
+// See docs/superpowers/plans/2026-08-06-split-move-resize.md.
+pub const designElementsTranslateHandler = @import("design_elements_translate.zig").designElementsTranslateHandler;
+pub const designElementsTranslateUseCase = @import("design_elements_translate.zig").useCase;
+pub const designElementsTranslateError = @import("design_elements_translate.zig").DesignElementTranslateError;
+// NEW (2026-08-06) — POST .../resize. Single-element resize with
+// absolute x/y/width/height/rotation. No cascade (resize is per-element
+// by Figma convention).
+// See docs/superpowers/plans/2026-08-06-split-move-resize.md.
+pub const designElementsResizeHandler = @import("design_elements_resize.zig").designElementsResizeHandler;
+pub const designElementsResizeUseCase = @import("design_elements_resize.zig").useCase;
+pub const designElementsResizeError = @import("design_elements_resize.zig").DesignElementResizeError;
 // Group 2+ elements into a new `group`/`frame` parent. POST
 // /api/workspaces/:w/items/:i/design/pages/:p/elements/group — see
 // docs/superpowers/plans/2026-07-28-grouped-layers.md (Chunk 3).

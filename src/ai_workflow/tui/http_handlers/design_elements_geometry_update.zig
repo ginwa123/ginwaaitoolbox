@@ -1,5 +1,15 @@
 //! `PATCH /api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/geometry`.
 //!
+//! ⚠️  DEPRECATED — replaced by two distinct endpoints:
+//!   - `POST .../elements/:element_id/translate` — for moves (delta-based,
+//!     cascades to descendants for groups).
+//!   - `POST .../elements/:element_id/resize` — for resizes (absolute
+//!     fields, no cascade, per-element only by Figma convention).
+//!
+//! This handler is kept for back-compat with any client still wired
+//! to the old single endpoint. New code MUST use /translate or
+//! /resize. See `docs/superpowers/plans/2026-08-06-split-move-resize.md`.
+//!
 //! Update an element's geometry (x/y/width/height/rotation). Used
 //! by the canvas drag/resize handlers in `DesignElement.vue` —
 //! fires on every pointer-move tick during a drag (debounced on
@@ -20,7 +30,10 @@
 //!   - 500 DB failure
 //!
 //! Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md
-//!   (Chunk 3, Task 3.4)
+//!   (Chunk 3, Task 3.4) — original endpoint.
+//! Plan: docs/superpowers/plans/2026-08-06-split-move-resize.md
+//!   (Task 2: deprecation — keep working but route new clients to
+//!   /translate + /resize).
 
 const std = @import("std");
 const nalarcore = @import("nalarcore");

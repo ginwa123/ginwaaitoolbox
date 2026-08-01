@@ -152,7 +152,7 @@ test "SseManager: removeClient sends the terminating chunk (0\\r\\n\\r\\n) befor
     try mgr.sendChunked(id, "event: ping\ndata: 1\n\n");
 
     // removeClient must (a) flush the terminator, then (b) close the fd.
-    mgr.removeClient(id);
+    mgr.removeClient(id, .test_only);
 
     // Read everything available on the peer end. Expected sequence:
     //   "15\r\nevent: ping\ndata: 1\n\n\r\n0\r\n\r\n"
