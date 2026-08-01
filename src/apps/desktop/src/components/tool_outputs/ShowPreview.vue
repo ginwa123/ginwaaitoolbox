@@ -49,6 +49,9 @@
 -->
 <script setup lang="ts">
 import { computed } from 'vue'
+import { usePreviewDisplayMode } from '@/composables/usePreviewDisplayMode'
+import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
+import PreviewContentRenderer from '@/components/preview/PreviewContentRenderer.vue'
 
 interface Props {
   /** The XML envelope produced by the show_preview tool. */
@@ -75,12 +78,15 @@ const emit = defineEmits<{
    * Fired when the user clicks the card (anywhere on it, not just a
    * specific button). Parent should navigate to / focus the side
    * panel for `messageId`.
+   *
+   * NOT emitted in `inline` mode — the rich content is already
+   * visible inline, so there's nothing to navigate to.
    */
   open: [string]
 }>()
 
 // ─── XML tag extraction (local helper) ───────────────────────────────────
-// Same regex-based extractor used in PreviewSidePanel.vue:146. Kept
+// Same regex-based extractor used in PreviewSidePanel.vue. Kept
 // inline so ShowPreview has zero cross-file coupling (project convention
 // for tool-output components — see KanbanMove.vue:47-82).
 
@@ -149,6 +155,66 @@ const title = computed(() => {
   return null
 })
 
+// ─── Inline-mode rendering (2026-08-06) ──────────────────────────────────
+//
+// When the user has flipped the global display mode to 'inline' via
+// the PreviewSidePanel header toggle (or the ChatView restore button),
+// this card mounts the shared PreviewContentRenderer inside the chat
+// bubble so the rich content is visible inline. In 'side' mode (the
+// default), the card stays minimal — click to open the side panel.
+//
+// Args extracted from the parameters tag: title / language / caption /
+// content. Same shape as PreviewSidePanel.activeArgs.
+
+const { isInline } = usePreviewDisplayMode()
+
+const previewArgs = computed(() => {
+  // Try the <tool> envelope first (modern pipeline), then fall back
+  // to plain JSON.parse (legacy raw-JSON rows).
+  const unwrapped: UnwrappedToolOutput | null = tryUnwrapToolOutput(props.content)
+  if (unwrapped?.parameters) {
+    const paramsXml = unwrapped.parameters
+    const fromXml: Record<string, string | undefined> = {
+      content_type: findTag(paramsXml, 'content_type') ?? undefined,
+      content: findTag(paramsXml, 'content') ?? undefined,
+      title: findTag(paramsXml, 'title') ?? undefined,
+      language: findTag(paramsXml, 'language') ?? undefined,
+      caption: findTag(paramsXml, 'caption') ?? undefined,
+    }
+    if (fromXml.content) return fromXml
+    try {
+      const parsed = JSON.parse(paramsXml) as Record<string, string | undefined>
+      if (parsed && typeof parsed === 'object') return parsed
+    } catch {
+      /* not JSON */
+    }
+  }
+  return {}
+})
+
+const resolvedContentType = computed<
+  'markdown' | 'text' | 'code' | 'image' | 'html' | null
+>(() => {
+  const ct = previewArgs.value.content_type ?? contentType.value ?? null
+  if (
+    ct === 'markdown' ||
+    ct === 'text' ||
+    ct === 'code' ||
+    ct === 'image' ||
+    ct === 'html'
+  ) {
+    return ct
+  }
+  return null
+})
+
+const rendererArgs = computed(() => ({
+  content: previewArgs.value.content ?? '',
+  title: previewArgs.value.title ?? title.value ?? undefined,
+  language: previewArgs.value.language ?? undefined,
+  caption: previewArgs.value.caption ?? undefined,
+}))
+
 // ─── Derived display values ──────────────────────────────────────────────
 
 const isSuccess = computed(
@@ -197,6 +263,10 @@ const headerTitle = computed(() => {
 // ─── Event handlers ──────────────────────────────────────────────────────
 
 const handleClick = () => {
+  // In inline mode the content is already visible — nothing to navigate
+  // to. Emit `open` only in side mode (when the click would expand
+  // content into the right-side panel).
+  if (isInline.value) return
   // Emit the bubble's message id; the parent decides how to navigate
   // (focus the side panel, dismiss collapsed state, etc.).
   emit('open', props.messageId)
@@ -215,10 +285,13 @@ const copyPreviewId = async (e: Event) => {
 
 <template>
   <div
-    class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)] cursor-pointer hover:border-violet-500/40 transition-colors"
-    :class="{ 'border-red-500/50 opacity-90': !isSuccess }"
-    role="button"
-    tabindex="0"
+    class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)] hover:border-violet-500/40 transition-colors"
+    :class="[
+      !isInline ? 'cursor-pointer' : '',
+      { 'border-red-500/50 opacity-90': !isSuccess },
+    ]"
+    :role="!isInline ? 'button' : undefined"
+    :tabindex="!isInline ? 0 : undefined"
     :aria-label="isSuccess
       ? `Show preview ${previewId ?? ''} in side panel`
       : `Show preview error: ${errorMessage ?? 'unknown error'}`"
@@ -260,10 +333,28 @@ const copyPreviewId = async (e: Event) => {
       >⎘</button>
     </div>
 
+    <!--
+      Inline-mode body: rich content rendered directly inside the
+      chat bubble (no need to click through to the side panel).
+      Hidden in 'side' mode (the user clicks to open the panel).
+    -->
+    <div
+      v-if="isInline && isSuccess && resolvedContentType"
+      class="border-t border-dashed border-[var(--color-border)]"
+      data-testid="show-preview-inline-content"
+      @click.stop
+    >
+      <PreviewContentRenderer
+        :content-type="resolvedContentType"
+        :args="rendererArgs"
+      />
+    </div>
+
     <!-- Error body — only when the tool failed. Success case has
-         nothing to show inline; the rich content lives in the side
-         panel. The error message is wrapped in a single line so the
-         user can scan the chat log without it expanding the card. -->
+         nothing to show inline when in side mode; the rich content
+         lives in the side panel. The error message is wrapped in a
+         single line so the user can scan the chat log without it
+         expanding the card. -->
     <div
       v-if="!isSuccess && errorMessage"
       class="px-2 py-1.5 text-red-500 text-xs border-t border-dashed border-[var(--color-border)] whitespace-pre-wrap break-all"

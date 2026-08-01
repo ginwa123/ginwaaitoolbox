@@ -568,4 +568,90 @@ describe('PreviewSidePanel', () => {
     expect(srcdoc).toContain('href="x"')
     expect(srcdoc).toContain('title="Y"')
   })
+
+  // ─── Display mode toggle (2026-08-06) ───────────────────────────
+  //
+  // The new 2-button segmented control in the panel header lets
+  // the user flip between rendering `show_preview` outputs in this
+  // side panel ('side', default) versus inline in the chat bubble
+  // ('inline'). The choice persists in localStorage. This is the
+  // UX-driven equivalent of DiffView's split/unified toggle.
+  describe('Display mode toggle', () => {
+    it('renders both Side and Inline buttons in the panel header', () => {
+      const wrapper = mount(PreviewSidePanel, {
+        props: { previews: [makePreview()] },
+      })
+      expect(wrapper.find('[data-testid="preview-display-mode-toggle"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="preview-display-mode-side"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="preview-display-mode-inline"]').exists()).toBe(true)
+    })
+
+    it('marks "Side" as the active mode by default (when localStorage is empty)', () => {
+      const wrapper = mount(PreviewSidePanel, {
+        props: { previews: [makePreview()] },
+      })
+      const sideBtn = wrapper.find('[data-testid="preview-display-mode-side"]')
+      const inlineBtn = wrapper.find('[data-testid="preview-display-mode-inline"]')
+      expect(sideBtn.attributes('aria-pressed')).toBe('true')
+      expect(inlineBtn.attributes('aria-pressed')).toBe('false')
+    })
+
+    it('marks "Inline" as the active mode when localStorage was set to "inline"', () => {
+      localStorage.setItem('nalar-preview-display-mode', 'inline')
+      const wrapper = mount(PreviewSidePanel, {
+        props: { previews: [makePreview()] },
+      })
+      const sideBtn = wrapper.find('[data-testid="preview-display-mode-side"]')
+      const inlineBtn = wrapper.find('[data-testid="preview-display-mode-inline"]')
+      expect(sideBtn.attributes('aria-pressed')).toBe('false')
+      expect(inlineBtn.attributes('aria-pressed')).toBe('true')
+    })
+
+    it('clicking "Inline" flips the active mode AND persists to localStorage', async () => {
+      const wrapper = mount(PreviewSidePanel, {
+        props: { previews: [makePreview()] },
+      })
+      const inlineBtn = wrapper.find('[data-testid="preview-display-mode-inline"]')
+      await inlineBtn.trigger('click')
+      await wrapper.vm.$nextTick()
+
+      expect(inlineBtn.attributes('aria-pressed')).toBe('true')
+      const sideBtn = wrapper.find('[data-testid="preview-display-mode-side"]')
+      expect(sideBtn.attributes('aria-pressed')).toBe('false')
+      expect(localStorage.getItem('nalar-preview-display-mode')).toBe('inline')
+    })
+
+    it('clicking "Side" flips back from inline AND persists to localStorage', async () => {
+      localStorage.setItem('nalar-preview-display-mode', 'inline')
+      const wrapper = mount(PreviewSidePanel, {
+        props: { previews: [makePreview()] },
+      })
+      // Sanity check: started in inline mode.
+      expect(
+        wrapper.find('[data-testid="preview-display-mode-inline"]').attributes('aria-pressed'),
+      ).toBe('true')
+
+      const sideBtn = wrapper.find('[data-testid="preview-display-mode-side"]')
+      await sideBtn.trigger('click')
+      await wrapper.vm.$nextTick()
+
+      expect(sideBtn.attributes('aria-pressed')).toBe('true')
+      expect(
+        wrapper.find('[data-testid="preview-display-mode-inline"]').attributes('aria-pressed'),
+      ).toBe('false')
+      expect(localStorage.getItem('nalar-preview-display-mode')).toBe('side')
+    })
+
+    it('clicking the already-active mode is a no-op (no write storm)', async () => {
+      const wrapper = mount(PreviewSidePanel, {
+        props: { previews: [makePreview()] },
+      })
+      const sideBtn = wrapper.find('[data-testid="preview-display-mode-side"]')
+      // Already 'side' — clicking again should not change anything.
+      await sideBtn.trigger('click')
+      await wrapper.vm.$nextTick()
+      expect(sideBtn.attributes('aria-pressed')).toBe('true')
+      expect(localStorage.getItem('nalar-preview-display-mode')).not.toBe('inline')
+    })
+  })
 })

@@ -4,7 +4,9 @@ This document lists the agent tools that the nalar LLM can call.
 
 ## `show_preview`
 
-Show a visual preview to the user in the side panel of the chat.
+Show a visual preview to the user in the side panel of the chat, OR
+inline within the chat message bubble (user choice — see "Display
+mode" below).
 
 **Input** (JSON object):
 - `content_type` (required): one of `"markdown"`, `"text"`, `"code"`, `"image"`, `"html"`
@@ -27,10 +29,26 @@ Show a visual preview to the user in the side panel of the chat.
 - `content` exceeds 1 MB
 - `content_type='code'` with no `language` (or empty `language`)
 
-**Frontend rendering** (`PreviewSidePanel.vue`):
-- The side panel mounts on the right side of ChatView (480px wide, collapses to 32px)
-- Auto-opens when a new preview arrives
-- Multi-preview per turn: each call adds a tab; click a tab to switch
+**Display mode** (user-controlled toggle, 2026-08-06):
+The user chooses where previews render via a 2-button segmented
+control in the side panel header (`Side` / `Inline`). The choice
+persists across reloads via `localStorage['nalar-preview-display-mode']`.
+Default: `side` (matches existing behaviour).
+
+| Mode | Where it renders |
+|---|---|
+| `side` (default) | The right-side `<PreviewSidePanel>` — current behaviour. |
+| `inline` | Rich content renders directly inside the chat message bubble (in `<ShowPreview>`). The side panel auto-hides. |
+
+When the side panel is hidden (inline mode + zero previews), a
+floating "📋 Open preview panel" button appears at top-right of
+the chat area. Click → flips mode back to `side`.
+
+The LLM does NOT pick the display mode per-call — only the user
+decides. Same UX model as `<DiffView>`'s split/unified toggle.
+
+**Frontend rendering** (`PreviewContentRenderer.vue`, used by both
+`<PreviewSidePanel>` and `<ShowPreview>`):
 - `markdown` → rendered via `marked()`
 - `text` → preserved whitespace in a `<pre>` block
 - `code` → syntax-highlighted via `<pre><code class="language-X">`

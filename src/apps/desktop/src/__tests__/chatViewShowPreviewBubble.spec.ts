@@ -345,4 +345,114 @@ describe('ChatView show_preview bubble click', () => {
     expect(vm.previewPanelDismissed).toBe(false)
     expect(vm.previewToShowId).toBe('msg-clickopens-1')
   })
+
+  // ─── Display mode (user-controlled sidebar/inline toggle, 2026-08-06) ──
+  //
+  // The user flips between 'side' (PreviewSidePanel — current default)
+  // and 'inline' (rich content renders inside chat bubble). When the
+  // mode is 'inline':
+  //   - ChatView auto-dismisses the side panel.
+  //   - A floating "Open preview panel" button appears at top-right.
+  // Clicking that button flips the mode back to 'side' and
+  // re-shows the panel.
+  describe('Preview display mode (sidebar/inline toggle)', () => {
+    it('hides the side panel when localStorage is set to "inline" on mount', async () => {
+      // Set inline mode BEFORE mount so the composable reads it.
+      localStorage.setItem('nalar-preview-display-mode', 'inline')
+
+      installChatViewMocks()
+      wrapper = await mountChatView('session_inline_init')
+
+      const vm = wrapper!.vm as unknown as { messages: unknown[] }
+      vm.messages = [makeShowPreviewMessage('msg-inline-init-1')]
+      await nextTick()
+      await nextTick()
+
+      // Side panel must NOT be in the DOM (v-if="!previewPanelDismissed").
+      expect(wrapper!.find('[data-testid="preview-side-panel"]').exists()).toBe(false)
+    })
+
+    it('shows the floating restore button when mode is "inline" AND there is at least one preview', async () => {
+      localStorage.setItem('nalar-preview-display-mode', 'inline')
+
+      installChatViewMocks()
+      wrapper = await mountChatView('session_inline_restore')
+
+      const vm = wrapper!.vm as unknown as { messages: unknown[] }
+      vm.messages = [makeShowPreviewMessage('msg-inline-restore-1')]
+      await nextTick()
+      await nextTick()
+
+      expect(wrapper!.find('[data-testid="restore-preview-panel-button"]').exists()).toBe(true)
+    })
+
+    it('does NOT show the restore button in "side" mode (default)', async () => {
+      installChatViewMocks()
+      wrapper = await mountChatView('session_side_no_restore')
+
+      const vm = wrapper!.vm as unknown as { messages: unknown[] }
+      vm.messages = [makeShowPreviewMessage('msg-side-no-restore-1')]
+      await nextTick()
+      await nextTick()
+
+      expect(wrapper!.find('[data-testid="restore-preview-panel-button"]').exists()).toBe(false)
+    })
+
+    it('does NOT show the restore button in inline mode when there are zero previews', async () => {
+      localStorage.setItem('nalar-preview-display-mode', 'inline')
+
+      installChatViewMocks()
+      wrapper = await mountChatView('session_inline_no_previews')
+
+      const vm = wrapper!.vm as unknown as { messages: unknown[] }
+      vm.messages = [] // No show_preview messages.
+      await nextTick()
+      await nextTick()
+
+      expect(wrapper!.find('[data-testid="restore-preview-panel-button"]').exists()).toBe(false)
+    })
+
+    it('clicking the restore button flips mode to "side" AND re-shows the panel', async () => {
+      localStorage.setItem('nalar-preview-display-mode', 'inline')
+
+      installChatViewMocks()
+      wrapper = await mountChatView('session_inline_click_restore')
+
+      const vm = wrapper!.vm as unknown as { messages: unknown[] }
+      vm.messages = [makeShowPreviewMessage('msg-inline-click-restore-1')]
+      await nextTick()
+      await nextTick()
+
+      // Sanity: starting state — panel hidden, restore button visible.
+      expect(wrapper!.find('[data-testid="preview-side-panel"]').exists()).toBe(false)
+      const restoreBtn = wrapper!.find('[data-testid="restore-preview-panel-button"]')
+      expect(restoreBtn.exists()).toBe(true)
+
+      await restoreBtn.trigger('click')
+      await nextTick()
+      await nextTick()
+
+      // Mode flipped, panel re-mounted, restore button gone.
+      expect(localStorage.getItem('nalar-preview-display-mode')).toBe('side')
+      expect(wrapper!.find('[data-testid="preview-side-panel"]').exists()).toBe(true)
+      expect(wrapper!.find('[data-testid="restore-preview-panel-button"]').exists()).toBe(false)
+    })
+
+    it('ShowPreview card renders content inline when mode is "inline"', async () => {
+      localStorage.setItem('nalar-preview-display-mode', 'inline')
+
+      installChatViewMocks()
+      wrapper = await mountChatView('session_inline_render')
+
+      const vm = wrapper!.vm as unknown as { messages: unknown[] }
+      vm.messages = [makeShowPreviewMessage('msg-inline-render-1')]
+      await nextTick()
+      await nextTick()
+
+      // The card itself renders as before, but the rich content body
+      // is now mounted inside it (data-testid="show-preview-inline-content").
+      const inlineContent = wrapper!.find('[data-testid="show-preview-inline-content"]')
+      expect(inlineContent.exists()).toBe(true)
+    })
+  })
 })

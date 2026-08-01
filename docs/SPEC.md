@@ -627,6 +627,7 @@ For each plan file in the 178-file input set:
 #55  feat(agent): show_preview tool + PreviewSidePanel
 #56  feat(frontend): ShowPreview card component
 #156 feat(agent): show_preview 'html' content_type (sandboxed iframe)
+#TBD feat(preview): user-controlled sidebar/inline display-mode toggle (extracted PreviewContentRenderer + usePreviewDisplayMode composable)
 #57  feat(frontend): task variant: 'row' | 'card'
 #58  ci: 2-cell nalar-desktop-build matrix
 #60  refactor: is_input/is_output JSON boolean (#60)
