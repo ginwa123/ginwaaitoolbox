@@ -1,5 +1,6 @@
 import { useNotificationStore } from '../stores/notifications'
 import { useWorkspacesStore } from '../stores/workspaces'
+import { designLogger } from '../helpers/designLogger'
 
 /**
  * AppLayout's design-mode handlers, extracted into a composable so
@@ -106,9 +107,29 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
   ): Promise<void> {
     const pageId = workspacesStore.activeDesignPageId
     if (!pageId) {
-      console.warn('[useDesignHandlers.translateElement] no activeDesignPageId; ignoring', { workspaceId, itemId, elementId, dx, dy })
+      designLogger.warn({
+        reason: 'app:noop:noActivePage',
+        caller: 'useDesignHandlers.translateElement',
+        dx,
+        dy,
+        noActivePage: true,
+        workspaceId,
+        itemId,
+        pageId: '',
+        extra: { elementId },
+      })
       return
     }
+    designLogger.info({
+      reason: 'app:translateElement',
+      caller: 'useDesignHandlers.translateElement',
+      dx,
+      dy,
+      workspaceId,
+      itemId,
+      pageId,
+      extra: { elementId },
+    })
     try {
       await workspacesStore.translateDesignElement(workspaceId, itemId, pageId, elementId, dx, dy)
     } catch (err) {
@@ -138,9 +159,27 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
   ): Promise<void> {
     const pageId = workspacesStore.activeDesignPageId
     if (!pageId) {
-      console.warn('[useDesignHandlers.resizeElement] no activeDesignPageId; ignoring', { workspaceId, itemId, elementId, patch })
+      designLogger.warn({
+        reason: 'app:noop:noActivePage',
+        caller: 'useDesignHandlers.resizeElement',
+        patch,
+        noActivePage: true,
+        workspaceId,
+        itemId,
+        pageId: '',
+        extra: { elementId },
+      })
       return
     }
+    designLogger.info({
+      reason: 'app:resizeElement',
+      caller: 'useDesignHandlers.resizeElement',
+      patch,
+      workspaceId,
+      itemId,
+      pageId,
+      extra: { elementId },
+    })
     try {
       await workspacesStore.resizeDesignElement(workspaceId, itemId, pageId, elementId, patch)
     } catch (err) {
@@ -351,6 +390,18 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
     const { workspaceId, itemId, pageId, items } = payload
     if (!workspaceId || !itemId || !pageId) return
     if (items.length === 0) return
+    designLogger.info({
+      reason: 'app:moveWithDescendants',
+      caller: 'useDesignHandlers.moveElementWithDescendants',
+      ids: items.map((i) => i.element_id),
+      workspaceId,
+      itemId,
+      pageId,
+      extra: {
+        itemCount: items.length,
+        sample: items[0] ? { id: items[0].element_id, dx: items[0].dx, dy: items[0].dy } : null,
+      },
+    })
     try {
       await workspacesStore.moveDesignElementsBatch(workspaceId, itemId, pageId, items)
     } catch (err) {

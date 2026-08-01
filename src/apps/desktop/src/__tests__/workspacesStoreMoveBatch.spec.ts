@@ -279,4 +279,110 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
     expect(after[2].x).toBe(200)
     expect(after[2].y).toBe(150)
   })
+
+  /**
+   * BUG FIX (2026-08-06, design-mode-second-drag): the `POST
+   * .../elements/move-batch` endpoint historically emitted `elem_type`
+   * (the Zig struct field name) instead of `type` on the wire. After a
+   * single move-batch the local mirror was clobbering `type` with
+   * `undefined`, which silently disabled the cascade path on every
+   * subsequent drag (`isGroupLike = false` → `triggerGroupDrag = false`).
+   *
+   * The fix has two parts:
+   *   1. Backend: the move-batch handler now uses
+   *      `makeDesignElementResponse` (canonical wire shape).
+   *   2. Frontend: defense in depth — the store mirror step normalizes
+   *      `type` from either `type` (canonical) or `elem_type`
+   *      (legacy). This test pins the frontend side: a backend
+   *      response using `elem_type` must NOT clobber `type`.
+   */
+  it('local mirror preserves `type` when backend emits `elem_type` (legacy wire shape)', async () => {
+    const store = makeWorkspacesStore()
+    // Seed the store with an item containing a group + a leaf.
+    const baseline = [
+      {
+        id: 'g1', name: 'G', type: 'group', page_id: 'page_1',
+        x: 100, y: 100, width: 200, height: 200, rotation: 0,
+        fill: '', stroke: '', stroke_width: 0, corner_radius: 0,
+        opacity: 1, text_content: '', text_style: '',
+        image_url: '', file_path: '', created_at: '', updated_at: '',
+        parent_id: '', z_index: 0, position: 0,
+      },
+    ]
+    ;(store.workspaces[0] as any).items[0].design_elements = baseline
+
+    // Backend response uses `elem_type` (the BUGGY shape) — no `type` field.
+    vi.spyOn(await import('../api'), 'moveDesignElementsBatch')
+      .mockResolvedValueOnce({
+        updated: [
+          {
+            id: 'g1',
+            // No `type` field — only `elem_type`.
+            elem_type: 'group',
+            x: 150, y: 150, width: 200, height: 200,
+            rotation: 0, fill: '', stroke: '', stroke_width: 0,
+            corner_radius: 0, opacity: 1, text_content: '',
+            text_style: '', image_url: '', file_path: '',
+            parent_id: '', z_index: 0, position: 0,
+            page_id: 'page_1', name: 'G',
+            created_at: '', updated_at: '',
+          },
+        ] as never,
+      })
+
+    await store.moveDesignElementsBatch('ws_1', 'item_1', 'page_1', [
+      { element_id: 'g1', dx: 50, dy: 50 },
+    ])
+
+    // EXPECTED: the local mirror preserves `type === 'group'` so the
+    // next drag still sees `isGroupLike = true` and uses the cascade.
+    const after = (store.workspaces[0] as any).items[0].design_elements
+    expect(after[0].type).toBe('group')
+    expect(after[0].x).toBe(150)
+    expect(after[0].y).toBe(150)
+  })
+
+  /**
+   * Same bug as above but verifying the canonical wire shape is also
+   * accepted (the new backend). Locks in that we don't regress the
+   * happy path while defending against the legacy shape.
+   */
+  it('local mirror preserves `type` when backend emits `type` (canonical wire shape)', async () => {
+    const store = makeWorkspacesStore()
+    const baseline = [
+      {
+        id: 'g1', name: 'G', type: 'group', page_id: 'page_1',
+        x: 100, y: 100, width: 200, height: 200, rotation: 0,
+        fill: '', stroke: '', stroke_width: 0, corner_radius: 0,
+        opacity: 1, text_content: '', text_style: '',
+        image_url: '', file_path: '', created_at: '', updated_at: '',
+        parent_id: '', z_index: 0, position: 0,
+      },
+    ]
+    ;(store.workspaces[0] as any).items[0].design_elements = baseline
+
+    vi.spyOn(await import('../api'), 'moveDesignElementsBatch')
+      .mockResolvedValueOnce({
+        updated: [
+          {
+            id: 'g1',
+            type: 'group',  // canonical
+            x: 150, y: 150, width: 200, height: 200,
+            rotation: 0, fill: '', stroke: '', stroke_width: 0,
+            corner_radius: 0, opacity: 1, text_content: '',
+            text_style: '', image_url: '', file_path: '',
+            parent_id: '', z_index: 0, position: 0,
+            page_id: 'page_1', name: 'G',
+            created_at: '', updated_at: '',
+          },
+        ] as never,
+      })
+
+    await store.moveDesignElementsBatch('ws_1', 'item_1', 'page_1', [
+      { element_id: 'g1', dx: 50, dy: 50 },
+    ])
+
+    const after = (store.workspaces[0] as any).items[0].design_elements
+    expect(after[0].type).toBe('group')
+  })
 })

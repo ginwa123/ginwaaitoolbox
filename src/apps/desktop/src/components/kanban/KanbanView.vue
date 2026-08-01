@@ -59,10 +59,12 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import KanbanColumn from './KanbanColumn.vue'
 import KanbanSearchInput from './KanbanSearchInput.vue'
 import KanbanTaskDetailDialog from './KanbanTaskDetailDialog.vue'
+import ChatView from '../views/ChatView.vue'
 import InlineEditableText from '../preview/InlineEditableText.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useNotificationStore } from '../../stores/notifications'
 import { useKanbanScrollRestore } from '../../composables/useKanbanScrollRestore'
+import type { PreviewFile } from '../file/FilePreview.vue'
 import type { WorkspaceItem, Task, KanbanColumn as KanbanColumnType } from '../../stores/workspaces'
 
 const props = withDefaults(
@@ -87,6 +89,131 @@ const workspacesStore = useWorkspacesStore()
 // Without this, the board renders empty on every page reload even
 // though the seeded 3 default columns exist in the DB.
 const effectiveItemId = computed(() => props.itemId || props.item.id)
+
+// ─── Chat pane branch (kanban-embed-chatview plan, Task 2) ────────────
+//
+// When `activeTask` is set AND it belongs to this kanban, the kanban
+// renders the chatview next to the board (replacing AppLayout's old
+// 3-column branch — the kanban now owns the chat pane). The chat's
+// `@close` event is forwarded as `@close-chat` so AppLayout can
+// handle URL routing + state cleanup (URL stays source of truth).
+const activeTask = computed(() => workspacesStore.activeTask)
+const activeTaskWorkspaceItemId = computed(() => workspacesStore.activeTaskWorkspaceItemId)
+const showChatPane = computed(
+  () => !!(activeTask.value && activeTaskWorkspaceItemId.value === effectiveItemId.value),
+)
+
+// ─── Kanban column resize (kanban-embed-chatview plan, Task 3) ─────────
+//
+// Drag-resize the kanban column in the board+chat layout. The user
+// grabs the 1px handle between the kanban and the chatview, drags
+// left/right, and the kanban grows/shrinks within a clamped range.
+// The chatview column absorbs the leftover space (it has
+// `flex: 1 1 0`). The width persists to localStorage so a refresh
+// keeps the user's preferred layout.
+//
+// Moved verbatim from AppLayout.vue:763-895 (kanban-embed-chatview
+// plan, Task 3) — same UX, same storage key, just a different owner.
+// The selector `[data-kanban-three-column] > :first-child` becomes
+// `[data-kanban-with-chat] > :first-child` (the chat-pane branch's
+// outer wrapper inside this component).
+//
+// Bounds rationale (preserved from AppLayout):
+//   - MIN 0px: the user can collapse the kanban column entirely,
+//     letting the chatview absorb the full main area. The 1px
+//     resize handle stays grabbable at width=0 so the kanban can
+//     be brought back by dragging right. (Floor was previously
+//     280px to keep kanban columns readable; user feedback
+//     2026-07-04 preferred unbounded.)
+//   - MAX 720px: beyond this the chatview shrinks to <30% of the
+//     main area on typical 1080p+ displays, making the chat feel
+//     cramped. The chat needs at least 480px to be usable.
+const KANBAN_MIN_WIDTH = 0
+const KANBAN_MAX_WIDTH = 720
+const KANBAN_DEFAULT_WIDTH = 40 // % of main area, used when no localStorage value exists
+const KANBAN_WIDTH_STORAGE_KEY = 'kanban-column-width'
+
+const loadKanbanColumnWidth = (): number | null => {
+  if (typeof localStorage === 'undefined') return null
+  const saved = localStorage.getItem(KANBAN_WIDTH_STORAGE_KEY)
+  if (saved === null) return null
+  const parsed = parseInt(saved, 10)
+  if (isNaN(parsed) || parsed <= 0) return null
+  return parsed
+}
+
+const kanbanColumnWidth = ref<number | null>(loadKanbanColumnWidth())
+const isKanbanResizing = ref(false)
+const kanbanResizeStartX = ref(0)
+const kanbanResizeStartWidth = ref(0)
+
+const startKanbanResize = (e: MouseEvent | TouchEvent) => {
+  isKanbanResizing.value = true
+  const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
+  kanbanResizeStartX.value = clientX
+  const rendered = kanbanResizeStartWidth.value
+  if (rendered <= 0) {
+    const el = document.querySelector(
+      '[data-kanban-with-chat] > :first-child',
+    ) as HTMLElement | null
+    kanbanResizeStartWidth.value = el?.getBoundingClientRect().width ?? 400
+  }
+  document.addEventListener('mousemove', handleKanbanResize)
+  document.addEventListener('mouseup', stopKanbanResize)
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'col-resize'
+  e.preventDefault()
+}
+
+const handleKanbanResize = (e: MouseEvent | TouchEvent) => {
+  if (!isKanbanResizing.value) return
+  const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
+  const deltaX = clientX - kanbanResizeStartX.value
+  const newWidth = Math.max(
+    KANBAN_MIN_WIDTH,
+    Math.min(KANBAN_MAX_WIDTH, kanbanResizeStartWidth.value + deltaX),
+  )
+  kanbanColumnWidth.value = newWidth
+}
+
+const stopKanbanResize = () => {
+  if (!isKanbanResizing.value) return
+  isKanbanResizing.value = false
+  document.removeEventListener('mousemove', handleKanbanResize)
+  document.removeEventListener('mouseup', stopKanbanResize)
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+  if (kanbanColumnWidth.value !== null) {
+    try {
+      localStorage.setItem(KANBAN_WIDTH_STORAGE_KEY, String(kanbanColumnWidth.value))
+    } catch {
+      // localStorage may throw in private-mode or quota-exceeded
+      // scenarios; silently ignore so the in-memory drag still
+      // works for the current session.
+    }
+  }
+}
+
+const kanbanColumnStyle = computed(() => {
+  if (kanbanColumnWidth.value !== null) {
+    return {
+      width: `${kanbanColumnWidth.value}px`,
+      'min-width': `${KANBAN_MIN_WIDTH}px`,
+      'max-width': `${KANBAN_MAX_WIDTH}px`,
+      'flex-shrink': '0',
+    }
+  }
+  return {
+    flex: `0 1 ${KANBAN_DEFAULT_WIDTH}%`,
+    'min-width': `${KANBAN_MIN_WIDTH}px`,
+    'max-width': `${KANBAN_MAX_WIDTH}px`,
+  }
+})
+
+// `close-chat` emit is added to the existing defineEmits() below
+// (the script already has one). The chat-pane branch forwards
+// ChatView's @close as @close-chat so AppLayout can clear the
+// active task + navigate back to view=workspace.
 
 const loadColumns = () => {
   if (props.workspaceId && effectiveItemId.value) {
@@ -161,6 +288,11 @@ const emit = defineEmits<{
    * Plan: docs/superpowers/plans/2026-06-30-edit-workspace-item-name.md
    */
   renameItem: [name: string]
+  // Chat pane (kanban-embed-chatview plan, Task 2+4). Fired when
+  // ChatView's header close button is clicked. AppLayout's handler
+  // clears activeTask + navigates to view=workspace (URL is the
+  // source of truth).
+  closeChat: []
 }>()
 
 // ─── Derived data ──────────────────────────────────────────────────────────
@@ -241,7 +373,7 @@ const handleOpenSettings = () => {
 // action). It hides once a path is set. The picker reuses the
 // AddKanbanDialog's picker to keep the UX consistent — same data
 // source, same select-pick-cancel flow.
-import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
+import { getSystemFolder, listFolder, type FolderEntry, uploadTaskAttachment } from '../../api'
 import { updateSession as apiUpdateSession } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
 
@@ -430,6 +562,7 @@ const handleViewCreateTask = (columnId: string) => {
 // re-typing).
 //
 // Plan: docs/superpowers/plans/2026-08-06-kanban-create-task-run-agent.md
+//   + 2026-08-06-kanban-no-base64-in-desc (pendingFiles upload step)
 const handleCreateTaskSave = async (payload: {
   mode: 'create' | 'create_and_run'
   name: string
@@ -441,6 +574,13 @@ const handleCreateTaskSave = async (payload: {
   // through to runAgentOnNewTask only (Path A — plain create doesn't
   // persist the choice; user can set from chatview later).
   selectedProfile?: string
+  // NEW (plan: 2026-08-06-kanban-no-base64-in-desc). Files the
+  // dialog staged in create mode (KanbanDescriptionEditor.pendingFiles).
+  // The editor never writes the base64 payload into `description` —
+  // we upload each file here AFTER `addTask` returns the new
+  // taskId, then PATCH the description with `![name](<url>)` markdown.
+  // Empty array (not undefined) when no images were attached.
+  pendingFiles?: PreviewFile[]
 }) => {
   if (!activeCreateColumnId.value) return
   createBusy.value = true
@@ -465,6 +605,45 @@ const handleCreateTaskSave = async (payload: {
       createError.value = 'Failed to create task — please retry.'
       return
     }
+
+    // NEW (plan: 2026-08-06-kanban-no-base64-in-desc). Upload each
+    // pending file the user pasted/picked while in create mode,
+    // then patch the description with the server URLs. The
+    // dialog's `description` was passed as text-only (no base64) —
+    // we append the `![name](<url>)` markdown lines here so the
+    // final description is self-contained.
+    //
+    // Failure mode: if the upload throws, we abort the move / run
+    // flow (the task exists but with no description patch yet) and
+    // surface the error via createError so the dialog stays open.
+    // The user can retry without re-typing.
+    const pendingFiles = payload.pendingFiles ?? []
+    if (pendingFiles.length > 0) {
+      const markdownLines: string[] = []
+      for (const entry of pendingFiles) {
+        try {
+          const { url } = await uploadTaskAttachment(taskId, entry.file)
+          markdownLines.push(`![${entry.file.name}](${url})`)
+        } catch (err) {
+          console.error(
+            '[handleCreateTaskSave] attachment upload failed:',
+            err,
+          )
+          createError.value = `Image upload failed (${entry.file.name}): ${
+            err instanceof Error ? err.message : String(err)
+          }`
+          return
+        }
+      }
+      const finalDescription =
+        payload.description.trim() === ''
+          ? markdownLines.join('\n')
+          : `${payload.description}\n${markdownLines.join('\n')}`
+      await workspacesStore.updateTaskDetails(wsId, itId, taskId, {
+        description: finalDescription,
+      })
+    }
+
     // Move the new task to the column the user clicked. The
     // backend's auto-assign put it in the first column; moveTaskToColumn
     // overwrites that. Position 0 = top of the column.
@@ -528,7 +707,19 @@ const handleCreateTaskSave = async (payload: {
     class="kanban-view flex flex-col h-full min-h-0"
     :data-kanban-item-id="item.id"
     :data-kanban-view="item.id"
+    data-kanban-host
   >
+    <!--
+      Layout branches (kanban-embed-chatview plan, Task 2):
+        - !showChatPane → full-width board (the old standalone layout)
+        - showChatPane   → board on the left, ChatView on the right
+                           (replaces AppLayout's old 3-column block).
+      The two branches share the same header + columns-row markup;
+      duplication is intentional for this first cut (relocation only,
+      no redesign). A follow-up can extract a sub-component if the
+      duplication grows.
+    -->
+    <template v-if="!showChatPane">
     <!-- ─── Header ────────────────────────────────────────────────────── -->
     <header
       class="flex items-center gap-3 px-3 py-2 shrink-0"
@@ -656,6 +847,114 @@ const handleCreateTaskSave = async (payload: {
           @run-routine="(ws, item, id) => emit('runRoutine', ws, item, id)"
           @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
           @view-task-detail="handleViewTaskDetail"
+        />
+      </div>
+    </div>
+    </template>
+
+    <!--
+      Active-task branch: board + chat side by side (kanban-embed-chatview
+      plan, Task 2). Replaces the 3-column block that used to live in
+      AppLayout.vue:1739-1825. Resize handle is added in Task 3.
+    -->
+    <div
+      v-else
+      class="flex-1 flex min-h-0"
+      data-kanban-with-chat
+    >
+      <div
+        class="flex flex-col h-full min-h-0"
+        :style="kanbanColumnStyle"
+        style="border-right: 1px solid var(--color-border)"
+      >
+        <header
+          class="flex items-center gap-3 px-3 py-2 shrink-0"
+          style="border-bottom: 1px solid var(--color-border);"
+        >
+          <h3
+            class="text-sm font-semibold truncate flex-1"
+            style="color: var(--semantic-text);"
+            :data-testid="`kanban-view-${item.id}-title`"
+          >
+            <InlineEditableText
+              :value="item.name"
+              :placeholder="'unnamed kanban'"
+              :ariaLabel="'kanban name'"
+              :testId="`kanban-view-${item.id}-rename`"
+              display-class="text-sm font-semibold"
+              @save="(newName) => emit('renameItem', newName)"
+            />
+          </h3>
+          <KanbanSearchInput v-model="searchQuery" />
+        </header>
+        <div
+          ref="kanbanColumnsContainer"
+          class="flex-1 min-h-0 overflow-x-auto overflow-y-hidden"
+          style="scrollbar-width: thin;"
+          :data-testid="`kanban-view-${item.id}-columns`"
+        >
+          <div class="flex gap-3 p-3 h-full items-stretch">
+            <KanbanColumn
+              v-for="column in sortedColumns"
+              :key="column.id"
+              :column="column"
+              :tasks="tasks"
+              :workspace-id="workspaceId"
+              :item-id="itemId || item.id"
+              :cwd="item.path || ''"
+              @add-task="handleViewCreateTask"
+              @move-task="(payload) => emit('moveTask', payload)"
+              @rename-column="(payload) => emit('renameColumn', payload)"
+              @delete-column="(columnId) => emit('deleteColumn', columnId)"
+              @reorder-column="(payload) => emit('reorderColumn', payload)"
+              @request-rename-column="(columnId) => emit('requestRenameColumn', columnId)"
+              @request-delete-column="(columnId) => emit('requestDeleteColumn', columnId)"
+              @select-task="(id) => emit('selectTask', id)"
+              @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
+              @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
+              @edit-routine="(ws, item, id) => emit('editRoutine', ws, item, id)"
+              @run-routine="(ws, item, id) => emit('runRoutine', ws, item, id)"
+              @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
+              @view-task-detail="handleViewTaskDetail"
+            />
+          </div>
+        </div>
+      </div>
+      <!-- Resize handle (Task 3). 4px-wide hit area (w-2 in Tailwind) -->
+      <div
+        class="shrink-0 w-2 cursor-col-resize relative flex items-center justify-center bg-[var(--color-violet)]/15 hover:bg-[var(--color-violet)]/40 transition-colors"
+        :class="isKanbanResizing ? '!bg-[var(--color-violet)]/60' : ''"
+        data-kanban-resize-handle
+        data-testid="kanban-resize-handle"
+        title="Drag to resize"
+        @mousedown="startKanbanResize"
+      >
+        <svg
+          width="14"
+          height="2"
+          viewBox="0 0 14 2"
+          fill="currentColor"
+          class="text-[var(--color-violet)] opacity-70"
+          aria-hidden="true"
+        >
+          <circle cx="3" cy="1" r="1" />
+          <circle cx="7" cy="1" r="1" />
+          <circle cx="11" cy="1" r="1" />
+        </svg>
+      </div>
+      <div class="flex-1 flex flex-col h-full min-w-0 min-h-0">
+        <ChatView
+          v-if="activeTask"
+          :key="'task-' + activeTask.id"
+          :chat-id="activeTask.id"
+          :chat-name="activeTask.name"
+          :type="'task'"
+          :cwd="item.path || ''"
+          :task-id="activeTask.id"
+          :task-name="activeTask.name"
+          :project-name="item.name || ''"
+          :show-header="true"
+          @close="emit('closeChat')"
         />
       </div>
     </div>

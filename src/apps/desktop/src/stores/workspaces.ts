@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useNavigationStore } from './navigation'
 import { useSseBus } from '../helpers/sseBus'
+import { designLogger } from '../helpers/designLogger'
 import type { DesignElement, DesignPage } from '../api'
 
 export interface KanbanColumn {
@@ -301,6 +302,7 @@ import {
   type GroupDesignElementsRequest,
   type ReparentDesignElementsBatchRequest,
   type ReorderMode,
+  normalizeDesignElementType,
 } from '../api'
 
 export const useWorkspacesStore = defineStore('workspaces', () => {
@@ -520,16 +522,35 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Get active task details
   const activeTask = computed(() => {
     if (!activeTaskId.value || !activeWorkspaceItemId.value) return null
-    
+
     const workspace = workspaces.value.find((ws) =>
       ws.items.some((item) => item.id === activeWorkspaceItemId.value)
     )
     if (!workspace) return null
-    
+
     const item = workspace.items.find((i) => i.id === activeWorkspaceItemId.value)
     if (!item?.tasks) return null
-    
+
     return item.tasks.find((t) => t.id === activeTaskId.value) || null
+  })
+
+  // NEW (kanban-embed-chatview plan, Task 1): "which item owns the
+  // active task". Walks every workspace's items + tasks looking for
+  // activeTaskId; returns the containing item's id or null. Used by
+  // (a) AppLayout's v-else-if guard for the kanban|chatview 3-column
+  // branch, and (b) KanbanView's chat-pane branch — single source of
+  // truth instead of duplicating the lookup in both consumers.
+  const activeTaskWorkspaceItemId = computed(() => {
+    const taskId = activeTaskId.value
+    if (!taskId) return null
+    for (const ws of workspaces.value) {
+      for (const item of ws.items) {
+        if (item.tasks?.some((t) => t.id === taskId)) {
+          return item.id
+        }
+      }
+    }
+    return null
   })
 
   // Actions
@@ -1302,8 +1323,28 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // the same reactive array.
       if (!item.design_elements) {
         item.design_elements = elements
+        designLogger.warn({
+          reason: 'fetch:replaced-array',
+          caller: 'workspacesStore.fetchDesignElements',
+          endpoint: '/design/pages/:page_id (GET)',
+          workspaceId,
+          itemId,
+          pageId,
+          mirrorCount: elements.length,
+          extra: { note: 'item.design_elements was undefined — assigned the full array (the OLD bug pattern)' },
+        })
         return
       }
+      designLogger.info({
+        reason: 'fetch:in-place-mirror',
+        caller: 'workspacesStore.fetchDesignElements',
+        endpoint: '/design/pages/:page_id (GET)',
+        workspaceId,
+        itemId,
+        pageId,
+        mirrorCount: elements.length,
+        extra: { preExistingCount: item.design_elements.length },
+      })
       // Build a Map<id, incomingElement> for O(1) lookup.
       const incomingById = new Map<string, typeof elements[number]>()
       for (const el of elements) incomingById.set(el.id, el)
@@ -1499,6 +1540,17 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     dx: number,
     dy: number,
   ): Promise<DesignElement[]> {
+    designLogger.info({
+      reason: 'store:translateDesignElement:api',
+      caller: 'workspacesStore.translateDesignElement',
+      endpoint: '/translate',
+      dx,
+      dy,
+      workspaceId,
+      itemId,
+      pageId,
+      extra: { elementId },
+    })
     const result = await translateDesignElementApi(
       workspaceId,
       itemId,
@@ -1524,6 +1576,19 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       result.updated.map((e) => e.id),
       Date.now() + RECENT_MUTATION_TTL_MS,
     )
+    designLogger.info({
+      reason: 'store:translateDesignElement:mirror',
+      caller: 'workspacesStore.translateDesignElement',
+      ids: result.updated.map((e) => e.id),
+      mirrorCount: result.updated.length,
+      endpoint: '/translate',
+      dx,
+      dy,
+      workspaceId,
+      itemId,
+      pageId,
+      extra: { elementId },
+    })
     return result.updated
   }
 
@@ -1545,6 +1610,16 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       rotation?: number
     },
   ): Promise<DesignElement> {
+    designLogger.info({
+      reason: 'store:resizeDesignElement:api',
+      caller: 'workspacesStore.resizeDesignElement',
+      endpoint: '/resize',
+      patch: geometry,
+      workspaceId,
+      itemId,
+      pageId,
+      extra: { elementId },
+    })
     const result = await resizeDesignElementApi(
       workspaceId,
       itemId,
@@ -1558,6 +1633,17 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       if (idx !== -1) item.design_elements[idx] = result
     }
     registerRecentLocalMutations([elementId], Date.now() + RECENT_MUTATION_TTL_MS)
+    designLogger.info({
+      reason: 'store:resizeDesignElement:mirror',
+      caller: 'workspacesStore.resizeDesignElement',
+      endpoint: '/resize',
+      ids: [elementId],
+      mirrorCount: 1,
+      workspaceId,
+      itemId,
+      pageId,
+      extra: { x: result.x, y: result.y, w: result.width, h: result.height, r: result.rotation },
+    })
     return result
   }
 
@@ -1639,6 +1725,19 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     items: MoveBatchItem[],
   ): Promise<DesignElement[]> {
     if (items.length === 0) return []
+    designLogger.info({
+      reason: 'store:moveDesignElementsBatch:api',
+      caller: 'workspacesStore.moveDesignElementsBatch',
+      endpoint: '/move-batch',
+      ids: items.map((i) => i.element_id),
+      workspaceId,
+      itemId,
+      pageId,
+      extra: {
+        itemCount: items.length,
+        sample: items[0] ? { id: items[0].element_id, dx: items[0].dx, dy: items[0].dy } : null,
+      },
+    })
     const result = await moveDesignElementsBatchApi(workspaceId, itemId, pageId, { items })
     // Mirror every updated row into the local design_elements array
     // (preserves the array's existing order for non-affected elements).
@@ -1651,6 +1750,15 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // re-rendered against the NEW array. The fix above (in-place
     // mutation in fetchDesignElements) plus the in-place mirror
     // here closes the loop.
+    //
+    // ALSO (2026-08-06): the move-batch endpoint historically emitted
+    // `elem_type` (the Zig struct field name) instead of `type`. After
+    // a single move-batch, every cascaded element in the local store
+    // had `type === undefined`, which broke `isGroupLike` →
+    // `triggerGroupDrag = false` on every subsequent drag. The
+    // frontend-side normalize step below accepts both shapes so the
+    // canvas works against old + new backends. See
+    // `api.normalizeDesignElementType` for the full rationale.
     const item = findItem(workspaceId, itemId)
     if (item?.design_elements) {
       // Build a Map<id, index> for O(1) lookup; the cascade can
@@ -1663,7 +1771,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       for (const updated of result.updated) {
         const idx = idxById.get(updated.id)
         if (idx !== undefined) {
-          item.design_elements[idx] = updated
+          // Normalize `type` from either `type` (canonical) or
+          // `elem_type` (legacy). Without this the local mirror
+          // clobbers the element's `type` field with `undefined`,
+          // which silently disables the cascade path on every drag
+          // after the first (BUG 2026-08-06).
+          item.design_elements[idx] = normalizeDesignElementType(updated) as DesignElement
         }
       }
     }
@@ -1675,6 +1788,21 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       result.updated.map((e) => e.id),
       Date.now() + RECENT_MUTATION_TTL_MS,
     )
+    designLogger.info({
+      reason: 'store:moveDesignElementsBatch:mirror',
+      caller: 'workspacesStore.moveDesignElementsBatch',
+      endpoint: '/move-batch',
+      ids: result.updated.map((e) => e.id),
+      mirrorCount: result.updated.length,
+      workspaceId,
+      itemId,
+      pageId,
+      extra: {
+        inputItemCount: items.length,
+        cascadeExpandedTo: result.updated.length,
+        cascade: result.updated.length > items.length,
+      },
+    })
     return result.updated
   }
 
@@ -2832,6 +2960,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     activeWorkspaceItem,
     activeWorkspace,
     activeTask,
+    activeTaskWorkspaceItemId,
     // Actions
     init,
     toggleWorkspace,

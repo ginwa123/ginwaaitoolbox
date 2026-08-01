@@ -28,6 +28,7 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const gserverz = nalarcore.gserverz;
 const design_model = @import("../design_model.zig");
+const http_response = @import("http_response.zig");
 
 /// HTTP request body for move-batch. Each `items[i]`'s `(dx, dy)`
 /// cascades to the element + every transitive descendant. Optional
@@ -201,18 +202,40 @@ pub fn designElementsMoveBatchHandler(
         });
     };
 
-    // 5. Build the success response (200 OK). Serialize via
-    //    std.json.Stringify.valueAlloc, which recursively walks the
-    //    `DesignElement` fields and produces wire-compatible JSON.
+    // 5. Build the success response (200 OK). Map every cascaded
+    //    element through `makeDesignElementResponse` so the wire shape
+    //    matches `GET /design/pages/:page_id` (specifically: the
+    //    `type` field, NOT `elem_type` — see the model comment on
+    //    `elem_type`).
+    //
+    //    BUG FIX (2026-08-06, design-mode-second-drag): previously this
+    //    handler serialized the `design_model.DesignElement` struct
+    //    directly via `std.json.Stringify.valueAlloc`, which emitted
+    //    `elem_type` (the model's field name). The page response and
+    //    every other design endpoint use `makeDesignElementResponse`
+    //    which aliases `elem_type` → `type` on the wire. After a single
+    //    move-batch the local store was mirrored with elements missing
+    //    the `type` field, so `props.element.type === undefined` on
+    //    every subsequent drag → `isGroupLike = false` →
+    //    `triggerGroupDrag = false` → the cascade path silently
+    //    switched to the single-element translate path. Frame/group
+    //    drags worked the first time then became broken.
     defer {
         design_model.freeElements(allocator, output.updated);
     }
 
+    const mapped = try allocator.alloc(http_response.DesignElementResponse, output.updated.len);
+    defer allocator.free(mapped);
+    for (output.updated, 0..) |e, i| mapped[i] = http_response.makeDesignElementResponse(e);
+
+    const Wrapper = struct {
+        updated: []const http_response.DesignElementResponse,
+    };
     return res.jsonResponse(.{
         .status_code = 200,
         .data = try std.json.Stringify.valueAlloc(
             allocator,
-            struct { updated: []const design_model.DesignElement }{ .updated = output.updated },
+            Wrapper{ .updated = mapped },
             .{},
         ),
     });

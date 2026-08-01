@@ -456,6 +456,7 @@ test {
     _ = @import("modules/logger/test_runner.zig"); // needs Zig 0.16 API updates
     _ = @import("modules/custom_http_server/src/test_session_lifecycle.zig");
     _ = @import("modules/custom_http_server/src/sse_chunked_test.zig");
+    _ = @import("modules/custom_http_server/src/sse_keepalive_test.zig"); // 60s SSE soak test
     _ = @import("modules/test_runner.zig");
     _ = @import("modules/notification/test_runner.zig");
     _ = @import("migrations/test_runner.zig");

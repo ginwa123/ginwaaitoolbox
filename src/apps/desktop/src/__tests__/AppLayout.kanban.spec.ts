@@ -156,7 +156,28 @@ function mountAppLayout(workspaces: Workspace[] = []) {
         Chats: true,
         SettingsView: true,
         CodeEditor: true,
-        KanbanView: { template: '<div data-kanban-view="stub" :data-item-id="item.id" />', props: ['item', 'workspaceId', 'itemId'] },
+        // Stub KanbanView with the chat-pane branch + resize handle so
+        // the AppLayout-level integration tests can still exercise
+        // "active task belongs to kanban → chat pane visible + resize
+        // handle draggable". The real KanbanView's chat-pane logic +
+        // resize state machine are covered by KanbanView.chatPane.spec.ts.
+        KanbanView: {
+          template: `
+            <div data-kanban-view="stub" :data-item-id="item.id">
+              <div v-if="showChatPane" data-kanban-with-chat>
+                <div data-kanban-resize-handle data-testid="kanban-resize-handle" />
+                <div data-test-stub-chatview />
+              </div>
+            </div>
+          `,
+          props: ['item', 'workspaceId', 'itemId'],
+          computed: {
+            showChatPane() {
+              const ws = useWorkspacesStore()
+              return !!(ws.activeTask && ws.activeTaskWorkspaceItemId === this.item.id)
+            },
+          },
+        },
       },
     },
   })
@@ -298,13 +319,14 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
     ws.setActiveWorkspaceItem(KANBAN_ID)
     ws.setActiveTask(TASK_ID)
     await nextTick()
-    // Both columns render side-by-side in a flex container
-    // marked with data-kanban-three-column (added in the
-    // 2026-06-24 migration as a test selector).
+    // Both columns render side-by-side inside KanbanView's
+    // chat-pane branch (selector: data-kanban-with-chat). The
+    // 3-column block that used to live in AppLayout was moved
+    // into KanbanView as part of the kanban-embed-chatview plan.
     const view = wrapper.find('[data-kanban-view="stub"]')
     expect(view.exists()).toBe(true)
     expect(view.attributes('data-item-id')).toBe(KANBAN_ID)
-    const threeCol = wrapper.find('[data-kanban-three-column]')
+    const threeCol = wrapper.find('[data-kanban-with-chat]')
     expect(threeCol.exists()).toBe(true)
     wrapper.unmount()
   })
@@ -343,166 +365,29 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
     ws.setActiveWorkspaceItem(KANBAN_ID) // kanban is the active WS item
     ws.setActiveTask('task_in_folder') // ...but the active task lives in the folder
     await nextTick()
-    // activeTaskWorkspaceItemId === FOLDER_ID, not KANBAN_ID — so
-    // the 3-column branch doesn't match. The standalone ChatView
-    // (task) branch renders, and the kanban stays out.
+    // activeTaskWorkspaceItemId === FOLDER_ID, not KANBAN_ID — and
+    // currentView === 'task'. The single-column ChatView branch
+    // wins (`v-else-if="currentView === 'task' && activeTask"`),
+    // so KanbanView does NOT render. The chat-pane branch inside
+    // KanbanView (data-kanban-with-chat) is irrelevant because
+    // KanbanView isn't mounted at all.
     const view = wrapper.find('[data-kanban-view="stub"]')
     expect(view.exists()).toBe(false)
-    const threeCol = wrapper.find('[data-kanban-three-column]')
+    const threeCol = wrapper.find('[data-kanban-with-chat]')
     expect(threeCol.exists()).toBe(false)
     wrapper.unmount()
   })
 
-  it('renders a resize handle between the kanban and chatview in the 3-column layout', async () => {
-    // The handle is the only way for the user to drag the
-    // kanban column to a new width. Without it, the column is
-    // stuck at the default 40% / persisted px value with no
-    // way to adjust. The testid is stable across refactors
-    // (data-kanban-resize-handle attribute also exists for
-    // older selectors).
-    const kanban = makeKanbanItem({
-      tasks: [makeTask({ kanban_column_id: 'col_todo' })],
-    })
-    useRouteMock.mockReturnValue({
-      query: { view: 'task', task: TASK_ID } as Record<string, string>,
-      path: '/app',
-      fullPath: `/app?view=task&task=${TASK_ID}`,
-    } as any)
-    const wrapper = mountAppLayout([
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace,
-    ])
-    const ws = useWorkspacesStore()
-    ws.setActiveWorkspaceItem(KANBAN_ID)
-    ws.setActiveTask(TASK_ID)
-    await nextTick()
-    const handle = wrapper.find('[data-testid="kanban-resize-handle"]')
-    expect(handle.exists()).toBe(true)
-    expect(handle.classes()).toContain('cursor-col-resize')
-    wrapper.unmount()
-  })
-
-  it('persists the kanban column width to localStorage on drag release', async () => {
-    // Pattern: mousedown on the handle → mousemove on document
-    // (to set the new width) → mouseup on document (to persist
-    // the new width to localStorage). Without the release-step
-    // persist, a refresh would lose the user's drag.
-    //
-    // The handle sets up document-level mousemove/mouseup
-    // listeners in startKanbanResize, NOT listeners on the
-    // handle itself. We dispatch those events on
-    // `document.body` (jsdom's document.body is the closest
-    // proxy to `document` in this test environment) so the
-    // mousedown handler can find them.
-    const kanban = makeKanbanItem({
-      tasks: [makeTask({ kanban_column_id: 'col_todo' })],
-    })
-    useRouteMock.mockReturnValue({
-      query: { view: 'task', task: TASK_ID } as Record<string, string>,
-      path: '/app',
-      fullPath: `/app?view=task&task=${TASK_ID}`,
-    } as any)
-    const wrapper = mountAppLayout([
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace,
-    ])
-    const ws = useWorkspacesStore()
-    ws.setActiveWorkspaceItem(KANBAN_ID)
-    ws.setActiveTask(TASK_ID)
-    await nextTick()
-    const handle = wrapper.find('[data-testid="kanban-resize-handle"]')
-    // Simulate mousedown at x=400 (the handle's location).
-    // In jsdom, the handle's getBoundingClientRect returns 0
-    // for everything, so kanbanResizeStartWidth stays at 0 and
-    // the startResize fallback measures the rendered column.
-    // For this test we just need to verify the persist path,
-    // not the exact drag math — fire a mousemove of 200px to
-    // the right of the start point, which will land somewhere
-    // in the 280..720 range and produce a non-null width.
-    await handle.trigger('mousedown', { clientX: 400 })
-    document.body.dispatchEvent(
-      new MouseEvent('mousemove', { clientX: 600, bubbles: true }),
-    )
-    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
-    await nextTick()
-    const stored = localStorage.getItem('kanban-column-width')
-    expect(stored).not.toBeNull()
-    // The stored value must be within the clamped bounds. The
-    // exact value depends on jsdom's reported width of the
-    // rendered column (which is 0 in our test environment
-    // since nothing is laid out), so we only assert the
-    // clamp + integer-ness, not a specific number.
-    const parsed = parseInt(stored!, 10)
-    // Since 2026-07-04 (kanban-min-width-zero) the floor is 0, not 280.
-    expect(parsed).toBeGreaterThanOrEqual(0)
-    expect(parsed).toBeLessThanOrEqual(720)
-    wrapper.unmount()
-  })
-
-  // Since 2026-07-04 (kanban-min-width-zero): KANBAN_MIN_WIDTH is 0, so the
-  // user can drag the kanban column all the way to width=0.
-  it('allows the kanban column to be resized all the way to 0 (kanban-min-width-zero)', async () => {
-    localStorage.setItem('kanban-column-width', '500')
-    const kanban = makeKanbanItem({
-      tasks: [makeTask({ kanban_column_id: 'col_todo' })],
-    })
-    useRouteMock.mockReturnValue({
-      query: { view: 'task', task: TASK_ID } as Record<string, string>,
-      path: '/app',
-      fullPath: `/app?view=task&task=${TASK_ID}`,
-    } as any)
-    const wrapper = mountAppLayout([
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace,
-    ])
-    const ws = useWorkspacesStore()
-    ws.setActiveWorkspaceItem(KANBAN_ID)
-    ws.setActiveTask(TASK_ID)
-    await nextTick()
-    const handle = wrapper.find('[data-testid="kanban-resize-handle"]')
-    expect(handle.exists()).toBe(true)
-    // Drag the handle FAR to the LEFT (negative deltaX → kanban
-    // shrinks). The clamp at KANBAN_MIN_WIDTH = 0 must kick in.
-    await handle.trigger('mousedown', { clientX: 700 })
-    document.body.dispatchEvent(
-      new MouseEvent('mousemove', { clientX: 100, bubbles: true }),
-    )
-    document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
-    await nextTick()
-    const stored = localStorage.getItem('kanban-column-width')
-    expect(stored).not.toBeNull()
-    const parsed = parseInt(stored!, 10)
-    expect(parsed).toBe(0)
-    wrapper.unmount()
-  })
-
-  it('restores the persisted kanban width on mount (no drag needed)', async () => {
-    // Pre-seed localStorage with a width that's in-range,
-    // mount, and assert the kanban column renders with that
-    // exact width. Verifies the loadKanbanColumnWidth() path
-    // — the on-mount read from localStorage that sets
-    // kanbanColumnWidth to a non-null px value.
-    localStorage.setItem('kanban-column-width', '500')
-    const kanban = makeKanbanItem({
-      tasks: [makeTask({ kanban_column_id: 'col_todo' })],
-    })
-    useRouteMock.mockReturnValue({
-      query: { view: 'task', task: TASK_ID } as Record<string, string>,
-      path: '/app',
-      fullPath: `/app?view=task&task=${TASK_ID}`,
-    } as any)
-    const wrapper = mountAppLayout([
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace,
-    ])
-    const ws = useWorkspacesStore()
-    ws.setActiveWorkspaceItem(KANBAN_ID)
-    ws.setActiveTask(TASK_ID)
-    await nextTick()
-    // The first child of the data-kanban-three-column
-    // container is the kanban column. Its style.width must be
-    // '500px' (the value we pre-seeded).
-    const kanbanColumn = wrapper.find('[data-kanban-three-column] > :first-child')
-    expect(kanbanColumn.exists()).toBe(true)
-    expect((kanbanColumn.element as HTMLElement).style.width).toBe('500px')
-    wrapper.unmount()
-  })
+  // The 4 resize-handle / localStorage-persist tests that USED to
+  // live here were deleted as part of the kanban-embed-chatview
+  // refactor (plan Task 5): the resize state machine + handle
+  // moved from AppLayout into KanbanView. Behavioural coverage
+  // is now in src/__tests__/KanbanView.chatPane.spec.ts (drag
+  // updates width, mouseup persists to localStorage, falls back
+  // to 40% default). AppLayout-level tests no longer exercise
+  // the resize machinery — they only verify the integration
+  // boundary: AppLayout mounts KanbanView with the right props
+  // and forwards events from KanbanView.
 })
 
 describe('AppLayout — kanban survives route navigation (regression: activeWorkspaceItemId is NOT cleared by ?view=workspace)', () => {
