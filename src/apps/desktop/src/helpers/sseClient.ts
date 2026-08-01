@@ -380,21 +380,99 @@ export interface SseClient {
  *   client.close()
  */
 export function createSseClient(opts: SseClientOptions): SseClient {
-  // Diagnostic logger — prefix every line with `[sse-client]` so
-  // the stream of state transitions is greppable from the DevTools
-  // console alongside the backend's `[sse]` lines. Cheapest possible
-  // implementation: one console.log per state event, no allocations
-  // beyond the timestamp string. Toggled by setting the
-  // `__sseDebug` global to `false` at runtime (see helpers/sseClient
-  // notes).
+  // =====================================================================
+  // Diagnostic logger — DEEP v2
+  //
+  // Tracks every received byte at millisecond resolution so we can
+  // tell exactly WHEN data stopped flowing before a disconnect.
+  // Critical for the "drops at 15s" bug — without per-message
+  // timestamps we can't tell if onerror fired:
+  //   (a) RIGHT after the last message (server crashed mid-send)
+  //   (b) 15s after the last message (keep-alive timeout fired)
+  //   (c) BEFORE any messages arrived (connection never established)
+  //
+  // Toggle off by setting `globalThis.__sseDebug = false` in DevTools.
+  // =====================================================================
   const debugOn: boolean = (globalThis as { __sseDebug?: boolean }).__sseDebug !== false
+  const t0: number = performance.now()
+  // High-resolution clock for delta-time measurements. performance.now()
+  // is monotonic (immune to wall-clock adjustments) and gives
+  // sub-millisecond precision in every modern browser.
+  const now = (): number => performance.now() - t0
+  const iso = (): string => new Date().toISOString()
+  const fmtMs = (ms: number): string => (ms / 1000).toFixed(3) + 's'
+  // navigator.connection is the NetworkInformation API. It's
+  // non-standard (Chromium-only), so we type-erase Navigator with a
+  // cast. Reports effectiveType ('4g' / '3g' / '2g' / 'slow-2g'),
+  // downlink (Mbps estimate), rtt (ms estimate), and saveData (user
+  // has data-saver enabled). All fields are nullable.
+  const readNetworkInfo = (): Record<string, unknown> | null => {
+    if (typeof navigator === 'undefined') return null
+    const conn = (navigator as Navigator & { connection?: unknown }).connection
+    if (conn === null || conn === undefined) return null
+    const c = conn as {
+      effectiveType?: string
+      downlink?: number
+      rtt?: number
+      saveData?: boolean
+    }
+    return {
+      effectiveType: c.effectiveType,
+      downlink: c.downlink,
+      rtt: c.rtt,
+      saveData: c.saveData,
+    }
+  }
   const log = (msg: string, extra?: Record<string, unknown>): void => {
     if (!debugOn) return
-    const ts = new Date().toISOString()
+    const t = now()
     const extra_ = extra ? ' ' + JSON.stringify(extra) : ''
     // eslint-disable-next-line no-console
-    console.log(`[sse-client ${ts}] ${msg}${extra_}`)
+    console.log(`[sse-client ${iso()} t=${fmtMs(t)}] ${msg}${extra_}`)
   }
+  // Track timing of last received event. Initially null = no event yet.
+  let lastEventAt: number | null = null
+  let lastEventKind: string | null = null
+  let lastEventBytes: number = 0
+  let heartbeatCount: number = 0
+  let eventCount: number = 0
+  // Stall detector: while state='open', if no event arrives within
+  // `stallThresholdMs` of the previous one, emit a warning so the
+  // operator can see "data stopped 10s ago" before the eventual
+  // onerror fires. Disabled by default; activated via the global
+  // toggle below.
+  const stallDetectorOn: boolean = (globalThis as { __sseStallDetector?: boolean }).__sseStallDetector !== false
+  const stallThresholdMs: number = 7_000 // 7s — well below the 15s bug
+  let stallTimer: ReturnType<typeof setTimeout> | null = null
+
+  function resetStallDetector(): void {
+    if (stallTimer !== null) {
+      clearTimeoutFn(stallTimer)
+      stallTimer = null
+    }
+    if (!stallDetectorOn) return
+    if (state !== 'open') return
+    stallTimer = setTimeoutFn(() => {
+      // No event in stallThresholdMs while we should be open. Log it.
+      const sinceLast = lastEventAt !== null ? now() - lastEventAt : -1
+      log('STALL DETECTED', {
+        sinceLastEventMs: Math.round(sinceLast),
+        lastEventKind,
+        lastEventBytes,
+        heartbeatCount,
+        eventCount,
+        readyState: es?.readyState,
+        readyStateLabel: ['CONNECTING', 'OPEN', 'CLOSED'][es?.readyState ?? 0] ?? 'UNKNOWN',
+        // navigator.connection tells us what kind of network the
+        // browser thinks we're on. If the effectiveType says "2g" or
+        // "slow-2g", that's the smoking gun. The NetworkInformation
+        // API is non-standard, so we type-erase Navigator with a
+        // cast — guards against TS complaining in jsdom too.
+        navConn: readNetworkInfo(),
+      })
+    }, stallThresholdMs)
+  }
+
   log('createSseClient', { url: opts.url })
 
   const baseDelayMs = opts.baseDelayMs ?? 1_000
@@ -455,6 +533,14 @@ export function createSseClient(opts: SseClientOptions): SseClient {
   function emitState(next: SseState, info: SseStateInfo): void {
     state = next
     if (next !== 'open') {
+      // Clear the stall detector when leaving 'open' — otherwise its
+      // setTimeout keeps the timer count non-zero in tests and
+      // could fire a misleading STALL warning while we're already in
+      // 'reconnecting' / 'failed' / 'closed'.
+      if (stallTimer !== null) {
+        clearTimeoutFn(stallTimer)
+        stallTimer = null
+      }
       // 'open' is logged by the 'connected' event listener at the
       // exact moment we receive the server handshake (more
       // diagnostic value than logging every state transition once
@@ -526,12 +612,21 @@ export function createSseClient(opts: SseClientOptions): SseClient {
       // construction (a fresh client).
       const me = e as MessageEvent
       const raw = typeof me.data === 'string' ? me.data : String(me.data ?? '')
+      lastEventAt = now()
+      lastEventKind = connectedEventName
+      lastEventBytes = raw.length
+      eventCount += 1
       hasBeenOpen = true
+      log('connected', { sinceLastEventMs: -1, bytes: raw.length, eventCount, heartbeatCount })
       emitState('open', { attempt, reason: 'manual' })
+      // Arm the stall detector AFTER emitState so `state === 'open'`
+      // is true. (resetStallDetector early-returns otherwise — bug
+      // introduced by reordering.)
+      resetStallDetector()
       opts.onConnected?.()
       // Also pass through to onEvent so adapters that want the
-      // payload (e.g. `createSseConnection` adds it to the
-      // message stream with `type: 'connected'`) can read it.
+      // payload (e.g. `createSseConnection` adds it to the message
+      // stream with `type: 'connected'`) can read it.
       try {
         opts.onEvent(raw, connectedEventName)
       } catch (err) {
@@ -543,6 +638,24 @@ export function createSseClient(opts: SseClientOptions): SseClient {
       const me = e as MessageEvent
       try {
         const raw = typeof me.data === 'string' ? me.data : String(me.data ?? '')
+        const isHeartbeat = heartbeatData !== null && raw === heartbeatData
+        const sinceLast = lastEventAt !== null ? now() - lastEventAt : -1
+        lastEventAt = now()
+        lastEventKind = isHeartbeat ? 'heartbeat' : 'message'
+        lastEventBytes = raw.length
+        if (isHeartbeat) {
+          heartbeatCount += 1
+        } else {
+          eventCount += 1
+        }
+        log(isHeartbeat ? 'heartbeat' : 'message', {
+          sinceLastEventMs: Math.round(sinceLast),
+          eventCount,
+          heartbeatCount,
+          bytes: raw.length,
+          preview: raw.slice(0, 80),
+        })
+        resetStallDetector()
         // Drop heartbeats before they reach the consumer. The
         // backend sends `data: ping\n\n` as a keepalive; in
         // consumers that JSON-buffer incoming data (e.g. the
@@ -551,7 +664,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
         // This is a generic SseClient concern — the heartbeat
         // exists to keep the connection alive, which is the
         // SseClient's job, not the consumer's.
-        if (heartbeatData !== null && raw === heartbeatData) {
+        if (isHeartbeat) {
           return
         }
         opts.onEvent(raw, 'message')
@@ -570,12 +683,22 @@ export function createSseClient(opts: SseClientOptions): SseClient {
       log('EventSource raw open', { readyState: instance.readyState })
     })
     instance.addEventListener('error', () => {
+      const sinceLastEventMs = lastEventAt !== null ? Math.round(now() - lastEventAt) : -1
       log('EventSource raw error', {
         readyState: instance.readyState,
         // readyState 0 = CONNECTING, 1 = OPEN, 2 = CLOSED. CLOSED
         // here is the smoking gun: the browser thinks the SSE
         // endpoint is gone.
         readyStateLabel: ['CONNECTING', 'OPEN', 'CLOSED'][instance.readyState] ?? 'UNKNOWN',
+        // Time since the last received event — the most important
+        // diagnostic field. If this is ~0ms, the connection died
+        // mid-stream. If it's ~5000ms, the heartbeat just stopped
+        // arriving. If it's ~15000ms or larger, an idle/keep-alive
+        // timeout fired.
+        sinceLastEventMs,
+        lastEventKind,
+        heartbeatCount,
+        eventCount,
       })
     })
 
