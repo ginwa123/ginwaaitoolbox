@@ -255,6 +255,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-08-06-kanban-task-profile-selector.md` | ✅ | Profile-model picker in the New Task dialog (create mode). See §3.7.6 below. |
 | `2026-08-06-kanban-chat-as-dialog.md` | ✅ | Kanban chat converted from side-by-side pane to centered modal dialog. See §3.7.7 below. |
 | `2026-08-06-kanban-sort-by.md` | ✅ | Per-column sort: each column's ⋮ menu has "Sort tasks…" opening a centered modal with 7 sort modes (Manual / Created / Updated / Name × asc/desc). State is per-column (no URL persistence, no store). See §3.7.8 below. |
+| `2026-08-06-kanban-per-column-pagination.md` | ✅ | Per-column pagination: backend `?column_id=` filter; frontend `WorkspaceItem.columnPagination: Record<col, {cursor, hasMore, isLoading}>`; new `loadMoreTasksForColumn(ws, item, columnId)` action; each kanban column paginates independently. See §3.7.9 below. |
 
 #### 3.7.1 Kanban task "AI finished — awaiting review" notification icon (2026-07-26)
 
@@ -467,6 +468,26 @@ The tiebreaker matches the backend's `(sort_field, id)` tuple pagination pattern
 **Tests.** 18 net new behavioural tests across 2 files (12 in `KanbanColumn.sortMenu.spec.ts`, 6 in `KanbanSortMenu.spec.ts` for the new `showTrigger=false` mode). 0 static-contract tests added (banned by user rule 2026-07-29). Full suite: 1997/2009 pass, 12 pre-existing failures unchanged.
 
 **Plan:** `docs/superpowers/plans/2026-08-06-kanban-sort-by.md`
+
+#### 3.7.9 Kanban per-column pagination (2026-08-06)
+
+Each kanban column paginates independently. The "Load more" / auto-load sentinel in any column fetches the next page for THAT column only — never stealing tasks from siblings.
+
+**Wire (backend).** `GET /api/workspaces/:ws/items/:item/tasks?column_id=<col>` filters the SQL result to tasks whose `kanban_column_id` matches (or `IS NULL`, defensive — preserves legacy rows without a column). Cursor stays `<sort_value>|<id>`; the `column_id` query param provides the column context.
+
+**Wire (frontend).** `WorkspaceItem.columnPagination: Record<columnId, ColumnPaginationState>` where `ColumnPaginationState = { cursor, hasMore, isLoading }`. Replaces the old board-wide `hasMoreTasks` / `tasksNextCursor` / `isLoadingMoreTasks` triple. New `loadMoreTasksForColumn(ws, itemId, columnId)` action replaces the old `loadMoreTasks(ws, itemId)`.
+
+**Lifecycle.** The initial fetch (`fetchKanbanTasks` + `init()`) is still board-wide — per-column pagination only kicks in from page 2 onwards. Heuristic for the initial board-wide page: any column with ≥1 task in the page gets `hasMore: true` when the global `has_more` is true. A sparse column's auto-load will quickly resolve to `hasMore: false` on the next page request.
+
+**Sidebar's "Load more"** aggregates `hasMore`/`isLoading` across all columns; clicks pick the first column with `hasMore: true` (cheapest visible next-page).
+
+**SSE refetch.** `fetchKanbanTasks` replaces `item.columnPagination` with a fresh map — SSE handlers get per-column reset for free.
+
+**Tests.** 7 new inline tests in `llm_history.zig` (column_id filter + per-column cursor + NULL-column defensive clause). 11 new behavioural tests in `workspacesStorePerColumnPagination.spec.ts` (initial population, sort + search forwarding, no-op guards, retry-on-error, etc.). Deleted obsolete `workspacesStoreLoadMoreTasks.spec.ts` + `workspacesStoreKanbanTasks.spec.ts` + `workspaceItemTaskLoadMore.spec.ts`.
+
+**Out of scope.** Per-column COUNT endpoint (the heuristic handles sparse columns via auto-load resolution). URL persistence of cursors (cursors are transient). Per-column search (search stays board-wide).
+
+**Plan:** `docs/superpowers/plans/2026-08-06-kanban-per-column-pagination.md`
 
 ### 3.8 Frontend — Design Canvas (Workspace Item Type)
 

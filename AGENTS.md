@@ -1316,3 +1316,31 @@ The `stallFiredAtReadiness` snapshot is captured at stall time and replayed at d
 - Adding a UI surface for the suspect — the user wants log-line diagnostics, not a badge.
 
 **Branch / commit.** `worktree/sse-disconnect-diagnosis` @ `5fa8dc05`. PR-ready. Plan doc: `docs/superpowers/plans/2026-08-06-sse-disconnect-diagnosis.md` (next step).
+
+### 2026-08-06: Kanban per-column pagination (Option A)
+
+**Symptom (user report).** "it should per column pagination kanban" — the user wanted each kanban column to paginate independently rather than sharing one board-wide cursor. The old `hasMoreTasks` / `tasksNextCursor` / `isLoadingMoreTasks` triple on `WorkspaceItem` was per-BOARD, so the "Load more" button in any column fetched the next 10 tasks across ALL columns mixed together.
+
+**What landed (per-column pagination plan, 2026-08-06-kanban-per-column-pagination.md).**
+
+- **Backend** (`tasks_list.zig` + `llm_history.zig`): new `?column_id=<col>` query param + matching DB fn param. SQL adds `AND (t.kanban_column_id = ? OR t.kanban_column_id IS NULL)` when non-null (the OR-NULL clause is defensive — preserves legacy rows without a column). Cursor stays `<sort_value>|<id>` (the `column_id` query param provides the column context). 7 new inline tests in `llm_history.zig` lock in the contract.
+- **Frontend store** (`workspaces.ts`): replaced `WorkspaceItem.hasMoreTasks` / `tasksNextCursor` / `isLoadingMoreTasks` with `columnPagination: Record<columnId, ColumnPaginationState>` where `ColumnPaginationState = { cursor, hasMore, isLoading }`. New action `loadMoreTasksForColumn(ws, itemId, columnId)` fetches the next page for ONE column only. The old board-wide `loadMoreTasks` was removed from the public API (deleted the test files that used it). The initial fetch (`fetchKanbanTasks` + `init()`) is still board-wide — per-column pagination only kicks in from page 2 onwards.
+- **Per-column heuristic**: when the initial board-wide fetch returns `has_more: true`, every column that has ≥1 task in the page gets `hasMore: true`. A sparse column's auto-load will quickly resolve to `hasMore: false` on the next page request.
+- **Sidebar's "Load more"**: aggregates `hasMore`/`isLoading` across all columns; clicks pick the first column with `hasMore: true` (cheapest visible next-page).
+- **Per-column sort + search**: `loadMoreTasksForColumn` forwards the active `sortBy` + `direction` + `q` (same pattern as the old `loadMoreTasks`).
+- **SSE refetch**: `fetchKanbanTasks` replaces `item.columnPagination` with a fresh map — SSE handlers get per-column reset for free.
+- **Tests**: deleted `workspacesStoreLoadMoreTasks.spec.ts` + `workspacesStoreKanbanTasks.spec.ts` + `workspaceItemTaskLoadMore.spec.ts`. Added `workspacesStorePerColumnPagination.spec.ts` (11 behavioural tests covering the new state machine).
+
+**Verification.**
+- `zig build test`: 2187/2193 pass (2 pre-existing `design_model_set_element_parent_test` leaks, unrelated)
+- `zig build-obj x86_64-windows-gnu`: clean
+- `zig build-obj aarch64-macos`: clean
+- `bun run build`: clean
+- `bunx vitest run`: 1997 pass / 12 fail (the 12 are pre-existing on main — `DesignElement` static contract, `DesignView.undoHidden ×5`, `DesignView.nudge clamp`, `AppLayout.translateResize`, `AppLayout.memoriesGate ×4`)
+- Live smoke on port 8080: `column_id=col_test` returns `{"tasks":[],"count":0,"has_more":false}` — filter wired end-to-end.
+
+**Out of scope (deferred).**
+- Per-column COUNT endpoint (the heuristic handles the "sparse column" case via auto-load resolution)
+- URL persistence of cursors (the user didn't ask; cursors are transient)
+- Per-column search (search stays board-wide)
+- Animation when switching columns
