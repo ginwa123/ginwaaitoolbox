@@ -2605,7 +2605,16 @@ export interface KanbanColumnEvent {
 }
 
 export interface KanbanTaskEvent {
-  action: 'assigned' | 'moved' | 'unassigned'
+  // Backend's full action enum (on_event_sent_kanban.zig
+  // KanbanTaskAction). `human_touched` was added when the kanban
+  // card UI started listening for the human-interaction stamp
+  // (see task_mark_human_touched.zig); the frontend interface
+  // was missing the action here even though the SSE bus already
+  // dispatched `human_touched` payloads, which made the SSE
+  // handler in kanbanSse.ts unreachable for those events under
+  // strict TS narrowing. Added in the
+  // sse-kanban-move-duplicate-task plan (2026-08-06).
+  action: 'assigned' | 'moved' | 'unassigned' | 'human_touched'
   workspace_id: string
   item_id: string
   task_id: string
