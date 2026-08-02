@@ -26,6 +26,7 @@
 | Frontend | **Vue 3 + TypeScript + Pinia** | Composition API, `<script setup lang="ts" generic>`, Vitest |
 | Frontend build | **Vite + Bun** | `bunx vitest run` + `bun run build` (vue-tsc + vite) |
 | Desktop wrapper | **Native webview** | WebKitGTK 4.1 (Linux) / WKWebView (macOS) / WebView2 (Windows) — three C/C++/ObjC++ shims under `src/apps/desktop_app/platform/` |
+| CLI wrapper | **`nalarcli` (Zig, libcurl-backed)** | Wraps the REST API from the terminal — `send` / `sessions` / `messages` / `events` (SSE tail). Re-uses `custom_http_client_mod` for the HTTP transport. Lives at `src/apps/cli/` with build wiring in the parent `build.zig` (`cli_app_mod` + `cli_exe` + `test:cli` + `install:cli`). |
 | SSE | **`/api/events?channels=...`** | Single global stream (PR #51), per-channel routing keys |
 | Tests | **Zig** (`zig build test`) + **Vitest** + **pytest** (functional, isolated-`$HOME`) | Three-layer test pyramid |
 

@@ -466,9 +466,6 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run the app");
 
-    const cli_step = b.step("run:cli", "Run the CLI");
-    _ = cli_step;
-
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -476,6 +473,69 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
+
+    // === nalarcli (libcurl-backed CLI app) ===
+    // Chunk 1: hello-world wire-up — the cli executable that wraps the
+    // backend's HTTP API (sessions/messages/events/SSE). Cross-platform:
+    // re-uses the existing `custom_http_client_mod` for libcurl linking,
+    // which already handles Linux/macOS/Windows curl paths via the
+    // `-Dcurl-prefix` / `-Dcurl-vcpkg-root` build options declared above.
+    //
+    // Two-step wiring:
+    //   1. `cli_app_mod` is a *module* rooted at `src/apps/cli/src/root.zig`
+    //      — used by both `cli_exe` (the executable) and `cli_tests` (the
+    //      `test:cli` step). The `root.zig` re-exports the public API
+    //      (config, client, format, commands) and `test { _ = @import(...) }`-s
+    //      every test file so a single `zig build test:cli` runs them all.
+    //   2. `cli_exe` is the executable rooted at `src/apps/cli/src/main.zig`
+    //      with imports `{ cli, custom_http_client }`. The Linux/macOS/
+    //      Windows curl linkage comes FREE from `custom_http_client_mod`
+    //      (which already runs `linkSystemLibrary("curl", .{})` and adds
+    //      the right include/lib paths per OS).
+    const cli_app_mod = b.addModule("cli", .{
+        .root_source_file = b.path("src/apps/cli/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "custom_http_client", .module = custom_http_client_mod },
+        },
+    });
+
+    const cli_exe = b.addExecutable(.{
+        .name = "nalarcli",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/apps/cli/src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "cli", .module = cli_app_mod },
+                .{ .name = "custom_http_client", .module = custom_http_client_mod },
+            },
+        }),
+    });
+    cli_exe.root_module.linkSystemLibrary("c", .{});
+    cli_exe.root_module.link_libc = true;
+
+    // CLI install + test wiring.
+    b.installArtifact(cli_exe);
+
+    const cli_tests = b.addTest(.{
+        .root_module = cli_app_mod,
+    });
+    cli_tests.root_module.linkSystemLibrary("c", .{});
+    cli_tests.root_module.link_libc = true;
+
+    const test_cli = b.step("test:cli", "Run nalarcli unit tests");
+    const run_cli_tests = b.addRunArtifact(cli_tests);
+    test_cli.dependOn(&run_cli_tests.step);
+
+    const run_cli = b.step("run:cli", "Run the nalarcli");
+    const run_cli_cmd = b.addRunArtifact(cli_exe);
+    run_cli.dependOn(&run_cli_cmd.step);
+    if (b.args) |args| run_cli_cmd.addArgs(args);
+
+    const install_cli_step = b.step("install:cli", "Install the nalarcli binary only");
+    install_cli_step.dependOn(b.getInstallStep());
 
     // Linux-host-only link_libs (ssl/crypto/system-sqlite3). These are
     // needed for the native Linux test build (the tests link against the
@@ -768,6 +828,7 @@ pub fn build(b: *std.Build) void {
         \\echo ""
         \\echo "  nalar service binary  →  $D/nalarcore-linux-x86_64"
         \\echo "  nalar desktop binary  →  $D/nalar-desktop"
+        \\echo "  nalar CLI binary      →  $D/nalarcli"
         \\echo ""
         \\echo "  (If a binary is missing, run \`rm -rf $D && zig build\`"
         \\echo "   to force a fresh install — the cache sometimes hides"
@@ -775,15 +836,18 @@ pub fn build(b: *std.Build) void {
         \\echo ""
         \\echo "  Run with:  $D/nalarcore-linux-x86_64 service start --port 8080"
         \\echo "             $D/nalar-desktop --devtools"
+        \\echo "             $D/nalarcli --server http://127.0.0.1:8080 sessions"
         \\echo ""
         ,
     });
-    const build_all_step = b.step("build:all", "Build nalar service + nalar-desktop, with end-of-build summary");
-    // The two binaries live on different top-level install steps:
+    const build_all_step = b.step("build:all", "Build nalar service + nalar-desktop + nalarcli, with end-of-build summary");
+    // The three binaries live on different top-level install steps:
     //   - nalarcore-linux-x86_64  → install:linux   (cross target, Linux x86_64)
     //   - nalar-desktop           → install           (native target, includes
     //                                               b.installArtifact(desktop_exe))
-    // The native `nalar` binary is also in `install`. We want both in
+    //   - nalarcli                → install           (native target, includes
+    //                                               b.installArtifact(cli_exe))
+    // The native `nalar` binary is also in `install`. We want all three in
     // one command, so depend on the inner install steps (not just the
     // outer top-level wrappers). Depending on the outer wrappers would
     // race against cache-hit skipping: when the binary's source hasn't
@@ -793,9 +857,15 @@ pub fn build(b: *std.Build) void {
     //
     // `dependOn` takes `*Step` not `*const *Step` — `install_linux` and
     // `desktop_install` are both `*InstallArtifact` whose `.step` field
-    // is what `dependOn` needs.
+    // is what `dependOn` needs. The native `nalar` + `nalarcli` binaries
+    // ride along on the top-level `install` step (included via
+    // b.installArtifact above), so depending on `b.getInstallStep()` is
+    // the cleanest way to pull them in too. Otherwise a fresh
+    // `rm -rf zig-out/bin && zig build` only installs `nalarcore-linux-x86_64`
+    // + `nalar-desktop` and leaves nalar/nalarcli missing.
     build_all_step.dependOn(&install_linux.step);
     build_all_step.dependOn(&desktop_install.step);
+    build_all_step.dependOn(b.getInstallStep());
     build_all_step.dependOn(&build_banner.step);
 
     // Default: same as `build:all`. Without this, `zig build` (no args)
