@@ -83,7 +83,7 @@ describe('KanbanView search filter wiring', () => {
     vi.advanceTimersByTime(350)
     await flushPromises()
 
-    expect(spy).toHaveBeenCalledWith(WS_ID, ITEM_ID, 100, undefined, 'design')
+    expect(spy).toHaveBeenCalledWith(WS_ID, ITEM_ID, 10, undefined, 'design')
   })
 
   it('Esc clears and triggers a debounced refetch with q=undefined', async () => {
@@ -102,7 +102,7 @@ describe('KanbanView search filter wiring', () => {
     vi.advanceTimersByTime(350)
     await flushPromises()
     expect(spy).toHaveBeenCalledTimes(1)
-    expect(spy).toHaveBeenLastCalledWith(WS_ID, ITEM_ID, 100, undefined, 'design')
+    expect(spy).toHaveBeenLastCalledWith(WS_ID, ITEM_ID, 10, undefined, 'design')
 
     // Clear it (Esc inside the input)
     await wrapper.find('[data-testid="kanban-search-input"]').trigger('keydown', { key: 'Escape' })

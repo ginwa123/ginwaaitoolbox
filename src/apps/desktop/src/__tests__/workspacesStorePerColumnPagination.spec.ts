@@ -164,11 +164,11 @@ describe('useWorkspacesStore.loadMoreTasksForColumn() — per-column pagination'
     expect(item.columnPagination).toBeDefined()
     expect(item.columnPagination!['col_a']).toBeDefined()
     expect(item.columnPagination!['col_b']).toBeDefined()
-    expect(item.columnPagination!['col_a'].hasMore).toBe(true)
-    expect(item.columnPagination!['col_b'].hasMore).toBe(true)
-    expect(item.columnPagination!['col_a'].cursor).toBe('cursor_1')
-    expect(item.columnPagination!['col_b'].cursor).toBe('cursor_1')
-    expect(item.columnPagination!['col_a'].isLoading).toBe(false)
+    expect(item.columnPagination!['col_a']!.hasMore).toBe(true)
+    expect(item.columnPagination!['col_b']!.hasMore).toBe(true)
+    expect(item.columnPagination!['col_a']!.cursor).toBe('cursor_1')
+    expect(item.columnPagination!['col_b']!.cursor).toBe('cursor_1')
+    expect(item.columnPagination!['col_a']!.isLoading).toBe(false)
   })
 
   it('fetchKanbanTasks resets columnPagination (no stale cursors from a previous query)', async () => {
@@ -268,9 +268,9 @@ describe('useWorkspacesStore.loadMoreTasksForColumn() — per-column pagination'
     await store.loadMoreTasksForColumn('ws_1', 'item_1a', 'col_a')
 
     const item = store.workspaces[0]!.items[0]!
-    expect(item.columnPagination!['col_a'].cursor).toBeNull()
-    expect(item.columnPagination!['col_a'].hasMore).toBe(false)
-    expect(item.columnPagination!['col_a'].isLoading).toBe(false)
+    expect(item.columnPagination!['col_a']!.cursor).toBeNull()
+    expect(item.columnPagination!['col_a']!.hasMore).toBe(false)
+    expect(item.columnPagination!['col_a']!.isLoading).toBe(false)
   })
 
   it('loadMoreTasksForColumn is a no-op when hasMore=false (no second fetch)', async () => {
@@ -294,7 +294,7 @@ describe('useWorkspacesStore.loadMoreTasksForColumn() — per-column pagination'
     })
 
     // Simulate an in-flight load.
-    store.workspaces[0]!.items[0]!.columnPagination!['col_a'].isLoading = true
+    store.workspaces[0]!.items[0]!.columnPagination!['col_a']!.isLoading = true
 
     await store.loadMoreTasksForColumn('ws_1', 'item_1a', 'col_a')
 
@@ -374,10 +374,10 @@ describe('useWorkspacesStore.loadMoreTasksForColumn() — per-column pagination'
 
     const item = store.workspaces[0]!.items[0]!
     // hasMore + cursor unchanged so the user can retry.
-    expect(item.columnPagination!['col_a'].hasMore).toBe(true)
-    expect(item.columnPagination!['col_a'].cursor).toBe('cursor_1')
+    expect(item.columnPagination!['col_a']!.hasMore).toBe(true)
+    expect(item.columnPagination!['col_a']!.cursor).toBe('cursor_1')
     // isLoading flipped back to false (the catch block's finally resumes).
-    expect(item.columnPagination!['col_a'].isLoading).toBe(false)
+    expect(item.columnPagination!['col_a']!.isLoading).toBe(false)
   })
 
   it('loadMoreTasksForColumn is a no-op when the column has no pagination state', async () => {
