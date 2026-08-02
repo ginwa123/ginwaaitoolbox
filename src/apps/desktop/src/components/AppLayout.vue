@@ -330,6 +330,14 @@ const handleNavigate = (
   // for reload, matching the existing `activeDesignPageId` mirror
   // on line 188.
   pageId?: string,
+  // NEW (kanban default-URL, 2026-08-06): when the caller navigates
+  // to a kanban workspace item, the Sidebar commits a default
+  // `?sorts=col_X:updated_at:desc,...` string here. We mirror it
+  // into the URL so a refresh preserves the user's implicit sort
+  // choice. Empty / undefined means "no sort param" (folder /
+  // design / chat paths). KanbanView's mount-time URL restore
+  // reads it back and applies each entry's sort to its column.
+  sortsParam?: string,
 ) => {
   if (view.startsWith('chat-')) {
     const chatSessionId = view.replace(/^chat-/, '')
@@ -362,6 +370,10 @@ const handleNavigate = (
       // design view restores the same page (URL is source of
       // truth, matching the activeDesignPageId mirror on line 188).
       if (pageId) query.pageId = pageId
+      // NEW (kanban default-URL, 2026-08-06): also mirror sortsParam
+      // when present so a kanban reload restores the per-column
+      // sort defaults the user committed to on click.
+      if (sortsParam) query.sorts = sortsParam
     }
     router.replace({ path: '/app', query })
   } else if (view === 'task') {
@@ -782,6 +794,20 @@ const handleCloseTaskView = () => {
     query.workspaceId = wsId
     query.itemId = itemId
     if (pageId) query.pageId = pageId
+  }
+  // Restore the kanban per-column sort state (kanban-sort-by plan,
+  // 2026-08-06 — `?sorts=col_x:name:asc,...`). Sidebar's
+  // handleSelectTask snapshots the user's sort choice before
+  // navigating into the task view; we read it back here and put it
+  // back into the URL. Without this, the round-trip drops the sort
+  // (the user reported this 2026-08-06: "when click chatview, my
+  // sort url is gone"). One round-trip's worth of state — the
+  // store value is consumed once and cleared so a subsequent
+  // close-without-a-task-open doesn't accidentally restore a stale
+  // sort.
+  if (workspacesStore.savedSortsParam) {
+    query.sorts = workspacesStore.savedSortsParam
+    workspacesStore.savedSortsParam = ''
   }
   router.replace({ path: '/app', query })
 }

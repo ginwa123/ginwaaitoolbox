@@ -43,7 +43,7 @@ describe('api.getTasks', () => {
 
   it('includes ?q= in the URL when q is non-empty', async () => {
     mockFetchOnce(200, { tasks: [], has_more: false, next_cursor: null })
-    await getTasks('ws_1', 'item_1', 20, undefined, 'updated_at', 'desc', 'design')
+    await getTasks('ws_1', 'item_1', 20, undefined, 'updated_at', 'desc', undefined, 'design')
     const url = (fetchMock.mock.calls[0]?.[0] ?? '') as string
     expect(url).toContain('q=design')
   })
@@ -57,14 +57,14 @@ describe('api.getTasks', () => {
 
   it('omits q param when q is empty string', async () => {
     mockFetchOnce(200, { tasks: [], has_more: false, next_cursor: null })
-    await getTasks('ws_1', 'item_1', 20, undefined, 'updated_at', 'desc', '')
+    await getTasks('ws_1', 'item_1', 20, undefined, 'updated_at', 'desc', undefined, '')
     const url = (fetchMock.mock.calls[0]?.[0] ?? '') as string
     expect(url).not.toContain('q=')
   })
 
   it('URL-encodes q value (spaces)', async () => {
     mockFetchOnce(200, { tasks: [], has_more: false, next_cursor: null })
-    await getTasks('ws_1', 'item_1', 20, undefined, 'updated_at', 'desc', 'fix login bug')
+    await getTasks('ws_1', 'item_1', 20, undefined, 'updated_at', 'desc', undefined, 'fix login bug')
     const url = (fetchMock.mock.calls[0]?.[0] ?? '') as string
     // URLSearchParams encodes spaces as '+' (form encoding).
     expect(url).toContain('q=fix+login+bug')
@@ -83,7 +83,7 @@ describe('api.getTasks', () => {
       has_more: false,
       next_cursor: null,
     })
-    const result = await getTasks('ws_1', 'item_1', 20, undefined, 'updated_at', 'desc', 'login')
+    const result = await getTasks('ws_1', 'item_1', 20, undefined, 'updated_at', 'desc', undefined, 'login')
     expect(result.tasks).toHaveLength(1)
     expect(result.tasks[0]?.id).toBe('task_1')
     expect(result.has_more).toBe(false)

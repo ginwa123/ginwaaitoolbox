@@ -753,4 +753,77 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
     expect(ws.activeDesignPageId).toBe('')
     wrapper.unmount()
   })
+
+  // NEW (kanban default-URL, 2026-08-06): handleNavigate accepts a
+  // 7th positional arg `sortsParam` and mirrors it into the URL
+  // query as `?sorts=...`. Sidebar passes this when the user clicks
+  // a kanban workspace item so the default sort survives a reload.
+  it('handleNavigate("workspace", wsId, itemId, "", sortsParam) writes sorts into the URL', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeKanbanItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {})
+    const layout = wrapper.vm as any
+
+    const sortsParam = 'col_a:updated_at:desc,col_b:updated_at:desc'
+    // 7-arg call: view, chatName, taskId, workspaceId, itemId, pageId, sortsParam
+    layout.handleNavigate(
+      'workspace',
+      undefined,
+      undefined,
+      WS_ID,
+      KANBAN_ID,
+      '',
+      sortsParam,
+    )
+
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: '/app',
+      query: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: KANBAN_ID,
+        sorts: sortsParam,
+      },
+    })
+    wrapper.unmount()
+  })
+
+  it('handleNavigate("workspace", wsId, itemId, "", undefined) OMITS sorts (non-kanban path)', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {})
+    const layout = wrapper.vm as any
+
+    // 7-arg call with undefined sortsParam (e.g. folder / design click).
+    layout.handleNavigate(
+      'workspace',
+      undefined,
+      undefined,
+      WS_ID,
+      DESIGN_ID,
+      'page_X',
+      undefined,
+    )
+
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: '/app',
+      query: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: DESIGN_ID,
+        pageId: 'page_X',
+      },
+    })
+    const lastQuery = replaceMock.mock.calls[0]![0].query
+    expect(lastQuery.sorts).toBeUndefined()
+    wrapper.unmount()
+  })
 })

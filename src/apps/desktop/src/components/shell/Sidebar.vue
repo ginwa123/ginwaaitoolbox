@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, inject, type Ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
@@ -30,6 +30,7 @@ import * as api from '../../api'
 const isLLMProcessing = inject<Ref<boolean>>('isLLMProcessing', ref(false))
 
 const router = useRouter()
+const route = useRoute()
 const navigationStore = useNavigationStore()
 
 const props = defineProps<{
@@ -50,6 +51,12 @@ const emit = defineEmits<{
     // the URL off `?view=task` back to `?view=workspace&pageId=Z`).
     // Matches the matching AppLayout.handleNavigate signature.
     pageId?: string,
+    // NEW (kanban default-URL, 2026-08-06): optional 7th arg —
+    // a pre-built `?sorts=` query string. Sidebar populates it
+    // when the user clicks a kanban workspace item (commits the
+    // default sort per column). AppLayout.handleNavigate mirrors
+    // it into the URL. Undefined for non-kanban navigations.
+    sortsParam?: string,
   ]
   'toggle-collapse': []
   resize: [width: number]
@@ -384,11 +391,51 @@ const handleSelectItem = async (workspaceId: string, itemId: string) => {
     chatsListRef.value.resetActiveChat()
   }
   workspacesStore.setActiveWorkspaceItem(itemId)
+  // NEW (kanban-sort-by default-URL, 2026-08-06): when the user
+  // clicks a kanban workspace item, ALWAYS append `?sorts=` to the
+  // URL with the default sort (`updated_at:desc`) for every column.
+  // The user's mental model: a URL without `sorts` means "no
+  // explicit sort" — but they want the URL to commit to a default
+  // on first click so a refresh preserves it (and so the wire
+  // payload doesn't carry silent defaults). Folders / designs /
+  // chats don't get the sort param.
+  //
+  // Build the `sorts` string from the kanban's columns. If the
+  // columns aren't loaded yet, fetch them on demand (cheap HTTP
+  // GET, idempotent) so the URL is complete on the first click.
+  let sortsParam: string | undefined
+  if (item?.item_type === 'kanban') {
+    const columns = item.kanban_columns ?? []
+    if (columns.length === 0) {
+      // Fire-and-await: the URL we emit must include the column ids,
+      // so we wait for the columns to land. fetchKanbanColumns is
+      // idempotent — safe to call even if columns are already in
+      // flight from elsewhere (e.g. Sidebar expansion).
+      try {
+        await workspacesStore.fetchKanbanColumns(workspaceId, itemId)
+      } catch {
+        // Swallow — the URL will simply omit `sorts` and the
+        // KanbanView mount path will apply its own fallback when
+        // columns arrive. Better than throwing mid-click.
+      }
+    }
+    // Re-read columns after the await (the store may have populated
+    // them by now).
+    const refreshedItem = workspacesStore.workspaces
+      .find((ws) => ws.id === workspaceId)
+      ?.items.find((i) => i.id === itemId)
+    const cols = refreshedItem?.kanban_columns ?? []
+    if (cols.length > 0) {
+      sortsParam = cols
+        .map((c) => `${c.id}:updated_at:desc`)
+        .join(',')
+    }
+  }
   // Carry (workspaceId, itemId) into the URL so the kanban / folder /
   // design view survives a page reload. The URL is the source of
   // truth on reload; the in-memory `activeWorkspaceItemId` would
   // otherwise reset to null on a refresh.
-  emit('navigate', 'workspace', undefined, undefined, workspaceId, itemId)
+  emit('navigate', 'workspace', undefined, undefined, workspaceId, itemId, undefined, sortsParam)
 }
 
 const handleDeleteWorkspace = (workspaceId: string) => {
@@ -784,6 +831,16 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
 }
 
 const handleSelectTask = (taskId: string) => {
+  // Kanban sort-by (plan 2026-08-06-kanban-sort-by.md): when the user
+  // opens a task from the kanban, save the current `?sorts=` so the
+  // close handler in AppLayout can restore it. Without this, the
+  // round-trip through the chat view drops the sort (the URL gets
+  // rewritten to `?view=task&task=Y`, then back to `?view=workspace&...`
+  // without sorts).
+  const currentSorts = route.query?.sorts
+  if (typeof currentSorts === 'string' && currentSorts.length > 0) {
+    workspacesStore.savedSortsParam = currentSorts
+  }
   workspacesStore.setActiveTask(taskId)
   // Mutually exclusive active state: task wins, clear any active chat row in ChatsList.
   if (chatsListRef.value) {
@@ -798,7 +855,27 @@ const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
   // api.getTasks with a cursor — no auto-load / scroll listener /
   // intersection observer. Mirrors the loadMoreChats pattern in
   // ChatsList.vue:121-183.
-  workspacesStore.loadMoreTasks(workspaceId, itemId)
+  //
+  // Per-column pagination (kanban-per-column-pagination plan,
+  // 2026-08-06): the sidebar's "Load more" picks the FIRST column
+  // with hasMore=true and fetches that column's next page. This
+  // matches the user's mental model: "I clicked Load more on the
+  // sidebar; give me more tasks for this board" (the first column
+  // that still has more is the cheapest visible next-page).
+  const workspace = workspacesStore.workspaces.find((w) => w.id === workspaceId)
+  const item = workspace?.items.find((i) => i.id === itemId)
+  if (!item) return
+  const colPagination = item.columnPagination ?? {}
+  for (const [columnId, state] of Object.entries(colPagination)) {
+    if (state.hasMore && !state.isLoading) {
+      void workspacesStore.loadMoreTasksForColumn(
+        workspaceId,
+        itemId,
+        columnId,
+      )
+      return
+    }
+  }
 }
 
 // Forward drag-and-drop reorder events from <WorkspaceList> to the

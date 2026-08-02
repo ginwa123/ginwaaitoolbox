@@ -55,7 +55,7 @@
     user navigates between kanbans).
 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import KanbanColumn from './KanbanColumn.vue'
 import KanbanSearchInput from './KanbanSearchInput.vue'
 import KanbanTaskDetailDialog from './KanbanTaskDetailDialog.vue'
@@ -63,6 +63,7 @@ import InlineEditableText from '../preview/InlineEditableText.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useNotificationStore } from '../../stores/notifications'
 import { useKanbanScrollRestore } from '../../composables/useKanbanScrollRestore'
+import { useRoute, useRouter } from 'vue-router'
 import type { PreviewFile } from '../file/FilePreview.vue'
 import type { WorkspaceItem, Task, KanbanColumn as KanbanColumnType } from '../../stores/workspaces'
 
@@ -79,6 +80,8 @@ const props = withDefaults(
 )
 
 const workspacesStore = useWorkspacesStore()
+const router = useRouter()
+const route = useRoute()
 
 // Lazy-load the kanban's columns on mount + whenever the item id
 // changes (e.g. user navigates from one kanban to another without
@@ -95,14 +98,41 @@ const effectiveItemId = computed(() => props.itemId || props.item.id)
 // `workspacesStore.activeTask` getter is consumed by the dialog,
 // not by this component.
 
-const loadColumns = () => {
-  if (props.workspaceId && effectiveItemId.value) {
-    void workspacesStore.fetchKanbanColumns(props.workspaceId, effectiveItemId.value)
-  }
+// Per-column initial fetch (Option B, 2026-08-06): KanbanView
+// must load columns FIRST (their ids are needed to issue the
+// `?column_id=col_xxx` query per column), then fire one
+// `fetchKanbanTasks(col_x)` PER column. We chain the two awaits
+// inside `loadColumnsAndTasks` to ensure ordering. The
+// per-column fetch skips itself if columnPagination is already
+// populated (the user navigated back to a kanban whose state we
+// already have — re-fetching is wasteful and would flash).
+const loadColumnsAndTasks = async () => {
+  if (!props.workspaceId || !effectiveItemId.value) return
+  const wsId = props.workspaceId
+  const itemId = effectiveItemId.value
+  // Step 1: load columns (needed for column ids). This is the
+  // existing behaviour — restores after column add/delete/move.
+  await workspacesStore.fetchKanbanColumns(wsId, itemId)
+  // Step 2: fire per-column fetches for the first page. Fetches
+  // skip columns whose columnPagination is already populated
+  // (the user has visited this kanban before and the tasks are
+  // still fresh — no need to re-fetch).
+  const item = workspacesStore.workspaces
+    .find((ws) => ws.id === wsId)
+    ?.items.find((it) => it.id === itemId)
+  if (!item) return
+  const cp = item.columnPagination ?? {}
+  const needFetch = (item.kanban_columns ?? []).filter((col) => !cp[col.id])
+  if (needFetch.length === 0) return
+  await Promise.all(
+    needFetch.map((col) =>
+      workspacesStore.fetchKanbanTasks(wsId, itemId, col.id, 10),
+    ),
+  )
 }
 
-onMounted(loadColumns)
-watch(() => [props.workspaceId, effectiveItemId.value], loadColumns)
+onMounted(loadColumnsAndTasks)
+watch(() => [props.workspaceId, effectiveItemId.value], loadColumnsAndTasks)
 
 // ─── Horizontal scroll position preservation ──────────────────────────
 //
@@ -208,17 +238,254 @@ watch(searchQuery, (newQ) => {
   searchDebounceTimer = setTimeout(() => {
     searchDebounceTimer = null
     const trimmed = newQ.trim()
-    void workspacesStore.fetchKanbanTasks(
+    // Per-column initial fetch (Option B): the search affects every
+    // column, so we fire one request per column. fetchKanbanTasks
+    // populates columnPagination per column with the new cursor.
+    void workspacesStore.fetchKanbanTasksForAllColumns(
       props.workspaceId,
       effectiveItemId.value,
-      100,        // limit (matches backend MAX_PAGE_SIZE)
-      undefined,  // cursor — reset to page 1 of the filtered set
+      10,         // limit (matches loadMoreTasks + the store's default)
       trimmed || undefined,
     )
   }, 300)
 })
 
 onUnmounted(clearSearchDebounce)
+
+// ─── Per-column sort (kanban-sort-by, redo 2026-08-06) ────────────────
+//
+// Each KanbanColumn has its own sortBy + direction (columns/index.vue
+// emits 'sortChange' on every change). KanbanView is the source of
+// truth for:
+//   1. URL persistence — `?sorts=col_<id>:<sortBy>:<direction>,...`.
+//      Default sort (position + asc) is omitted to keep URLs clean
+//      for users who never touch a column's sort dropdown.
+//   2. API re-fetch — when any column's sort changes, we fetch the
+//      kanban tasks with that sort. The backend returns ALL tasks
+//      sorted globally; each column's cardsInColumn then applies its
+//      own client-side sort on top (so per-column independence is
+//      preserved — see compareBySortMode in KanbanColumn.vue).
+//
+// The fetch is debounced (300ms) so rapid column-sort changes don't
+// fire N requests. Same pattern as the search-input watcher above.
+//
+// URL format: `?sorts=col_1:name:asc,col_2:created_at:desc,...`
+// Comma-separated; each entry is `col_<id>:<sortBy>:<direction>`.
+// Validate on parse (typo / out-of-range → drop the entry).
+
+interface SortEntry {
+  columnId: string
+  sortBy: 'position' | 'created_at' | 'updated_at' | 'name'
+  direction: 'asc' | 'desc'
+}
+
+// Parse the URL's `sorts` query param. Returns an empty array if
+// missing / malformed.
+const parseSortsParam = (raw: string | string[] | undefined): SortEntry[] => {
+  if (!raw) return []
+  const s = Array.isArray(raw) ? raw.join(',') : raw
+  const entries: SortEntry[] = []
+  for (const part of s.split(',')) {
+    const trimmed = part.trim()
+    if (!trimmed) continue
+    const [columnId, sortBy, direction] = trimmed.split(':')
+    if (!columnId || !sortBy || !direction) continue
+    if (
+      sortBy !== 'position' && sortBy !== 'created_at' &&
+      sortBy !== 'updated_at' && sortBy !== 'name'
+    ) continue
+    if (direction !== 'asc' && direction !== 'desc') continue
+    entries.push({ columnId, sortBy, direction })
+  }
+  return entries
+}
+
+// Encode the per-column sorts into a URL-safe `sorts` string.
+// Default sorts (position + asc) are OMITTED so the URL stays clean.
+// Returns null when no non-default sorts exist (caller writes no
+// `sorts` param).
+const encodeSortsParam = (entries: SortEntry[]): string | null => {
+  const filtered = entries.filter(
+    (e) => !(e.sortBy === 'position' && e.direction === 'asc'),
+  )
+  if (filtered.length === 0) return null
+  return filtered.map((e) => `${e.columnId}:${e.sortBy}:${e.direction}`).join(',')
+}
+
+// Map of column.id → latest sort. Reflects every column's picks
+// (not just the latest one). Used by the URL mirror and by the
+// fetch watcher.
+const columnSorts = ref<Record<string, SortEntry>>({})
+
+// Template refs to each KanbanColumn instance — needed so we can
+// call the columns' setSortMode() (defineExpose seam) on URL
+// restore. Map keyed by column.id, populated by the `ref="..."`
+// callback in the template.
+const columnRefs = ref<Record<string, unknown>>({})
+const setColumnRef = (columnId: string) => (el: unknown) => {
+  if (el) columnRefs.value[columnId] = el
+}
+
+// On mount: parse the URL's sorts param and apply each entry to
+// its column via setSortMode. The KanbanColumn's watcher then
+// re-emits the change, populating columnSorts via the
+// handleColumnSortChange path below.
+//
+// IMPORTANT: we ALSO fire fetchKanbanTasks DIRECTLY (not via the
+// columnSorts watcher chain) with the restored sort. The
+// workspacesStore's SSE handler ALSO fires an initial fetch with
+// the default sort ('updated_at desc') on mount — this races with
+// our restore. By firing our fetch with the restored sort
+// BEFORE the SSE handler's first re-fetch lands, the user sees
+// the right order on initial render. The column's setSortMode
+// triggers the visual re-sort client-side regardless.
+//
+// Guarded: tests that don't mock vue-router (e.g. legacy
+// KanbanView.createAndRun.spec.ts) call this component without
+// useRouter/useRoute setup. The route/router are null in that
+// case; skip the URL restore gracefully.
+onMounted(() => {
+  const routeObj = (() => {
+    try {
+      return route
+    } catch {
+      return null
+    }
+  })()
+  if (!routeObj) return
+  const sortsRaw = routeObj.query?.sorts as string | undefined
+  if (!sortsRaw) return
+  const entries = parseSortsParam(sortsRaw)
+  // Mirror into columnSorts immediately — no need to wait for
+  // column refs to populate. The watcher on columnSorts will
+  // write the URL (no-op since it's already correct) and trigger
+  // a debounced fetch, but we ALSO fire the fetch directly so it
+  // happens NOW (before the SSE handler's default-sort fetch
+  // lands).
+  const next: Record<string, SortEntry> = {}
+  for (const entry of entries) {
+    next[entry.columnId] = entry
+  }
+  columnSorts.value = next
+
+  // Wait for the next tick so the column refs are populated, then
+  // call setSortMode on each column for visual consistency.
+  void nextTick(() => {
+    for (const entry of entries) {
+      const col = columnRefs.value[entry.columnId] as
+        | { setSortMode?: (s: string, d: string) => void }
+        | null
+        | undefined
+      if (col && typeof col.setSortMode === 'function') {
+        col.setSortMode(entry.sortBy, entry.direction)
+      }
+    }
+  })
+
+  // Fire the fetch directly with the most-recently-changed sort
+  // (last in the entries array — preserves insertion order).
+  // Use the LAST non-default sort (manual doesn't have a server
+  // equivalent).
+  const lastNonDefault = [...entries].reverse().find(
+    (e) => !(e.sortBy === 'position' && e.direction === 'asc'),
+  )
+  if (lastNonDefault) {
+    // Per-column initial fetch (Option B): sort affects every column,
+    // so fire one request per column with the restored sort.
+    const apiSortBy = lastNonDefault.sortBy === 'position'
+      ? undefined
+      : lastNonDefault.sortBy as 'created_at' | 'updated_at' | 'name'
+    void workspacesStore.fetchKanbanTasksForAllColumns(
+      props.workspaceId,
+      effectiveItemId.value,
+      10,
+      undefined,
+      apiSortBy,
+      lastNonDefault.direction,
+    )
+  } else {
+    // No non-default sort — fire plain per-column fetches (no
+    // sortBy/direction → backend default 'updated_at' / 'desc')
+    void workspacesStore.fetchKanbanTasksForAllColumns(
+      props.workspaceId,
+      effectiveItemId.value,
+    )
+  }
+})
+
+// Watcher on columnSorts changes → debounced fetch + URL write.
+// Triggered by the sort-change emit from each KanbanColumn.
+let sortFetchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+const clearSortFetchDebounce = () => {
+  if (sortFetchDebounceTimer !== null) {
+    clearTimeout(sortFetchDebounceTimer)
+    sortFetchDebounceTimer = null
+  }
+}
+
+watch(columnSorts, (next) => {
+  // URL write (synchronous — the user sees the URL update
+  // immediately).
+  const encoded = encodeSortsParam(Object.values(next))
+  const query: Record<string, string> = { view: 'workspace' }
+  if (props.workspaceId) query.workspaceId = props.workspaceId
+  if (effectiveItemId.value) query.itemId = effectiveItemId.value
+  if (encoded) query.sorts = encoded
+  router.replace({ path: '/app', query })
+
+  // Debounced fetch — fires only for non-default sorts, using the
+  // latest-changed sort as the backend sort param. The backend
+  // returns all tasks sorted per-column (Option B); each column's
+  // cardsInColumn then applies its own client-side sort on top.
+  clearSortFetchDebounce()
+  sortFetchDebounceTimer = setTimeout(() => {
+    sortFetchDebounceTimer = null
+    const entries = Object.values(columnSorts.value)
+    const last = entries[entries.length - 1]
+    if (!last) return
+    if (last.sortBy === 'position' && last.direction === 'asc') {
+      // Default sort — still fire per-column fetches (no sortBy
+      // param → backend default 'updated_at' desc).
+      void workspacesStore.fetchKanbanTasksForAllColumns(
+        props.workspaceId,
+        effectiveItemId.value,
+        10,
+      )
+      return
+    }
+    // The store's sortBy param excludes 'position' (no server
+    // equivalent); narrow at the call site so the type checker
+    // accepts the union.
+    const apiSortBy = last.sortBy === 'position'
+      ? undefined
+      : last.sortBy as 'created_at' | 'updated_at' | 'name'
+    void workspacesStore.fetchKanbanTasksForAllColumns(
+      props.workspaceId,
+      effectiveItemId.value,
+      10,
+      undefined,
+      apiSortBy,
+      last.direction,
+    )
+  }, 300)
+})
+
+onUnmounted(() => {
+  clearSortFetchDebounce()
+})
+
+// Handler for the column's sort-change emit. Updates the map
+// (which triggers the watcher above).
+const handleColumnSortChange = (
+  columnId: string,
+  payload: { sortBy: SortEntry['sortBy']; direction: SortEntry['direction'] },
+) => {
+  columnSorts.value = {
+    ...columnSorts.value,
+    [columnId]: { columnId, sortBy: payload.sortBy, direction: payload.direction },
+  }
+}
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
 
@@ -721,6 +988,7 @@ const handleCreateTaskSave = async (payload: {
         <KanbanColumn
           v-for="column in sortedColumns"
           :key="column.id"
+          :ref="setColumnRef(column.id)"
           :column="column"
           :tasks="tasks"
           :workspace-id="workspaceId"
@@ -740,6 +1008,7 @@ const handleCreateTaskSave = async (payload: {
           @run-routine="(ws, item, id) => emit('runRoutine', ws, item, id)"
           @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
           @view-task-detail="handleViewTaskDetail"
+          @sort-change="(payload) => handleColumnSortChange(column.id, payload)"
         />
       </div>
     </div>

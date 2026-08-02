@@ -190,6 +190,26 @@ const handleRunRoutine = (
   emit('runRoutine', workspaceId, itemId, taskId)
 }
 
+// Per-column pagination (kanban-per-column-pagination plan,
+// 2026-08-06): the SIDEBAR's "Load more" button aggregates the
+// per-column state. For kanban items, any column with hasMore=true
+// flips the sidebar button on; for non-kanban items, falls back to
+// the (now-removed) board-wide state — which is `undefined` for
+// items that were never paginated board-wide (no behavior change
+// for those). Each `KanbanColumn` in the kanban view has its own
+// per-column pagination so the sidebar's aggregation here is just a
+// convenience for the global "Load more" affordance.
+const hasMoreTasksForSidebar = computed(() => {
+  const colPagination = props.item.columnPagination
+  if (!colPagination) return false
+  return Object.values(colPagination).some((s) => s.hasMore)
+})
+const isLoadingMoreTasksForSidebar = computed(() => {
+  const colPagination = props.item.columnPagination
+  if (!colPagination) return false
+  return Object.values(colPagination).some((s) => s.isLoading)
+})
+
 const handleLoadMoreTasks = (event: Event) => {
   // Stop the click from bubbling up to the parent <button> (which
   // would toggle item expansion). The Load More button lives inside
@@ -629,22 +649,27 @@ const handlePinnedDrop = (event: DragEvent) => {
              tasks for this item. Hidden during the load to prevent
              double-clicks. data-testid is used by
              workspaceItemTaskLoadMore.spec.ts. Click-to-load only —
-             no scroll / intersection-observer / auto-fetch. -->
+             no scroll / intersection-observer / auto-fetch.
+             Per-column pagination (kanban-per-column-pagination
+             plan, 2026-08-06): the SIDEBAR's "Load more" still works
+             on the board-wide cursor (computed from any column with
+             hasMore=true). The kanban view itself uses per-column
+             pagination in KanbanColumn.vue. -->
         <button
-          v-if="item.hasMoreTasks"
+          v-if="hasMoreTasksForSidebar"
           data-testid="load-more-tasks"
-          :disabled="item.isLoadingMoreTasks"
+          :disabled="isLoadingMoreTasksForSidebar"
           @click="handleLoadMoreTasks"
           class="w-full flex items-center justify-center gap-1.5 px-3 py-1 rounded text-xs transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80"
           style="color: var(--semantic-text-dim);"
         >
-          <span v-if="item.isLoadingMoreTasks" class="w-3 h-3">
+          <span v-if="isLoadingMoreTasksForSidebar" class="w-3 h-3">
             <div
               class="w-3 h-3 border-2 rounded-full animate-spin"
               style="border-color: var(--color-aqua); border-top-color: transparent"
             ></div>
           </span>
-          <span>{{ item.isLoadingMoreTasks ? 'Loading…' : 'Load more' }}</span>
+          <span>{{ isLoadingMoreTasksForSidebar ? 'Loading…' : 'Load more' }}</span>
         </button>
       </div>
 

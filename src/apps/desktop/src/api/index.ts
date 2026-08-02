@@ -501,10 +501,24 @@ export async function reorderWorkspaceItems(
  *                       previous page's `next_cursor`; pass undefined
  *                       for the first page
  * @param sortBy       - field to sort by: 'created_at' | 'updated_at'
- *                       | 'name'. Default: 'updated_at' (most recently
- *                       renamed task first). The backend uses this for
- *                       both ORDER BY and the cursor value.
- * @param direction    - 'asc' | 'desc'. Default: 'desc'.
+ *                       | 'name'. Default: undefined — the backend
+ *                       applies its own default ('updated_at'). Send
+ *                       an explicit value when the URL has a sort
+ *                       param (`?sorts=col_X:updated_at:desc`) and
+ *                       the user wants the backend to honour it.
+ *                       Both `sortBy` AND `direction` must be provided
+ *                       together; otherwise the backend defaults apply.
+ * @param direction    - 'asc' | 'desc'. Default: undefined (backend
+ *                       default 'desc'). See sortBy for the pairing
+ *                       rule.
+ * @param columnId     - optional kanban column id (per-column
+ *                       pagination, plan 2026-08-06-kanban-per-column-
+ *                       pagination.md). When set, the backend's WHERE
+ *                       clause restricts results to tasks whose
+ *                       `kanban_column_id` matches (or IS NULL,
+ *                       preserving legacy rows). When unset, the
+ *                       full board-wide result is returned (the
+ *                       initial page of every kanban view).
  * @param q            - optional case-insensitive substring filter
  *                       applied at the SQL level against `name`,
  *                       `description`, and `tags`. Pass undefined or
@@ -520,10 +534,24 @@ export async function reorderWorkspaceItems(
 export async function getTasks(
   workspaceId: string,
   itemId: string,
-  limit = 20,
+  limit = 10,
   cursor?: string,
-  sortBy: 'created_at' | 'updated_at' | 'name' = 'updated_at',
-  direction: 'asc' | 'desc' = 'desc',
+  // NEW (2026-08-06): NO default values. The frontend used to send
+  // `sort_by=updated_at&direction=desc` on every task-fetch — even
+  // when the user hadn't picked a sort, the URL had no sort, and
+  // the backend would have used its own identical default. The
+  // user feedback was "no need set default when load task kanban" —
+  // pass `undefined` for both when no sort is in play, and let the
+  // backend's default (`updated_at desc`) handle it. Same wire
+  // result, cleaner URL, less coupling.
+  //
+  // Both must be provided together — we don't send `sort_by` without
+  // `direction` (or vice versa) because the backend's cursor format
+  // depends on the sort field. If only one is passed, we fall back
+  // to "no sort params" and let the backend default apply.
+  sortBy?: 'created_at' | 'updated_at' | 'name',
+  direction?: 'asc' | 'desc',
+  columnId?: string,
   q?: string,
 ): Promise<{
   tasks: Task[]
@@ -532,10 +560,15 @@ export async function getTasks(
 }> {
   const params = new URLSearchParams()
   params.set('limit', String(limit))
-  params.set('sort_by', sortBy)
-  params.set('direction', direction)
+  if (sortBy && direction) {
+    params.set('sort_by', sortBy)
+    params.set('direction', direction)
+  }
   if (cursor) {
     params.set('cursor', cursor)
+  }
+  if (columnId && columnId.length > 0) {
+    params.set('column_id', columnId)
   }
   if (q && q.length > 0) {
     params.set('q', q)
