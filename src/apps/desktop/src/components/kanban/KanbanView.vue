@@ -424,8 +424,11 @@ const handleViewCreateTask = (columnId: string) => {
 // half of the flow:
 //   - 'create'           — today's behavior (create + move + close)
 //   - 'create_and_run'   — also queues title + description as the
-//                          first user message and routes to the chat
-//                          view via the existing selectTask emit.
+//                          first user message and starts the agent
+//                          in the background. The user stays on the
+//                          kanban view (no chat dialog opens); they
+//                          can click the new task card to open the
+//                          chat view any time.
 //
 // On error: keep the dialog open and surface the error message via
 // the dialog's `errorMessage` prop (the user can retry without
@@ -433,6 +436,8 @@ const handleViewCreateTask = (columnId: string) => {
 //
 // Plan: docs/superpowers/plans/2026-08-06-kanban-create-task-run-agent.md
 //   + 2026-08-06-kanban-no-base64-in-desc (pendingFiles upload step)
+//   + 2026-08-06-no-need-go-chatview (do NOT navigate to chatview on
+//     success path — keep the user on the kanban)
 const handleCreateTaskSave = async (payload: {
   mode: 'create' | 'create_and_run'
   name: string
@@ -563,17 +568,18 @@ const handleCreateTaskSave = async (payload: {
           imageUrls: uploadedImageUrls,
         },
       )
-      if (result?.status === 'send') {
-        // Reuse the existing selectTask emit so the AppLayout ->
-        // Sidebar chain handles setActiveTask + router.replace.
-        // 'send' is the backend's status string for a successful
-        // session create (see session_create.zig:115 — the worker
-        // is given the queued message and will start processing).
-        emit('selectTask', taskId)
-      } else {
+      if (result?.status !== 'send') {
         // Partial success: task was created but the agent didn't
         // start. Surface a toast so the user knows to click the
         // card to retry manually. Never strand the user.
+        //
+        // NOTE (2026-08-06, "no need go chatview"): on the SUCCESS
+        // path we deliberately do NOT emit `selectTask` — the user
+        // asked to stay on the kanban view after clicking "Create
+        // task & run agent" instead of being routed into the chat
+        // dialog. The agent keeps running in the background; the
+        // user can click the task card on the kanban any time to
+        // open the chat view.
         useNotificationStore().notifyError(
           'Task created — agent did not start',
           'Click the card to retry, or check the nalar logs.',

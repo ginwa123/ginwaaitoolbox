@@ -1959,39 +1959,6 @@ watch(chatSessionCwd, (newCwd) => {
           is a no-op at runtime since `activeWorkspaceItem` is
           always null here.
         -->
-
-        <div v-if="true" class="text-center">
-          <div
-            class="w-20 h-20 rounded-2xl mx-auto mb-6 flex items-center justify-center text-4xl"
-            style="background: linear-gradient(135deg, var(--color-yellow), var(--color-orange))"
-          >
-            📂
-          </div>
-          <h2 class="text-2xl font-bold mb-2" style="color: var(--semantic-text)">Workspaces</h2>
-          <p style="color: var(--semantic-text-muted)">
-            Select a project from the sidebar to get started
-          </p>
-
-          <div class="mt-8 grid grid-cols-3 gap-4 max-w-md">
-            <div
-              v-for="workspace in workspacesStore.workspaces"
-              :key="workspace.id"
-              class="p-4 rounded-lg text-center"
-              style="
-                background-color: var(--semantic-card-bg);
-                border: 1px solid var(--color-border);
-              "
-            >
-              <div class="text-2xl mb-2">{{ workspace.icon }}</div>
-              <div class="text-sm font-medium truncate" style="color: var(--semantic-text)">
-                {{ workspace.name }}
-              </div>
-              <div class="text-xs mt-1" style="color: var(--semantic-text-dim)">
-                {{ workspace.items.length }} projects
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
     </main>
 

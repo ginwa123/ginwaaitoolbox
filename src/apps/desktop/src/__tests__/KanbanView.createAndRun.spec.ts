@@ -91,6 +91,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     const addSpy = vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
     const moveSpy = vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
     const runSpy = vi.spyOn(store, 'runAgentOnNewTask').mockResolvedValue({ status: 'send' })
+    const notifySpy = vi.spyOn(useNotificationStore(), 'notifyError')
 
     const view = await mountView()
     const vm: any = view.vm
@@ -124,10 +125,18 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
         isAutoRetryUntilStop: '0',
       }),
     )
-    // Reuses the existing selectTask emit so the AppLayout -> Sidebar
-    // chain handles setActiveTask + router.replace (D1 from the plan).
-    expect(view.emitted('selectTask')).toBeTruthy()
-    expect(view.emitted('selectTask')![0]).toEqual(['task_new'])
+    // CHANGED (2026-08-06, "no need go chatview"): on the SUCCESS
+    // path we deliberately do NOT emit `selectTask`. The user stays
+    // on the kanban view (no chat dialog opens); the agent runs in
+    // the background and the user can click the new task card to
+    // open the chat view any time they want.
+    expect(view.emitted('selectTask')).toBeUndefined()
+    // No failure toast on success.
+    expect(notifySpy).not.toHaveBeenCalled()
+    // The create dialog gets closed (its host sets
+    // showCreateDialog.value = false unconditionally after the
+    // run-and-create block, so the user always lands back on the
+    // kanban view).
   })
 
   it('queue message is just the title when description is empty', async () => {
@@ -287,6 +296,44 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     })
     await flushPromises()
     expect(runAgentSpy).not.toHaveBeenCalled()
+    expect(view.emitted('selectTask')).toBeUndefined()
+  })
+
+  // NEW (2026-08-06, "no need go chatview"). Regression test for
+  // the user's request: after clicking "Create task & run agent",
+  // the chat view dialog should NOT auto-open. The agent runs in
+  // the background; the user stays on the kanban view and can click
+  // the new task card to open the chat view any time.
+  it('does NOT emit selectTask on create_and_run success (no chat dialog opens)', async () => {
+    vi.spyOn(api, 'createTask').mockResolvedValue({
+      id: 'task_new',
+      name: 'My task',
+      description: 'desc',
+      task_type: 'standard',
+    })
+    vi.spyOn(api, 'sendChatMessage').mockResolvedValue({ status: 'send' })
+
+    const store = useWorkspacesStore()
+    vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
+    vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
+    vi.spyOn(store, 'runAgentOnNewTask').mockResolvedValue({ status: 'send' })
+
+    const view = await mountView()
+    const vm: any = view.vm
+    await vm.handleCreateTaskSave({
+      mode: 'create_and_run',
+      name: 'My task',
+      description: 'desc',
+      is_auto_retry_until_stop: '0',
+      tags: [],
+    })
+    await flushPromises()
+
+    // The flow: addTask -> moveTaskToColumn -> runAgentOnNewTask.
+    // The agent IS started (runAgentOnNewTask was called) — the
+    // user just stays on the kanban view.
+    expect(store.runAgentOnNewTask).toHaveBeenCalledOnce()
+    // But the chat view does NOT open.
     expect(view.emitted('selectTask')).toBeUndefined()
   })
 

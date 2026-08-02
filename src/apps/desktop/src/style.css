@@ -87,13 +87,26 @@
 
 /* Base layer styles */
 @layer base {
+  html {
+    overflow-x: hidden;
+    /*
+     * `touch-action: manipulation` lets the browser handle single-finger
+     * pan + double-tap (and disables the 300 ms tap delay) while
+     * SUPPRESSING multi-finger pinch-zoom. The desktop webview
+     * (WebKitGTK / WKWebView / WebView2) interprets pinch as page-level
+     * zoom by default; without this, the entire app shell scales when
+     * the user pinches over the sidebar / kanban / chat / settings.
+     * The design canvas has its own pinch handler (DesignView.vue) that
+     * is unaffected — `manipulation` doesn't block custom Pointer Events
+     * listeners, only the browser's native gesture.
+     */
+    touch-action: manipulation;
+  }
+
   body {
     @apply bg-[--color-bg] text-[--color-fg] font-sans antialiased;
     overflow-x: hidden;
-  }
-
-  html {
-    overflow-x: hidden;
+    touch-action: manipulation;
   }
 
   /* Selection */
