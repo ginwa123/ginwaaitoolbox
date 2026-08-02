@@ -302,6 +302,15 @@ const setColumnRef = (columnId: string) => (el: unknown) => {
 // re-emits the change, populating columnSorts via the
 // handleColumnSortChange path below.
 //
+// IMPORTANT: we ALSO fire fetchKanbanTasks DIRECTLY (not via the
+// columnSorts watcher chain) with the restored sort. The
+// workspacesStore's SSE handler ALSO fires an initial fetch with
+// the default sort ('updated_at desc') on mount — this races with
+// our restore. By firing our fetch with the restored sort
+// BEFORE the SSE handler's first re-fetch lands, the user sees
+// the right order on initial render. The column's setSortMode
+// triggers the visual re-sort client-side regardless.
+//
 // Guarded: tests that don't mock vue-router (e.g. legacy
 // KanbanView.createAndRun.spec.ts) call this component without
 // useRouter/useRoute setup. The route/router are null in that
@@ -318,8 +327,20 @@ onMounted(() => {
   const sortsRaw = routeObj.query?.sorts as string | undefined
   if (!sortsRaw) return
   const entries = parseSortsParam(sortsRaw)
-  // Wait for the next tick so the column refs are populated by
-  // the template's ref callback (Vue populates refs after mount).
+  // Mirror into columnSorts immediately — no need to wait for
+  // column refs to populate. The watcher on columnSorts will
+  // write the URL (no-op since it's already correct) and trigger
+  // a debounced fetch, but we ALSO fire the fetch directly so it
+  // happens NOW (before the SSE handler's default-sort fetch
+  // lands).
+  const next: Record<string, SortEntry> = {}
+  for (const entry of entries) {
+    next[entry.columnId] = entry
+  }
+  columnSorts.value = next
+
+  // Wait for the next tick so the column refs are populated, then
+  // call setSortMode on each column for visual consistency.
   void nextTick(() => {
     for (const entry of entries) {
       const col = columnRefs.value[entry.columnId] as
@@ -330,14 +351,28 @@ onMounted(() => {
         col.setSortMode(entry.sortBy, entry.direction)
       }
     }
-    // Mirror into columnSorts so the watcher knows about the
-    // restored values immediately.
-    const next: Record<string, SortEntry> = {}
-    for (const entry of entries) {
-      next[entry.columnId] = entry
-    }
-    columnSorts.value = next
   })
+
+  // Fire the fetch directly with the most-recently-changed sort
+  // (last in the entries array — preserves insertion order).
+  // Use the LAST non-default sort (manual doesn't have a server
+  // equivalent).
+  const lastNonDefault = [...entries].reverse().find(
+    (e) => !(e.sortBy === 'position' && e.direction === 'asc'),
+  )
+  if (!lastNonDefault) return
+  const apiSortBy = lastNonDefault.sortBy === 'position'
+    ? undefined
+    : lastNonDefault.sortBy as 'created_at' | 'updated_at' | 'name'
+  void workspacesStore.fetchKanbanTasks(
+    props.workspaceId,
+    effectiveItemId.value,
+    100,
+    undefined,
+    undefined,
+    apiSortBy,
+    lastNonDefault.direction,
+  )
 })
 
 // Watcher on columnSorts changes → debounced fetch + URL write.

@@ -170,6 +170,71 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
     expect(query.sorts).toContain('col_a:name:asc')
   })
 
+  it('mount with ?sorts=col_a:name:asc fires fetchKanbanTasks with sortBy=name immediately', async () => {
+    // Regression for the user-reported issue: on refresh with
+    // ?sorts=col_xxx:name:asc in the URL, the initial fetch should
+    // use the URL's sort (not the default 'updated_at desc'). The
+    // kanban SSE handler fires its own initial fetch with the
+    // default — our URL restore must fire FIRST so the user sees
+    // the right order on initial render.
+    const store = useWorkspacesStore()
+    store.workspaces = [
+      { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
+    ]
+    const spy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
+
+    const { wrapper } = mountKanbanView({
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: ITEM_ID,
+      sorts: 'col_a:name:asc',
+    })
+
+    // Allow onMounted + nextTick to fire.
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    await flushPromises()
+
+    // The first fetchKanbanTasks call (from the URL restore on
+    // mount) should carry sortBy='name', direction='asc'.
+    const calls = spy.mock.calls
+    expect(calls.length).toBeGreaterThan(0)
+    const first = calls[0]!
+    expect(first[5]).toBe('name')
+    expect(first[6]).toBe('asc')
+
+    wrapper.unmount()
+  })
+
+  it('mount with ?sorts=col_a:position:asc (default) does NOT trigger an extra fetch (no server equivalent)', async () => {
+    const store = useWorkspacesStore()
+    store.workspaces = [
+      { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
+    ]
+    const spy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
+
+    // position + asc is the default — should NOT trigger an extra
+    // fetch (no server-side equivalent). The SSE handler's default
+    // fetch will still happen (out of scope for this test).
+    mountKanbanView({
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: ITEM_ID,
+      sorts: 'col_a:position:asc',
+    })
+
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    await flushPromises()
+
+    // No fetch with sortBy='position' (which would be the bug).
+    // Cast c[5] to any — the type-narrowed spy mock loses the
+    // 'position' literal type (the store narrows the param).
+    const calls = spy.mock.calls as unknown[][]
+    const positionCalls = calls.filter((c) => (c[5] as string) === 'position')
+    expect(positionCalls.length).toBe(0)
+  })
+
   it('mount with ?sorts=col_a:name:asc restores column_a sort on the cards', async () => {
     const tasks = [
       makeTask('t_z', 'Zeta', 0),
