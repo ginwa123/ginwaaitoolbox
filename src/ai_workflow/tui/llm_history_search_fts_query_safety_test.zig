@@ -28,6 +28,7 @@ const std = @import("std");
 const testing = std.testing;
 const sqlite = @import("nalarcore").sqlite;
 const llm_history = @import("nalarcore").llm_history;
+const migration = @import("../../migrations/migration.zig");
 
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
@@ -43,40 +44,16 @@ fn setupDb() !TestCtx {
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
-    try db.exec(alloc,
-        \\CREATE TABLE llm_history (
-        \\  id TEXT PRIMARY KEY,
-        \\  session_id TEXT NOT NULL,
-        \\  model TEXT,
-        \\  response_content TEXT,
-        \\  role TEXT,
-        \\  tool_call_id TEXT,
-        \\  tool_name TEXT,
-        \\  is_feed_to_llm INTEGER DEFAULT 1,
-        \\  agent TEXT,
-        \\  created_at TEXT DEFAULT (datetime('now')),
-        \\  created_iso TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now'))
-        \\)
-    , &.{});
-    try db.exec(alloc,
-        \\CREATE VIRTUAL TABLE messages_fts USING fts5(content)
-    , &.{});
-    try db.exec(alloc,
-        \\CREATE TRIGGER llm_history_ai AFTER INSERT ON llm_history BEGIN
-        \\  INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, COALESCE(new.response_content, ''));
-        \\END
-    , &.{});
-    try db.exec(alloc,
-        \\CREATE TRIGGER llm_history_ad AFTER DELETE ON llm_history BEGIN
-        \\  DELETE FROM messages_fts WHERE rowid = old.rowid;
-        \\END
-    , &.{});
-    try db.exec(alloc,
-        \\CREATE TRIGGER llm_history_au AFTER UPDATE ON llm_history BEGIN
-        \\  DELETE FROM messages_fts WHERE rowid = old.rowid;
-        \\  INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, COALESCE(new.response_content, ''));
-        \\END
-    , &.{});
+    // Walk every production migration so the schema (including
+    // `messages_fts` + its triggers) matches what production runs.
+    // Manual table/trigger setup drifts the moment a new FTS column
+    // or trigger lands in production and silently tests an outdated
+    // schema (reviewer note on PR #172: "when setup db, use from
+    // migrationsss module, migrations module will load all table").
+    var manager = migration.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try migration.registerAllMigrations(&manager);
+    try manager.runMigrations();
 
     return .{ .db = db, .threaded = threaded };
 }
@@ -88,12 +65,16 @@ fn teardown(ctx: *TestCtx) void {
 
 /// Insert a row whose `response_content` contains all of the "needle"
 /// words in `needles` so we can prove the FTS5 query finds it.
+///
+/// Note: `model` is required because the production schema (after all
+/// 67 migrations) declares it NOT NULL. The value is irrelevant to the
+/// FTS5 query — only `response_content` is indexed.
 fn insertRow(ctx: *TestCtx, id: []const u8, content: []const u8) !void {
     const alloc = testing.allocator;
     var sql_buf: [512]u8 = undefined;
     const stmt = try std.fmt.bufPrint(sql_buf[0..],
-        "INSERT INTO llm_history (id, session_id, role, response_content) " ++
-        "VALUES ('{s}','s_1','user','{s}')", .{ id, content });
+        "INSERT INTO llm_history (id, session_id, model, role, response_content) " ++
+        "VALUES ('{s}','s_1','test-model','user','{s}')", .{ id, content });
     try ctx.db.exec(alloc, stmt, &.{});
 }
 
