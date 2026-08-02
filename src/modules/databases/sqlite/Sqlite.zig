@@ -304,15 +304,51 @@ pub const SqliteBackend = struct {
     pub const Rows = struct {
         allocator: std.mem.Allocator,
         stmt: ?*c.sqlite3_stmt,
+        /// Non-owning reference to the db, captured at query time. Needed
+        /// so that `next()` can call `sqlite3_errmsg(db)` when
+        /// `sqlite3_step()` returns an error — the stmt pointer alone
+        /// does not give access to the db handle. See `captureError`.
+        db: ?*c.sqlite3,
         /// Tracks whether the iterator has reached SQLITE_DONE so that
         /// subsequent `next()` calls short-circuit to null without
         /// re-invoking `sqlite3_step()`. See `next` for the rationale.
         done: bool = false,
+        /// Most recent SQLite error message, captured by `next()` when
+        /// `sqlite3_step()` returns a non-ROW rc. Owned by Rows; freed
+        /// in `deinit`. Callers can read it via `getLastErrorMessage()`
+        /// to surface a USEFUL error to the user — without this, the
+        /// only signal was the `Error.QueryFailed` enum name and the
+        /// raw SQLite message was lost (logged but not returned).
+        last_error_msg: ?[]u8 = null,
 
         pub fn deinit(self: *Rows) void {
+            if (self.last_error_msg) |msg| {
+                self.allocator.free(msg);
+                self.last_error_msg = null;
+            }
             if (self.stmt) |s| {
                 _ = c.sqlite3_finalize(s);
             }
+        }
+
+        /// Capture `sqlite3_errmsg(db)` into `last_error_msg` so callers
+        /// can surface it. Best-effort: silently no-ops when `db` is
+        /// null (backend closed) or when allocation fails — the caller
+        /// still gets the Error enum either way, this just enriches it.
+        fn captureError(self: *Rows) void {
+            if (self.db) |d| {
+                const err_msg_c = c.sqlite3_errmsg(d);
+                const span = std.mem.span(err_msg_c);
+                if (self.last_error_msg) |old| self.allocator.free(old);
+                self.last_error_msg = self.allocator.dupe(u8, span) catch null;
+            }
+        }
+
+        /// Returns the most recent SQLite error message, or null if no
+        /// error has been captured yet. The returned slice is owned by
+        /// Rows and is valid until `deinit()` is called.
+        pub fn getLastErrorMessage(self: *Rows) ?[]const u8 {
+            return self.last_error_msg;
         }
 
         pub fn next(self: *Rows) Error!?Row {
@@ -337,7 +373,11 @@ pub const SqliteBackend = struct {
                 return null;
             }
             if (rc != c.SQLITE_ROW) {
-                // Note: Can't get err_msg here since stmt is already finalized after this returns
+                // Capture the SQL error message BEFORE returning so
+                // callers can surface it (e.g. "fts5: syntax error"
+                // instead of bare "QueryFailed"). Without `db` on the
+                // Rows struct, we could only print the rc number here.
+                self.captureError();
                 std.debug.print("sqlite3_step error (Rows.next): rc={}\n", .{rc});
                 return Error.QueryFailed;
             }
@@ -597,6 +637,7 @@ pub const SqliteBackend = struct {
         return Rows{
             .allocator = allocator,
             .stmt = stmt,
+            .db = db,
         };
     }
 

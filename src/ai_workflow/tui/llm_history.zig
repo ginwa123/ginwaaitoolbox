@@ -1604,6 +1604,55 @@ pub fn getCompactedMessages(
 ///
 /// Caller owns the returned slice. Free with `hit[i].deinit(allocator)`
 /// for each hit and `allocator.free(hits)` for the outer slice.
+/// Sanitize a user-supplied FTS5 query string so it is always a valid
+/// FTS5 expression. Wraps the result in double quotes (FTS5 phrase
+/// syntax) and replaces FTS5 operators (`-`, `+`, `*`, `^`, `:`,
+/// `(`, `)`, `"`) with single spaces inside the phrase.
+///
+/// **Why this exists.** Without sanitization, plain user input that
+/// happens to contain FTS5 operators fails with `SQLITE_ERROR` —
+/// the user's complaint in task_1785658329168 was specifically that
+/// `handle_tool.zig`, `AGENTS.md`, `SPEC.md`, `2026-08-06`, and
+/// `agentic_loop/handle_tool.zig:18` all returned the bare
+/// `FTS search failed: QueryFailed` with no hint about WHY:
+///   - `.` in `handle_tool.zig` is a syntax error: `fts5: syntax error near "."`
+///   - `-` in `2026-08-06` parses as binary NOT: `no such column: 08`
+///   - `:` in `agentic_loop/handle_tool.zig:18` parses as column filter
+///
+/// **The fix.** Strip FTS5 operators (so the query can't be parsed as
+/// expression syntax) AND wrap the result in FTS5 phrase syntax (so the
+/// indexer and query parser tokenize identically — the phrase
+/// `"handle_tool.zig"` tokenizes as `["handle_tool", "zig"]` which
+/// matches the indexed terms for the same string).
+///
+/// Caller owns the returned slice; free with `allocator.free`.
+pub fn escapeFtsQuery(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    // Open the FTS5 phrase.
+    try out.append(allocator, '"');
+
+    // Build the inner phrase. Replace FTS5 operators with a single
+    // space (so adjacent operators don't collapse). Internal `"`
+    // is replaced with a space too — FTS5 phrase syntax requires
+    // doubling internal `"`, but the input never has un-escaped
+    // quotes inside a phrase anyway (the user would be very unlikely
+    // to type one).
+    var i: usize = 0;
+    while (i < query.len) : (i += 1) {
+        const c = query[i];
+        switch (c) {
+            '-', '+', '*', '^', ':', '(', ')', '"' => try out.append(allocator, ' '),
+            else => try out.append(allocator, c),
+        }
+    }
+    // Close the phrase.
+    try out.append(allocator, '"');
+
+    return out.toOwnedSlice(allocator);
+}
+
 pub fn searchMessagesFts(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -1611,6 +1660,13 @@ pub fn searchMessagesFts(
     opts: SearchOptions,
 ) ![]SearchHit {
     const effective_limit = opts.limit orelse 20;
+
+    // Sanitize the user query so plain text with FTS5 operators
+    // (`.`, `-`, `:`) doesn't blow up the MATCH parser. See
+    // `escapeFtsQuery` for the full rationale and the exact
+    // transformation.
+    const sanitized_query = try escapeFtsQuery(allocator, query);
+    defer allocator.free(sanitized_query);
 
     var sql: std.ArrayList(u8) = .empty;
     defer sql.deinit(allocator);
@@ -1639,7 +1695,7 @@ pub fn searchMessagesFts(
 
     var bind_values: std.ArrayList([]const u8) = .empty;
     defer bind_values.deinit(allocator);
-    try bind_values.append(allocator, query);
+    try bind_values.append(allocator, sanitized_query);
 
     if (opts.session_id) |sid| {
         try sql.appendSlice(allocator, " AND h.session_id = ?");

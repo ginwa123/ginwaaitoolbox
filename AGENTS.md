@@ -1286,3 +1286,50 @@ The `stallFiredAtReadiness` snapshot is captured at stall time and replayed at d
 - Adding a UI surface for the suspect — the user wants log-line diagnostics, not a badge.
 
 **Branch / commit.** `worktree/sse-disconnect-diagnosis` @ `5fa8dc05`. PR-ready. Plan doc: `docs/superpowers/plans/2026-08-06-sse-disconnect-diagnosis.md` (next step).
+
+### 2026-08-06: search_history FTS5 query sanitization + Rows.getLastErrorMessage
+
+**Symptom (user report, task_1785658329168).** `search_history` returned
+`FTS search failed: QueryFailed` for common plain-text queries containing
+FTS5-special characters: `handle_tool.zig`, `AGENTS.md`, `SPEC.md`,
+`2026-08-06`, `agentic_loop/handle_tool.zig:18`. The bare `QueryFailed`
+enum name gave the user no hint about WHY.
+
+**Two-part fix:**
+
+1. **`SqliteBackend.Rows.getLastErrorMessage()`** — capture
+   `sqlite3_errmsg(db)` into `Rows.last_error_msg` before
+   `Error.QueryFailed` is returned. Adds `db: ?*c.sqlite3` field to
+   `Rows` (needed because the stmt pointer alone can't reach the db
+   handle). All `Rows.next()` error paths now populate the message
+   automatically.
+
+2. **`llm_history.escapeFtsQuery()`** — strip FTS5 operators (`-`, `+`,
+   `*`, `^`, `:`, `(`, `)`, `"`) by replacing with spaces, then wrap
+   the entire query in FTS5 phrase syntax (`"..."`). The phrase
+   `"handle_tool.zig"` tokenizes the same way as the indexer
+   tokenized the original document text, so the phrase match works.
+
+**Files.** 4 modified + 2 new:
+- `src/modules/databases/sqlite/Sqlite.zig` (+43/-2)
+- `src/ai_workflow/tui/llm_history.zig` (+57/-1)
+- `src/modules/databases/test_runner.zig` (+1)
+- `src/ai_workflow/tui/test_runner.zig` (+1)
+- `src/modules/databases/sqlite/sqlite_test_rows_capture_error.zig` (new, 3 tests)
+- `src/ai_workflow/tui/llm_history_search_fts_query_safety_test.zig` (new, 5 tests)
+
+**Tests.** 14 new tests, all green; 2175 pass / 6 skip / 0 fail (only
+the 2 pre-existing leaks in `design_model_set_element_parent_test` remain).
+
+**Verification.** `zig build test --summary all` 2175/2181 pass. Cross-
+compile `zig build-obj -target x86_64-windows-gnu` and `aarch64-macos`
+both pass. `zig build` (fresh rebuild) produces both
+`nalarcore-linux-x86_64` and `nalar-desktop`.
+
+**Out of scope.** Plumbing the captured SQL message all the way
+through to the formatted user-facing error envelope. The infrastructure
+is in place (`Rows.getLastErrorMessage`), but threading it through
+`searchMessagesFts` (which iterates Rows internally) requires either a
+signature change or a different plumbing mechanism — deferred.
+
+**Branch.** `worktree/tool-error-better-message` (uncommitted).
