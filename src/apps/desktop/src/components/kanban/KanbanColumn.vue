@@ -57,8 +57,18 @@ const props = withDefaults(defineProps<{
   // file-path resolution in descendant cards. Threaded from
   // <KanbanView> via `props.item.path`.
   cwd?: string
+  // NEW (kanban-sort-by, per-column). Each KanbanColumn owns its
+  // own sort state. The parent (KanbanView) wires v-model:sortBy +
+  // v-model:direction to the per-column modal, but the column is
+  // self-contained: a parent refresh does NOT reset the sort (it's
+  // view state, not store state). Default = 'position' + 'asc' =
+  // today's drag-reorder order.
+  sortBy?: 'position' | 'created_at' | 'updated_at' | 'name'
+  direction?: 'asc' | 'desc'
 }>(), {
   cwd: '',
+  sortBy: 'position',
+  direction: 'asc',
 })
 
 const emit = defineEmits<{
@@ -93,22 +103,78 @@ const emit = defineEmits<{
 
 // ─── Derived data ──────────────────────────────────────────────────────────
 
-// Cards in this column, sorted by kanban_position ascending. Tasks
-// without a kanban_column_id (unassigned) are excluded — they live
-// in their own region (out of scope for v1).
+// Cards in this column. NEW (kanban-sort-by, per-column): the sort
+// applies the per-column sortBy + direction FIRST, then
+// kanban_position asc as the tiebreaker (matches the backend's
+// (sort_field, id) tuple pagination — stable ordering across rows
+// that share the same sort-field value). The sort is purely
+// client-side; no server refetch, no store changes, no URL.
+//
+//   sortBy='position' → first key is kanban_position asc (the
+//   historical behaviour; here the comparator degenerates to the
+//   tiebreaker — every row's primary key is identical, so the
+//   tiebreaker determines the order).
+//   sortBy='name' / 'created_at' / 'updated_at' → first key is the
+//   chosen field (asc or desc), tiebreaker is kanban_position asc.
+//
+// Tasks without a kanban_column_id (unassigned) are excluded — they
+// live in their own region (out of scope for v1).
 const cardsInColumn = computed<Task[]>(() => {
   return props.tasks
     .filter((t) => t.kanban_column_id === props.column.id)
     .slice()
     .sort((a, b) => {
-      // Tasks without a kanban_position sort to the end (defensive
-      // — the backend always assigns one, but the local store can
-      // have a brief moment before the optimistic update lands).
+      const cmp = compareBySortMode(a, b, props.sortBy, props.direction)
+      if (cmp !== 0) return cmp
+      // Tiebreaker: kanban_position asc (stable across same-field rows).
       const ap = a.kanban_position ?? Number.MAX_SAFE_INTEGER
       const bp = b.kanban_position ?? Number.MAX_SAFE_INTEGER
       return ap - bp
     })
 })
+
+// Pure comparator — extracted from cardsInColumn so it can be unit-
+// tested in isolation if needed. Returns negative when a sorts before
+// b, positive when b sorts before a, 0 when equal (caller falls back
+// to the kanban_position tiebreaker).
+//
+// Notes on the comparators:
+//   - name uses BINARY collate (matches the backend's SQL ORDER BY
+//     without LOWER() — 'Apple' (capital A) sorts before 'banana' in
+//     BINARY). Same behaviour as the previous Tasks 6 implementation.
+//   - created_at / updated_at convert Date to ISO string for a
+//     deterministic string compare (works for the ISO 8601 format
+//     the backend stores).
+//   - Direction: 'asc' → normal ordering; 'desc' → signs flipped.
+function compareBySortMode(
+  a: Task,
+  b: Task,
+  sortBy: 'position' | 'created_at' | 'updated_at' | 'name',
+  direction: 'asc' | 'desc',
+): number {
+  const sign = direction === 'asc' ? 1 : -1
+  let av: string | number = 0
+  let bv: string | number = 0
+  if (sortBy === 'position') {
+    // Manually order by kanban_position. The caller passes the
+    // result through the tiebreaker, so when sortBy === 'position'
+    // we want a stable 0 here and let the tiebreaker drive.
+    return 0
+  } else if (sortBy === 'name') {
+    av = a.name ?? ''
+    bv = b.name ?? ''
+  } else if (sortBy === 'created_at') {
+    av = a.createdAt instanceof Date ? a.createdAt.toISOString() : (a.createdAt ?? '')
+    bv = b.createdAt instanceof Date ? b.createdAt.toISOString() : (b.createdAt ?? '')
+  } else {
+    // updated_at
+    av = a.updatedAt instanceof Date ? a.updatedAt.toISOString() : (a.updatedAt ?? '')
+    bv = b.updatedAt instanceof Date ? b.updatedAt.toISOString() : (b.updatedAt ?? '')
+  }
+  if (av < bv) return -1 * sign
+  if (av > bv) return 1 * sign
+  return 0
+}
 
 // ─── Auto-load (lazy) for the per-item task list ─────────────────────────
 //
