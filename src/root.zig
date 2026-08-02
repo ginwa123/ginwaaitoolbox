@@ -15,55 +15,9 @@ pub fn setPanicLogPath(path: []const u8) void {
 }
 
 /// Panic handler that logs to file and notifies SSE clients
-fn panicHandler(comptime message: []const u8, _: ?*std.builtin.StackTrace) noreturn {
-    // Get stack trace if available
-    var stack_buffer: [64]std.builtin.StackTrace = undefined;
-    var captured_stack: ?*std.builtin.StackTrace = null;
-
-    // Try to capture current stack trace
-    if (std.debug.getStackTrace(&stack_buffer)) |stack| {
-        captured_stack = stack;
-    }
-
-    // Build panic log message
-    var panic_buf: std.ArrayList(u8) = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer panic_buf.deinit();
-
-    panic_buf.writer().print("=== PANIC ===\n", .{}) catch {};
-    panic_buf.writer().print("Message: {s}\n", .{message}) catch {};
-
-    if (captured_stack) |stack| {
-        panic_buf.writer().print("Stack trace:\n", .{}) catch {};
-        std.debug.formatStackTrace(stack, std.heap.page_allocator, panic_buf.writer()) catch {};
-    }
-    panic_buf.writer().print("=============\n", .{}) catch {};
-
-    const panic_log: []const u8 = panic_buf.items;
-
-    // Write to panic log file if path is set. `std.fs.openFileAbsolute`
-    // was removed in Zig 0.16 — use libc `std.c.fopen("a", append mode)`
-    // which works on Linux, macOS, and Windows via UCRT.
-    if (panic_log_path) |path| {
-        const file = std.c.fopen(path, "a") orelse null;
-        if (file) |f| {
-            _ = std.c.fwrite(panic_log.ptr, 1, panic_log.len, f);
-            _ = std.c.fclose(f);
-        }
-    }
-
-    // Also write to stderr for visibility
-    std.debug.print("{s}", .{panic_log});
-
-    // Broadcast panic to all connected TUI clients via SSE
-    gserverz.broadcastPanic(panic_log);
-
-    // Exit with error code
-    std.process.exit(1);
-}
 
 pub const std_options: std.Options = .{
     .http_disable_tls = false,
-    .panic = panicHandler,
 };
 
 var global_ctx: ?*ContextIPCTui = null;
@@ -104,8 +58,6 @@ pub const ContextIPCTui = struct {
     event_bus: *event_bus.EventBus,
     server: *gserverz.GinwaServer,
 
-    session_ids_to_release: std.ArrayList([]const u8) = .empty,
-
     session_to_client_ids: std.StringHashMapUnmanaged(std.ArrayList([16]u8)) = .empty,
     session_map_lock: std.Io.Mutex = .init,
 
@@ -113,10 +65,6 @@ pub const ContextIPCTui = struct {
     on_disconnect_lock: std.Io.Mutex = .init,
     group_emit_session_create: std.Io.Group,
 
-    /// If non-null, nalar serves files from this directory at HTTP /.
-    /// The desktop webview wrapper (nalar-desktop) will set this to a temp
-    /// dir containing the embedded Vue dist/. Parsed from the `--static-dir`
-    /// CLI flag in main.zig and held here for the lifetime of the process.
     static_dir_path: ?[]const u8 = null,
 };
 

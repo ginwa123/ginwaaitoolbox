@@ -38,7 +38,7 @@ pub const MAGIC_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 ///
 /// Implementation: `base64(SHA1(key + MAGIC_GUID))`. The hash is computed
 /// in a single pass over the 60-byte input (24-byte key + 36-byte GUID).
-pub fn computeAcceptKey(client_key: []const u8) ![]u8 {
+pub fn computeAcceptKey(allocator: std.mem.Allocator, client_key: []const u8) ![]u8 {
     var buf: [256]u8 = undefined;
     if (client_key.len + MAGIC_GUID.len > buf.len) return error.KeyTooLong;
     @memcpy(buf[0..client_key.len], client_key);
@@ -54,7 +54,7 @@ pub fn computeAcceptKey(client_key: []const u8) ![]u8 {
     // 20-byte SHA-1 is ceil(20/3)*4 = 28 bytes.
     const encoder = &std.base64.standard.Encoder;
     const encoded_size = encoder.calcSize(20);
-    const dest = try std.heap.page_allocator.alloc(u8, encoded_size);
+    const dest = try allocator.alloc(u8, encoded_size);
     _ = encoder.encode(dest, &hash);
     return dest;
 }
@@ -63,8 +63,8 @@ pub fn computeAcceptKey(client_key: []const u8) ![]u8 {
 ///
 /// The returned slice is owned by the caller (free with `allocator.free`).
 pub fn buildAcceptResponse(allocator: std.mem.Allocator, client_key: []const u8) ![]u8 {
-    const accept = try computeAcceptKey(client_key);
-    defer std.heap.page_allocator.free(accept);
+    const accept = try computeAcceptKey(allocator, client_key);
+    defer allocator.free(accept);
 
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);

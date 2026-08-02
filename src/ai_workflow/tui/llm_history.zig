@@ -724,7 +724,7 @@ pub fn getSessionMessagesSorted(
     const result_messages = if (has_more) messages.items[0..limit] else messages.items;
 
     // Get total count of messages for this session
-    const total_count = getTotalMessageCountForSession(db, session_id);
+    const total_count = getTotalMessageCountForSession(allocator, db, session_id);
 
     // Get skills loaded for this session
     const session_skills = getSessionSkills(allocator, db, session_id) catch null;
@@ -761,12 +761,13 @@ pub fn getSessionMessagesSorted(
 
 /// Get the total count of messages for a session
 fn getTotalMessageCountForSession(
+    allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) ?u32 {
     const sql = "SELECT COUNT(*) FROM llm_history WHERE session_id = ?";
 
-    var rows = db.query(std.heap.page_allocator, sql, &.{session_id}) catch return null;
+    var rows = db.query(allocator, sql, &.{session_id}) catch return null;
     defer rows.deinit();
 
     const row = rows.next() catch return null;
@@ -1090,7 +1091,7 @@ pub fn saveMessage(
     // decimal digits for any post‑1970 timestamp). We divide by
     // `std.time.ns_per_us` (1000) to convert nanoseconds → microseconds
     // so the column matches its documented format.
-    const id =try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+    const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(id);
     const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(created_at);
@@ -1103,7 +1104,7 @@ pub fn saveMessage(
     // (no parameter) — semantically the same value `created_at_us`
     // would produce (both come from the same `now_ns` source a few
     // lines above), but the helper hides the conversion details.
-    const created_iso = try helpers.currentTimeIsoLocal(allocator,io);
+    const created_iso = try helpers.currentTimeIsoLocal(allocator, io);
     defer allocator.free(created_iso);
 
     const contentStr = input.content orelse "";
@@ -4379,13 +4380,9 @@ fn insertKanbanTask(db: *sqlite.SqliteBackend, alloc: std.mem.Allocator, id: []c
     // production pattern (see createWorkspaceItemTask): use a SQL
     // `''` literal when the value is the empty string.
     if (tags_json.len == 0) {
-        try db.exec(alloc,
-            "INSERT INTO workspace_item_tasks (id, workspace_item_id, tags) VALUES (?, ?, '')",
-            &.{ id, item_id });
+        try db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, tags) VALUES (?, ?, '')", &.{ id, item_id });
     } else {
-        try db.exec(alloc,
-            "INSERT INTO workspace_item_tasks (id, workspace_item_id, tags) VALUES (?, ?, ?)",
-            &.{ id, item_id, tags_json });
+        try db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, tags) VALUES (?, ?, ?)", &.{ id, item_id, tags_json });
     }
 }
 
@@ -4397,9 +4394,7 @@ fn insertKanbanTaskWithUpdatedAt(
     tags_json: []const u8,
     updated_at: []const u8,
 ) !void {
-    try db.exec(alloc,
-        "INSERT INTO workspace_item_tasks (id, workspace_item_id, tags, updated_at) VALUES (?, ?, ?, ?)",
-        &.{ id, item_id, tags_json, updated_at });
+    try db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, tags, updated_at) VALUES (?, ?, ?, ?)", &.{ id, item_id, tags_json, updated_at });
 }
 
 test "listKanbanDistinctTags returns empty page when kanban has no tasks" {
@@ -4568,7 +4563,6 @@ test "listKanbanDistinctTags skips rows with malformed tags JSON (defensive)" {
 // to manual smoke. The only way to verify is to run the SQL.
 // ════════════════════════════════════════════════════════════════════════════
 
-
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
@@ -4587,9 +4581,7 @@ fn setupDb() !TestCtx {
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
-    try db.exec(alloc,
-        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
-        &.{});
+    try db.exec(alloc, "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)", &.{});
     try db.exec(alloc,
         \\CREATE TABLE workspace_item_tasks (
         \\    id TEXT PRIMARY KEY,
@@ -4638,10 +4630,8 @@ fn insertTask(
     description: []const u8,
     tags: []const u8,
 ) !void {
-    try ctx.db.exec(alloc,
-        "INSERT OR IGNORE INTO workspace_items (id, workspace_id, item_type) " ++
-            "VALUES ('wi_1', 'ws_1', 'kanban')",
-        &.{});
+    try ctx.db.exec(alloc, "INSERT OR IGNORE INTO workspace_items (id, workspace_id, item_type) " ++
+        "VALUES ('wi_1', 'ws_1', 'kanban')", &.{});
     try ctx.db.exec(alloc,
         \\INSERT INTO workspace_item_tasks
         \\(id, name, workspace_item_id, description, updated_at, task_type, tags)
@@ -4665,10 +4655,8 @@ fn insertTaskInColumn(
     column_id: ?[]const u8,
     position: i64,
 ) !void {
-    try ctx.db.exec(alloc,
-        "INSERT OR IGNORE INTO workspace_items (id, workspace_id, item_type) " ++
-            "VALUES ('wi_1', 'ws_1', 'kanban')",
-        &.{});
+    try ctx.db.exec(alloc, "INSERT OR IGNORE INTO workspace_items (id, workspace_id, item_type) " ++
+        "VALUES ('wi_1', 'ws_1', 'kanban')", &.{});
     // SQLite exec binds only TEXT, so format position as a string.
     const pos_str = try std.fmt.allocPrint(alloc, "{d}", .{position});
     defer alloc.free(pos_str);
@@ -4707,7 +4695,15 @@ test "listWorkspaceItemTasksWithCursor matches q against name (case-insensitive 
     try insertTask(&ctx, alloc, "task_3", "design page", "", "[]");
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, null, "login",
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        null,
+        "login",
     );
     defer freeTasks(alloc, result.tasks);
 
@@ -4729,7 +4725,15 @@ test "listWorkspaceItemTasksWithCursor matches q against description" {
     try insertTask(&ctx, alloc, "task_3", "feature three", "another login ref", "[]");
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, null, "login",
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        null,
+        "login",
     );
     defer freeTasks(alloc, result.tasks);
 
@@ -4751,7 +4755,15 @@ test "listWorkspaceItemTasksWithCursor matches q against tags JSON text" {
     try insertTask(&ctx, alloc, "task_3", "feature three", "", "[\"design\",\"frontend\"]");
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, null, "login",
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        null,
+        "login",
     );
     defer freeTasks(alloc, result.tasks);
 
@@ -4772,13 +4784,29 @@ test "listWorkspaceItemTasksWithCursor q is case-insensitive" {
     try insertTask(&ctx, alloc, "task_3", "feature", "", "[\"Login\",\"urgent\"]");
 
     const upper = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, null, "LOGIN",
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        null,
+        "LOGIN",
     );
     defer freeTasks(alloc, upper.tasks);
     try testing.expectEqual(@as(usize, 3), upper.tasks.len);
 
     const mixed = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, null, "LoGiN",
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        null,
+        "LoGiN",
     );
     defer freeTasks(alloc, mixed.tasks);
     try testing.expectEqual(@as(usize, 3), mixed.tasks.len);
@@ -4797,7 +4825,15 @@ test "listWorkspaceItemTasksWithCursor with empty q returns all tasks" {
     try insertTask(&ctx, alloc, "task_3", "gamma", "", "[]");
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, null, "",
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        null,
+        "",
     );
     defer freeTasks(alloc, result.tasks);
 
@@ -4816,7 +4852,15 @@ test "listWorkspaceItemTasksWithCursor with null q returns all tasks" {
     try insertTask(&ctx, alloc, "task_2", "beta", "", "[]");
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, null, null,
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        null,
+        null,
     );
     defer freeTasks(alloc, result.tasks);
 
@@ -4835,7 +4879,15 @@ test "listWorkspaceItemTasksWithCursor escapes % so literal % matches nothing" {
     try insertTask(&ctx, alloc, "task_2", "beta", "", "[]");
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, null, "%",
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        null,
+        "%",
     );
     defer freeTasks(alloc, result.tasks);
 
@@ -4854,7 +4906,15 @@ test "listWorkspaceItemTasksWithCursor escapes _ so literal _ matches nothing" {
     try insertTask(&ctx, alloc, "task_2", "beta", "", "[]");
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, null, "_",
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        null,
+        "_",
     );
     defer freeTasks(alloc, result.tasks);
 
@@ -4873,7 +4933,15 @@ test "listWorkspaceItemTasksWithCursor SQL-injection attempt returns no rows (pa
     try insertTask(&ctx, alloc, "task_2", "beta", "", "[]");
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, null, "' OR '1'='1",
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        null,
+        "' OR '1'='1",
     );
     defer freeTasks(alloc, result.tasks);
 
@@ -4900,7 +4968,15 @@ test "listWorkspaceItemTasksWithCursor q + cursor advances through matches only"
     try insertTask(&ctx, alloc, "task_x5", "other five", "", "[]");
 
     const page1 = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 2, null, .updated_at, .desc, null, "match",
+        alloc,
+        &ctx.db,
+        "wi_1",
+        2,
+        null,
+        .updated_at,
+        .desc,
+        null,
+        "match",
     );
     defer freeTasks(alloc, page1.tasks);
 
@@ -4920,7 +4996,15 @@ test "listWorkspaceItemTasksWithCursor q + cursor advances through matches only"
         .{ cursor_value, page1.tasks[1].id },
     );
     const page2 = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 2, cursor_str, .updated_at, .desc, null, "match",
+        alloc,
+        &ctx.db,
+        "wi_1",
+        2,
+        cursor_str,
+        .updated_at,
+        .desc,
+        null,
+        "match",
     );
     defer freeTasks(alloc, page2.tasks);
 
@@ -4937,7 +5021,15 @@ test "listWorkspaceItemTasksWithCursor q + cursor advances through matches only"
         .{ cursor_value2, page2.tasks[1].id },
     );
     const page3 = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 2, cursor_str2, .updated_at, .desc, null, "match",
+        alloc,
+        &ctx.db,
+        "wi_1",
+        2,
+        cursor_str2,
+        .updated_at,
+        .desc,
+        null,
+        "match",
     );
     defer freeTasks(alloc, page3.tasks);
 
@@ -4958,7 +5050,14 @@ test "listWorkspaceItemTasksWithCursor with nonexistent q returns empty + has_mo
     try insertTask(&ctx, alloc, "task_2", "beta", "", "[]");
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, null,
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        null,
         "nonexistent_token_xyz_12345",
     );
     defer freeTasks(alloc, result.tasks);
@@ -4987,7 +5086,15 @@ test "listWorkspaceItemTasksWithCursor sorts by name asc and desc" {
     try insertTask(&ctx, alloc, "task_m", "Mike", "", "[]");
 
     const asc = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .name, .asc, null, null,
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .name,
+        .asc,
+        null,
+        null,
     );
     defer freeTasks(alloc, asc.tasks);
     try testing.expectEqual(@as(usize, 3), asc.tasks.len);
@@ -4996,7 +5103,15 @@ test "listWorkspaceItemTasksWithCursor sorts by name asc and desc" {
     try testing.expectEqualStrings("Zeta", asc.tasks[2].name);
 
     const desc = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .name, .desc, null, null,
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .name,
+        .desc,
+        null,
+        null,
     );
     defer freeTasks(alloc, desc.tasks);
     try testing.expectEqual(@as(usize, 3), desc.tasks.len);
@@ -5028,18 +5143,20 @@ test "listWorkspaceItemTasksWithCursor sorts by created_at asc and desc" {
 
     // Set explicit created_at values (oldest < middle < newest) so the
     // sort is deterministic regardless of insertion order.
-    try ctx.db.exec(alloc,
-        "UPDATE workspace_item_tasks SET created_at = '2024-01-01 00:00:00' WHERE id = 'task_old'",
-        &.{});
-    try ctx.db.exec(alloc,
-        "UPDATE workspace_item_tasks SET created_at = '2024-06-15 12:00:00' WHERE id = 'task_mid'",
-        &.{});
-    try ctx.db.exec(alloc,
-        "UPDATE workspace_item_tasks SET created_at = '2024-12-31 23:59:59' WHERE id = 'task_new'",
-        &.{});
+    try ctx.db.exec(alloc, "UPDATE workspace_item_tasks SET created_at = '2024-01-01 00:00:00' WHERE id = 'task_old'", &.{});
+    try ctx.db.exec(alloc, "UPDATE workspace_item_tasks SET created_at = '2024-06-15 12:00:00' WHERE id = 'task_mid'", &.{});
+    try ctx.db.exec(alloc, "UPDATE workspace_item_tasks SET created_at = '2024-12-31 23:59:59' WHERE id = 'task_new'", &.{});
 
     const asc = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .created_at, .asc, null, null,
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .created_at,
+        .asc,
+        null,
+        null,
     );
     defer freeTasks(alloc, asc.tasks);
     try testing.expectEqual(@as(usize, 3), asc.tasks.len);
@@ -5048,7 +5165,15 @@ test "listWorkspaceItemTasksWithCursor sorts by created_at asc and desc" {
     try testing.expectEqualStrings("task_new", asc.tasks[2].id);
 
     const desc = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .created_at, .desc, null, null,
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .created_at,
+        .desc,
+        null,
+        null,
     );
     defer freeTasks(alloc, desc.tasks);
     try testing.expectEqual(@as(usize, 3), desc.tasks.len);
@@ -5079,7 +5204,15 @@ test "listWorkspaceItemTasksWithCursor column_id=col_a returns only col_a tasks"
     try insertTaskInColumn(&ctx, alloc, "task_b1", "gamma", "", "[]", "col_b", 0);
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, "col_a", null,
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        "col_a",
+        null,
     );
     defer freeTasks(alloc, result.tasks);
 
@@ -5105,7 +5238,15 @@ test "listWorkspaceItemTasksWithCursor column_id=col_b returns only col_b tasks"
     try insertTaskInColumn(&ctx, alloc, "task_b2", "delta", "", "[]", "col_b", 1);
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, "col_b", null,
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        "col_b",
+        null,
     );
     defer freeTasks(alloc, result.tasks);
 
@@ -5132,7 +5273,15 @@ test "listWorkspaceItemTasksWithCursor column_id=col_a + cursor advances through
     // (id DESC tiebreak, both within the same updated_at bucket since
     // they're inserted in quick succession). task_a1 falls into page 2.
     const page1 = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 2, null, .updated_at, .desc, "col_a", null,
+        alloc,
+        &ctx.db,
+        "wi_1",
+        2,
+        null,
+        .updated_at,
+        .desc,
+        "col_a",
+        null,
     );
     defer freeTasks(alloc, page1.tasks);
     try testing.expectEqual(@as(usize, 2), page1.tasks.len);
@@ -5154,7 +5303,15 @@ test "listWorkspaceItemTasksWithCursor column_id=col_a + cursor advances through
 
     // Page 2: pass cursor + col_a filter — should return task_a1 only.
     const page2 = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 2, cursor_str, .updated_at, .desc, "col_a", null,
+        alloc,
+        &ctx.db,
+        "wi_1",
+        2,
+        cursor_str,
+        .updated_at,
+        .desc,
+        "col_a",
+        null,
     );
     defer freeTasks(alloc, page2.tasks);
     try testing.expectEqual(@as(usize, 1), page2.tasks.len);
@@ -5176,7 +5333,15 @@ test "listWorkspaceItemTasksWithCursor column_id=col_a + q filters within the co
     try insertTaskInColumn(&ctx, alloc, "task_b2", "settings", "", "[]", "col_b", 1);
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, "col_a", "login",
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        "col_a",
+        "login",
     );
     defer freeTasks(alloc, result.tasks);
 
@@ -5194,7 +5359,15 @@ test "listWorkspaceItemTasksWithCursor column_id='' (empty) returns all columns"
     try insertTaskInColumn(&ctx, alloc, "task_b1", "beta", "", "[]", "col_b", 0);
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, "", null,
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        "",
+        null,
     );
     defer freeTasks(alloc, result.tasks);
 
@@ -5212,7 +5385,15 @@ test "listWorkspaceItemTasksWithCursor column_id=nonexistent returns 0 + has_mor
     try insertTaskInColumn(&ctx, alloc, "task_b1", "beta", "", "[]", "col_b", 0);
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, "col_nonexistent", null,
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        "col_nonexistent",
+        null,
     );
     defer freeTasks(alloc, result.tasks);
 
@@ -5234,7 +5415,15 @@ test "listWorkspaceItemTasksWithCursor column_id includes NULL-column legacy tas
     try insertTaskInColumn(&ctx, alloc, "task_null", "null_col", "", "[]", null, 0);
 
     const result = try listWorkspaceItemTasksWithCursor(
-        alloc, &ctx.db, "wi_1", 100, null, .updated_at, .desc, "col_a", null,
+        alloc,
+        &ctx.db,
+        "wi_1",
+        100,
+        null,
+        .updated_at,
+        .desc,
+        "col_a",
+        null,
     );
     defer freeTasks(alloc, result.tasks);
 
