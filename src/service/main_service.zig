@@ -178,7 +178,7 @@ pub fn serviceStart(
     //    Windows CreateProcessW with DETACHED_PROCESS. The POSIX parent
     //    / Windows parent exits inside `daemonize`; the function only
     //    returns to the grandchild (POSIX) or spawned child (Windows).
-    try daemon.daemonize();
+    try daemon.daemonize(allocator);
     try daemon.redirectStdioToLog(opts.log_path);
 
     // 3. Write our state.json (with the just-allocated PID).

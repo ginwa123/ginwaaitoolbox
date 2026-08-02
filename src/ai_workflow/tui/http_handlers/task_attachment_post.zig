@@ -78,7 +78,6 @@ pub fn taskAttachmentPostHandler(
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = @errorName(err) }),
         });
     };
-    defer allocator.free(item_path);
 
     // Pick the file extension from ?filename= or Content-Type.
     const filename_param = req.query.get("filename") orelse "";
@@ -95,21 +94,18 @@ pub fn taskAttachmentPostHandler(
     const attachments_dir = std.fs.path.join(allocator, &.{ item_path, ".nalar", "attachments", task_id }) catch {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }) });
     };
-    defer allocator.free(attachments_dir);
 
-    mkdirp(io, attachments_dir) catch |err| {
+    mkdirp(allocator, io, attachments_dir) catch |err| {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = @errorName(err) }) });
     };
 
     const chosen_name = nextAvailableName(io, allocator, attachments_dir, ext) catch |err| {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = @errorName(err) }) });
     };
-    defer allocator.free(chosen_name);
 
     const full_path = std.fs.path.join(allocator, &.{ attachments_dir, chosen_name }) catch {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }) });
     };
-    defer allocator.free(full_path);
 
     // Atomic write: place the tmp file in `attachments_dir` itself
     // (a sibling of `chosen_name`), NOT inside the not-yet-existent
@@ -125,7 +121,6 @@ pub fn taskAttachmentPostHandler(
     const tmp_path = std.fs.path.join(allocator, &.{ attachments_dir, tmp_filename }) catch {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }) });
     };
-    defer allocator.free(tmp_path);
 
     writeFileAtomic(io, tmp_path, full_path, req.body) catch |err| {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = @errorName(err) }) });
@@ -256,11 +251,9 @@ pub fn nextAvailableName(
 /// success if the directory already exists. Uses raw POSIX mkdirat
 /// to avoid relying on the project-specific std.fs path APIs which
 /// differ between Zig versions.
-pub fn mkdirp(io: std.Io, path: []const u8) !void {
+pub fn mkdirp(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
     var it = std.fs.path.componentIterator(path);
-    const gpa = std.heap.page_allocator;
     var current: std.ArrayList(u8) = .empty;
-    defer current.deinit(gpa);
     if (path.len > 0 and path[0] == '/') try current.append(gpa, '/');
 
     while (it.next()) |comp| {

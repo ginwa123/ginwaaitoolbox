@@ -87,10 +87,10 @@ pub const DaemonError = error{
 ///
 /// Comptime-dispatches on `builtin.os.tag` so the unused platform's
 /// code is fully eliminated by the compiler (no runtime check).
-pub fn daemonize() DaemonError!void {
+pub fn daemonize(allocator: std.mem.Allocator) DaemonError!void {
     switch (builtin.os.tag) {
         .linux, .macos => return daemonizePosixImpl(),
-        .windows => return daemonizeWindows(),
+        .windows => return daemonizeWindows(allocator),
         else => @compileError("daemon.daemonize: unsupported platform " ++ @tagName(builtin.os.tag)),
     }
 }
@@ -98,8 +98,8 @@ pub fn daemonize() DaemonError!void {
 /// Backward-compat alias for `daemonize()` on POSIX. On Windows this
 /// also works (calls into the Windows implementation) so legacy
 /// callers compile on all platforms.
-pub fn daemonizePosix() DaemonError!void {
-    return daemonize();
+pub fn daemonizePosix(allocator: std.mem.Allocator) DaemonError!void {
+    return daemonize(allocator);
 }
 
 /// Walk the parent directory chain of `path` and create each missing
@@ -345,12 +345,12 @@ const win32_apis = if (builtin.os.tag == .windows) struct {
 /// from `daemonize` immediately (it IS the daemon).
 const NALAR_DAEMON_CHILD: [:0]const u16 = std.unicode.utf8ToUtf16LeStringLiteral("NALAR_DAEMON_CHILD");
 
-fn daemonizeWindows() DaemonError!void {
+fn daemonizeWindows(allocator: std.mem.Allocator) DaemonError!void {
     // 1. If NALAR_DAEMON_CHILD is set, we ARE the spawned daemon. Just
     //    return; the caller is the daemon process.
     const sentinel = getEnvVarW(NALAR_DAEMON_CHILD) catch null;
     if (sentinel) |val| {
-        defer std.heap.page_allocator.free(val);
+        defer allocator.free(val);
         if (val.len > 0) {
             // Sentinel is set → child path. Validate it's "1" (or any
             // non-empty value).
@@ -362,7 +362,7 @@ fn daemonizeWindows() DaemonError!void {
     //    and DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP flags so the
     //    spawned child has no console and no parent terminal.
     const app_path_w = getModuleFileNameW_alloc() catch return error.SpawnFailed;
-    defer std.heap.page_allocator.free(app_path_w);
+    defer allocator.free(app_path_w);
 
     // Build a command line: "<exe>" "<sentinel>=1". Quote minimal — the
     // exe path won't contain quotes (it's a UTF-16 module file name).
@@ -535,7 +535,7 @@ fn pathToWideZ(path: []const u8, buf: []u16) ![:0]u16 {
 
 /// Get the current module's file path as a heap-allocated
 /// NUL-terminated UTF-16 string. Caller frees the returned slice.
-fn getModuleFileNameW_alloc() ![:0]u16 {
+fn getModuleFileNameW_alloc(allocator: std.mem.Allocator) ![:0]u16 {
     if (builtin.os.tag != .windows) unreachable;
     var buf: [std.fs.max_path_bytes]u16 = undefined;
     // GetModuleFileNameW returns the length in characters (not
@@ -544,7 +544,7 @@ fn getModuleFileNameW_alloc() ![:0]u16 {
     if (len == 0) return error.PathTooLong;
     if (len >= buf.len) return error.PathTooLong;
     buf[len] = 0;
-    const result = std.heap.page_allocator.allocSentinel(u16, len, 0) catch
+    const result = allocator.allocSentinel(u16, len, 0) catch
         return error.OutOfMemory;
     @memcpy(result[0..len], buf[0..len]);
     return result;
@@ -552,7 +552,7 @@ fn getModuleFileNameW_alloc() ![:0]u16 {
 
 /// Get the value of an environment variable as a NUL-terminated
 /// wide string. Returns `null` if the variable is not set.
-fn getEnvVarW(name: [:0]const u16) !?[:0]u16 {
+fn getEnvVarW(allocator: std.mem.Allocator, name: [:0]const u16) !?[:0]u16 {
     if (builtin.os.tag != .windows) unreachable;
     var buf: [std.fs.max_path_bytes]u16 = undefined;
     // `name.ptr` is `[*]const u16` (many-pointer without sentinel info).
@@ -563,7 +563,7 @@ fn getEnvVarW(name: [:0]const u16) !?[:0]u16 {
     if (len > buf.len) return error.PathTooLong;
     // Need to allocate a NUL-terminated copy because buf's NUL is at
     // buf[len] but the returned slice must be [:0]u16.
-    const result = std.heap.page_allocator.allocSentinel(u16, len, 0) catch
+    const result = allocator.allocSentinel(u16, len, 0) catch
         return error.OutOfMemory;
     @memcpy(result[0..len], buf[0..len]);
     return result;

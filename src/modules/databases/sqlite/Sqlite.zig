@@ -97,36 +97,7 @@ pub const Error = error{
 /// lazily because the struct field of the same name is referenced only
 /// when SqliteBackend is actually used.
 pub const SqliteBackend = struct {
-    const c = if (builtin.os.tag == .linux)
-        @cImport(@cInclude("sqlite3.h"))
-    else
-        struct {
-            pub const sqlite3 = opaque {};
-            pub const sqlite3_stmt = opaque {};
-
-            pub const SQLITE_OK: c_int = 0;
-            pub const SQLITE_ROW: c_int = 100;
-            pub const SQLITE_DONE: c_int = 101;
-            pub const SQLITE_MISUSE: c_int = 21;
-            pub const SQLITE_CANTOPEN: c_int = 14;
-            pub const SQLITE_PERM: c_int = 3;
-            pub const SQLITE_FULL: c_int = 13;
-            pub const SQLITE_CORRUPT: c_int = 11;
-
-            pub extern fn sqlite3_open(filename: [*:0]const u8, ppDb: *?*sqlite3) c_int;
-            pub extern fn sqlite3_close(db: ?*sqlite3) c_int;
-            pub extern fn sqlite3_errmsg(db: ?*sqlite3) [*:0]const u8;
-            pub extern fn sqlite3_exec(db: ?*sqlite3, sql: [*:0]const u8, callback: ?*anyopaque, arg: ?*anyopaque, errmsg: ?*?[*:0]const u8) c_int;
-            pub extern fn sqlite3_prepare_v2(db: ?*sqlite3, sql: [*]const u8, nByte: c_int, ppStmt: *?*sqlite3_stmt, pzTail: ?*?[*]const u8) c_int;
-            pub extern fn sqlite3_step(stmt: ?*sqlite3_stmt) c_int;
-            pub extern fn sqlite3_finalize(stmt: ?*sqlite3_stmt) c_int;
-            pub extern fn sqlite3_bind_text(stmt: ?*sqlite3_stmt, idx: c_int, text: [*]const u8, n: c_int, destroy: isize) c_int;
-            pub extern fn sqlite3_bind_null(stmt: ?*sqlite3_stmt, idx: c_int) c_int;
-            pub extern fn sqlite3_column_count(stmt: ?*sqlite3_stmt) c_int;
-            pub extern fn sqlite3_column_text(stmt: ?*sqlite3_stmt, col: c_int) ?[*]const u8;
-            pub extern fn sqlite3_column_bytes(stmt: ?*sqlite3_stmt, col: c_int) c_int;
-            pub extern fn sqlite3_changes(db: ?*sqlite3) c_int;
-        };
+    const c = @cImport(@cInclude("sqlite3.h"));
 
     // `SQLITE_TRANSIENT` sentinel — passed as -1 via the
     // `sqlite3_bind_text_isize` wrapper above (which takes isize instead
@@ -759,4 +730,3 @@ pub const SqliteBackend = struct {
         return c.sqlite3_changes(db);
     }
 };
-

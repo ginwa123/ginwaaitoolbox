@@ -86,28 +86,6 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
         });
     };
 
-    // Chunk 5 of kanban-task-notification-icon: the user just sent a
-    // chat message. Per the project convention task.id == session.id,
-    // so stamping the session's matching task flips the kanban card
-    // from the orange "awaiting review" dot to the green "reviewed"
-    // checkmark. Fire-and-forget: a failed stamp doesn't fail the
-    // session create.
-    //
-    // The session id is the new task id (per task.id == session.id
-    // project convention). For standard tasks this stamps the
-    // corresponding workspace_item_tasks row. For routine tasks it
-    // does too — the routine's kanban card uses the same column.
-    ai_workflow.llm_history.updateTaskLastHumanTouchedAt(
-        allocator,
-        di.db,
-        usecase.id,
-        null,
-    ) catch |stamp_err| {
-        std.log.warn(
-            "session_create: stamp last_human_touched_at failed (non-fatal): {s}",
-            .{@errorName(stamp_err)},
-        );
-    };
 
     const data = try http_response.makeSessionCreateResponse(allocator, .{
         .id = usecase.id,
@@ -121,14 +99,9 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     });
 }
 
-fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parsed: RequestSession) !ResponseSession {
+fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parsed: RequestSession) !ResponseSession {
     const sqlite_db = di.db;
     const environment = di.environment orelse return error.EnvironmentNotInitialized;
-
-    // Arena is ONLY for local computation in this function
-    var arena_allocator = std.heap.ArenaAllocator.init(di.allocator);
-    defer arena_allocator.deinit();
-    const local = arena_allocator.allocator();
 
     // --- Resolve all values locally using arena ---
     var session_id: []u8 = undefined;
@@ -139,9 +112,9 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
     var body_message: []const u8 = "";
 
     if (parsed.session_id.len > 0) {
-        session_id = try local.dupe(u8, parsed.session_id);
+        session_id = try alloc.dupe(u8, parsed.session_id);
     } else {
-        session_id = try helpers.random.generateSessionId(local, io);
+        session_id = try helpers.random.generateSessionId(alloc, io);
     }
     if (parsed.session_name.len > 0) session_name = parsed.session_name;
     if (parsed.queue_message.len > 0) queue_message = parsed.queue_message;
@@ -151,9 +124,9 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
 
     var effective_cwd: []const u8 = "";
     if (cwd_session.len > 0) {
-        effective_cwd = try local.dupe(u8, cwd_session);
+        effective_cwd = try alloc.dupe(u8, cwd_session);
     } else {
-        effective_cwd = createSandbox(local, io, environment, session_id) catch
+        effective_cwd = createSandbox(alloc, io, environment, session_id) catch
             environment.get("TMPDIR") orelse "/tmp";
     }
 
@@ -168,78 +141,70 @@ fn useCase(_: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parse
     var is_auto_retry_until_stop: []const u8 = "";
     if (parsed.is_auto_retry_until_stop.len > 0) is_auto_retry_until_stop = parsed.is_auto_retry_until_stop;
 
-    try insertWorker(local, sqlite_db, parsed, image_urls);
-
-    // --- Heap-allocate data for the async task (task owns these, frees them) ---
-    const thread_session_id = try di.allocator.dupe(u8, session_id);
-    const thread_queue_message = try di.allocator.dupe(u8, queue_message);
-    const thread_effective_cwd = try di.allocator.dupe(u8, effective_cwd);
-    const thread_body_message = try di.allocator.dupe(u8, body_message);
-    const thread_allowed_tools = try di.allocator.dupe(u8, allowed_tools);
-    const thread_image_urls = try di.allocator.dupe(u8, image_urls);
-    const thread_selected_profile_model = try di.allocator.dupe(u8, selected_profile_model);
-    const thread_is_auto_retry_until_stop = try di.allocator.dupe(u8, is_auto_retry_until_stop);
-
-    // If concurrent() fails, we must free the heap data ourselves
-    errdefer {
-        di.allocator.free(thread_session_id);
-        di.allocator.free(thread_queue_message);
-        di.allocator.free(thread_effective_cwd);
-        di.allocator.free(thread_body_message);
-        di.allocator.free(thread_allowed_tools);
-        di.allocator.free(thread_image_urls);
-        di.allocator.free(thread_selected_profile_model);
-        di.allocator.free(thread_is_auto_retry_until_stop);
-    }
+    try insertWorker(alloc, sqlite_db, parsed, image_urls);
 
     try di.group_emit_session_create.concurrent(
         io,
         struct {
             fn run(
                 di_inner: *nalarcore.ContextIPCTui,
-                sid: []u8,
-                qmsg: []u8,
-                cwd: []u8,
-                bmsg: []u8,
-                atools: []u8,
-                iurls: []u8,
-                spm: []u8, 
-                iaur: []u8, 
+                sid: []const u8,
+                qmsg: []const u8,
+                cwd: []const u8,
+                bmsg: []const u8,
+                atools: []const u8,
+                iurls: []const u8,
+                spm: []const u8,
+                iaur: []const u8,
             ) void {
-                // Task owns these slices — free them when done
-                defer di_inner.allocator.free(sid);
-                defer di_inner.allocator.free(qmsg);
-                defer di_inner.allocator.free(cwd);
-                defer di_inner.allocator.free(bmsg);
-                defer di_inner.allocator.free(atools);
-                defer di_inner.allocator.free(iurls);
-                defer di_inner.allocator.free(spm); 
-                defer di_inner.allocator.free(iaur); 
+                var arena_allocator = std.heap.ArenaAllocator.init(di_inner.allocator);
+                defer arena_allocator.deinit();
+                const local = arena_allocator.allocator();
+
+                // --- Heap-allocate data for the async task (task owns these, frees them) ---
+                const copy_session_id =  local.dupe(u8, sid) catch unreachable;
+                const copy_queue_message =  local.dupe(u8, qmsg) catch unreachable;
+                const copy_cwd =  local.dupe(u8, cwd) catch unreachable;
+                const copy_body_message =  local.dupe(u8, bmsg) catch unreachable;
+                const copy_allowed_tools = local.dupe(u8, atools) catch unreachable;
+                const copy_image_urls = local.dupe(u8, iurls) catch unreachable;
+                const copy_selected_profile_model = local.dupe(u8, spm) catch unreachable;
+                const copy_is_auto_retry_until_stop = local.dupe(u8, iaur) catch unreachable;
+
 
                 const event_bus = di_inner.event_bus;
                 event_bus.emit(ai_workflow.ai_workflow.RunParamsNew, "ai_worker_flow", .{
-                    .parent_session_id = sid,
-                    .session_id = sid,
-                    .message = qmsg,
-                    .cwd = cwd,
-                    .body = bmsg,
-                    .allowed_tools = atools,
+                    .parent_session_id = copy_session_id,
+                    .session_id = copy_session_id,
+                    .message = copy_queue_message,
+                    .cwd = copy_cwd,
+                    .body = copy_body_message,
+                    .allowed_tools = copy_allowed_tools,
                     .is_sub_agent = false,
-                    .image_urls = iurls,
-                    .selected_profile_model = spm, 
-                    .is_auto_retry_until_stop = iaur,
+                    .image_urls = copy_image_urls,
+                    .selected_profile_model = copy_selected_profile_model,
+                    .is_auto_retry_until_stop = copy_is_auto_retry_until_stop,
                 });
             }
         }.run,
-        .{ di, thread_session_id, thread_queue_message, thread_effective_cwd, thread_body_message, thread_allowed_tools, thread_image_urls, thread_selected_profile_model, thread_is_auto_retry_until_stop },
+        .{ di, session_id, queue_message, effective_cwd, body_message, allowed_tools, image_urls, selected_profile_model, is_auto_retry_until_stop },
     );
 
-    // ResponseSession.id must also outlive this function (caller may hold it)
-    // If the caller is also short-lived, adjust accordingly
-    const response_id = try di.allocator.dupe(u8, session_id);
+    ai_workflow.llm_history.updateTaskLastHumanTouchedAt(
+        alloc,
+        di.db,
+        session_id,
+        null,
+    ) catch |stamp_err| {
+        std.log.warn(
+            "session_create: stamp last_human_touched_at failed (non-fatal): {s}",
+            .{@errorName(stamp_err)},
+        );
+    };
+
 
     return ResponseSession{
-        .id = response_id,
+        .id = session_id,
         .name = session_name,
         .status = "send",
     };
@@ -251,10 +216,6 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
     const session_name = parsed.session_name;
     const effective_cwd = parsed.cwd_session;
     const effective_profile = parsed.selected_profile_model;
-    // Migration 063 — propagate the unattended-mode flag to the DB row.
-    // Coerce any non-"1" value to "0" so the NOT NULL DEFAULT 0 schema
-    // constraint is always satisfied (see project memory
-    // `sqlite-backend-empty-slice-binds-as-null`).
     const effective_auto_retry: []const u8 = blk: {
         if (std.mem.eql(u8, parsed.is_auto_retry_until_stop, "1")) break :blk "1";
         break :blk "0";
@@ -286,10 +247,6 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
         .created_at = "",
         .updated_at = "",
         .selected_profile_model = effective_profile,
-        // Migration 063 — carry the flag in the SSE payload so ChatsList's
-        // reactive badge updates without a refetch. Empty default
-        // matches the `create_session` helper's "" fallback for
-        // `last_finish_reason`.
         .is_auto_retry_until_stop = effective_auto_retry,
         .last_finish_reason = "",
     });
