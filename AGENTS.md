@@ -397,6 +397,36 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Kanban — Sort-by tasks (per-column, ⋮ menu)
+
+**Symptom (user report).** *"add feature to implement sort tasks kanban ... and they should persistentece in url"*. The kanban only sorted by `kanban_position` (drag-reorder). Then the user refined: *"put the sort in that three dot ... so everyl column can have independt sort"*. The user wanted per-column sort, accessed from each column's existing ⋮ menu (not a separate header button).
+
+**Architecture.** Sort state lives ENTIRELY inside each `<KanbanColumn>` instance — local refs (`sortBy`, `direction`), NOT in the store, NOT in the URL, NOT lifted to KanbanView. Two mounted columns can have different sorts simultaneously. Re-mounting a column (via KanbanView's `:key`) resets to Manual (today's drag-reorder behaviour).
+
+**UI flow.** Each column's existing ⋮ menu (Rename / Delete) gains a third entry: "Sort tasks…" between Rename and Delete. Clicking it opens a centered modal containing the same `<KanbanSortMenu>` component in `showTrigger=false` mode (just the 7 menu items, no trigger button, no document listeners — the modal owns backdrop + Esc close). v-model:sort-by + v-model:direction bind to the column's local refs. Picking an item closes the modal AND applies the sort immediately.
+
+**7 sort modes** (same as before):
+- Manual (position asc, default — preserves drag-to-reorder)
+- Created (newest / oldest)
+- Updated (newest / oldest)
+- Name (A→Z / Z→A)
+
+**cardsInColumn sort** — first by sortBy + direction, then by `kanban_position asc` as tiebreaker (matches the backend's `(sort_field, id)` tuple pagination). For sortBy='position', the primary key returns 0 and the tiebreaker dominates → kanban_position asc (today's behaviour, no regression).
+
+**Drag-to-reorder stays enabled in all modes.** Backend still writes `kanban_position` on drop. After a drop, the dragged card visually snaps back to its server-sorted position on the next reactive render. Same UX as the previous attempt (option B) — but applied per-column: column A sorted by Name (A→Z) still lets the user drag a card, and it lands at its server-sorted Name position.
+
+**Backend (1 line, no behaviour change).** 2 new behavioural tests in `llm_history.zig` lock in `sort_by=name` + `sort_by=created_at` coverage. The SQL `ORDER BY` in `listWorkspaceItemTasksWithCursor` already supported all 3 fields × 2 directions. No migration.
+
+**Files.** 3 modified (KanbanSortMenu.vue, KanbanColumn.vue, __tests__/KanbanColumn.sortMenu.spec.ts). No changes to the store, AppLayout, or api.getTasks. No URL persistence (sort is ephemeral view state per column).
+
+**Tests.** 12 net new behavioural tests in `KanbanColumn.sortMenu.spec.ts` + 6 new in `KanbanSortMenu.spec.ts` for the `showTrigger=false` modal mode. 0 static-contract tests added (banned by user rule 2026-07-29). Full suite: 1997/2009 pass, 12 pre-existing failures unchanged.
+
+**Verification.** `zig build test --summary all` 2181/2187 pass (no new failures). `zig build` clean (102 MB `nalar` + 35 MB `nalar-desktop` binaries). Cross-compile smoke: `x86_64-windows-gnu` + `aarch64-macos` both pass.
+
+**Branch / commits.** `worktree/kanban-sort-by` @ 5 commits (Task 1 backend, Task 2 showTrigger, Task 3 per-column state, Task 4 modal, this changelog).
+
+**Plan.** `docs/superpowers/plans/2026-08-06-kanban-sort-by.md`.
+
 ### 2026-08-06: Kanban chat — side-by-side pane → centered modal dialog
 
 **Symptom (pre-fix).** Opening a kanban task reshaped the layout into `[kanban 40%][resize-handle][ChatView 60%]` (kanban-embed-chatview, 2026-08-06). The board shrank every time a task was opened, and closing meant "back to full width but the chat pane was the default UX." For a focused kanban, the board is the hero and the chat is a focused event.

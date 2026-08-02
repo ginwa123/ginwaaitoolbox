@@ -89,7 +89,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 
 | Status | Count | Meaning |
 |---|---|---|
-| ✅ **Implemented** | 146 | Landed in current code — verified via PR # or commit ref (+2 from the 2026-08-06 round: `kanban-task-profile-selector` PR #161, `kanban-chat-as-dialog` worktree branch) |
+| ✅ **Implemented** | 147 | Landed in current code — verified via PR # or commit ref (+1 from the 2026-08-06 round: `kanban-sort-by` worktree branch) |
 | 🟡 **In Progress** | 6 | Partially landed; backend or frontend part shipped, not both (unchanged) |
 | ⏳ **Pending** | 2 | Plan is current and still relevant; no implementation found (`kanban-task-tags-autocomplete`, `sse-reconnect-plan`) |
 | ❌ **Superseded** | 2 | Replaced by a follow-up plan that did land (`constrain-design-elements-to-canvas` → `remove-canvas-background`, `design-per-page-chat-sessions` → `design-page-workspace-item-task-fk`) |
@@ -254,6 +254,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-08-06-kanban-create-task-run-agent.md` | ✅ | "Create task & run agent" button: primary flow collapses create-task + queue-first-message + navigate into one click. See §3.7.5 below. |
 | `2026-08-06-kanban-task-profile-selector.md` | ✅ | Profile-model picker in the New Task dialog (create mode). See §3.7.6 below. |
 | `2026-08-06-kanban-chat-as-dialog.md` | ✅ | Kanban chat converted from side-by-side pane to centered modal dialog. See §3.7.7 below. |
+| `2026-08-06-kanban-sort-by.md` | ✅ | Per-column sort: each column's ⋮ menu has "Sort tasks…" opening a centered modal with 7 sort modes (Manual / Created / Updated / Name × asc/desc). State is per-column (no URL persistence, no store). See §3.7.8 below. |
 
 #### 3.7.1 Kanban task "AI finished — awaiting review" notification icon (2026-07-26)
 
@@ -430,6 +431,42 @@ The kanban chat is no longer a side-by-side pane. It opens as a centered modal d
 **Files.** 7 (2 NEW, 4 EDIT, 1 DELETE). Frontend-only — no backend, no migration, no Zig changes.
 
 **Plan:** `docs/superpowers/plans/2026-08-06-kanban-chat-as-dialog.md`
+
+#### 3.7.8 Kanban per-column sort-by (2026-08-06)
+
+A "Sort tasks…" entry in each `<KanbanColumn>`'s existing ⋮ menu (between Rename and Delete) opens a centered modal hosting the same `<KanbanSortMenu>` component in `showTrigger=false` mode (just the 7 menu items). v-model binds to per-column local refs — each column has independent sort state.
+
+**7 sort modes** (all client-side, applied in `cardsInColumn`):
+
+| Mode | Primary key | Tiebreaker |
+|---|---|---|
+| **Manual** (default) | `kanban_position asc` | (the primary key itself) |
+| **Created (newest)** | `created_at desc` | `kanban_position asc` |
+| **Created (oldest)** | `created_at asc` | `kanban_position asc` |
+| **Updated (newest)** | `updated_at desc` | `kanban_position asc` |
+| **Updated (oldest)** | `updated_at asc` | `kanban_position asc` |
+| **Name (A → Z)** | `name asc` (BINARY collate) | `kanban_position asc` |
+| **Name (Z → A)** | `name desc` (BINARY collate) | `kanban_position asc` |
+
+The tiebreaker matches the backend's `(sort_field, id)` tuple pagination pattern — stable ordering across rows that share the same primary-key value.
+
+**State lives entirely inside `<KanbanColumn>`** — `sortBy` + `direction` refs. No store, no URL, no lift to KanbanView. Two mounted columns can have different sorts simultaneously. Re-mounting a column (via KanbanView's `:key`) resets to Manual.
+
+**Why per-column (not per-board).** The user explicitly chose: *"everyl column can have independt sort"*. Each column is a sub-list with its own visual rhythm — column A may be sorted by Name for triage while column B stays on Manual drag-reorder.
+
+**No URL persistence.** The kanban's URL (`?view=workspace&workspaceId=...&itemId=...`) still works; we don't add `?sort=...&dir=...`. Sort is ephemeral view state — same lifecycle as drag-reorder order (re-mount resets it).
+
+**Drag-to-reorder stays enabled in all modes.** The backend's drop handler still writes `kanban_position` on drop. After a drop, the card visually snaps back to its server-sorted position on the next reactive render. The user can pick Manual to re-enable persistent drag-reorder.
+
+**Modal close behaviour.** Backdrop click + Esc + item-select all close the modal. The component listens for `document` `keydown` with `key === 'Escape'`, guarded by `sortModalOpen` to avoid stealing focus from other modals (KanbanTaskDetailDialog etc).
+
+**Backend (1 line, no behaviour change).** 2 new behavioural tests in `llm_history.zig` lock in `sort_by=name` + `sort_by=created_at` coverage. The SQL `ORDER BY` in `listWorkspaceItemTasksWithCursor` already supported all 3 fields × 2 directions. No migration.
+
+**Files.** 3 modified (`KanbanSortMenu.vue`, `KanbanColumn.vue`, `__tests__/KanbanColumn.sortMenu.spec.ts`). Frontend-only — no backend, no migration, no Zig changes beyond 2 inline test cases.
+
+**Tests.** 18 net new behavioural tests across 2 files (12 in `KanbanColumn.sortMenu.spec.ts`, 6 in `KanbanSortMenu.spec.ts` for the new `showTrigger=false` mode). 0 static-contract tests added (banned by user rule 2026-07-29). Full suite: 1997/2009 pass, 12 pre-existing failures unchanged.
+
+**Plan:** `docs/superpowers/plans/2026-08-06-kanban-sort-by.md`
 
 ### 3.8 Frontend — Design Canvas (Workspace Item Type)
 
