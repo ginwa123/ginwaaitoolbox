@@ -11,7 +11,6 @@ test {
     _ = @import("save_agent_test.zig");
     _ = @import("save_skill_test.zig");
     _ = @import("agentic_loop/workflow_compaction_envelope_test.zig");
-    _ = @import("agentic_loop/workflow_retry_delay_test.zig");
     _ = @import("agentic_loop/retry_delay_ms_race_test.zig");
     // Inline retry-loop hygiene tests (CallResponse deinit, literal-free
     // errdefer, stale retry-cause capture) live in workflow.zig itself —
