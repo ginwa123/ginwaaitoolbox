@@ -397,6 +397,28 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: SSE kanban — mirror local task column on move/assign/unassign (no more duplicate after agent moves)
+
+**Symptom (user report, task_1785688388584).** Agent runs `kanban_move_task` to move a task from column A to column B. The frontend's `kanbanTask` SSE event triggers a `fetchKanbanTasks(colB)` refetch, which merges the fresh wire response on top of a local task whose `kanban_column_id` is still `'colA'` (nothing locally mirrored the move). The merge keeps the stale source copy AND adds the fresh dest copy — user sees the task in BOTH columns. After refresh, the duplicate disappears.
+
+**Root cause.** `fetchKanbanTasks` (workspaces.ts:1231-1235) assumes the local task's `kanban_column_id` is authoritative for what's in each column. User-initiated moves don't hit this because `moveTaskToColumn` mutates the local id before the SSE round-trip. Agent moves skip that path entirely.
+
+**Fix (surgical frontend-only).** New `mirrorKanbanTaskMove` action on the workspaces store. The SSE handler in `kanbanSse.ts` calls it BEFORE `fetchKanbanTasks` / `fetchKanbanTasksForAllColumns` on every `task_id` event except `human_touched` (whose payload carries null and is not a move). After the mirror, the merge logic correctly excludes the stale source-column copy.
+
+**Files.** 5 changed:
+- `src/apps/desktop/src/stores/workspaces.ts` — new `mirrorKanbanTaskMove` action + export.
+- `src/apps/desktop/src/stores/kanbanSse.ts` — mirror call in the `task_id` branch.
+- `src/apps/desktop/src/api/index.ts` — fix the `KanbanTaskEvent` action union: add `'human_touched'` (was missing even though the backend emits it for the human-interaction stamp; TS narrowing was hiding the gap).
+- `src/apps/desktop/src/__tests__/kanbanSseMirrorMove.spec.ts` (new) — 8 behavioural tests covering moved/assigned/unassigned, full integration (merge produces no duplicates), unknown-task no-op, human_touched bypass, idempotent re-dispatch.
+- `docs/superpowers/plans/2026-08-06-sse-kanban-move-duplicate-task.md` (new) — plan + root cause analysis.
+
+**Verification.**
+- `bun run build` clean (vue-tsc passes).
+- `bunx vitest run` — 2024 pass / 12 fail. The 12 failures are exactly the pre-existing baseline (5 DesignView.undoHidden + 1 DesignElement static contract + 1 DesignView.nudge clamp + 1 AppLayout.translateResize + 4 AppLayout.memoriesGate). No regressions from this fix.
+- 8 new tests in `kanbanSseMirrorMove.spec.ts` all pass.
+
+**Branch / commit.** `worktree/sse-kanban-move-duplicate` @ `0eade9d3`.
+
 ### 2026-08-06: Kanban — VirtualScroller integration + default-sort URL behavior + no-default API params
 
 **Three related changes (kanban-sort-by continuation, 2026-08-06).**

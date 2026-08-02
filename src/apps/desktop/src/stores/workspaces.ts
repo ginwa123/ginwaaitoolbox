@@ -1490,6 +1490,48 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Mirror a kanban task's column (and optional position) into the
+  // local store WITHOUT an HTTP round-trip. Used by the SSE handler
+  // in `kanbanSse.ts` to update local state when a `kanban_task`
+  // event arrives for a move/assign/unassign action that was
+  // initiated by a non-UI client (e.g. the agent's `kanban_move_task`
+  // tool). Without this mirror, `fetchKanbanTasks` (called
+  // immediately after by the SSE handler) merges the fresh wire
+  // response on top of a stale local copy whose `kanban_column_id`
+  // still points to the SOURCE column — producing a visible
+  // duplicate in the user's UI until the next page refresh.
+  //
+  // Plan: docs/superpowers/plans/2026-08-06-sse-kanban-move-duplicate-task.md
+  //
+  // Contract:
+  //   - `newColumnId`: the destination column id (`null` for
+  //     unassign). Setting `null` removes the task from any column
+  //     locally; the next fetch will not include it in `otherTasks`.
+  //   - `newPosition`: optional — when provided, the task's
+  //     `kanban_position` is updated; when omitted, the local
+  //     position is preserved.
+  //   - Idempotent no-op when the item or task isn't in the local
+  //     store (defensive against SSE events arriving before the
+  //     initial board load, or for events from other clients that
+  //     we don't track).
+  //   - Returns `void`.
+  function mirrorKanbanTaskMove(
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+    newColumnId: string | null,
+    newPosition?: number,
+  ): void {
+    const item = findItem(workspaceId, itemId)
+    if (!item || !item.tasks) return
+    const task = item.tasks.find((t) => t.id === taskId)
+    if (!task) return
+    task.kanban_column_id = newColumnId
+    if (newPosition !== undefined) {
+      task.kanban_position = newPosition
+    }
+  }
+
   // ─── Design mode actions (Chunk 6 of design-mode-redesign plan) ──────
   //
   // These 5 actions back the design canvas / layers panel / properties
@@ -3393,6 +3435,14 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     deleteKanbanColumn,
     reorderKanbanColumn,
     moveTaskToColumn,
+    // NEW (sse-kanban-move-duplicate-task plan, 2026-08-06): SSE
+    // handler calls this BEFORE triggering the refetch on a
+    // kanban_task move/assign/unassign event so the local task's
+    // `kanban_column_id` matches the wire state. Without this
+    // mirror, `fetchKanbanTasks`'s merge logic keeps the stale
+    // source-column copy AND adds the fresh destination-column copy,
+    // producing a visible duplicate in the UI until refresh.
+    mirrorKanbanTaskMove,
     updateKanbanItemPath,
     updateKanbanItemName,
     fetchKanbanColumns,
