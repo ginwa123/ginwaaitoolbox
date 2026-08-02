@@ -4838,3 +4838,93 @@ test "listWorkspaceItemTasksWithCursor with nonexistent q returns empty + has_mo
     try testing.expectEqual(@as(usize, 0), result.tasks.len);
     try testing.expect(!result.has_more);
 }
+
+// ─── Contract 12: sort by name returns A→Z (asc) and Z→A (desc) ─────────
+//
+// Locks in the kanban-sort-by plan (2026-08-06). Pre-fix this contract
+// was untested — only `.updated_at` sorts were exercised. The kanban
+// sort dropdown relies on name asc/desc ordering; a regression here
+// would silently mis-order the board.
+
+test "listWorkspaceItemTasksWithCursor sorts by name asc and desc" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Insert in non-alphabetical order so a correct sort proves
+    // itself (insertion-order is not the natural return order).
+    try insertTask(&ctx, alloc, "task_z", "Zeta", "", "[]");
+    try insertTask(&ctx, alloc, "task_a", "Alpha", "", "[]");
+    try insertTask(&ctx, alloc, "task_m", "Mike", "", "[]");
+
+    const asc = try listWorkspaceItemTasksWithCursor(
+        alloc, &ctx.db, "wi_1", 100, null, .name, .asc, null,
+    );
+    defer freeTasks(alloc, asc.tasks);
+    try testing.expectEqual(@as(usize, 3), asc.tasks.len);
+    try testing.expectEqualStrings("Alpha", asc.tasks[0].name);
+    try testing.expectEqualStrings("Mike", asc.tasks[1].name);
+    try testing.expectEqualStrings("Zeta", asc.tasks[2].name);
+
+    const desc = try listWorkspaceItemTasksWithCursor(
+        alloc, &ctx.db, "wi_1", 100, null, .name, .desc, null,
+    );
+    defer freeTasks(alloc, desc.tasks);
+    try testing.expectEqual(@as(usize, 3), desc.tasks.len);
+    try testing.expectEqualStrings("Zeta", desc.tasks[0].name);
+    try testing.expectEqualStrings("Mike", desc.tasks[1].name);
+    try testing.expectEqualStrings("Alpha", desc.tasks[2].name);
+}
+
+// ─── Contract 13: sort by created_at returns oldest/newest first ────────
+//
+// Locks in the kanban-sort-by plan (2026-08-06). The created_at column
+// is NOT set by insertTask (it defaults to NULL), so this test must
+// explicitly UPDATE created_at to deterministic values per row. Sort
+// by created_at uses the same (sort_field, id) tuple pagination as
+// updated_at — locking in the SQL ORDER BY also locks the next_cursor
+// format used by the handler.
+
+test "listWorkspaceItemTasksWithCursor sorts by created_at asc and desc" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Insert with the same updated_at so updated_at is not a
+    // tiebreaker; the test exercises the created_at ORDER BY alone.
+    try insertTask(&ctx, alloc, "task_old", "oldest", "", "[]");
+    try insertTask(&ctx, alloc, "task_mid", "middle", "", "[]");
+    try insertTask(&ctx, alloc, "task_new", "newest", "", "[]");
+
+    // Set explicit created_at values (oldest < middle < newest) so the
+    // sort is deterministic regardless of insertion order.
+    try ctx.db.exec(alloc,
+        "UPDATE workspace_item_tasks SET created_at = '2024-01-01 00:00:00' WHERE id = 'task_old'",
+        &.{});
+    try ctx.db.exec(alloc,
+        "UPDATE workspace_item_tasks SET created_at = '2024-06-15 12:00:00' WHERE id = 'task_mid'",
+        &.{});
+    try ctx.db.exec(alloc,
+        "UPDATE workspace_item_tasks SET created_at = '2024-12-31 23:59:59' WHERE id = 'task_new'",
+        &.{});
+
+    const asc = try listWorkspaceItemTasksWithCursor(
+        alloc, &ctx.db, "wi_1", 100, null, .created_at, .asc, null,
+    );
+    defer freeTasks(alloc, asc.tasks);
+    try testing.expectEqual(@as(usize, 3), asc.tasks.len);
+    try testing.expectEqualStrings("task_old", asc.tasks[0].id);
+    try testing.expectEqualStrings("task_mid", asc.tasks[1].id);
+    try testing.expectEqualStrings("task_new", asc.tasks[2].id);
+
+    const desc = try listWorkspaceItemTasksWithCursor(
+        alloc, &ctx.db, "wi_1", 100, null, .created_at, .desc, null,
+    );
+    defer freeTasks(alloc, desc.tasks);
+    try testing.expectEqual(@as(usize, 3), desc.tasks.len);
+    try testing.expectEqualStrings("task_new", desc.tasks[0].id);
+    try testing.expectEqualStrings("task_mid", desc.tasks[1].id);
+    try testing.expectEqualStrings("task_old", desc.tasks[2].id);
+}
