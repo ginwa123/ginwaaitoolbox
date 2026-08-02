@@ -51,7 +51,15 @@
 //! (which is the dev machine and CI host). macOS/Windows require
 //! matching manual extern declarations (already scaffolded in
 //! `Postgres.zig` — see the file-level comment for the pad).
-
+//!
+//! ## How tests are isolated
+//!
+//! The actual CREATE / DROP DATABASE / per-test conninfo plumbing
+//! lives in `test_helpers.zig`. This file just calls into it via
+//! thin `setupDb` / `teardown` wrappers so each test stays
+//! readable. See `test_helpers.zig` for the full API (including
+//! `createTempDb` / `dropTempDb` for any future test that wants
+//! a per-test isolated database).
 const std = @import("std");
 const testing = std.testing;
 const builtin = @import("builtin");
@@ -59,222 +67,38 @@ const builtin = @import("builtin");
 const postgres_mod = @import("Postgres.zig");
 const PostgresBackend = postgres_mod.PostgresBackend;
 const Error = postgres_mod.Error;
-
-// ─── Test environment ─────────────────────────────────────────────────────
-//
-// Detects (or starts) a PostgreSQL instance for testing. The shared
-// instance pattern lets us run many tests in series against the same
-// running server, with each test creating + dropping its own database
-// for true isolation.
-
-const DEFAULT_TEST_CONNINFO = "host=/tmp port=54329 user=ginwa dbname=postgres";
-
-/// Returns the test conninfo and a flag indicating whether PostgreSQL
-/// is reachable. If `is_available` is false, all tests should skip
-/// with `return;`.
-const TestEnv = struct {
-    conninfo: []const u8,
-    is_available: bool,
-};
-
-fn getTestInstance(allocator: std.mem.Allocator) TestEnv {
-    // Try POSTGRES_TEST_CONNINFO env var first — lets users override
-    // the test target (e.g. to a remote PG instance).
-    if (std.c.getenv("POSTGRES_TEST_CONNINFO")) |raw| {
-        const span = std.mem.span(raw);
-        const dup = allocator.dupeZ(u8, span) catch return .{
-            .conninfo = "",
-            .is_available = false,
-        };
-        return .{ .conninfo = dup, .is_available = testConnect(dup) };
-    }
-
-    // Default: local dev instance on port 54329 (matches what the
-    // README documents — see "Postgres tests" section).
-    return .{
-        .conninfo = DEFAULT_TEST_CONNINFO,
-        .is_available = testConnect(DEFAULT_TEST_CONNINFO),
-    };
-}
-
-/// One-shot connectivity probe. Returns true if the server accepted
-/// the connection. Uses libpq directly so we don't have to construct
-/// a PostgresBackend just to probe.
-fn testConnect(conninfo: [:0]const u8) bool {
-    // Reuse the c bindings from PostgresBackend. Accessing them via
-    // a throwaway instance is the cleanest way to share the c
-    // struct without re-declaring it here.
-    const Dummy = struct {
-        const c = PostgresBackend.c;
-    };
-    const conn = Dummy.c.PQconnectdb(conninfo.ptr);
-    defer if (conn) |c| Dummy.c.PQfinish(c);
-    if (conn == null) return false;
-    return Dummy.c.PQstatus(conn) == Dummy.c.CONNECTION_OK;
-}
+const helpers = @import("test_helpers.zig");
 
 // ─── Per-test isolation ──────────────────────────────────────────────────
+//
+// All the test-instance probing, per-test temp-DB creation, and
+// DROP-DATABASE cleanup lives in `test_helpers.zig`. The thin wrappers
+// below exist so this file can keep its terse `setupDb(env)` /
+// `teardown(ctx)` shape that mirrors sqlite_test.zig, while the real
+// implementation is shared and reusable by other test files.
 
-/// Context returned by `setupDb` — holds the backend, the Io runtime,
-/// the random DB name, and the shared conninfo string used for cleanup.
-const DbCtx = struct {
-    db: PostgresBackend,
-    threaded: std.Io.Threaded,
-    db_name: []u8,
-    conninfo: []const u8,
-};
+const TestEnv = helpers.TestEnv;
+const DbCtx = helpers.TestDb;
 
-/// Per-test: create a fresh database via `CREATE DATABASE` on the
-/// shared instance, then open a `PostgresBackend` against it. Returns
-/// the test context. Caller MUST call `teardown` on the returned
-/// value.
+fn ensureEnv(allocator: std.mem.Allocator) *const TestEnv {
+    _ = helpers.getOrStartTestInstance(allocator);
+    // We always return the (possibly empty) cached env so tests can
+    // gate on `is_available`. The cache is a global singleton so the
+    // first call to `getOrStartTestInstance` does the network probe;
+    // every subsequent call is a no-op.
+    return &helpers.g_test_env;
+}
+
 fn setupDb(allocator: std.mem.Allocator, env: *const TestEnv) !DbCtx {
     if (!env.is_available) return error.PostgresUnavailable;
-
-    // 1. Generate a unique DB name.
-    // Use an atomic counter + thread-id-ish bits to guarantee uniqueness
-    // across parallel test invocations within the same process.
-    const counter_value = nextDbCounter();
-    const pid_bits: u64 = @intCast(std.os.linux.gettid());
-    const db_name = try std.fmt.allocPrint(
-        allocator,
-        "nalar_pg_test_{x}_{x}",
-        .{ pid_bits, counter_value },
-    );
-    errdefer allocator.free(db_name);
-
-    // 2. Use a temporary admin connection to CREATE DATABASE.
-    {
-        const admin_conn = postgres_mod.PostgresBackend.c.PQconnectdb(env.conninfo.ptr);
-        defer if (admin_conn) |c| postgres_mod.PostgresBackend.c.PQfinish(c);
-        if (admin_conn == null) return Error.DatabaseNotFound;
-        if (postgres_mod.PostgresBackend.c.PQstatus(admin_conn) != postgres_mod.PostgresBackend.c.CONNECTION_OK) {
-            return Error.DatabaseNotFound;
-        }
-
-        const create_sql = try std.fmt.allocPrint(allocator, "CREATE DATABASE {s}", .{db_name});
-        defer allocator.free(create_sql);
-        const create_sql_z = try allocator.allocSentinel(u8, create_sql.len, 0);
-        defer allocator.free(create_sql_z);
-        @memcpy(create_sql_z, create_sql);
-
-        const result = postgres_mod.PostgresBackend.c.PQexec(admin_conn, create_sql_z.ptr);
-        defer if (result) |r| postgres_mod.PostgresBackend.c.PQclear(r);
-        if (result == null) return Error.ExecuteFailed;
-        const status = postgres_mod.PostgresBackend.c.PQresultStatus(result);
-        if (status != postgres_mod.PostgresBackend.c.PGRES_COMMAND_OK) {
-            const err_msg = postgres_mod.PostgresBackend.c.PQresultErrorMessage(result);
-            std.log.warn("CREATE DATABASE failed: {s}", .{err_msg});
-            return Error.ExecuteFailed;
-        }
-    }
-
-    // 3. Open a PostgresBackend against the new database.
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    errdefer threaded.deinit();
-    const io = threaded.io();
-
-    // Build the per-db conninfo: take env.conninfo, drop any dbname=,
-    // append dbname=db_name.
-    const db_conninfo = try buildDbConninfo(allocator, env.conninfo, db_name);
-    defer allocator.free(db_conninfo);
-
-    var db: PostgresBackend = .{};
-    errdefer db.deinit();
-    try db.init(io, db_conninfo);
-
-    return .{
-        .db = db,
-        .threaded = threaded,
-        .db_name = db_name,
-        .conninfo = env.conninfo,
-    };
+    return helpers.createTempDb(allocator, env.conninfo);
 }
 
-/// Take a base conninfo, strip any `dbname=...` clause, and append
-/// `dbname=<wanted>`. libpq allows multiple keys; later ones win on
-/// duplication, so we strip to be safe.
-fn buildDbConninfo(allocator: std.mem.Allocator, base: []const u8, wanted: []const u8) ![:0]u8 {
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer out.deinit(allocator);
-
-    var i: usize = 0;
-    while (i < base.len) {
-        // Find the next space (key/value separators in libpq conninfo).
-        var end = i;
-        while (end < base.len and base[end] != ' ') end += 1;
-        const token = base[i..end];
-
-        // Skip any existing dbname= clause.
-        if (!std.mem.startsWith(u8, token, "dbname=")) {
-            if (out.items.len > 0) try out.append(allocator, ' ');
-            try out.appendSlice(allocator, token);
-        }
-        i = end;
-        while (i < base.len and base[i] == ' ') i += 1;
-    }
-
-    // Append the wanted dbname.
-    if (out.items.len > 0) try out.append(allocator, ' ');
-    try out.appendSlice(allocator, "dbname=");
-    try out.appendSlice(allocator, wanted);
-
-    // NUL-terminate.
-    try out.append(allocator, 0);
-    return out.toOwnedSliceSentinel(allocator, 0);
-}
-
-/// Close the backend, then DROP DATABASE on the admin connection.
-/// Mirrors the order in `sqlite_test.zig::teardown` — backend close
-/// before DROP so PG doesn't reject the DROP with "database is being
-/// accessed by other users".
 fn teardown(allocator: std.mem.Allocator, ctx: *DbCtx) void {
-    // 1. Close the per-test backend.
-    ctx.db.deinit();
-    ctx.threaded.deinit();
-
-    // 2. Open an admin connection to drop the test DB. Use
-    // `DROP DATABASE WITH (FORCE)` (PostgreSQL 13+) to terminate any
-    // lingering connections to the test DB. The test connection was
-    // closed above, but if anything else (e.g. a leftover idle
-    // connection in PG's pool) is still attached, FORCE makes the
-    // DROP succeed anyway.
-    const admin_conn = postgres_mod.PostgresBackend.c.PQconnectdb(ctx.conninfo.ptr);
-    defer if (admin_conn) |c| postgres_mod.PostgresBackend.c.PQfinish(c);
-    if (admin_conn == null) return;
-    if (postgres_mod.PostgresBackend.c.PQstatus(admin_conn) != postgres_mod.PostgresBackend.c.CONNECTION_OK) return;
-
-    const drop_sql = std.fmt.allocPrint(
-        allocator,
-        "DROP DATABASE IF EXISTS {s} WITH (FORCE)",
-        .{ctx.db_name},
-    ) catch return;
-    defer allocator.free(drop_sql);
-    const drop_sql_z = allocator.allocSentinel(u8, drop_sql.len, 0) catch return;
-    defer allocator.free(drop_sql_z);
-    @memcpy(drop_sql_z, drop_sql);
-
-    const result = postgres_mod.PostgresBackend.c.PQexec(admin_conn, drop_sql_z.ptr);
-    defer if (result) |r| postgres_mod.PostgresBackend.c.PQclear(r);
-    if (result) |r| {
-        if (postgres_mod.PostgresBackend.c.PQresultStatus(r) != postgres_mod.PostgresBackend.c.PGRES_COMMAND_OK) {
-            const err_msg = postgres_mod.PostgresBackend.c.PQresultErrorMessage(r);
-            std.log.warn("DROP DATABASE WITH (FORCE) failed: {s}", .{err_msg});
-        }
-    }
-
-    allocator.free(ctx.db_name);
+    helpers.dropTempDb(allocator, ctx);
 }
 
 // ─── Test helpers ─────────────────────────────────────────────────────────
-
-/// Atomic counter for unique DB names. Increments on every `setupDb`
-/// call so even concurrent test invocations within the same process
-/// don't collide on the same database name.
-var g_db_counter: u64 = 0;
-fn nextDbCounter() u64 {
-    return @atomicRmw(u64, &g_db_counter, .Add, 1, .seq_cst);
-}
 
 /// Run a single-column SELECT and return a duplicated copy of the first
 /// row's first column. Returns null when the query produces no rows.
@@ -287,21 +111,6 @@ fn scalarText(alloc: std.mem.Allocator, db: *PostgresBackend, sql: []const u8, a
         return try alloc.dupe(u8, row.values[0]);
     }
     return null;
-}
-
-// ─── Suite-level availability gate ────────────────────────────────────────
-
-/// One-time initialization: probe the test instance. Tests skip
-/// themselves when `is_available` is false.
-var g_test_env: TestEnv = undefined;
-var g_test_env_initialized: bool = false;
-
-fn ensureEnv(allocator: std.mem.Allocator) *const TestEnv {
-    if (!g_test_env_initialized) {
-        g_test_env = getTestInstance(allocator);
-        g_test_env_initialized = true;
-    }
-    return &g_test_env;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
