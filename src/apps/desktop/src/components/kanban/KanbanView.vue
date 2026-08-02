@@ -98,14 +98,41 @@ const effectiveItemId = computed(() => props.itemId || props.item.id)
 // `workspacesStore.activeTask` getter is consumed by the dialog,
 // not by this component.
 
-const loadColumns = () => {
-  if (props.workspaceId && effectiveItemId.value) {
-    void workspacesStore.fetchKanbanColumns(props.workspaceId, effectiveItemId.value)
-  }
+// Per-column initial fetch (Option B, 2026-08-06): KanbanView
+// must load columns FIRST (their ids are needed to issue the
+// `?column_id=col_xxx` query per column), then fire one
+// `fetchKanbanTasks(col_x)` PER column. We chain the two awaits
+// inside `loadColumnsAndTasks` to ensure ordering. The
+// per-column fetch skips itself if columnPagination is already
+// populated (the user navigated back to a kanban whose state we
+// already have — re-fetching is wasteful and would flash).
+const loadColumnsAndTasks = async () => {
+  if (!props.workspaceId || !effectiveItemId.value) return
+  const wsId = props.workspaceId
+  const itemId = effectiveItemId.value
+  // Step 1: load columns (needed for column ids). This is the
+  // existing behaviour — restores after column add/delete/move.
+  await workspacesStore.fetchKanbanColumns(wsId, itemId)
+  // Step 2: fire per-column fetches for the first page. Fetches
+  // skip columns whose columnPagination is already populated
+  // (the user has visited this kanban before and the tasks are
+  // still fresh — no need to re-fetch).
+  const item = workspacesStore.workspaces
+    .find((ws) => ws.id === wsId)
+    ?.items.find((it) => it.id === itemId)
+  if (!item) return
+  const cp = item.columnPagination ?? {}
+  const needFetch = (item.kanban_columns ?? []).filter((col) => !cp[col.id])
+  if (needFetch.length === 0) return
+  await Promise.all(
+    needFetch.map((col) =>
+      workspacesStore.fetchKanbanTasks(wsId, itemId, col.id, 10),
+    ),
+  )
 }
 
-onMounted(loadColumns)
-watch(() => [props.workspaceId, effectiveItemId.value], loadColumns)
+onMounted(loadColumnsAndTasks)
+watch(() => [props.workspaceId, effectiveItemId.value], loadColumnsAndTasks)
 
 // ─── Horizontal scroll position preservation ──────────────────────────
 //

@@ -1274,12 +1274,20 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // one place we DON'T use this — it fires per the affected column
   // only (see kanbanSse.ts).
   //
-  // Cancellation: if `item.kanban_columns` is empty (the columns
-  // haven't loaded yet — fetchKanbanColumns is in flight), this is a
-  // no-op. The caller is expected to re-invoke once the columns
-  // arrive. KanbanView.vue does this implicitly: it calls
-  // fetchKanbanColumns on mount and the column iteration happens
-  // once the columns store populates.
+  // Wait for columns: if `item.kanban_columns` is empty (the
+  // columns haven't loaded yet — fetchKanbanColumns is in flight),
+  // we wait for the columns to land before issuing per-column task
+  // fetches. This means callers can fire this action WITHOUT first
+  // calling fetchKanbanColumns. KanbanView.vue's onMount still
+  // calls `fetchKanbanColumns` first for the column ids, then this
+  // — but search/sort watchers don't need to repeat that.
+  //
+  // CRITICAL: this function ALWAYS refetches (never skips columns
+  // that already have data). The mount path uses selective fetching
+  // to avoid redundant requests when the user navigates back to a
+  // kanban whose state we already have — KanbanView.vue's
+  // onMount calls `fetchKanbanTasks(col.id, ...)` directly in that
+  // case instead of going through this helper.
   async function fetchKanbanTasksForAllColumns(
     workspaceId: string,
     itemId: string,
@@ -1290,13 +1298,15 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   ): Promise<void> {
     const item = findItem(workspaceId, itemId)
     if (!item) return
-    const columns = item.kanban_columns ?? []
+    let columns = item.kanban_columns ?? []
     if (columns.length === 0) {
-      // No columns loaded yet — defer to the next call (caller
-      // usually retries via watch on kanban_columns or via
-      // fetchKanbanColumns.then()).
-      return
+      // No columns loaded yet — fetch them first so we have ids.
+      // fetchKanbanColumns is idempotent (just an HTTP GET), safe
+      // to call even if the columns are already in flight.
+      await fetchKanbanColumns(workspaceId, itemId)
+      columns = item.kanban_columns ?? []
     }
+    if (columns.length === 0) return // still empty → board has no columns
     // Fire one fetch per column in parallel. Each fetch updates
     // its own slice of item.tasks + its own columnPagination entry.
     await Promise.all(
