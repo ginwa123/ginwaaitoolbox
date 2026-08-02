@@ -44,6 +44,7 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("llm_history_routines_test.zig");
     _ = @import("llm_history_compacted_messages_test.zig");
     _ = @import("llm_history_search_messages_fts_test.zig"); // search_history rewrite (Chunk 2)
+    _ = @import("llm_history_search_fts_query_safety_test.zig"); // better-tool-output-error-message — FTS5 query sanitization regression tests
     _ = @import("llm_history_worker_info_test.zig"); // NEW: sprint 2 "git worktree cwd, worker"
     _ = @import("llm_history_description_test.zig"); // Migration 062 description propagation
     _ = @import("llm_history_notification_test.zig"); // Migration 065 — kanban needs_human_review + updateTaskLastHumanTouchedAt
