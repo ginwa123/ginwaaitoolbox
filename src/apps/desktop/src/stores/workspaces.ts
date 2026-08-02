@@ -345,6 +345,17 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Active task within the selected workspace item
   const activeTaskId = ref<string | null>(null)
 
+  // Kanban sort-by round-trip preservation (plan 2026-08-06-kanban-
+  // sort-by.md): when the user opens a kanban task from the kanban
+  // board, Sidebar snapshots the current `?sorts=` into this field.
+  // When the user closes the task view (AppLayout.handleCloseTaskView),
+  // we read from this field and write it back into the URL — so a
+  // round-trip through the chat view preserves the user's per-column
+  // sort choices. Plain string (not a Map) — one item at a time, the
+  // most recently navigated-to kanban. Module-level state across
+  // components via the Pinia store.
+  const savedSortsParam = ref<string>('')
+
   // NEW (Chunk 1 of design-element-drag-and-drop plan). The currently
   // active design page id, set by DesignView on mount / tab switch and
   // cleared on unmount. Read by AppLayout's design handlers
@@ -3285,6 +3296,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     activeWorkspaceItemId,
     expandedItemIds,
     activeTaskId,
+    // Kanban sort-by round-trip preservation (plan 2026-08-06):
+    // snapshots the active `?sorts=` when the user enters a task
+    // view, read back by AppLayout.handleCloseTaskView to restore
+    // the sort URL on close. Plain ref (no setter needed — direct
+    // assignment from Sidebar.vue's handleSelectTask).
+    savedSortsParam,
     // NEW (Chunk 1 of design-element-drag-and-drop plan): the currently
     // active design page id, mirrored from DesignView so AppLayout's
     // design handlers can route PATCH/PUT/DELETE to the right page.

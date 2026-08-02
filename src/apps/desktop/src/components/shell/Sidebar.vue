@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, inject, type Ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
@@ -30,6 +30,7 @@ import * as api from '../../api'
 const isLLMProcessing = inject<Ref<boolean>>('isLLMProcessing', ref(false))
 
 const router = useRouter()
+const route = useRoute()
 const navigationStore = useNavigationStore()
 
 const props = defineProps<{
@@ -784,6 +785,16 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
 }
 
 const handleSelectTask = (taskId: string) => {
+  // Kanban sort-by (plan 2026-08-06-kanban-sort-by.md): when the user
+  // opens a task from the kanban, save the current `?sorts=` so the
+  // close handler in AppLayout can restore it. Without this, the
+  // round-trip through the chat view drops the sort (the URL gets
+  // rewritten to `?view=task&task=Y`, then back to `?view=workspace&...`
+  // without sorts).
+  const currentSorts = route.query?.sorts
+  if (typeof currentSorts === 'string' && currentSorts.length > 0) {
+    workspacesStore.savedSortsParam = currentSorts
+  }
   workspacesStore.setActiveTask(taskId)
   // Mutually exclusive active state: task wins, clear any active chat row in ChatsList.
   if (chatsListRef.value) {
