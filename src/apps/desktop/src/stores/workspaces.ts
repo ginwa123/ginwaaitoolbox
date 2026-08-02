@@ -38,14 +38,17 @@ export interface WorkspaceItem {
   isLoading?: boolean      // Loading state
   expanded?: boolean       // Whether nested contents are expanded
   tasks?: Task[]           // Tasks within this project
-  // Pagination state for the task list. Populated when tasks are first
-  // fetched (in init()) and reset whenever tasks are reloaded. `null`
-  // next_cursor means there are no more pages. `isLoadingMoreTasks` is
-  // per-item and independent of `isLoading` (which is for the folder
-  // entry fetch). See loadMoreTasks action below.
-  hasMoreTasks?: boolean
-  tasksNextCursor?: string | null
-  isLoadingMoreTasks?: boolean
+  // Per-column pagination state (kanban-per-column-pagination plan,
+  // 2026-08-06). Replaces the board-wide `hasMoreTasks` /
+  // `tasksNextCursor` / `isLoadingMoreTasks` triple. Each column
+  // paginates independently — the auto-load sentinel + manual "Load
+  // more" button in `KanbanColumn.vue` reads from
+  // `columnPagination[col.id]`. Populated when tasks are first fetched
+  // (in fetchKanbanTasks) and reset on SSE refetch / search / sort.
+  // `null` cursor means there are no more pages. `isLoading` is
+  // per-column and independent of `isLoading` (which is for the folder
+  // entry fetch). See `loadMoreTasksForColumn` action below.
+  columnPagination?: Record<string, ColumnPaginationState>
   // NEW (Chunk 4 of workspace-item-kanban plan). Populated for
   // `item_type === 'kanban'` items. Optional so legacy literals
   // (5+ test files construct WorkspaceItem without this field) keep
@@ -58,6 +61,20 @@ export interface WorkspaceItem {
   // without this field) keep type-checking — see the
   // nalar-frontend-task-literal-typing-rule memory.
   design_elements?: DesignElement[]
+}
+
+// Per-column pagination state (kanban-per-column-pagination plan,
+// 2026-08-06). Each kanban column has its own cursor + hasMore
+// flag so the auto-load sentinel + manual "Load more" button in
+// `KanbanColumn.vue` can fetch the next page for ONE column without
+// touching the others. `cursor` is the OPAQUE value returned by the
+// backend (currently `<sort_value>|<id>`) — the API client does not
+// interpret it, just forwards it on the next "Load more" click.
+// `cursor: null` means there are no more pages for this column.
+export interface ColumnPaginationState {
+  cursor: string | null
+  hasMore: boolean
+  isLoading: boolean
 }
 
 export interface Workspace {
@@ -529,14 +546,32 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
                   // card UI and dialog rely on tags being a string[].
                   tasksByItem.set(item.id, tasks.map(normalizeTaskTags))
                 }
-                // Stash pagination state on the item object directly.
-                // The spread below copies these into the final item.
-                // If the fetch failed, hasMoreTasks / tasksNextCursor
-                // stay undefined → the Load More button stays hidden
-                // (its v-if is `item.hasMoreTasks` which is falsy for
-                // undefined). The user can retry by reloading the page.
-                item.hasMoreTasks = has_more
-                item.tasksNextCursor = next_cursor
+                // Per-column pagination state (kanban-per-column-
+                // pagination plan, 2026-08-06). For the initial
+                // board-wide fetch, mark every column that has at least
+                // one task in this page as `hasMore: true` when the
+                // global `has_more` is true. This is a heuristic —
+                // a sparse column's auto-load will quickly resolve to
+                // `hasMore: false` on the next page request. The
+                // alternative (asking the backend for a per-column
+                // COUNT) is a separate endpoint and out of scope.
+                const colPagination: Record<string, ColumnPaginationState> = {}
+                if (tasks && tasks.length > 0) {
+                  const columnsWithTasks = new Set<string>()
+                  for (const t of tasks) {
+                    if (t.kanban_column_id) {
+                      columnsWithTasks.add(t.kanban_column_id)
+                    }
+                  }
+                  for (const cid of columnsWithTasks) {
+                    colPagination[cid] = {
+                      cursor: has_more ? next_cursor : null,
+                      hasMore: has_more,
+                      isLoading: false,
+                    }
+                  }
+                }
+                item.columnPagination = colPagination
               } catch (err) {
                 console.error(`Failed to fetch tasks for item ${item.id}:`, err)
               }
@@ -1126,9 +1161,8 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   //   - Silently preserves the existing tasks array on API failure
   //     (matches `fetchKanbanColumns`'s best-effort semantics — the
   //     next SSE event will trigger another fetch).
-  //   - Sets `hasMoreTasks` + `tasksNextCursor` on the item for
-  //     pagination-state consistency (matches `loadMoreTasks`'s
-  //     pattern at workspaces.ts:1051-1083).
+  //   - Sets `columnPagination` per-column state (kanban-per-column-
+  //     pagination plan, 2026-08-06).
   //
   // Does NOT call `api.getTasks` if the item is missing — short-circuit
   // before the HTTP request to avoid a needless 404 roundtrip.
@@ -1164,6 +1198,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // undefined (page 1 of the filtered set) — the caller is
       // responsible for that, we don't track cursor+q consistency
       // here.
+      //
+      // Per-column pagination (plan 2026-08-06-kanban-per-column-
+      // pagination.md): the initial fetch is board-wide (no `column_id`
+      // filter — the SELECT returns a mix of columns' first page so the
+      // columns can populate their cards). The per-column cursor only
+      // kicks in from page 2 onwards via `loadMoreTasksForColumn`.
       const { tasks, has_more, next_cursor } = await api.getTasks(
         workspaceId,
         itemId,
@@ -1171,15 +1211,40 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         cursor,
         sortBy,
         direction,
+        undefined, // column_id — initial fetch is board-wide
         q,
       )
       // Migration 067 — normalize tags from wire string to in-memory
       // string[]. The card UI reads task.tags directly; if the wire
       // string leaks through, JSON.stringify fails silently and the
       // chip render path crashes.
-      item.tasks = (tasks ?? []).map(normalizeTaskTags)
-      item.hasMoreTasks = has_more
-      item.tasksNextCursor = next_cursor
+      const normalized = (tasks ?? []).map(normalizeTaskTags)
+      item.tasks = normalized
+
+      // Populate per-column pagination state. The initial fetch is
+      // board-wide, so the heuristic is: for each column that has at
+      // least one task in this page, set `hasMore: true` when the
+      // global `has_more` is true. A sparse column's auto-load will
+      // quickly resolve to `hasMore: false` on the next page request.
+      // The alternative (asking the backend for a per-column COUNT) is
+      // a separate endpoint and out of scope for this plan.
+      const colPagination: Record<string, ColumnPaginationState> = {}
+      if (normalized.length > 0) {
+        const columnsWithTasks = new Set<string>()
+        for (const t of normalized) {
+          if (t.kanban_column_id) {
+            columnsWithTasks.add(t.kanban_column_id)
+          }
+        }
+        for (const cid of columnsWithTasks) {
+          colPagination[cid] = {
+            cursor: has_more ? next_cursor : null,
+            hasMore: has_more,
+            isLoading: false,
+          }
+        }
+      }
+      item.columnPagination = colPagination
 
       // Track the active q so SSE handlers + loadMoreTasks can
       // forward it on subsequent refetches. Empty / undefined =
@@ -2421,21 +2486,37 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
-  // Load the next page of tasks for a workspace item. No-op if there
-  // are no more pages, a load is already in progress for this item, or
-  // the item / workspace can't be found. Mirrors the `loadMoreChats`
-  // pattern in ChatsList.vue:121-183. Click-to-load only: this is the
-  // ONLY way the second-or-later pages get fetched (no auto-load).
-  async function loadMoreTasks(workspaceId: string, itemId: string) {
+  // Load the next page of tasks for ONE column of a kanban item
+  // (per-column pagination, plan 2026-08-06-kanban-per-column-
+  // pagination.md). Each kanban column paginates independently — the
+  // auto-load sentinel + manual "Load more" button in `KanbanColumn.vue`
+  // read from `columnPagination[columnId]` and call this action.
+  //
+  // No-op if:
+  //   - the workspace / item isn't in the local store
+  //   - the column has no pagination state (column wasn't in the
+  //     initial fetch — its tasks, if any, are still loading)
+  //   - the column has `hasMore: false` (already at the end)
+  //   - the column has `isLoading: true` (already in-flight; protects
+  //     against double-click on the manual button)
+  //   - the cursor is null (defensive — should never happen with
+  //     hasMore=true, but treat as a no-op just in case)
+  async function loadMoreTasksForColumn(
+    workspaceId: string,
+    itemId: string,
+    columnId: string,
+  ) {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
     if (!workspace) return
     const item = workspace.items.find((i) => i.id === itemId)
     if (!item) return
-    if (item.isLoadingMoreTasks) return
-    if (!item.hasMoreTasks) return
-    if (!item.tasksNextCursor) return
+    const colState = item.columnPagination?.[columnId]
+    if (!colState) return
+    if (colState.isLoading) return
+    if (!colState.hasMore) return
+    if (!colState.cursor) return
 
-    item.isLoadingMoreTasks = true
+    colState.isLoading = true
     try {
       // Kanban task search (Chunk 4): forward the active q so
       // "Load more" fetches the next page of MATCHES, not the next
@@ -2458,9 +2539,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         workspaceId,
         itemId,
         10, // PAGE_SIZE — keep in sync with the default in api/index.ts
-        item.tasksNextCursor,
+        colState.cursor,
         activeSort,
         activeDirection,
+        columnId, // per-column filter (the new arg)
         activeQ,
       )
       // Append the new page to the existing list. We push (not unshift)
@@ -2469,15 +2551,44 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // string to in-memory string[] at every fetch site.
       if (!item.tasks) item.tasks = []
       item.tasks.push(...tasks.map(normalizeTaskTags))
-      item.hasMoreTasks = has_more
-      item.tasksNextCursor = next_cursor
+      // Update this column's pagination state with the new cursor +
+      // hasMore. The backend tells us if THIS column has more pages.
+      colState.cursor = next_cursor
+      colState.hasMore = has_more
     } catch (err) {
-      console.error(`Failed to load more tasks for item ${itemId}:`, err)
-      // Leave hasMoreTasks/cursor as-is so the user can retry by
+      console.error(
+        `Failed to load more tasks for item ${itemId} column ${columnId}:`,
+        err,
+      )
+      // Leave hasMore/cursor as-is so the user can retry by
       // clicking the button again. Do not surface a toast — keep the
       // failure mode quiet (same pattern as addTask's catch block).
     } finally {
-      item.isLoadingMoreTasks = false
+      colState.isLoading = false
+    }
+  }
+
+  // Back-compat shim: if any code path still calls the old
+  // board-wide `loadMoreTasks(ws, item)`, dispatch to the FIRST
+  // column that has more. This is a temporary helper used by older
+  // tests; production code should use `loadMoreTasksForColumn` with
+  // an explicit columnId. Marked as deprecated so future refactors
+  // can remove it cleanly.
+  //
+  // NOTE: This shim is intentionally NOT exposed via the store's
+  // return object (it's a private helper). The store returns
+  // `loadMoreTasksForColumn` only.
+  async function loadMoreTasks(workspaceId: string, itemId: string) {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return
+    const item = workspace.items.find((i) => i.id === itemId)
+    if (!item) return
+    const colPagination = item.columnPagination ?? {}
+    for (const [columnId, state] of Object.entries(colPagination)) {
+      if (state.hasMore && !state.isLoading) {
+        await loadMoreTasksForColumn(workspaceId, itemId, columnId)
+        return
+      }
     }
   }
 
@@ -3182,7 +3293,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     addTask,
     toggleTask,
     deleteTask,
-    loadMoreTasks,
+    // Per-column pagination (kanban-per-column-pagination plan,
+    // 2026-08-06). Replaces the old board-wide `loadMoreTasks`.
+    // Each kanban column paginates independently — the column's
+    // auto-load sentinel + manual "Load more" button call this
+    // action with the column's id.
+    loadMoreTasksForColumn,
     renameTask,
     // NEW (kanban-task-detail-dialog plan, Chunk 2). Edit a task's
     // name and/or description in one API call from the detail

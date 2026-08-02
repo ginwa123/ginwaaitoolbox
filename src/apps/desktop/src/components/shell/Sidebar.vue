@@ -798,7 +798,27 @@ const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
   // api.getTasks with a cursor — no auto-load / scroll listener /
   // intersection observer. Mirrors the loadMoreChats pattern in
   // ChatsList.vue:121-183.
-  workspacesStore.loadMoreTasks(workspaceId, itemId)
+  //
+  // Per-column pagination (kanban-per-column-pagination plan,
+  // 2026-08-06): the sidebar's "Load more" picks the FIRST column
+  // with hasMore=true and fetches that column's next page. This
+  // matches the user's mental model: "I clicked Load more on the
+  // sidebar; give me more tasks for this board" (the first column
+  // that still has more is the cheapest visible next-page).
+  const workspace = workspacesStore.workspaces.find((w) => w.id === workspaceId)
+  const item = workspace?.items.find((i) => i.id === itemId)
+  if (!item) return
+  const colPagination = item.columnPagination ?? {}
+  for (const [columnId, state] of Object.entries(colPagination)) {
+    if (state.hasMore && !state.isLoading) {
+      void workspacesStore.loadMoreTasksForColumn(
+        workspaceId,
+        itemId,
+        columnId,
+      )
+      return
+    }
+  }
 }
 
 // Forward drag-and-drop reorder events from <WorkspaceList> to the

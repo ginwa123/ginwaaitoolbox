@@ -249,8 +249,18 @@ const parentItem = computed(() => {
   )
 })
 
-const moreTasksAvailable = computed(() => parentItem.value?.hasMoreTasks ?? false)
-const loadingMoreTasks = computed(() => parentItem.value?.isLoadingMoreTasks ?? false)
+// Per-column pagination (kanban-per-column-pagination plan,
+// 2026-08-06). Each column reads its own `hasMore` + `isLoading`
+// from the store's `columnPagination[col.id]` map. The auto-load
+// sentinel + manual "Load more" button below call
+// `loadMoreTasksForColumn` instead of the old board-wide
+// `loadMoreTasks`.
+const moreTasksAvailable = computed(
+  () => parentItem.value?.columnPagination?.[props.column.id]?.hasMore ?? false,
+)
+const loadingMoreTasks = computed(
+  () => parentItem.value?.columnPagination?.[props.column.id]?.isLoading ?? false,
+)
 // Page size that loadMoreTasks requests. Must match the PAGE_SIZE
 // in `workspacesStore.loadMoreTasks` (workspaces.ts). Used to hide
 // the manual "Load more" button when the column already has fewer
@@ -261,20 +271,28 @@ const loadMorePageSize = 10
 const handleAutoLoad = () => {
   // Debounce: only fire once per page. Reset via the `cardsInColumn`
   // watcher below when the card count changes (a new page arrived)
-  // OR when hasMoreTasks flips false.
+  // OR when this column's `hasMore` flips false.
   if (hasTriggeredAutoLoad.value) return
   if (!moreTasksAvailable.value) return
   if (loadingMoreTasks.value) return
   if (cardsInColumn.value.length === 0) return // empty column: nothing to scroll past, skip auto
   hasTriggeredAutoLoad.value = true
-  void workspacesStore.loadMoreTasks(props.workspaceId, props.itemId)
+  void workspacesStore.loadMoreTasksForColumn(
+    props.workspaceId,
+    props.itemId,
+    props.column.id,
+  )
 }
 
 const handleManualLoadMore = () => {
   // Manual fallback — same code path as auto-trigger. Catches
   // keyboard-only users and short columns where the sentinel never
   // enters view. No debounce: the user explicitly asked for more.
-  void workspacesStore.loadMoreTasks(props.workspaceId, props.itemId)
+  void workspacesStore.loadMoreTasksForColumn(
+    props.workspaceId,
+    props.itemId,
+    props.column.id,
+  )
 }
 
 // Reset the debounce when a new page lands (cardsInColumn grew).

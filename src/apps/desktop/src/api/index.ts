@@ -505,6 +505,14 @@ export async function reorderWorkspaceItems(
  *                       renamed task first). The backend uses this for
  *                       both ORDER BY and the cursor value.
  * @param direction    - 'asc' | 'desc'. Default: 'desc'.
+ * @param columnId     - optional kanban column id (per-column
+ *                       pagination, plan 2026-08-06-kanban-per-column-
+ *                       pagination.md). When set, the backend's WHERE
+ *                       clause restricts results to tasks whose
+ *                       `kanban_column_id` matches (or IS NULL,
+ *                       preserving legacy rows). When unset, the
+ *                       full board-wide result is returned (the
+ *                       initial page of every kanban view).
  * @param q            - optional case-insensitive substring filter
  *                       applied at the SQL level against `name`,
  *                       `description`, and `tags`. Pass undefined or
@@ -524,6 +532,7 @@ export async function getTasks(
   cursor?: string,
   sortBy: 'created_at' | 'updated_at' | 'name' = 'updated_at',
   direction: 'asc' | 'desc' = 'desc',
+  columnId?: string,
   q?: string,
 ): Promise<{
   tasks: Task[]
@@ -536,6 +545,9 @@ export async function getTasks(
   params.set('direction', direction)
   if (cursor) {
     params.set('cursor', cursor)
+  }
+  if (columnId && columnId.length > 0) {
+    params.set('column_id', columnId)
   }
   if (q && q.length > 0) {
     params.set('q', q)

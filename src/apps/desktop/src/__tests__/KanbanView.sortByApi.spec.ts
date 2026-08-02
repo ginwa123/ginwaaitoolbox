@@ -39,7 +39,7 @@ const makeItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
     { id: 'col_b', name: 'in_progress', workspace_item_id: ITEM_ID, position: 1, created_at: '2026-01-01' },
   ],
   tasks: [],
-  hasMoreTasks: false,
+  columnPagination: {},
   ...overrides,
 })
 

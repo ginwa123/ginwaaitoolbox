@@ -36,7 +36,7 @@ const makeItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
     { id: 'task_1', name: 'fix login', task_type: 'standard', kanban_column_id: 'col_a', kanban_position: 0 },
     { id: 'task_2', name: 'design', task_type: 'standard', kanban_column_id: 'col_b', kanban_position: 0 },
   ],
-  hasMoreTasks: false,
+  columnPagination: {},
   ...overrides,
 })
 
