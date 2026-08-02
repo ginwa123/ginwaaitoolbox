@@ -178,3 +178,107 @@ test "buildDbConninfo handles conninfo with no dbname" {
 
     try testing.expect(std.mem.indexOf(u8, out, "dbname=fresh_db") != null);
 }
+
+test "createDatabase: standalone helper creates a database on the shared instance" {
+    const alloc = testing.allocator;
+    const env = helpers.getOrStartTestInstance(alloc);
+    if (!env.is_available) return;
+
+    // Use the shared naming scheme so we don't collide with anything.
+    const pid_bits: u64 = @intCast(std.os.linux.gettid());
+    const counter_value = helpers.nextDbCounter();
+    const db_name = try std.fmt.allocPrint(alloc,
+        "nalar_pg_test_helper_{x}_{x}",
+        .{ pid_bits, counter_value });
+    defer alloc.free(db_name);
+
+    // Use the standalone helper — NOT createTempDb.
+    try helpers.createDatabase(alloc, env.conninfo, db_name);
+
+    // Verify the database exists via a direct libpq probe.
+    const probe = PostgresBackend.c.PQconnectdb(env.conninfo.ptr);
+    defer if (probe) |p| PostgresBackend.c.PQfinish(p);
+    if (probe == null) return;
+    if (PostgresBackend.c.PQstatus(probe) != PostgresBackend.c.CONNECTION_OK) return;
+
+    var sql_buf: [256]u8 = undefined;
+    const sql = std.fmt.bufPrint(&sql_buf,
+        "SELECT 1 FROM pg_database WHERE datname = '{s}'", .{db_name}) catch return;
+    const sql_z = try alloc.allocSentinel(u8, sql.len, 0);
+    defer alloc.free(sql_z);
+    @memcpy(sql_z, sql);
+    const res = PostgresBackend.c.PQexec(probe, sql_z.ptr);
+    defer if (res) |r| PostgresBackend.c.PQclear(r);
+    if (res == null) return;
+    try testing.expectEqual(@as(c_int, 1), PostgresBackend.c.PQntuples(res));
+
+    // Clean up via the standalone dropDatabase helper.
+    helpers.dropDatabase(alloc, env.conninfo, db_name);
+}
+
+test "createDatabase: failure on bad admin conninfo returns DatabaseNotFound" {
+    const alloc = testing.allocator;
+    const env = helpers.getOrStartTestInstance(alloc);
+    if (!env.is_available) return;
+
+    const db_name = "nalar_pg_test_should_not_exist";
+    const result = helpers.createDatabase(alloc,
+        "host=/tmp port=1 user=ginwa dbname=postgres connect_timeout=1", db_name);
+    try testing.expectError(helpers.PostgresError.DatabaseNotFound, result);
+}
+
+test "dropDatabase: standalone helper drops a database (no TestDb needed)" {
+    const alloc = testing.allocator;
+    const env = helpers.getOrStartTestInstance(alloc);
+    if (!env.is_available) return;
+
+    const pid_bits: u64 = @intCast(std.os.linux.gettid());
+    const counter_value = helpers.nextDbCounter();
+    const db_name = try std.fmt.allocPrint(alloc,
+        "nalar_pg_test_drop_helper_{x}_{x}",
+        .{ pid_bits, counter_value });
+    defer alloc.free(db_name);
+
+    // Create via standalone helper, drop via standalone helper — no
+    // PostgresBackend opened.
+    try helpers.createDatabase(alloc, env.conninfo, db_name);
+    helpers.dropDatabase(alloc, env.conninfo, db_name);
+
+    // Verify it's gone.
+    const probe = PostgresBackend.c.PQconnectdb(env.conninfo.ptr);
+    defer if (probe) |p| PostgresBackend.c.PQfinish(p);
+    if (probe == null) return;
+    if (PostgresBackend.c.PQstatus(probe) != PostgresBackend.c.CONNECTION_OK) return;
+
+    var sql_buf: [256]u8 = undefined;
+    const sql = std.fmt.bufPrint(&sql_buf,
+        "SELECT 1 FROM pg_database WHERE datname = '{s}'", .{db_name}) catch return;
+    const sql_z = try alloc.allocSentinel(u8, sql.len, 0);
+    defer alloc.free(sql_z);
+    @memcpy(sql_z, sql);
+    const res = PostgresBackend.c.PQexec(probe, sql_z.ptr);
+    defer if (res) |r| PostgresBackend.c.PQclear(r);
+    if (res == null) return;
+    try testing.expectEqual(@as(c_int, 0), PostgresBackend.c.PQntuples(res));
+}
+
+test "dropDatabase: non-fatal on missing database (IF EXISTS branch)" {
+    const alloc = testing.allocator;
+    const env = helpers.getOrStartTestInstance(alloc);
+    if (!env.is_available) return;
+
+    // Drop a database that doesn't exist — must not crash, must not
+    // return an error (the function returns void).
+    helpers.dropDatabase(alloc, env.conninfo, "nalar_pg_test_definitely_not_real_zzz");
+}
+
+test "dropDatabase: non-fatal on bad admin conninfo" {
+    const alloc = testing.allocator;
+    const env = helpers.getOrStartTestInstance(alloc);
+    if (!env.is_available) return;
+
+    // Bad conninfo — must not crash, must not return anything.
+    helpers.dropDatabase(alloc,
+        "host=/tmp port=1 user=ginwa dbname=postgres connect_timeout=1",
+        "nalar_pg_test_anything");
+}

@@ -5,7 +5,7 @@
 //! copy/paste the CREATE-DATABASE / open-connection / DROP-DATABASE
 //! boilerplate.
 //!
-//! ## Two layers of helpers
+//! ## Two layers of helpers (plus the standalone CREATE / DROP pair)
 //!
 //! **Layer 1 — instance probe** (`getOrStartTestInstance`):
 //! Detects or starts a running PostgreSQL instance for the test
@@ -21,7 +21,19 @@
 //! `DROP DATABASE ... WITH (FORCE)` to terminate any lingering
 //! connections. The naming scheme is
 //! `nalar_pg_test_<pid>_<counter>` so concurrent test invocations
-//! within the same process get distinct databases.
+//! within the same process get distinct databases. `createTempDb`
+//! internally calls `createDatabase` (the standalone helper), so the
+//! per-test isolation is just orchestration around the standalone
+//! pair.
+//!
+//! **Standalone CREATE / DROP helpers** (`createDatabase` /
+//! `dropDatabase`): when a test only needs to provision or tear down
+//! a database on the shared instance — without opening a
+//! `PostgresBackend` against it — call these directly. They own the
+//! admin connection lifecycle and the SQL string formatting. Useful
+//! for tests that interact with the shared instance's catalogs
+//! directly, or for setting up side databases that aren't bound to
+//! a `TestDb`.
 //!
 //! ## Usage
 //!
@@ -135,8 +147,12 @@ fn testConnect(conninfo: [:0]const u8) bool {
 /// `createTempDb` call so even concurrent test invocations within the
 /// same process don't collide on the same database name. Combined
 /// with `pid_bits` to also disambiguate across processes.
-var g_db_counter: u64 = 0;
-fn nextDbCounter() u64 {
+///
+/// `pub` so tests that build a unique DB name outside of
+/// `createTempDb` (e.g. to test `createDatabase` directly) can pull
+/// from the same monotonic source instead of inventing their own.
+pub var g_db_counter: u64 = 0;
+pub fn nextDbCounter() u64 {
     return @atomicRmw(u64, &g_db_counter, .Add, 1, .seq_cst);
 }
 
@@ -162,31 +178,10 @@ pub fn createTempDb(allocator: std.mem.Allocator, base_conninfo: []const u8) Err
     );
     errdefer allocator.free(db_name);
 
-    // 2. Use a temporary admin connection to CREATE DATABASE.
-    {
-        const admin_conn = PostgresBackend.c.PQconnectdb(base_conninfo.ptr);
-        defer if (admin_conn) |c| PostgresBackend.c.PQfinish(c);
-        if (admin_conn == null) return Error.DatabaseNotFound;
-        if (PostgresBackend.c.PQstatus(admin_conn) != PostgresBackend.c.CONNECTION_OK) {
-            return Error.DatabaseNotFound;
-        }
-
-        const create_sql = try std.fmt.allocPrint(allocator, "CREATE DATABASE {s}", .{db_name});
-        defer allocator.free(create_sql);
-        const create_sql_z = try allocator.allocSentinel(u8, create_sql.len, 0);
-        defer allocator.free(create_sql_z);
-        @memcpy(create_sql_z, create_sql);
-
-        const result = PostgresBackend.c.PQexec(admin_conn, create_sql_z.ptr);
-        defer if (result) |r| PostgresBackend.c.PQclear(r);
-        if (result == null) return Error.ExecuteFailed;
-        const status = PostgresBackend.c.PQresultStatus(result);
-        if (status != PostgresBackend.c.PGRES_COMMAND_OK) {
-            const err_msg = PostgresBackend.c.PQresultErrorMessage(result);
-            std.log.warn("CREATE DATABASE failed: {s}", .{err_msg});
-            return Error.ExecuteFailed;
-        }
-    }
+    // 2. CREATE DATABASE on the shared instance via the dedicated
+    //    helper. On failure, returns BEFORE we open the per-test
+    //    backend so there's nothing to clean up beyond `db_name`.
+    try createDatabase(allocator, base_conninfo, db_name);
 
     // 3. Open a PostgresBackend against the new database.
     var threaded = std.Io.Threaded.init(allocator, .{});
@@ -208,6 +203,45 @@ pub fn createTempDb(allocator: std.mem.Allocator, base_conninfo: []const u8) Err
     };
 }
 
+/// CREATE DATABASE on a shared PG instance using a temporary admin
+/// connection. The admin connection is opened, the CREATE DATABASE
+/// statement is issued, and the connection is closed before this
+/// function returns.
+///
+/// On any failure (cannot connect, CREATE DATABASE fails), returns
+/// the error WITHOUT having created the database. The caller owns
+/// `db_name` — `createTempDb` already freed it via `errdefer`; other
+/// callers should arrange their own cleanup.
+///
+/// This is the standalone "create one database on the shared
+/// instance" helper, exposed so test code that doesn't want the full
+/// `createTempDb` boilerplate (open a backend, etc.) can still get a
+/// fresh database.
+pub fn createDatabase(allocator: std.mem.Allocator, admin_conninfo: []const u8, db_name: []const u8) Error!void {
+    const admin_conn = PostgresBackend.c.PQconnectdb(admin_conninfo.ptr);
+    defer if (admin_conn) |c| PostgresBackend.c.PQfinish(c);
+    if (admin_conn == null) return Error.DatabaseNotFound;
+    if (PostgresBackend.c.PQstatus(admin_conn) != PostgresBackend.c.CONNECTION_OK) {
+        return Error.DatabaseNotFound;
+    }
+
+    const create_sql = try std.fmt.allocPrint(allocator, "CREATE DATABASE {s}", .{db_name});
+    defer allocator.free(create_sql);
+    const create_sql_z = try allocator.allocSentinel(u8, create_sql.len, 0);
+    defer allocator.free(create_sql_z);
+    @memcpy(create_sql_z, create_sql);
+
+    const result = PostgresBackend.c.PQexec(admin_conn, create_sql_z.ptr);
+    defer if (result) |r| PostgresBackend.c.PQclear(r);
+    if (result == null) return Error.ExecuteFailed;
+    const status = PostgresBackend.c.PQresultStatus(result);
+    if (status != PostgresBackend.c.PGRES_COMMAND_OK) {
+        const err_msg = PostgresBackend.c.PQresultErrorMessage(result);
+        std.log.warn("CREATE DATABASE failed: {s}", .{err_msg});
+        return Error.ExecuteFailed;
+    }
+}
+
 /// Drop a database created by `createTempDb` and free all resources
 /// held by the `TestDb`. Idempotent: safe to call multiple times (the
 /// second call is a no-op).
@@ -222,10 +256,35 @@ pub fn dropTempDb(allocator: std.mem.Allocator, ctx: *TestDb) void {
     ctx.db.deinit();
     ctx.threaded.deinit();
 
-    // 2. Open an admin connection and drop the test DB. Failure
-    //    here is non-fatal — the test already passed; the DB just
-    //    lingers. Logged for visibility.
-    const admin_conn = PostgresBackend.c.PQconnectdb(ctx.base_conninfo.ptr);
+    // 2. Drop the test DB via the dedicated helper. Failure here is
+    //    non-fatal — the test already passed; the DB just lingers.
+    //    `dropDatabase` logs on failure.
+    dropDatabase(allocator, ctx.base_conninfo, ctx.db_name);
+
+    allocator.free(ctx.db_name);
+    ctx.* = .{
+        .db = .{ .conn = null },
+        .threaded = undefined,
+        .db_name = &[_]u8{},
+        .base_conninfo = "",
+    };
+}
+
+/// DROP DATABASE [IF EXISTS] ... WITH (FORCE) on a shared PG instance
+/// using a temporary admin connection. The admin connection is
+/// opened, the DROP is issued, and the connection is closed before
+/// this function returns.
+///
+/// Non-fatal on any failure (cannot connect, DROP fails): the caller
+/// already owns whatever state it's cleaning up. Failures are logged
+/// via `std.log.warn` for visibility — the test process can move on.
+///
+/// This is the standalone "drop one database on the shared instance"
+/// helper, exposed so test code that created a database via
+/// `createDatabase` directly can also clean it up without going
+/// through the full `dropTempDb` path (which expects a `TestDb`).
+pub fn dropDatabase(allocator: std.mem.Allocator, admin_conninfo: []const u8, db_name: []const u8) void {
+    const admin_conn = PostgresBackend.c.PQconnectdb(admin_conninfo.ptr);
     defer if (admin_conn) |c| PostgresBackend.c.PQfinish(c);
     if (admin_conn == null) return;
     if (PostgresBackend.c.PQstatus(admin_conn) != PostgresBackend.c.CONNECTION_OK) return;
@@ -233,7 +292,7 @@ pub fn dropTempDb(allocator: std.mem.Allocator, ctx: *TestDb) void {
     const drop_sql = std.fmt.allocPrint(
         allocator,
         "DROP DATABASE IF EXISTS {s} WITH (FORCE)",
-        .{ctx.db_name},
+        .{db_name},
     ) catch return;
     defer allocator.free(drop_sql);
     const drop_sql_z = allocator.allocSentinel(u8, drop_sql.len, 0) catch return;
@@ -248,14 +307,6 @@ pub fn dropTempDb(allocator: std.mem.Allocator, ctx: *TestDb) void {
             std.log.warn("DROP DATABASE WITH (FORCE) failed: {s}", .{err_msg});
         }
     }
-
-    allocator.free(ctx.db_name);
-    ctx.* = .{
-        .db = .{ .conn = null },
-        .threaded = undefined,
-        .db_name = &[_]u8{},
-        .base_conninfo = "",
-    };
 }
 
 /// Build a per-database conninfo by stripping any `dbname=` from the
