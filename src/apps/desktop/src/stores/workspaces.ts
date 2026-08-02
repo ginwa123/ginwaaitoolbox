@@ -529,49 +529,36 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Step 2 + 3: fan out per-workspace items + per-item tasks in parallel.
       // A per-item tasks fetch failure is best-effort (logged + empty tasks
       // for that item) so a single bad item doesn't kill the whole init.
+      //
+      // Per-column pagination (Option B, 2026-08-06 amendment): for
+      // KANBAN items, we no longer fire a board-wide task fetch in
+      // init(). The kanban view fires per-column fetches on mount
+      // (one per column), so the initial load is consistent. Folders
+      // / other types still use the board-wide fetch.
       workspaces.value = await Promise.all(
         (wsList || []).map(async (ws: Workspace) => {
           // Items for this workspace.
           const { items } = await api.getWorkspacesItems(ws.id)
 
           // Tasks for each item in this workspace (per-item, in parallel).
+          // Kanban items skip this — they populate per-column on
+          // mount via KanbanView.vue's per-column fetches.
           const tasksByItem = new Map<string, Task[]>()
           await Promise.all(
             (items || []).map(async (item: WorkspaceItem) => {
+              if (item.item_type === 'kanban') {
+                // Defer to KanbanView onMount — fires per-column
+                // fetches with column_id set (per Option B).
+                return
+              }
               try {
-                const { tasks, has_more, next_cursor } = await api.getTasks(ws.id, item.id)
+                const { tasks } = await api.getTasks(ws.id, item.id)
                 if (tasks && tasks.length > 0) {
                   // Migration 067 — normalize tags from wire string to
                   // in-memory string[]. All fetch sites do this; the
                   // card UI and dialog rely on tags being a string[].
                   tasksByItem.set(item.id, tasks.map(normalizeTaskTags))
                 }
-                // Per-column pagination state (kanban-per-column-
-                // pagination plan, 2026-08-06). For the initial
-                // board-wide fetch, mark every column that has at least
-                // one task in this page as `hasMore: true` when the
-                // global `has_more` is true. This is a heuristic —
-                // a sparse column's auto-load will quickly resolve to
-                // `hasMore: false` on the next page request. The
-                // alternative (asking the backend for a per-column
-                // COUNT) is a separate endpoint and out of scope.
-                const colPagination: Record<string, ColumnPaginationState> = {}
-                if (tasks && tasks.length > 0) {
-                  const columnsWithTasks = new Set<string>()
-                  for (const t of tasks) {
-                    if (t.kanban_column_id) {
-                      columnsWithTasks.add(t.kanban_column_id)
-                    }
-                  }
-                  for (const cid of columnsWithTasks) {
-                    colPagination[cid] = {
-                      cursor: has_more ? next_cursor : null,
-                      hasMore: has_more,
-                      isLoading: false,
-                    }
-                  }
-                }
-                item.columnPagination = colPagination
               } catch (err) {
                 console.error(`Failed to fetch tasks for item ${item.id}:`, err)
               }
@@ -586,8 +573,21 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
               ...item,
               // Restore expanded state from localStorage
               expanded: expandedItems.has(item.id),
-              // Attach tasks for this item (may be [] if no tasks or fetch failed).
-              tasks: tasksByItem.get(item.id) ?? [],
+              // Attach tasks for this item:
+              //   - Non-kanban: from tasksByItem (the api response).
+              //   - Kanban: PRESERVE the input's tasks (test fixtures
+              //     inject tasks directly; per-column fetches via
+              //     KanbanView onMount will eventually replace this).
+              //     Falling back to tasksByItem would clobber test
+              //     fixtures that bypass the API.
+              tasks: item.item_type === 'kanban'
+                ? (item.tasks ?? [])
+                : (tasksByItem.get(item.id) ?? []),
+              // Per-column pagination state — empty until KanbanView
+              // onMount fires per-column fetches (Option B) or until
+              // SSE / fetchKanbanTasks populates it for non-kanban
+              // items that have a column id on tasks.
+              columnPagination: {} as Record<string, ColumnPaginationState>,
             })),
           }
         }),
@@ -1149,61 +1149,52 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
-  // Refresh an item's tasks from the backend and replace the local
-  // `item.tasks` array. Used by the kanbanSse store to react to
-  // `kanban_task.*` SSE events (moved / assigned / unassigned) so the
-  // KanbanView.vue card visibly moves to the new column without a
-  // manual reload.
+  // Refresh an item's tasks from the backend and merge the response
+  // into the local `item.tasks` array. Used by:
+  //   - KanbanView.vue on mount (per-column initial fetch — one call
+  //     per column, all with `columnId` set)
+  //   - kanbanSse store on `kanban_task.*` events (per-column refetch
+  //     — each event re-fetches ONE column, again with `columnId`)
+  //   - KanbanView search input + sort-change watchers (also per-column)
+  //
+  // Per the user's explicit request (Option B per the in-flight 2026-
+  // 08-06 plan amendment), EVERY task-fetch request carries a
+  // `column_id` query param — even the page-1 fetch. This means the
+  // initial mount fires N parallel requests (one per kanban column),
+  // each loading only ITS column's first page. A board-wide fetch is
+  // never used. The benefit: each column's `cursor` + `hasMore` + `tasks`
+  // are populated from the very start, with NO heuristic — the cursor
+  // in the response IS the cursor for that column (no guessing).
+  //
+  // The `columnId` argument is REQUIRED for kanban fetches. Passing
+  // undefined falls back to board-wide (legacy / non-kanban usage).
   //
   // Mirrors `fetchKanbanColumns` in shape and error semantics:
-  //   - Silently no-ops if the item isn't in the local store (defensive
-  //     against stale SSE events after a workspace switch).
-  //   - Silently preserves the existing tasks array on API failure
-  //     (matches `fetchKanbanColumns`'s best-effort semantics — the
-  //     next SSE event will trigger another fetch).
-  //   - Sets `columnPagination` per-column state (kanban-per-column-
-  //     pagination plan, 2026-08-06).
+  //   - Silently no-ops if the item isn't in the local store.
+  //   - Silently preserves the existing tasks array on API failure.
+  //   - Sets `columnPagination[columnId]` with the new cursor + hasMore.
+  //   - When called for a NEW column (one that hasn't been seen
+  //     before), initializes its pagination entry. When called for
+  //     an EXISTING column, replaces just that column's tasks.
   //
   // Does NOT call `api.getTasks` if the item is missing — short-circuit
   // before the HTTP request to avoid a needless 404 roundtrip.
   async function fetchKanbanTasks(
     workspaceId: string,
     itemId: string,
+    columnId: string, // NEW (Option B) — required for per-column fetch
     limit = 10,
     cursor?: string,
     q?: string,
-    // NEW (kanban-sort-by, redo 2026-08-06 — per-column). Optional
-    // server-side sort. When undefined, the api layer applies its
-    // own 'updated_at desc' default (back-compat). When defined,
-    // the backend returns all tasks sorted by the chosen field.
-    // The frontend's per-column client-side sort then applies on
-    // top, so each column can have an independent sort despite
-    // the global server sort.
     sortBy?: 'created_at' | 'updated_at' | 'name',
     direction?: 'asc' | 'desc',
   ): Promise<void> {
     const item = findItem(workspaceId, itemId)
     if (!item) return
     try {
-      // Chunk 1 of kanban-lazy-load-tasks plan: bump initial fetch to
-      // the backend's MAX_PAGE_SIZE (100). The previous default (no
-      // limit → backend default 20) silently truncated kanbans with >
-      // 20 tasks so columns showed partial data with no "Load more"
-      // affordance. Keep this in sync with tasks_list.zig::MAX_PAGE_SIZE.
-      //
-      // Kanban task search (Chunk 4 of plan):
-      // docs/superpowers/plans/2026-07-30-kanban-task-search.md — `q`
-      // is the active search query. Server-side filter on name +
-      // description + tags. When q changes, the cursor resets to
-      // undefined (page 1 of the filtered set) — the caller is
-      // responsible for that, we don't track cursor+q consistency
-      // here.
-      //
-      // Per-column pagination (plan 2026-08-06-kanban-per-column-
-      // pagination.md): the initial fetch is board-wide (no `column_id`
-      // filter — the SELECT returns a mix of columns' first page so the
-      // columns can populate their cards). The per-column cursor only
-      // kicks in from page 2 onwards via `loadMoreTasksForColumn`.
+      // Per-column initial fetch — pass the columnId straight through.
+      // Backend returns ONLY this column's tasks (filtered by WHERE
+      // clause in listWorkspaceItemTasksWithCursor).
       const { tasks, has_more, next_cursor } = await api.getTasks(
         workspaceId,
         itemId,
@@ -1211,7 +1202,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         cursor,
         sortBy,
         direction,
-        undefined, // column_id — initial fetch is board-wide
+        columnId, // per-column filter (the new arg)
         q,
       )
       // Migration 067 — normalize tags from wire string to in-memory
@@ -1219,51 +1210,39 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // string leaks through, JSON.stringify fails silently and the
       // chip render path crashes.
       const normalized = (tasks ?? []).map(normalizeTaskTags)
-      item.tasks = normalized
 
-      // Populate per-column pagination state. The initial fetch is
-      // board-wide, so the heuristic is: for each column that has at
-      // least one task in this page, set `hasMore: true` when the
-      // global `has_more` is true. A sparse column's auto-load will
-      // quickly resolve to `hasMore: false` on the next page request.
-      // The alternative (asking the backend for a per-column COUNT) is
-      // a separate endpoint and out of scope for this plan.
-      const colPagination: Record<string, ColumnPaginationState> = {}
-      if (normalized.length > 0) {
-        const columnsWithTasks = new Set<string>()
-        for (const t of normalized) {
-          if (t.kanban_column_id) {
-            columnsWithTasks.add(t.kanban_column_id)
-          }
-        }
-        for (const cid of columnsWithTasks) {
-          colPagination[cid] = {
-            cursor: has_more ? next_cursor : null,
-            hasMore: has_more,
-            isLoading: false,
-          }
-        }
+      // Merge into `item.tasks`: remove existing tasks for THIS column
+      // (in case the response is a refresh of column A and column B's
+      // tasks should stay intact), then push the new ones. We assume
+      // the SAME column is being refetched (cursor/refresh semantics):
+      // the wire response carries the server-sorted (or per-column-
+      // cursor-scoped) order for this column only.
+      if (!item.tasks) item.tasks = []
+      const otherTasks = item.tasks.filter(
+        (t) => t.kanban_column_id !== columnId,
+      )
+      item.tasks = [...otherTasks, ...normalized]
+
+      // Update this column's pagination state. For an initial fetch
+      // (no prior state), this initializes the entry. For a refresh
+      // (SSE / sort / search), this replaces the cursor + hasMore.
+      if (!item.columnPagination) item.columnPagination = {}
+      item.columnPagination[columnId] = {
+        cursor: next_cursor,
+        hasMore: has_more,
+        isLoading: false,
       }
-      item.columnPagination = colPagination
 
       // Track the active q so SSE handlers + loadMoreTasks can
-      // forward it on subsequent refetches. Empty / undefined =
-      // "no search active" → DELETE the entry (preserves Map size
-      // bounded by the number of boards with active searches).
+      // forward it on subsequent refetches.
       if (q && q.length > 0) {
         activeSearchQueries.set(itemId, q)
       } else {
         activeSearchQueries.delete(itemId)
       }
 
-      // Track the active sort so loadMoreTasks + kanbanSse can
-      // forward it on subsequent refetches. Both sortBy and
-      // direction must be defined to SET (a half-set state would
-      // produce a "page 2 of a sort the user never asked for"
-      // mismatch with the cursor). Otherwise → DELETE (the api
-      // layer falls back to its 'updated_at' / 'desc' default
-      // which matches the pre-fix loadMoreTasks + kanbanSse
-      // behaviour).
+      // Track the active sort so loadMoreTasksForColumn + kanbanSse
+      // can forward it on subsequent refetches.
       if (sortBy && direction) {
         activeSortBy.set(itemId, sortBy)
         activeSortDirection.set(itemId, direction)
@@ -1272,11 +1251,68 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         activeSortDirection.delete(itemId)
       }
     } catch (err) {
-      console.error('[workspacesStore.fetchKanbanTasks] API call failed:', err)
+      console.error(
+        `[workspacesStore.fetchKanbanTasks] API call failed for column ${columnId}:`,
+        err,
+      )
       // Leave the existing tasks array untouched so the UI doesn't
       // flash to empty on a transient network blip. The next SSE
       // event will trigger another fetch.
     }
+  }
+
+    // Fire `fetchKanbanTasks` for every column of a kanban item.
+  // Per-column pagination (Option B, 2026-08-06 amendment): every
+  // task fetch must carry a `column_id`, including the initial page-1
+  // fetch. This helper iterates `item.kanban_columns` and fires one
+  // fetch per column in parallel (each populates its own
+  // `columnPagination[col]` entry + tasks slice).
+  //
+  // Used by KanbanView on mount, on sort-change refetch, and on
+  // search-input refetch — all 3 are "global" events (every column
+  // needs the freshest sort + search context). SSE refetch is the
+  // one place we DON'T use this — it fires per the affected column
+  // only (see kanbanSse.ts).
+  //
+  // Cancellation: if `item.kanban_columns` is empty (the columns
+  // haven't loaded yet — fetchKanbanColumns is in flight), this is a
+  // no-op. The caller is expected to re-invoke once the columns
+  // arrive. KanbanView.vue does this implicitly: it calls
+  // fetchKanbanColumns on mount and the column iteration happens
+  // once the columns store populates.
+  async function fetchKanbanTasksForAllColumns(
+    workspaceId: string,
+    itemId: string,
+    limit = 10,
+    q?: string,
+    sortBy?: 'created_at' | 'updated_at' | 'name',
+    direction?: 'asc' | 'desc',
+  ): Promise<void> {
+    const item = findItem(workspaceId, itemId)
+    if (!item) return
+    const columns = item.kanban_columns ?? []
+    if (columns.length === 0) {
+      // No columns loaded yet — defer to the next call (caller
+      // usually retries via watch on kanban_columns or via
+      // fetchKanbanColumns.then()).
+      return
+    }
+    // Fire one fetch per column in parallel. Each fetch updates
+    // its own slice of item.tasks + its own columnPagination entry.
+    await Promise.all(
+      columns.map((col) =>
+        fetchKanbanTasks(
+          workspaceId,
+          itemId,
+          col.id,
+          limit,
+          undefined, // cursor — reset to page 1 of the filtered set
+          q,
+          sortBy,
+          direction,
+        ),
+      ),
+    )
   }
 
   // Add a column to a kanban and append it to the local item's
@@ -3334,6 +3370,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     updateKanbanItemName,
     fetchKanbanColumns,
     fetchKanbanTasks,
+    // Per-column initial fetch helper (Option B). Iterates
+    // kanban_columns and fires one fetch each, all with column_id
+    // set. Replaces the previous "one board-wide fetch" pattern.
+    fetchKanbanTasksForAllColumns,
     // Design mode actions (Chunk 6 of design-mode-redesign plan)
     fetchDesignElements,
     addDesignElement,

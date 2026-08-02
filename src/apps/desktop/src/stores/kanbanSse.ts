@@ -131,15 +131,40 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
         // is active (init path).
         const sortBy = ws.activeSortBy.get(event.item_id)
         const direction = ws.activeSortDirection.get(event.item_id)
-        void ws.fetchKanbanTasks(
-          event.workspace_id,
-          event.item_id,
-          100,
-          undefined,
-          q,
-          sortBy,
-          direction,
-        )
+
+        // Per-column SSE refetch (Option B, 2026-08-06): refetch
+        // JUST the affected column, not the whole board. The event
+        // carries `new_column_id` (the destination column for move /
+        // assign; null for unassign). For unassign, we still need
+        // to refresh the source column (where the task was) — but
+        // since the SSE payload doesn't carry the source column id,
+        // we conservatively iterate all columns. This is the rare
+        // edge case (unassign is manual via the UI), so the cost
+        // is acceptable.
+        const affectedColumnId = event.new_column_id
+        if (affectedColumnId && affectedColumnId.length > 0) {
+          void ws.fetchKanbanTasks(
+            event.workspace_id,
+            event.item_id,
+            affectedColumnId,
+            100, // limit — initial fetch size
+            undefined,
+            q,
+            sortBy,
+            direction,
+          )
+        } else {
+          // unassign — iterate all columns to catch the task
+          // removal + the (rare) reappearance in some other column.
+          void ws.fetchKanbanTasksForAllColumns(
+            event.workspace_id,
+            event.item_id,
+            100,
+            q,
+            sortBy,
+            direction,
+          )
+        }
       }
       // Defensive: unknown event shapes are silently dropped.
     })

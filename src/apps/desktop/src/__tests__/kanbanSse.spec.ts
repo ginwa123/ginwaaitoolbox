@@ -218,7 +218,7 @@ describe('useKanbanSseStore (bus-backed)', () => {
     // events).
     expect(fetchColumnsSpy).not.toHaveBeenCalled()
     expect(fetchTasksSpy).toHaveBeenCalledWith(
-      'ws_1', 'item_1', 100, undefined, undefined, undefined, undefined,
+      'ws_1', 'item_1', 'col_done', 100, undefined, undefined, undefined, undefined,
     )
   })
 
@@ -240,12 +240,22 @@ describe('useKanbanSseStore (bus-backed)', () => {
     dispatch(event)
 
     expect(fetchTasksSpy).toHaveBeenCalledWith(
-      'ws_1', 'item_1', 100, undefined, undefined, undefined, undefined,
+      'ws_1', 'item_1', 'col_1', 100, undefined, undefined, undefined, undefined,
     )
   })
 
-  it('triggers fetchKanbanTasks on kanban_task events (unassigned action)', async () => {
+  it('triggers fetchKanbanTasksForAllColumns on unassigned (no new_column_id)', async () => {
+    // Per-column pagination (Option B, 2026-08-06): unassign events
+    // have `new_column_id: null` (the task is being detached from any
+    // column). We don't know which column it WAS in (the SSE payload
+    // doesn't carry the source column id), so conservatively refetch
+    // ALL columns via fetchKanbanTasksForAllColumns. For move/assign
+    // events with a non-null new_column_id, the single-column
+    // fetchKanbanTasks fires (see the moved/assigned tests above).
     const ws = useWorkspacesStore()
+    const fetchAllColumnsSpy = vi
+      .spyOn(ws, 'fetchKanbanTasksForAllColumns')
+      .mockResolvedValue()
     const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
 
     const store = useKanbanSseStore()
@@ -261,9 +271,10 @@ describe('useKanbanSseStore (bus-backed)', () => {
     }
     dispatch(event)
 
-    expect(fetchTasksSpy).toHaveBeenCalledWith(
-      'ws_1', 'item_1', 100, undefined, undefined, undefined, undefined,
+    expect(fetchAllColumnsSpy).toHaveBeenCalledWith(
+      'ws_1', 'item_1', 100, undefined, undefined, undefined,
     )
+    expect(fetchTasksSpy).not.toHaveBeenCalled()
   })
 
   it('forwards the active q to fetchKanbanTasks on kanban_task events (Chunk 7)', async () => {
@@ -293,7 +304,7 @@ describe('useKanbanSseStore (bus-backed)', () => {
     dispatch(event)
 
     expect(fetchTasksSpy).toHaveBeenCalledWith(
-      'ws_1', 'item_1', 100, undefined, 'design', undefined, undefined,
+      'ws_1', 'item_1', 'col_done', 100, undefined, 'design', undefined, undefined,
     )
   })
 
@@ -330,7 +341,7 @@ describe('useKanbanSseStore (bus-backed)', () => {
 
     // 7-arg signature: (ws, item, limit, cursor, q, sortBy, direction).
     expect(fetchTasksSpy).toHaveBeenCalledWith(
-      'ws_1', 'item_1', 100, undefined, undefined, 'name', 'desc',
+      'ws_1', 'item_1', 'col_done', 100, undefined, undefined, 'name', 'desc',
     )
   })
 

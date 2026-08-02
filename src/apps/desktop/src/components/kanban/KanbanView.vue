@@ -211,11 +211,13 @@ watch(searchQuery, (newQ) => {
   searchDebounceTimer = setTimeout(() => {
     searchDebounceTimer = null
     const trimmed = newQ.trim()
-    void workspacesStore.fetchKanbanTasks(
+    // Per-column initial fetch (Option B): the search affects every
+    // column, so we fire one request per column. fetchKanbanTasks
+    // populates columnPagination per column with the new cursor.
+    void workspacesStore.fetchKanbanTasksForAllColumns(
       props.workspaceId,
       effectiveItemId.value,
       10,         // limit (matches loadMoreTasks + the store's default)
-      undefined,  // cursor — reset to page 1 of the filtered set
       trimmed || undefined,
     )
   }, 300)
@@ -360,19 +362,28 @@ onMounted(() => {
   const lastNonDefault = [...entries].reverse().find(
     (e) => !(e.sortBy === 'position' && e.direction === 'asc'),
   )
-  if (!lastNonDefault) return
-  const apiSortBy = lastNonDefault.sortBy === 'position'
-    ? undefined
-    : lastNonDefault.sortBy as 'created_at' | 'updated_at' | 'name'
-  void workspacesStore.fetchKanbanTasks(
-    props.workspaceId,
-    effectiveItemId.value,
-    10,
-    undefined,
-    undefined,
-    apiSortBy,
-    lastNonDefault.direction,
-  )
+  if (lastNonDefault) {
+    // Per-column initial fetch (Option B): sort affects every column,
+    // so fire one request per column with the restored sort.
+    const apiSortBy = lastNonDefault.sortBy === 'position'
+      ? undefined
+      : lastNonDefault.sortBy as 'created_at' | 'updated_at' | 'name'
+    void workspacesStore.fetchKanbanTasksForAllColumns(
+      props.workspaceId,
+      effectiveItemId.value,
+      10,
+      undefined,
+      apiSortBy,
+      lastNonDefault.direction,
+    )
+  } else {
+    // No non-default sort — fire plain per-column fetches (no
+    // sortBy/direction → backend default 'updated_at' / 'desc')
+    void workspacesStore.fetchKanbanTasksForAllColumns(
+      props.workspaceId,
+      effectiveItemId.value,
+    )
+  }
 })
 
 // Watcher on columnSorts changes → debounced fetch + URL write.
@@ -398,26 +409,34 @@ watch(columnSorts, (next) => {
 
   // Debounced fetch — fires only for non-default sorts, using the
   // latest-changed sort as the backend sort param. The backend
-  // returns all tasks sorted; each column's cardsInColumn then
-  // applies its own client-side sort on top.
+  // returns all tasks sorted per-column (Option B); each column's
+  // cardsInColumn then applies its own client-side sort on top.
   clearSortFetchDebounce()
   sortFetchDebounceTimer = setTimeout(() => {
     sortFetchDebounceTimer = null
     const entries = Object.values(columnSorts.value)
     const last = entries[entries.length - 1]
     if (!last) return
-    if (last.sortBy === 'position' && last.direction === 'asc') return
+    if (last.sortBy === 'position' && last.direction === 'asc') {
+      // Default sort — still fire per-column fetches (no sortBy
+      // param → backend default 'updated_at' desc).
+      void workspacesStore.fetchKanbanTasksForAllColumns(
+        props.workspaceId,
+        effectiveItemId.value,
+        10,
+      )
+      return
+    }
     // The store's sortBy param excludes 'position' (no server
     // equivalent); narrow at the call site so the type checker
     // accepts the union.
     const apiSortBy = last.sortBy === 'position'
       ? undefined
       : last.sortBy as 'created_at' | 'updated_at' | 'name'
-    void workspacesStore.fetchKanbanTasks(
+    void workspacesStore.fetchKanbanTasksForAllColumns(
       props.workspaceId,
       effectiveItemId.value,
       10,
-      undefined,
       undefined,
       apiSortBy,
       last.direction,

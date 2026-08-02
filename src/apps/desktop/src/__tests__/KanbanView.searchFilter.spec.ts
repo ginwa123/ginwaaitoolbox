@@ -68,7 +68,7 @@ describe('KanbanView search filter wiring', () => {
     store.workspaces = [
       { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
     ]
-    const spy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
+    const spyForAllColumns = vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
 
     const wrapper = mount(KanbanView, {
       props: { item: makeItem(), workspaceId: WS_ID },
@@ -77,13 +77,17 @@ describe('KanbanView search filter wiring', () => {
     await wrapper.find('[data-testid="kanban-search-input"]').setValue('design')
 
     // Immediately after setValue (before debounce fires) — no call yet.
-    expect(spy).not.toHaveBeenCalled()
+    expect(spyForAllColumns).not.toHaveBeenCalled()
 
     // Advance fake timer past the debounce window.
     vi.advanceTimersByTime(350)
     await flushPromises()
 
-    expect(spy).toHaveBeenCalledWith(WS_ID, ITEM_ID, 10, undefined, 'design')
+    // Per-column initial fetch (Option B): the search watcher calls
+    // fetchKanbanTasksForAllColumns, not fetchKanbanTasks directly.
+    // The underlying per-column fetches happen as
+    // Promise.all(map(col => fetchKanbanTasks(...))).
+    expect(spyForAllColumns).toHaveBeenCalledWith(WS_ID, ITEM_ID, 10, 'design')
   })
 
   it('Esc clears and triggers a debounced refetch with q=undefined', async () => {
@@ -91,7 +95,7 @@ describe('KanbanView search filter wiring', () => {
     store.workspaces = [
       { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
     ]
-    const spy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
+    const spyForAllColumns = vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
 
     const wrapper = mount(KanbanView, {
       props: { item: makeItem(), workspaceId: WS_ID },
@@ -101,16 +105,17 @@ describe('KanbanView search filter wiring', () => {
     await wrapper.find('[data-testid="kanban-search-input"]').setValue('design')
     vi.advanceTimersByTime(350)
     await flushPromises()
-    expect(spy).toHaveBeenCalledTimes(1)
-    expect(spy).toHaveBeenLastCalledWith(WS_ID, ITEM_ID, 10, undefined, 'design')
+    expect(spyForAllColumns).toHaveBeenCalledTimes(1)
+    expect(spyForAllColumns).toHaveBeenLastCalledWith(WS_ID, ITEM_ID, 10, 'design')
 
     // Clear it (Esc inside the input)
     await wrapper.find('[data-testid="kanban-search-input"]').trigger('keydown', { key: 'Escape' })
     vi.advanceTimersByTime(350)
     await flushPromises()
 
-    const calls = spy.mock.calls
-    expect(calls[calls.length - 1]?.[4]).toBeUndefined() // last call's q is undefined
+    // Last call's q is undefined (Esc cleared the input).
+    const calls = spyForAllColumns.mock.calls
+    expect(calls[calls.length - 1]?.[3]).toBeUndefined() // q is the 4th arg (ws, item, limit, q)
   })
 
   it('renders "No tasks match" banner when tasks empty + search non-empty', async () => {

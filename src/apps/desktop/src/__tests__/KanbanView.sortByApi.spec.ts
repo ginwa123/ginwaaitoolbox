@@ -93,7 +93,7 @@ describe('KanbanView — per-column sort triggers API call', () => {
     store.workspaces = [
       { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
     ]
-    const spy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
+    const spy = vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
 
     const { wrapper } = mountKanbanView({ view: 'workspace', workspaceId: WS_ID, itemId: ITEM_ID })
 
@@ -106,12 +106,13 @@ describe('KanbanView — per-column sort triggers API call', () => {
     await new Promise((resolve) => setTimeout(resolve, 350))
     await flushPromises()
 
-    // fetchKanbanTasks was called with sortBy='created_at', direction='asc'.
+    // fetchKanbanTasksForAllColumns was called with sortBy='created_at', direction='asc'.
+    // Signature: (ws, item, limit, q, sortBy, direction) — index 4 is sortBy, 5 is direction.
     const calls = spy.mock.calls
     expect(calls.length).toBeGreaterThan(0)
     const last = calls[calls.length - 1]!
-    expect(last[5]).toBe('created_at')
-    expect(last[6]).toBe('asc')
+    expect(last[4]).toBe('created_at')
+    expect(last[5]).toBe('asc')
   })
 
   it('picking "Manual" does NOT trigger an API call (no server-side equivalent)', async () => {
@@ -119,7 +120,7 @@ describe('KanbanView — per-column sort triggers API call', () => {
     store.workspaces = [
       { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
     ]
-    const spy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
+    const spy = vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
 
     const { wrapper } = mountKanbanView({ view: 'workspace', workspaceId: WS_ID, itemId: ITEM_ID })
 
@@ -148,7 +149,7 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
     store.workspaces = [
       { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
     ]
-    vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
+    vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
 
     const { wrapper, replaceMock } = mountKanbanView({
       view: 'workspace',
@@ -181,7 +182,7 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
     store.workspaces = [
       { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
     ]
-    const spy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
+    const spy = vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
 
     const { wrapper } = mountKanbanView({
       view: 'workspace',
@@ -195,13 +196,14 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     await flushPromises()
 
-    // The first fetchKanbanTasks call (from the URL restore on
-    // mount) should carry sortBy='name', direction='asc'.
+    // The first fetchKanbanTasksForAllColumns call (from the URL
+    // restore on mount) should carry sortBy='name', direction='asc'.
+    // Signature: (ws, item, limit, q, sortBy, direction) — index 4 is sortBy, 5 is direction.
     const calls = spy.mock.calls
     expect(calls.length).toBeGreaterThan(0)
     const first = calls[0]!
-    expect(first[5]).toBe('name')
-    expect(first[6]).toBe('asc')
+    expect(first[4]).toBe('name')
+    expect(first[5]).toBe('asc')
 
     wrapper.unmount()
   })
@@ -211,7 +213,7 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
     store.workspaces = [
       { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
     ]
-    const spy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
+    const spy = vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
 
     // position + asc is the default — should NOT trigger an extra
     // fetch (no server-side equivalent). The SSE handler's default
@@ -245,7 +247,7 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
     store.workspaces = [
       { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] },
     ]
-    vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
+    vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
 
     // Mount KanbanView with the seeded item (so the columns have
     // tasks to display after the URL-restore applies setSortMode).
