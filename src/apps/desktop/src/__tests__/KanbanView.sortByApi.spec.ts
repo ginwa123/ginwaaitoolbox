@@ -237,7 +237,13 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
     expect(positionCalls.length).toBe(0)
   })
 
-  it('mount with ?sorts=col_a:name:asc restores column_a sort on the cards', async () => {
+  it('mount with ?sorts=col_a:name:asc fires fetchKanbanTasksForAllColumns with sortBy=name', async () => {
+    // Regression for the user-reported issue (re-test after the
+    // 2026-08-06 client-side-sort removal). The card-order assertion
+    // was deleted because per-column sort is now backend-driven —
+    // the client renders cards in input order. The URL → fetch
+    // mapping is what we test now: the URL sort param must reach
+    // the backend via `fetchKanbanTasksForAllColumns(sortBy, direction)`.
     const tasks = [
       makeTask('t_z', 'Zeta', 0),
       makeTask('t_a', 'Alpha', 1),
@@ -247,7 +253,7 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
     store.workspaces = [
       { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] },
     ]
-    vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
+    const spy = vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
 
     // Mount KanbanView with the seeded item (so the columns have
     // tasks to display after the URL-restore applies setSortMode).
@@ -268,14 +274,22 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
       props: { item, workspaceId: WS_ID },
     })
 
-    // Allow the URL-restore watcher to apply setSortMode.
+    // Allow the URL-restore watcher to fire fetchKanbanTasksForAllColumns.
     await flushPromises()
     await new Promise((resolve) => setTimeout(resolve, 50))
     await flushPromises()
 
-    const cards = wrapper.findAll('[data-kanban-card]')
-    const cardIds = cards.map((c) => c.attributes('data-kanban-card'))
-    expect(cardIds).toEqual(['t_a', 't_z'])
+    // The URL's `sorts=col_a:name:asc` must reach the backend via
+    // `fetchKanbanTasksForAllColumns(ws, item, limit, q, sortBy, direction)`.
+    // Signature arg index 4 is sortBy, 5 is direction.
+    const calls = spy.mock.calls
+    expect(calls.length).toBeGreaterThan(0)
+    const sortByCall = calls.find((c) => c[4] === 'name' && c[5] === 'asc')
+    expect(sortByCall).toBeDefined()
+    const lastCall = calls[calls.length - 1]!
+    expect(lastCall[4]).toBe('name')
+    expect(lastCall[5]).toBe('asc')
+    wrapper.unmount()
   })
 })
 

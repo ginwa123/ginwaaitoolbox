@@ -51,6 +51,12 @@ const emit = defineEmits<{
     // the URL off `?view=task` back to `?view=workspace&pageId=Z`).
     // Matches the matching AppLayout.handleNavigate signature.
     pageId?: string,
+    // NEW (kanban default-URL, 2026-08-06): optional 7th arg —
+    // a pre-built `?sorts=` query string. Sidebar populates it
+    // when the user clicks a kanban workspace item (commits the
+    // default sort per column). AppLayout.handleNavigate mirrors
+    // it into the URL. Undefined for non-kanban navigations.
+    sortsParam?: string,
   ]
   'toggle-collapse': []
   resize: [width: number]
@@ -385,11 +391,51 @@ const handleSelectItem = async (workspaceId: string, itemId: string) => {
     chatsListRef.value.resetActiveChat()
   }
   workspacesStore.setActiveWorkspaceItem(itemId)
+  // NEW (kanban-sort-by default-URL, 2026-08-06): when the user
+  // clicks a kanban workspace item, ALWAYS append `?sorts=` to the
+  // URL with the default sort (`updated_at:desc`) for every column.
+  // The user's mental model: a URL without `sorts` means "no
+  // explicit sort" — but they want the URL to commit to a default
+  // on first click so a refresh preserves it (and so the wire
+  // payload doesn't carry silent defaults). Folders / designs /
+  // chats don't get the sort param.
+  //
+  // Build the `sorts` string from the kanban's columns. If the
+  // columns aren't loaded yet, fetch them on demand (cheap HTTP
+  // GET, idempotent) so the URL is complete on the first click.
+  let sortsParam: string | undefined
+  if (item?.item_type === 'kanban') {
+    const columns = item.kanban_columns ?? []
+    if (columns.length === 0) {
+      // Fire-and-await: the URL we emit must include the column ids,
+      // so we wait for the columns to land. fetchKanbanColumns is
+      // idempotent — safe to call even if columns are already in
+      // flight from elsewhere (e.g. Sidebar expansion).
+      try {
+        await workspacesStore.fetchKanbanColumns(workspaceId, itemId)
+      } catch {
+        // Swallow — the URL will simply omit `sorts` and the
+        // KanbanView mount path will apply its own fallback when
+        // columns arrive. Better than throwing mid-click.
+      }
+    }
+    // Re-read columns after the await (the store may have populated
+    // them by now).
+    const refreshedItem = workspacesStore.workspaces
+      .find((ws) => ws.id === workspaceId)
+      ?.items.find((i) => i.id === itemId)
+    const cols = refreshedItem?.kanban_columns ?? []
+    if (cols.length > 0) {
+      sortsParam = cols
+        .map((c) => `${c.id}:updated_at:desc`)
+        .join(',')
+    }
+  }
   // Carry (workspaceId, itemId) into the URL so the kanban / folder /
   // design view survives a page reload. The URL is the source of
   // truth on reload; the in-memory `activeWorkspaceItemId` would
   // otherwise reset to null on a refresh.
-  emit('navigate', 'workspace', undefined, undefined, workspaceId, itemId)
+  emit('navigate', 'workspace', undefined, undefined, workspaceId, itemId, undefined, sortsParam)
 }
 
 const handleDeleteWorkspace = (workspaceId: string) => {

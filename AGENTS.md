@@ -397,6 +397,32 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Kanban — VirtualScroller integration + default-sort URL behavior + no-default API params
+
+**Three related changes (kanban-sort-by continuation, 2026-08-06).**
+
+**1. VirtualScroller integration in KanbanColumn.** Replaced the plain `v-for` rendering of cards with `<VirtualScroller>` so a column with 100+ tasks only mounts the rows currently in the viewport (plus a 5-row buffer above + below). The DOM stays at ~10-14 cards regardless of total. Fixes the "lazy load adds items in TOP not BOTTOM" bug — that was plain-v-for visually displacing existing rows when a new page arrived.
+
+Per-column pagination (already shipped earlier in this branch) is wired to the scroller's `@load-more` event. Short columns where the scroller is NOT scrollable get a manual "Load more" button (gated on `@scrollability-change`) as a keyboard-only / no-scroll affordance. Added an auto-fetch watcher that fires `loadMoreTasksForColumn` when the entire page fits the viewport — the user reported the manual button stuck around forever in that case.
+
+Card gaps are restored via `<div class="pb-1">` inside the scroller slot (VirtualScroller's `.virtual-scroller-content` has no row spacing by default).
+
+**2. URL `?sorts=col_X:updated_at:desc,...` is the source of truth (user feedback 2026-08-06).** Sidebar.handleSelectItem now builds the `sorts` string from each kanban item's columns when the user clicks it and passes it through the `navigate` emit's new 7th positional arg. AppLayout.handleNavigate writes it to the URL. The kanban column picker still works (per-column sort UI is unchanged) — picking a sort emits `sortChange`, KanbanView's `columnSorts` watcher writes the URL + fires `fetchKanbanTasksForAllColumns(sortBy, direction)` so the backend re-sorts.
+
+**3. No-default sort API params.** `api.getTasks` no longer sends `sort_by=updated_at&direction=desc` on every task-fetch. Both params default to `undefined`; only set on the URL when BOTH are explicitly provided. The backend's own default (`updated_at desc`) handles the no-sort case identically — same wire result, cleaner URL.
+
+**Tests.** +36 net new behavioural tests across 3 new files:
+- `KanbanColumn.virtualScroller.spec.ts` (15) — scroller renders, only slice of cards in DOM, `@load-more` → backend fetch, `@scrollability-change` drives manual button, empty column → no scroller, drop zone still fires, auto-fetch when page fits viewport (and bails when scroller is scrollable).
+- `apiGetTasksSortParams.spec.ts` (6) — `getTasks` omits sort params when neither/both-missing, includes them when both provided, still includes column_id/q/cursor.
+- `sidebarKanbanSortUrl.spec.ts` (4) — kanban click emits `navigate` with `?sorts=col_X:updated_at:desc,...`; folder/design clicks do NOT; pre-loaded columns emit directly; unloaded columns trigger a fetch first.
+- Plus 3 new tests in `AppLayout.urlPersist.spec.ts` for the new `sortsParam` arg + 1 rewrite in `KanbanView.sortByApi.spec.ts` (the "restores column_a sort on the cards" test → now asserts URL → backend fetch mapping, since the comparator is gone).
+- 1 fix in `KanbanColumn.spec.ts > renders cards sorted by kanban_position` (now asserts input order, with a comment pointing at the URL sort as the new driver).
+- Deleted `KanbanColumn.sortMenu.spec.ts` (12 tests) — the per-column sort UI is intact (the picker still works, the URL still writes) but the client-side comparator is gone. New tests live in `KanbanColumn.virtualScroller.spec.ts` covering the auto-fetch case.
+
+**Files.** 8 changed + 3 new. Build clean (`bun run build` vue-tsc passes). Full suite: **2016 pass / 12 fail** (the 12 are pre-existing on main — banned static-contract tests in AppLayout.memoriesGate / DesignElement static + design-view regressions in DesignView.undoHidden / AppLayout.translateResize / DesignView.nudge).
+
+**Plan.** `docs/superpowers/plans/2026-08-06-kanban-virtual-scroll.md` (in progress).
+
 ### 2026-08-06: Kanban — Sort-by tasks (per-column, ⋮ menu)
 
 **Symptom (user report).** *"add feature to implement sort tasks kanban ... and they should persistentece in url"*. The kanban only sorted by `kanban_position` (drag-reorder). Then the user refined: *"put the sort in that three dot ... so everyl column can have independt sort"*. The user wanted per-column sort, accessed from each column's existing ⋮ menu (not a separate header button).

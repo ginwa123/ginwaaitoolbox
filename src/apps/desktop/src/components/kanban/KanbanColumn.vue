@@ -46,6 +46,7 @@
 import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import KanbanCard from './KanbanCard.vue'
 import KanbanSortMenu from './KanbanSortMenu.vue'
+import { VirtualScroller } from '@/helpers'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import type { KanbanColumn, Task } from '../../stores/workspaces'
 
@@ -75,12 +76,13 @@ const emit = defineEmits<{
   // The "⋮" menu's delete option opens KanbanColumnEditor in
   // 'delete' mode (confirmation modal). The host listens for this.
   requestDeleteColumn: [columnId: string]
-  // NEW (per-column sort, redo 2026-08-06). Fired when the user
-  // picks a sort mode in the column's "Sort tasks…" modal. The host
-  // (KanbanView) listens for this and:
+  // Fired when the user picks a sort mode in the column's "Sort
+  // tasks…" modal. The host (KanbanView) listens for this and:
   //   1. re-fetches the kanban tasks with the chosen sort (so the
   //      backend can return the freshest data first), and
   //   2. updates the URL with the per-column sort (URL persistence).
+  // The client-side comparator is gone (removed 2026-08-06) — the
+  // backend's `ORDER BY` is now the single source of visual order.
   sortChange: [{ sortBy: 'position' | 'created_at' | 'updated_at' | 'name'; direction: 'asc' | 'desc' }]
   // Column drag-and-drop reorder. Emitted when a column's header
   // is dragged onto another column's header (the dropped-on column
@@ -155,91 +157,46 @@ const cardsInColumn = computed<Task[]>(() => {
   return props.tasks
     .filter((t) => t.kanban_column_id === props.column.id)
     .slice()
-    .sort((a, b) => {
-      const cmp = compareBySortMode(a, b, sortBy.value, direction.value)
-      if (cmp !== 0) return cmp
-      // Tiebreaker: kanban_position asc (stable across same-field rows).
-      const ap = a.kanban_position ?? Number.MAX_SAFE_INTEGER
-      const bp = b.kanban_position ?? Number.MAX_SAFE_INTEGER
-      return ap - bp
-    })
 })
 
-// Pure comparator — extracted from cardsInColumn so it can be unit-
-// tested in isolation if needed. Returns negative when a sorts before
-// b, positive when b sorts before a, 0 when equal (caller falls back
-// to the kanban_position tiebreaker).
+// Pure comparator — REMOVED 2026-08-06. The client-side sort is gone
+// (the backend's ORDER BY is the single source of visual order). This
+// function was the comparator for the now-deleted `.sort()` call in
+// `cardsInColumn` above. Removed because nothing references it.
 //
-// Notes on the comparators:
-//   - name uses BINARY collate (matches the backend's SQL ORDER BY
-//     without LOWER() — 'Apple' (capital A) sorts before 'banana' in
-//     BINARY).
-//   - created_at / updated_at convert Date to ISO string for a
-//     deterministic string compare (works for the ISO 8601 format
-//     the backend stores).
-//   - Direction: 'asc' → normal ordering; 'desc' → signs flipped.
-function compareBySortMode(
-  a: Task,
-  b: Task,
-  sortBy: SortField,
-  direction: SortDirection,
-): number {
-  const sign = direction === 'asc' ? 1 : -1
-  let av: string | number = 0
-  let bv: string | number = 0
-  if (sortBy === 'position') {
-    // The caller passes the result through the tiebreaker, so when
-    // sortBy === 'position' we want a stable 0 here and let the
-    // tiebreaker drive.
-    return 0
-  } else if (sortBy === 'name') {
-    av = a.name ?? ''
-    bv = b.name ?? ''
-  } else if (sortBy === 'created_at') {
-    av = a.createdAt instanceof Date ? a.createdAt.toISOString() : (a.createdAt ?? '')
-    bv = b.createdAt instanceof Date ? b.createdAt.toISOString() : (b.createdAt ?? '')
-  } else {
-    // updated_at
-    av = a.updatedAt instanceof Date ? a.updatedAt.toISOString() : (a.updatedAt ?? '')
-    bv = b.updatedAt instanceof Date ? b.updatedAt.toISOString() : (b.updatedAt ?? '')
-  }
-  if (av < bv) return -1 * sign
-  if (av > bv) return 1 * sign
-  return 0
-}
+// Original signature (kept here as a comment for the git history):
+//   function compareBySortMode(
+//     a: Task, b: Task,
+//     sortBy: SortField, direction: SortDirection,
+//   ): number
 
-// ─── Auto-load (lazy) for the per-item task list ─────────────────────────
+// ─── Virtual scrolling + lazy load (kanban-virtual-scroll, 2026-08-06) ───
 //
-// When the kanban has > 100 tasks (the backend's MAX_PAGE_SIZE), the
-// initial fetch in `fetchKanbanTasks` only loads the first page. We
-// expose two escape hatches for fetching more:
+// The cards list is rendered through <VirtualScroller>, which mounts
+// only the rows currently in the viewport (plus a buffer above and
+// below). With 100+ tasks on a column, the DOM stays small (8-12 rows
+// at any moment) — no more "lazy load adds items in TOP not BOTTOM"
+// confusion, where the new page displaced existing rows and pushed
+// the user's scroll position visually upward.
 //
-//   1. **Scroll-triggered auto-load** (the common case): an
-//      IntersectionObserver watches a 1px-tall sentinel div placed at
-//      the bottom of the cards list. When the sentinel becomes visible
-//      AND `item.hasMoreTasks`, fire `loadMoreTasks` ONCE (debounced via
-//      `hasTriggeredAutoLoad`).
+// Lazy-load is owned by the scroller: it fires `@load-more` when the
+// user scrolls within `loadMoreThreshold` of the bottom edge. We map
+// that to `workspacesStore.loadMoreTasksForColumn` (per-column
+// pagination). The store's `columnPagination[colId].isLoading` guard
+// makes concurrent calls no-ops, so the scroller's debounce is
+// belt-and-suspenders but harmless.
 //
-//   2. **Click-to-load fallback**: a "Load more" button at the bottom
-//      of the column when `hasMoreTasks` is true. Catches keyboard-only
-//      users and short columns where the sentinel never enters the
-//      viewport on its own.
+// For short columns where the scroller is NOT scrollable
+// (`scrollerIsScrollable === false`), we expose a manual "Load more"
+// button as a keyboard-only / no-scroll affordance.
 //
-// Both routes call `workspacesStore.loadMoreTasks` (the existing store
-// action) — no new store changes. The action's `isLoadingMoreTasks`
-// guard (workspaces.ts:1425) makes concurrent calls no-ops.
-//
-// Plan: docs/superpowers/plans/2026-07-24-kanban-lazy-load-tasks.md
-//      Chunk 2 (Task 2.1)
+// Plan: docs/superpowers/plans/2026-08-06-kanban-virtual-scroll.md
 const workspacesStore = useWorkspacesStore()
-const autoLoadSentinel = ref<HTMLElement | null>(null)
-const hasTriggeredAutoLoad = ref(false)
-let autoLoadObserver: IntersectionObserver | null = null
 
-// Resolve the parent WorkspaceItem once. Used to read `hasMoreTasks` /
-// `isLoadingMoreTasks` for both the auto-trigger and the manual button.
-// Returns null when the store doesn't have this item yet (defensive
-// during SSE races / item navigation).
+// Resolve the parent WorkspaceItem once. Used to read `hasMore` /
+// `isLoading` for both the auto-trigger (from VirtualScroller) and
+// the manual button. Returns null when the store doesn't have this
+// item yet (defensive during SSE races / item navigation).
 const parentItem = computed(() => {
   if (!props.workspaceId || !props.itemId) return null
   return (
@@ -249,34 +206,33 @@ const parentItem = computed(() => {
   )
 })
 
-// Per-column pagination (kanban-per-column-pagination plan,
-// 2026-08-06). Each column reads its own `hasMore` + `isLoading`
-// from the store's `columnPagination[col.id]` map. The auto-load
-// sentinel + manual "Load more" button below call
-// `loadMoreTasksForColumn` instead of the old board-wide
-// `loadMoreTasks`.
+// Per-column pagination state.
 const moreTasksAvailable = computed(
   () => parentItem.value?.columnPagination?.[props.column.id]?.hasMore ?? false,
 )
 const loadingMoreTasks = computed(
   () => parentItem.value?.columnPagination?.[props.column.id]?.isLoading ?? false,
 )
-// Page size that loadMoreTasks requests. Must match the PAGE_SIZE
-// in `workspacesStore.loadMoreTasks` (workspaces.ts). Used to hide
-// the manual "Load more" button when the column already has fewer
-// cards than one page would return (i.e. the backend has nothing
-// more to give this column on a paginated request).
-const loadMorePageSize = 10
 
-const handleAutoLoad = () => {
-  // Debounce: only fire once per page. Reset via the `cardsInColumn`
-  // watcher below when the card count changes (a new page arrived)
-  // OR when this column's `hasMore` flips false.
-  if (hasTriggeredAutoLoad.value) return
+// Drives the manual "Load more" button visibility. When the scroller
+// IS scrollable, the auto-trigger handles loading and the button
+// would be redundant. When NOT scrollable (short column), the auto-
+// trigger can never fire, so we surface the button as the user's
+// only way to fetch more. Driven by the VirtualScroller's
+// `@scrollability-change` event (immediate:true means it fires once
+// on mount with the initial value).
+const scrollerIsScrollable = ref(false)
+const handleScrollabilityChange = (scrollable: boolean) => {
+  scrollerIsScrollable.value = scrollable
+}
+
+// @load-more from VirtualScroller. Fire `loadMoreTasksForColumn`.
+// The store's `isLoading` guard (workspaces.ts) makes this a no-op
+// when a fetch is already in flight, so the scroller's internal
+// debounce + this guard are stacked safely.
+const handleScrollerLoadMore = () => {
   if (!moreTasksAvailable.value) return
   if (loadingMoreTasks.value) return
-  if (cardsInColumn.value.length === 0) return // empty column: nothing to scroll past, skip auto
-  hasTriggeredAutoLoad.value = true
   void workspacesStore.loadMoreTasksForColumn(
     props.workspaceId,
     props.itemId,
@@ -284,10 +240,10 @@ const handleAutoLoad = () => {
   )
 }
 
+// Manual fallback (button click). Same code path as the scroller's
+// `@load-more` — both routes go through `loadMoreTasksForColumn`,
+// which is idempotent under the store's `isLoading` guard.
 const handleManualLoadMore = () => {
-  // Manual fallback — same code path as auto-trigger. Catches
-  // keyboard-only users and short columns where the sentinel never
-  // enters view. No debounce: the user explicitly asked for more.
   void workspacesStore.loadMoreTasksForColumn(
     props.workspaceId,
     props.itemId,
@@ -295,62 +251,64 @@ const handleManualLoadMore = () => {
   )
 }
 
-// Reset the debounce when a new page lands (cardsInColumn grew).
-// Re-enables the observer so the next scroll-to-bottom fires another
-// loadMore. When hasMoreTasks flips false, the sentinel + button hide
-// (v-if) and the observer is disconnected (see the sentinel watcher).
+// ─── Auto-fetch when the viewport fits the page (kanban-virtual-scroll) ───
+//
+// VirtualScroller's `@load-more` ONLY fires when the user is near the
+// bottom of a scrollable container. When the entire page (10 cards) fits
+// in the viewport, the container is NOT scrollable — so `@load-more`
+// never fires — and the user is stuck clicking "Load more" until the
+// column overflows. Bad UX (user feedback 2026-08-06: "if limit 10, why
+// not auto fetch? it keeps like that until i click the load more").
+//
+// Fix: when the column has fewer cards than one page AND `hasMore` is
+// true, automatically fetch the next page. The watcher re-fires when
+// the new page arrives (cardsInColumn.length grows), recursively
+// pulling pages until either `hasMore` flips false OR the column
+// becomes scrollable (at which point the VirtualScroller's @load-more
+// takes over).
+//
+// Guardrails:
+//   - `moreTasksAvailable` gates on the backend's `hasMore` — the
+//     recursion terminates when the backend says "no more".
+//   - `loadingMoreTasks` gates on the store's `isLoading` flag — no
+//     concurrent fetches.
+//   - `cardsInColumn.length < PAGE_SIZE` is the "doesn't overflow" check.
+//     Once the column becomes scrollable, the condition is false and
+//     the watcher goes silent — VirtualScroller handles the rest.
+//   - `hasAutoFetched` is a one-shot guard so the watcher doesn't loop
+//     forever on the SAME DOM state — but the watcher IS triggered by
+//     `cardsInColumn.length` changes, so each new page re-arms it.
+const PAGE_SIZE = 10
+const hasAutoFetched = ref(false)
 watch(
-  () => cardsInColumn.value.length,
+  [cardsInColumn, moreTasksAvailable, loadingMoreTasks, scrollerIsScrollable],
   () => {
-    hasTriggeredAutoLoad.value = false
-  },
-)
-
-// Wire the IntersectionObserver when the sentinel mounts (and re-wire
-// when the ref is recreated on re-render). Use `watch` + `immediate`
-// rather than onMounted alone so the observer picks up the sentinel
-// ref on every reactive update that creates a new DOM node for it.
-watch(
-  autoLoadSentinel,
-  (el) => {
-    // Always tear down the previous observer before wiring a new one.
-    if (autoLoadObserver) {
-      autoLoadObserver.disconnect()
-      autoLoadObserver = null
+    // Nothing to fetch → release the guard so the next "has more" state
+    // can re-trigger.
+    if (!moreTasksAvailable.value) {
+      hasAutoFetched.value = false
+      return
     }
-    if (!el) return
-    // Skip wiring if there's nothing to load — saves a useless observer
-    // + the sentinel rendering overhead on every column on every render.
-    if (!moreTasksAvailable.value) return
-    autoLoadObserver = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            handleAutoLoad()
-            break
-          }
-        }
-      },
-      // rootMargin '200px' = fire when sentinel is within 200px of the
-      // viewport bottom, matching the VirtualScroller's
-      // loadMoreThreshold (ChatView.vue:2199). root: null = viewport
-      // (the column container's own scrollTop can grow, but the
-      // sentinel still enters the document viewport as the user scrolls
-      // — works for any scrollable column without per-column root
-      // wiring).
-      { root: null, rootMargin: '0px 0px 200px 0px', threshold: 0 },
+    // Already a fetch in flight → wait for it.
+    if (loadingMoreTasks.value) return
+    // Not the "viewport fits the page" case → let VirtualScroller
+    // handle it (the scroll-driven @load-more).
+    if (cardsInColumn.value.length >= PAGE_SIZE) return
+    // Container is scrollable → VirtualScroller will handle it.
+    if (scrollerIsScrollable.value) return
+    // Already auto-fetched for this DOM state → wait for the new
+    // page's mount to re-arm. The watcher re-fires when the next
+    // page's cards arrive (cardsInColumn.length changes).
+    if (hasAutoFetched.value) return
+    hasAutoFetched.value = true
+    void workspacesStore.loadMoreTasksForColumn(
+      props.workspaceId,
+      props.itemId,
+      props.column.id,
     )
-    autoLoadObserver.observe(el)
   },
   { immediate: true },
 )
-
-onUnmounted(() => {
-  if (autoLoadObserver) {
-    autoLoadObserver.disconnect()
-    autoLoadObserver = null
-  }
-})
 
 // ─── Inline rename state ───────────────────────────────────────────────────
 
@@ -757,9 +715,22 @@ const handleAddClick = () => {
       {{ column.description }}
     </p>
 
-    <!-- ─── Cards (drop zone) ────────────────────────────────────────── -->
+    <!-- ─── Cards (drop zone + virtual scroller) ────────────────────── -->
+    <!-- The wrapper <div> is the drop zone (receives dragover/drop for
+         card moves between columns) AND the flex parent for the
+         VirtualScroller below. VirtualScroller owns its own
+         scrollable container internally — we don't put
+         `overflow-y-auto` here. The DnD handlers stay on this
+         wrapper so the browser fires dragenter/dragleave correctly
+         even when the cursor crosses between virtualized rows.
+
+         `p-2` restores the inner padding that used to live on the
+         cards container before the VirtualScroller migration — it
+         gives the first/last card breathing room from the column
+         edges. The card-to-card gap is applied inside the scroller
+         slot via `pb-1` on each row's wrapper (see below). -->
     <div
-      class="flex-1 min-h-0 overflow-y-auto p-2 space-y-1"
+      class="flex-1 min-h-0 flex flex-col p-2"
       :style="isDragOver
         ? 'background-color: var(--semantic-active-bg); outline: 2px dashed var(--color-violet); outline-offset: -4px;'
         : ''"
@@ -771,22 +742,51 @@ const handleAddClick = () => {
       @dragstart.capture="handleDragStartCapture"
       @dragend.capture="handleDragEndCapture"
     >
-      <KanbanCard
-        v-for="task in cardsInColumn"
-        :key="task.id"
-        :task="task"
-        :workspace-id="workspaceId"
-        :item-id="itemId"
-        :cwd="cwd"
-        :style="isDragging ? 'opacity: 0.4;' : ''"
-        @select-task="(id) => emit('selectTask', id)"
-        @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
-        @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
-        @edit-routine="(ws, item, id) => emit('editRoutine', ws, item, id)"
-        @run-routine="(ws, item, id) => emit('runRoutine', ws, item, id)"
-        @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
-        @view-task-detail="(id) => emit('viewTaskDetail', id)"
-      />
+      <!--
+        VirtualScroller mounts only the cards currently in the viewport
+        (plus buffer above/below — default 5 each side). For a column
+        with 100+ tasks, the DOM stays at ~10-14 cards regardless of
+        total. The slot uses `:key="item.id"` (NOT the index — the
+        index changes as the user scrolls, which would unmount and
+        re-mount each card and lose focus/scroll state).
+
+        Each card is wrapped in a `<div class="pb-1">` so the gap
+        between cards is uniform (matches the pre-migration
+        `space-y-1` behaviour). The `pb-1` adds 4 px to each row's
+        measured height — the `defaultItemHeight` below includes this
+        buffer (100 px = ~96 card + 4 gap) so the scroller's
+        initial render lines up with reality before the first
+        measurement cycle (~150 ms).
+      -->
+      <VirtualScroller
+        v-if="cardsInColumn.length > 0"
+        :items="cardsInColumn"
+        :default-item-height="100"
+        :buffer="5"
+        :load-more-threshold="200"
+        :load-more-threshold-ratio="0.5"
+        @load-more="handleScrollerLoadMore"
+        @scrollability-change="handleScrollabilityChange"
+      >
+        <template #default="{ item: task }">
+          <div :key="task.id" class="pb-1">
+            <KanbanCard
+              :task="task"
+              :workspace-id="workspaceId"
+              :item-id="itemId"
+              :cwd="cwd"
+              :style="isDragging ? 'opacity: 0.4;' : ''"
+              @select-task="(id) => emit('selectTask', id)"
+              @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
+              @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
+              @edit-routine="(ws, item, id) => emit('editRoutine', ws, item, id)"
+              @run-routine="(ws, item, id) => emit('runRoutine', ws, item, id)"
+              @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
+              @view-task-detail="(id) => emit('viewTaskDetail', id)"
+            />
+          </div>
+        </template>
+      </VirtualScroller>
       <!-- Empty placeholder — shown only when there are no cards. Gives
            the drop zone a clear "drop here" affordance. -->
       <div
@@ -797,29 +797,15 @@ const handleAddClick = () => {
       >
         No tasks yet
       </div>
-      <!-- Auto-load sentinel — a 1px-tall element at the bottom of the
-           scrollable cards list. The IntersectionObserver in <script setup>
-           watches this and fires workspacesStore.loadMoreTasks when it
-           enters the viewport (with a 200px rootMargin for early trigger).
-           Hidden when the column has no more tasks to fetch. -->
-      <div
-        v-if="moreTasksAvailable"
-        ref="autoLoadSentinel"
-        class="h-px w-full shrink-0"
-        aria-hidden="true"
-        :data-testid="`kanban-column-${column.id}-auto-load-sentinel`"
-      ></div>
       <!-- Manual "Load more" fallback — visible when the backend says
-           more tasks exist AND this column has at least one task loaded.
-           Hides for empty columns (no point loading more for a column
-           with 0 cards; the auto-load already skips empty columns
-           at line 262, and so should the button). Also hides when the
-           loaded count already matches what one page would return
-           (`cardsInColumn.length < limit`) — the column likely has
-           no more of its own to load. Catches keyboard-only / short-
-           column cases where the sentinel never enters the viewport. -->
+           more tasks exist AND this column has at least one task loaded
+           AND the VirtualScroller is NOT scrollable (the auto-trigger
+           can never fire for non-scrollable content). Catches keyboard-
+           only users and short columns. The button is hidden when the
+           scroller IS scrollable because the scroll-driven auto-trigger
+           handles loading there. -->
       <button
-        v-if="moreTasksAvailable && cardsInColumn.length > 0 && cardsInColumn.length < loadMorePageSize"
+        v-if="moreTasksAvailable && cardsInColumn.length > 0 && !scrollerIsScrollable"
         type="button"
         :disabled="loadingMoreTasks"
         @click="handleManualLoadMore"
