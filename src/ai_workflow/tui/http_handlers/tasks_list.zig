@@ -6,6 +6,14 @@
 //!     previous page's `next_cursor`; pass undefined for the first page
 //!   - `sort_by`: `"created_at" | "updated_at" | "name"`, default `"updated_at"`
 //!   - `direction`: `"asc" | "desc"`, default `"desc"`
+//!   - `column_id`: per-column pagination filter (kanban-per-column-
+//!     pagination, 2026-08-06). When non-null, the SQL WHERE clause
+//!     restricts the result to tasks where `kanban_column_id` matches
+//!     the supplied id (or `IS NULL`, preserving legacy rows without a
+//!     column). When null, the full board-wide result is returned (the
+//!     original behavior; the first page of any kanban view still
+//!     returns ALL columns so the columns can populate their cards).
+//!   - `q`: case-insensitive substring filter on name/description/tags.
 //!
 //! Response: `{ tasks: [...], count, has_more, next_cursor }`.
 //!
@@ -50,6 +58,13 @@ pub const TasksListInput = struct {
     cursor: ?[]const u8,
     sort_field: llm_history.TaskSortField,
     sort_direction: llm_history.TaskSortDirection,
+    /// Per-column pagination filter (kanban-per-column-pagination,
+    /// 2026-08-06). When non-null, the SQL restricts to tasks whose
+    /// `kanban_column_id` matches this id (or IS NULL, so legacy
+    /// rows without a column are also included — see the DB fn's
+    /// WHERE clause). When null, no column filter is applied (the
+    /// full board-wide result is returned).
+    column_id: ?[]const u8,
     /// Optional case-insensitive substring filter applied at the SQL
     /// level against `name`, `description`, `tags`. Null / empty →
     /// no filter (matches the historical behaviour). The DB fn
@@ -96,12 +111,19 @@ fn parseInput(query: anytype) TasksListInput {
     const q_raw = query.get("q");
     const q: ?[]const u8 = if (q_raw) |q_val| (if (q_val.len == 0) null else q_val) else null;
 
+    // Optional column_id (per-column pagination, 2026-08-06). Same
+    // null-or-empty semantics as `q`: an empty `?column_id=` is
+    // identical to omitting the param.
+    const column_id_raw = query.get("column_id");
+    const column_id: ?[]const u8 = if (column_id_raw) |c| (if (c.len == 0) null else c) else null;
+
     return .{
         .item_id = "", // set by the handler (path param)
         .limit = limit,
         .cursor = cursor,
         .sort_field = sort_field,
         .sort_direction = sort_direction,
+        .column_id = column_id,
         .q = q,
     };
 }
@@ -119,6 +141,7 @@ fn useCase(
         input.cursor,
         input.sort_field,
         input.sort_direction,
+        input.column_id,
         input.q,
     ) catch return error.QueryFailed;
     defer {
