@@ -80,7 +80,7 @@ describe('workspacesStore.fetchKanbanTasks', () => {
     // (workspaceId, itemId, limit, cursor, sortBy, direction, q). When
     // q is undefined, the helper layer (api.getTasks) omits the URL
     // param — server-side semantics: no filter.
-    expect(api.getTasks).toHaveBeenCalledWith(WS_ID, ITEM_ID, 100, undefined, 'updated_at', 'desc', undefined)
+    expect(api.getTasks).toHaveBeenCalledWith(WS_ID, ITEM_ID, 100, undefined, undefined, undefined, undefined)
   })
 
   it('passes limit=100 on initial fetch (matches backend MAX_PAGE_SIZE)', async () => {
@@ -128,8 +128,8 @@ describe('workspacesStore.fetchKanbanTasks', () => {
     await store.fetchKanbanTasks(WS_ID, ITEM_ID)
 
     expect(spy.mock.calls[0]?.[3]).toBeUndefined() // cursor = undefined (index 3)
-    expect(spy.mock.calls[0]?.[4]).toBe('updated_at') // sortBy
-    expect(spy.mock.calls[0]?.[5]).toBe('desc') // direction
+    expect(spy.mock.calls[0]?.[4]).toBeUndefined() // sortBy (default back-compat — api layer applies 'updated_at')
+    expect(spy.mock.calls[0]?.[5]).toBeUndefined() // direction (default back-compat — api layer applies 'desc')
     expect(spy.mock.calls[0]?.[6]).toBeUndefined() // q = undefined
   })
 
@@ -230,7 +230,7 @@ describe('workspacesStore.fetchKanbanTasks with q (kanban task search)', () => {
 
     await store.fetchKanbanTasks(WS_ID, ITEM_ID, 100, undefined, 'design')
 
-    expect(spy).toHaveBeenCalledWith(WS_ID, ITEM_ID, 100, undefined, 'updated_at', 'desc', 'design')
+    expect(spy).toHaveBeenCalledWith(WS_ID, ITEM_ID, 100, undefined, undefined, undefined, 'design')
   })
 
   it('forwards q=undefined when search is cleared', async () => {

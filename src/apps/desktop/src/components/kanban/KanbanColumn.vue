@@ -75,6 +75,13 @@ const emit = defineEmits<{
   // The "⋮" menu's delete option opens KanbanColumnEditor in
   // 'delete' mode (confirmation modal). The host listens for this.
   requestDeleteColumn: [columnId: string]
+  // NEW (per-column sort, redo 2026-08-06). Fired when the user
+  // picks a sort mode in the column's "Sort tasks…" modal. The host
+  // (KanbanView) listens for this and:
+  //   1. re-fetches the kanban tasks with the chosen sort (so the
+  //      backend can return the freshest data first), and
+  //   2. updates the URL with the per-column sort (URL persistence).
+  sortChange: [{ sortBy: 'position' | 'created_at' | 'updated_at' | 'name'; direction: 'asc' | 'desc' }]
   // Column drag-and-drop reorder. Emitted when a column's header
   // is dragged onto another column's header (the dropped-on column
   // becomes the new "slot" for the dragged column; the host's
@@ -111,6 +118,15 @@ type SortField = 'position' | 'created_at' | 'updated_at' | 'name'
 type SortDirection = 'asc' | 'desc'
 const sortBy = ref<SortField>('position')
 const direction = ref<SortDirection>('asc')
+
+// Watcher that re-emits the sort change to the parent. The parent
+// (KanbanView) is the source of truth for URL persistence + the
+// API re-fetch. Picked via a watcher (not a single emit) so any
+// setSortMode call (from URL restore, tests, or the modal) is
+// surfaced — the host always sees the latest state.
+watch([sortBy, direction], ([newSortBy, newDirection]) => {
+  emit('sortChange', { sortBy: newSortBy, direction: newDirection })
+})
 
 const setSortMode = (newSortBy: SortField, newDirection: SortDirection) => {
   sortBy.value = newSortBy

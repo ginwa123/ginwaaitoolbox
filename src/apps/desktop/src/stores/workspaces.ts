@@ -1117,6 +1117,15 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     limit = 100,
     cursor?: string,
     q?: string,
+    // NEW (kanban-sort-by, redo 2026-08-06 — per-column). Optional
+    // server-side sort. When undefined, the api layer applies its
+    // own 'updated_at desc' default (back-compat). When defined,
+    // the backend returns all tasks sorted by the chosen field.
+    // The frontend's per-column client-side sort then applies on
+    // top, so each column can have an independent sort despite
+    // the global server sort.
+    sortBy?: 'created_at' | 'updated_at' | 'name',
+    direction?: 'asc' | 'desc',
   ): Promise<void> {
     const item = findItem(workspaceId, itemId)
     if (!item) return
@@ -1139,8 +1148,8 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         itemId,
         limit,
         cursor,
-        'updated_at',
-        'desc',
+        sortBy,
+        direction,
         q,
       )
       // Migration 067 — normalize tags from wire string to in-memory
