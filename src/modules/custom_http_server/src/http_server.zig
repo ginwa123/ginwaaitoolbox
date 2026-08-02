@@ -8,6 +8,7 @@ pub const sse_manager = @import("sse_manager.zig");
 pub const ws_manager = @import("websocket_manager.zig");
 pub const ws_frames = @import("websocket_frames.zig");
 pub const ws_handshake = @import("websocket_handshake.zig");
+pub const Template = @import("template.zig");
 pub const HttpRequest = http_parser.HttpRequest;
 pub const HttpResponse = http_parser.HttpResponse;
 pub const HttpContext = http_parser.HttpContext;

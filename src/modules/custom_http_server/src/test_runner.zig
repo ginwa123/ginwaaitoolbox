@@ -24,4 +24,6 @@ test {
     _ = @import("websocket_frames_test.zig");
     _ = @import("websocket_handshake_test.zig");
     _ = @import("websocket_manager_test.zig");
+    // Jinja-style template engine — tokenizer, parser, renderer, inheritance
+    _ = @import("template_test.zig");
 }

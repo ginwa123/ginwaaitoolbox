@@ -1,5 +1,6 @@
 const std = @import("std");
 const linux = std.posix.system;
+const Template = @import("template.zig");
 
 pub const HttpContext = struct {
     allocator: std.mem.Allocator,
@@ -130,6 +131,36 @@ pub const HttpResponse = struct {
         copy.body = body;
         const len_str = std.fmt.allocPrint(self.allocator, "{}", .{body.len}) catch @panic("OOM");
         copy.headers.put("Content-Length", len_str) catch @panic("OOM");
+        return copy;
+    }
+
+    /// Render a compiled Jinja template and set the body + Content-Type
+    /// in one call. Equivalent to:
+    ///   const body = try Template.render(self.allocator, nodes, ctx);
+    ///   return self.withBody(body).setContentType("text/html; charset=utf-8");
+    /// but allocates the body and the Content-Length string for you.
+    ///
+    /// On render error, returns the response unchanged (caller should
+    /// check for an empty body if this matters — a successful render
+    /// always produces a non-empty body unless the template itself is
+    /// empty).
+    pub fn withRender(
+        self: HttpResponse,
+        nodes: []const Template.Node,
+        ctx: *const Template.Context,
+    ) HttpResponse {
+        const body = Template.render(self.allocator, nodes, ctx) catch return self;
+        return self
+            .withBody(body)
+            .setContentType("text/html; charset=utf-8");
+    }
+
+    /// Set a content-type header on the response. Returns the (possibly
+    /// copied) response so it can be chained after withBody / withJson
+    /// / withRender.
+    pub fn setContentType(self: HttpResponse, ct: []const u8) HttpResponse {
+        var copy = self;
+        copy.headers.put("Content-Type", ct) catch @panic("OOM");
         return copy;
     }
 

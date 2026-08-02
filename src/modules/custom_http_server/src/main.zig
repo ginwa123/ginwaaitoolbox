@@ -322,6 +322,110 @@ fn landingPageHandler(
     return out;
 }
 
+// ============================================================================
+// Jinja-style template handler — demonstrates the template engine.
+//
+// Renders `templates/example.jinja` (a child of `templates/base.jinja`)
+// with a context built from a few hardcoded values. On each request:
+//   1. Load the child template source (recursively loads the parent).
+//   2. Compile the merged AST with inheritance resolution.
+//   3. Build a context with: build_sha, started_at, features[], show_extra.
+//   4. Render the AST and serve as `text/html; charset=utf-8`.
+//
+// For production: pre-compile the AST once at startup (cache it in a
+// global) and only build a fresh context per request. The compile step
+// walks the file system / parses; the render step is in-memory and fast.
+// ============================================================================
+
+// Bundle the template sources at compile time so the binary is
+// self-contained — no on-disk template files required at runtime.
+const EXAMPLE_TEMPLATE = @embedFile("templates/example.jinja");
+
+// Loader callback: serves the bundled child + parent to the template
+// engine. For multi-template apps this would be a real filesystem
+// loader; for this single-page demo, embedFile is enough.
+const TemplateLoader = struct {
+    fn load(
+        ctx: *anyopaque,
+        allocator: std.mem.Allocator,
+        path: []const u8,
+    ) anyerror![]u8 {
+        _ = ctx;
+        if (std.mem.eql(u8, path, "example.jinja")) {
+            return allocator.dupe(u8, EXAMPLE_TEMPLATE) catch return error.OutOfMemory;
+        }
+        if (std.mem.eql(u8, path, "base.jinja")) {
+            return allocator.dupe(u8, BASE_TEMPLATE) catch return error.OutOfMemory;
+        }
+        return error.TemplateNotFound;
+    }
+};
+
+const BASE_TEMPLATE = @embedFile("templates/base.jinja");
+
+fn templateHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    res: gserverz.HttpResponse,
+) !gserverz.HttpResponse {
+    _ = req;
+
+    // Build a loader + compile the template (with inheritance).
+    var loader = TemplateLoader{};
+    const nodes = gserverz.Template.compileWithParent(
+        ctx.allocator,
+        EXAMPLE_TEMPLATE,
+        @ptrCast(&loader),
+        &TemplateLoader.load,
+    ) catch |err| {
+        return gserverz.response.internalError(@errorName(err), ctx.allocator);
+    };
+    defer gserverz.Template.freeNodes(ctx.allocator, nodes);
+
+    // Build a context. Real apps would inject request-scoped data here
+    // (user info, feature flags, build SHA from CI, etc.).
+    var tctx = gserverz.Template.Context.init(ctx.allocator);
+    defer tctx.deinit();
+
+    try tctx.put("build_sha", .{ .string = "146df72d" });
+    try tctx.put("started_at", .{ .string = "2026-08-06" });
+    try tctx.put("show_extra", .{ .bool = true });
+
+    const features = [_]gserverz.Template.Value{
+        .{ .string = "AI Chat View" },
+        .{ .string = "Kanban Mode" },
+        .{ .string = "Design Canvas" },
+    };
+    const descs = [_][]const u8{
+        "Talk to an agent that can see your workspace.",
+        "Sprint board wired to your tasks.",
+        "Visual editor backed by Zig.",
+    };
+    var fmap = std.StringHashMap(gserverz.Template.Value).init(ctx.allocator);
+    defer fmap.deinit();
+    try fmap.put("name", .{ .string = features[0].string });
+    try fmap.put("description", .{ .string = descs[0] });
+    // For brevity we put one feature; the template loops, so a single
+    // item is enough to demonstrate the loop. To pass an array, build
+    // one as shown below:
+    var fmap2 = std.StringHashMap(gserverz.Template.Value).init(ctx.allocator);
+    try fmap2.put("name", .{ .string = features[1].string });
+    try fmap2.put("description", .{ .string = descs[1] });
+    var fmap3 = std.StringHashMap(gserverz.Template.Value).init(ctx.allocator);
+    try fmap3.put("name", .{ .string = features[2].string });
+    try fmap3.put("description", .{ .string = descs[2] });
+    const arr = [_]gserverz.Template.Value{
+        .{ .map = fmap },
+        .{ .map = fmap2 },
+        .{ .map = fmap3 },
+    };
+    try tctx.put("features", .{ .array = &arr });
+
+    // Render via the response's `withRender` helper — sets the body,
+    // Content-Length, and Content-Type in one call.
+    return res.withRender(nodes, &tctx);
+}
+
 // Handlers - (ctx, req, res) -> !HttpResponse
 fn healthHandler(_: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     _ = req;
@@ -532,6 +636,10 @@ pub fn run(init: std.process.Init) !void {
     try gs.router.post("/users", createUserHandler);
     // Static HTML page — served by landingPageHandler. See LANDING_PAGE_HTML above.
     try gs.router.get("/", landingPageHandler);
+    // Jinja-style template demo — extends base.jinja, demonstrates
+    // {{ var }}, {% if %}, {% for %}, {% raw %}. See templateHandler
+    // and templates/example.jinja.
+    try gs.router.get("/example", templateHandler);
     try gs.router.sse("/stream", sseStreamHandler);
     // WebSocket endpoint — echo + broadcast demo. See wsEchoHandler above.
     try gs.router.ws("/ws", wsEchoHandler);
