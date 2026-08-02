@@ -11,9 +11,12 @@
  *  - independent state across columns
  *  - sort application for name asc/desc, created_at desc
  *  - tiebreaker on equal sort-field values
- *  - v-model forwarding (so the modal can update the column)
+ *  - setSortMode via defineExpose (the test seam; production code
+ *    drives via the modal's v-model)
+ *  - ⋮ menu has 3 items, "Sort tasks…" opens the modal
+ *  - backdrop click + Esc + item-select all close the modal
  *
- * Plan: docs/superpowers/plans/2026-08-06-kanban-sort-by.md Task 3
+ * Plan: docs/superpowers/plans/2026-08-06-kanban-sort-by.md Tasks 3 + 4
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -46,7 +49,6 @@ const makeTask = (
   task_type: 'standard',
   kanban_column_id: COL_A,
   kanban_position,
-  // camelCase per Task interface; convert to ISO when KanbanColumn reads.
   createdAt: new Date('2024-01-01T00:00:00Z'),
   updatedAt: new Date('2024-01-01T00:00:00Z'),
   ...overrides,
@@ -67,6 +69,19 @@ function mountColumn(
   })
 }
 
+// Test seam: the component exposes setSortMode via defineExpose so
+// tests (and future URL-restore code, if requested separately) can
+// drive the sort state without touching the modal flow.
+function setSort(wrapper: VueWrapper, sortBy: string, direction: string) {
+  ;(wrapper.vm as unknown as { setSortMode: (s: string, d: string) => void }).setSortMode(sortBy, direction)
+}
+
+function cardOrder(wrapper: VueWrapper): string[] {
+  return wrapper
+    .findAll('[data-kanban-card]')
+    .map((node) => node.attributes('data-kanban-card') ?? '')
+}
+
 describe('KanbanColumn — per-column sort state', () => {
   let wrapper: VueWrapper | null = null
 
@@ -81,20 +96,14 @@ describe('KanbanColumn — per-column sort state', () => {
   })
 
   it('default sortBy=position + direction=asc → cards in kanban_position asc order', () => {
-    // Seed tasks in non-position order to prove sorting is applied
-    // (insertion order is not the natural return order).
+    // Seed tasks in non-position order to prove sorting is applied.
     const tasks = [
       makeTask('t_2', 'Bravo', 2),
       makeTask('t_0', 'Alpha', 0),
       makeTask('t_1', 'Charlie', 1),
     ]
     wrapper = mountColumn(makeColumn(COL_A), tasks)
-    // Read the rendered KanbanCards in DOM order (cardsInColumn
-    // already filters + sorts; the rendered DOM reflects the order).
-    const cardIds = wrapper
-      .findAll('[data-kanban-card]')
-      .map((node) => node.attributes('data-kanban-card'))
-    expect(cardIds).toEqual(['t_0', 't_1', 't_2'])
+    expect(cardOrder(wrapper)).toEqual(['t_0', 't_1', 't_2'])
   })
 
   it('sortBy=name + direction=asc → cards in A→Z order', async () => {
@@ -104,16 +113,9 @@ describe('KanbanColumn — per-column sort state', () => {
       makeTask('t_m', 'Mike', 2),
     ]
     wrapper = mountColumn(makeColumn(COL_A), tasks)
-
-    // Flip the sort. The component uses v-model:sortBy + v-model:direction
-    // (declared below in Task 4). For this test, set the prop directly.
-    await wrapper.setProps({ sortBy: 'name', direction: 'asc' })
+    setSort(wrapper, 'name', 'asc')
     await nextTick()
-
-    const cardIds = wrapper
-      .findAll('[data-kanban-card]')
-      .map((node) => node.attributes('data-kanban-card'))
-    expect(cardIds).toEqual(['t_a', 't_m', 't_z'])
+    expect(cardOrder(wrapper)).toEqual(['t_a', 't_m', 't_z'])
   })
 
   it('sortBy=name + direction=desc → cards in Z→A order', async () => {
@@ -123,13 +125,9 @@ describe('KanbanColumn — per-column sort state', () => {
       makeTask('t_z', 'Zeta', 2),
     ]
     wrapper = mountColumn(makeColumn(COL_A), tasks)
-    await wrapper.setProps({ sortBy: 'name', direction: 'desc' })
+    setSort(wrapper, 'name', 'desc')
     await nextTick()
-
-    const cardIds = wrapper
-      .findAll('[data-kanban-card]')
-      .map((node) => node.attributes('data-kanban-card'))
-    expect(cardIds).toEqual(['t_z', 't_m', 't_a'])
+    expect(cardOrder(wrapper)).toEqual(['t_z', 't_m', 't_a'])
   })
 
   it('sortBy=created_at + direction=desc → cards in newest-first order', async () => {
@@ -139,100 +137,140 @@ describe('KanbanColumn — per-column sort state', () => {
       { ...makeTask('t_new', 'Newest', 2), createdAt: new Date('2024-12-31T23:59:59Z') },
     ]
     wrapper = mountColumn(makeColumn(COL_A), tasks)
-    await wrapper.setProps({ sortBy: 'created_at', direction: 'desc' })
+    setSort(wrapper, 'created_at', 'desc')
     await nextTick()
-
-    const cardIds = wrapper
-      .findAll('[data-kanban-card]')
-      .map((node) => node.attributes('data-kanban-card'))
-    expect(cardIds).toEqual(['t_new', 't_mid', 't_old'])
+    expect(cardOrder(wrapper)).toEqual(['t_new', 't_mid', 't_old'])
   })
 
   it('cards with the same sort-field value fall back to kanban_position asc tiebreaker', async () => {
-    // All three cards share the same name → tiebreaker is kanban_position.
     const tasks = [
       makeTask('t_pos2', 'Same', 2),
       makeTask('t_pos0', 'Same', 0),
       makeTask('t_pos1', 'Same', 1),
     ]
     wrapper = mountColumn(makeColumn(COL_A), tasks)
-    await wrapper.setProps({ sortBy: 'name', direction: 'asc' })
+    setSort(wrapper, 'name', 'asc')
     await nextTick()
-
-    const cardIds = wrapper
-      .findAll('[data-kanban-card]')
-      .map((node) => node.attributes('data-kanban-card'))
-    expect(cardIds).toEqual(['t_pos0', 't_pos1', 't_pos2'])
+    expect(cardOrder(wrapper)).toEqual(['t_pos0', 't_pos1', 't_pos2'])
   })
 
   it('two columns sort independently — changing one does not affect the other', async () => {
-    // Mount both columns with the same tasks but different column ids
-    // (so the cardsInColumn filter keeps each in its own column).
     const tasksA = [
       makeTask('t_a_z', 'Zeta', 0),
       makeTask('t_a_a', 'Alpha', 1),
     ]
     const tasksB = [
-      makeTask('t_b_a', 'Alpha', 0),
-      makeTask('t_b_z', 'Zeta', 1),
+      { ...makeTask('t_b_a', 'Alpha', 0), kanban_column_id: COL_B },
+      { ...makeTask('t_b_z', 'Zeta', 1), kanban_column_id: COL_B },
     ]
-    // Patch the column_id for B's tasks.
-    const tasksBwithCol = tasksB.map((t) => ({ ...t, kanban_column_id: COL_B }))
-
     const wA = mountColumn(makeColumn(COL_A), tasksA)
-    const wB = mountColumn(makeColumn(COL_B), tasksBwithCol)
+    const wB = mountColumn(makeColumn(COL_B), tasksB)
 
-    // Column A: sort by name asc.
-    await wA.setProps({ sortBy: 'name', direction: 'asc' })
+    setSort(wA, 'name', 'asc')
     await nextTick()
-
-    // Column A's cards are A→Z.
-    expect(
-      wA.findAll('[data-kanban-card]').map((n) => n.attributes('data-kanban-card')),
-    ).toEqual(['t_a_a', 't_a_z'])
-
-    // Column B is still in kanban_position asc (default position mode).
-    expect(
-      wB.findAll('[data-kanban-card]').map((n) => n.attributes('data-kanban-card')),
-    ).toEqual(['t_b_a', 't_b_z'])
+    expect(cardOrder(wA)).toEqual(['t_a_a', 't_a_z'])
+    expect(cardOrder(wB)).toEqual(['t_b_a', 't_b_z'])
 
     wA.unmount()
     wB.unmount()
   })
 
   it('setting sortBy back to position restores the original kanban_position order', async () => {
-    // Use names whose alphabetical order does NOT match position order,
-    // so switching back to position is observable.
+    // Names whose alpha order does NOT match position order — switching
+    // back to position is observable.
     const tasks = [
       makeTask('t_b', 'Bravo', 0),
       makeTask('t_a', 'Alpha', 1),
       makeTask('t_c', 'Charlie', 2),
     ]
     wrapper = mountColumn(makeColumn(COL_A), tasks)
+    expect(cardOrder(wrapper)).toEqual(['t_b', 't_a', 't_c'])
 
-    // Default (position asc) → positions 0, 1, 2 → t_b, t_a, t_c.
-    expect(
-      wrapper
-        .findAll('[data-kanban-card]')
-        .map((n) => n.attributes('data-kanban-card')),
-    ).toEqual(['t_b', 't_a', 't_c'])
-
-    // Switch to name asc → Alpha, Bravo, Charlie → t_a, t_b, t_c.
-    await wrapper.setProps({ sortBy: 'name', direction: 'asc' })
+    setSort(wrapper, 'name', 'asc')
     await nextTick()
-    expect(
-      wrapper
-        .findAll('[data-kanban-card]')
-        .map((n) => n.attributes('data-kanban-card')),
-    ).toEqual(['t_a', 't_b', 't_c'])
+    expect(cardOrder(wrapper)).toEqual(['t_a', 't_b', 't_c'])
 
-    // Switch back to position asc → restored to position order.
-    await wrapper.setProps({ sortBy: 'position', direction: 'asc' })
+    setSort(wrapper, 'position', 'asc')
     await nextTick()
-    expect(
-      wrapper
-        .findAll('[data-kanban-card]')
-        .map((n) => n.attributes('data-kanban-card')),
-    ).toEqual(['t_b', 't_a', 't_c'])
+    expect(cardOrder(wrapper)).toEqual(['t_b', 't_a', 't_c'])
+  })
+})
+
+describe('KanbanColumn — ⋮ menu + sort modal', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    vi.restoreAllMocks()
+  })
+
+  it('⋮ menu has 3 items in order: Rename, Sort tasks…, Delete', async () => {
+    wrapper = mountColumn(makeColumn(COL_A))
+    await wrapper.find(`[data-testid="kanban-column-${COL_A}-menu-trigger"]`).trigger('click')
+    // The ⋮ menu's <ul> contains exactly Rename + Sort tasks… + Delete
+    // — read the <li> children directly to skip the trigger button.
+    const items = wrapper.findAll(
+      `[data-testid="kanban-column-${COL_A}-menu"] > li > button`,
+    )
+    const itemIds = items.map((node) => node.attributes('data-testid'))
+    expect(itemIds).toEqual([
+      `kanban-column-${COL_A}-menu-rename`,
+      `kanban-column-${COL_A}-menu-sort`,
+      `kanban-column-${COL_A}-menu-delete`,
+    ])
+  })
+
+  it('clicking "Sort tasks…" closes the menu + opens the sort modal', async () => {
+    wrapper = mountColumn(makeColumn(COL_A))
+    await wrapper.find(`[data-testid="kanban-column-${COL_A}-menu-trigger"]`).trigger('click')
+    expect(wrapper.find(`[data-testid="kanban-column-${COL_A}-menu"]`).exists()).toBe(true)
+    await wrapper.find(`[data-testid="kanban-column-${COL_A}-menu-sort"]`).trigger('click')
+    expect(wrapper.find(`[data-testid="kanban-column-${COL_A}-menu"]`).exists()).toBe(false)
+    expect(wrapper.find(`[data-testid="kanban-column-${COL_A}-sort-modal"]`).exists()).toBe(true)
+  })
+
+  it('backdrop click closes the sort modal', async () => {
+    wrapper = mountColumn(makeColumn(COL_A))
+    await wrapper.find(`[data-testid="kanban-column-${COL_A}-menu-trigger"]`).trigger('click')
+    await wrapper.find(`[data-testid="kanban-column-${COL_A}-menu-sort"]`).trigger('click')
+    expect(wrapper.find(`[data-testid="kanban-column-${COL_A}-sort-modal"]`).exists()).toBe(true)
+    await wrapper
+      .find(`[data-testid="kanban-column-${COL_A}-sort-modal"]`)
+      .trigger('click')
+    expect(wrapper.find(`[data-testid="kanban-column-${COL_A}-sort-modal"]`).exists()).toBe(false)
+  })
+
+  it('Esc keydown closes the sort modal', async () => {
+    wrapper = mountColumn(makeColumn(COL_A))
+    await wrapper.find(`[data-testid="kanban-column-${COL_A}-menu-trigger"]`).trigger('click')
+    await wrapper.find(`[data-testid="kanban-column-${COL_A}-menu-sort"]`).trigger('click')
+    expect(wrapper.find(`[data-testid="kanban-column-${COL_A}-sort-modal"]`).exists()).toBe(true)
+    const event = new KeyboardEvent('keydown', { key: 'Escape' })
+    document.dispatchEvent(event)
+    await nextTick()
+    expect(wrapper.find(`[data-testid="kanban-column-${COL_A}-sort-modal"]`).exists()).toBe(false)
+  })
+
+  it('picking a sort item in the modal closes the modal + applies the sort', async () => {
+    const tasks = [
+      makeTask('t_b', 'Bravo', 0),
+      makeTask('t_a', 'Alpha', 1),
+      makeTask('t_c', 'Charlie', 2),
+    ]
+    wrapper = mountColumn(makeColumn(COL_A), tasks)
+    await wrapper.find(`[data-testid="kanban-column-${COL_A}-menu-trigger"]`).trigger('click')
+    await wrapper.find(`[data-testid="kanban-column-${COL_A}-menu-sort"]`).trigger('click')
+    // Modal mounts KanbanSortMenu with showTrigger=false — items
+    // render immediately, no click needed.
+    await wrapper.find('[data-testid="kanban-sort-menu-name-asc"]').trigger('click')
+    expect(wrapper.find(`[data-testid="kanban-column-${COL_A}-sort-modal"]`).exists()).toBe(false)
+    await nextTick()
+    expect(cardOrder(wrapper)).toEqual(['t_a', 't_b', 't_c'])
   })
 })

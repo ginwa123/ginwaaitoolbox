@@ -45,6 +45,7 @@
 <script setup lang="ts">
 import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import KanbanCard from './KanbanCard.vue'
+import KanbanSortMenu from './KanbanSortMenu.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import type { KanbanColumn, Task } from '../../stores/workspaces'
 
@@ -57,18 +58,8 @@ const props = withDefaults(defineProps<{
   // file-path resolution in descendant cards. Threaded from
   // <KanbanView> via `props.item.path`.
   cwd?: string
-  // NEW (kanban-sort-by, per-column). Each KanbanColumn owns its
-  // own sort state. The parent (KanbanView) wires v-model:sortBy +
-  // v-model:direction to the per-column modal, but the column is
-  // self-contained: a parent refresh does NOT reset the sort (it's
-  // view state, not store state). Default = 'position' + 'asc' =
-  // today's drag-reorder order.
-  sortBy?: 'position' | 'created_at' | 'updated_at' | 'name'
-  direction?: 'asc' | 'desc'
 }>(), {
   cwd: '',
-  sortBy: 'position',
-  direction: 'asc',
 })
 
 const emit = defineEmits<{
@@ -101,6 +92,33 @@ const emit = defineEmits<{
   viewTaskDetail: [taskId: string]
 }>()
 
+// ─── Per-column sort state (kanban-sort-by, plan Task 3) ────────────────
+//
+// Each KanbanColumn owns its own sortBy + direction refs (LOCAL —
+// not in the store, not in the URL, not lifted to KanbanView). Two
+// columns can have different sorts simultaneously.
+//
+// The sort is purely client-side: no server refetch, no store
+// changes, no URL persistence. Re-mounting the column (via KanbanView's
+// :key=) resets to the defaults (Manual / drag-reorder). The user
+// picks via the "Sort tasks…" entry in the column's ⋮ menu (opens
+// the centered modal mounted below).
+//
+// Exposed via defineExpose so tests (and future URL-restore code,
+// if requested separately) can drive the sort state without
+// touching the modal flow.
+type SortField = 'position' | 'created_at' | 'updated_at' | 'name'
+type SortDirection = 'asc' | 'desc'
+const sortBy = ref<SortField>('position')
+const direction = ref<SortDirection>('asc')
+
+const setSortMode = (newSortBy: SortField, newDirection: SortDirection) => {
+  sortBy.value = newSortBy
+  direction.value = newDirection
+}
+
+defineExpose({ setSortMode })
+
 // ─── Derived data ──────────────────────────────────────────────────────────
 
 // Cards in this column. NEW (kanban-sort-by, per-column): the sort
@@ -108,12 +126,10 @@ const emit = defineEmits<{
 // kanban_position asc as the tiebreaker (matches the backend's
 // (sort_field, id) tuple pagination — stable ordering across rows
 // that share the same sort-field value). The sort is purely
-// client-side; no server refetch, no store changes, no URL.
+// client-side.
 //
-//   sortBy='position' → first key is kanban_position asc (the
-//   historical behaviour; here the comparator degenerates to the
-//   tiebreaker — every row's primary key is identical, so the
-//   tiebreaker determines the order).
+//   sortBy='position' → comparator returns 0; tiebreaker dominates →
+//   kanban_position asc (today's behaviour, no regression).
 //   sortBy='name' / 'created_at' / 'updated_at' → first key is the
 //   chosen field (asc or desc), tiebreaker is kanban_position asc.
 //
@@ -124,7 +140,7 @@ const cardsInColumn = computed<Task[]>(() => {
     .filter((t) => t.kanban_column_id === props.column.id)
     .slice()
     .sort((a, b) => {
-      const cmp = compareBySortMode(a, b, props.sortBy, props.direction)
+      const cmp = compareBySortMode(a, b, sortBy.value, direction.value)
       if (cmp !== 0) return cmp
       // Tiebreaker: kanban_position asc (stable across same-field rows).
       const ap = a.kanban_position ?? Number.MAX_SAFE_INTEGER
@@ -141,7 +157,7 @@ const cardsInColumn = computed<Task[]>(() => {
 // Notes on the comparators:
 //   - name uses BINARY collate (matches the backend's SQL ORDER BY
 //     without LOWER() — 'Apple' (capital A) sorts before 'banana' in
-//     BINARY). Same behaviour as the previous Tasks 6 implementation.
+//     BINARY).
 //   - created_at / updated_at convert Date to ISO string for a
 //     deterministic string compare (works for the ISO 8601 format
 //     the backend stores).
@@ -149,16 +165,16 @@ const cardsInColumn = computed<Task[]>(() => {
 function compareBySortMode(
   a: Task,
   b: Task,
-  sortBy: 'position' | 'created_at' | 'updated_at' | 'name',
-  direction: 'asc' | 'desc',
+  sortBy: SortField,
+  direction: SortDirection,
 ): number {
   const sign = direction === 'asc' ? 1 : -1
   let av: string | number = 0
   let bv: string | number = 0
   if (sortBy === 'position') {
-    // Manually order by kanban_position. The caller passes the
-    // result through the tiebreaker, so when sortBy === 'position'
-    // we want a stable 0 here and let the tiebreaker drive.
+    // The caller passes the result through the tiebreaker, so when
+    // sortBy === 'position' we want a stable 0 here and let the
+    // tiebreaker drive.
     return 0
   } else if (sortBy === 'name') {
     av = a.name ?? ''
@@ -342,16 +358,64 @@ const closeMenu = () => {
 
 // The header "⋮" menu offers Rename + Delete. Both delegate to the
 // host (KanbanView / WorkspaceItem), which opens KanbanColumnEditor
-// in the right mode. We close the menu on click; the host is
-// responsible for showing the editor.
+// in the right mode. Sort tasks… opens the per-column sort modal
+// mounted in this component. We close the menu on click; the host
+// is responsible for showing the editor.
 const handleMenuRename = () => {
   menuOpen.value = false
   emit('requestRenameColumn', props.column.id)
 }
 
+// NEW (kanban-sort-by, per-column). Clicking "Sort tasks…" in the
+// column's ⋮ menu opens a centered modal that hosts the
+// <KanbanSortMenu> component in showTrigger=false mode.
+const handleMenuSort = () => {
+  menuOpen.value = false
+  openSortModal()
+}
+
 const handleMenuDelete = () => {
   menuOpen.value = false
   emit('requestDeleteColumn', props.column.id)
+}
+
+// ─── Per-column sort modal (kanban-sort-by, plan Task 4) ─────────────
+//
+// Mounted inside the column's <section> (not Teleport'd). The modal
+// uses position: fixed + inset-0, so it visually centres
+// regardless of where it sits in the DOM. Inside the modal we
+// render <KanbanSortMenu :show-trigger="false"> — the menu items
+// without the trigger button. v-model:sortBy + v-model:direction
+// bind to local refs (the per-column state).
+//
+// The modal stays open across picks until the user dismisses
+// (matches the dropdown's close-on-select behaviour — here the
+// modal IS the wrapper, so we close it on item click).
+//
+// Esc + backdrop click closes the modal. The show-trigger=false
+// KanbanSortMenu does NOT install its own Esc handler, so we add
+// one here.
+const sortModalOpen = ref(false)
+const sortModalKey = ref(0)
+
+const openSortModal = () => {
+  sortModalKey.value++
+  sortModalOpen.value = true
+}
+
+const handleSortModalSelect = () => {
+  sortModalOpen.value = false
+}
+
+const handleSortModalBackdrop = () => {
+  sortModalOpen.value = false
+}
+
+const handleSortModalKeyDown = (event: KeyboardEvent) => {
+  if (event.key === 'Escape' && sortModalOpen.value) {
+    event.preventDefault()
+    sortModalOpen.value = false
+  }
 }
 
 // Close the menu when clicking outside. Mirror the pattern in
@@ -366,9 +430,11 @@ const handleDocumentClick = (event: MouseEvent) => {
 
 onMounted(() => {
   document.addEventListener('click', handleDocumentClick)
+  document.addEventListener('keydown', handleSortModalKeyDown)
 })
 onUnmounted(() => {
   document.removeEventListener('click', handleDocumentClick)
+  document.removeEventListener('keydown', handleSortModalKeyDown)
 })
 
 // ─── Drag-and-drop state (drop zone) ───────────────────────────────────────
@@ -604,6 +670,23 @@ const handleAddClick = () => {
             </button>
           </li>
           <li>
+            <!--
+              NEW (kanban-sort-by, per-column). Opens the per-column
+              sort modal (mounted below the menu). Sorted state lives
+              in this column — each column can have an independent
+              sort (column A → Name (A→Z), column B → Manual).
+            -->
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
+              style="color: var(--semantic-text);"
+              :data-testid="`kanban-column-${column.id}-menu-sort`"
+              @click="handleMenuSort"
+            >
+              Sort tasks…
+            </button>
+          </li>
+          <li>
             <button
               type="button"
               class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
@@ -729,6 +812,40 @@ const handleAddClick = () => {
         <span>Add</span>
       </button>
     </footer>
+
+    <!--
+      Per-column sort modal (kanban-sort-by, plan Task 4). Opens
+      when the user clicks "Sort tasks…" in the column's ⋮ menu.
+      Centered on the viewport (position: fixed + inset-0). The
+      backdrop click + Esc close it. Inside, <KanbanSortMenu
+      :show-trigger="false"> renders just the menu items — the
+      showTrigger=false mode (Task 2) skips the trigger button +
+      click-outside / Esc handlers, leaving the modal wrapper as
+      the sole owner of those behaviours.
+    -->
+    <div
+      v-if="sortModalOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center"
+      style="background-color: rgba(0, 0, 0, 0.5);"
+      :data-testid="`kanban-column-${column.id}-sort-modal`"
+      :key="`sort-modal-${column.id}-${sortModalKey}`"
+      @click.self="handleSortModalBackdrop"
+    >
+      <div
+        class="rounded-lg shadow-2xl p-2 min-w-[240px] max-w-[90vw]"
+        style="
+          background-color: var(--semantic-card-bg);
+          border: 1px solid var(--color-border);
+        "
+      >
+        <KanbanSortMenu
+          v-model:sort-by="sortBy"
+          v-model:direction="direction"
+          :show-trigger="false"
+          @click="handleSortModalSelect"
+        />
+      </div>
+    </div>
   </section>
 </template>
 
