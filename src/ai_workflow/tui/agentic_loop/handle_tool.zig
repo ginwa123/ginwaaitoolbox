@@ -4,21 +4,21 @@ const agent = nalar.agent;
 const logger_mod = nalar.loggermod;
 const sqlite = nalar.sqlite;
 const config_mod = nalar.config;
-const tool_registry = @import("agentic_loop/tool_registry.zig");
-const llm_history = @import("llm_history.zig");
-const on_event_sent = @import("on_event_sent.zig");
-const onEventSendLLMHistory = on_event_sent.onEventSendLLMHistory;
+const tool_registry = @import("tool_registry.zig");
+const llm_history = @import("../llm_history.zig");
 const SaveSkill = llm_history.saveSkill;
-const SaveAgent = @import("save_agent.zig").SaveAgent;
+const SaveAgent = @import("../save_agent.zig").SaveAgent;
 const session_helpers = llm_history;
 const get_current_agent_by_session_id = llm_history.get_current_agent_by_session_id;
 const tool_models = nalar.tool_models;
 const getLatestMessage = llm_history.getLatestMessage;
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
-const models = @import("models.zig");
-const agentic_loop_mod = @import("agentic_loop/mod.zig");
+const ActiveLoops = @import("../ActiveLoops.zig").ActiveLoops;
+const agentic_loop_mod = @import("mod.zig");
 const wrapToolOutput = agentic_loop_mod.tools.wrapToolOutput;
 const xmlUnescape = nalar.helpers.xmlUnescape;
+const on_event_sent = @import("../on_event_sent.zig");
+const onEventSendLLMHistory = on_event_sent.onEventSendLLMHistory;
 
 // ============================================================================
 // TOOL REGISTRY - Uses unified tool_registry.zig
@@ -42,7 +42,7 @@ const ToolContext = struct {
     agent_temperature: *f32,
     is_thinking: *bool,
     environment: ?*const std.process.Environ.Map,
-    active_loops: *models.ActiveLoops,
+    active_loops: *ActiveLoops,
     selected_profile_model: []const u8 = "",
 };
 
@@ -342,7 +342,7 @@ pub fn handle_tool(
     base_url: []const u8,
     config: *const config_mod.LlmConfig,
     environment: ?*const std.process.Environ.Map,
-    active_loops: *models.ActiveLoops,
+    active_loops: *ActiveLoops,
     selected_profile_model: []const u8,
 ) !void {
     if (res_dynamic_agent.tool_calls) |tc| {

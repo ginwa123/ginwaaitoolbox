@@ -30,6 +30,7 @@ test {
     _ = @import("parsing.zig");
     _ = @import("parsing_test.zig");
     _ = @import("workflow.zig");
+    _ = @import("handle_tool.zig"); // 2026-08-06-fix-refactor-zig-imports — 16 inline parseDiffViewFromResult tests
     _ = @import("tools_wrap_output.zig");
     _ = @import("workflow_commpact_message.zig");
     _ = @import("compaction_context.zig"); // 2026-07-30-better-compaction-context — parseReadFilePath + fetchUserChatHistory + fetchReadFilePaths + enrichCompactionXml

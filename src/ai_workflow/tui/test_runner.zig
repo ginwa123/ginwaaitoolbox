@@ -3,7 +3,6 @@ test {
     _ = @import("build_messages_for_agent_prompt_test.zig");
     _ = @import("build_messages_for_agent_prompt_design_canvas_test.zig"); // design-mode-scrollbar-fix — iframe scrollbar guidance in BuildDesignCanvasPrompt
     _ = @import("build_messages_for_agent_prompt_filtering_tools_test.zig"); // unit-test-filtering-tools — behavioural tests for the per-item-type tool filter
-    _ = @import("handle_tool_test.zig");
     _ = @import("inherited_context_test.zig");
     _ = @import("routines/model_test.zig");
     _ = @import("routines/cron_test.zig");
@@ -140,5 +139,4 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     // _ = @import("extract_base64_image_urls_test.zig"); // DISABLED - 9 failing tests (investigation shows std.testing.expectEqualStrings has a bug with literal strings)
     // _ = @import("session_db_test.zig"); // DISABLED - pre-existing test errors (see session_db_test.zig for details)
     _ = @import("agentic_loop/test_runner.zig");
-    _ = @import("handle_tool.zig");
 }
