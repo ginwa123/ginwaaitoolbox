@@ -120,7 +120,26 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
         // narrowed view to the unfiltered list. activeSearchQueries
         // is a Map<itemId, string>; undefined when no search active.
         const q = ws.activeSearchQueries.get(event.item_id)
-        void ws.fetchKanbanTasks(event.workspace_id, event.item_id, 100, undefined, q)
+        // Kanban sort-by (Chunk 3): forward the active sort so a
+        // remote move during a non-default sort re-fetches in the
+        // SAME order the user is looking at. Without this, the
+        // just-received event lands in the wrong visual position
+        // (the api's 'updated_at' / 'desc' default would silently
+        // override the user's pick). activeSortBy +
+        // activeSortDirection are Map<itemId, ...> populated by
+        // fetchKanbanTasks; both are undefined when no user sort
+        // is active (init path).
+        const sortBy = ws.activeSortBy.get(event.item_id)
+        const direction = ws.activeSortDirection.get(event.item_id)
+        void ws.fetchKanbanTasks(
+          event.workspace_id,
+          event.item_id,
+          100,
+          undefined,
+          q,
+          sortBy,
+          direction,
+        )
       }
       // Defensive: unknown event shapes are silently dropped.
     })

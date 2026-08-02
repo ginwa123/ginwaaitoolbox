@@ -217,7 +217,9 @@ describe('useKanbanSseStore (bus-backed)', () => {
     // a future bug where the column handler accidentally picks up task
     // events).
     expect(fetchColumnsSpy).not.toHaveBeenCalled()
-    expect(fetchTasksSpy).toHaveBeenCalledWith('ws_1', 'item_1', 100, undefined, undefined)
+    expect(fetchTasksSpy).toHaveBeenCalledWith(
+      'ws_1', 'item_1', 100, undefined, undefined, undefined, undefined,
+    )
   })
 
   it('triggers fetchKanbanTasks on kanban_task events (assigned action)', async () => {
@@ -237,7 +239,9 @@ describe('useKanbanSseStore (bus-backed)', () => {
     }
     dispatch(event)
 
-    expect(fetchTasksSpy).toHaveBeenCalledWith('ws_1', 'item_1', 100, undefined, undefined)
+    expect(fetchTasksSpy).toHaveBeenCalledWith(
+      'ws_1', 'item_1', 100, undefined, undefined, undefined, undefined,
+    )
   })
 
   it('triggers fetchKanbanTasks on kanban_task events (unassigned action)', async () => {
@@ -257,7 +261,9 @@ describe('useKanbanSseStore (bus-backed)', () => {
     }
     dispatch(event)
 
-    expect(fetchTasksSpy).toHaveBeenCalledWith('ws_1', 'item_1', 100, undefined, undefined)
+    expect(fetchTasksSpy).toHaveBeenCalledWith(
+      'ws_1', 'item_1', 100, undefined, undefined, undefined, undefined,
+    )
   })
 
   it('forwards the active q to fetchKanbanTasks on kanban_task events (Chunk 7)', async () => {
@@ -286,7 +292,74 @@ describe('useKanbanSseStore (bus-backed)', () => {
     }
     dispatch(event)
 
-    expect(fetchTasksSpy).toHaveBeenCalledWith('ws_1', 'item_1', 100, undefined, 'design')
+    expect(fetchTasksSpy).toHaveBeenCalledWith(
+      'ws_1', 'item_1', 100, undefined, 'design', undefined, undefined,
+    )
+  })
+
+  // ─── Active sort forwarding (kanban-sort-by plan Chunk 3) ───
+  // The SSE handler refetches tasks on kanban_task events. When the
+  // user has picked a sort (e.g. name desc), the refetch MUST use
+  // the same sort — otherwise the user's view silently reverts to
+  // updated_at desc and the just-received event lands in the wrong
+  // visual order. The handler reads activeSortBy +
+  // activeSortDirection (written by fetchKanbanTasks on the most
+  // recent user-initiated fetch) and forwards them.
+  it('forwards the active sort to fetchKanbanTasks on kanban_task events', async () => {
+    const ws = useWorkspacesStore()
+    // Seed both maps for the matching item id. activeSortDirection is
+    // intentionally a separate Map (rather than a tuple Map value)
+    // to mirror the activeSearchQueries pattern in the same store.
+    ws.activeSortBy.set('item_1', 'name')
+    ws.activeSortDirection.set('item_1', 'desc')
+
+    const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
+
+    const store = useKanbanSseStore()
+    await store.initKanbanSse('ws_1')
+
+    const event: KanbanTaskEvent = {
+      action: 'moved',
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      task_id: 'task_1',
+      new_column_id: 'col_done',
+      new_position: 0,
+    }
+    dispatch(event)
+
+    // 7-arg signature: (ws, item, limit, cursor, q, sortBy, direction).
+    expect(fetchTasksSpy).toHaveBeenCalledWith(
+      'ws_1', 'item_1', 100, undefined, undefined, 'name', 'desc',
+    )
+  })
+
+  it('forwards sortBy=undefined / direction=undefined when no active sort is recorded', async () => {
+    // The default case (no user-picked sort) — loadMoreTasks + SSE
+    // refetches both default to undefined so the api layer applies
+    // its back-compat 'updated_at' / 'desc' default. This keeps the
+    // existing pre-fix behaviour intact.
+    const ws = useWorkspacesStore()
+    // Don't seed the maps.
+    const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
+
+    const store = useKanbanSseStore()
+    await store.initKanbanSse('ws_1')
+
+    const event: KanbanTaskEvent = {
+      action: 'moved',
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      task_id: 'task_1',
+      new_column_id: 'col_done',
+      new_position: 0,
+    }
+    dispatch(event)
+
+    const lastCall = fetchTasksSpy.mock.calls[fetchTasksSpy.mock.calls.length - 1]!
+    expect(lastCall[4]).toBeUndefined() // q
+    expect(lastCall[5]).toBeUndefined() // sortBy
+    expect(lastCall[6]).toBeUndefined() // direction
   })
 
   it('forwards q=undefined to fetchKanbanTasks when no search active (Chunk 7)', async () => {

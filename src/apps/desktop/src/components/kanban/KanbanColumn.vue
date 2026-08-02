@@ -251,6 +251,12 @@ const parentItem = computed(() => {
 
 const moreTasksAvailable = computed(() => parentItem.value?.hasMoreTasks ?? false)
 const loadingMoreTasks = computed(() => parentItem.value?.isLoadingMoreTasks ?? false)
+// Page size that loadMoreTasks requests. Must match the PAGE_SIZE
+// in `workspacesStore.loadMoreTasks` (workspaces.ts). Used to hide
+// the manual "Load more" button when the column already has fewer
+// cards than one page would return (i.e. the backend has nothing
+// more to give this column on a paginated request).
+const loadMorePageSize = 10
 
 const handleAutoLoad = () => {
   // Debounce: only fire once per page. Reset via the `cardsInColumn`
@@ -786,11 +792,16 @@ const handleAddClick = () => {
         :data-testid="`kanban-column-${column.id}-auto-load-sentinel`"
       ></div>
       <!-- Manual "Load more" fallback — visible when the backend says
-           more tasks exist. Hides during the in-flight load. Catches
-           keyboard-only / short-column cases where the sentinel never
-           enters the viewport. -->
+           more tasks exist AND this column has at least one task loaded.
+           Hides for empty columns (no point loading more for a column
+           with 0 cards; the auto-load already skips empty columns
+           at line 262, and so should the button). Also hides when the
+           loaded count already matches what one page would return
+           (`cardsInColumn.length < limit`) — the column likely has
+           no more of its own to load. Catches keyboard-only / short-
+           column cases where the sentinel never enters the viewport. -->
       <button
-        v-if="moreTasksAvailable"
+        v-if="moreTasksAvailable && cardsInColumn.length > 0 && cardsInColumn.length < loadMorePageSize"
         type="button"
         :disabled="loadingMoreTasks"
         @click="handleManualLoadMore"

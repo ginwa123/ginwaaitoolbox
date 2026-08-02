@@ -214,7 +214,7 @@ watch(searchQuery, (newQ) => {
     void workspacesStore.fetchKanbanTasks(
       props.workspaceId,
       effectiveItemId.value,
-      100,        // limit (matches backend MAX_PAGE_SIZE)
+      10,         // limit (matches loadMoreTasks + the store's default)
       undefined,  // cursor — reset to page 1 of the filtered set
       trimmed || undefined,
     )
@@ -367,7 +367,7 @@ onMounted(() => {
   void workspacesStore.fetchKanbanTasks(
     props.workspaceId,
     effectiveItemId.value,
-    100,
+    10,
     undefined,
     undefined,
     apiSortBy,
@@ -416,7 +416,7 @@ watch(columnSorts, (next) => {
     void workspacesStore.fetchKanbanTasks(
       props.workspaceId,
       effectiveItemId.value,
-      100,
+      10,
       undefined,
       undefined,
       apiSortBy,

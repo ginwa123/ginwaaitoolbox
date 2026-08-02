@@ -388,6 +388,27 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // v-model is component-local in KanbanView.vue).
   const activeSearchQueries: Map<string, string> = new Map()
 
+  // NEW (kanban-sort-by, plan
+  // docs/superpowers/plans/2026-08-06-kanban-sort-by.md Chunk 3).
+  // Map<itemId, sortField> + Map<itemId, direction> — the active
+  // per-board sort. Read by `loadMoreTasks` (to forward the sort on
+  // "Load more" clicks — the cursor is tied to the sort order) and
+  // by the kanbanSse handler (so a remote move during a non-default
+  // sort re-fetches in the same order the user is looking at).
+  // Written by `fetchKanbanTasks(ws, item, limit, cursor, q, sortBy,
+  // direction)`: BOTH sortBy and direction must be defined to SET
+  // (anything else → DELETE — the api layer falls back to its
+  // 'updated_at' / 'desc' default which matches the pre-fix
+  // behaviour). Two separate Maps (rather than a single Map of
+  // tuples) mirror the activeSearchQueries pattern and let
+  // loadMoreTasks/kanbanSse read each piece independently. Plain
+  // Map (not reactive ref) — same reason as activeSearchQueries.
+  const activeSortBy: Map<
+    string,
+    'created_at' | 'updated_at' | 'name'
+  > = new Map()
+  const activeSortDirection: Map<string, 'asc' | 'desc'> = new Map()
+
   // System folder info from API
   const systemFolderInfo = ref<SystemFolderInfo | null>(null)
   const systemFolderLoading = ref(false)
@@ -1114,7 +1135,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   async function fetchKanbanTasks(
     workspaceId: string,
     itemId: string,
-    limit = 100,
+    limit = 10,
     cursor?: string,
     q?: string,
     // NEW (kanban-sort-by, redo 2026-08-06 — per-column). Optional
@@ -1168,6 +1189,22 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         activeSearchQueries.set(itemId, q)
       } else {
         activeSearchQueries.delete(itemId)
+      }
+
+      // Track the active sort so loadMoreTasks + kanbanSse can
+      // forward it on subsequent refetches. Both sortBy and
+      // direction must be defined to SET (a half-set state would
+      // produce a "page 2 of a sort the user never asked for"
+      // mismatch with the cursor). Otherwise → DELETE (the api
+      // layer falls back to its 'updated_at' / 'desc' default
+      // which matches the pre-fix loadMoreTasks + kanbanSse
+      // behaviour).
+      if (sortBy && direction) {
+        activeSortBy.set(itemId, sortBy)
+        activeSortDirection.set(itemId, direction)
+      } else {
+        activeSortBy.delete(itemId)
+        activeSortDirection.delete(itemId)
       }
     } catch (err) {
       console.error('[workspacesStore.fetchKanbanTasks] API call failed:', err)
@@ -2405,13 +2442,25 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // page of everything. Read from activeSearchQueries (set by
       // fetchKanbanTasks(q)).
       const activeQ = activeSearchQueries.get(itemId)
+      // Kanban sort-by (Chunk 3): forward the active sort. The
+      // cursor is tied to the sort order — using a different sort
+      // here would fetch a meaningless slice. Read from
+      // activeSortBy + activeSortDirection (set by the most recent
+      // fetchKanbanTasks with both args defined). When the maps
+      // are empty (init() loads the first page directly without
+      // going through fetchKanbanTasks, so no sort is recorded)
+      // we pass undefined for both — the api layer's
+      // 'updated_at' / 'desc' default is the back-compat choice
+      // and matches the pre-fix behaviour.
+      const activeSort = activeSortBy.get(itemId)
+      const activeDirection = activeSortDirection.get(itemId)
       const { tasks, has_more, next_cursor } = await api.getTasks(
         workspaceId,
         itemId,
-        20, // PAGE_SIZE — keep in sync with the default in api/index.ts
+        10, // PAGE_SIZE — keep in sync with the default in api/index.ts
         item.tasksNextCursor,
-        'updated_at',
-        'desc',
+        activeSort,
+        activeDirection,
         activeQ,
       )
       // Append the new page to the existing list. We push (not unshift)
@@ -3086,6 +3135,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // Kanban task search (Chunk 4): exposed so SSE handlers can read
     // the active q and forward it on refetch.
     activeSearchQueries,
+    // Kanban sort-by (Chunk 3): exposed so SSE handlers can read the
+    // active sort and forward it on refetch. The cursor is tied to
+    // the sort order — using a different sort on a refetch would
+    // fetch a meaningless page.
+    activeSortBy,
+    activeSortDirection,
     systemFolderInfo,
     systemFolderLoading,
     systemFolderError,

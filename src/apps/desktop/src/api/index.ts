@@ -520,7 +520,7 @@ export async function reorderWorkspaceItems(
 export async function getTasks(
   workspaceId: string,
   itemId: string,
-  limit = 20,
+  limit = 10,
   cursor?: string,
   sortBy: 'created_at' | 'updated_at' | 'name' = 'updated_at',
   direction: 'asc' | 'desc' = 'desc',

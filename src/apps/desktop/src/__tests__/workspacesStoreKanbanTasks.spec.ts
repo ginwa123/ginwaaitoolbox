@@ -73,22 +73,19 @@ describe('workspacesStore.fetchKanbanTasks', () => {
     const item = store.workspaces[0]!.items[0]!
     expect(item.tasks).toEqual(freshTasks)
     // CONTRACT (Chunk 1 of kanban-lazy-load-tasks plan): fetchKanbanTasks
-    // passes limit=100 (backend MAX_PAGE_SIZE) instead of inheriting the
-    // default 20, so a typical kanban loads in a single round-trip.
-    //
     // CONTRACT (kanban task search, Chunk 4): the 7-arg signature is
     // (workspaceId, itemId, limit, cursor, sortBy, direction, q). When
     // q is undefined, the helper layer (api.getTasks) omits the URL
     // param — server-side semantics: no filter.
-    expect(api.getTasks).toHaveBeenCalledWith(WS_ID, ITEM_ID, 100, undefined, undefined, undefined, undefined)
+    expect(api.getTasks).toHaveBeenCalledWith(WS_ID, ITEM_ID, 10, undefined, undefined, undefined, undefined)
   })
 
-  it('passes limit=100 on initial fetch (matches backend MAX_PAGE_SIZE)', async () => {
-    // CONTRACT (Chunk 1 of kanban-lazy-load-tasks plan):
-    // fetchKanbanTasks MUST request the backend's MAX_PAGE_SIZE (100)
-    // so a typical kanban loads in a single round-trip instead of the
-    // default 20. The previous behavior (no limit → backend default 20)
-    // silently truncated boards with > 20 tasks.
+  it('passes limit=10 on initial fetch (matches the page-size cap)', async () => {
+    // CONTRACT: fetchKanbanTasks requests the standard page size of
+    // 10 so the kanban view loads in the same-sized pages as the
+    // "Load more" button. The backend's MAX_PAGE_SIZE in
+    // tasks_list.zig is still 100; we use 10 to keep the
+    // "Load more" affordance exercised on every kanban.
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
@@ -103,9 +100,9 @@ describe('workspacesStore.fetchKanbanTasks', () => {
 
     expect(spy).toHaveBeenCalledTimes(1)
     const thirdArg = spy.mock.calls[0]![2]
-    // Third arg is the `limit` parameter; must be exactly 100 to match
-    // the backend's MAX_PAGE_SIZE in tasks_list.zig.
-    expect(thirdArg).toBe(100)
+    // Third arg is the `limit` parameter; must match loadMoreTasks'
+    // page size so paginated pages and initial pages are uniform.
+    expect(thirdArg).toBe(10)
   })
 
   it('does not pass a cursor on initial fetch', async () => {
