@@ -4,7 +4,7 @@ const testing = std.testing;
 const nalarcore = @import("nalarcore");
 
 const llm_history = @import("../llm_history.zig");
-const build_msg_prompt = @import("../build_messages_for_agent_prompt.zig");
+const build_msg_prompt = @import("build_messages_for_agent_prompt.zig");
 const models = @import("../models.zig");
 const on_event_sent = @import("../on_event_sent.zig");
 const tool_registry = @import("tool_registry.zig");

@@ -129,12 +129,12 @@ test "system_prompt_get handler delegates to buildMessages" {
         return error.BuildMessagesCallMissing;
     }
 
-    if (std.mem.indexOf(u8, source, "../build_messages_for_agent_prompt.zig") == null) {
+    if (std.mem.indexOf(u8, source, "../agentic_loop/build_messages_for_agent_prompt.zig") == null) {
         std.debug.print(
-            "\n!! {s} does not import from `../build_messages_for_agent_prompt.zig` !!\n" ++
+            "\n!! {s} does not import from `../agentic_loop/build_messages_for_agent_prompt.zig` !!\n" ++
                 "   The handler must reach the canonical builder through its\n" ++
                 "   file-relative import. Add:\n" ++
-                "     const buildMessages = @import(\"../build_messages_for_agent_prompt.zig\").buildMessages;\n",
+                "     const buildMessages = @import(\"../agentic_loop/build_messages_for_agent_prompt.zig\").buildMessages;\n",
             .{HANDLER_PATH},
         );
         return error.BuildMessagesImportMissing;

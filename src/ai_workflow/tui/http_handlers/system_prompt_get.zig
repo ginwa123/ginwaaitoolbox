@@ -33,7 +33,7 @@ const llm_history = nalarcore.llm_history;
 const agent = nalarcore.agent;
 const tool_models = nalarcore.tool_models;
 
-const buildMessages = @import("../build_messages_for_agent_prompt.zig").buildMessages;
+const buildMessages = @import("../agentic_loop/build_messages_for_agent_prompt.zig").buildMessages;
 
 const agentic_loop = @import("../agentic_loop/mod.zig");
 const SqliteBackend = nalarcore.sqlite.SqliteBackend;

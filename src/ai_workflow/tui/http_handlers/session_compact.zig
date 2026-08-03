@@ -51,7 +51,7 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
 
     var messagesLists: std.ArrayList(agent.AgentMessage) = .empty;
 
-    const buildMessages = @import("../build_messages_for_agent_prompt.zig").buildMessages;
+    const buildMessages = @import("../agentic_loop/build_messages_for_agent_prompt.zig").buildMessages;
     const merged_tools: []tool_models.AgentTool = &.{};
     const initialMessages = buildMessages(allocator, io, sqlite_db, cwd, session_id, "", db_messages, merged_tools, "") catch |err| {
         logger.errFmt("[COMPACTION] buildMessages failed: {s}", .{@errorName(err)});

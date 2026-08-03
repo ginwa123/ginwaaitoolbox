@@ -35,4 +35,7 @@ test {
     _ = @import("workflow_commpact_message.zig");
     _ = @import("compaction_context.zig"); // 2026-07-30-better-compaction-context — parseReadFilePath + fetchUserChatHistory + fetchReadFilePaths + enrichCompactionXml
     _ = @import("compaction.zig"); // 2026-08-06-encapsulate-compaction-prompt — buildCompactMessagePrompt inline tests
+    _ = @import("build_messages_for_agent_prompt_test.zig");
+    _ = @import("build_messages_for_agent_prompt_design_canvas_test.zig"); // design-mode-scrollbar-fix — iframe scrollbar guidance in BuildDesignCanvasPrompt
+    _ = @import("build_messages_for_agent_prompt_filtering_tools_test.zig"); // unit-test-filtering-tools — behavioural tests for the per-item-type tool filter
 }

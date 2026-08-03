@@ -24,7 +24,7 @@ const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 
-const llm_history = @import("llm_history.zig");
+const llm_history = @import("../llm_history.zig");
 
 // ─── Test helpers (mirror build_messages_for_agent_prompt_test.zig) ────────
 
