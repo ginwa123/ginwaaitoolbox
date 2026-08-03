@@ -344,9 +344,15 @@ describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
     expect(lastColACall[6]).toBe('name')
     expect(lastColACall[7]).toBe('asc')
 
-    // col_b's fetch does NOT fire (col_b not mentioned in URL).
+    // col_b's fetch ALSO fires (regression fix 2026-08-06: other
+    // columns should NOT stay empty when only some have URL
+    // sort entries). col_b gets default sort (no sortBy/direction
+    // params — backend's natural ORDER BY).
     const colBCalls = fetchOneSpy.mock.calls.filter((c) => c[2] === 'col_b')
-    expect(colBCalls.length).toBe(0)
+    expect(colBCalls.length).toBeGreaterThan(0)
+    const lastColBCall = colBCalls[colBCalls.length - 1]!
+    expect(lastColBCall[6]).toBeUndefined() // default sort
+    expect(lastColBCall[7]).toBeUndefined()
 
     wrapper.unmount()
   })
@@ -397,15 +403,15 @@ describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
     wrapper.unmount()
   })
 
-  it('mount with ?sorts=col_a:position:asc (default) skips the URL-restore fetch (no-op)', async () => {
-    // Default sort (position+asc) is a no-op for the URL restore
-    // path — the initial mount's default-sort fetch already loaded
-    // the column. The URL-restore code uses `continue` for default
-    // entries, so no extra fetch fires.
-    //
-    // The test pre-populates columnPagination so KanbanView's
-    // initial `loadColumnsAndTasks` doesn't fire its own fetch
-    // either (otherwise it would muddy the assertion).
+  it('mount with ?sorts=col_a:position:asc (default) fetches with default sort (no URL-sort override)', async () => {
+    // Default sort (position+asc) is a no-op for the URL-sort
+    // override path — nonDefaultUrlEntries filters it out. But
+    // col_a IS still fetched (regression fix 2026-08-06: other
+    // columns should NOT stay empty when the URL has only
+    // default entries). The fetch uses NO sortBy/direction
+    // params so the backend applies its natural ORDER BY
+    // (kanban_position asc) — the same default it would have
+    // used on first-time visit.
     const item = makeItem({
       tasks: [makeTask('t_z', 'Zeta', 0), makeTask('t_a', 'Alpha', 1)],
     })
@@ -436,8 +442,13 @@ describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     await flushPromises()
 
-    // No fetch for col_a (default sort is a no-op in the URL restore).
+    // col_a's fetch fires WITH default sort (no URL-sort
+    // override — the URL entry was default, so nonDefaultUrlEntries
+    // excluded it; the column still needs data).
     const colACalls = fetchOneSpy.mock.calls.filter((c) => c[2] === 'col_a')
-    expect(colACalls.length).toBe(0)
+    expect(colACalls.length).toBeGreaterThan(0)
+    const lastColACall = colACalls[colACalls.length - 1]!
+    expect(lastColACall[6]).toBeUndefined() // default sort
+    expect(lastColACall[7]).toBeUndefined()
   })
 })

@@ -118,32 +118,36 @@ const effectiveItemId = computed(() => props.itemId || props.item.id)
 //      consistency (the column's sortBy/direction refs match
 //      the URL's sorts — matches the URL),
 //   4. loads columns,
-//   5. fires per-column fetches with the URL sort applied to
-//      EACH column that has a non-default URL entry. Columns
-//      NOT mentioned in the URL are skipped (user must click
-//      sort on them to load data). This avoids the duplicate
-//      call the previous code made (one default-sort fetch +
-//      one URL-sort fetch per column mentioned in URL).
+//   5. fires per-column fetches. URL-mentioned columns get
+//      their URL sort; OTHER unpaginated columns get default
+//      sort. Both groups fetch in ONE pass — no duplicate
+//      calls per column (the user's complaint).
 //
 // Fetch plan:
-//   - URL has non-default entries → fetch ONLY those columns
-//     with URL sort.
-//   - URL has ONLY default entries (or NO entries) AND there
-//     are unpaginated columns → fetch all unpaginated columns
-//     with default sort.
-//   - URL has only default entries AND no unpaginated columns
-//     → 0 fetches (no-op — default sort matches what the user
-//     would get anyway).
-//   - URL has only default entries AND unpaginated columns
-//     exist → fetch all unpaginated columns with default sort
-//     (the URL's default entries are visual-only; the columns
-//     still need their first-page data).
+//   - URL has non-default entries (e.g. ?sorts=col_a:name:asc) →
+//     fetch URL-mentioned columns with URL sort AND fetch other
+//     unpaginated columns with default sort. ONE fetch per
+//     column (no duplicates).
+//   - URL has ONLY default entries (or NO entries) AND there are
+//     unpaginated columns → fetch all unpaginated columns with
+//     default sort.
+//   - URL has only default entries AND no unpaginated columns →
+//     0 fetches (no-op).
 //
-// The old code fired per-column fetches for ALL unpaginated
-// columns even when the URL had sort entries for a subset —
-// duplicate calls that the user complained about ("double
-// called same endpoint on kanban view, when mounted and when
-// there's a querysort").
+// Regression note (2026-08-06): the previous version of this
+// function ONLY fetched URL-mentioned columns when the URL had
+// sort entries. The user reported this left the OTHER columns
+// empty (screenshot: only 2 of 7 columns loaded after a URL
+// with 2 sort entries). Fix: include all unpaginated columns
+// in the fetch plan — URL sort for mentioned ones, default
+// sort for the rest.
+//
+// The original "double-call" bug fired per-column fetches TWICE
+// (once from loadColumnsAndTasks with default sort + once from
+// the URL restore onMounted with URL sort). Both onMounted
+// hooks are now merged into this single function — one fetch
+// per column, applied sort depending on whether the column is
+// URL-mentioned.
 const loadColumnsAndTasks = async () => {
   if (!props.workspaceId || !effectiveItemId.value) return
   const wsId = props.workspaceId
@@ -204,32 +208,44 @@ const loadColumnsAndTasks = async () => {
     direction?: 'asc' | 'desc'
   }>
 
-  if (urlEntries.length > 0) {
-    // URL has any sort entries (default or non-default) →
-    // fetch ONLY the URL-mentioned columns with their URL sort.
-    // Default entries are no-op (filtered out above via
-    // nonDefaultUrlEntries).
-    if (nonDefaultUrlEntries.length === 0) {
-      // All URL entries are default → no fetches at all. The
-      // board's columns load with empty data until the user
-      // explicitly picks a sort or navigates to a column.
-      return
-    }
-    fetchPlan = nonDefaultUrlEntries.map((e) => {
+  // Build a set of columns mentioned in the URL (default or
+  // non-default). Used by the "fetch other columns with default
+  // sort" path to skip columns that already have an explicit URL
+  // entry (their fetch carries the URL sort instead).
+  const urlEntryColumnIds = new Set(urlEntries.map((e) => e.columnId))
+
+  if (nonDefaultUrlEntries.length > 0) {
+    // URL has non-default sort entries (e.g. ?sorts=col_a:name:asc).
+    // 1. Fetch the URL-mentioned columns with their URL sort.
+    // 2. ALSO fetch the OTHER unpaginated columns with default
+    //    sort — leaving them empty was the regression the user
+    //    reported (screenshot showed only the 2 URL-sorted
+    //    columns loaded; the other 5 stayed empty until a
+    //    column sort was picked).
+    const urlSortFetches = nonDefaultUrlEntries.map((e) => {
       const apiSortBy = e.sortBy === 'position'
         ? undefined
         : e.sortBy as 'created_at' | 'updated_at' | 'name'
       return { columnId: e.columnId, sortBy: apiSortBy, direction: e.direction }
     })
+    const defaultFetches = needFetch
+      .filter((col) => !urlEntryColumnIds.has(col.id))
+      .map((col) => ({ columnId: col.id }))
+    fetchPlan = [...urlSortFetches, ...defaultFetches]
   } else if (needFetch.length === 0) {
-    // No URL entries AND no unpaginated columns → nothing to
-    // do. Single endpoint (fetchKanbanColumns) is already fired
-    // above; no per-column fetch needed.
+    // No non-default URL entries AND no unpaginated columns →
+    // nothing to do. Single endpoint (fetchKanbanColumns) is
+    // already fired above; no per-column fetch needed. (Covers
+    // the "all URL entries are default" case too — those columns
+    // already received a default-sort fetch on a previous mount
+    // or have data, OR the URL restore is purely cosmetic.)
     return
   } else {
-    // No URL entries AND unpaginated columns exist → fetch all
-    // unpaginated columns with default sort. This is the
-    // "first-time visit" path (no URL sort history).
+    // No non-default URL entries AND unpaginated columns exist
+    // → fetch all unpaginated columns with default sort. This
+    // is the "first-time visit" path (no URL sort history) AND
+    // the "URL has only default entries" path (those columns
+    // re-fetch with default sort on mount).
     fetchPlan = needFetch.map((col) => ({ columnId: col.id }))
   }
 
