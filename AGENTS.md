@@ -397,6 +397,43 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Kanban — fetch OTHER columns with default sort when URL has sort entries for SOME columns (regression fix after onMounted merge)
+
+**Symptom (user report, task_1785730557641, follow-up).** After the previous `onMounted`-merge fix landed (`a5dcb686`), the user reported a regression: when the URL had sort entries for SOME columns, only those columns fetched on mount. The OTHER columns stayed empty until the user picked a sort or navigated. Screenshot: kanban with 7 columns + URL `?sorts=col_merged:name:desc,col_in_review_task:name:asc` showed only 2 columns loaded (the URL-mentioned ones). The other 5 columns rendered empty.
+
+**User feedback (verbatim).** *"another issues if column not sorted, it should still fetch the task, in my screenshot only 2 column that fetch it should all, if sorted not there"*.
+
+**Root cause.** The fetch-plan in `loadColumnsAndTasks` (KanbanView.vue) had three branches:
+- URL has non-default entries → fetch ONLY those columns with URL sort. **(regression — left unmentioned columns empty)**
+- URL has no entries → fetch all unpaginated with default. (worked correctly)
+- URL has only default entries → 0 fetches.
+
+The middle branch worked, but the first branch — `fetch ONLY URL-mentioned columns` — was the over-aggressive trade-off I noted in the previous changelog as "Out of scope". The user explicitly rejected that trade-off.
+
+**Fix (surgical, `KanbanView.vue::loadColumnsAndTasks`).** Rewrote the fetch-plan:
+
+| URL state | Fetch behavior |
+|---|---|
+| Has non-default entries (e.g. `col_a:name:asc`) | Fetch URL-mentioned columns with URL sort AND fetch other unpaginated columns with default sort. ONE fetch per column. |
+| Has only default entries AND unpaginated columns exist | Fetch all unpaginated with default sort. |
+| Has only default entries AND no unpaginated columns | 0 fetches (no-op). |
+| No URL entries AND no unpaginated columns | 0 fetches (no-op). |
+| No URL entries AND unpaginated columns exist | Fetch all unpaginated with default sort. |
+
+**Tests.** Two tests in `KanbanView.sortByApi.spec.ts` updated:
+- **Test 3** ("`?sorts=col_a:name:asc` fires fetchKanbanTasks for col_a with sortBy=name") — now also expects `col_b` to fire (with default sort, no `sortBy`/`direction` params). The previous assertion `"col_b does NOT fire"` was wrong per the user's report.
+- **Test 4** ("`?sorts=col_a:position:asc` (default)") — renamed to `"... fetches with default sort (no URL-sort override)"`. The assertion flipped from `col_a fetch count === 0` to `col_a fetch count > 0 AND lastColACall[6] === undefined AND lastColACall[7] === undefined` (col_a fires with default sort; the URL's default entry is filtered out as a no-op for URL-sort override, but the column still needs data and gets the default fetch).
+
+**Verification.**
+- `bun run build` clean (vue-tsc passes).
+- `bunx vitest run src/__tests__/KanbanView.sortByApi.spec.ts` — **7/7 pass**.
+- `bunx vitest run src/__tests__/KanbanView src/__tests__/KanbanColumn` — **111/111 pass**.
+- Full suite: 19 pre-existing failures on main unchanged (no regressions).
+
+**Why I missed this the first time.** The "Out of scope" trade-off in the previous changelog (`a5dcb686`) listed: *"UX change: when URL has non-default sort entries for SOME columns, the OTHER columns are NOT loaded on mount (user clicks the column to load). Previous code fetched all unpaginated columns regardless. Tests assert this behaviour."* That was wrong. The tests asserted what I implemented, not what the user wanted. Lesson: **never write a trade-off in a "Out of scope" section without explicit user confirmation** — surface the trade-off FIRST, let the user pick, then implement.
+
+**Branch / commit.** `main @ a357903a`. Plan: `docs/superpowers/plans/2026-08-06-kanban-onmount-single-fetch.md`.
+
 ### 2026-08-06: Kanban — merge the two onMounted hooks into one (single fetch per column on mount)
 
 **Symptom (user report, task_1785730557641).** *"theres a double called same endpoint on kanban view, when mounted and when thers a quertsort, its very complicated your code, to many code that call same api, mounted should only one in @/src/apps/desktop/src/components/kanban/KanbanView.vue"*. DevTools Network panel showed the SAME per-column fetch endpoint called twice on mount — once from `loadColumnsAndTasks`, once from a separate URL restore `onMounted`.
