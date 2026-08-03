@@ -2130,6 +2130,30 @@ const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
   }
 }
 
+// ─── Stop session ──────────────────────────────────────────────────────────
+//
+// The FileInput component renders a Stop button (visible only when
+// `isLLMProcessing === true`) that emits `stop-session`. We translate
+// that into a `POST /api/llm/session/<sid>/stop` which flips the
+// worker's `cancelled` flag. The workflow breaks at the next iteration
+// boundary, deletes the worker, and the SSE `worker deleted` event
+// removes the session from `processingState`. The button's
+// `v-if="isLLMProcessing"` auto-hides when that event lands.
+//
+// We deliberately do NOT optimistically flip `isLLMProcessing`
+// locally — the SSE event races with the API response and could
+// cause a flicker (button hides → re-shows → hides). FileInput owns
+// its own `isStopping` flag for the spinner; `processingState` is the
+// source of truth.
+const handleStopSession = async () => {
+  if (!sessionId.value) return
+  try {
+    await api.stopSession(sessionId.value)
+  } catch (err) {
+    console.error('Failed to stop session:', err)
+  }
+}
+
 const formatTime = (date: Date) => {
   if (!date || isNaN(date.getTime())) return ''
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -2697,6 +2721,7 @@ const compactSession = async () => {
             :isLLMProcessing="isLLMProcessing"
             @submit="handleFileInputSubmit"
             @files-selected="handleFileInputSubmit"
+            @stop-session="handleStopSession"
           />
           <!-- Status bar -->
           <div class="flex items-center gap-2 mt-3">

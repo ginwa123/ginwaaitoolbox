@@ -1438,6 +1438,78 @@ is in place (`Rows.getLastErrorMessage`), but threading it through
 signature change or a different plumbing mechanism — deferred.
 
 **Branch.** `worktree/tool-error-better-message` (uncommitted).
+### 2026-08-06: ChatView Stop button — cancel a running agent
+
+**Symptom (user report, task_1785730430551).** The chatview had no UI
+affordance to stop a running agent. The user could only wait for the agent
+to finish or restart `nalar`. The "Queue" button that replaces "Send" while
+the agent runs queues follow-up messages — it does NOT cancel the running
+one.
+
+**The mental model.** Backend cancel was already fully wired end-to-end:
+- `POST /api/llm/session/:sid/stop` → `llm_history.cancelSession` → `UPDATE worker SET cancelled=1`
+- Workflow loop polls `isWorkerCancelled` at the top of every iteration
+  (`workflow.zig:500`) + retry delay (`retry_delay_ms.zig:42`)
+- Workflow breaks → `deleteWorker` → SSE `worker deleted` event →
+  `App.vue` removes session from `processingState`
+
+Missing: the frontend wrapper, the button, and the test.
+
+**What landed.** Surgical frontend addition:
+- `api.stopSession(sessionId)` — POST wrapper. Returns
+  `{ success, session_id }`; swallows non-2xx errors with a typed
+  response (so callers never need try/catch).
+- `FileInput.vue` Stop button — visible only when
+  `isLLMProcessing=true`. Red filled-square icon, "Stop" label.
+  Emits `stop-session` to ChatView. New `isStopping` prop drives the
+  spinner + "Stopping…" label + debounces clicks.
+- `ChatView.vue::handleStopSession` — translates the emit into the
+  API call. No optimistic local flip of `isLLMProcessing` (would race
+  with the SSE event and cause button flicker).
+- Two new spec files: `FileInput.stopButton.spec.ts` (8 tests) +
+  `ChatView.stopSession.spec.ts` (5 tests) = 13 behavioural tests,
+  all green.
+
+**Tests.**
+- Button visibility: hidden when `isLLMProcessing=false`, shown when
+  true, hidden again when prop flips back.
+- Button label: "Stop" by default, "Stopping…" when `isStopping=true`.
+- Click semantics: emits `stop-session` exactly once on click, no
+  second emit while `isStopping` (debounce mirror).
+- Wiring: `api.stopSession` called with the un-prefixed session id
+  (no `chat-`); double-click debounce via FileInput's `isStopping`;
+  SSE `worker deleted` event hides the button; `api.stopSession`
+  rejection caught (no unhandled promise); button stays visible on
+  error.
+
+**Verification.**
+- `bun run build`: clean (vue-tsc + vite)
+- `bunx vitest run`: 2031 pass / 12 fail. Failures are PRE-EXISTING
+  on main (`DesignView.undoHidden ×5`, `DesignElement static ×1`,
+  `DesignView.nudge clamp ×1`, `AppLayout.translateResize ×1`,
+  `AppLayout.memoriesGate ×4`). Zero regressions.
+- `zig build test --summary all`: 2184/2190 pass (2 pre-existing
+  leaks in `design_model_set_element_parent_test`). No regressions.
+- Live smoke: `POST /api/llm/session/<sid>/stop` returns
+  `{"success":true,"session_id":"<sid>"}` on both my `localhost:8080`
+  and the user's running 8081 instance.
+
+**Out of scope (deferred to follow-ups).**
+- Mid-stream cancellation in `Agent.zig::callStreaming` (currently
+  cancel only fires at iteration boundaries; `error.Cancelled` is
+  declared but never returned from the chunk loop).
+- Keyboard shortcut (`Esc` / `Cmd+.`).
+- Confirmation modal.
+- Cancelling queued messages.
+
+**Pitfall.** `processingState` MUST be a Vue `ref()`, not a plain
+`{ value: ... }` object — Vue's reactivity tracks reassignments via
+the proxy, plain objects are invisible. First test C draft used a
+plain object and the computed `isLLMProcessing` never re-evaluated
+despite the mutation propagating.
+
+**Branch / commits.** `worktree/chatview-stop` @ `4235f008`
+(plan+spec), `02c5935e` (impl).
 
 ### 2026-08-06: Kanban — restore per-column sort independence (client-side comparator)
 
