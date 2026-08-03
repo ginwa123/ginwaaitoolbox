@@ -115,6 +115,32 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
       if ('column_id' in event) {
         void ws.fetchKanbanColumns(event.workspace_id, event.item_id)
       } else if ('task_id' in event) {
+        // Mirror the local task's column (and position) BEFORE the
+        // refetch. Without this mirror, `fetchKanbanTasks`'s merge
+        // logic — `otherTasks = filter(t => t.kanban_column_id !==
+        // columnId)` — keeps the stale source-column copy AND adds
+        // the fresh destination-column copy from the wire, producing
+        // a visible duplicate in the user's UI until refresh.
+        //
+        // User-initiated moves don't hit this because
+        // `moveTaskToColumn` mutates the local column id before the
+        // SSE round-trip. Non-UI moves (agent's `kanban_move_task`
+        // tool, edits from another tab) bypass `moveTaskToColumn`,
+        // so we have to mirror here.
+        //
+        // Skipped for `human_touched` (its payload carries
+        // `new_column_id: null` and is NOT a move — the agent's
+        // task-update flow re-fetches the task to flip the
+        // "awaiting review" indicator).
+        if (event.action !== 'human_touched') {
+          ws.mirrorKanbanTaskMove(
+            event.workspace_id,
+            event.item_id,
+            event.task_id,
+            event.new_column_id ?? null,
+            event.new_position ?? undefined,
+          )
+        }
         // Kanban task search (Chunk 7): forward the active q so a
         // remote move/edit during a search doesn't reset the user's
         // narrowed view to the unfiltered list. activeSearchQueries

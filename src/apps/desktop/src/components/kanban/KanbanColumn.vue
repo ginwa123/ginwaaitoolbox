@@ -14,8 +14,10 @@
                 collide with the per-card MIME
                 (`application/x-kanban-task-id`).
     2. Cards   — scrollable list of <KanbanCard>, filtered by the
-                column id from the `tasks` prop and sorted by
-                kanban_position.
+                column id from the `tasks` prop and sorted by the
+                per-column sort mode (sortBy + direction, both
+                stateful in this component). Default is Manual
+                (kanban_position asc).
     3. Footer  — "+ Add" button → emits `add-task` with the column id.
     4. Drop    — the cards area is a drop zone. dragover.preventDefault
                 (required by the HTML5 DnD spec to mark this as a
@@ -81,8 +83,10 @@ const emit = defineEmits<{
   //   1. re-fetches the kanban tasks with the chosen sort (so the
   //      backend can return the freshest data first), and
   //   2. updates the URL with the per-column sort (URL persistence).
-  // The client-side comparator is gone (removed 2026-08-06) — the
-  // backend's `ORDER BY` is now the single source of visual order.
+  // Per-column visual order is restored client-side via the
+  // `compareBySortMode` comparator in `cardsInColumn` — the
+  // backend's `ORDER BY` is a single global sort that the
+  // comparator overrides per column.
   sortChange: [{ sortBy: 'position' | 'created_at' | 'updated_at' | 'name'; direction: 'asc' | 'desc' }]
   // Column drag-and-drop reorder. Emitted when a column's header
   // is dragged onto another column's header (the dropped-on column
@@ -107,15 +111,23 @@ const emit = defineEmits<{
 // not in the store, not in the URL, not lifted to KanbanView). Two
 // columns can have different sorts simultaneously.
 //
-// The sort is purely client-side: no server refetch, no store
-// changes, no URL persistence. Re-mounting the column (via KanbanView's
-// :key=) resets to the defaults (Manual / drag-reorder). The user
-// picks via the "Sort tasks…" entry in the column's ⋮ menu (opens
-// the centered modal mounted below).
+// The sort is APPLIED CLIENT-SIDE in `cardsInColumn` below (the
+// comparator restores per-column visual independence — see the
+// doc comment on `cardsInColumn`). The parent also receives a
+// `sortChange` emit so it can:
+//   1. URL-persist the per-column sort (`?sorts=col_X:<field>:<dir>`)
+//   2. Trigger a backend re-fetch with that sort (the wire data
+//      lands in the user's most-recently-expressed order, then
+//      each column re-sorts locally to its own state).
 //
-// Exposed via defineExpose so tests (and future URL-restore code,
-// if requested separately) can drive the sort state without
-// touching the modal flow.
+// Re-mounting the column (via KanbanView's :key=) resets to the
+// defaults (Manual / drag-reorder). The user picks via the
+// "Sort tasks…" entry in the column's ⋮ menu (opens the centered
+// modal mounted below).
+//
+// Exposed via defineExpose so tests (and the URL restore code in
+// KanbanView's onMount) can drive the sort state without touching
+// the modal flow.
 type SortField = 'position' | 'created_at' | 'updated_at' | 'name'
 type SortDirection = 'asc' | 'desc'
 const sortBy = ref<SortField>('position')
@@ -139,36 +151,88 @@ defineExpose({ setSortMode })
 
 // ─── Derived data ──────────────────────────────────────────────────────────
 
-// Cards in this column. NEW (kanban-sort-by, per-column): the sort
-// applies the per-column sortBy + direction FIRST, then
-// kanban_position asc as the tiebreaker (matches the backend's
-// (sort_field, id) tuple pagination — stable ordering across rows
-// that share the same sort-field value). The sort is purely
-// client-side.
+// Cards in this column. The sort applies the per-column sortBy +
+// direction FIRST, then kanban_position asc as the tiebreaker
+// (matches the backend's (sort_field, id) tuple pagination —
+// stable ordering across rows that share the same sort-field
+// value).
 //
 //   sortBy='position' → comparator returns 0; tiebreaker dominates →
-//   kanban_position asc (today's behaviour, no regression).
+//   kanban_position asc (the default Manual / drag-reorder
+//   behaviour, no regression).
 //   sortBy='name' / 'created_at' / 'updated_at' → first key is the
 //   chosen field (asc or desc), tiebreaker is kanban_position asc.
 //
 // Tasks without a kanban_column_id (unassigned) are excluded — they
 // live in their own region (out of scope for v1).
+//
+// IMPORTANT — per-column independence. The backend's
+// `listWorkspaceItemTasksWithCursor` accepts only ONE sort_field +
+// sort_direction per request, so every column's fetch returns tasks
+// in the SAME global order (whichever sort the LATEST user pick
+// dictated, or the backend default `updated_at desc`). The
+// per-column `.sort()` below restores visual independence — two
+// mounted columns can show different orders at the same time.
+//
+// Plan: docs/superpowers/plans/2026-08-06-kanban-sort-independence.md
 const cardsInColumn = computed<Task[]>(() => {
   return props.tasks
     .filter((t) => t.kanban_column_id === props.column.id)
     .slice()
+    .sort((a, b) => {
+      const cmp = compareBySortMode(a, b, sortBy.value, direction.value)
+      if (cmp !== 0) return cmp
+      // Tiebreaker: kanban_position asc (stable across same-field
+      // rows). Matches the pre-removal behaviour from commit
+      // 77482f07 — the user-visible "drag-reorder position" is what
+      // they expect to see when two cards share a sort-field value.
+      const ap = a.kanban_position ?? Number.MAX_SAFE_INTEGER
+      const bp = b.kanban_position ?? Number.MAX_SAFE_INTEGER
+      return ap - bp
+    })
 })
 
-// Pure comparator — REMOVED 2026-08-06. The client-side sort is gone
-// (the backend's ORDER BY is the single source of visual order). This
-// function was the comparator for the now-deleted `.sort()` call in
-// `cardsInColumn` above. Removed because nothing references it.
+// Pure comparator — returns negative when a sorts before b, positive
+// when b sorts before a, 0 when equal (caller falls back to the
+// kanban_position tiebreaker).
 //
-// Original signature (kept here as a comment for the git history):
-//   function compareBySortMode(
-//     a: Task, b: Task,
-//     sortBy: SortField, direction: SortDirection,
-//   ): number
+// Notes on the comparators:
+//   - name uses BINARY collate (matches the backend's SQL ORDER BY
+//     without LOWER() — 'Apple' (capital A) sorts before 'banana'
+//     in BINARY).
+//   - created_at / updated_at convert Date to ISO string for a
+//     deterministic string compare (works for the ISO 8601 format
+//     the backend stores).
+//   - Direction: 'asc' → normal ordering; 'desc' → signs flipped.
+function compareBySortMode(
+  a: Task,
+  b: Task,
+  sortBy: SortField,
+  direction: SortDirection,
+): number {
+  const sign = direction === 'asc' ? 1 : -1
+  let av: string | number = 0
+  let bv: string | number = 0
+  if (sortBy === 'position') {
+    // Manual / drag-reorder: the caller passes the result through
+    // the tiebreaker, so when sortBy === 'position' we return a
+    // stable 0 here and let the tiebreaker drive the order.
+    return 0
+  } else if (sortBy === 'name') {
+    av = a.name ?? ''
+    bv = b.name ?? ''
+  } else if (sortBy === 'created_at') {
+    av = a.createdAt instanceof Date ? a.createdAt.toISOString() : (a.createdAt ?? '')
+    bv = b.createdAt instanceof Date ? b.createdAt.toISOString() : (b.createdAt ?? '')
+  } else {
+    // updated_at
+    av = a.updatedAt instanceof Date ? a.updatedAt.toISOString() : (a.updatedAt ?? '')
+    bv = b.updatedAt instanceof Date ? b.updatedAt.toISOString() : (b.updatedAt ?? '')
+  }
+  if (av < bv) return -1 * sign
+  if (av > bv) return 1 * sign
+  return 0
+}
 
 // ─── Virtual scrolling + lazy load (kanban-virtual-scroll, 2026-08-06) ───
 //

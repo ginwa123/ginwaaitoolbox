@@ -464,10 +464,53 @@ pub fn build(b: *std.Build) void {
     const run_desktop_tests = b.addRunArtifact(desktop_tests);
     test_desktop.dependOn(&run_desktop_tests.step);
 
-    const run_step = b.step("run", "Run the app");
+    // =====================================================================
+    // CLI executable (`src/apps/cli/main.zig`) — wraps
+    //   - POST  /api/llm/session
+    //   - GET   /api/llm/session
+    //   - GET   /api/llm/session/:id/messages
+    //   - GET   /api/events?channels=...   (SSE)
+    // via the project's `custom_http_client` module (libcurl-backed,
+    // cross-platform per `src/modules/custom_http_client/NALAR.md`).
+    //
+    // The CLI module is independent of `nalarcore`: it talks HTTP,
+    // not SQLite, so importing `mod` would pull in the database +
+    // SSE machinery we don't need. We build its executable directly
+    // from `src/apps/cli/main.zig` and hand it the `custom_http_client`
+    // import that's already prepared above. The `libc` + `curl` link
+    // flags ride along through `custom_http_client_mod` itself.
+    const cli_module = b.addModule("cli", .{
+        .root_source_file = b.path("src/apps/cli/src/root.zig"),
+        .target = target,
+    });
+    cli_module.addImport("custom_http_client", custom_http_client_mod);
+
+    const cli_exe = b.addExecutable(.{
+        .name = "nalarcli",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/apps/cli/src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "cli", .module = cli_module },
+                .{ .name = "custom_http_client", .module = custom_http_client_mod },
+            },
+        }),
+    });
+    // NOTE: do NOT call `b.installArtifact(cli_exe)` here — in
+    // Zig 0.16 the default install step is finalized early and
+    // post-hoc additions can be dropped. Instead we capture the
+    // install artifact handle below and depend it from
+    // `build_all_step` after that variable exists.
+    const cli_install = b.addInstallArtifact(cli_exe, .{});
 
     const cli_step = b.step("run:cli", "Run the CLI");
-    _ = cli_step;
+    const run_cli_cmd = b.addRunArtifact(cli_exe);
+    cli_step.dependOn(&run_cli_cmd.step);
+    run_cli_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_cli_cmd.addArgs(args);
+
+    const run_step = b.step("run", "Run the app");
 
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
@@ -501,7 +544,11 @@ pub fn build(b: *std.Build) void {
         mod.linkSystemLibrary("sqlite3", .{});
         mod.linkSystemLibrary("ssl", .{});
         mod.linkSystemLibrary("crypto", .{});
+        mod.linkSystemLibrary("pq", .{});
         mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+        // Debian/Ubuntu layout: libpq-fe.h lives in /usr/include/postgresql
+        // (Arch has it directly in /usr/include). Adding both is harmless.
+        mod.addIncludePath(.{ .cwd_relative = "/usr/include/postgresql" });
     } else if (target.result.os.tag == .macos) {
         // macOS native (Apple Silicon + Intel): use the system libsqlite3
         // provided by Homebrew. The vendored amalgamation compiled into
@@ -768,6 +815,7 @@ pub fn build(b: *std.Build) void {
         \\echo ""
         \\echo "  nalar service binary  →  $D/nalarcore-linux-x86_64"
         \\echo "  nalar desktop binary  →  $D/nalar-desktop"
+        \\echo "  nalarcli binary       →  $D/nalarcli"
         \\echo ""
         \\echo "  (If a binary is missing, run \`rm -rf $D && zig build\`"
         \\echo "   to force a fresh install — the cache sometimes hides"
@@ -775,15 +823,20 @@ pub fn build(b: *std.Build) void {
         \\echo ""
         \\echo "  Run with:  $D/nalarcore-linux-x86_64 service start --port 8080"
         \\echo "             $D/nalar-desktop --devtools"
+        \\echo "             $D/nalarcli sessions list"
         \\echo ""
         ,
     });
     const build_all_step = b.step("build:all", "Build nalar service + nalar-desktop, with end-of-build summary");
-    // The two binaries live on different top-level install steps:
+    // The binaries live on different top-level install steps:
     //   - nalarcore-linux-x86_64  → install:linux   (cross target, Linux x86_64)
     //   - nalar-desktop           → install           (native target, includes
     //                                               b.installArtifact(desktop_exe))
-    // The native `nalar` binary is also in `install`. We want both in
+    //   - nalarcli                → cli_install      (manual addInstallArtifact;
+    //                                               see note above `cli_install`
+    //                                               for why we don't use the
+    //                                               default `install` step)
+    // The native `nalar` binary is also in `install`. We want all in
     // one command, so depend on the inner install steps (not just the
     // outer top-level wrappers). Depending on the outer wrappers would
     // race against cache-hit skipping: when the binary's source hasn't
@@ -796,6 +849,7 @@ pub fn build(b: *std.Build) void {
     // is what `dependOn` needs.
     build_all_step.dependOn(&install_linux.step);
     build_all_step.dependOn(&desktop_install.step);
+    build_all_step.dependOn(&cli_install.step);
     build_all_step.dependOn(&build_banner.step);
 
     // Default: same as `build:all`. Without this, `zig build` (no args)

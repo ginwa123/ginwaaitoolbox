@@ -1,6 +1,6 @@
 ---
 name: zig-constcast-slice-helper-mismatch
-description: "Use @constCast(&local_array) to pass a []const T slice to a helper that takes []T. The slice is read-only in practice, but the type system requires non-const."
+description: "When checking unused @as(usize, ...) → just check the val"
 ---
 ---
 name: zig-constcast-slice-helper-mismatch
@@ -50,4 +50,3 @@ test sites only have `[_]llm_history.SessionMessage` array literals
 of the 3 call sites. The helper genuinely only reads the slice
 fields (it doesn't call any methods that take `*Self`), so the
 const-cast is safe.
-

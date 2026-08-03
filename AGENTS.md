@@ -397,6 +397,28 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: SSE kanban — mirror local task column on move/assign/unassign (no more duplicate after agent moves)
+
+**Symptom (user report, task_1785688388584).** Agent runs `kanban_move_task` to move a task from column A to column B. The frontend's `kanbanTask` SSE event triggers a `fetchKanbanTasks(colB)` refetch, which merges the fresh wire response on top of a local task whose `kanban_column_id` is still `'colA'` (nothing locally mirrored the move). The merge keeps the stale source copy AND adds the fresh dest copy — user sees the task in BOTH columns. After refresh, the duplicate disappears.
+
+**Root cause.** `fetchKanbanTasks` (workspaces.ts:1231-1235) assumes the local task's `kanban_column_id` is authoritative for what's in each column. User-initiated moves don't hit this because `moveTaskToColumn` mutates the local id before the SSE round-trip. Agent moves skip that path entirely.
+
+**Fix (surgical frontend-only).** New `mirrorKanbanTaskMove` action on the workspaces store. The SSE handler in `kanbanSse.ts` calls it BEFORE `fetchKanbanTasks` / `fetchKanbanTasksForAllColumns` on every `task_id` event except `human_touched` (whose payload carries null and is not a move). After the mirror, the merge logic correctly excludes the stale source-column copy.
+
+**Files.** 5 changed:
+- `src/apps/desktop/src/stores/workspaces.ts` — new `mirrorKanbanTaskMove` action + export.
+- `src/apps/desktop/src/stores/kanbanSse.ts` — mirror call in the `task_id` branch.
+- `src/apps/desktop/src/api/index.ts` — fix the `KanbanTaskEvent` action union: add `'human_touched'` (was missing even though the backend emits it for the human-interaction stamp; TS narrowing was hiding the gap).
+- `src/apps/desktop/src/__tests__/kanbanSseMirrorMove.spec.ts` (new) — 8 behavioural tests covering moved/assigned/unassigned, full integration (merge produces no duplicates), unknown-task no-op, human_touched bypass, idempotent re-dispatch.
+- `docs/superpowers/plans/2026-08-06-sse-kanban-move-duplicate-task.md` (new) — plan + root cause analysis.
+
+**Verification.**
+- `bun run build` clean (vue-tsc passes).
+- `bunx vitest run` — 2024 pass / 12 fail. The 12 failures are exactly the pre-existing baseline (5 DesignView.undoHidden + 1 DesignElement static contract + 1 DesignView.nudge clamp + 1 AppLayout.translateResize + 4 AppLayout.memoriesGate). No regressions from this fix.
+- 8 new tests in `kanbanSseMirrorMove.spec.ts` all pass.
+
+**Branch / commit.** `worktree/sse-kanban-move-duplicate` @ `0eade9d3`.
+
 ### 2026-08-06: Kanban — VirtualScroller integration + default-sort URL behavior + no-default API params
 
 **Three related changes (kanban-sort-by continuation, 2026-08-06).**
@@ -1488,3 +1510,39 @@ despite the mutation propagating.
 
 **Branch / commits.** `worktree/chatview-stop` @ `4235f008`
 (plan+spec), `02c5935e` (impl).
+
+### 2026-08-06: Kanban — restore per-column sort independence (client-side comparator)
+
+**Symptom (user report, task_1785730557641).** User picks "Name (Z→A)" in one column's ⋮ menu → Sort tasks… modal. The DevTools Network panel shows ALL columns receiving `sort_by=name&direction=desc`. Every column renders in `name Z→A` order, NOT just the one the user picked.
+
+User feedback:
+- *"sort not indepedence per column, the goal should independecen per sort column"*
+- *"when i click sort it affected all"* (with DevTools screenshot showing `sort_by=name&direction=desc` on every column's fetch)
+
+**Root cause.** Commit `0ed7582d` ("feat(frontend): kanban VirtualScroller + default-sort URL behavior", 2026-08-06) removed the client-side `.sort()` in `KanbanColumn.cardsInColumn` AND deleted the `compareBySortMode` comparator. The justification was the user's "i remove that and its become better" comment — but the removal broke per-column independence, because the backend's `listWorkspaceItemTasksWithCursor` only accepts ONE `sort_field` + `sort_direction` per request.
+
+`fetchKanbanTasksForAllColumns` (workspaces.ts:1302) is correct in that it fetches each column in parallel — but every parallel fetch gets the SAME `sortBy` / `direction` from the caller. The caller (KanbanView.vue:442) takes the LAST-changed entry from `columnSorts` and passes it as the global sort. So picking "Name (Z→A)" in column A causes column B (Manual) to also be re-fetched in `name Z→A` order.
+
+**Fix (surgical).** Re-add the client-side sort comparator in `KanbanColumn.cardsInColumn`. The architecture becomes:
+
+1. **Backend** — each column fetch goes out with the LATEST changed sort (single `sortBy` / `direction` URL param, current behaviour).
+2. **Frontend** — each `KanbanColumn.cardsInColumn` applies its own local `sortBy` + `direction` to the incoming tasks. Two columns with different sorts display differently, even though they were fetched with the same wire order.
+
+This is the original architecture from commit `77482f07`. The comparator deleted in `0ed7582d` is restored verbatim — `name` (BINARY collate), `created_at` / `updated_at` (Date → ISO string), with `kanban_position asc` as the tiebreaker for stable ordering across equal sort-field values.
+
+**Files.** 4 changed:
+- `src/apps/desktop/src/components/kanban/KanbanColumn.vue` (+85/-35 — restore `.sort()`, restore `compareBySortMode`, update 3 doc comment blocks).
+- `src/apps/desktop/src/__tests__/KanbanColumn.spec.ts` (+7/-6 — rewrite the "renders cards in input order" test to assert `kanban_position asc`).
+- `src/apps/desktop/src/__tests__/KanbanColumn.sortIndependence.spec.ts` (NEW, 11 tests — default sort, 4 sort modes, tiebreaker, per-column independence [critical regression test], 3-column independence, `setSortMode` seam, `sortChange` emit).
+- `docs/superpowers/plans/2026-08-06-kanban-sort-independence.md` (NEW).
+
+**Verification.**
+- `bun run build` clean (vue-tsc passes).
+- `bunx vitest run src/__tests__/KanbanColumn.sortIndependence.spec.ts` — 11/11 pass.
+- `bunx vitest run src/__tests__/KanbanColumn.spec.ts` — 19/19 pass.
+- `bunx vitest run src/__tests__/KanbanView` — 53/53 pass.
+- `bunx vitest run` (full suite) — 2029 pass / 12 fail. The 12 failures are PRE-EXISTING on main (5 `DesignView.undoHidden`, 1 `DesignElement` static contract, 1 `DesignView.nudge clamp`, 1 `AppLayout.translateResize`, 4 `AppLayout.memoriesGate`). Zero regressions from this fix.
+
+**Lesson.** When a user feedback comment ("i remove that and its become better") is acted on globally without checking per-column/per-instance independence, regression is silent. The user reported a single-column issue; the fix removed the per-column sort entirely. Tests like "renders cards in input order" (KanbanColumn.spec.ts) become the guard rail — if they fail to assert the per-column sort behaviour, the regression slips through.
+
+**Branch / commit.** `worktree/kanban-sort-independence` @ `911e6647`.
