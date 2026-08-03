@@ -33,7 +33,10 @@ export type CurrentMainView =
 export function useCurrentMainView(): ComputedRef<CurrentMainView> {
   const route = useRoute()
   return computed<CurrentMainView>(() => {
-    const q = route.query as Record<string, string>
+    // Defensive: `useRoute()` returns undefined when called outside a
+    // router context (some tests mount the component without mocking
+    // vue-router). Treat that as an empty query → `kind: 'none'`.
+    const q = (route?.query ?? {}) as Record<string, string>
     const view = q.view
     if (view === 'chat') {
       if (typeof q.session === 'string' && q.session.length > 0) {

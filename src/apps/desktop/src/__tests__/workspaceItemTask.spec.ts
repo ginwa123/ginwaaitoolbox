@@ -20,14 +20,27 @@
  * workspaceItemTaskSpinner.spec.ts files (which mount <WorkspaceItem>
  * and assert through the parent).
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { nextTick, ref, type Ref } from 'vue'
 import { mount } from '@vue/test-utils'
 
 import WorkspaceItemTaskRow from '../components/workspace/WorkspaceItemTaskRow.vue'
-import { useWorkspacesStore } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
+
+// Stub vue-router — WorkspaceItemTaskRow reads useRoute() via
+// useCurrentMainView() to drive its active state. We mock useRoute
+// to return a per-test controlled query so the row's active styling
+// can be exercised against any URL. Mirrors the pattern at
+// sidebarHandleSelectTaskUrl.spec.ts:57-77.
+const { useRouteMock } = vi.hoisted(() => ({
+  useRouteMock: vi.fn(() => ({ query: {} as Record<string, string>, path: '/app', fullPath: '/app' })),
+}))
+
+vi.mock('vue-router', async () => {
+  const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
+  return { ...actual, useRoute: useRouteMock }
+})
 
 const baseTask = { id: 'task_alpha', name: 'Alpha task' }
 
@@ -118,16 +131,18 @@ describe('WorkspaceItemTaskRow per-task row', () => {
     expect(bullet.attributes('style')).toContain('--semantic-text-dim')
   })
 
-  it('applies active styling (aqua bullet + active background) when activeTaskId === task.id', async () => {
-    const ws = useWorkspacesStore()
-    ws.activeTaskId = baseTask.id
+  it('applies active styling (aqua bullet + active background) when URL is ?view=task&task=X', async () => {
+    // Mock useRoute to return ?view=task matching this task's id.
+    useRouteMock.mockReturnValue({
+      query: { view: 'task', task: baseTask.id },
+      path: '/app',
+      fullPath: `/app?view=task&task=${baseTask.id}`,
+    } as any)
     const { wrapper } = mountTask()
     const rowButton = wrapper.find('button.group\\/task')
     expect(rowButton.exists()).toBe(true)
-    // The row's inline style includes the active background + aqua text.
     expect(rowButton.attributes('style')).toContain('--semantic-active-bg')
     expect(rowButton.attributes('style')).toContain('--color-aqua')
-    // And the bullet is aqua.
     const bullet = wrapper.find('span.w-1\\.5.h-1\\.5.rounded-full')
     expect(bullet.attributes('style')).toContain('--color-aqua')
   })
