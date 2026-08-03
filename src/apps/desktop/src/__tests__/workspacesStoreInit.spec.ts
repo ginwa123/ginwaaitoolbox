@@ -41,6 +41,10 @@ describe('useWorkspacesStore.init()', () => {
   // design items in their fixtures — listDesignPages should never
   // fire for them).
   const listDesignPagesMock = vi.fn()
+  // NEW (kanban-prefetch-on-init plan, 2026-08-06): init() now
+  // fires listKanbanColumns + per-column getTasks (with column_id)
+  // for every kanban item. Track the new mocks separately.
+  const listKanbanColumnsMock = vi.fn()
 
   // Re-created per beforeEach so tests start with a clean Map. The shared
   // helper just builds the stub; lifecycle is the test's responsibility.
@@ -74,12 +78,21 @@ describe('useWorkspacesStore.init()', () => {
     // response call listDesignPagesMock.mockResolvedValueOnce(...)
     // per item they expect to be fetched.
     vi.spyOn(api, 'listDesignPages').mockImplementation(listDesignPagesMock)
+    // NEW (kanban-prefetch-on-init plan): mock listKanbanColumns so
+    // the kanban-columns fetch in init() doesn't hit the network.
+    vi.spyOn(api, 'listKanbanColumns').mockImplementation(listKanbanColumnsMock)
     // Reset call history so toHaveBeenCalledTimes assertions stay
     // scoped to a single test. vi.restoreAllMocks() (in afterEach)
     // restores spy implementations but does NOT clear vi.fn()
     // call history, so without this the second test sees the first
     // test's calls and the call-count assertion below flakes.
     listDesignPagesMock.mockClear()
+    listKanbanColumnsMock.mockClear()
+    // getTasks is reused for per-column kanban task fetches. Clear
+    // its call history too so the kanban-prefetch tests can assert
+    // call counts for column_id-tagged calls without seeing the
+    // earlier board-wide tests' state.
+    getTasksMock.mockClear()
   })
 
   // Helper for design-item fixtures: produces the shape the backend
@@ -94,6 +107,25 @@ describe('useWorkspacesStore.init()', () => {
       workspace_id: 'ws_1',
       // Other fields the in-memory WorkspaceItem type requires —
       // init() doesn't read them so we can pass empty values.
+      ...overrides,
+    }
+  }
+
+  // Helper for kanban-item fixtures. Mirrors makeDesignItem but
+  // uses item_type='kanban' so init() routes it through the
+  // kanban-prefetch fan-out.
+  function makeKanbanItem(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'item_kanban',
+      name: 'kanban',
+      item_type: 'kanban',
+      workspace_id: 'ws_1',
+      // kanban_columns are populated by listKanbanColumns in
+      // init(); start with an empty array so the per-column
+      // fetches have no work to do unless the test stubs a
+      // populated columns response.
+      kanban_columns: [],
+      tasks: [],
       ...overrides,
     }
   }
@@ -351,5 +383,227 @@ describe('useWorkspacesStore.init()', () => {
     expect(store.isLoading).toBe(false)
     expect(store.designPagesByItemId['item_design']).toHaveLength(1)
     expect(store.designPagesByItemId['item_design']?.[0]?.name).toBe('AI Chat View')
+  })
+
+  // NEW (kanban-prefetch-on-init plan, 2026-08-06): init() must
+  // fire per-column task fetches for every kanban item so the
+  // board renders populated when the user clicks the kanban
+  // (matches the design-pages eager-fetch contract). Pre-fix,
+  // KanbanView's onMount was responsible for these fetches —
+  // meaning a click on a kanban showed columns-with-counts but
+  // empty bodies until the fetches landed. The user reported
+  // "spinner is show after i click a kanban workspace" — exactly
+  // this gap. The fix awaits the fetches in init() so the kanban
+  // renders fully when isLoading flips to false.
+
+  it('fetches kanban columns + per-column tasks for every kanban item in init()', async () => {
+    // 1 kanban item with 2 columns → 1 listKanbanColumns call +
+    // 2 getTasks calls (one per column, both with column_id set).
+    getWorkspacesMock.mockResolvedValueOnce({
+      workspaces: [{ id: 'ws_1', name: 'W1', icon: '📁' }],
+    })
+    getWorkspacesItemsMock.mockResolvedValueOnce({
+      items: [
+        makeKanbanItem({ id: 'item_kanban_a' }),
+        { id: 'item_folder', name: 'folder', item_type: 'folder' },
+      ],
+      count: 2,
+    })
+    listKanbanColumnsMock.mockResolvedValueOnce({
+      columns: [
+        { id: 'col_a', workspace_item_id: 'item_kanban_a', name: 'todo', position: 0 },
+        { id: 'col_b', workspace_item_id: 'item_kanban_a', name: 'done', position: 1 },
+      ],
+      count: 2,
+    })
+    // Mock the board-wide fetch for the folder item (which fires
+    // in the existing tasks block because folder is not kanban/design).
+    // This must be queued FIRST because Promise.all runs in
+    // parallel — the order of consumption is non-deterministic
+    // from the test's perspective. Without this mock, one of the
+    // 3 total getTasks calls returns undefined and the destructure
+    // throws.
+    getTasksMock.mockResolvedValueOnce({ tasks: [], has_more: false, next_cursor: null })
+    // 2 per-column task fetches — each with a unique column_id.
+    getTasksMock
+      .mockResolvedValueOnce({
+        tasks: [
+          { id: 'task_a1', name: 'A1', workspace_item_id: 'item_kanban_a', kanban_column_id: 'col_a' },
+        ],
+        has_more: false,
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        tasks: [
+          { id: 'task_b1', name: 'B1', workspace_item_id: 'item_kanban_a', kanban_column_id: 'col_b' },
+          { id: 'task_b2', name: 'B2', workspace_item_id: 'item_kanban_a', kanban_column_id: 'col_b' },
+        ],
+        has_more: false,
+        next_cursor: null,
+      })
+
+    const store = useWorkspacesStore()
+    await store.init()
+
+    // 1 listKanbanColumns call for the kanban item — never for the folder.
+    expect(listKanbanColumnsMock).toHaveBeenCalledTimes(1)
+    expect(listKanbanColumnsMock).toHaveBeenNthCalledWith(1, 'ws_1', 'item_kanban_a')
+    // Filter getTasks calls to the KANBAN branch: every getTasks
+    // call from the kanban-prefetch block passes column_id as the
+    // 7th argument (after wsId, itemId, limit, cursor, sortBy,
+    // direction). The board-wide fetch (for the folder item) does
+    // NOT pass column_id — only 5 positional args. So we assert
+    // that exactly 2 column_id-tagged calls fire — one per
+    // kanban column.
+    const kanbanCalls = getTasksMock.mock.calls.filter(
+      (call) => call[6] !== undefined, // 7th arg = column_id
+    )
+    expect(kanbanCalls).toHaveLength(2)
+    expect(kanbanCalls[0]).toEqual([
+      'ws_1', 'item_kanban_a',
+      10, // limit
+      undefined, // cursor — page 1
+      undefined, // sortBy — default sort
+      undefined, // direction — default sort
+      'col_a', // column_id — per-column filter
+      undefined, // q — no search
+    ])
+    expect(kanbanCalls[1]).toEqual([
+      'ws_1', 'item_kanban_a',
+      10, undefined, undefined, undefined, 'col_b', undefined,
+    ])
+    // Cache populated — kanban_columns has the loaded columns,
+    // item.tasks has the merged tasks from both columns.
+    const item = store.workspaces[0]!.items.find((i) => i.id === 'item_kanban_a')!
+    expect(item.kanban_columns).toHaveLength(2)
+    expect(item.tasks).toHaveLength(3)
+    expect(item.tasks!.map((t) => t.id).sort()).toEqual(['task_a1', 'task_b1', 'task_b2'])
+    // columnPagination entries are set so the onMount path
+    // (KanbanView.loadColumnsAndTasks) sees them as already
+    // fetched — its `needFetch` filter excludes them.
+    expect(item.columnPagination).toBeDefined()
+    expect(item.columnPagination!['col_a']?.hasMore).toBe(false)
+    expect(item.columnPagination!['col_b']?.hasMore).toBe(false)
+  })
+
+  it('does NOT fire kanban fetches for non-kanban items in init()', async () => {
+    // Regression guard: a future refactor must not broaden the
+    // filter to fetch kanban columns for folder/chat/design items.
+    getWorkspacesMock.mockResolvedValueOnce({
+      workspaces: [{ id: 'ws_1', name: 'W1', icon: '📁' }],
+    })
+    getWorkspacesItemsMock.mockResolvedValueOnce({
+      items: [
+        { id: 'item_folder', name: 'folder', item_type: 'folder' },
+        { id: 'item_chat', name: 'chat', item_type: 'chat' },
+        makeDesignItem({ id: 'item_design' }),
+      ],
+      count: 3,
+    })
+    // Mock the BOARD-WIDE getTasks fires for folder + chat. The
+    // design item skips it (design has no tasks list per the
+    // design-pages-in-workspace-tree plan, 2026-08-06). The
+    // assertion below isolates the KANBAN branch by checking the
+    // call shape — kanban fetches must include column_id,
+    // board-wide fetches don't.
+    getTasksMock.mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
+    listDesignPagesMock.mockResolvedValueOnce({
+      pages: [{ id: 'page_x', workspace_item_id: 'item_design', name: 'X', position: 0 }],
+      count: 1,
+    })
+
+    const store = useWorkspacesStore()
+    await store.init()
+
+    // Zero kanban items → zero listKanbanColumns calls. The kanban
+    // branch is gated on item_type === 'kanban'; a future refactor
+    // that broadens the filter would be caught here.
+    expect(listKanbanColumnsMock).toHaveBeenCalledTimes(0)
+    // Filter getTasks calls to the KANBAN branch: every getTasks
+    // call from the kanban-prefetch block passes column_id as the
+    // 7th argument. The board-wide fetch (folder + chat) does NOT
+    // pass column_id. So we assert zero column_id-tagged calls.
+    const kanbanCalls = getTasksMock.mock.calls.filter(
+      (call) => call[6] !== undefined, // 7th arg = column_id
+    )
+    expect(kanbanCalls).toHaveLength(0)
+  })
+
+  it('keeps the workspace when a per-column kanban fetch fails', async () => {
+    // Best-effort contract — same as the per-item tasks fetch. A
+    // single bad column fetch logs and leaves that column's
+    // pagination entry missing, but the workspace tree still
+    // loads and other columns' tasks populate.
+    getWorkspacesMock.mockResolvedValueOnce({
+      workspaces: [{ id: 'ws_1', name: 'W1', icon: '📁' }],
+    })
+    getWorkspacesItemsMock.mockResolvedValueOnce({
+      items: [makeKanbanItem({ id: 'item_kanban' })],
+      count: 1,
+    })
+    listKanbanColumnsMock.mockResolvedValueOnce({
+      columns: [
+        { id: 'col_a', workspace_item_id: 'item_kanban', name: 'A', position: 0 },
+        { id: 'col_b', workspace_item_id: 'item_kanban', name: 'B', position: 1 },
+      ],
+      count: 2,
+    })
+    // First column succeeds, second rejects. The try/catch in
+    // init()'s kanban block logs the error but doesn't fail init.
+    getTasksMock
+      .mockResolvedValueOnce({
+        tasks: [{ id: 'task_a', name: 'A', workspace_item_id: 'item_kanban', kanban_column_id: 'col_a' }],
+        has_more: false,
+        next_cursor: null,
+      })
+      .mockRejectedValueOnce(new Error('column b down'))
+
+    const store = useWorkspacesStore()
+    await store.init()
+
+    expect(store.loadingError).toBeNull()
+    const item = store.workspaces[0]!.items.find((i) => i.id === 'item_kanban')!
+    expect(item.tasks).toHaveLength(1)
+    expect(item.tasks![0]?.id).toBe('task_a')
+    // col_a pagination entry set; col_b NOT set (failed fetch).
+    expect(item.columnPagination!['col_a']).toBeDefined()
+    expect(item.columnPagination!['col_b']).toBeUndefined()
+  })
+
+  it('init populates the kanban cache before isLoading flips to false (instant open)', async () => {
+    // The "instant open" invariant — when init() resolves, the
+    // kanban item's tasks should be ready to render without
+    // needing a click. The KanbanView onMount's
+    // `needFetch` filter uses the columnPagination entries to
+    // skip already-fetched columns, so this test verifies both:
+    // (a) the cache is populated at init() resolve time, and
+    // (b) the pagination entries gate the onMount re-fetch path.
+    getWorkspacesMock.mockResolvedValueOnce({
+      workspaces: [{ id: 'ws_1', name: 'W1', icon: '📁' }],
+    })
+    getWorkspacesItemsMock.mockResolvedValueOnce({
+      items: [makeKanbanItem({ id: 'item_kanban' })],
+      count: 1,
+    })
+    listKanbanColumnsMock.mockResolvedValueOnce({
+      columns: [
+        { id: 'col_a', workspace_item_id: 'item_kanban', name: 'A', position: 0 },
+      ],
+      count: 1,
+    })
+    getTasksMock.mockResolvedValueOnce({
+      tasks: [{ id: 'task_a', name: 'A', workspace_item_id: 'item_kanban', kanban_column_id: 'col_a' }],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const store = useWorkspacesStore()
+    expect(store.isLoading).toBe(false) // before init
+    await store.init()
+    expect(store.isLoading).toBe(false) // after init
+    const item = store.workspaces[0]!.items.find((i) => i.id === 'item_kanban')!
+    expect(item.tasks).toHaveLength(1)
+    expect(item.tasks![0]?.id).toBe('task_a')
+    expect(item.columnPagination!['col_a']).toBeDefined()
   })
 })

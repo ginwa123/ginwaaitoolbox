@@ -424,6 +424,35 @@ The brief network-in-flight moment (local `isLoading=true` BEFORE the SSE `worke
 
 **Branch / commit.** `worktree/hide-queue-button-processing` @ `d8b91ca5`.
 
+### 2026-08-06: Kanban pre-fetch tasks in init() — instant open on click
+
+**Symptom (user report, task_1785772308817, follow-up).** *"if you see spinned is show after i click a kanban workspace"*. After clicking a kanban workspace in the sidebar, the board rendered column headers with correct counts (e.g. `merged=10`, `in_review_task=3`) but the column BODIES all showed "No tasks yet" — the per-column task fetches only fired on KanbanView's `onMount`, leaving a visible loading gap between the click and the data landing.
+
+**Root cause.** `workspacesStore.init()` restored expanded item IDs + per-item tasks for non-kanban items, but **never fetched kanban tasks**. The pre-fix code had a comment: *"Per-column pagination (Option B, 2026-08-06 amendment): for KANBAN items, we no longer fire a board-wide task fetch in init(). The kanban view fires per-column fetches on mount"*. So the per-column task fetch responsibility landed on `KanbanView.vue::loadColumnsAndTasks` (its `onMount`).
+
+**Fix.** Pre-fetch kanban tasks in `init()` for every kanban item — same pattern as the design-pages auto-expand fix below. Two surgical edits:
+
+1. **New kanban block in init()** — fires `listKanbanColumns` + per-column `getTasks(col.id)` for every kanban item. Best-effort (logged + non-blocking).
+2. **Preserve pre-fetched `columnPagination` in the outer items map** — the outer `items: (items || []).map((item) => ({...item, ..., columnPagination: {} }))` previously OVERRODE any per-column pagination that init() had populated, making the pre-fetch invisible. Now it's conditional: `(item.columnPagination && Object.keys(...).length > 0) ? item.columnPagination : {}`.
+
+The inline merge writes directly to the in-flight `item` reference because `findItem` looks at `workspaces.value` which the outer `Promise.all` is still building — so the public `fetchKanbanTasks` helper would silently no-op.
+
+**Files.** 2 modified:
+- `src/apps/desktop/src/stores/workspaces.ts` — new kanban pre-fetch block + conditional `columnPagination` preservation (2 edits, ~80 lines net)
+- `src/apps/desktop/src/__tests__/workspacesStoreInit.spec.ts` — +4 behavioural tests
+
+**Verification.**
+- `bun run build` clean (vue-tsc passes, 5.02s)
+- `bunx vitest run src/__tests__/workspacesStoreInit.spec.ts` — 13/13 pass (was 9/9, +4 new)
+- `bunx vitest run` (full suite) — 2052 pass / 19 fail. The 19 failures are PRE-EXISTING on main (baseline 2033/19). Zero regressions.
+
+**Why NOT keep the lazy onMount fetch.** KanbanView onMount's `loadColumnsAndTasks` still runs (it handles URL sort restore — see kanban-onmount-single-fetch plan), but for pre-fetched columns its `needFetch` filter is empty (no redundant fetch). URL-sorted columns re-fetch in <100ms after mount, before the user can perceive a flash.
+
+**Wire cost.** 1 + N endpoints per kanban on every init. Typical board has 5-7 columns → 6-8 endpoints. Most workspaces have 1-3 kanbans → 6-24 endpoints on cold boot. Sub-100ms on a fresh connection.
+
+**Branch.** `worktree/kanban-prefetch-on-init` (uncommitted).
+**Plan.** `docs/superpowers/plans/2026-08-06-kanban-prefetch-on-init.md`.
+
 ### 2026-08-06: Auto-expand design pages in sidebar tree (sidebar empty after refresh)
 
 **Symptom (user report, task_1785772308817).** User: *"see workspace design,

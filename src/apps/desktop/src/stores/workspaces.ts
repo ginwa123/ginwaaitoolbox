@@ -622,6 +622,91 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
             }),
           )
 
+          // NEW (kanban-prefetch-on-init plan, 2026-08-06): kanban
+          // columns + per-column task fetches for each kanban item.
+          // Mirrors the design-pages block above: pre-fetch so the
+          // board renders populated when the user clicks the kanban
+          // (matches the "instant open" UX the user reported in
+          // task_1785772308817). Pre-fix, KanbanView onMount fired
+          // the per-column fetches — meaning a click on a kanban
+          // showed columns-with-counts but empty bodies until the
+          // fetches landed. The onMount path is now a no-op for
+          // pre-fetched columns (columnPagination[col.id] is set →
+          // needFetch filter excludes them).
+          //
+          // Wire cost: 1 + N endpoints per kanban (columns + N
+          // per-column task fetches). For a typical 5-7 column
+          // board that's 6-8 endpoints — sub-100ms on a cold boot.
+          // Best-effort (logged + non-blocking) so a single bad
+          // fetch doesn't kill init.
+          await Promise.all(
+            (items || []).map(async (item: WorkspaceItem) => {
+              if (item.item_type !== 'kanban') return
+              try {
+                // Step 1: load columns (id list for per-column fetches).
+                // Inline the fetch here (instead of calling
+                // fetchKanbanColumns) because the public helper uses
+                // `findItem` which looks at `workspaces.value` — but
+                // at this point in init(), the outer Promise.all is
+                // still building that array, so findItem returns
+                // undefined and the helper silently no-ops. Mutating
+                // `item.kanban_columns` directly is safe here because
+                // (a) we hold a stable reference to the item object
+                // via the iteration, and (b) `workspaces.value` will
+                // receive the SAME item reference when the outer
+                // Promise.all's `.map((item) => ({...item, ...}))`
+                // produces the workspace tree.
+                const { columns } = await api.listKanbanColumns(ws.id, item.id)
+                item.kanban_columns = [...columns].sort(
+                  (a, b) => a.position - b.position,
+                )
+                // Step 2: fire per-column task fetches with DEFAULT
+                // sort (page 1). Same inline reason as Step 1 —
+                // fetchKanTasks uses findItem too. The onMount path
+                // will re-fetch URL-sorted columns if the user has a
+                // ?sorts= in their URL — the pre-fetched default-sort
+                // data is overwritten by the URL-sort fetch, so the
+                // brief flash is invisible (the data is replaced in
+                // <100ms after mount, before the user can perceive it).
+                await Promise.all(
+                  item.kanban_columns.map(async (col) => {
+                    const { tasks, has_more, next_cursor } =
+                      await api.getTasks(
+                        ws.id,
+                        item.id,
+                        10, // limit
+                        undefined, // cursor — page 1
+                        undefined, // sortBy — default sort
+                        undefined, // direction — default sort
+                        col.id, // column_id — per-column filter
+                        undefined, // q — no search
+                      )
+                    const normalized = (tasks ?? []).map(normalizeTaskTags)
+                    // Merge into the in-flight item — drop any prior
+                    // tasks for THIS column (idempotent refresh), then
+                    // push the new ones.
+                    const otherTasks = (item.tasks ?? []).filter(
+                      (t) => t.kanban_column_id !== col.id,
+                    )
+                    item.tasks = [...otherTasks, ...normalized]
+                    // Initialise pagination entry for the column.
+                    item.columnPagination ??= {} as Record<
+                      string,
+                      ColumnPaginationState
+                    >
+                    item.columnPagination[col.id] = {
+                      cursor: next_cursor,
+                      hasMore: has_more,
+                      isLoading: false,
+                    }
+                  }),
+                )
+              } catch (err) {
+                console.error(`Failed to fetch kanban tasks for item ${item.id}:`, err)
+              }
+            }),
+          )
+
           return {
             ...ws,
             // Restore expanded state from localStorage
@@ -640,11 +725,21 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
               tasks: item.item_type === 'kanban'
                 ? (item.tasks ?? [])
                 : (tasksByItem.get(item.id) ?? []),
-              // Per-column pagination state — empty until KanbanView
-              // onMount fires per-column fetches (Option B) or until
-              // SSE / fetchKanbanTasks populates it for non-kanban
-              // items that have a column id on tasks.
-              columnPagination: {} as Record<string, ColumnPaginationState>,
+              // Per-column pagination state — empty for non-kanban /
+              // non-pre-fetched items; PRESERVE the kanban-prefetch
+              // entries for kanban items so the onMount
+              // loadColumnsAndTasks `needFetch` filter excludes them
+              // (no redundant fetch on the user's first click).
+              // Per-column pagination (kanban-prefetch-on-init plan,
+              // 2026-08-06): when the kanban block above populated
+              // `item.columnPagination`, this branch passes it through.
+              // For all other items (and for kanban items that had no
+              // pre-fetch), the empty record is the original behaviour.
+              columnPagination: (item.item_type === 'kanban'
+                && item.columnPagination
+                && Object.keys(item.columnPagination).length > 0)
+                ? item.columnPagination
+                : ({} as Record<string, ColumnPaginationState>),
             })),
           }
         }),
