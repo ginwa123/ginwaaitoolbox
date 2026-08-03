@@ -30,6 +30,7 @@ import {
   type OpenInCodeEditorOptions,
 } from '../composables/useCodeEditor'
 import { useDesignHandlers } from '../composables/useDesignHandlers'
+import { buildTaskUrlQuery } from '../helpers/buildTaskUrlQuery'
 
 const router = useRouter()
 const route = useRoute()
@@ -411,7 +412,22 @@ const handleNavigate = (
   } else if (view === 'task') {
     navigationStore.setActiveTask(taskId || null)
     chatSessionCwd.value = ''
-    router.push({ path: '/app', query: { view: 'task', task: taskId } })
+    // NEW (add-workspace-id-params, 2026-08-06): include workspaceId
+    // + itemId + pageId from the active store state in the URL. Pre-fix
+    // this branch wrote only `?view=task&task=X`, dropping the kanban
+    // / design breadcrumb. The caller passes `workspaceId` / `itemId`
+    // / `pageId` as positional args; we fall back to the active store
+    // when those are absent (e.g. legacy call sites).
+    router.push({
+      path: '/app',
+      query: buildTaskUrlQuery({
+        taskId: taskId || '',
+        activeWorkspaceId: workspaceId ?? workspacesStore.activeWorkspace?.id ?? null,
+        activeWorkspaceItemId: itemId ?? workspacesStore.activeWorkspaceItemId,
+        activeDesignPageId: pageId ?? workspacesStore.activeDesignPageId,
+        activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
+      }),
+    })
   } else if (view === 'settings') {
     router.push({ path: '/app/settings' })
   }
@@ -472,7 +488,22 @@ const closeGitViewer = () => {
     if (pageId) query.pageId = pageId
     router.replace({ path: '/app', query })
   } else if (activeTask.value) {
-    router.replace({ path: '/app', query: { view: 'task', task: activeTask.value.id } })
+    // NEW (add-workspace-id-params, 2026-08-06): include workspaceId +
+    // itemId + pageId when the task is attached to a workspace item.
+    // Pre-fix this branch wrote only `?view=task&task=X`, dropping
+    // the kanban / design breadcrumb — the user reported this
+    // (task_1785774094183).
+    router.replace({
+      path: '/app',
+      query: buildTaskUrlQuery({
+        taskId: activeTask.value.id,
+        activeWorkspaceId: activeWorkspaceId.value,
+        activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
+        activeDesignPageId: workspacesStore.activeDesignPageId,
+        activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
+        currentQuery: route.query,
+      }),
+    })
   } else if (activeChatId.value.startsWith('chat-')) {
     const sessionId = activeChatId.value.replace(/^chat-/, '')
     router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
@@ -541,7 +572,22 @@ const closeSkillViewer = () => {
     if (pageId) query.pageId = pageId
     router.replace({ path: '/app', query })
   } else if (activeTask.value) {
-    router.replace({ path: '/app', query: { view: 'task', task: activeTask.value.id } })
+    // NEW (add-workspace-id-params, 2026-08-06): include workspaceId +
+    // itemId + pageId when the task is attached to a workspace item.
+    // Pre-fix this branch wrote only `?view=task&task=X`, dropping
+    // the kanban / design breadcrumb — the user reported this
+    // (task_1785774094183).
+    router.replace({
+      path: '/app',
+      query: buildTaskUrlQuery({
+        taskId: activeTask.value.id,
+        activeWorkspaceId: activeWorkspaceId.value,
+        activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
+        activeDesignPageId: workspacesStore.activeDesignPageId,
+        activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
+        currentQuery: route.query,
+      }),
+    })
   } else if (activeChatId.value.startsWith('chat-')) {
     const sessionId = activeChatId.value.replace(/^chat-/, '')
     router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
@@ -645,7 +691,22 @@ const closeCodeEditor = () => {
     if (pageId) query.pageId = pageId
     router.replace({ path: '/app', query })
   } else if (activeTask.value) {
-    router.replace({ path: '/app', query: { view: 'task', task: activeTask.value.id } })
+    // NEW (add-workspace-id-params, 2026-08-06): include workspaceId +
+    // itemId + pageId when the task is attached to a workspace item.
+    // Pre-fix this branch wrote only `?view=task&task=X`, dropping
+    // the kanban / design breadcrumb — the user reported this
+    // (task_1785774094183).
+    router.replace({
+      path: '/app',
+      query: buildTaskUrlQuery({
+        taskId: activeTask.value.id,
+        activeWorkspaceId: activeWorkspaceId.value,
+        activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
+        activeDesignPageId: workspacesStore.activeDesignPageId,
+        activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
+        currentQuery: route.query,
+      }),
+    })
   } else if (activeChatId.value.startsWith('chat-')) {
     const sessionId = activeChatId.value.replace(/^chat-/, '')
     router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })

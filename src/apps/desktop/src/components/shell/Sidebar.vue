@@ -25,6 +25,7 @@ import EditRoutineDialog from '../dialogs/EditRoutineDialog.vue'
 import type { EditRoutineParams } from '../dialogs/EditRoutineDialog.vue'
 import type { RoutineMeta, WorkspaceItem } from '../../stores/workspaces'
 import * as api from '../../api'
+import { buildTaskUrlQuery } from '../../helpers/buildTaskUrlQuery'
 
 // Inject isLLMProcessing from App.vue
 const isLLMProcessing = inject<Ref<boolean>>('isLLMProcessing', ref(false))
@@ -738,7 +739,23 @@ const handleAddTaskPick = async (taskType: 'standard' | 'routine' | 'memory') =>
     })
     if (taskId) {
       workspacesStore.setActiveTask(taskId)
-      router.replace({ path: '/app', query: { view: 'task', task: taskId } })
+      // NEW (add-workspace-id-params, 2026-08-06): include the
+      // workspaceId + itemId in the URL so the auto-created chat task
+      // carries the kanban / folder / design breadcrumb. Pre-fix the
+      // URL was just `?view=task&task=X` — sharing / refreshing lost
+      // the workspace context. The helper reads from the active store
+      // state set by `handleSelectItem` (which fired before the
+      // picker opened).
+      router.replace({
+        path: '/app',
+        query: buildTaskUrlQuery({
+          taskId,
+          activeWorkspaceId: workspacesStore.activeWorkspace?.id ?? null,
+          activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
+          activeDesignPageId: workspacesStore.activeDesignPageId,
+          activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
+        }),
+      })
     }
     return
   }
@@ -865,7 +882,6 @@ const handleSelectTask = (taskId: string) => {
   if (chatsListRef.value) {
     chatsListRef.value.resetActiveChat()
   }
-  const parentItemId = workspacesStore.activeWorkspaceItemId ?? ''
   // NEW (better-url-browser, 2026-08-06): APPEND the URL instead
   // of REPLACE. The user reported "when click task in kanban, no
   // need replace url, but append the url browser" — clicking a
@@ -891,40 +907,36 @@ const handleSelectTask = (taskId: string) => {
   // fallback for cases where AppLayout's handleCloseTaskView runs
   // WITHOUT the URL having preserved context (e.g. an older URL
   // pattern that lands on task without kanban context).
-  const query: Record<string, string> = {
-    // Carry over the current URL's breadcrumb params. vue-router's
-    // LocationQuery values can be `string | null | (string|null)[]`;
-    // we only preserve the string-typed scalars that match the
-    // kanban/folder/design breadcrumb contract. Other params
-    // (e.g. `chat`, `session`, `view`) are intentionally dropped —
-    // we explicitly set `view` and `task` below.
-    ...pickBreadcrumbFromQuery(route.query),
-    view: 'task',
-    task: taskId,
-    itemId: parentItemId,
-  }
+  //
+  // NEW (add-workspace-id-params, 2026-08-06): always include
+  // workspaceId + itemId + pageId from the active store state, with
+  // the URL breadcrumb as a fallback. Pre-fix the URL could end up
+  // as `?view=task&task=X&itemId=Y` (no workspaceId) when the user
+  // landed on a kanban URL that didn't include workspaceId — sharing
+  // / refreshing that URL lost the workspace context. The helper
+  // reads from the store FIRST (authoritative source) and falls back
+  // to the current URL only when no active store state exists.
+  const query = buildTaskUrlQuery({
+    taskId,
+    activeWorkspaceId: workspacesStore.activeWorkspace?.id ?? null,
+    activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
+    activeDesignPageId: workspacesStore.activeDesignPageId,
+    activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
+    currentQuery: route.query,
+  })
+  // handleSelectTask uses router.push (NOT replace) so the previous
+  // kanban / design URL stays in the browser history and the back
+  // button returns naturally (better-url-browser, 2026-08-06). The
+  // `itemId` derived from `activeWorkspaceItemId` is included via the
+  // helper's store-derived value (NOT the `parentItemId` we computed
+  // above — they should be equal but the store is authoritative).
   router.push({ path: '/app', query })
   console.log("[handleSelectTask] end handleSelectTask")
 }
 
-// Pick the breadcrumb params (`workspaceId`, `itemId`, `pageId`,
-// `sorts`) from a vue-router LocationQuery and return them as a
-// plain Record<string, string>. Used by handleSelectTask to
-// preserve the user's current kanban/folder/design context when
-// APPENDing the URL on task click (better-url-browser, 2026-08-06).
-// Returns an empty object when the source query has no relevant
-// breadcrumb fields (e.g. user landed via deep link with no
-// workspace context).
-const pickBreadcrumbFromQuery = (
-  query: Record<string, unknown>,
-): Record<string, string> => {
-  const out: Record<string, string> = {}
-  for (const key of ['workspaceId', 'itemId', 'pageId', 'sorts']) {
-    const v = query[key]
-    if (typeof v === 'string' && v.length > 0) out[key] = v
-  }
-  return out
-}
+// pickBreadcrumbFromQuery moved to `helpers/buildTaskUrlQuery.ts`
+// (add-workspace-id-params plan, 2026-08-06) so it can be shared
+// across Sidebar, AppLayout, and any future task-URL builders.
 
 const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
   // Click-to-load pagination: invoked by the "Load more" button in
@@ -1148,9 +1160,21 @@ const handleRunRoutine = async (
   // downstream cache hydration.
   if (result) {
     workspacesStore.setActiveTask(taskId)
+    // NEW (add-workspace-id-params, 2026-08-06): include workspaceId +
+    // itemId in the URL — the routine-run path previously wrote only
+    // `view`/`task`/`session`, dropping the kanban / folder breadcrumb.
+    // The helper reads from the active store state (the user clicked
+    // the routine from a kanban column, so `activeWorkspace` is set).
     router.replace({
       path: '/app',
-      query: { view: 'task', task: taskId, session: taskId },
+      query: buildTaskUrlQuery({
+        taskId,
+        sessionId: taskId,
+        activeWorkspaceId: workspacesStore.activeWorkspace?.id ?? null,
+        activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
+        activeDesignPageId: workspacesStore.activeDesignPageId,
+        activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
+      }),
     })
   }
 }
