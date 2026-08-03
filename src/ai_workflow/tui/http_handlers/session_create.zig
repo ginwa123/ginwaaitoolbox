@@ -99,7 +99,6 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
 }
 
 fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parsed: RequestSession) !ResponseSession {
-    const sqlite_db = di.db;
     const environment = di.environment orelse return error.EnvironmentNotInitialized;
 
     // --- Resolve all values locally using arena ---
