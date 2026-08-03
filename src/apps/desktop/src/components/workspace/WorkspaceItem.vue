@@ -262,7 +262,29 @@ const handleSelectDesignPage = (page: DesignPage) => {
   if (workspacesStore.activeWorkspaceItemId !== props.item.id) {
     workspacesStore.setActiveWorkspaceItem(props.item.id)
   }
-  // 3. Bubble the event up for any external listener (tests).
+  // 3. Also activate the page's chat task (each design page has a
+  // 1:1 FK to a workspace_item_tasks row, see Migration 066). This
+  // makes the AppLayout 3-column branch fire (DesignView + ChatView
+  // side-by-side) — without it, only the DesignView alone renders
+  // and the user lands on a dark canvas with no visible feedback
+  // that the click registered. The chat shows the design chat task
+  // (empty state "How can I help you?" if no messages yet, otherwise
+  // the conversation history).
+  //
+  // FIX (chatview-bug, task_1785726648589, follow-up): this was
+  // missing from the initial click handler — only the 💬 button in
+  // DesignView's toolbar opened the chat, and the user's reported
+  // "blank after clicking a design page" symptom was the
+  // DesignView-alone branch showing a dark canvas (no elements
+  // visible because the active page's elements take a tick to load,
+  // or the page has no elements yet). Setting the active task here
+  // is the same logic handleDesignOpenChat runs when the user clicks
+  // 💬 — we're just doing it earlier (at page-select time) so the
+  // chat pane is open from the start.
+  if (page.workspace_item_task_id) {
+    workspacesStore.setActiveTask(page.workspace_item_task_id)
+  }
+  // 4. Bubble the event up for any external listener (tests).
   emit('selectDesignPage', props.workspaceId, props.item.id, page.id)
 }
 
