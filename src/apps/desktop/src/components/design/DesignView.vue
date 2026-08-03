@@ -80,7 +80,6 @@ import { useNotificationStore } from '../../stores/notifications'
 import { useDesignHandlers } from '../../composables/useDesignHandlers'
 import { designLogger } from '../../helpers/designLogger'
 import { useDesignHistory } from '../../composables/useDesignHistory'
-import DesignHistoryButtons from './DesignHistoryButtons.vue'
 import { useDesignContextMenu } from '../../composables/useDesignContextMenu'
 import {
   // NEW (design-pages-in-workspace-tree plan, 2026-08-06): the
@@ -770,38 +769,12 @@ const handleKeydown = (event: KeyboardEvent): void => {
     return
   }
 
-  // Undo/redo (Chunk 3 of undo/redo plan). Figma / Excalidraw
-  // convention:
-  //   Cmd/Ctrl+Z         → undo
-  //   Cmd/Ctrl+Shift+Z   → redo (mac convention)
-  //   Cmd/Ctrl+Y         → redo (Windows convention)
-  // The composable's undo/redo are no-ops when the stack is empty
-  // (Figma parity — don't push to undo/redo if there's nothing to
-  // apply). Input-focus guard is already in place at the top of
-  // this handler (browser-native Cmd+Z for text inputs wins).
-  if (
-    (event.key === 'z' || event.key === 'Z') &&
-    (event.ctrlKey || event.metaKey) &&
-    !event.altKey
-  ) {
-    event.preventDefault()
-    if (event.shiftKey) {
-      if (history.canRedo.value) void history.redo()
-    } else {
-      if (history.canUndo.value) void history.undo()
-    }
-    return
-  }
-  if (
-    (event.key === 'y' || event.key === 'Y') &&
-    (event.ctrlKey || event.metaKey) &&
-    !event.shiftKey &&
-    !event.altKey
-  ) {
-    event.preventDefault()
-    if (history.canRedo.value) void history.redo()
-    return
-  }
+  // Undo/redo keyboard shortcuts (Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z,
+  // Cmd/Ctrl+Y) were intentionally removed in 2026-08-06 when the
+  // feature was hidden from the design UI. Browser-native Cmd+Z now
+  // reaches the user unimpeded. The composable's undo/redo + the
+  // internal `history.capture*()` calls below remain intact for a
+  // clean future re-enable — see DesignView.undoHidden.spec.ts.
 
   // Fit-to-viewport shortcuts — F (Figma convention) or Shift+1.
   // Both ignored when modifier keys (Ctrl/Cmd/Alt) are held to avoid
@@ -2019,18 +1992,12 @@ watch(
             + Element
           </button>
           <!--
-            Undo/Redo buttons (Chunk 3 of undo/redo plan). Placed in
-            the canvas header so they're visible in both layout modes
-            (chat-open + chat-closed). The composable reads
-            activeWorkspaceId / activeWorkspaceItemId from the store;
-            we pass pageId as a prop for clarity.
+            Undo/Redo toolbar was intentionally removed (2026-08-06):
+            the feature is HIDDEN from the user in design mode.
+            Internal plumbing (useDesignHistory composable +
+            history.capture*() calls) is retained for clean future
+            re-enable — see DesignView.undoHidden.spec.ts.
           -->
-          <DesignHistoryButtons
-            v-if="!isPreviewMode"
-            :workspace-id="props.workspaceId"
-            :item-id="effectiveItemId"
-            :page-id="activePageId"
-          />
           <div
             v-if="activePage"
             class="text-xs flex-1 truncate"

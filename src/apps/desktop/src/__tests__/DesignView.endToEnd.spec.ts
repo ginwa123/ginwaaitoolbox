@@ -1,10 +1,18 @@
 /**
- * End-to-end tests for design-mode undo/redo (Chunk 7).
+ * End-to-end test for design-mode undo/redo capture calls (Chunk 7).
  *
- * Verifies the full gesture → entry push → undo/redo → element
- * restored cycle for the most important mutations.
+ * Originally verified the full gesture → entry push → undo/redo →
+ * element restored cycle for the most important mutations.
  *
- * 3 behavioural tests. Project convention is behavioural only —
+ * After 2026-08-06 (the undo/redo feature was hidden from the user
+ * in design mode — see DesignView.undoHidden.spec.ts), the Cmd+Z /
+ * Cmd+Shift+Z / Cmd+Y keyboard shortcut tests were deleted because
+ * the keyboard handlers were removed. The capture-call invariant
+ * (history.capturePreState / capturePostState fire on every gesture)
+ * is still the canonical regression guard against accidentally
+ * removing the dead-code captures during future refactors.
+ *
+ * 1 behavioural test. Project convention is behavioural only —
  * see ~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -103,7 +111,7 @@ function makeEl(overrides: Record<string, unknown> = {}): any {
   }
 }
 
-describe('DesignView undo/redo end-to-end (Chunk 7)', () => {
+describe('DesignView undo/redo capture invariant (Chunk 7 regression guard)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     canUndoRef.value = false
@@ -140,57 +148,6 @@ describe('DesignView undo/redo end-to-end (Chunk 7)', () => {
     }
     expect(capturePreStateMock).toHaveBeenCalledTimes(3)
     expect(capturePostStateMock).toHaveBeenCalledTimes(3)
-    wrapper.unmount()
-  })
-
-  it('Cmd+Z dispatches undo only when canUndo is true', async () => {
-    canUndoRef.value = false
-    const wrapper = mount(DesignView, {
-      props: {
-        item: { ...ITEM, design_elements: [makeEl({ id: 'a' })] },
-        workspaceId: 'ws_1',
-        itemId: 'item_1',
-      },
-    })
-    await flushPromises()
-    document.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true }),
-    )
-    await flushPromises()
-    expect(undoMock).not.toHaveBeenCalled()
-    canUndoRef.value = true
-    await flushPromises()
-    document.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true }),
-    )
-    await flushPromises()
-    expect(undoMock).toHaveBeenCalledOnce()
-    wrapper.unmount()
-  })
-
-  it('full undo cycle: drag captures pre/post, undo restores pre-state', async () => {
-    const wrapper = mount(DesignView, {
-      props: {
-        item: { ...ITEM, design_elements: [makeEl({ id: 'a', x: 100 })] },
-        workspaceId: 'ws_1',
-        itemId: 'item_1',
-      },
-    })
-    await flushPromises()
-    // Pre-state
-    capturePreStateMock(['a'])
-    expect(capturePreStateMock).toHaveBeenCalled()
-    // Simulate the user dragging (which would mutate the store)
-    // Then post-state (pointerup trailing emit)
-    capturePostStateMock(['a'])
-    expect(capturePostStateMock).toHaveBeenCalled()
-    // Now undo
-    canUndoRef.value = true
-    document.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true }),
-    )
-    await flushPromises()
-    expect(undoMock).toHaveBeenCalledOnce()
     wrapper.unmount()
   })
 })
