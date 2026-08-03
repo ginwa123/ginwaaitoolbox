@@ -2207,6 +2207,209 @@ pub fn cancelSession(
     try db.exec(allocator, sql, &.{session_id});
 }
 
+// =============================================================================
+// Tool-call loading placeholder (Migration 068, plan:
+// docs/superpowers/plans/2026-08-06-tool-call-loading-placeholder.md)
+//
+// The OpenAI tool-call API requires every `tool_call_id` in an assistant
+// message's `tool_calls` array to have a matching `role=tool` row in the
+// next conversation payload, or the API rejects with "Invalid function
+// ID". When the agent crashes mid-execution (bash hangs, spawn_sub_agent
+// dies, nalar process SIGKILL'd), the assistant message is in the DB but
+// the per-tool result rows aren't — every subsequent LLM call fails.
+//
+// The fix is a 3-phase INSERT pattern:
+//
+//   Phase 1 (sync): For each tool_call, INSERT a placeholder row with
+//                   `is_loading=1` and `is_feed_to_llm=1`. The empty
+//                   content satisfies the API contract by ID (the LLM
+//                   just sees "tool call X completed with empty content"
+//                   — acceptable as a "still running" sentinel).
+//   Phase 2 (sync): INSERT the assistant message declaring tool_calls.
+//   Phase 3 (async): For each tool_call, run the tool and UPDATE the
+//                   placeholder row in place (set content + is_loading=0).
+//
+// If the process crashes between Phase 1 and Phase 3, the placeholders
+// remain in the DB. On next startup, `resolveStaleLoadingToolResults`
+// replaces them with a synthetic "interrupted" message so the next LLM
+// call's API contract is satisfied and the LLM can decide what to do.
+// =============================================================================
+
+/// Options for `saveToolResultPlaceholder`. All required fields are
+/// non-null — the placeholder is intentionally minimal (empty content,
+/// `is_loading=1`, `is_feed_to_llm=1`, `role=tool`) so callers can't
+/// forget any of the three-place contract.
+pub const SaveToolResultPlaceholderOptions = struct {
+    session_id: []const u8,
+    model: []const u8,
+    tool_call_id: []const u8,
+    tool_name: []const u8,
+    loop_index: u32,
+    /// Optional `parent_session_id` (matches `saveMessage`).
+    parent_session_id: []const u8 = "",
+};
+
+/// Options for `updateToolResultById`. Only `content` is required;
+/// `diffview_before` / `diffview_after` are optional (text_replace
+/// uses them; most tools don't).
+pub const UpdateToolResultOptions = struct {
+    content: []const u8,
+    diffview_before: ?[]const u8,
+    diffview_after: ?[]const u8,
+};
+
+/// INSERT a `role=tool` placeholder row with `is_loading=1`. Returns
+/// the new row's `id` (a nanosecond timestamp string, same shape as
+/// `saveMessage`). Caller OWNS the returned slice — must `free()`.
+///
+/// The row is created with:
+///   - `role = 'tool'`
+///   - `tool_call_id = opts.tool_call_id`
+///   - `tool_name = opts.tool_name`
+///   - `response_content = ''`
+///   - `is_loading = 1`
+///   - `is_feed_to_llm = 1`
+///   - `finish_reason = 'tool_calls'`
+///   - `created_at = created_iso = <current nanosecond timestamp>`
+///   - other fields populated to safe defaults
+///
+/// The partial UNIQUE INDEX on `tool_call_id`
+/// (`idx_llm_history_tool_call_id_loading`) rejects a duplicate
+/// `tool_call_id` at the DB level — returns `error.ExecuteFailed`.
+///
+/// Plan: docs/superpowers/plans/2026-08-06-tool-call-loading-placeholder.md
+pub fn saveToolResultPlaceholder(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    opts: SaveToolResultPlaceholderOptions,
+) ![]const u8 {
+    const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+    defer allocator.free(id);
+    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+    defer allocator.free(created_at);
+    const created_iso = try helpers.currentTimeIsoLocal(allocator, io);
+    defer allocator.free(created_iso);
+
+    const sql =
+        \\INSERT INTO llm_history (
+        \\    id, session_id, model, response_content, tool_call_id, tool_name,
+        \\    role, finish_reason, is_loading, is_feed_to_llm,
+        \\    agent, loop_index, temperature, is_thinking,
+        \\    created_at, created_iso, parent_session_id,
+        \\    is_input, is_output, prompt_tokens, completion_tokens, total_tokens
+        \\) VALUES (
+        \\    ?, ?, ?, '', ?, ?, 'tool', 'tool_calls', 1, 1,
+        \\    'Agent', ?, 0.2, 0,
+        \\    ?, ?, ?,
+        \\    0, 1, 0, 0, 0
+        \\)
+    ;
+
+    const loop_index_str = try std.fmt.allocPrint(allocator, "{}", .{opts.loop_index});
+    defer allocator.free(loop_index_str);
+
+    const sqlArgs = &.{
+        id,
+        opts.session_id,
+        opts.model,
+        opts.tool_call_id,
+        opts.tool_name,
+        loop_index_str,
+        created_at,
+        created_iso,
+        opts.parent_session_id,
+    };
+    try db.exec(allocator, sql, sqlArgs);
+
+    // Return a copy the caller can own (the local `id` would be
+    // freed by the deferred `allocator.free` above).
+    return try allocator.dupe(u8, id);
+}
+
+/// UPDATE a placeholder row in place by `tool_call_id`. Preserves
+/// `created_at` and `created_iso` (the placeholder's "started at"
+/// time — the LLM benefits from seeing the gap between the assistant
+/// message and the actual tool completion in the conversation
+/// timestamps).
+///
+/// If no row matches the `tool_call_id`, the UPDATE is a silent no-op
+/// (0 rows affected, returns Ok(())). This is intentional — callers
+/// shouldn't have to handle "the placeholder didn't exist because the
+/// agent finished fast" as a special case.
+///
+/// Plan: docs/superpowers/plans/2026-08-06-tool-call-loading-placeholder.md
+pub fn updateToolResultById(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    tool_call_id: []const u8,
+    opts: UpdateToolResultOptions,
+) !void {
+    const sql =
+        \\UPDATE llm_history SET
+        \\    response_content = ?,
+        \\    diffview_before = COALESCE(?, diffview_before),
+        \\    diffview_after = COALESCE(?, diffview_after),
+        \\    is_loading = 0
+        \\WHERE tool_call_id = ?
+    ;
+
+    // For diffview: an empty slice binds as NULL per project memory
+    // `sqlite-backend-empty-slice-binds-as-null` — so passing ''
+    // is indistinguishable from passing null. The COALESCE on the
+    // existing column leaves the value unchanged in both cases.
+    // Acceptable for v1 (text_replace always sets diffview; no other
+    // tool uses it).
+    const sqlArgs = &.{
+        opts.content,
+        opts.diffview_before orelse "",
+        opts.diffview_after orelse "",
+        tool_call_id,
+    };
+    try db.exec(allocator, sql, sqlArgs);
+}
+
+/// Replace every `is_loading=1` row in the session with a synthetic
+/// "<interrupted>...</interrupted>" message so the next LLM call's
+/// tool_call_id contract is satisfied after an agent crash.
+///
+/// Idempotent: a session with 0 stranded rows is a no-op (0 rows
+/// updated). Safe to call at the top of every worker loop before the
+/// first LLM call.
+///
+/// The synthetic content uses an XML envelope (`<interrupted>...</interrupted>`)
+/// so future `show_preview`-style tools can detect + render it
+/// distinctly. The LLM sees plain text:
+///
+///     Tool execution was interrupted by server restart. Please
+///     retry this action.
+///
+/// …and the API contract is satisfied (every `tool_call_id` in the
+/// assistant message has a matching `role=tool` row).
+///
+/// Plan: docs/superpowers/plans/2026-08-06-tool-call-loading-placeholder.md
+pub fn resolveStaleLoadingToolResults(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !void {
+    // The placeholder content is empty (Phase 1 inserts); replace
+    // it with the synthetic interrupted message. We KEEP
+    // `is_feed_to_llm=1` so the LLM actually sees the message —
+    // otherwise the conversation payload would have a tool_call_id
+    // with no matching tool result, triggering the original bug.
+    const sql =
+        \\UPDATE llm_history SET
+        \\    response_content = '<interrupted>Tool execution was interrupted by server restart. Please retry this action.</interrupted>',
+        \\    is_loading = 0
+        \\WHERE session_id = ?
+        \\AND is_loading = 1
+        \\AND tool_call_id IS NOT NULL
+        \\AND tool_call_id != ''
+    ;
+    try db.exec(allocator, sql, &.{session_id});
+}
+
 /// Struct to hold queued message data including image_url
 pub const QueuedMessage = struct {
     message: []const u8,

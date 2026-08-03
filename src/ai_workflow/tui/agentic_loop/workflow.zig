@@ -524,6 +524,22 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         defer arenaAllocatorWhileLoop.deinit();
         const allocator = arenaAllocatorWhileLoop.allocator();
 
+        // ─── Tool-call loading placeholder recovery (plan 2026-08-06) ───
+        // Replace any stranded `is_loading=1` placeholders from a
+        // previous crash with synthetic "interrupted" messages. The
+        // next LLM call's tool_call_id matching then succeeds (the
+        // API contract is satisfied) and the LLM sees a clear
+        // "Tool execution was interrupted — please retry" message.
+        //
+        // Idempotent: 0 stranded rows = 0 updates, no side effects.
+        // Safe to call at the top of every worker loop iteration.
+        llm_history.resolveStaleLoadingToolResults(allocator, db, copy_session_id) catch |err| {
+            logger.warnFmt(
+                "[CHECKPOINT] resolveStaleLoadingToolResults failed session_id={s} err={s} (continuing — existing placeholders may cause 'Invalid function ID' on next LLM call)",
+                .{ copy_session_id, @errorName(err) },
+            );
+        };
+
         const is_auto_retry_until_stop: bool = blk: {
             var flag_rows = db.query(allocator, "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{copy_session_id}) catch break :blk false;
             defer flag_rows.deinit();
