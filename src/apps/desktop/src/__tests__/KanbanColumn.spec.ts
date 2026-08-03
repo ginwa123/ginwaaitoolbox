@@ -96,11 +96,12 @@ describe('KanbanColumn — header rendering', () => {
     expect(cards[1]!.attributes('data-kanban-card')).toBe('t2')
   })
 
-  it('renders cards in kanban_position asc order (default Manual sort)', () => {
-    // Default sort is 'position' + 'asc' (Manual / drag-reorder).
-    // The client-side comparator in `cardsInColumn` (restored
-    // 2026-08-06 for per-column independence) applies the sort
-    // client-side — the wire data order doesn't matter.
+  it('renders cards in input order (backend applies the sort per-column via fetchKanbanTasks)', () => {
+    // The client-side sort was removed in 2026-08-06 (kanban-
+    // sort-independence, take 2). The backend's per-column fetch
+    // returns tasks in the column's own sort order — `cardsInColumn`
+    // here is a thin filter, no comparator. The wire order is what
+    // the user sees.
     wrapper = mountColumn(makeColumn(), [
       makeTask({ id: 't1', kanban_column_id: COL_TODO, kanban_position: 2 }),
       makeTask({ id: 't2', kanban_column_id: COL_TODO, kanban_position: 0 }),
@@ -108,9 +109,9 @@ describe('KanbanColumn — header rendering', () => {
     ])
     const cards = wrapper.findAll(`[data-kanban-card]`)
     expect(cards.map((c) => c.attributes('data-kanban-card'))).toEqual([
+      't1',
       't2',
       't3',
-      't1',
     ])
   })
 

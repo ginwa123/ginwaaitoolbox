@@ -14,10 +14,10 @@
                 collide with the per-card MIME
                 (`application/x-kanban-task-id`).
     2. Cards   — scrollable list of <KanbanCard>, filtered by the
-                column id from the `tasks` prop and sorted by the
-                per-column sort mode (sortBy + direction, both
-                stateful in this component). Default is Manual
-                (kanban_position asc).
+                column id from the `tasks` prop. The backend
+                applies the per-column sort (sortBy + direction,
+                both stateful in this component) — wire data
+                arrives already in the column's own order.
     3. Footer  — "+ Add" button → emits `add-task` with the column id.
     4. Drop    — the cards area is a drop zone. dragover.preventDefault
                 (required by the HTML5 DnD spec to mark this as a
@@ -80,13 +80,13 @@ const emit = defineEmits<{
   requestDeleteColumn: [columnId: string]
   // Fired when the user picks a sort mode in the column's "Sort
   // tasks…" modal. The host (KanbanView) listens for this and:
-  //   1. re-fetches the kanban tasks with the chosen sort (so the
-  //      backend can return the freshest data first), and
+  //   1. fires `fetchKanbanTasks` for ONLY the changed column with
+  //      that column's sortBy/direction (per-column backend sort
+  //      — wire data arrives already in the column's own order),
   //   2. updates the URL with the per-column sort (URL persistence).
-  // Per-column visual order is restored client-side via the
-  // `compareBySortMode` comparator in `cardsInColumn` — the
-  // backend's `ORDER BY` is a single global sort that the
-  // comparator overrides per column.
+  // Per-column sort independence is achieved at the wire level —
+  // each column's fetchKanbanTasks carries ITS OWN sort, so other
+  // columns' data is untouched.
   sortChange: [{ sortBy: 'position' | 'created_at' | 'updated_at' | 'name'; direction: 'asc' | 'desc' }]
   // Column drag-and-drop reorder. Emitted when a column's header
   // is dragged onto another column's header (the dropped-on column
@@ -111,14 +111,15 @@ const emit = defineEmits<{
 // not in the store, not in the URL, not lifted to KanbanView). Two
 // columns can have different sorts simultaneously.
 //
-// The sort is APPLIED CLIENT-SIDE in `cardsInColumn` below (the
-// comparator restores per-column visual independence — see the
-// doc comment on `cardsInColumn`). The parent also receives a
-// `sortChange` emit so it can:
+// The sort is APPLIED BACKEND-SIDE per column. When the user picks
+// a sort, KanbanView's `handleColumnSortChange` calls
+// `fetchKanbanTasks` for ONLY the changed column with that column's
+// own sortBy/direction. The wire data arrives in the right
+// per-column order — `cardsInColumn` below just filters.
+//
+// The parent receives a `sortChange` emit so it can:
 //   1. URL-persist the per-column sort (`?sorts=col_X:<field>:<dir>`)
-//   2. Trigger a backend re-fetch with that sort (the wire data
-//      lands in the user's most-recently-expressed order, then
-//      each column re-sorts locally to its own state).
+//   2. Fire the per-column backend re-fetch (see #1 above).
 //
 // Re-mounting the column (via KanbanView's :key=) resets to the
 // defaults (Manual / drag-reorder). The user picks via the
@@ -133,15 +134,11 @@ type SortDirection = 'asc' | 'desc'
 const sortBy = ref<SortField>('position')
 const direction = ref<SortDirection>('asc')
 
-// Watcher that re-emits the sort change to the parent. The parent
-// (KanbanView) is the source of truth for URL persistence + the
-// API re-fetch. Picked via a watcher (not a single emit) so any
-// setSortMode call (from URL restore, tests, or the modal) is
-// surfaced — the host always sees the latest state.
-watch([sortBy, direction], ([newSortBy, newDirection]) => {
-  emit('sortChange', { sortBy: newSortBy, direction: newDirection })
-})
-
+// setSortMode is the test + URL-restore seam. Mutates the refs
+// WITHOUT emitting — the caller is responsible for emitting (or
+// for the URL restore path, the onMount loop below also fires
+// the fetchKanbanTasks after calling setSortMode, so we don't
+// need a duplicate emit here).
 const setSortMode = (newSortBy: SortField, newDirection: SortDirection) => {
   sortBy.value = newSortBy
   direction.value = newDirection
@@ -151,88 +148,22 @@ defineExpose({ setSortMode })
 
 // ─── Derived data ──────────────────────────────────────────────────────────
 
-// Cards in this column. The sort applies the per-column sortBy +
-// direction FIRST, then kanban_position asc as the tiebreaker
-// (matches the backend's (sort_field, id) tuple pagination —
-// stable ordering across rows that share the same sort-field
-// value).
+// Cards in this column. Just filters by the column id — the
+// backend's per-column fetch already returns tasks in the
+// column's own sort order (the `sortChange` handler in
+// KanbanView calls `fetchKanbanTasks(col.id, sortBy, direction)`
+// for ONLY the changed column; the wire data arrives in the
+// right per-column order). No client-side re-sort needed.
 //
-//   sortBy='position' → comparator returns 0; tiebreaker dominates →
-//   kanban_position asc (the default Manual / drag-reorder
-//   behaviour, no regression).
-//   sortBy='name' / 'created_at' / 'updated_at' → first key is the
-//   chosen field (asc or desc), tiebreaker is kanban_position asc.
-//
-// Tasks without a kanban_column_id (unassigned) are excluded — they
-// live in their own region (out of scope for v1).
-//
-// IMPORTANT — per-column independence. The backend's
-// `listWorkspaceItemTasksWithCursor` accepts only ONE sort_field +
-// sort_direction per request, so every column's fetch returns tasks
-// in the SAME global order (whichever sort the LATEST user pick
-// dictated, or the backend default `updated_at desc`). The
-// per-column `.sort()` below restores visual independence — two
-// mounted columns can show different orders at the same time.
+// Tasks without a kanban_column_id (unassigned) are excluded —
+// they live in their own region (out of scope for v1).
 //
 // Plan: docs/superpowers/plans/2026-08-06-kanban-sort-independence.md
 const cardsInColumn = computed<Task[]>(() => {
   return props.tasks
     .filter((t) => t.kanban_column_id === props.column.id)
     .slice()
-    .sort((a, b) => {
-      const cmp = compareBySortMode(a, b, sortBy.value, direction.value)
-      if (cmp !== 0) return cmp
-      // Tiebreaker: kanban_position asc (stable across same-field
-      // rows). Matches the pre-removal behaviour from commit
-      // 77482f07 — the user-visible "drag-reorder position" is what
-      // they expect to see when two cards share a sort-field value.
-      const ap = a.kanban_position ?? Number.MAX_SAFE_INTEGER
-      const bp = b.kanban_position ?? Number.MAX_SAFE_INTEGER
-      return ap - bp
-    })
 })
-
-// Pure comparator — returns negative when a sorts before b, positive
-// when b sorts before a, 0 when equal (caller falls back to the
-// kanban_position tiebreaker).
-//
-// Notes on the comparators:
-//   - name uses BINARY collate (matches the backend's SQL ORDER BY
-//     without LOWER() — 'Apple' (capital A) sorts before 'banana'
-//     in BINARY).
-//   - created_at / updated_at convert Date to ISO string for a
-//     deterministic string compare (works for the ISO 8601 format
-//     the backend stores).
-//   - Direction: 'asc' → normal ordering; 'desc' → signs flipped.
-function compareBySortMode(
-  a: Task,
-  b: Task,
-  sortBy: SortField,
-  direction: SortDirection,
-): number {
-  const sign = direction === 'asc' ? 1 : -1
-  let av: string | number = 0
-  let bv: string | number = 0
-  if (sortBy === 'position') {
-    // Manual / drag-reorder: the caller passes the result through
-    // the tiebreaker, so when sortBy === 'position' we return a
-    // stable 0 here and let the tiebreaker drive the order.
-    return 0
-  } else if (sortBy === 'name') {
-    av = a.name ?? ''
-    bv = b.name ?? ''
-  } else if (sortBy === 'created_at') {
-    av = a.createdAt instanceof Date ? a.createdAt.toISOString() : (a.createdAt ?? '')
-    bv = b.createdAt instanceof Date ? b.createdAt.toISOString() : (b.createdAt ?? '')
-  } else {
-    // updated_at
-    av = a.updatedAt instanceof Date ? a.updatedAt.toISOString() : (a.updatedAt ?? '')
-    bv = b.updatedAt instanceof Date ? b.updatedAt.toISOString() : (b.updatedAt ?? '')
-  }
-  if (av < bv) return -1 * sign
-  if (av > bv) return 1 * sign
-  return 0
-}
 
 // ─── Virtual scrolling + lazy load (kanban-virtual-scroll, 2026-08-06) ───
 //
@@ -465,8 +396,17 @@ const openSortModal = () => {
   sortModalOpen.value = true
 }
 
+// Close the modal AND emit the sort change unconditionally —
+// even if the user picked the SAME sort (Manual again, etc.), the
+// parent's per-column fetch should still fire so the wire data
+// is refreshed. The watcher-based emit (below) only fires on VALUE
+// CHANGE; this explicit emit fires on every USER PICK, regardless
+// of whether the values actually changed.
+//
+// Plan: docs/superpowers/plans/2026-08-06-kanban-sort-independence.md
 const handleSortModalSelect = () => {
   sortModalOpen.value = false
+  emit('sortChange', { sortBy: sortBy.value, direction: direction.value })
 }
 
 const handleSortModalBackdrop = () => {
