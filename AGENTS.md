@@ -395,6 +395,20 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Add `workspace_id` URL param when viewing a task (kanban / design mode)
+
+**Symptom (user report, task_1785774094183).** User: *"add workspace_id params when view the task, like in kanbanmode or design mode"*. The URL bar showed `?view=task&task=X&itemId=Y` with no `workspaceId`, so sharing / refreshing / back-buttoning the URL lost the kanban / design context.
+
+**Root cause.** Seven call sites across `Sidebar.vue` and `AppLayout.vue` built `?view=task` URLs without including `workspaceId` / `itemId` / `pageId`: `Sidebar.handleSelectTask`, `Sidebar.handleAddTaskPick` (auto-create Standard Chat), `Sidebar.handleRunRoutine`, `AppLayout.handleNavigate('task')` (dead branch), and the `else if (activeTask.value)` arms of `closeGitViewer` / `closeSkillViewer` / `closeCodeEditor`. Each wrote a bare `?view=task&task=X` and dropped the breadcrumb.
+
+**What landed.** Centralised the URL builder in `src/apps/desktop/src/helpers/buildTaskUrlQuery.ts` (pure function, no Vue / Pinia / vue-router imports). Resolution order: active store state (authoritative) → URL breadcrumb fallback (deep-link refresh) → omit. `pageId` gated on `activeItemType === 'design'` (prevents cross-leak from a stale design page into a kanban URL — see `url-pageid-leak-design-to-non-design`, 2026-08-06). `sorts` always preserved from URL (kanban view-specific, needed for `handleCloseTaskView` close-restore via `savedSortsParam`). `session` included when caller passes it (routine-run back-compat).
+
+**Files (7 changed, +1026/-42).** 2 new (`helpers/buildTaskUrlQuery.ts` + spec) + 4 modified (`Sidebar.vue`, `AppLayout.vue`, 2 spec files) + 1 plan doc. 22 new tests (15 helper + 3 sidebar behavioural + 4 AppLayout behavioural). `bun run build` clean (vue-tsc + vite). Full vitest: **2070 pass / 19 fail**. The 19 failures are PRE-EXISTING on `main` (verified via `git stash`); no regressions.
+
+**Plan / PR.** `docs/superpowers/plans/2026-08-06-add-workspace-id-params.md`. PR #179 @ commit `e8db6bb3`. Branch: `worktree/add-workspace-id-params`.
+
+**Lesson.** The previous "better-url-browser" fix (PR #178) added URL preservation via `pickBreadcrumbFromQuery(route.query)` — but if the source URL didn't have `workspaceId` to begin with, the new URL didn't either. The active store state is the AUTHORITATIVE source for "which workspace / item is the user on right now"; the URL breadcrumb is only a fallback for the deep-link case where no in-memory active state exists.
+
 ### 2026-08-06: Hide Send/Queue button while LLM is processing
 
 **Symptom (user report, task_1785772775411).** User: *"remove button queue when in processing"*. The chatview input area was showing BOTH a Stop button AND a Queue/Send button when the agent ran. The Queue button (orange, label "Queue", spinner) was visual noise — users cannot actually queue more work while the agent runs, so the button was misleading.
