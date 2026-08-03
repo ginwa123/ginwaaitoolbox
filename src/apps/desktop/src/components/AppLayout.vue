@@ -124,15 +124,19 @@ const activeWorkspaceId = computed(() => activeWorkspace.value?.id ?? '')
 // chat history) and prevents the EventSource HTTP request from
 // saturating the browser's per-origin 6-connection pool.
 let didInitSse = false
-watch(activeWorkspaceId, async (newId) => {
-  if (!newId) return
-  if (!didInitSse) {
-    didInitSse = true
-    await kanbanSseStore.initKanbanSse(newId)
-  } else {
-    await kanbanSseStore.setActiveWorkspaceId(newId)
-  }
-}, { immediate: true })
+watch(
+  activeWorkspaceId,
+  async (newId) => {
+    if (!newId) return
+    if (!didInitSse) {
+      didInitSse = true
+      await kanbanSseStore.initKanbanSse(newId)
+    } else {
+      await kanbanSseStore.setActiveWorkspaceId(newId)
+    }
+  },
+  { immediate: true },
+)
 
 // ─── URL → activeWorkspaceItemId / activeDesignPageId restoration ─────
 //
@@ -176,9 +180,7 @@ watch(
     if (!pending) return
     if (!wsList || wsList.length === 0) return
     const wsExists = wsList.some((ws) => ws.id === pending.workspaceId)
-    const itemExists = wsList.some((ws) =>
-      ws.items.some((item) => item.id === pending.itemId),
-    )
+    const itemExists = wsList.some((ws) => ws.items.some((item) => item.id === pending.itemId))
     if (wsExists && itemExists) {
       workspacesStore.setActiveWorkspaceItem(pending.itemId)
       // Restore the active design page (if any) so DesignView picks
@@ -235,10 +237,7 @@ watch(
 //      already matches the active state (would push redundant
 //      history entries).
 watch(
-  () => [
-    workspacesStore.activeWorkspaceItemId,
-    workspacesStore.activeDesignPageId,
-  ] as const,
+  () => [workspacesStore.activeWorkspaceItemId, workspacesStore.activeDesignPageId] as const,
   ([itemId, pageId]) => {
     const wsId = workspacesStore.activeWorkspace?.id ?? ''
     const currentView = route.query.view as string | undefined
@@ -300,15 +299,19 @@ let didInitDesignSse = false
 // Task 1.2) and routes patches to the geometry endpoint vs the
 // full-update endpoint based on which keys are present.
 const designHandlers = useDesignHandlers()
-watch(activeWorkspaceId, async (newId) => {
-  if (!newId) return
-  if (!didInitDesignSse) {
-    didInitDesignSse = true
-    await designSseStore.initDesignSse(newId)
-  } else {
-    await designSseStore.setActiveWorkspaceId(newId)
-  }
-}, { immediate: true })
+watch(
+  activeWorkspaceId,
+  async (newId) => {
+    if (!newId) return
+    if (!didInitDesignSse) {
+      didInitDesignSse = true
+      await designSseStore.initDesignSse(newId)
+    } else {
+      await designSseStore.setActiveWorkspaceId(newId)
+    }
+  },
+  { immediate: true },
+)
 
 onUnmounted(() => {
   kanbanSseStore.closeKanbanSse()
@@ -356,6 +359,7 @@ const handleNavigate = (
   // reads it back and applies each entry's sort to its column.
   sortsParam?: string,
 ) => {
+  console.log('[handleNavigate]', view)
   if (view.startsWith('chat-')) {
     const chatSessionId = view.replace(/^chat-/, '')
     // Clear any workspace-item active state — navigating to a chat wins.
@@ -363,14 +367,14 @@ const handleNavigate = (
     navigationStore.setActiveChat(chatSessionId, chatName)
     // Fetch cwd for folder explorer and git
     fetchChatSessionCwd(chatSessionId)
-    router.replace({ path: '/app', query: { view: 'chat', session: chatSessionId } })
+    router.push({ path: '/app', query: { view: 'chat', session: chatSessionId } })
   } else if (view === 'chat') {
     // Clear any workspace-item active state — the URL is asserting
     // "no chat selected, no workspace item selected".
     workspacesStore.setActiveWorkspaceItem(null)
     navigationStore.clearActiveChat()
     chatSessionCwd.value = ''
-    router.replace({ path: '/app', query: { view: 'chat' } })
+    router.push({ path: '/app', query: { view: 'chat' } })
   } else if (view === 'workspace') {
     navigationStore.clearAll()
     chatSessionCwd.value = ''
@@ -392,11 +396,11 @@ const handleNavigate = (
       // sort defaults the user committed to on click.
       if (sortsParam) query.sorts = sortsParam
     }
-    router.replace({ path: '/app', query })
+    router.push({ path: '/app', query })
   } else if (view === 'task') {
     navigationStore.setActiveTask(taskId || null)
     chatSessionCwd.value = ''
-    router.replace({ path: '/app', query: { view: 'task', task: taskId } })
+    router.push({ path: '/app', query: { view: 'task', task: taskId } })
   } else if (view === 'settings') {
     router.push({ path: '/app/settings' })
   }
@@ -1164,12 +1168,7 @@ const handleCloseCopyKanbanSpec = () => {
 const handleCopyKanbanSpec = (sourceItemId: string, mode: 'replace' | 'append') => {
   if (!activeWorkspaceItem.value || !activeWorkspace.value) return
   void workspacesStore
-    .copyKanbanSpecFrom(
-      activeWorkspace.value.id,
-      activeWorkspaceItem.value.id,
-      sourceItemId,
-      mode,
-    )
+    .copyKanbanSpecFrom(activeWorkspace.value.id, activeWorkspaceItem.value.id, sourceItemId, mode)
     .then(() => {
       showCopyKanbanSpecDialog.value = false
     })
@@ -1378,7 +1377,14 @@ const handleDesignOpenChat = async (payload: {
 
 const handleDesignUpdateElement = async (
   elementId: string,
-  patch: Partial<{ x: number; y: number; width: number; height: number; rotation: number; [k: string]: unknown }>,
+  patch: Partial<{
+    x: number
+    y: number
+    width: number
+    height: number
+    rotation: number
+    [k: string]: unknown
+  }>,
 ): Promise<void> => {
   const ws = activeWorkspace.value
   const item = activeWorkspaceItem.value
@@ -1413,7 +1419,14 @@ const handleDesignTranslateElement = async (
  */
 const handleDesignResizeElement = async (
   elementId: string,
-  patch: Partial<{ x: number; y: number; width: number; height: number; rotation: number; [k: string]: unknown }>,
+  patch: Partial<{
+    x: number
+    y: number
+    width: number
+    height: number
+    rotation: number
+    [k: string]: unknown
+  }>,
 ): Promise<void> => {
   const ws = activeWorkspace.value
   const item = activeWorkspaceItem.value
@@ -1490,8 +1503,7 @@ watch(
       // clicks a line in the diff view). Only valid numbers > 0 are honored.
       const lineParam = query.line as string | undefined
       const parsedLine = lineParam ? parseInt(lineParam, 10) : NaN
-      const requestedLine =
-        Number.isFinite(parsedLine) && parsedLine > 0 ? parsedLine : null
+      const requestedLine = Number.isFinite(parsedLine) && parsedLine > 0 ? parsedLine : null
 
       if (filePath) {
         // Decode the file path
@@ -1581,10 +1593,7 @@ watch(chatSessionCwd, (newCwd) => {
       @toggle-collapse="toggleSidebar"
       @resize="handleSidebarResize"
     />
-    <main
-      class="flex-1 flex flex-col overflow-hidden relative"
-      style="touch-action: pan-x pan-y;"
-    >
+    <main class="flex-1 flex flex-col overflow-hidden relative" style="touch-action: pan-x pan-y">
       <!-- Git File Viewer (shown when view is gitfile) -->
       <GitFileViewer
         v-if="currentView === 'gitfile' && gitViewerFile && rightSidebarCwd"
@@ -1912,7 +1921,11 @@ watch(chatSessionCwd, (newCwd) => {
           <button
             type="button"
             class="absolute top-2 right-12 z-30 w-7 h-7 rounded flex items-center justify-center text-sm hover:opacity-80 transition-opacity shadow"
-            style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-dim); border: 1px solid var(--color-border);"
+            style="
+              background-color: var(--semantic-sidebar-bg);
+              color: var(--semantic-text-dim);
+              border: 1px solid var(--color-border);
+            "
             title="Hide chat (collapse to icon)"
             aria-label="Hide chat"
             data-testid="design-chat-collapse-button"
@@ -1924,13 +1937,19 @@ watch(chatSessionCwd, (newCwd) => {
         <div
           v-else
           class="shrink-0 w-10 flex flex-col items-center pt-2"
-          style="background-color: var(--semantic-sidebar-bg); border-left: 1px solid var(--color-border);"
+          style="
+            background-color: var(--semantic-sidebar-bg);
+            border-left: 1px solid var(--color-border);
+          "
           data-design-chat-collapsed-strip
         >
           <button
             type="button"
             class="w-8 h-8 rounded flex items-center justify-center hover:opacity-80 transition-opacity"
-            style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
+            style="
+              background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
+              color: var(--color-bg);
+            "
             title="Expand chat"
             aria-label="Expand chat"
             data-testid="design-chat-expand-button"
