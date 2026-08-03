@@ -1546,3 +1546,42 @@ This is the original architecture from commit `77482f07`. The comparator deleted
 **Lesson.** When a user feedback comment ("i remove that and its become better") is acted on globally without checking per-column/per-instance independence, regression is silent. The user reported a single-column issue; the fix removed the per-column sort entirely. Tests like "renders cards in input order" (KanbanColumn.spec.ts) become the guard rail — if they fail to assert the per-column sort behaviour, the regression slips through.
 
 **Branch / commit.** `worktree/kanban-sort-independence` @ `911e6647`.
+
+### 2026-08-06: Kanban — per-column sort fetch (only the changed column's endpoint)
+
+**Symptom (user follow-up, task_1785730557641).** The previous fix restored per-column visual independence (frontend client-side re-sort + backend single-sort wire). But the wire shape STILL had every column receiving the same `sort_by` URL params on every sort change. User feedback:
+
+- *"when sort happen its should independece not all column use same sort by value, fix that code above"*
+- *"just make sure if i sort column a, only column a endpoint that called, other column a should not call endpoint"*
+
+**Root cause.** Two layers:
+1. The `watch(columnSorts, ...)` in `KanbanView.vue:427` took only the LATEST changed sort from `Object.values(columnSorts.value)` and applied it globally to a single `fetchKanbanTasksForAllColumns` call.
+2. `fetchKanbanTasksForAllColumns` (workspaces.ts:1302) loops over every column and calls `fetchKanbanTasks(col, sortBy, direction)` with the SAME `sortBy` / `direction` — wire-level fan-out regardless of which column changed.
+
+**Fix (surgical, per-column fetch).** `handleColumnSortChange` in `KanbanView.vue` now fires `fetchKanbanTasks(col, sortBy, direction)` for ONLY the clicked column, with that column's own sort. Other columns' data is untouched (it still matches their own last sort from a previous per-column fetch).
+
+**Wire shape now matches the user's intent:**
+- User picks "Name (Z→A)" on column A → ONLY `?sort_by=name&direction=desc&column_id=col_a` is called.
+- Column B's data is unchanged (still in its own last sort).
+- No more fan-out N parallel calls on every sort change.
+
+**Files.** 4 changed + 1 deleted:
+- `src/apps/desktop/src/components/kanban/KanbanColumn.vue` — removed `compareBySortMode` + the client-side `.sort()` (back to plain filter). `handleSortModalSelect` now always emits `sortChange` unconditionally on every menu click. `setSortMode` is a pure ref-mutator (no emit — the URL restore path fires the fetch directly in the onMount loop).
+- `src/apps/desktop/src/components/kanban/KanbanView.vue` — `handleColumnSortChange` fires `fetchKanbanTasks` for the changed column only. `watch(columnSorts, ...)` is URL-only (no fetch, no debounce). URL restore onMount loops over entries and fires per-column `fetchKanbanTasks` (default sort is `continue`d).
+- `src/apps/desktop/src/__tests__/KanbanView.sortByApi.spec.ts` — 7 new behavioural tests. The critical regression test: *"picking Created (oldest) on column A fires fetchKanbanTasks for col_a only (col_b is NOT called)"*.
+- `src/apps/desktop/src/__tests__/KanbanColumn.spec.ts` — restored the "renders cards in input order" assertion (client-side sort is gone; wire order is what the user sees).
+- `src/apps/desktop/src/__tests__/KanbanColumn.sortIndependence.spec.ts` — DELETED. The client-side comparator it tested is gone.
+
+**Verification.**
+- `bun run build` — vue-tsc clean.
+- `bunx vitest run src/__tests__/KanbanView.sortByApi.spec.ts` — 7/7 pass.
+- `bunx vitest run src/__tests__/KanbanColumn.spec.ts` — 19/19 pass.
+- `bunx vitest run` (full suite) — 2027 pass / 12 fail. The 12 are PRE-EXISTING on main (5 `DesignView.undoHidden`, 1 `DesignElement` static contract, 1 `DesignView.nudge clamp`, 1 `AppLayout.translateResize`, 4 `AppLayout.memoriesGate`). Zero regressions from this fix.
+
+**Lessons.**
+- **Network panel = wire shape, not behavior.** The user's initial complaint was about the Network panel showing the same `sort_by` on every column. The first take (per-column-sorts-map in the store) fixed the wire shape but still fired N parallel fetches. The user pushed back — they don't want OTHER columns' endpoints called at all. The take-2 fix removes the fan-out entirely.
+- **Per-column fetch is the right primitive.** The store already has `fetchKanbanTasks(columnId, sortBy, direction)`. Use it directly; the `fetchKanbanTasksForAllColumns` helper is for "all columns with the SAME sort" (initial mount, search, SSE) — not for per-column sort changes.
+- **Idempotent user actions should always emit.** The watcher-based emit only fired on value CHANGE. The menu click handler emits unconditionally — even when the user picks the same sort twice. Same sort twice should still refetch.
+- **`setSortMode` is a seam, not a side-effect channel.** It mutates refs but doesn't emit. The URL restore path uses it to set local state, then the onMount loop fires the fetch. Keeping the seam pure prevents double-fetch.
+
+**Branch.** `worktree/per-column-sort-watcher`.

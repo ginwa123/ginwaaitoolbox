@@ -1,17 +1,24 @@
 /**
  * Behavioural tests for KanbanView's per-column-sort + URL persistence +
- * API-fetch wiring.
+ * per-column backend fetch wiring.
  *
- * Plan (the redo, 2026-08-06):
+ * Plan (kanban-sort-independence, take 2, 2026-08-06):
  *  - Each KanbanColumn has its own sortBy + direction (already done).
  *  - When a column's sort changes, the column emits `sort-change` with
- *    the new sortBy + direction. KanbanView listens and:
- *      a) re-fetches tasks via fetchKanbanTasks with that sort
+ *    the new sortBy + direction. KanbanView's `handleColumnSortChange`
+ *    listens and:
+ *      a) fires `fetchKanbanTasks(col_id, sortBy, direction)` for ONLY
+ *         that column — other columns' data is untouched.
  *      b) updates the URL: `?sorts=col_<id>:<sortBy>:<direction>,...`
  *  - On mount, KanbanView parses the URL's `sorts` param and applies
- *    each column's sort via setSortMode (defineExpose seam).
- *  - The fetch is debounced via the existing search-input pattern
- *    (300ms) so rapid column-sort changes don't fire N requests.
+ *    each column's sort via setSortMode (defineExpose seam) + fires
+ *    per-column `fetchKanbanTasks` for the columns mentioned in the
+ *    URL.
+ *
+ * The CRITICAL user requirement (kanban-sort-independence): "only
+ * column A endpoint that called, other column should not call
+ * endpoint" — when the user picks a sort in one column, only THAT
+ * column's fetch fires. The watcher's only job is URL persistence.
  *
  * URL format:
  *   ?sorts=col_1:name:asc,col_2:created_at:desc,col_3:updated_at:asc
@@ -24,7 +31,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 
 import KanbanView from '../components/kanban/KanbanView.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
-import type { WorkspaceItem } from '../stores/workspaces'
+import type { WorkspaceItem, Task } from '../stores/workspaces'
 
 const WS_ID = 'ws_sortapi'
 const ITEM_ID = 'item_sortapi'
@@ -39,8 +46,26 @@ const makeItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
     { id: 'col_b', name: 'in_progress', workspace_item_id: ITEM_ID, position: 1, created_at: '2026-01-01' },
   ],
   tasks: [],
-  columnPagination: {},
+  // Pre-populate columnPagination so KanbanView's `loadColumnsAndTasks`
+  // (its initial mount-time fetch) SKIPS the per-column fetch. This
+  // is critical for the per-column-fetch tests — we want to assert
+  // that ONLY the column we click on gets `fetchKanbanTasks`
+  // called, not the initial mount's fetch for every column.
+  columnPagination: {
+    col_a: { cursor: null, hasMore: false, isLoading: false },
+    col_b: { cursor: null, hasMore: false, isLoading: false },
+  },
   ...overrides,
+})
+
+const makeTask = (id: string, name: string, kanbanPosition: number): Task => ({
+  id,
+  name,
+  task_type: 'standard',
+  kanban_column_id: 'col_a',
+  kanban_position: kanbanPosition,
+  createdAt: new Date('2024-01-01T00:00:00Z'),
+  updatedAt: new Date('2024-01-01T00:00:00Z'),
 })
 
 const { useRouteMock, useRouterMock } = vi.hoisted(() => ({
@@ -79,7 +104,7 @@ function mountKanbanView(query: Record<string, string> = {}) {
   return { wrapper, replaceMock }
 }
 
-describe('KanbanView — per-column sort triggers API call', () => {
+describe('KanbanView — per-column sort triggers API call (only the changed column)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
   })
@@ -88,50 +113,116 @@ describe('KanbanView — per-column sort triggers API call', () => {
     vi.restoreAllMocks()
   })
 
-  it('opening sort menu + picking "Oldest" debounces + fires fetchKanbanTasks with the sort', async () => {
+  it('picking "Created (oldest)" on column A fires fetchKanbanTasks for col_a only (col_b is NOT called)', async () => {
+    // The CRITICAL user-reported bug (kanban-sort-independence, take 2):
+    // "only column a endpoint that called, other column should not
+    // call endpoint". Before this fix, the watcher called
+    // fetchKanbanTasksForAllColumns which fired N parallel requests
+    // (one per column) — all with the same sort_by. Now only the
+    // changed column's fetch fires.
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
     ]
-    const spy = vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
+    const fetchAllSpy = vi
+      .spyOn(store, 'fetchKanbanTasksForAllColumns')
+      .mockResolvedValue()
+    const fetchOneSpy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
 
-    const { wrapper } = mountKanbanView({ view: 'workspace', workspaceId: WS_ID, itemId: ITEM_ID })
+    const { wrapper } = mountKanbanView({
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: ITEM_ID,
+    })
 
-    // Open the ⋮ menu on column_a, click Sort tasks…, pick "Oldest".
+    // Open the ⋮ menu on col_a, click Sort tasks…, pick "Oldest".
     await wrapper.find(`[data-testid="kanban-column-col_a-menu-trigger"]`).trigger('click')
     await wrapper.find(`[data-testid="kanban-column-col_a-menu-sort"]`).trigger('click')
     await wrapper.find('[data-testid="kanban-sort-menu-created-asc"]').trigger('click')
-
-    // Wait past the 300ms debounce window.
-    await new Promise((resolve) => setTimeout(resolve, 350))
     await flushPromises()
 
-    // fetchKanbanTasksForAllColumns was called with sortBy='created_at', direction='asc'.
-    // Signature: (ws, item, limit, q, sortBy, direction) — index 4 is sortBy, 5 is direction.
-    const calls = spy.mock.calls
-    expect(calls.length).toBeGreaterThan(0)
-    const last = calls[calls.length - 1]!
-    expect(last[4]).toBe('created_at')
-    expect(last[5]).toBe('asc')
+    // fetchKanbanTasks was called for col_a with sortBy='created_at', direction='asc'.
+    // Signature: (ws, item, columnId, limit, cursor, q, sortBy, direction).
+    // col_id is index 2, sortBy is index 6, direction is index 7.
+    const colACalls = fetchOneSpy.mock.calls.filter((c) => c[2] === 'col_a')
+    expect(colACalls.length).toBeGreaterThan(0)
+    const lastColACall = colACalls[colACalls.length - 1]!
+    expect(lastColACall[6]).toBe('created_at')
+    expect(lastColACall[7]).toBe('asc')
+
+    // CRITICAL: col_b's endpoint was NOT called.
+    const colBCalls = fetchOneSpy.mock.calls.filter((c) => c[2] === 'col_b')
+    expect(colBCalls.length).toBe(0)
+
+    // And the "all columns" helper was NOT used (we don't fan out
+    // fetches on click — each click is single-column).
+    expect(fetchAllSpy).not.toHaveBeenCalled()
   })
 
-  it('picking "Manual" does NOT trigger an API call (no server-side equivalent)', async () => {
+  it('picking "Manual" on column A fires fetchKanbanTasks for col_a with no sortBy param (backend default)', async () => {
+    // Default sort (position + asc) has no server-side equivalent
+    // — fetch with no sortBy param. Backend uses its default
+    // ORDER BY (kanban_position asc).
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
     ]
-    const spy = vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
+    const fetchOneSpy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
 
-    const { wrapper } = mountKanbanView({ view: 'workspace', workspaceId: WS_ID, itemId: ITEM_ID })
+    const { wrapper } = mountKanbanView({
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: ITEM_ID,
+    })
 
     await wrapper.find(`[data-testid="kanban-column-col_a-menu-trigger"]`).trigger('click')
     await wrapper.find(`[data-testid="kanban-column-col_a-menu-sort"]`).trigger('click')
     await wrapper.find('[data-testid="kanban-sort-menu-position"]').trigger('click')
-
-    await new Promise((resolve) => setTimeout(resolve, 350))
     await flushPromises()
 
-    expect(spy).not.toHaveBeenCalled()
+    const colACalls = fetchOneSpy.mock.calls.filter((c) => c[2] === 'col_a')
+    expect(colACalls.length).toBeGreaterThan(0)
+    const lastColACall = colACalls[colACalls.length - 1]!
+    // sortBy/direction are undefined for the default sort
+    expect(lastColACall[6]).toBeUndefined()
+    expect(lastColACall[7]).toBeUndefined()
+  })
+
+  it('clicking a different sort on column A fires fetchKanbanTasks again for col_a (replaces previous)', async () => {
+    // Two clicks on the same column → two fetches. The second fetch
+    // replaces the column's local tasks slice (see fetchKanbanTasks
+    // implementation: `otherTasks = item.tasks.filter(t => t.kanban_column_id !== colId)`).
+    const store = useWorkspacesStore()
+    store.workspaces = [
+      { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
+    ]
+    const fetchOneSpy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
+
+    const { wrapper } = mountKanbanView({
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: ITEM_ID,
+    })
+
+    // First sort: name asc
+    await wrapper.find(`[data-testid="kanban-column-col_a-menu-trigger"]`).trigger('click')
+    await wrapper.find(`[data-testid="kanban-column-col_a-menu-sort"]`).trigger('click')
+    await wrapper.find('[data-testid="kanban-sort-menu-name-asc"]').trigger('click')
+    await flushPromises()
+
+    // Second sort: name desc
+    await wrapper.find(`[data-testid="kanban-column-col_a-menu-trigger"]`).trigger('click')
+    await wrapper.find(`[data-testid="kanban-column-col_a-menu-sort"]`).trigger('click')
+    await wrapper.find('[data-testid="kanban-sort-menu-name-desc"]').trigger('click')
+    await flushPromises()
+
+    // Two fetches, both for col_a. First with name+asc, second with name+desc.
+    const colACalls = fetchOneSpy.mock.calls.filter((c) => c[2] === 'col_a')
+    expect(colACalls.length).toBe(2)
+    expect(colACalls[0]![6]).toBe('name')
+    expect(colACalls[0]![7]).toBe('asc')
+    expect(colACalls[1]![6]).toBe('name')
+    expect(colACalls[1]![7]).toBe('desc')
   })
 })
 
@@ -144,12 +235,12 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
     vi.restoreAllMocks()
   })
 
-  it('picking a sort on column_a updates the URL with col_a sort, omits col_b', async () => {
+  it('picking a sort on column A updates the URL with col_a sort, omits col_b', async () => {
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
     ]
-    vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
+    vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
 
     const { wrapper, replaceMock } = mountKanbanView({
       view: 'workspace',
@@ -160,8 +251,6 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
     await wrapper.find(`[data-testid="kanban-column-col_a-menu-trigger"]`).trigger('click')
     await wrapper.find(`[data-testid="kanban-column-col_a-menu-sort"]`).trigger('click')
     await wrapper.find('[data-testid="kanban-sort-menu-name-asc"]').trigger('click')
-
-    await new Promise((resolve) => setTimeout(resolve, 350))
     await flushPromises()
 
     // The URL got a `sorts=col_a:name:asc` query param.
@@ -170,93 +259,31 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
     const query = lastCall[0].query as Record<string, string>
     expect(query.sorts).toContain('col_a:name:asc')
   })
+})
 
-  it('mount with ?sorts=col_a:name:asc fires fetchKanbanTasks with sortBy=name immediately', async () => {
-    // Regression for the user-reported issue: on refresh with
-    // ?sorts=col_xxx:name:asc in the URL, the initial fetch should
-    // use the URL's sort (not the default 'updated_at desc'). The
-    // kanban SSE handler fires its own initial fetch with the
-    // default — our URL restore must fire FIRST so the user sees
-    // the right order on initial render.
-    const store = useWorkspacesStore()
-    store.workspaces = [
-      { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
-    ]
-    const spy = vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
-
-    const { wrapper } = mountKanbanView({
-      view: 'workspace',
-      workspaceId: WS_ID,
-      itemId: ITEM_ID,
-      sorts: 'col_a:name:asc',
-    })
-
-    // Allow onMounted + nextTick to fire.
-    await flushPromises()
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    await flushPromises()
-
-    // The first fetchKanbanTasksForAllColumns call (from the URL
-    // restore on mount) should carry sortBy='name', direction='asc'.
-    // Signature: (ws, item, limit, q, sortBy, direction) — index 4 is sortBy, 5 is direction.
-    const calls = spy.mock.calls
-    expect(calls.length).toBeGreaterThan(0)
-    const first = calls[0]!
-    expect(first[4]).toBe('name')
-    expect(first[5]).toBe('asc')
-
-    wrapper.unmount()
+describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
   })
 
-  it('mount with ?sorts=col_a:position:asc (default) does NOT trigger an extra fetch (no server equivalent)', async () => {
-    const store = useWorkspacesStore()
-    store.workspaces = [
-      { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
-    ]
-    const spy = vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
-
-    // position + asc is the default — should NOT trigger an extra
-    // fetch (no server-side equivalent). The SSE handler's default
-    // fetch will still happen (out of scope for this test).
-    mountKanbanView({
-      view: 'workspace',
-      workspaceId: WS_ID,
-      itemId: ITEM_ID,
-      sorts: 'col_a:position:asc',
-    })
-
-    await flushPromises()
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    await flushPromises()
-
-    // No fetch with sortBy='position' (which would be the bug).
-    // Cast c[5] to any — the type-narrowed spy mock loses the
-    // 'position' literal type (the store narrows the param).
-    const calls = spy.mock.calls as unknown[][]
-    const positionCalls = calls.filter((c) => (c[5] as string) === 'position')
-    expect(positionCalls.length).toBe(0)
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
-  it('mount with ?sorts=col_a:name:asc fires fetchKanbanTasksForAllColumns with sortBy=name', async () => {
-    // Regression for the user-reported issue (re-test after the
-    // 2026-08-06 client-side-sort removal). The card-order assertion
-    // was deleted because per-column sort is now backend-driven —
-    // the client renders cards in input order. The URL → fetch
-    // mapping is what we test now: the URL sort param must reach
-    // the backend via `fetchKanbanTasksForAllColumns(sortBy, direction)`.
-    const tasks = [
-      makeTask('t_z', 'Zeta', 0),
-      makeTask('t_a', 'Alpha', 1),
-    ]
-    const item = makeItem({ tasks })
+  it('mount with ?sorts=col_a:name:asc fires fetchKanbanTasks for col_a with sortBy=name', async () => {
+    // User lands on the kanban with a URL carrying a per-column sort.
+    // KanbanView's onMount parses the URL, calls setSortMode on each
+    // column, and fires fetchKanbanTasks for ONLY the columns mentioned
+    // in the URL.
+    const item = makeItem({
+      tasks: [makeTask('t_z', 'Zeta', 0), makeTask('t_a', 'Alpha', 1)],
+    })
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] },
     ]
-    const spy = vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
+    const fetchOneSpy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
 
-    // Mount KanbanView with the seeded item (so the columns have
-    // tasks to display after the URL-restore applies setSortMode).
     useRouteMock.mockReturnValue({
       query: {
         view: 'workspace',
@@ -274,33 +301,111 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
       props: { item, workspaceId: WS_ID },
     })
 
-    // Allow the URL-restore watcher to fire fetchKanbanTasksForAllColumns.
     await flushPromises()
     await new Promise((resolve) => setTimeout(resolve, 50))
     await flushPromises()
 
-    // The URL's `sorts=col_a:name:asc` must reach the backend via
-    // `fetchKanbanTasksForAllColumns(ws, item, limit, q, sortBy, direction)`.
-    // Signature arg index 4 is sortBy, 5 is direction.
-    const calls = spy.mock.calls
-    expect(calls.length).toBeGreaterThan(0)
-    const sortByCall = calls.find((c) => c[4] === 'name' && c[5] === 'asc')
-    expect(sortByCall).toBeDefined()
-    const lastCall = calls[calls.length - 1]!
-    expect(lastCall[4]).toBe('name')
-    expect(lastCall[5]).toBe('asc')
+    // col_a's fetch fires with sortBy=name, direction=asc.
+    const colACalls = fetchOneSpy.mock.calls.filter((c) => c[2] === 'col_a')
+    expect(colACalls.length).toBeGreaterThan(0)
+    const lastColACall = colACalls[colACalls.length - 1]!
+    expect(lastColACall[6]).toBe('name')
+    expect(lastColACall[7]).toBe('asc')
+
+    // col_b's fetch does NOT fire (col_b not mentioned in URL).
+    const colBCalls = fetchOneSpy.mock.calls.filter((c) => c[2] === 'col_b')
+    expect(colBCalls.length).toBe(0)
+
     wrapper.unmount()
   })
-})
 
-function makeTask(id: string, name: string, kanbanPosition: number): any {
-  return {
-    id,
-    name,
-    task_type: 'standard',
-    kanban_column_id: 'col_a',
-    kanban_position: kanbanPosition,
-    createdAt: new Date('2024-01-01T00:00:00Z'),
-    updatedAt: new Date('2024-01-01T00:00:00Z'),
-  }
-}
+  it('mount with ?sorts=col_a:name:asc,col_b:created_at:desc fires per-column fetches with each column own sort', async () => {
+    // Two columns mentioned in the URL → two fetches, each with its
+    // own sort. col_b is NOT told to use col_a's sort.
+    const item = makeItem()
+    const store = useWorkspacesStore()
+    store.workspaces = [
+      { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] },
+    ]
+    const fetchOneSpy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
+
+    useRouteMock.mockReturnValue({
+      query: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: ITEM_ID,
+        sorts: 'col_a:name:asc,col_b:created_at:desc',
+      },
+      path: '/app',
+      fullPath: '/app',
+    } as any)
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+
+    const wrapper = mount(KanbanView, {
+      props: { item, workspaceId: WS_ID },
+    })
+
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    await flushPromises()
+
+    // col_a: name asc
+    const colACalls = fetchOneSpy.mock.calls.filter((c) => c[2] === 'col_a')
+    expect(colACalls.length).toBeGreaterThan(0)
+    expect(colACalls[colACalls.length - 1]![6]).toBe('name')
+    expect(colACalls[colACalls.length - 1]![7]).toBe('asc')
+
+    // col_b: created_at desc — INDEPENDENT of col_a's sort
+    const colBCalls = fetchOneSpy.mock.calls.filter((c) => c[2] === 'col_b')
+    expect(colBCalls.length).toBeGreaterThan(0)
+    expect(colBCalls[colBCalls.length - 1]![6]).toBe('created_at')
+    expect(colBCalls[colBCalls.length - 1]![7]).toBe('desc')
+
+    wrapper.unmount()
+  })
+
+  it('mount with ?sorts=col_a:position:asc (default) skips the URL-restore fetch (no-op)', async () => {
+    // Default sort (position+asc) is a no-op for the URL restore
+    // path — the initial mount's default-sort fetch already loaded
+    // the column. The URL-restore code uses `continue` for default
+    // entries, so no extra fetch fires.
+    //
+    // The test pre-populates columnPagination so KanbanView's
+    // initial `loadColumnsAndTasks` doesn't fire its own fetch
+    // either (otherwise it would muddy the assertion).
+    const item = makeItem({
+      tasks: [makeTask('t_z', 'Zeta', 0), makeTask('t_a', 'Alpha', 1)],
+    })
+    const store = useWorkspacesStore()
+    store.workspaces = [
+      { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] },
+    ]
+    const fetchOneSpy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
+
+    useRouteMock.mockReturnValue({
+      query: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: ITEM_ID,
+        sorts: 'col_a:position:asc',
+      },
+      path: '/app',
+      fullPath: '/app',
+    } as any)
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+
+    mount(KanbanView, {
+      props: { item, workspaceId: WS_ID },
+    })
+
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    await flushPromises()
+
+    // No fetch for col_a (default sort is a no-op in the URL restore).
+    const colACalls = fetchOneSpy.mock.calls.filter((c) => c[2] === 'col_a')
+    expect(colACalls.length).toBe(0)
+  })
+})
