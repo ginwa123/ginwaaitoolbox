@@ -2299,7 +2299,7 @@ pub fn saveToolResultPlaceholder(
         \\    created_at, created_iso, parent_session_id,
         \\    is_input, is_output, prompt_tokens, completion_tokens, total_tokens
         \\) VALUES (
-        \\    ?, ?, ?, '', ?, ?, 'tool', 'tool_calls', 1, 1,
+        \\    ?, ?, ?, '', ?, ?, 'tool', 'tool', 1, 1,
         \\    'Agent', ?, 0.2, 0,
         \\    ?, ?, ?,
         \\    0, 1, 0, 0, 0
@@ -2341,17 +2341,20 @@ pub fn saveToolResultPlaceholder(
 /// Plan: docs/superpowers/plans/2026-08-06-tool-call-loading-placeholder.md
 pub fn updateToolResultById(
     allocator: std.mem.Allocator,
+    io: std.Io,
     db: *sqlite.SqliteBackend,
     tool_call_id: []const u8,
     opts: UpdateToolResultOptions,
 ) !void {
+    _ = io;
+
     const sql =
         \\UPDATE llm_history SET
         \\    response_content = ?,
         \\    diffview_before = COALESCE(?, diffview_before),
         \\    diffview_after = COALESCE(?, diffview_after),
         \\    is_loading = 0
-        \\WHERE tool_call_id = ?
+        \\WHERE id = ?
     ;
 
     // For diffview: an empty slice binds as NULL per project memory

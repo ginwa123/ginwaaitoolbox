@@ -20,6 +20,7 @@ const wrapToolOutput = agentic_loop_mod.tools.wrapToolOutput;
 const xmlUnescape = nalar.helpers.xmlUnescape;
 const on_event_sent = @import("../on_event_sent.zig");
 const onEventSendLLMHistory = on_event_sent.onEventSendLLMHistory;
+const insertLLMHistories = @import("insert_llm_histories.zig").inserLLMHistories;
 
 // ============================================================================
 // TOOL REGISTRY - Single source of truth: tools_equipped.zig
@@ -379,18 +380,6 @@ pub fn handle_tool(
         // INSERT then per-tool saveMessage) which left orphaned
         // tool_call_ids on crash. See plan:
         // docs/superpowers/plans/2026-08-06-tool-call-loading-placeholder.md
-        for (tc) |tool_call| {
-            if (!isKnownToolOrMCP(tool_call.function.name, config)) continue;
-            const placeholder_id = try llm_history.saveToolResultPlaceholder(allocator, io, db, .{
-                .session_id = session_id,
-                .model = model,
-                .tool_call_id = tool_call.id,
-                .tool_name = tool_call.function.name,
-                .loop_index = loop_counter,
-                .parent_session_id = parent_session_id,
-            });
-            allocator.free(placeholder_id);
-        }
 
         // ─── Phase 2: INSERT the assistant message (existing code) ───
         //
@@ -454,6 +443,50 @@ pub fn handle_tool(
         // Send SSE for assistant message
         try sendSSEForLatestMessage(allocator, db, session_id, cwd, current_agent_for_save, parent_session_id, agent_temperature.*, isThinking.*, true, false, tc);
 
+        var list_id_that_was_loaded: std.ArrayList([]const u8) = .empty;
+
+        for (tc) |tool_call| {
+            if (!isKnownToolOrMCP(tool_call.function.name, config)) continue;
+
+            const id_llm_history = try insertLLMHistories(.{
+                .allocator = allocator,
+                .io = io,
+                .db = db,
+                .logger = logger,
+                .is_emit_sse = false,
+                .event_bus = null,
+                .cwd = cwd,
+                .entity = .{
+                    .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+                    .session_id = session_id,
+                    .model = model,
+                    .response_content = "",
+                    .reasoning_content = null,
+                    .role = agent.Role.tool.to_str(),
+                    .finish_reason = agent.FinishReason.tool.to_str(),
+                    .tool_calls_json = "",
+                    .tool_call_id = tool_call.id,
+                    .agent = current_agent_state.agent,
+                    .loop_index = loop_counter,
+                    .temperature = agent_temperature.*,
+                    .is_thinking = isThinking.*,
+                    .prompt_tokens = 0,
+                    .completion_tokens = 0,
+                    .total_tokens = 0,
+                    .parent_id = parent_session_id,
+                    .parent_session_id = parent_session_id,
+                    .is_input = false,
+                    .is_output = true,
+                    .image_urls = null,
+                    .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+                    .is_feed_to_llm = true,
+                    .tool_name = tool_call.function.name,
+
+                },
+            });
+            try list_id_that_was_loaded.append(allocator, id_llm_history);
+        }
+
         // Build context for dispatch
         const ctx = ToolContext{
             .allocator = allocator,
@@ -484,7 +517,10 @@ pub fn handle_tool(
         // If the app crashes mid-dispatch, the stranded placeholders
         // are picked up by `resolveStaleLoadingToolResults` on the
         // next worker loop start (called from workflow.zig).
+        var idx: usize = 0;
         for (tc) |tool_call| {
+            const id_llm_history = list_id_that_was_loaded.items[idx];
+            idx += 1;
             var tool_result: []const u8 = undefined;
             var toolAgentTemp: f32 = agent_temperature.*;
             var toolIsThinking: bool = isThinking.*;
@@ -512,11 +548,11 @@ pub fn handle_tool(
                     });
                     tool_result = try wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
                     errdefer allocator.free(tool_result);
-                    try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                    try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                     allocator.free(tool_result);
                     continue;
                 };
-                try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                 continue;
             }
 
@@ -529,7 +565,7 @@ pub fn handle_tool(
                 });
                 tool_result = try wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
                 errdefer allocator.free(tool_result);
-                try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                 allocator.free(tool_result);
                 continue;
             };
@@ -554,7 +590,7 @@ pub fn handle_tool(
                 };
             }
 
-            try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+            try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
         }
     }
 
@@ -563,7 +599,9 @@ pub fn handle_tool(
 
 fn updateAndSendToolResult(
     allocator: std.mem.Allocator,
+    io: std.Io,
     db: *sqlite.SqliteBackend,
+    id: []const u8,
     session_id: []const u8,
     cwd: []const u8,
     tool_call: agent.ToolCall,
@@ -601,7 +639,7 @@ fn updateAndSendToolResult(
     // (0 rows affected) — the old saveMessage would have created a
     // new row, but with the placeholder pattern we prefer to drop
     // the orphan rather than have an unmatched tool result.
-    try llm_history.updateToolResultById(allocator, db, tool_call.id, .{
+    try llm_history.updateToolResultById(allocator, io, db, id, .{
         .content = content_modified,
         .diffview_before = diffview_before,
         .diffview_after = diffview_after,
@@ -933,4 +971,3 @@ test "parseDiffViewFromResult - unescapes multiline content with entities" {
     std.testing.allocator.free(result.after.?);
     std.testing.allocator.free(result.content_without_diffview);
 }
-

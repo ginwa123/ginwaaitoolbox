@@ -175,7 +175,7 @@ pub const CallbackAiWorkerFlow = struct {
             const created_at = std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}) catch return;
             defer allocator.free(created_at);
 
-            insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{ .id = id, .session_id = session_id, .model = nalarcore.getLlmConfig(di).model, .response_content = error_message, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = initial_agent, .loop_index = 0, .temperature = initial_agent_state.temperature, .is_thinking = initial_agent_state.is_thinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = session_id, .parent_session_id = session_id, .is_input = true, .is_output = false, .is_feed_to_llm = false, .image_urls = null, .created_at = created_at } }) catch return;
+            _ = insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{ .id = id, .session_id = session_id, .model = nalarcore.getLlmConfig(di).model, .response_content = error_message, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = initial_agent, .loop_index = 0, .temperature = initial_agent_state.temperature, .is_thinking = initial_agent_state.is_thinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = session_id, .parent_session_id = session_id, .is_input = true, .is_output = false, .is_feed_to_llm = false, .image_urls = null, .created_at = created_at } }) catch return;
         };
     }
 };
@@ -533,12 +533,12 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         //
         // Idempotent: 0 stranded rows = 0 updates, no side effects.
         // Safe to call at the top of every worker loop iteration.
-        llm_history.resolveStaleLoadingToolResults(allocator, db, copy_session_id) catch |err| {
-            logger.warnFmt(
-                "[CHECKPOINT] resolveStaleLoadingToolResults failed session_id={s} err={s} (continuing — existing placeholders may cause 'Invalid function ID' on next LLM call)",
-                .{ copy_session_id, @errorName(err) },
-            );
-        };
+        // llm_history.resolveStaleLoadingToolResults(allocator, db, copy_session_id) catch |err| {
+        //     logger.warnFmt(
+        //         "[CHECKPOINT] resolveStaleLoadingToolResults failed session_id={s} err={s} (continuing — existing placeholders may cause 'Invalid function ID' on next LLM call)",
+        //         .{ copy_session_id, @errorName(err) },
+        //     );
+        // };
 
         const is_auto_retry_until_stop: bool = blk: {
             var flag_rows = db.query(allocator, "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{copy_session_id}) catch break :blk false;
@@ -635,7 +635,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     }
                 }
 
-                try insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
+                _ = try insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
                     .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     .session_id = copy_session_id,
                     .model = effective_model,
@@ -758,7 +758,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     \\[Agent Nalar System info] unattended-mode soft-bail after {} consecutive retries.
                     \\Reason for last retry: {s} (source: {s}). The session keeps running.
                 , .{ retry_count, reason_error, reason_source }) catch "unattended soft-bail snapshot";
-                try insertLLMHistories(.{
+                _ = try insertLLMHistories(.{
                     .allocator = allocator,
                     .io = io,
                     .db = db,
@@ -807,7 +807,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // its next turn. Mirror the pattern the outer catch uses for generic
             // errors so the message shape is consistent.
 
-            try insertLLMHistories(.{
+            _ = try insertLLMHistories(.{
                 .allocator = allocator,
                 .io = io,
                 .db = db,
@@ -1001,7 +1001,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     "[CHECKPOINT] finish_reason=stop session_id={s} loop_counter={d} content_len={d}",
                     .{ copy_session_id, loop_counter, if (res_dynamic_agent.content) |c| c.len else 0 },
                 );
-                try insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
+                _ = try insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
                     .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     .session_id = copy_session_id,
                     .model = effective_model,
@@ -1270,7 +1270,7 @@ fn saveRetryAttemptMessage(
 
     logger.errFmt("Retry {d}/{d}: {s} ({s}). Retrying in {d}ms.", .{ attempt, max_attempts, error_name, source, delay_ms });
 
-    try insertLLMHistories(.{
+    _ = try insertLLMHistories(.{
         .allocator = allocator,
         .io = io,
         .db = db,

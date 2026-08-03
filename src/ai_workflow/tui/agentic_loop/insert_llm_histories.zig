@@ -32,7 +32,7 @@ pub const InsertLLMHistoriesInput = struct {
 
 pub fn inserLLMHistories(
     obj: InsertLLMHistoriesInput,
-) !void {
+) ![]const u8 {
     const allocator = obj.allocator;
     const db = obj.db;
     const logger = obj.logger;
@@ -57,7 +57,7 @@ pub fn inserLLMHistories(
     // stored the raw nanosecond string AND never set `created_iso`,
     // so every row inserted via this path had NULL `created_iso` AND
     // any future fix‑up would have produced year 58,507 for them.
-    const id =try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+    const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(id);
     const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(created_at);
@@ -67,7 +67,7 @@ pub fn inserLLMHistories(
     // returns the current UTC time as ISO — semantically the same
     // as `created_at_us`/`now_ns` since both are generated from the
     // same `now_ns` source a few lines above.
-    const created_iso = try helpers.currentTimeIsoLocal(allocator,io);
+    const created_iso = try helpers.currentTimeIsoLocal(allocator, io);
     defer allocator.free(created_iso);
 
     const contentStr = input.response_content;
@@ -225,6 +225,8 @@ pub fn inserLLMHistories(
             };
         }
     }
+
+    return allocator.dupe(u8, id);
 }
 
 /// Get all skills loaded for a session
@@ -368,7 +370,7 @@ test "inserLLMHistories: inserts exactly one row into llm_history for the given 
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -379,9 +381,7 @@ test "inserLLMHistories: inserts exactly one row into llm_history for the given 
         .entity = makeEntity(),
     });
 
-    var q = try s.db.query(testing.allocator,
-        "SELECT COUNT(*) FROM llm_history WHERE session_id = 's1'",
-        &.{});
+    var q = try s.db.query(testing.allocator, "SELECT COUNT(*) FROM llm_history WHERE session_id = 's1'", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
@@ -398,7 +398,7 @@ test "inserLLMHistories: inserted row carries the user-supplied response_content
     entity.role = "assistant";
     entity.finish_reason = "stop";
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -409,9 +409,7 @@ test "inserLLMHistories: inserted row carries the user-supplied response_content
         .entity = entity,
     });
 
-    var q = try s.db.query(testing.allocator,
-        "SELECT response_content, role, finish_reason FROM llm_history WHERE session_id = 's1'",
-        &.{});
+    var q = try s.db.query(testing.allocator, "SELECT response_content, role, finish_reason FROM llm_history WHERE session_id = 's1'", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
@@ -425,11 +423,9 @@ test "inserLLMHistories: updates sessions.cwd when a matching session row exists
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try s.db.exec(testing.allocator,
-        "INSERT INTO sessions (id, cwd) VALUES ('s1', '/old/dir')",
-        &.{});
+    try s.db.exec(testing.allocator, "INSERT INTO sessions (id, cwd) VALUES ('s1', '/old/dir')", &.{});
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -454,7 +450,7 @@ test "inserLLMHistories: UPDATE sessions is a no-op when the session row does no
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -484,7 +480,7 @@ test "inserLLMHistories: stores is_input, is_output, is_thinking as 0/1" {
     entity.loop_index = 3;
     entity.temperature = 0.7;
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -495,9 +491,7 @@ test "inserLLMHistories: stores is_input, is_output, is_thinking as 0/1" {
         .entity = entity,
     });
 
-    var q = try s.db.query(testing.allocator,
-        "SELECT is_input, is_output, is_thinking, loop_index, temperature FROM llm_history",
-        &.{});
+    var q = try s.db.query(testing.allocator, "SELECT is_input, is_output, is_thinking, loop_index, temperature FROM llm_history", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
@@ -518,7 +512,7 @@ test "inserLLMHistories: stores prompt/completion/total tokens" {
     entity.completion_tokens = 50;
     entity.total_tokens = 150;
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -529,9 +523,7 @@ test "inserLLMHistories: stores prompt/completion/total tokens" {
         .entity = entity,
     });
 
-    var q = try s.db.query(testing.allocator,
-        "SELECT prompt_tokens, completion_tokens, total_tokens FROM llm_history",
-        &.{});
+    var q = try s.db.query(testing.allocator, "SELECT prompt_tokens, completion_tokens, total_tokens FROM llm_history", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
@@ -548,7 +540,7 @@ test "inserLLMHistories: stores reasoning_content when present (nullable column)
     var entity = makeEntity();
     entity.reasoning_content = "step-by-step reasoning";
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -559,9 +551,7 @@ test "inserLLMHistories: stores reasoning_content when present (nullable column)
         .entity = entity,
     });
 
-    var q = try s.db.query(testing.allocator,
-        "SELECT reasoning_content FROM llm_history",
-        &.{});
+    var q = try s.db.query(testing.allocator, "SELECT reasoning_content FROM llm_history", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
@@ -576,7 +566,7 @@ test "inserLLMHistories: stores empty string for null reasoning_content" {
     // entity.reasoning_content = null (default), is_feed_to_llm = false
     // → the implementation passes '' as the reasoning_content arg,
     // so the column holds '' not NULL. Document that contract.
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -587,9 +577,7 @@ test "inserLLMHistories: stores empty string for null reasoning_content" {
         .entity = makeEntity(),
     });
 
-    var q = try s.db.query(testing.allocator,
-        "SELECT reasoning_content, is_feed_to_llm FROM llm_history",
-        &.{});
+    var q = try s.db.query(testing.allocator, "SELECT reasoning_content, is_feed_to_llm FROM llm_history", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
@@ -606,7 +594,7 @@ test "inserLLMHistories: is_feed_to_llm=false is stored as '0'" {
     var entity = makeEntity();
     entity.is_feed_to_llm = false;
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -617,9 +605,7 @@ test "inserLLMHistories: is_feed_to_llm=false is stored as '0'" {
         .entity = entity,
     });
 
-    var q = try s.db.query(testing.allocator,
-        "SELECT is_feed_to_llm FROM llm_history",
-        &.{});
+    var q = try s.db.query(testing.allocator, "SELECT is_feed_to_llm FROM llm_history", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
@@ -650,7 +636,7 @@ test "inserLLMHistories: joins multiple image_urls with '||' delimiter" {
     defer testing.allocator.free(entity.image_urls.?);
     defer for (entity.image_urls.?) |u| testing.allocator.free(u);
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -661,9 +647,7 @@ test "inserLLMHistories: joins multiple image_urls with '||' delimiter" {
         .entity = entity,
     });
 
-    var q = try s.db.query(testing.allocator,
-        "SELECT image_url FROM llm_history",
-        &.{});
+    var q = try s.db.query(testing.allocator, "SELECT image_url FROM llm_history", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
@@ -677,7 +661,7 @@ test "inserLLMHistories: stores empty image_url when image_urls is null" {
 
     // entity.image_urls = null → the implementation writes "" (no rows
     // are added to the combined buffer). Document that contract.
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -688,9 +672,7 @@ test "inserLLMHistories: stores empty image_url when image_urls is null" {
         .entity = makeEntity(),
     });
 
-    var q = try s.db.query(testing.allocator,
-        "SELECT image_url FROM llm_history",
-        &.{});
+    var q = try s.db.query(testing.allocator, "SELECT image_url FROM llm_history", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
@@ -705,7 +687,7 @@ test "inserLLMHistories: is_emit_sse=true with event_bus=null is a safe no-op fo
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -716,9 +698,7 @@ test "inserLLMHistories: is_emit_sse=true with event_bus=null is a safe no-op fo
         .entity = makeEntity(),
     });
 
-    var q = try s.db.query(testing.allocator,
-        "SELECT 1 FROM llm_history WHERE session_id = 's1'",
-        &.{});
+    var q = try s.db.query(testing.allocator, "SELECT 1 FROM llm_history WHERE session_id = 's1'", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
@@ -729,7 +709,7 @@ test "inserLLMHistories: is_emit_sse=false short-circuits before any event_bus a
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -740,9 +720,7 @@ test "inserLLMHistories: is_emit_sse=false short-circuits before any event_bus a
         .entity = makeEntity(),
     });
 
-    var q = try s.db.query(testing.allocator,
-        "SELECT 1 FROM llm_history WHERE session_id = 's1'",
-        &.{});
+    var q = try s.db.query(testing.allocator, "SELECT 1 FROM llm_history WHERE session_id = 's1'", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
@@ -764,7 +742,7 @@ test "inserLLMHistories: is_skip_db=true inserts ZERO rows into llm_history" {
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -776,9 +754,7 @@ test "inserLLMHistories: is_skip_db=true inserts ZERO rows into llm_history" {
         .is_skip_db = true,
     });
 
-    var q = try s.db.query(testing.allocator,
-        "SELECT COUNT(*) FROM llm_history WHERE session_id = 's1'",
-        &.{});
+    var q = try s.db.query(testing.allocator, "SELECT COUNT(*) FROM llm_history WHERE session_id = 's1'", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
@@ -790,11 +766,9 @@ test "inserLLMHistories: is_skip_db=true leaves sessions.cwd untouched even when
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try s.db.exec(testing.allocator,
-        "INSERT INTO sessions (id, cwd) VALUES ('s1', '/original/dir')",
-        &.{});
+    try s.db.exec(testing.allocator, "INSERT INTO sessions (id, cwd) VALUES ('s1', '/original/dir')", &.{});
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -806,9 +780,7 @@ test "inserLLMHistories: is_skip_db=true leaves sessions.cwd untouched even when
         .is_skip_db = true,
     });
 
-    var q = try s.db.query(testing.allocator,
-        "SELECT cwd FROM sessions WHERE id = 's1'",
-        &.{});
+    var q = try s.db.query(testing.allocator, "SELECT cwd FROM sessions WHERE id = 's1'", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.SessionRowMissing;
     defer row.deinit(testing.allocator);
@@ -826,7 +798,7 @@ test "inserLLMHistories: is_skip_db=false (default) preserves the existing DB-wr
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -838,9 +810,7 @@ test "inserLLMHistories: is_skip_db=false (default) preserves the existing DB-wr
         .is_skip_db = false,
     });
 
-    var q = try s.db.query(testing.allocator,
-        "SELECT COUNT(*) FROM llm_history WHERE session_id = 's1'",
-        &.{});
+    var q = try s.db.query(testing.allocator, "SELECT COUNT(*) FROM llm_history WHERE session_id = 's1'", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
