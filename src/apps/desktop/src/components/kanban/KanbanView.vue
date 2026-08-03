@@ -106,33 +106,171 @@ const effectiveItemId = computed(() => props.itemId || props.item.id)
 // per-column fetch skips itself if columnPagination is already
 // populated (the user navigated back to a kanban whose state we
 // already have — re-fetching is wasteful and would flash).
+//
+// FIX (kanban-sort-independence, task_1785730557641, 2026-08-06,
+// onmount single-fetch): the initial mount is a SINGLE function
+// that:
+//   1. parses the URL's `?sorts=` (once),
+//   2. mirrors the URL sorts into the in-memory `columnSorts`
+//      map (so the watcher doesn't re-write the URL or re-fire
+//      any fetch — the URL is already correct),
+//   3. calls `setSortMode` on each column for visual state
+//      consistency (the column's sortBy/direction refs match
+//      the URL's sorts — matches the URL),
+//   4. loads columns,
+//   5. fires per-column fetches with the URL sort applied to
+//      EACH column that has a non-default URL entry. Columns
+//      NOT mentioned in the URL are skipped (user must click
+//      sort on them to load data). This avoids the duplicate
+//      call the previous code made (one default-sort fetch +
+//      one URL-sort fetch per column mentioned in URL).
+//
+// Fetch plan:
+//   - URL has non-default entries → fetch ONLY those columns
+//     with URL sort.
+//   - URL has ONLY default entries (or NO entries) AND there
+//     are unpaginated columns → fetch all unpaginated columns
+//     with default sort.
+//   - URL has only default entries AND no unpaginated columns
+//     → 0 fetches (no-op — default sort matches what the user
+//     would get anyway).
+//   - URL has only default entries AND unpaginated columns
+//     exist → fetch all unpaginated columns with default sort
+//     (the URL's default entries are visual-only; the columns
+//     still need their first-page data).
+//
+// The old code fired per-column fetches for ALL unpaginated
+// columns even when the URL had sort entries for a subset —
+// duplicate calls that the user complained about ("double
+// called same endpoint on kanban view, when mounted and when
+// there's a querysort").
 const loadColumnsAndTasks = async () => {
   if (!props.workspaceId || !effectiveItemId.value) return
   const wsId = props.workspaceId
   const itemId = effectiveItemId.value
-  // Step 1: load columns (needed for column ids). This is the
-  // existing behaviour — restores after column add/delete/move.
+
+  // Step 1: parse the URL's sorts (defensive — route/router may
+  // be null in tests that don't mock vue-router).
+  const routeObj = (() => {
+    try { return route } catch { return null }
+  })()
+  const sortsRaw = routeObj
+    ? (routeObj.query?.sorts as string | undefined)
+    : undefined
+  const urlEntries = sortsRaw ? parseSortsParam(sortsRaw) : []
+  const nonDefaultUrlEntries = urlEntries.filter(
+    (e) => !(e.sortBy === 'position' && e.direction === 'asc'),
+  )
+
+  // Step 2: mirror URL sorts into columnSorts (drives the
+  // watcher's URL write — no-op since the URL already matches,
+  // no fetch). Also fires the column's local setSortMode on
+  // the next tick so the UI's "active sort" highlight matches.
+  if (urlEntries.length > 0) {
+    const next: Record<string, SortEntry> = {}
+    for (const entry of urlEntries) {
+      next[entry.columnId] = entry
+    }
+    columnSorts.value = next
+    void nextTick(() => {
+      for (const entry of urlEntries) {
+        const col = columnRefs.value[entry.columnId] as
+          | { setSortMode?: (s: string, d: string) => void }
+          | null
+          | undefined
+        if (col && typeof col.setSortMode === 'function') {
+          col.setSortMode(entry.sortBy, entry.direction)
+        }
+      }
+    })
+  }
+
+  // Step 3: load columns (always — even if the URL has only
+  // default entries, we still need the column list to render
+  // the board).
   await workspacesStore.fetchKanbanColumns(wsId, itemId)
-  // Step 2: fire per-column fetches for the first page. Fetches
-  // skip columns whose columnPagination is already populated
-  // (the user has visited this kanban before and the tasks are
-  // still fresh — no need to re-fetch).
+
+  // Step 4: figure out the fetch plan.
   const item = workspacesStore.workspaces
     .find((ws) => ws.id === wsId)
     ?.items.find((it) => it.id === itemId)
   if (!item) return
   const cp = item.columnPagination ?? {}
   const needFetch = (item.kanban_columns ?? []).filter((col) => !cp[col.id])
-  if (needFetch.length === 0) return
+
+  let fetchPlan: Array<{
+    columnId: string
+    sortBy?: 'created_at' | 'updated_at' | 'name'
+    direction?: 'asc' | 'desc'
+  }>
+
+  if (urlEntries.length > 0) {
+    // URL has any sort entries (default or non-default) →
+    // fetch ONLY the URL-mentioned columns with their URL sort.
+    // Default entries are no-op (filtered out above via
+    // nonDefaultUrlEntries).
+    if (nonDefaultUrlEntries.length === 0) {
+      // All URL entries are default → no fetches at all. The
+      // board's columns load with empty data until the user
+      // explicitly picks a sort or navigates to a column.
+      return
+    }
+    fetchPlan = nonDefaultUrlEntries.map((e) => {
+      const apiSortBy = e.sortBy === 'position'
+        ? undefined
+        : e.sortBy as 'created_at' | 'updated_at' | 'name'
+      return { columnId: e.columnId, sortBy: apiSortBy, direction: e.direction }
+    })
+  } else if (needFetch.length === 0) {
+    // No URL entries AND no unpaginated columns → nothing to
+    // do. Single endpoint (fetchKanbanColumns) is already fired
+    // above; no per-column fetch needed.
+    return
+  } else {
+    // No URL entries AND unpaginated columns exist → fetch all
+    // unpaginated columns with default sort. This is the
+    // "first-time visit" path (no URL sort history).
+    fetchPlan = needFetch.map((col) => ({ columnId: col.id }))
+  }
+
+  // Step 5: fire per-column fetches in parallel.
   await Promise.all(
-    needFetch.map((col) =>
-      workspacesStore.fetchKanbanTasks(wsId, itemId, col.id, 10),
+    fetchPlan.map((p) =>
+      workspacesStore.fetchKanbanTasks(
+        wsId,
+        itemId,
+        p.columnId,
+        10,
+        undefined, // cursor — page 1
+        undefined, // q — no search filter
+        p.sortBy,
+        p.direction,
+      ),
     ),
   )
 }
 
+// Single onMounted hook (kanban-onmount-single-fetch, task_1785730557641,
+// 2026-08-06). The previous code had TWO onMounted hooks:
+//   (a) loadColumnsAndTasks — fetches columns + per-column tasks,
+//   (b) URL restore — parsed sorts, updated columnSorts, called
+//       setSortMode.
+// Both ran on mount and (b) re-fired per-column fetches when the
+// URL had entries — the "double called same endpoint" the user
+// reported. Merged into ONE function (loadColumnsAndTasks above)
+// that handles columns + URL sort-aware fetches + URL restore in
+// a single pass. ONE endpoint per column on mount.
 onMounted(loadColumnsAndTasks)
-watch(() => [props.workspaceId, effectiveItemId.value], loadColumnsAndTasks)
+
+// Re-run when the user navigates to a different kanban
+// (workspaceId or itemId change). The URL restore logic above
+// also re-fires because the URL query carries over.
+watch(
+  () => [props.workspaceId, effectiveItemId.value],
+  () => {
+    loadColumnsAndTasks()
+  },
+)
 
 // ─── Horizontal scroll position preservation ──────────────────────────
 //
@@ -326,103 +464,13 @@ const setColumnRef = (columnId: string) => (el: unknown) => {
   if (el) columnRefs.value[columnId] = el
 }
 
-// On mount: parse the URL's sorts param and apply each entry to
-// its column via setSortMode. The KanbanColumn's watcher then
-// re-emits the change, populating columnSorts via the
-// handleColumnSortChange path below.
-//
-// IMPORTANT: we ALSO fire fetchKanbanTasks DIRECTLY (not via the
-// columnSorts watcher chain) with the restored sort. The
-// workspacesStore's SSE handler ALSO fires an initial fetch with
-// the default sort ('updated_at desc') on mount — this races with
-// our restore. By firing our fetch with the restored sort
-// BEFORE the SSE handler's first re-fetch lands, the user sees
-// the right order on initial render. The column's setSortMode
-// triggers the visual re-sort client-side regardless.
-//
-// Guarded: tests that don't mock vue-router (e.g. legacy
-// KanbanView.createAndRun.spec.ts) call this component without
-// useRouter/useRoute setup. The route/router are null in that
-// case; skip the URL restore gracefully.
-onMounted(() => {
-  const routeObj = (() => {
-    try {
-      return route
-    } catch {
-      return null
-    }
-  })()
-  if (!routeObj) return
-  const sortsRaw = routeObj.query?.sorts as string | undefined
-  if (!sortsRaw) return
-  const entries = parseSortsParam(sortsRaw)
-  // Mirror into columnSorts immediately — no need to wait for
-  // column refs to populate. The watcher on columnSorts will
-  // write the URL (no-op since it's already correct) and trigger
-  // a debounced fetch, but we ALSO fire the fetch directly so it
-  // happens NOW (before the SSE handler's default-sort fetch
-  // lands).
-  const next: Record<string, SortEntry> = {}
-  for (const entry of entries) {
-    next[entry.columnId] = entry
-  }
-  columnSorts.value = next
-
-  // Wait for the next tick so the column refs are populated, then
-  // call setSortMode on each column for visual consistency.
-  void nextTick(() => {
-    for (const entry of entries) {
-      const col = columnRefs.value[entry.columnId] as
-        | { setSortMode?: (s: string, d: string) => void }
-        | null
-        | undefined
-      if (col && typeof col.setSortMode === 'function') {
-        col.setSortMode(entry.sortBy, entry.direction)
-      }
-    }
-  })
-
-  // Fire the fetch per-column for the restored sorts (URL restore's
-  // "show me the board as the user left it" path). Each column gets
-  // ITS OWN sortBy/direction. The caller is responsible for any
-  // columns NOT in the URL — those already received a default-sort
-  // fetch from the columns-load path (the SSE handler's mount-time
-  // re-fetch, see kanbanSse.ts).
-  //
-  // This is the "only the changed column's endpoint is called" path:
-  // when the URL has sorts for col_a only, col_a gets ONE fetch with
-  // its own sort. Other columns are left alone (their data is what
-  // it was).
-  //
-  // Default sort (position+asc) is a no-op — the URL probably
-  // contains it because the user clicked "Manual" earlier; we
-  // don't need to re-fetch because the initial mount's default-sort
-  // fetch already populated the column.
-  if (entries.length > 0) {
-    for (const entry of entries) {
-      if (entry.sortBy === 'position' && entry.direction === 'asc') {
-        // Default sort — no fetch (already loaded with default).
-        continue
-      }
-      const apiSortBy = entry.sortBy === 'position'
-        ? undefined
-        : entry.sortBy as 'created_at' | 'updated_at' | 'name'
-      void workspacesStore.fetchKanbanTasks(
-        props.workspaceId,
-        effectiveItemId.value,
-        entry.columnId,
-        10,
-        undefined, // cursor — reset to page 1 of the new sort
-        undefined, // q — no search filter
-        apiSortBy,
-        entry.direction,
-      )
-    }
-  }
-  // (else: no sorts URL — caller already handles the initial fetch
-  //  via the SSE handler's mount-time flow + KanbanView.onMount's
-  //  earlier fetchKanbanColumns step.)
-})
+// On mount: the URL restore (sorts parsing, columnSorts mirror,
+// setSortMode) is handled INSIDE loadColumnsAndTasks above — see
+// Step 1 + Step 2. No separate onMounted needed. The user
+// requested "merge the two onMounted into one" (kanban-
+// onmount-single-fetch plan, task_1785730557641, 2026-08-06) to
+// eliminate the duplicate per-column fetches the previous code
+// made (one from loadColumnsAndTasks + one from URL restore).
 
 // Watcher on columnSorts changes → URL write only.
 // (Per-column sort independence, kanban-sort-independence, 2026-08-06,
