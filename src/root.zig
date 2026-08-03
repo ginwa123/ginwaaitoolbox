@@ -15,7 +15,6 @@ pub fn setPanicLogPath(path: []const u8) void {
 }
 
 /// Panic handler that logs to file and notifies SSE clients
-
 pub const std_options: std.Options = .{
     .http_disable_tls = false,
 };
@@ -40,11 +39,20 @@ pub fn setSingleton(ctx: *ContextIPCTui) !void {
 /// the swap-and-promote sequence inside `setLlmConfig`.
 pub const LlmConfigHolder = struct {
     current: *config.LlmConfig,
-    /// Previous pointer, kept alive until the next swap (or shutdown) so
-    /// any in-flight workflow that captured the old `*const LlmConfig` does
-    /// not dereference freed memory. `null` until the first live reload.
     previous: ?*const config.LlmConfig = null,
     lock: std.Io.Mutex = .init,
+};
+
+pub const EmitRunAgentInput = struct {
+    session_id: []const u8,
+    session_name: []const u8,
+    queue_message: []const u8,
+    cwd: []const u8,
+    body_message: []const u8,
+    allowed_tools: []const u8,
+    image_urls: []const u8,
+    selected_profile_model: []const u8,
+    is_auto_retry_until_stop: []const u8,
 };
 
 pub const ContextIPCTui = struct {
@@ -66,6 +74,110 @@ pub const ContextIPCTui = struct {
     group_emit_session_create: std.Io.Group,
 
     static_dir_path: ?[]const u8 = null,
+
+    pub fn emit_run_agent(self: *ContextIPCTui, obj: EmitRunAgentInput) !void {
+        try self.group_emit_session_create.concurrent(
+            self.io,
+            struct {
+                fn run(
+                    di_inner: *ContextIPCTui,
+                    sid: []const u8,
+                    sname: []const u8,
+                    qmsg: []const u8,
+                    cwd: []const u8,
+                    bmsg: []const u8,
+                    atools: []const u8,
+                    iurls: []const u8,
+                    spm: []const u8,
+                    iaur: []const u8,
+                ) void {
+                    var arena_allocator = std.heap.ArenaAllocator.init(di_inner.allocator);
+                    defer arena_allocator.deinit();
+                    const local = arena_allocator.allocator();
+
+                    // --- Heap-allocate data for the async task (task owns these, frees them) ---
+                    const copy_session_id = local.dupe(u8, sid) catch unreachable;
+                    const copy_session_name = local.dupe(u8, sname) catch unreachable;
+                    const copy_queue_message = local.dupe(u8, qmsg) catch unreachable;
+                    const copy_cwd = local.dupe(u8, cwd) catch unreachable;
+                    const copy_body_message = local.dupe(u8, bmsg) catch unreachable;
+                    const copy_allowed_tools = local.dupe(u8, atools) catch unreachable;
+                    const copy_image_urls = local.dupe(u8, iurls) catch unreachable;
+                    const copy_selected_profile_model = local.dupe(u8, spm) catch unreachable;
+                    const copy_is_auto_retry_until_stop = local.dupe(u8, iaur) catch unreachable;
+
+                    const event_buss = di_inner.event_bus;
+
+                    di_inner.insert_worker(local, .{
+                        .session_id = copy_session_id,
+                        .session_name = copy_session_name,
+                        .queue_message = copy_queue_message,
+                        .cwd = copy_cwd,
+                        .body_message = copy_body_message,
+                        .allowed_tools = copy_allowed_tools,
+                        .image_urls = copy_image_urls,
+                        .selected_profile_model = copy_selected_profile_model,
+                        .is_auto_retry_until_stop = copy_is_auto_retry_until_stop,
+                    }) catch unreachable;
+
+                    event_buss.emit(agentic_loop_mod.RunParamsNew, "ai_worker_flow", .{
+                        .parent_session_id = copy_session_id,
+                        .session_id = copy_session_id,
+                        .message = copy_queue_message,
+                        .cwd = copy_cwd,
+                        .body = copy_body_message,
+                        .allowed_tools = copy_allowed_tools,
+                        .is_sub_agent = false,
+                        .image_urls = copy_image_urls,
+                        .selected_profile_model = copy_selected_profile_model,
+                        .is_auto_retry_until_stop = copy_is_auto_retry_until_stop,
+                    });
+                }
+            }.run,
+            .{ self, obj.session_id, obj.session_name, obj.queue_message, obj.cwd, obj.body_message, obj.allowed_tools, obj.image_urls, obj.selected_profile_model, obj.is_auto_retry_until_stop },
+        );
+    }
+
+    fn insert_worker(self: *ContextIPCTui, allocator: std.mem.Allocator, parsed: EmitRunAgentInput) !void {
+        const session_id = parsed.session_id;
+        const session_name = parsed.session_name;
+        const effective_cwd = parsed.cwd;
+        const effective_profile = parsed.selected_profile_model;
+        const effective_auto_retry: []const u8 = blk: {
+            if (std.mem.eql(u8, parsed.is_auto_retry_until_stop, "1")) break :blk "1";
+            break :blk "0";
+        };
+
+        const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop) " ++
+            "VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)";
+        const copy_session_name = try allocator.dupe(u8, session_name);
+        defer allocator.free(copy_session_name);
+        const copy_cwd = try allocator.dupe(u8, effective_cwd);
+        defer allocator.free(copy_cwd);
+        const copy_session_id = try allocator.dupe(u8, session_id);
+        defer allocator.free(copy_session_id);
+        const copy_profile = if (effective_profile.len > 0) try allocator.dupe(u8, effective_profile) else "";
+        defer if (copy_profile.len > 0) allocator.free(copy_profile);
+        try self.db.exec(
+            allocator,
+            session_sql,
+            &.{ session_id, copy_session_name, copy_cwd, copy_profile, effective_auto_retry },
+        );
+
+        // Broadcast session created event
+        try agentic_loop_mod.on_event_sent.onEventSendSessions(allocator, .{
+            .action = "created",
+            .id = session_id,
+            .name = session_name,
+            .status = "active",
+            .cwd = effective_cwd,
+            .created_at = "",
+            .updated_at = "",
+            .selected_profile_model = effective_profile,
+            .is_auto_retry_until_stop = effective_auto_retry,
+            .last_finish_reason = "",
+        });
+    }
 };
 
 /// Hot-path read. Returns the currently-installed `LlmConfig` pointer.

@@ -86,7 +86,6 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
         });
     };
 
-
     const data = try http_response.makeSessionCreateResponse(allocator, .{
         .id = usecase.id,
         .name = usecase.name,
@@ -143,52 +142,17 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
 
     try insertWorker(alloc, sqlite_db, parsed, image_urls);
 
-    try di.group_emit_session_create.concurrent(
-        io,
-        struct {
-            fn run(
-                di_inner: *nalarcore.ContextIPCTui,
-                sid: []const u8,
-                qmsg: []const u8,
-                cwd: []const u8,
-                bmsg: []const u8,
-                atools: []const u8,
-                iurls: []const u8,
-                spm: []const u8,
-                iaur: []const u8,
-            ) void {
-                var arena_allocator = std.heap.ArenaAllocator.init(di_inner.allocator);
-                defer arena_allocator.deinit();
-                const local = arena_allocator.allocator();
-
-                // --- Heap-allocate data for the async task (task owns these, frees them) ---
-                const copy_session_id =  local.dupe(u8, sid) catch unreachable;
-                const copy_queue_message =  local.dupe(u8, qmsg) catch unreachable;
-                const copy_cwd =  local.dupe(u8, cwd) catch unreachable;
-                const copy_body_message =  local.dupe(u8, bmsg) catch unreachable;
-                const copy_allowed_tools = local.dupe(u8, atools) catch unreachable;
-                const copy_image_urls = local.dupe(u8, iurls) catch unreachable;
-                const copy_selected_profile_model = local.dupe(u8, spm) catch unreachable;
-                const copy_is_auto_retry_until_stop = local.dupe(u8, iaur) catch unreachable;
-
-
-                const event_bus = di_inner.event_bus;
-                event_bus.emit(ai_workflow.ai_workflow.RunParamsNew, "ai_worker_flow", .{
-                    .parent_session_id = copy_session_id,
-                    .session_id = copy_session_id,
-                    .message = copy_queue_message,
-                    .cwd = copy_cwd,
-                    .body = copy_body_message,
-                    .allowed_tools = copy_allowed_tools,
-                    .is_sub_agent = false,
-                    .image_urls = copy_image_urls,
-                    .selected_profile_model = copy_selected_profile_model,
-                    .is_auto_retry_until_stop = copy_is_auto_retry_until_stop,
-                });
-            }
-        }.run,
-        .{ di, session_id, queue_message, effective_cwd, body_message, allowed_tools, image_urls, selected_profile_model, is_auto_retry_until_stop },
-    );
+    try di.emit_run_agent(.{
+        .session_id = session_id,
+        .session_name = session_name,
+        .queue_message = queue_message,
+        .cwd = effective_cwd,
+        .body_message = body_message,
+        .allowed_tools = allowed_tools,
+        .image_urls = image_urls,
+        .selected_profile_model = selected_profile_model,
+        .is_auto_retry_until_stop = is_auto_retry_until_stop,
+    });
 
     ai_workflow.llm_history.updateTaskLastHumanTouchedAt(
         alloc,
@@ -201,7 +165,6 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
             .{@errorName(stamp_err)},
         );
     };
-
 
     return ResponseSession{
         .id = session_id,
