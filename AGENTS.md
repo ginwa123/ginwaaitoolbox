@@ -478,6 +478,38 @@ The middle branch worked, but the first branch — `fetch ONLY URL-mentioned col
 
 **Branch / commit.** `main @ a357903a`. Plan: `docs/superpowers/plans/2026-08-06-kanban-onmount-single-fetch.md`.
 
+### 2026-08-06: Better URL browser — APPEND on task click, not REPLACE (PR #178, commit `bb2b9bd4`)
+
+**Symptom (user report, task_1785771871817).** *"when click task in kanban, no need replace url, but append the url browser"*. Clicking a task card in the kanban REPLACED the URL from `?view=workspace&workspaceId=W&itemId=K&sorts=col_a:updated_at:desc,col_b:…` to `?view=task&task=X&itemId=K` — dropping the kanban + per-column sort context AND clobbering the browser history so the back button skipped the kanban URL.
+
+**Fix.** `Sidebar.handleSelectTask` now spreads the current `route.query`'s breadcrumb fields (`workspaceId`, `itemId`, `pageId`, `sorts`) into the new query, then overrides `view: 'task'` / `task: taskId` / `itemId: parentItemId` on the spread. Uses `router.push` instead of `router.replace`. New helper `pickBreadcrumbFromQuery` extracts only the string-typed scalars (vue-router's `LocationQuery` values are `string | null | (string|null)[]`; arrays/nulls are dropped).
+
+**Behavioural matrix.**
+- From a kanban URL: task URL preserves `workspaceId`, `itemId`, `sorts`
+- From a design URL: task URL preserves `workspaceId`, `itemId`, `pageId`
+- From a deep-link task URL: task URL stays lean (no orphan workspace context injected)
+- All paths use `router.push` (browser back works)
+
+**Why NOT also touch `handleCloseTaskView`?** It reads `activeWorkspaceId`/`activeWorkspaceItemId`/`activeDesignPageId` from the store + `savedSortsParam` snapshot, which mirror the URL. The close handler still works correctly because the store reflects the URL state.
+
+**Why NOT `router.back()` on close?** Would be more "browser-back-button-natural" but riskier — the user might have navigated away from the kanban between clicking the task and closing it; back would go to an unexpected page. Minimal change preserves `router.replace` on close.
+
+**Why NOT delete `savedSortsParam` snapshot?** It remains the close-restore fallback for older URL patterns that land on task without kanban context. URL is the primary path; snapshot is the safety net.
+
+**Verification.**
+- `bunx vitest run src/__tests__/sidebarHandleSelectTaskUrl.spec.ts` — 5/5 pass (new)
+- `bunx vitest run src/__tests__/AppLayout.sortUrlRoundTrip.spec.ts` — 2/2 pass (round-trip contract intact)
+- `bun run build` — vue-tsc clean
+- Full suite: 2038 pass / 19 fail; the 19 failures are pre-existing on `main` (same 6 files: `DesignView.undoHidden×5`, `DesignView.nudge clamp×1`, `DesignElement static contract×1`, `AppLayout.translateResize×1`, `AppLayout.urlPersist×7`, `AppLayout.memoriesGate×4`)
+
+**Plan / branch / commit.**
+- `docs/superpowers/plans/2026-08-06-better-url-browser.md`
+- `.nalar/memories/better-url-browser-append-on-task-click.md` (project memory with the URL-as-breadcrumb pattern)
+- Branch: `worktree/better-url-browser` @ `bb2b9bd4` (+ `f174dcbb` memory commit)
+- PR: #178
+
+**Lesson.** When a navigation feels "off" to the user (URL dropped, back button wrong), the URL is probably being treated as a **state identifier** when it should be a **breadcrumb**. Use `router.push` to navigate; spread the current context into the new query so refresh + back + share-link all work. Use `router.replace` only for rewriting the *current* state (e.g. closing a dialog). See `.nalar/memories/better-url-browser-append-on-task-click.md` for the canonical pattern.
+
 ### 2026-08-06: Kanban — merge the two onMounted hooks into one (single fetch per column on mount)
 
 **Symptom (user report, task_1785730557641).** *"theres a double called same endpoint on kanban view, when mounted and when thers a quertsort, its very complicated your code, to many code that call same api, mounted should only one in @/src/apps/desktop/src/components/kanban/KanbanView.vue"*. DevTools Network panel showed the SAME per-column fetch endpoint called twice on mount — once from `loadColumnsAndTasks`, once from a separate URL restore `onMounted`.
@@ -1662,6 +1694,45 @@ This is the original architecture from commit `77482f07`. The comparator deleted
 **Lesson.** When a user feedback comment ("i remove that and its become better") is acted on globally without checking per-column/per-instance independence, regression is silent. The user reported a single-column issue; the fix removed the per-column sort entirely. Tests like "renders cards in input order" (KanbanColumn.spec.ts) become the guard rail — if they fail to assert the per-column sort behaviour, the regression slips through.
 
 **Branch / commit.** `worktree/kanban-sort-independence` @ `911e6647`.
+
+### 2026-08-06: Kanban — per-column sort fetch (only the changed column's endpoint)
+
+**Symptom (user follow-up, task_1785730557641).** The previous fix restored per-column visual independence (frontend client-side re-sort + backend single-sort wire). But the wire shape STILL had every column receiving the same `sort_by` URL params on every sort change. User feedback:
+
+- *"when sort happen its should independece not all column use same sort by value, fix that code above"*
+- *"just make sure if i sort column a, only column a endpoint that called, other column a should not call endpoint"*
+
+**Root cause.** Two layers:
+1. The `watch(columnSorts, ...)` in `KanbanView.vue:427` took only the LATEST changed sort from `Object.values(columnSorts.value)` and applied it globally to a single `fetchKanbanTasksForAllColumns` call.
+2. `fetchKanbanTasksForAllColumns` (workspaces.ts:1302) loops over every column and calls `fetchKanbanTasks(col, sortBy, direction)` with the SAME `sortBy` / `direction` — wire-level fan-out regardless of which column changed.
+
+**Fix (surgical, per-column fetch).** `handleColumnSortChange` in `KanbanView.vue` now fires `fetchKanbanTasks(col, sortBy, direction)` for ONLY the clicked column, with that column's own sort. Other columns' data is untouched (it still matches their own last sort from a previous per-column fetch).
+
+**Wire shape now matches the user's intent:**
+- User picks "Name (Z→A)" on column A → ONLY `?sort_by=name&direction=desc&column_id=col_a` is called.
+- Column B's data is unchanged (still in its own last sort).
+- No more fan-out N parallel calls on every sort change.
+
+**Files.** 4 changed + 1 deleted:
+- `src/apps/desktop/src/components/kanban/KanbanColumn.vue` — removed `compareBySortMode` + the client-side `.sort()` (back to plain filter). `handleSortModalSelect` now always emits `sortChange` unconditionally on every menu click. `setSortMode` is a pure ref-mutator (no emit — the URL restore path fires the fetch directly in the onMount loop).
+- `src/apps/desktop/src/components/kanban/KanbanView.vue` — `handleColumnSortChange` fires `fetchKanbanTasks` for the changed column only. `watch(columnSorts, ...)` is URL-only (no fetch, no debounce). URL restore onMount loops over entries and fires per-column `fetchKanbanTasks` (default sort is `continue`d).
+- `src/apps/desktop/src/__tests__/KanbanView.sortByApi.spec.ts` — 7 new behavioural tests. The critical regression test: *"picking Created (oldest) on column A fires fetchKanbanTasks for col_a only (col_b is NOT called)"*.
+- `src/apps/desktop/src/__tests__/KanbanColumn.spec.ts` — restored the "renders cards in input order" assertion (client-side sort is gone; wire order is what the user sees).
+- `src/apps/desktop/src/__tests__/KanbanColumn.sortIndependence.spec.ts` — DELETED. The client-side comparator it tested is gone.
+
+**Verification.**
+- `bun run build` — vue-tsc clean.
+- `bunx vitest run src/__tests__/KanbanView.sortByApi.spec.ts` — 7/7 pass.
+- `bunx vitest run src/__tests__/KanbanColumn.spec.ts` — 19/19 pass.
+- `bunx vitest run` (full suite) — 2027 pass / 12 fail. The 12 are PRE-EXISTING on main (5 `DesignView.undoHidden`, 1 `DesignElement` static contract, 1 `DesignView.nudge clamp`, 1 `AppLayout.translateResize`, 4 `AppLayout.memoriesGate`). Zero regressions from this fix.
+
+**Lessons.**
+- **Network panel = wire shape, not behavior.** The user's initial complaint was about the Network panel showing the same `sort_by` on every column. The first take (per-column-sorts-map in the store) fixed the wire shape but still fired N parallel fetches. The user pushed back — they don't want OTHER columns' endpoints called at all. The take-2 fix removes the fan-out entirely.
+- **Per-column fetch is the right primitive.** The store already has `fetchKanbanTasks(columnId, sortBy, direction)`. Use it directly; the `fetchKanbanTasksForAllColumns` helper is for "all columns with the SAME sort" (initial mount, search, SSE) — not for per-column sort changes.
+- **Idempotent user actions should always emit.** The watcher-based emit only fired on value CHANGE. The menu click handler emits unconditionally — even when the user picks the same sort twice. Same sort twice should still refetch.
+- **`setSortMode` is a seam, not a side-effect channel.** It mutates refs but doesn't emit. The URL restore path uses it to set local state, then the onMount loop fires the fetch. Keeping the seam pure prevents double-fetch.
+
+**Branch.** `worktree/per-column-sort-watcher`.
 
 ### 2026-08-06: AI agent tools — `get_design_context` + `preview_design_page`
 
