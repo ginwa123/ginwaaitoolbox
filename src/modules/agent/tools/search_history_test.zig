@@ -546,3 +546,61 @@ test "execute_search_history: mode=text live_only and compacted_only both true r
     try testing.expect(std.mem.indexOf(u8, xml, "mutually exclusive") != null);
     try testing.expect(std.mem.indexOf(u8, xml, "<results>") == null);
 }
+
+// =============================================================================
+// Chunk 2 — tool_name filter
+// =============================================================================
+
+test "execute_search_history: mode=text tool_name=bash returns only bash rows" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    // 1 bash tool + 1 read_file tool + 1 user (no tool_name) — all match the query.
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, tool_name) " ++
+        "VALUES ('bash_h','s_J','tool','grep result for keyword', 'bash')", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, tool_name) " ++
+        "VALUES ('read_h','s_J','tool','file contents keyword', 'read_file')", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, tool_name) " ++
+        "VALUES ('user_h','s_J','user','keyword in user msg', '')", &.{});
+
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "text",
+        .query = "keyword",
+        .tool_name = "bash",
+    });
+    defer alloc.free(xml);
+
+    // Only the bash row is in the result.
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>bash_h</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>read_h</id>") == null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>user_h</id>") == null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<count>1</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<total_count>1</total_count>") != null);
+}
+
+test "execute_search_history: mode=session tool_name=read_file returns only read_file rows" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, tool_name) " ++
+        "VALUES ('bash_h','s_K','tool','bash result', 'bash')", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, tool_name) " ++
+        "VALUES ('read_h','s_K','tool','file result', 'read_file')", &.{});
+
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "session",
+        .session_id = "s_K",
+        .tool_name = "read_file",
+    });
+    defer alloc.free(xml);
+
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>read_h</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>bash_h</id>") == null);
+}
