@@ -397,6 +397,41 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Kanban — merge the two onMounted hooks into one (single fetch per column on mount)
+
+**Symptom (user report, task_1785730557641).** *"theres a double called same endpoint on kanban view, when mounted and when thers a quertsort, its very complicated your code, to many code that call same api, mounted should only one in @/src/apps/desktop/src/components/kanban/KanbanView.vue"*. DevTools Network panel showed the SAME per-column fetch endpoint called twice on mount — once from `loadColumnsAndTasks`, once from a separate URL restore `onMounted`.
+
+**Root cause.** KanbanView.vue had TWO onMounted hooks that BOTH fired per-column fetches when the URL had sort entries. The first fetched with default sort, the second re-fetched with the URL sort. The first was wasted work and the second looked like a duplicate call.
+
+**Fix (surgical frontend-only).** Merged the two `onMounted` into ONE `onMounted(loadColumnsAndTasks)`. The function now handles in one pass:
+1. URL sort parsing (was in onMounted #2).
+2. `columnSorts` mirror + `setSortMode` on each column for visual state.
+3. Columns fetch (always).
+4. Per-column tasks fetch (URL sort-aware, no duplication).
+
+URL fetch plan:
+- URL has non-default entries → fetch ONLY those columns with URL sort. Other columns are NOT loaded on mount (user must click to load — UX trade-off, see "Out of scope").
+- URL has only default entries (or no entries) AND no unpaginated columns → 0 fetches.
+- URL has no entries AND unpaginated columns exist → fetch all unpaginated columns with default sort (first-time visit).
+
+**Test fixture fix.** `mountKanbanView` now accepts `opts.item` so callers can pre-populate `columnPagination` without being overwritten by the helper's own `store.workspaces` assignment. The 3 click-handler tests pass the pre-populated item via the new opts; the URL restore tests pass a fresh item (empty `columnPagination`).
+
+**Files.**
+- `src/apps/desktop/src/components/kanban/KanbanView.vue` (single onMounted; URL-restore logic merged into loadColumnsAndTasks).
+- `src/apps/desktop/src/__tests__/KanbanView.sortByApi.spec.ts` (`mountKanbanView` opts.item).
+
+**Verification.**
+- `bun run build` clean.
+- `bunx vitest run src/__tests__/KanbanView.sortByApi.spec.ts` 7/7 pass.
+- `bunx vitest run src/__tests__/KanbanView src/__tests__/KanbanColumn` 111/111 pass.
+- Full suite: 19 failures remain — ALL pre-existing on main (AppLayout.urlPersist ×7 + DesignView ×6 + AppLayout.translateResize ×1 + AppLayout.memoriesGate ×4 + sse-client test isolation ×1). Zero regressions from this fix.
+
+**Out of scope.** UX change: when URL has non-default sort entries for SOME columns, the OTHER columns are NOT loaded on mount. User must click the column header to load. Previous code fetched all unpaginated columns regardless. The tests assert this behaviour (test 3 expects col_b's fetch count = 0 when URL only mentions col_a).
+
+**Branch / commit.** `worktree/kanban-onmount-single-fetch` @ `bc54e51a`, merged to main at `a5dcb686`.
+
+**Plan.** `docs/superpowers/plans/2026-08-06-kanban-onmount-single-fetch.md`.
+
 ### 2026-08-06: SSE kanban — mirror local task column on move/assign/unassign (no more duplicate after agent moves)
 
 **Symptom (user report, task_1785688388584).** Agent runs `kanban_move_task` to move a task from column A to column B. The frontend's `kanbanTask` SSE event triggers a `fetchKanbanTasks(colB)` refetch, which merges the fresh wire response on top of a local task whose `kanban_column_id` is still `'colA'` (nothing locally mirrored the move). The merge keeps the stale source copy AND adds the fresh dest copy — user sees the task in BOTH columns. After refresh, the duplicate disappears.
