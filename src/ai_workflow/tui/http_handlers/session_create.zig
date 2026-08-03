@@ -140,8 +140,6 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
     var is_auto_retry_until_stop: []const u8 = "";
     if (parsed.is_auto_retry_until_stop.len > 0) is_auto_retry_until_stop = parsed.is_auto_retry_until_stop;
 
-    try insertWorker(alloc, sqlite_db, parsed, image_urls);
-
     try di.emit_run_agent(.{
         .session_id = session_id,
         .session_name = session_name,
