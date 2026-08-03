@@ -739,14 +739,33 @@ const handleAddTaskPick = async (taskType: 'standard' | 'routine' | 'memory') =>
     })
     if (taskId) {
       workspacesStore.setActiveTask(taskId)
+      // NEW (better-url-browser-standard-ai, 2026-08-06, task
+      // task_1785786201882): the auto-create Standard Chat path used
+      // `router.replace`, which clobbered the workspace URL in the
+      // browser history. The user clicked "+ Standard Chat" from a
+      // workspace view, then back-buttoning skipped the workspace
+      // entirely — same UX problem that bit `handleSelectTask` (fixed
+      // in PR #178 / #179). Switch to `router.push` so the workspace
+      // URL stays in history; the user can back-button to return to
+      // the workspace view where they triggered the create.
+      //
       // NEW (add-workspace-id-params, 2026-08-06): include the
-      // workspaceId + itemId in the URL so the auto-created chat task
-      // carries the kanban / folder / design breadcrumb. Pre-fix the
-      // URL was just `?view=task&task=X` — sharing / refreshing lost
-      // the workspace context. The helper reads from the active store
-      // state set by `handleSelectItem` (which fired before the
-      // picker opened).
-      router.replace({
+      // workspaceId + itemId + pageId in the URL so the auto-created
+      // chat task carries the kanban / folder / design breadcrumb.
+      // Pre-fix the URL was just `?view=task&task=X` — sharing /
+      // refreshing lost the workspace context. The helper reads from
+      // the active store state set by `handleSelectItem` (which fired
+      // before the picker opened).
+      //
+      // NEW (better-url-browser, 2026-08-06): snapshot the URL's
+      // `sorts` into `savedSortsParam` so the close-restore fallback
+      // (handleCloseTaskView) can put it back when the user closes
+      // this chat. Same pattern as `handleSelectTask`.
+      const currentSorts = route.query?.sorts
+      if (typeof currentSorts === 'string' && currentSorts.length > 0) {
+        workspacesStore.savedSortsParam = currentSorts
+      }
+      router.push({
         path: '/app',
         query: buildTaskUrlQuery({
           taskId,
@@ -754,6 +773,7 @@ const handleAddTaskPick = async (taskType: 'standard' | 'routine' | 'memory') =>
           activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
           activeDesignPageId: workspacesStore.activeDesignPageId,
           activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
+          currentQuery: route.query,
         }),
       })
     }
@@ -1160,12 +1180,30 @@ const handleRunRoutine = async (
   // downstream cache hydration.
   if (result) {
     workspacesStore.setActiveTask(taskId)
-    // NEW (add-workspace-id-params, 2026-08-06): include workspaceId +
-    // itemId in the URL — the routine-run path previously wrote only
-    // `view`/`task`/`session`, dropping the kanban / folder breadcrumb.
-    // The helper reads from the active store state (the user clicked
-    // the routine from a kanban column, so `activeWorkspace` is set).
-    router.replace({
+    // NEW (better-url-browser-standard-ai, 2026-08-06, task
+    // task_1785786201882): switch from `router.replace` to
+    // `router.push` so the user can back-button from the routine
+    // run's chat view back to the workspace they triggered it
+    // from. Same UX rationale as `handleSelectTask` and
+    // `handleAddTaskPick` — only `close-*` paths should REPLACE
+    // (rewriting the current state).
+    //
+    // NEW (add-workspace-id-params, 2026-08-06): include workspaceId
+    // + itemId + pageId in the URL — the routine-run path previously
+    // wrote only `view`/`task`/`session`, dropping the kanban /
+    // folder breadcrumb. The helper reads from the active store
+    // state (the user clicked the routine from a kanban column, so
+    // `activeWorkspace` is set).
+    //
+    // NEW (better-url-browser, 2026-08-06): snapshot the URL's
+    // `sorts` into `savedSortsParam` so the close-restore fallback
+    // (handleCloseTaskView) can put it back when the user closes
+    // this routine run's chat. Same pattern as `handleSelectTask`.
+    const currentSorts = route.query?.sorts
+    if (typeof currentSorts === 'string' && currentSorts.length > 0) {
+      workspacesStore.savedSortsParam = currentSorts
+    }
+    router.push({
       path: '/app',
       query: buildTaskUrlQuery({
         taskId,
@@ -1174,6 +1212,7 @@ const handleRunRoutine = async (
         activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
         activeDesignPageId: workspacesStore.activeDesignPageId,
         activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
+        currentQuery: route.query,
       }),
     })
   }
