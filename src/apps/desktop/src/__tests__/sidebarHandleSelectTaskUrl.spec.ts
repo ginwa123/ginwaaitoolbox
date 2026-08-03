@@ -267,14 +267,19 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     wrapper.unmount()
   })
 
-  it('from a deep-link task URL, clicking another task does NOT inject orphan workspace context', async () => {
+  it('from a deep-link task URL, clicking another task DOES add workspaceId from the store (add-workspace-id-params, 2026-08-06)', async () => {
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'WS', items: [baseItem] },
     ] as any
     // The URL is a deep link — no workspaceId in route.query. The
-    // new URL must NOT inject workspace context that the user never
-    // had (no ?workspaceId=... would be appended).
+    // new URL MUST add workspaceId from the active store state
+    // (setActiveTask auto-discovers the parent item + workspace via
+    // workspacesStore.setActiveTask's parent-item lookup at
+    // workspaces.ts:3366). This addresses the user's report
+    // (task_1785774094183): task URLs were missing `workspaceId`
+    // and the user wanted it added so the URL bar shows the
+    // kanban / design context (share / refresh / back work).
     setRouteQuery({
       view: 'task',
       task: 'task_older',
@@ -290,8 +295,9 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     expect(pushArg.query.view).toBe('task')
     expect(pushArg.query.task).toBe(TASK_ID)
     expect(pushArg.query.itemId).toBe(ITEM_ID)
-    // No workspaceId was in the URL before — must not be appended.
-    expect(pushArg.query.workspaceId).toBeUndefined()
+    // NEW: workspaceId IS included (from the active store state
+    // auto-discovered by setActiveTask's parent-item lookup).
+    expect(pushArg.query.workspaceId).toBe(WS_ID)
     // No sorts was in the URL before — must not be appended.
     expect(pushArg.query.sorts).toBeUndefined()
 
@@ -320,6 +326,114 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     // handleCloseTaskView reads savedSortsParam and writes it back
     // into the workspace URL on close.
     expect(store.savedSortsParam).toBe('col_a:name:asc')
+
+    wrapper.unmount()
+  })
+
+  // ─── add-workspace-id-params plan (2026-08-06) ──────────────────
+  //
+  // The user reported (task_1785774094183): task URLs were missing
+  // `workspaceId`. These tests lock in the new contract: when the
+  // user clicks a task in kanban / design mode, the new task URL
+  // MUST include workspaceId (from the active store state).
+
+  it('writes workspaceId from the active store even when the URL breadcrumb lacks it (add-workspace-id-params, 2026-08-06)', async () => {
+    const store = useWorkspacesStore()
+    store.workspaces = [
+      { id: WS_ID, name: 'WS', items: [baseItem] },
+    ] as any
+    store.setActiveWorkspaceItem(ITEM_ID)
+    // Simulate a URL refresh that landed the user on a task view
+    // WITHOUT workspaceId in route.query — e.g. an older URL
+    // bookmark, or a code path that stripped workspaceId. The user
+    // wants the URL to be repaired with workspaceId once they click
+    // a task.
+    setRouteQuery({
+      view: 'task',
+      task: 'task_stale',
+      itemId: ITEM_ID,
+    })
+
+    const wrapper = mountSidebar()
+    const sidebar = wrapper.vm as any
+    sidebar.selectTask(TASK_ID)
+    await nextTick()
+
+    const pushArg = lastPushCall()
+    expect(pushArg.query.view).toBe('task')
+    expect(pushArg.query.task).toBe(TASK_ID)
+    expect(pushArg.query.itemId).toBe(ITEM_ID)
+    // NEW: workspaceId IS included (from the active store state
+    // set by `setActiveWorkspaceItem(ITEM_ID)` above).
+    expect(pushArg.query.workspaceId).toBe(WS_ID)
+
+    wrapper.unmount()
+  })
+
+  it('always writes workspaceId for a kanban click (user mental model: kanban-mode task URL)', async () => {
+    const store = useWorkspacesStore()
+    store.workspaces = [
+      { id: WS_ID, name: 'WS', items: [baseItem] },
+    ] as any
+    store.setActiveWorkspaceItem(ITEM_ID)
+    setRouteQuery({
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: ITEM_ID,
+      sorts: 'col_a:updated_at:desc',
+    })
+
+    const wrapper = mountSidebar()
+    const sidebar = wrapper.vm as any
+    sidebar.selectTask(TASK_ID)
+    await nextTick()
+
+    const pushArg = lastPushCall()
+    // The URL should include the kanban-mode breadcrumb:
+    //   ?view=task&task=X&workspaceId=W&itemId=K&sorts=S
+    expect(pushArg.query.view).toBe('task')
+    expect(pushArg.query.task).toBe(TASK_ID)
+    expect(pushArg.query.workspaceId).toBe(WS_ID)
+    expect(pushArg.query.itemId).toBe(ITEM_ID)
+    expect(pushArg.query.sorts).toBe('col_a:updated_at:desc')
+
+    wrapper.unmount()
+  })
+
+  it('writes workspaceId + itemId + pageId for a design click (user mental model: design-mode task URL)', async () => {
+    const store = useWorkspacesStore()
+    store.workspaces = [
+      {
+        id: WS_ID,
+        name: 'WS',
+        items: [
+          { ...baseItem, id: 'item_design', item_type: 'design', tasks: [{ id: TASK_ID, name: 'T' }] },
+        ],
+      },
+    ] as any
+    store.setActiveWorkspaceItem('item_design')
+    // The design-mode URL pattern is ?view=workspace&workspaceId=W&itemId=K&pageId=P
+    setRouteQuery({
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: 'item_design',
+      pageId: 'page_first',
+    })
+
+    const wrapper = mountSidebar()
+    const sidebar = wrapper.vm as any
+    sidebar.selectTask(TASK_ID)
+    await nextTick()
+
+    const pushArg = lastPushCall()
+    expect(pushArg.query.view).toBe('task')
+    expect(pushArg.query.task).toBe(TASK_ID)
+    expect(pushArg.query.workspaceId).toBe(WS_ID)
+    expect(pushArg.query.itemId).toBe('item_design')
+    // pageId preserved from URL (the URL is the source of truth for
+    // design page state, mirrored from the store's activeDesignPageId
+    // via DesignView's onMount + tab switch watcher).
+    expect(pushArg.query.pageId).toBe('page_first')
 
     wrapper.unmount()
   })
