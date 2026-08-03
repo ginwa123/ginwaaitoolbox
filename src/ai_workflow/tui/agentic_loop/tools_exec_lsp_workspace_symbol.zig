@@ -1,9 +1,10 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const tools = mod.tools;
+const nalarcore = @import("nalarcore");
+const tools = @import("tools.zig");
+
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = mod.nalarcore.agent;
+const agent = nalarcore.agent;
 const wrapToolOutput = tools.wrapToolOutput;
 
 // Placeholder LSP exec function (not yet implemented).

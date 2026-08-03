@@ -1,19 +1,19 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
+const nalarcore = @import("nalarcore");
+const CallCompactAgentInput = @import("compaction.zig").CallCompactAgentInput;
+const callCompactAgent = @import("compaction.zig").callCompactAgent;
+const mark_history_not_for_llmrun = @import("markHistoryNotForLLMRun.zig").markHistoryNotForLLMRun;
+const compaction_context = @import("compaction_context.zig");
+
 const LlmConfig = nalarcore.config.LlmConfig;
-const CallCompactAgentInput = mod.CallCompactAgentInput;
 const agent = nalarcore.agent;
 const AgentMessage = agent.AgentMessage;
 const sqlite = nalarcore.sqlite;
 const SqliteBackend = sqlite.SqliteBackend;
 const Logger = nalarcore.loggermod.Logger;
-const callCompactAgent = mod.callCompactAgent;
-const mark_history_not_for_llmrun = mod.mark_history_not_for_llmrun;
 const timestampIso = nalarcore.loggermod.timestampIso;
 const xml_escape = nalarcore.helpers.xml_escape;
 const saveMessage = @import("../llm_history.zig").saveMessage;
-const compaction_context = mod;
 
 /// Bundle of inputs to `shouldCompactDefault` — the threshold decision that
 /// tests can swap via `CompactDeps.should_compact`. Carries enough context that

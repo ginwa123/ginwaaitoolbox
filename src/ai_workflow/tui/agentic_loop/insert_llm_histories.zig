@@ -1,15 +1,14 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
+const nalarcore = @import("nalarcore");
+const LLMHistory = @import("llm_history.zig").LLMHistory;
+const SkillInfo = @import("session_skills.zig").SkillInfo;
+const onEventSendLLMHistory = @import("sse_on_event_send_llm_history.zig").onEventSendLLMHistory;
+
 const sqlite = nalarcore.sqlite;
 const logger_mod = nalarcore.loggermod;
 const agent = nalarcore.agent;
 const helpers = nalarcore.helpers;
-const LLMHistory = mod.LLMHistory;
 const event_bus_mod = nalarcore.event_bus;
-const onEventSendLLMHistory = mod.onEventSendLLMHistory;
-const SkillInfo = mod.SkillInfo;
-
 const keyword = "INSERTLLMHISTORIES";
 
 pub const InsertLLMHistoriesInput = struct {

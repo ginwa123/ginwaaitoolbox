@@ -1,7 +1,7 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
-const LLMHistory = mod.LLMHistory;
+const nalarcore = @import("nalarcore");
+const LLMHistory = @import("llm_history.zig").LLMHistory;
+
 const agent = nalarcore.agent;
 const json = std.json;
 

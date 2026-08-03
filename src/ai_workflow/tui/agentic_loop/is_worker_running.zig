@@ -1,6 +1,7 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const sqlite = mod.nalarcore.sqlite;
+const nalarcore = @import("nalarcore");
+
+const sqlite = nalarcore.sqlite;
 const testing = std.testing;
 
 /// Check if a session is currently running (exists in worker table)

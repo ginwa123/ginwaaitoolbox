@@ -1,12 +1,12 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
+const nalarcore = @import("nalarcore");
+const SseEvent = @import("sse.zig").SseEvent;
+const SkillInfo = @import("session_skills.zig").SkillInfo;
+
 const agent = nalarcore.agent;
 const event_bus_mod = nalarcore.event_bus;
 const logger_mod = nalarcore.loggermod;
 const helpers = nalarcore.helpers;
-const SseEvent = mod.SseEvent;
-const SkillInfo = mod.SkillInfo;
 const testing = std.testing;
 
 /// JSON representation of a tool call

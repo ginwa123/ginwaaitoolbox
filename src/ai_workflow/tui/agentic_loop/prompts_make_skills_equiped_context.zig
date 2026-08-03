@@ -1,6 +1,6 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
+const nalarcore = @import("nalarcore");
+
 const sqlite = nalarcore.sqlite;
 
 /// Build skills content string from database for persistence

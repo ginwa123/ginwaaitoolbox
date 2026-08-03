@@ -1,7 +1,7 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
-const helpers = mod.nalarcore.helpers;
+const nalarcore = @import("nalarcore");
+
+const helpers = nalarcore.helpers;
 const xmlEscape = helpers.xml_escape;
 const testing = std.testing;
 

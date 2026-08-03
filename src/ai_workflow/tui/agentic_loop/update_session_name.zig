@@ -1,10 +1,10 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
+const nalarcore = @import("nalarcore");
+
 const sqlite = nalarcore.sqlite;
 const event_bus_mod = nalarcore.event_bus;
 
-const onEventSendSessions = mod.onEventSendSessions;
+const onEventSendSessions = @import("sse_on_event_send_session.zig").onEventSendSessions;
 
 /// Update session name
 pub fn updateSessionName(

@@ -1,10 +1,10 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
+const nalarcore = @import("nalarcore");
+const isWorkerCancelled = @import("is_worker_cancelled.zig").isWorkerCancelled;
+
 const logger_mod = nalarcore.loggermod;
 const sqlite = nalarcore.sqlite;
-const isWorkerCancelled = mod.isWorkerCancelled;
-const IsWorkerCancelledInput = mod.IsWorkerCancelledInput;
+const IsWorkerCancelledInput = @import("is_worker_cancelled.zig").IsWorkerCancelledInput;
 
 const WorkflowNanoSleepTimespec = extern struct {
     sec: c_long,

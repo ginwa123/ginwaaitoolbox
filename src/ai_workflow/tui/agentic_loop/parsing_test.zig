@@ -1,10 +1,9 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
+const nalarcore = @import("nalarcore");
+const LLMHistory = @import("llm_history.zig").LLMHistory;
+
 const agent = nalarcore.agent;
 const testing = std.testing;
-const LLMHistory = mod.LLMHistory;
-
 const Parsing = @import("parsing.zig");
 
 // ─── Helpers ───────────────────────────────────────────────────────────────

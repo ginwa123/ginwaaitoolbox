@@ -1,10 +1,10 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
+const nalarcore = @import("nalarcore");
+
 const sqlite = nalarcore.sqlite;
 const logger_mod = nalarcore.loggermod;
 const event_bus_mod = nalarcore.event_bus;
-const onEventSendWorkers = mod.onEventSendWorkers;
+const onEventSendWorkers = @import("sse_send_event_worker.zig").onEventSendWorkers;
 const testing = std.testing;
 
 pub const DeleteWorkerInput = struct {

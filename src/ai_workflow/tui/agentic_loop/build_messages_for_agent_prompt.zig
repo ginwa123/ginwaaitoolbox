@@ -20,7 +20,7 @@ const AgentTool = tool_models.AgentTool;
 const AgentToolFunction = tool_models.AgentToolFunction;
 const ToolParameters = tool_models.ToolParameters;
 const ToolProperty = tool_models.ToolProperty;
-const agentic_loop = @import("mod.zig");
+const agentic_loop = @import("workflow.zig");
 
 const bash_tool_mod = nalarcore.bash_tool;
 const read_file_mod = nalarcore.read_file;

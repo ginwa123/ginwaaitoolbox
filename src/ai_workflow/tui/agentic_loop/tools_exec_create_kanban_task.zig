@@ -11,9 +11,9 @@
 //! Plan: docs/superpowers/plans/2026-07-29-create-kanban-task-tool.md (Task 5)
 
 const std = @import("std");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
-const tools = mod.tools;
+const nalarcore = @import("nalarcore");
+const tools = @import("tools.zig");
+
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
 const agent = nalarcore.agent;

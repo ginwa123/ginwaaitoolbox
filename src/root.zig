@@ -392,7 +392,7 @@ pub const event_bus = @import("modules/event_bus/src/event.zig");
 pub const static_files = @import("modules/static_files.zig");
 
 pub const startup = @import("startup.zig");
-pub const agentic_loop_mod = @import("ai_workflow/tui/agentic_loop/mod.zig");
+pub const agentic_loop_mod = @import("ai_workflow/tui/agentic_loop/workflow.zig");
 
 pub const notifications_mod = @import("modules/notification/notifications.zig");
 pub const migrations_mod = @import("migrations/mod.zig");

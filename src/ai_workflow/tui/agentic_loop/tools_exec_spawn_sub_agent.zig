@@ -1,6 +1,7 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
+const nalarcore = @import("nalarcore");
+const tools = @import("tools.zig");
+
 const sqlite = nalarcore.sqlite;
 const logger_mod = nalarcore.loggermod;
 const config_mod = nalarcore.config;
@@ -8,7 +9,6 @@ const llm_history = nalarcore.llm_history;
 const models = @import("../models.zig");
 const ai_workflow = @import("workflow.zig");
 const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
-const tools = mod.tools;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
 const agent = nalarcore.agent;

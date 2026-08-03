@@ -1,7 +1,7 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const LLMHistory = mod.LLMHistory;
-const nalarcore = mod.nalarcore;
+const nalarcore = @import("nalarcore");
+const LLMHistory = @import("llm_history.zig").LLMHistory;
+
 const sqlite = nalarcore.sqlite;
 const testing = std.testing;
 const SqliteBackend = sqlite.SqliteBackend;

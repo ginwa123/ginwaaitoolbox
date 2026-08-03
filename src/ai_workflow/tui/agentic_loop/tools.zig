@@ -1,6 +1,6 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
+const nalarcore = @import("nalarcore");
+
 const logger_mod = nalarcore.loggermod;
 const sqlite = nalarcore.sqlite;
 const config_mod = nalarcore.config;

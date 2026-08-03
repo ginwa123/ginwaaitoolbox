@@ -1,8 +1,8 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
+const nalarcore = @import("nalarcore");
+const tools = @import("tools.zig");
+
 const sqlite = nalarcore.sqlite;
-const tools = mod.tools;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
 const agent = nalarcore.agent;

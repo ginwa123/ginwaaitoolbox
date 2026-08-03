@@ -1,6 +1,7 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const sqlite = mod.nalarcore.sqlite;
+const nalarcore = @import("nalarcore");
+
+const sqlite = nalarcore.sqlite;
 const testing = std.testing;
 
 pub const QueuedMessage = struct {

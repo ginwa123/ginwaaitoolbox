@@ -27,7 +27,7 @@ const sqlite = nalarcore.sqlite;
 
 const llm_history = @import("../llm_history.zig");
 const WorkspaceContext = llm_history.WorkspaceContext;
-const agentic_loop = @import("mod.zig");
+const agentic_loop = @import("workflow.zig");
 // After the refactor that split prompt builders into agentic_loop/*,
 // `makeWorkspaceContext` and `makeKanbanContext` live in
 // `agentic_loop.prompts_mod`. The old `build_messages.BuildWorkspaceContext`

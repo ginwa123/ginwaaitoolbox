@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
+const nalarcore = @import("nalarcore");
+
 const agent = nalarcore.agent;
 const prompt = nalarcore.agent.prompt;
 const sqlite = nalarcore.sqlite;
