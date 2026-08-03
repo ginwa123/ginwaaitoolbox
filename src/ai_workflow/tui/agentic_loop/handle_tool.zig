@@ -363,7 +363,49 @@ pub fn handle_tool(
     selected_profile_model: []const u8,
 ) !void {
     if (res_dynamic_agent.tool_calls) |tc| {
-        // Check if any tools match registered tools or MCP tools
+        // ─── Phase 1: INSERT placeholder rows for ALL known tools ───
+        //
+        // This is the critical fix for the "Invalid function ID" bug.
+        // We pre-create every role=tool row BEFORE running any tool,
+        // so the OpenAI API contract (every tool_call_id must have a
+        // matching role=tool row) is satisfied even if the app
+        // crashes mid-execution. The dispatch loop in Phase 3 then
+        // UPDATEs each placeholder in place with the actual result.
+        //
+        // Unknown tools skip the placeholder (they're skipped below
+        // too — the original code's behaviour is preserved).
+        //
+        // Migrated from the old 2-phase pattern (assistant message
+        // INSERT then per-tool saveMessage) which left orphaned
+        // tool_call_ids on crash. See plan:
+        // docs/superpowers/plans/2026-08-06-tool-call-loading-placeholder.md
+        for (tc) |tool_call| {
+            if (!isKnownToolOrMCP(tool_call.function.name, config)) continue;
+            const placeholder_id = try llm_history.saveToolResultPlaceholder(allocator, io, db, .{
+                .session_id = session_id,
+                .model = model,
+                .tool_call_id = tool_call.id,
+                .tool_name = tool_call.function.name,
+                .loop_index = loop_counter,
+                .parent_session_id = parent_session_id,
+            });
+            allocator.free(placeholder_id);
+        }
+
+        // ─── Phase 2: INSERT the assistant message (existing code) ───
+        //
+        // The assistant message declares tool_calls=[A, B, C] and has
+        // existing tool_call_id columns that match the placeholders
+        // by id. The DB now has 1 assistant row + N placeholder rows.
+        //
+        // NOTE: the conversation order is "placeholders first, then
+        // assistant message" by created_at. This is OK because the LLM
+        // API contract matches tool_call_ids by VALUE, not by row
+        // order. The LLM sees a complete set of (placeholder, assistant)
+        // records either way. The ordering matters for the LLM's
+        // understanding of the conversation flow, but an empty
+        // placeholder content followed by an assistant message is
+        // semantically equivalent to "the agent is mid-execution".
         var has_known_tools = false;
         for (tc) |tool_call| {
             if (isKnownToolOrMCP(tool_call.function.name, config)) {
@@ -372,7 +414,7 @@ pub fn handle_tool(
             }
         }
         if (!has_known_tools) {
-            logger.infoFmt("[HANDLE_TOOL] Skipping saving assistant message, no tools matched", .{});
+            logger.infoFmt("[HANDLE_TOOL] All tool calls are unknown — placeholders were skipped", .{});
         }
 
         // Build tool names list and save assistant message
@@ -431,11 +473,28 @@ pub fn handle_tool(
             .selected_profile_model = selected_profile_model,
         };
 
-        // Execute each tool call using dispatch
+        // ─── Phase 3: dispatch each tool & UPDATE placeholder in place ───
+        //
+        // For each tool_call, we run the tool (catching errors) and
+        // UPDATE the placeholder row with the actual result (or the
+        // error message). The placeholder's id is unchanged, so the
+        // SSE listener (which reads the latest message) sees an
+        // in-place update.
+        //
+        // If the app crashes mid-dispatch, the stranded placeholders
+        // are picked up by `resolveStaleLoadingToolResults` on the
+        // next worker loop start (called from workflow.zig).
         for (tc) |tool_call| {
             var tool_result: []const u8 = undefined;
             var toolAgentTemp: f32 = agent_temperature.*;
             var toolIsThinking: bool = isThinking.*;
+
+            // Skip placeholders for unknown tools (consistency with
+            // Phase 1 — we never inserted a placeholder for them).
+            if (!isKnownToolOrMCP(tool_call.function.name, config)) {
+                logger.warnFmt("[HANDLE_TOOL] Skipping unknown tool '{s}' (no placeholder was created)", .{tool_call.function.name});
+                continue;
+            }
 
             // Check if this is an MCP tool
             if (isMCPTool(config, tool_call.function.name)) {
@@ -453,11 +512,11 @@ pub fn handle_tool(
                     });
                     tool_result = try wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
                     errdefer allocator.free(tool_result);
-                    try saveAndSendToolResult(allocator, io, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                    try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id, model, loop_counter);
                     allocator.free(tool_result);
                     continue;
                 };
-                try saveAndSendToolResult(allocator, io, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id, model, loop_counter);
                 continue;
             }
 
@@ -470,7 +529,7 @@ pub fn handle_tool(
                 });
                 tool_result = try wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
                 errdefer allocator.free(tool_result);
-                try saveAndSendToolResult(allocator, io, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+                try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id, model, loop_counter);
                 allocator.free(tool_result);
                 continue;
             };
@@ -495,27 +554,24 @@ pub fn handle_tool(
                 };
             }
 
-            try saveAndSendToolResult(allocator, io, db, session_id, parent_session_id, model, cwd, loop_counter, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save);
+            try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id, model, loop_counter);
         }
     }
 
     logger.debugFmt("Tool calls processing complete, looping back for next API call...", .{});
 }
 
-fn saveAndSendToolResult(
+fn updateAndSendToolResult(
     allocator: std.mem.Allocator,
-    io: std.Io,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
-    parent_session_id: []const u8,
-    model: []const u8,
     cwd: []const u8,
-    loop_counter: u32,
     tool_call: agent.ToolCall,
     result: []const u8,
     temperature: f32,
     is_thinking: bool,
     agent_name: []const u8,
+    parent_session_id: []const u8,
 ) !void {
     var diffview_before: ?[]const u8 = null;
     var diffview_after: ?[]const u8 = null;
@@ -535,30 +591,20 @@ fn saveAndSendToolResult(
         }
     }
 
-    _ = try llm_history.saveMessage(allocator, io, db, .{
-        .session_id = session_id,
-        .model = model,
-        .cwd = cwd,
+    // UPDATE the placeholder row in place (created in Phase 1 of
+    // handle_tool's 3-phase pattern). The row's id is unchanged, so
+    // the SSE listener (which reads the latest message) sees an
+    // in-place update.
+    //
+    // If the placeholder doesn't exist (e.g. an unknown tool was
+    // dispatched anyway), updateToolResultById is a silent no-op
+    // (0 rows affected) — the old saveMessage would have created a
+    // new row, but with the placeholder pattern we prefer to drop
+    // the orphan rather than have an unmatched tool result.
+    try llm_history.updateToolResultById(allocator, db, tool_call.id, .{
         .content = content_modified,
-        .reasoning_content = null,
-        .role = agent.Role.tool.to_str(),
-        .finish_reason = agent.FinishReason.tool.to_str(),
-        .tool_calls = null,
-        .tool_call_id = tool_call.id,
-        .agent_name = agent_name,
-        .loop_index = loop_counter,
-        .temperature = temperature,
-        .is_thinking = is_thinking,
-        .prompt_tokens = 0,
-        .completion_tokens = 0,
-        .total_tokens = 0,
-        .is_output = true,
-        .is_input = false,
-        .tool_name = tool_call.function.name,
-        .parent_id = parent_session_id,
-        .parent_session_id = parent_session_id,
-        .diffview_after = diffview_after,
         .diffview_before = diffview_before,
+        .diffview_after = diffview_after,
     });
 
     // Free the allocated content_after_diff_view.
@@ -572,6 +618,9 @@ fn saveAndSendToolResult(
     if (diffview_before) |before| allocator.free(before);
     if (diffview_after) |after| allocator.free(after);
 
+    // SSE: the latest message is now the UPDATED placeholder row.
+    // We send the SSE with the tool_call_id (NOT the row's id) so
+    // the frontend can match the SSE to the tool_calls it received.
     try sendSSEForLatestMessage(allocator, db, session_id, cwd, agent_name, parent_session_id, temperature, is_thinking, false, true, null);
 }
 
