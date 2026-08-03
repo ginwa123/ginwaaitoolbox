@@ -10,11 +10,32 @@
  *  4. × button click does NOT also emit `selectPage` (stopPropagation).
  *  5. Active page gets the violet active style; inactive doesn't.
  *  6. data-testid `design-page-row-${pageId}` is present.
+ *
+ * Active styling is driven by URL (?view=workspace&pageId=X) via the
+ * `useCurrentMainView` composable (see sidebar-single-active-state plan).
+ * Tests stub vue-router so the URL is controllable per test.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import DesignPageRow from '../components/workspace/DesignPageRow.vue'
 import type { DesignPage } from '../api'
+
+// Stub vue-router — DesignPageRow reads useRoute() via useCurrentMainView()
+// to drive its active state. Mirrors the pattern at
+// sidebarHandleSelectTaskUrl.spec.ts:57-77. Default = empty route (no
+// active state); tests that need the active styling override per-test.
+const { useRouteMock } = vi.hoisted(() => ({
+  useRouteMock: vi.fn(() => ({
+    query: {} as Record<string, string>,
+    path: '/app',
+    fullPath: '/app',
+  })),
+}))
+
+vi.mock('vue-router', async () => {
+  const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
+  return { ...actual, useRoute: useRouteMock }
+})
 
 function makePage(overrides: Partial<DesignPage> = {}): DesignPage {
   return {
@@ -87,7 +108,24 @@ describe('DesignPageRow.vue', () => {
   })
 
   it('active page gets the violet active style; inactive does not', () => {
+    // Active state is now URL-driven (sidebar-single-active-state plan,
+    // 2026-08-06). The `isActivePage` prop is kept for backwards compat
+    // but the visual now sources from the URL.
     const page = makePage({ id: 'page_active' })
+    // Mock URL with the matching pageId — page_1 is item_1's page in
+    // the base fixture. The first mockReturnValueOnce is consumed by
+    // the active mount, the second by the inactive mount (no match).
+    useRouteMock
+      .mockReturnValueOnce({
+        query: { view: 'workspace', itemId: 'item_1', pageId: 'page_active' },
+        path: '/app',
+        fullPath: '/app?view=workspace&itemId=item_1&pageId=page_active',
+      } as any)
+      .mockReturnValueOnce({
+        query: { view: 'workspace', itemId: 'item_1', pageId: 'page_other' },
+        path: '/app',
+        fullPath: '/app?view=workspace&itemId=item_1&pageId=page_other',
+      } as any)
     const active = mountRow({ page, isActivePage: true })
     const inactive = mountRow({ page, isActivePage: false })
     expect(active.find('[data-testid="design-page-row-page_active"]').attributes('style') ?? '')
