@@ -20,10 +20,27 @@ const props = defineProps<{
   isLLMProcessing?: boolean
   initialMessage?: string
   reviewMode?: boolean
+  /**
+   * True while the parent is waiting for the stop-session API call to
+   * resolve. Drives the Stop button's spinner state + click-debounce.
+   * The parent (ChatView) sets this to `true` immediately on click
+   * and resets it to `false` when the LLM is no longer processing
+   * (driven by the SSE `worker deleted` event).
+   */
+  isStopping?: boolean
 }>()
 
 const emit = defineEmits<{
   'submit': [message: string, files?: File[]]
+  /**
+   * Emitted when the user clicks the Stop button. Parent
+   * (ChatView) calls api.stopSession(sessionId) — the API call
+   * lives at the parent layer because the input is shared across
+   * multiple chat views and the stop semantics are tied to the
+   * chat's sessionId, not the input box. The parent should also
+   * pass `:isStopping="true"` back via prop to show the spinner.
+   */
+  'stop-session': []
 }>()
 
 interface FileEntry {
@@ -57,6 +74,39 @@ if (props.initialMessage) {
 
 // Image preview state
 const previewFiles = ref<PreviewFile[]>([])
+
+// ── Stop button state ─────────────────────────────────────────────────────
+//
+// `isStopping` is the parent's claim about whether a stop request is in
+// flight. We watch `isLLMProcessing` and reset to false when the LLM
+// stops — covers the fast path (SSE `worker deleted` arrives before the
+// API round-trip) and the slow path (backend processes cancel before
+// SSE). Without this reset, the spinner could stay stuck on after the
+// SSE event hid the button, then re-appear the next time the agent
+// runs.
+const isStopping = ref(props.isStopping ?? false)
+watch(
+  () => props.isStopping,
+  (v) => {
+    isStopping.value = v ?? false
+  },
+)
+watch(
+  () => props.isLLMProcessing,
+  (isProcessing) => {
+    if (!isProcessing) isStopping.value = false
+  },
+)
+
+const handleStopClick = () => {
+  // Debounce: while a stop is already in flight, ignore subsequent
+  // clicks. The button is also `:disabled` while `isStopping`, so
+  // this is a defensive check for the case where the prop hasn't
+  // propagated yet (same render frame as the click).
+  if (isStopping.value) return
+  isStopping.value = true
+  emit('stop-session')
+}
 
 const isImageFile = (file: File): boolean => {
   return file.type.startsWith('image/')
@@ -602,6 +652,47 @@ const sendMessage = () => {
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.586a6 6 0 108.486 8.486L20.5 13"/>
         </svg>
+      </button>
+      <!--
+        Stop button — visible only while the LLM is processing. Click
+        emits `stop-session`; parent (ChatView) translates to
+        POST /api/llm/session/:session/stop. Auto-hides when the SSE
+        `worker deleted` event lands (driven by the parent's
+        `isLLMProcessing` prop flipping to false). The Queue/Send
+        button on the right is intentionally preserved so the user
+        can still queue follow-up messages while the agent runs.
+      -->
+      <button
+        v-if="isLLMProcessing"
+        type="button"
+        @click="handleStopClick"
+        :disabled="isStopping"
+        data-testid="stop-session-button"
+        class="px-3 py-3 rounded-xl text-sm font-medium transition-all duration-200 border flex items-center gap-2"
+        :class="isStopping ? 'cursor-not-allowed opacity-70' : 'hover:opacity-90 active:scale-95'"
+        style="
+          background-color: var(--color-red);
+          color: var(--color-bg);
+          border-color: var(--color-border);
+        "
+        title="Stop the running agent"
+        aria-label="Stop session"
+      >
+        <div
+          v-if="isStopping"
+          class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
+          style="border-color: var(--color-bg); border-top-color: transparent;"
+        ></div>
+        <svg
+          v-else
+          xmlns="http://www.w3.org/2000/svg"
+          class="w-4 h-4"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+        >
+          <rect x="6" y="6" width="12" height="12" rx="2" />
+        </svg>
+        <span>{{ isStopping ? 'Stopping…' : 'Stop' }}</span>
       </button>
       <button type="submit" :disabled="isLoading || isLLMProcessing"
         class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200 border flex items-center gap-2"

@@ -1263,6 +1263,45 @@ export async function compactSession(
   }
 }
 
+/**
+ * Stop/cancel a running LLM session by flipping the worker's
+ * `cancelled` flag in the DB.
+ *
+ * The backend handler (`sessionStopHandler` in `src/ai_workflow/tui/
+ * http_handlers/session_stop.zig`) runs `llm_history.cancelSession`
+ * which sets `UPDATE worker SET cancelled = 1 WHERE id = ?`. The
+ * workflow's loop checks this flag at the top of every iteration
+ * (`workflow.zig:500`) and inside the retry delay
+ * (`retry_delay_ms.zig:42`) — once it sees `cancelled`, it breaks
+ * out, calls `deleteWorker`, and the SSE `worker deleted` event
+ * removes the session from `processingState` on the frontend.
+ *
+ * Idempotent: calling stop on a session with no worker row returns
+ * 200 OK (the UPDATE matches 0 rows; the handler doesn't inspect
+ * the row count). Calling stop on an already-cancelled session is
+ * also a 200 OK (the flag is already 1).
+ *
+ * POST /api/llm/session/:session/stop
+ *
+ * Returns `{ success: true, session_id }` on success.
+ * Returns `{ success: false }` on network/transport failure (the
+ * `apiFetch` wrapper turns non-2xx into a thrown error which we
+ * swallow + log here, so callers always get a typed response).
+ */
+export async function stopSession(
+  sessionId: string,
+): Promise<{ success: boolean; session_id?: string }> {
+  try {
+    return await apiFetch<{ success: boolean; session_id: string }>(
+      `/llm/session/${sessionId}/stop`,
+      { method: 'POST' },
+    )
+  } catch (error) {
+    console.error('Failed to stop session:', error)
+    return { success: false }
+  }
+}
+
 // Worker API
 export interface Worker {
   id: string
