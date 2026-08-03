@@ -45,6 +45,7 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("llm_history_worker_info_test.zig"); // NEW: sprint 2 "git worktree cwd, worker"
     _ = @import("llm_history_description_test.zig"); // Migration 062 description propagation
     _ = @import("llm_history_notification_test.zig"); // Migration 065 — kanban needs_human_review + updateTaskLastHumanTouchedAt
+    _ = @import("llm_history_tool_call_loading_test.zig"); // tool-call-loading-placeholder — 3 helper contract tests
     // 2026-07-30-kanban-task-search — server-side q filter on
     // listWorkspaceItemTasksWithCursor. Tests live INLINE in
     // llm_history.zig (per project agentic_loop/ convention).
