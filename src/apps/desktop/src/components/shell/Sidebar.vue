@@ -856,52 +856,21 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
 }
 
 const handleSelectTask = (taskId: string) => {
-  // Kanban sort-by (plan 2026-08-06-kanban-sort-by.md): when the user
-  // opens a task from the kanban, save the current `?sorts=` so the
-  // close handler in AppLayout can restore it. Without this, the
-  // round-trip through the chat view drops the sort (the URL gets
-  // rewritten to `?view=task&task=Y`, then back to `?view=workspace&...`
-  // without sorts).
+  console.log("[handleSelectTask], task: ", taskId)
   const currentSorts = route.query?.sorts
   if (typeof currentSorts === 'string' && currentSorts.length > 0) {
     workspacesStore.savedSortsParam = currentSorts
   }
   workspacesStore.setActiveTask(taskId)
-  // Mutually exclusive active state: task wins, clear any active chat row in ChatsList.
   if (chatsListRef.value) {
     chatsListRef.value.resetActiveChat()
   }
-  // FIX (chatview-bug, task_1785726648589, follow-up): include the
-  // parent workspace item id in the URL for consistency with the other
-  // URL patterns. The design page URL is
-  // `?view=workspace&itemId=DESIGN&pageId=X` (itemId encoded explicitly),
-  // and the kanban-click URL is `?view=workspace&itemId=KANBAN&sorts=...`
-  // (itemId encoded explicitly). Without itemId in the task URL, a
-  // reload lands the user on `?view=task&task=X` with no item context,
-  // which then has to be re-derived from the task's parent via
-  // setActiveTask's internal walk. For folder tasks in particular this
-  // matters because the URL alone doesn't tell AppLayout which parent
-  // workspace item to activate (folder tasks have a folder parent, not
-  // a kanban or design — the 3-column branch and KanbanChatDialog
-  // wouldn't fire for them even if activeTask is set).
-  //
-  // We use the same `view=task` (not `view=workspace`) because the
-  // routing logic at AppLayout.vue line ~1752 fires ChatView on
-  // `currentView === 'task' && activeTask`; flipping to `view=workspace`
-  // would skip that branch for folder tasks (no design 3-column, no
-  // kanban chat dialog fires). The itemId query param is purely
-  // informational/contextual — restores on reload via the standard
-  // pendingUrlRestore path.
-  //
-  // Snapshot the parent id BEFORE setActiveTask to detect the
-  // "task not found" case (setActiveTask silently no-ops when the
-  // task id is unknown — it leaves activeWorkspaceItemId unchanged,
-  // which would leak the *previous* item id into the URL).
   const parentItemId = workspacesStore.activeWorkspaceItemId ?? ''
   router.replace({
     path: '/app',
     query: { view: 'task', task: taskId, itemId: parentItemId },
   })
+  console.log("[handleSelectTask] end handleSelectTask")
 }
 
 const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
