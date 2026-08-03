@@ -444,17 +444,6 @@ const handleSelectItem = async (workspaceId: string, itemId: string) => {
           // columns arrive. Better than throwing mid-click.
         }
       }
-      // Re-read columns after the await (the store may have populated
-      // them by now).
-      const refreshedItem = workspacesStore.workspaces
-        .find((ws) => ws.id === workspaceId)
-        ?.items.find((i) => i.id === itemId)
-      const cols = refreshedItem?.kanban_columns ?? []
-      if (cols.length > 0) {
-        sortsParam = cols
-          .map((c) => `${c.id}:updated_at:desc`)
-          .join(',')
-      }
     }
   }
   // Carry (workspaceId, itemId) into the URL so the kanban / folder /
