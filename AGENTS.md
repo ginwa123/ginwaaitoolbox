@@ -1870,3 +1870,33 @@ Group/frame nesting handled via recursive descent (depth-guarded at 32). Unknown
 - Multi-page preview (one SVG per page) — out of scope; use `get_design_context` for the data shape
 
 **Plan.** `docs/superpowers/plans/2026-08-06-ai-agent-design-context-tool.md`.
+
+### 2026-08-06: Delete `agentic_loop/mod.zig`, promote `workflow.zig` as public face
+
+**Symptom (user report).** User: *"delete mode.zig as screenshot, and fix the zig build"*. The `src/ai_workflow/tui/agentic_loop/mod.zig` barrel file (99 lines) was a pure re-export of 44 symbols from sub-modules in the same directory. Every internal file did `const mod = @import("mod.zig")` then `mod.X`, adding an extra import hop for every consumer without owning any logic.
+
+**What landed.** Surgical delete + workflow.zig promotion (no behaviour change):
+
+- **`src/ai_workflow/tui/agentic_loop/mod.zig`** — **DELETED**
+- **`src/ai_workflow/tui/agentic_loop/workflow.zig`** — promoted to the module's public face. Added 44 `pub const` re-exports (the same symbols `mod.zig` held). Internal `agentic_loop_mod.X` call sites switched to direct names. `const nalarcore` → `pub const nalarcore`.
+- **49 internal files** in `agentic_loop/` — switched from `const mod = @import("mod.zig")` + `mod.X` patterns to direct imports (`const nalarcore = @import("nalarcore")`, `const tools = @import("tools.zig")`, `const LLMHistory = @import("llm_history.zig").LLMHistory`, etc.). 3 special cases (`handle_tool.zig`, `build_messages_for_agent_prompt.zig`, `build_messages_for_agent_prompt_test.zig`) point at `workflow.zig` instead.
+- **`src/ai_workflow/tui/http_handlers/system_prompt_get.zig`** — also imported `mod.zig` (out-of-tree consumer); updated to `workflow.zig`.
+- **`src/root.zig`** — `nalarcore.agentic_loop_mod` now points at `workflow.zig`.
+
+**External API preserved.** `nalarcore.agentic_loop_mod.<X>` still resolves to the same symbol — every existing caller works unchanged.
+
+**Net effect.** 77 files changed, +355/-380 (net 25 fewer lines). One fewer file in the build graph.
+
+**Verification.**
+- `zig build test --summary all`: **2278 pass, 6 skip (2284 total), 2 leaks** — the 2 leaks are pre-existing on `main` (`design_model_set_element_parent_test` cycle-rejection test, unrelated to this refactor).
+- `zig build install:linux:system` → compile succeeds; only `cp` to `/usr/local/bin/` fails (permission, not our problem).
+- `rm -rf zig-out/bin && zig build` → both `nalarcore-linux-x86_64` (86 MB) + `nalar-desktop` (35 MB) + `nalar` (78 MB) + `nalarcli` produced.
+- Cross-compile smoke: `zig build-obj -target x86_64-windows-gnu` + `-target aarch64-macos` → both clean (no errors).
+- Binary smoke: `zig-out/bin/nalarcore-linux-x86_64 --help` → works.
+
+**Notes.**
+- Renamed `workflow.zig::callDynamicAgentNew`'s `tools` parameter to `equip_tools` to avoid shadowing the new `pub const tools` re-export (otherwise Zig emits a "function parameter shadows declaration" error).
+- `workflow.zig::LLMHistory` re-export reads from `@import("llm_history.zig").LLMHistory` (the `agentic_loop/` directory's own `llm_history.zig`), NOT `../llm_history.zig` (the parent dir's `llm_history.zig` which doesn't have `LLMHistory`).
+- Inserted `const mark_history_not_for_llmrun = @import("markHistoryNotForLLMRun.zig").markHistoryNotForLLMRun;` in `workflow_commpact_message.zig` (was previously `mod.mark_history_not_for_llmrun`). Same for `IsWorkerCancelledInput`, `onEventSendWorkers`, `onEventSendSessions`.
+
+**Branch / commit.** `main @ bfe53456`. Squash-merged via direct commit (was working on `main` directly).
