@@ -758,6 +758,157 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     })
     wrapper.unmount()
   })
+
+  // ─── add-workspace-id-params plan (2026-08-06) ──────────────────
+  //
+  // When the user closes a git/skill/code-editor viewer while a
+  // task is active (e.g. they opened a viewer from the chat
+  // panel of a kanban task), the new URL must include workspaceId
+  // + itemId + pageId so the kanban / design context survives the
+  // navigation. Pre-fix these branches wrote `?view=task&task=X`
+  // only, dropping the breadcrumb.
+  it('closeGitViewer includes workspaceId + itemId when the active task belongs to a kanban (add-workspace-id-params)', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    const kanban = makeKanbanItem()
+    // Inject the active task into the kanban's `tasks` array so the
+    // activeTask computed can find it (mirrors the workspaces
+    // store's setActiveTask auto-discovery at workspaces.ts:3366).
+    kanban.tasks = [{ id: 'task_active', name: 'Active Task' } as any]
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {})
+    const layout = wrapper.vm as any
+    await nextTick()
+    await nextTick()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace,
+    ]
+    ws.setActiveWorkspaceItem(KANBAN_ID)
+    ws.setActiveTask('task_active')
+    await nextTick()
+    await nextTick()
+    replaceMock.mockClear()
+    layout.closeGitViewer()
+    const lastCall = replaceMock.mock.calls[replaceMock.mock.calls.length - 1]
+    expect(lastCall).toBeDefined()
+    const query = lastCall![0].query as Record<string, string>
+    // The close-viewer priority is: activeWorkspaceItem > activeTask
+    // > chat. The user has both a kanban active AND a task active,
+    // so the URL returns to the kanban view. workspaceId + itemId
+    // are now required so the URL stays in the workspace context.
+    expect(query.view).toBe('workspace')
+    expect(query.workspaceId).toBe(WS_ID)
+    expect(query.itemId).toBe(KANBAN_ID)
+    // pageId must NOT leak into a kanban URL.
+    expect(query.pageId).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('closeGitViewer falls to chat branch when only the task is active (no workspace item)', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    // No workspace item active — only a chat task (chat-only).
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {})
+    const layout = wrapper.vm as any
+    await nextTick()
+    await nextTick()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] } as Workspace,
+    ]
+    // activeTask.value is null because no item owns the task —
+    // activeTask computed walks the tree. The branch falls through
+    // to chat since neither activeWorkspaceItem nor activeTask
+    // computed is truthy. Defensive: workspaceId absent.
+    ws.setActiveTask('task_chat_only')
+    await nextTick()
+    await nextTick()
+    replaceMock.mockClear()
+    layout.closeGitViewer()
+    const lastCall = replaceMock.mock.calls[replaceMock.mock.calls.length - 1]
+    expect(lastCall).toBeDefined()
+    const query = lastCall![0].query as Record<string, string>
+    // Falls through to chat branch (no workspace item, no resolvable task).
+    expect(query.workspaceId).toBeUndefined()
+    expect(query.itemId).toBeUndefined()
+    expect(query.view).toBe('chat')
+    wrapper.unmount()
+  })
+
+  it('closeSkillViewer includes workspaceId + itemId + pageId when the active task belongs to a design', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    const design = makeDesignItem()
+    design.tasks = [{ id: 'task_design_active', name: 'Design Task' } as any]
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [design] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {})
+    const layout = wrapper.vm as any
+    await nextTick()
+    await nextTick()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [design] } as Workspace,
+    ]
+    ws.setActiveWorkspaceItem(DESIGN_ID)
+    ws.setActiveDesignPage(PAGE_ID_2)
+    ws.setActiveTask('task_design_active')
+    await nextTick()
+    await nextTick()
+    replaceMock.mockClear()
+    layout.closeSkillViewer()
+    const lastCall = replaceMock.mock.calls[replaceMock.mock.calls.length - 1]
+    expect(lastCall).toBeDefined()
+    const query = lastCall![0].query as Record<string, string>
+    // The close-viewer priority is: activeWorkspaceItem > activeTask
+    // > chat. Both the design item AND the task are active, so the
+    // URL returns to the workspace view (carrying the design
+    // breadcrumb + active page).
+    expect(query.view).toBe('workspace')
+    expect(query.workspaceId).toBe(WS_ID)
+    expect(query.itemId).toBe(DESIGN_ID)
+    expect(query.pageId).toBe(PAGE_ID_2)
+    wrapper.unmount()
+  })
+
+  it('closeCodeEditor falls through to chat when no workspace item owns the task', async () => {
+    const replaceMock = vi.fn()
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    // No workspace item active — chat-only task.
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {})
+    const layout = wrapper.vm as any
+    await nextTick()
+    await nextTick()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] } as Workspace,
+    ]
+    ws.setActiveTask('task_chat_only')
+    await nextTick()
+    await nextTick()
+    replaceMock.mockClear()
+    layout.closeCodeEditor()
+    const lastCall = replaceMock.mock.calls[replaceMock.mock.calls.length - 1]
+    expect(lastCall).toBeDefined()
+    const query = lastCall![0].query as Record<string, string>
+    // The branch falls through to chat (no active workspace item,
+    // and `activeTask` computed returns null because no item owns
+    // the task).
+    expect(query.view).toBe('chat')
+    expect(query.workspaceId).toBeUndefined()
+    expect(query.itemId).toBeUndefined()
+    wrapper.unmount()
+  })
 })
 
 describe('AppLayout — design page URL persistence (pageId in URL)', () => {
