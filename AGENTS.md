@@ -2143,3 +2143,59 @@ create two placeholders for the same id.
 - Plan: `docs/superpowers/plans/2026-08-06-tool-call-loading-placeholder.md`
 - Memory: `.nalar/memories/tool-call-loading-placeholder-2026-08-06.md` (project) + `~/.config/nalar/memories/openai-tool-call-api-contract.md` (cross-project)
 
+### 2026-08-06: Bash tool — regression test for `head -n 30 + huge lines` byte-cap
+
+Cherry-picked from `worktree/bash-truncation-bytes` (branch was stale relative to main by ~14 commits, only the single meaningful commit was brought across).
+
+**Symptom.** User report: agent ran
+`grep -rn "invalid_id\|InvalidId\|invalid id" /home/.../src/ 2>&1 | head -n 30` and got back ~150 KB of stdout. The bash tool DID set `truncated=true` (byte cap fired at 20 KB), but the truncated result was still huge — blowing the LLM context. `head -n 30` bounds the LINE count but NOT the BYTE count; matching lines came from single-line minified JS in `node_modules/` (~5 KB per line).
+
+**What landed (commit `042276ed`).** New regression test `bash_tool: many long lines (head -n 30) byte-truncated to max_output` in `src/modules/agent/tools/bash_test.zig`. Verifies:
+
+1. `result.truncated == true` when output > `max_output` (even when line count < `max_lines`).
+2. `result.stdout.len <= max_output` (capped at the byte limit).
+3. `result.stdout_lines` reports the TRUE pre-truncation count (≥ 30).
+4. **NO FD LEAK** after the byte-truncation path — guards against future refactors that add an early-return on truncation without closing both reader-thread pipes.
+
+Uses `yes` + a 200-char-per-line × 30-line input piped through `head -n 30`, with `max_output=2048` + `max_lines=999_999` to isolate the byte-cap path.
+
+**Files (1 changed, +70/-0).**
+- `src/modules/agent/tools/bash_test.zig` — 1 new test (gated on `builtin.os.tag != .windows` per the no-Windows bash test convention).
+
+**Verification.**
+- `zig build test --summary all` — 2294/2300 pass, 6 skip, 2 leaks (matches documented baseline in AGENTS.md).
+- Branch: `worktree/bash-truncation-bytes` @ `c9ceceb5`
+- Commit: `042276ed` (cherry-picked onto main with `-x` annotation).
+
+### 2026-08-06: Undo regressions from "fixing invalid" (commit `20d061c6`)
+
+Discovered while verifying the bash test cherry-pick. Commit `20d061c6` ("call tool place holder fixing invalid") was a follow-up to PR #181 that attempted to fix something in the tool-call-loading-placeholder, but introduced **3 regressions** that together blocked `zig build test` from running cleanly.
+
+**Regression #1 — `WHERE id = ?` instead of `WHERE tool_call_id = ?`** (`src/ai_workflow/tui/llm_history.zig::updateToolResultById`). Commit changed the WHERE clause from `tool_call_id` to `id`, breaking lookup by `tool_call_id`. The function doc explicitly says it looks up by `tool_call_id`, and tests pass the `tool_call_id` string (not the row's nanosecond-timestamp id). Net effect: every UPDATE found 0 rows and the row's `response_content` stayed empty.
+
+**Regression #2 — new `io: std.Io` parameter not threaded into 4 test callsites** (`llm_history_tool_call_loading_test.zig`). Commit added the `io` parameter to `updateToolResultById` but the 4 test calls still passed only 4 args. 4 compile errors blocked `zig build test` entirely.
+
+**Regression #3 — `inserLLMHistories` return type changed from `!void` to `![]const u8`** (`src/ai_workflow/tui/agentic_loop/insert_llm_histories.zig`). The new return allocates a duplicate of the row's `id` string, but **no production caller uses the returned value**. The 16 test callsites were updated to `_ = try inserLLMHistories(...)` which leaked the returned slice — 16 leaked allocations per full test run.
+
+**Fix (commit `fbf83057`).** Revert all 3 to the post-PR-#181 state:
+- `WHERE tool_call_id = ?` (back to looking up by `tool_call_id`)
+- `io` arg added at all 4 test callsites
+- `inserLLMHistories` returns `!void` (no id dupe, no leak)
+- All 16 test callsites: `_ = try inserLLMHistories(...)` → `try inserLLMHistories(...)`
+
+**Verification.**
+- `zig build test --summary all`
+  - BEFORE: 3 tests failing + 18 allocations leaked
+  - AFTER: 2294/2300 pass, 6 skip, 2 leaks (matches documented baseline)
+- 3 tests now pass that were previously failing:
+  - `updateToolResultById updates content + is_loading=0 in place`
+  - `updateToolResultById accepts and stores diffview_before / diffview_after`
+  - `resolveStaleLoadingToolResults is idempotent on a session with no stranded rows`
+
+**Files (3 changed, +22/-24).**
+- `src/ai_workflow/tui/llm_history.zig` (1 line)
+- `src/ai_workflow/tui/llm_history_tool_call_loading_test.zig` (4 lines)
+- `src/ai_workflow/tui/agentic_loop/insert_llm_histories.zig` (37 lines)
+
+**Lesson.** Follow-up "fix the invalid thing" commits need full regression coverage: if PR #181 had a regression test that covered the `UPDATE … WHERE tool_call_id = ?` round-trip, this would have been caught immediately. The `updateToolResultById` function is now well-tested by the suite — future changes to its WHERE clause will fail loudly.
+
