@@ -512,11 +512,11 @@ pub fn handle_tool(
                     });
                     tool_result = try wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
                     errdefer allocator.free(tool_result);
-                    try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id, model, loop_counter);
+                    try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                     allocator.free(tool_result);
                     continue;
                 };
-                try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id, model, loop_counter);
+                try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                 continue;
             }
 
@@ -529,7 +529,7 @@ pub fn handle_tool(
                 });
                 tool_result = try wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
                 errdefer allocator.free(tool_result);
-                try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id, model, loop_counter);
+                try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                 allocator.free(tool_result);
                 continue;
             };
@@ -554,7 +554,7 @@ pub fn handle_tool(
                 };
             }
 
-            try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id, model, loop_counter);
+            try updateAndSendToolResult(allocator, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
         }
     }
 
