@@ -604,3 +604,48 @@ test "execute_search_history: mode=session tool_name=read_file returns only read
     try testing.expect(std.mem.indexOf(u8, xml, "<id>read_h</id>") != null);
     try testing.expect(std.mem.indexOf(u8, xml, "<id>bash_h</id>") == null);
 }
+
+// =============================================================================
+// Chunk 3 — parent_session_id filter
+// =============================================================================
+// The `parent_session_id` column is added to the test schema during the
+// `addColumnIfMissing` style helpers used in higher-level fixtures. For our
+// minimal test schema we add it via `ALTER TABLE` in each test that uses
+// it (keeps the shared `setupDb()` from drifting).
+//
+// Note: the production schema does have the column. See Migration 012.
+
+test "execute_search_history: mode=text parent_session_id filter restricts to sub-agent rows" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    // Add the parent_session_id column (production schema has it via Migration 012).
+    try s.db.exec(alloc,
+        "ALTER TABLE llm_history ADD COLUMN parent_session_id TEXT DEFAULT ''",
+        &.{});
+
+    // 1 sub-agent row + 1 main-agent row + 1 sub-agent of a different parent — all match query.
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, parent_session_id) " ++
+        "VALUES ('sub_a1','s_subA','user','keyword in subA','s_parent')", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, parent_session_id) " ++
+        "VALUES ('main_h','s_main','user','keyword in main','')", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, parent_session_id) " ++
+        "VALUES ('sub_b1','s_subB','user','keyword in subB','s_other_parent')", &.{});
+
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "text",
+        .query = "keyword",
+        .parent_session_id = "s_parent",
+    });
+    defer alloc.free(xml);
+
+    // Only the row whose parent_session_id matches.
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>sub_a1</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>main_h</id>") == null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>sub_b1</id>") == null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<count>1</count>") != null);
+}
