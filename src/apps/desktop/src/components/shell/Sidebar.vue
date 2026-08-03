@@ -866,11 +866,64 @@ const handleSelectTask = (taskId: string) => {
     chatsListRef.value.resetActiveChat()
   }
   const parentItemId = workspacesStore.activeWorkspaceItemId ?? ''
-  router.replace({
-    path: '/app',
-    query: { view: 'task', task: taskId, itemId: parentItemId },
-  })
+  // NEW (better-url-browser, 2026-08-06): APPEND the URL instead
+  // of REPLACE. The user reported "when click task in kanban, no
+  // need replace url, but append the url browser" — clicking a
+  // kanban task used to write a lean `?view=task&task=X&itemId=Y`
+  // URL via router.replace, which (a) dropped the workspace +
+  // per-column sort context the user was on, and (b) clobbered the
+  // browser history so the back button skipped the kanban URL.
+  //
+  // Now we PUSH the new URL with the current route.query spread
+  // underneath, then override `view`, `task`, and `itemId`. This:
+  //   1. Preserves the breadcrumb (workspaceId / pageId / sorts)
+  //      so a refresh of the task URL still carries the kanban
+  //      context, matching the sidebar's mental model of "I'm on
+  //      kanban X, opened task Y from column Z".
+  //   2. Keeps the previous URL in the browser history so the back
+  //      button returns naturally to the kanban URL (no need to
+  //      manually pre-fill `savedSortsParam` for back-restore).
+  //   3. Still works for deep links — if the user landed on the
+  //      task URL via bookmark with NO workspace context, the
+  //      spread copies nothing and the resulting URL stays lean.
+  //
+  // The `savedSortsParam` snapshot above remains the close-restore
+  // fallback for cases where AppLayout's handleCloseTaskView runs
+  // WITHOUT the URL having preserved context (e.g. an older URL
+  // pattern that lands on task without kanban context).
+  const query: Record<string, string> = {
+    // Carry over the current URL's breadcrumb params. vue-router's
+    // LocationQuery values can be `string | null | (string|null)[]`;
+    // we only preserve the string-typed scalars that match the
+    // kanban/folder/design breadcrumb contract. Other params
+    // (e.g. `chat`, `session`, `view`) are intentionally dropped —
+    // we explicitly set `view` and `task` below.
+    ...pickBreadcrumbFromQuery(route.query),
+    view: 'task',
+    task: taskId,
+    itemId: parentItemId,
+  }
+  router.push({ path: '/app', query })
   console.log("[handleSelectTask] end handleSelectTask")
+}
+
+// Pick the breadcrumb params (`workspaceId`, `itemId`, `pageId`,
+// `sorts`) from a vue-router LocationQuery and return them as a
+// plain Record<string, string>. Used by handleSelectTask to
+// preserve the user's current kanban/folder/design context when
+// APPENDing the URL on task click (better-url-browser, 2026-08-06).
+// Returns an empty object when the source query has no relevant
+// breadcrumb fields (e.g. user landed via deep link with no
+// workspace context).
+const pickBreadcrumbFromQuery = (
+  query: Record<string, unknown>,
+): Record<string, string> => {
+  const out: Record<string, string> = {}
+  for (const key of ['workspaceId', 'itemId', 'pageId', 'sorts']) {
+    const v = query[key]
+    if (typeof v === 'string' && v.length > 0) out[key] = v
+  }
+  return out
 }
 
 const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
