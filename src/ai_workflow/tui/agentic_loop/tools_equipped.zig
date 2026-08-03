@@ -29,6 +29,8 @@ const group_design_elements_mod = nalarcore.group_design_elements;
 const set_element_parent_mod = nalarcore.set_element_parent;
 const move_design_element_mod = nalarcore.move_design_element;
 const show_preview_mod = nalarcore.ai_mod.show_preview;
+const get_design_context_mod = nalarcore.get_design_context;
+const preview_design_page_mod = nalarcore.preview_design_page;
 const remove_agent_mod = nalarcore.remove_agent;
 const remove_file_mod = nalarcore.remove_file;
 const change_agent_mod = nalarcore.change_agent;
@@ -84,6 +86,8 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         group_design_elements_mod.group_design_element_tool,
         set_element_parent_mod.set_element_parent_tool,
         move_design_element_mod.move_design_element_tool,
+        get_design_context_mod.get_design_context_tool,
+        preview_design_page_mod.preview_design_page_tool,
     };
     return allocator.dupe(AgentTool, tools_list) catch return &.{};
 }
@@ -163,6 +167,8 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         .{ .name = "group_elements", .exec = mod.tools.execGroupElements, .tool_def = group_design_elements_mod.group_design_element_tool },
         .{ .name = "set_element_parent", .exec = mod.tools.execSetElementParent, .tool_def = set_element_parent_mod.set_element_parent_tool },
         .{ .name = "move_design_element", .exec = mod.tools.execMoveDesignElement, .tool_def = move_design_element_mod.move_design_element_tool },
+        .{ .name = "get_design_context", .exec = mod.tools.execGetDesignContext, .tool_def = get_design_context_mod.get_design_context_tool },
+        .{ .name = "preview_design_page", .exec = mod.tools.execPreviewDesignPage, .tool_def = preview_design_page_mod.preview_design_page_tool },
 
         // === PREVIEW TOOLS ===
         .{ .name = "show_preview", .exec = mod.tools.execShowPreview, .tool_def = show_preview_mod.show_preview_tool },
