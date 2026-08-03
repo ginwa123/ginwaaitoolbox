@@ -46,15 +46,15 @@ const makeItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
     { id: 'col_b', name: 'in_progress', workspace_item_id: ITEM_ID, position: 1, created_at: '2026-01-01' },
   ],
   tasks: [],
-  // Pre-populate columnPagination so KanbanView's `loadColumnsAndTasks`
-  // (its initial mount-time fetch) SKIPS the per-column fetch. This
-  // is critical for the per-column-fetch tests — we want to assert
-  // that ONLY the column we click on gets `fetchKanbanTasks`
-  // called, not the initial mount's fetch for every column.
-  columnPagination: {
-    col_a: { cursor: null, hasMore: false, isLoading: false },
-    col_b: { cursor: null, hasMore: false, isLoading: false },
-  },
+  // NOTE (kanban-sort-independence, 2026-08-06, onmount
+  // single-fetch): tests that want to assert on the per-column
+  // fetch from `loadColumnsAndTasks` (URL restore) should NOT
+  // pre-populate columnPagination — that would skip the fetch.
+  // Tests that want to assert on click-only fetches (e.g. the
+  // "picking a sort" describe block) DO pre-populate so the
+  // initial mount's fetch doesn't muddy the assertion. See
+  // each describe block for its setup.
+  columnPagination: {},
   ...overrides,
 })
 
@@ -86,20 +86,24 @@ vi.mock('vue-router', async () => {
   }
 })
 
-function mountKanbanView(query: Record<string, string> = {}) {
+function mountKanbanView(
+  query: Record<string, string> = {},
+  opts: { item?: WorkspaceItem } = {},
+) {
   useRouteMock.mockReturnValue({
     query,
     path: '/app',
     fullPath: '/app',
   } as any)
+  const item = opts.item ?? makeItem()
   const store = useWorkspacesStore()
   store.workspaces = [
-    { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
+    { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] },
   ]
   const replaceMock = vi.fn()
   useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
   const wrapper = mount(KanbanView, {
-    props: { item: makeItem(), workspaceId: WS_ID },
+    props: { item, workspaceId: WS_ID },
   })
   return { wrapper, replaceMock }
 }
@@ -120,20 +124,32 @@ describe('KanbanView — per-column sort triggers API call (only the changed col
     // fetchKanbanTasksForAllColumns which fired N parallel requests
     // (one per column) — all with the same sort_by. Now only the
     // changed column's fetch fires.
+    //
+    // Pre-populate columnPagination so the initial mount's
+    // loadColumnsAndTasks doesn't fire its own per-column fetch
+    // (which would muddy this click-isolation assertion). The
+    // click handler's per-column fetch is the ONLY fetchKanbanTasks
+    // call in this test.
+    const item = makeItem({
+      columnPagination: {
+        col_a: { cursor: null, hasMore: false, isLoading: false },
+        col_b: { cursor: null, hasMore: false, isLoading: false },
+      },
+    })
     const store = useWorkspacesStore()
-    store.workspaces = [
-      { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
-    ]
     const fetchAllSpy = vi
       .spyOn(store, 'fetchKanbanTasksForAllColumns')
       .mockResolvedValue()
     const fetchOneSpy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
 
-    const { wrapper } = mountKanbanView({
-      view: 'workspace',
-      workspaceId: WS_ID,
-      itemId: ITEM_ID,
-    })
+    const { wrapper } = mountKanbanView(
+      {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: ITEM_ID,
+      },
+      { item },
+    )
 
     // Open the ⋮ menu on col_a, click Sort tasks…, pick "Oldest".
     await wrapper.find(`[data-testid="kanban-column-col_a-menu-trigger"]`).trigger('click')
@@ -164,16 +180,24 @@ describe('KanbanView — per-column sort triggers API call (only the changed col
     // — fetch with no sortBy param. Backend uses its default
     // ORDER BY (kanban_position asc).
     const store = useWorkspacesStore()
-    store.workspaces = [
-      { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
-    ]
+    // Pre-populate columnPagination so the initial mount's
+    // loadColumnsAndTasks doesn't fire its own per-column fetch.
+    const item = makeItem({
+      columnPagination: {
+        col_a: { cursor: null, hasMore: false, isLoading: false },
+        col_b: { cursor: null, hasMore: false, isLoading: false },
+      },
+    })
     const fetchOneSpy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
 
-    const { wrapper } = mountKanbanView({
-      view: 'workspace',
-      workspaceId: WS_ID,
-      itemId: ITEM_ID,
-    })
+    const { wrapper } = mountKanbanView(
+      {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: ITEM_ID,
+      },
+      { item },
+    )
 
     await wrapper.find(`[data-testid="kanban-column-col_a-menu-trigger"]`).trigger('click')
     await wrapper.find(`[data-testid="kanban-column-col_a-menu-sort"]`).trigger('click')
@@ -193,16 +217,24 @@ describe('KanbanView — per-column sort triggers API call (only the changed col
     // replaces the column's local tasks slice (see fetchKanbanTasks
     // implementation: `otherTasks = item.tasks.filter(t => t.kanban_column_id !== colId)`).
     const store = useWorkspacesStore()
-    store.workspaces = [
-      { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
-    ]
+    // Pre-populate columnPagination so the initial mount's
+    // loadColumnsAndTasks doesn't fire its own per-column fetch.
+    const item = makeItem({
+      columnPagination: {
+        col_a: { cursor: null, hasMore: false, isLoading: false },
+        col_b: { cursor: null, hasMore: false, isLoading: false },
+      },
+    })
     const fetchOneSpy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
 
-    const { wrapper } = mountKanbanView({
-      view: 'workspace',
-      workspaceId: WS_ID,
-      itemId: ITEM_ID,
-    })
+    const { wrapper } = mountKanbanView(
+      {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: ITEM_ID,
+      },
+      { item },
+    )
 
     // First sort: name asc
     await wrapper.find(`[data-testid="kanban-column-col_a-menu-trigger"]`).trigger('click')
