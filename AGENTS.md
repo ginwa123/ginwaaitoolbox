@@ -395,6 +395,37 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Kanban chatview dialog — 3rd size bump (make it bigger on kanban mode)
+
+**Symptom (user report).** User said *"make chatview dialog bigger on kanban mode"* with a screenshot showing the dialog occupying ~60% of the viewport width. Current sizing was 95vw × 90vh / max 1400×1000 — visible as a centered panel with ~150px margin on each side of a typical 1600px viewport.
+
+**What landed (commit `c47c94ac`, branch `worktree/kanban-chat-dialog-bigger`).**
+
+| | Before | After |
+|---|---|---|
+| width | 95vw | 98vw |
+| height | 90vh | 95vh |
+| max-width | 1400px | 1600px |
+| max-height | 1000px | 1200px |
+| min-width | 720px | 800px |
+| min-height | 480px | 540px |
+| Area (vw·vh) | 0.855 | 0.931 (+8.9%) |
+
+Also restored the stale header comment block — the previous bump updated the code but not the comments, so the header claimed 90vw/85vh when the actual code was 95vw/90vh. The new block tracks all 4 bumps (original → 1st → 2nd → current).
+
+**Files (2 changed, +91/-12).**
+
+- `src/apps/desktop/src/components/kanban/KanbanChatDialog.vue` — inline `:style` width/height/max/min values
+- `src/apps/desktop/src/__tests__/KanbanChatDialog.spec.ts` — +4 new tests in a new `describe('dialog sizing (2026-08-06, 3rd bump)')` block
+
+**TDD trace.** RED: 3 of 4 new tests fail on the inline-style regex (the 4th, the pure-numeric `98·95 > 95·90`, passes trivially). GREEN: patch the .vue → 13/13 dialog tests pass.
+
+**Verification.** `bun run build` clean (vue-tsc). `bunx vitest run` 2078 pass / 19 fail — the 19 are PRE-EXISTING on main (matches the documented baseline exactly: DesignView.undoHidden×5, AppLayout.urlPersist×7, AppLayout.memoriesGate×4, DesignElement static contract×1, AppLayout.translateResize×1, DesignView.nudge clamp×1). Zero regressions.
+
+**Lesson.** Lock in CSS sizing via inline-style regex assertions when the value keeps getting bumped. Pure visual checks need Playwright, but a 4-line `expect(panel.getAttribute('style')).toMatch(/width:\s*98vw/)` catches "someone shrank the dialog" without any visual-regression infrastructure. For one-off cosmetic tweaks it's overkill; for "this value keeps getting tweaked", it's worth it.
+
+**Memory.** `.nalar/memories/kanban-chat-dialog-sizing-bump-2026-08-06.md`.
+
 ### 2026-08-06: Deduplicate `UNIFIED_TOOL_REGISTRY` — single source of truth in `tools_equipped.zig`
 
 **Symptom (user report, task_1785779810982).** User: *"duplicate pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo { … i want you use from tools_equiped .zig file"*. The LLM tool registry was defined in TWO files: `tools_equipped.zig` (newer, includes `get_design_context` + `preview_design_page`) and `tool_registry.zig` (older legacy file). Two competing copies meant future tool additions had to be added in two places, and the older copy was silently missing the newest tools (the agent couldn't actually call `get_design_context` from the legacy copy).

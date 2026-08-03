@@ -268,4 +268,75 @@ describe('KanbanChatDialog', () => {
     const title = document.querySelector('[data-testid="kanban-chat-dialog-title"]')
     expect(title?.textContent).toContain('Chat')
   })
+
+  // 2026-08-06 polish, 3rd bump: user asked "make chatview dialog bigger
+  // on kanban mode". Lock in the new sizing so future refactors don't
+  // shrink it back. Reads the inline `style` attribute Vue compiles
+  // from the :style binding on the panel.
+  describe('dialog sizing (2026-08-06, 3rd bump)', () => {
+    it('uses 98vw width + 95vh height for viewport-relative sizing', async () => {
+      wrapper = mountDialog({
+        show: true,
+        task: TASK_A,
+        workspaceId: 'ws_1',
+        itemId: 'item_1',
+        projectName: 'Sprint',
+        cwd: '',
+      })
+      await flushPromises()
+      const panel = document.querySelector(
+        '[data-testid="kanban-chat-dialog"]',
+      ) as HTMLElement
+      expect(panel).not.toBeNull()
+      const style = panel.getAttribute('style') ?? ''
+      expect(style).toMatch(/width:\s*98vw/)
+      expect(style).toMatch(/height:\s*95vh/)
+    })
+
+    it('caps at max-width 1600px and max-height 1200px on large screens', async () => {
+      wrapper = mountDialog({
+        show: true,
+        task: TASK_A,
+        workspaceId: 'ws_1',
+        itemId: 'item_1',
+        projectName: 'Sprint',
+        cwd: '',
+      })
+      await flushPromises()
+      const panel = document.querySelector(
+        '[data-testid="kanban-chat-dialog"]',
+      ) as HTMLElement
+      expect(panel).not.toBeNull()
+      const style = panel.getAttribute('style') ?? ''
+      expect(style).toMatch(/max-width:\s*1600px/)
+      expect(style).toMatch(/max-height:\s*1200px/)
+    })
+
+    it('keeps a usable min size on small viewports', async () => {
+      wrapper = mountDialog({
+        show: true,
+        task: TASK_A,
+        workspaceId: 'ws_1',
+        itemId: 'item_1',
+        projectName: 'Sprint',
+        cwd: '',
+      })
+      await flushPromises()
+      const panel = document.querySelector(
+        '[data-testid="kanban-chat-dialog"]',
+      ) as HTMLElement
+      expect(panel).not.toBeNull()
+      const style = panel.getAttribute('style') ?? ''
+      expect(style).toMatch(/min-width:\s*800px/)
+      expect(style).toMatch(/min-height:\s*540px/)
+    })
+
+    it('dialog area exceeds the previous 95vw x 90vh sizing', async () => {
+      // Cross-check the 3rd bump is actually bigger than the 2nd bump.
+      // 0.98 * 0.95 > 0.95 * 0.90 (0.931 > 0.855).
+      const before = 95 * 90 // 8550
+      const after = 98 * 95 // 9310
+      expect(after).toBeGreaterThan(before)
+    })
+  })
 })

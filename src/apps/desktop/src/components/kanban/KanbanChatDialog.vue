@@ -28,10 +28,17 @@
       update:show   [value: boolean]  (v-model:show)
       close         []                (backward compat with KanbanSettingsDialog-style binding)
 
-  Sizing (2026-08-06 polish):
-    - 90vw × 85vh (was 80vw × 80vh — bigger per user feedback)
-    - max 1200px × 900px (was 1100 × 800)
-    - min 640px × 420px (was 480 × 320)
+  Sizing (2026-08-06 polish, 3rd bump):
+    - 98vw × 95vh (was 95vw × 90vh — bigger per user feedback
+      "make chatview dialog bigger on kanban mode")
+    - max 1600px × 1200px (was 1400 × 1000)
+    - min 800px × 540px (was 720 × 480)
+    - history:
+        80vw × 80vh / max 1100×800 / min 480×320  (original)
+        90vw × 85vh / max 1200×900 / min 640×420  (1st bump — stale comment block)
+        95vw × 90vh / max 1400×1000 / min 720×480 (2nd bump — code only, comments forgot)
+        98vw × 95vh / max 1600×1200 / min 800×540 (3rd bump — current)
+    - area delta: 0.95·0.90 = 0.855 → 0.98·0.95 = 0.931 (+8.9%)
     - panel background: opaque var(--semantic-content-bg) + glassmorphism
       via backdrop-filter on the panel itself (slightly tints the
       kanban behind the panel edges without making the panel
@@ -131,8 +138,9 @@ watch(
 
       <!--
         Dialog panel. Explicit centering: top:50%, left:50%, then
-        translate(-50%, -50%) to truly center. Bigger sizing (90vw ×
-        85vh, max 1200×900) per user feedback. OPAQUE background
+        translate(-50%, -50%) to truly center. Bigger sizing (98vw ×
+        95vh, max 1600×1200) per user feedback "make chatview dialog
+        bigger on kanban mode". OPAQUE background
         (var(--semantic-content-bg) is the fully-saturated card
         surface; var(--semantic-bg) was sometimes being inherited
         transparent in nested contexts). Hairline violet border +
@@ -144,12 +152,12 @@ watch(
         class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col overflow-hidden"
         style="
           background: var(--semantic-content-bg);
-          width: 95vw;
-          height: 90vh;
-          max-width: 1400px;
-          max-height: 1000px;
-          min-width: 720px;
-          min-height: 480px;
+          width: 98vw;
+          height: 95vh;
+          max-width: 1600px;
+          max-height: 1200px;
+          min-width: 800px;
+          min-height: 540px;
           border: 1px solid var(--color-violet);
           border-radius: 14px;
           box-shadow:
