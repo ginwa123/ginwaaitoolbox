@@ -17,7 +17,7 @@ const text_normalize = nalarcore.helpers.text_normalize;
 const design_model = @import("../../../ai_workflow/tui/design_model.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/add_design_element.zig";
-const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tool_registry.zig";
+const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan
 /// The exec function was migrated from `tool_registry.zig` to
 /// `src/ai_workflow/tui/agentic_loop/tools_exec_add_element.zig`.
 const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_add_element.zig";
@@ -126,17 +126,17 @@ test "add_element input supports optional geometry defaults" {
 
 // ─── Static wiring tests ─────────────────────────────────────────────────
 
-test "tool_registry.zig imports add_design_element module" {
+test "tools_equipped.zig imports add_design_element module" {
+    // After deduplication of `UNIFIED_TOOL_REGISTRY` (2026-08-06), the
+    // registry body lives in `tools_equipped.zig` and no longer lives
+    // in `tool_registry.zig`. This test now reads the imports from
+    // the canonical home.
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
-    if (!contains(source, "add_design_element_mod")) {
-        std.debug.print("!! tool_registry.zig does not import add_design_element_mod !!\n", .{});
-        return error.AddElementModImportMissing;
-    }
-    if (!contains(source, "add_design_element_tool")) {
-        std.debug.print("!! tool_registry.zig does not bind add_design_element_tool !!\n", .{});
-        return error.AddElementToolBindingMissing;
+    if (!contains(source, "const add_design_element_mod = nalarcore.add_design_element;")) {
+        std.debug.print("!! tools_equipped.zig does not bind add_design_element_mod = nalarcore.add_design_element !!\n", .{});
+        return error.AddElementModBindingMissing;
     }
 }
 
@@ -154,15 +154,20 @@ test "agentic_loop defines execAddElement" {
 }
 
 test "UNIFIED_TOOL_REGISTRY contains add_element entry" {
+    // The registry body moved from `tool_registry.zig` (deleted) to
+    // `tools_equipped.zig` (canonical home) on 2026-08-06. The test
+    // now reads from the canonical file. tools_equipped.zig imports
+    // `tools = @import("tools.zig")` directly, so the `.exec` binding
+    // is `tools.execAddElement` (NOT `agentic_loop_mod.tools.execAddElement`).
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
     if (!contains(source, ".name = \"add_element\"")) {
         std.debug.print("!! UNIFIED_TOOL_REGISTRY is missing the add_element entry !!\n", .{});
         return error.RegistryEntryMissing;
     }
-    if (!contains(source, ".exec = agentic_loop_mod.tools.execAddElement")) {
-        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = agentic_loop_mod.tools.execAddElement !!\n", .{});
+    if (!contains(source, ".exec = tools.execAddElement")) {
+        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = tools.execAddElement !!\n", .{});
         return error.RegistryExecBindingMissing;
     }
     if (!contains(source, ".tool_def = add_design_element_mod.add_design_element_tool")) {

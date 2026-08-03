@@ -22,7 +22,7 @@ const text_normalize = nalarcore.helpers.text_normalize;
 const design_model = @import("../../../ai_workflow/tui/design_model.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/group_design_elements.zig";
-const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tool_registry.zig";
+const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan
 const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_group_elements.zig";
 const TOOLS_EQUIPPED_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig";
 const TOOLS_ZIG_PATH = "src/ai_workflow/tui/agentic_loop/tools.zig";
@@ -108,17 +108,17 @@ test "group_elements description references set_design_page as the source of pag
 
 // ─── Static wiring tests ─────────────────────────────────────────────────
 
-test "tool_registry.zig imports group_design_elements module" {
+test "tools_equipped.zig imports group_design_elements module" {
+    // After deduplication of `UNIFIED_TOOL_REGISTRY` (2026-08-06), the
+    // registry body lives in `tools_equipped.zig` and no longer lives
+    // in `tool_registry.zig`. This test now reads the imports from
+    // the canonical home.
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
-    if (!contains(source, "group_design_elements_mod")) {
-        std.debug.print("!! tool_registry.zig does not import group_design_elements_mod !!\n", .{});
-        return error.GroupElementsModImportMissing;
-    }
-    if (!contains(source, "group_design_element_tool")) {
-        std.debug.print("!! tool_registry.zig does not bind group_design_element_tool !!\n", .{});
-        return error.GroupElementsToolBindingMissing;
+    if (!contains(source, "const group_design_elements_mod = nalarcore.group_design_elements;")) {
+        std.debug.print("!! tools_equipped.zig does not bind group_design_elements_mod = nalarcore.group_design_elements !!\n", .{});
+        return error.GroupElementsModBindingMissing;
     }
 }
 
@@ -143,15 +143,20 @@ test "tools.zig re-exports execGroupElements" {
 }
 
 test "UNIFIED_TOOL_REGISTRY contains group_elements entry" {
+    // The registry body moved from `tool_registry.zig` (deleted) to
+    // `tools_equipped.zig` (canonical home) on 2026-08-06. The test
+    // now reads from the canonical file. tools_equipped.zig imports
+    // `tools = @import("tools.zig")` directly, so the `.exec` binding
+    // is `tools.execGroupElements` (NOT `agentic_loop_mod.tools.execGroupElements`).
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
     if (!contains(source, ".name = \"group_elements\"")) {
         std.debug.print("!! UNIFIED_TOOL_REGISTRY is missing the group_elements entry !!\n", .{});
         return error.RegistryEntryMissing;
     }
-    if (!contains(source, ".exec = agentic_loop_mod.tools.execGroupElements")) {
-        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = agentic_loop_mod.tools.execGroupElements !!\n", .{});
+    if (!contains(source, ".exec = tools.execGroupElements")) {
+        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = tools.execGroupElements !!\n", .{});
         return error.RegistryExecBindingMissing;
     }
     if (!contains(source, ".tool_def = group_design_elements_mod.group_design_element_tool")) {

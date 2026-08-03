@@ -4,7 +4,8 @@ const agent = nalar.agent;
 const logger_mod = nalar.loggermod;
 const sqlite = nalar.sqlite;
 const config_mod = nalar.config;
-const tool_registry = @import("tool_registry.zig");
+const tools_equipped = @import("tools_equipped.zig");
+const tools = @import("tools.zig");
 const llm_history = @import("../llm_history.zig");
 const SaveSkill = llm_history.saveSkill;
 const SaveAgent = @import("../save_agent.zig").SaveAgent;
@@ -21,11 +22,16 @@ const on_event_sent = @import("../on_event_sent.zig");
 const onEventSendLLMHistory = on_event_sent.onEventSendLLMHistory;
 
 // ============================================================================
-// TOOL REGISTRY - Uses unified tool_registry.zig
+// TOOL REGISTRY - Single source of truth: tools_equipped.zig
 // ============================================================================
+//
+// The registry used to live in `tool_registry.zig` (deleted). It is now
+// defined exclusively in `tools_equipped.zig` — every reference in this
+// file (and elsewhere) goes through there. Re-export the alias here for
+// downstream callers that still import `handle_tool.TOOL_REGISTRY`.
 
-/// Re-export from unified registry for backwards compatibility
-pub const TOOL_REGISTRY = tool_registry.UNIFIED_TOOL_REGISTRY;
+/// Re-export from the canonical registry (`tools_equipped.zig`).
+pub const TOOL_REGISTRY = tools_equipped.UNIFIED_TOOL_REGISTRY;
 
 /// Context passed to all tool handlers
 const ToolContext = struct {
@@ -164,7 +170,7 @@ const MainAgentToolResult = struct {
 fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const tool_name = tool_call.function.name;
 
-    for (tool_registry.UNIFIED_TOOL_REGISTRY()) |entry| {
+    for (tools_equipped.UNIFIED_TOOL_REGISTRY()) |entry| {
         if (std.mem.eql(u8, tool_name, entry.name)) {
             return dispatchFromRegistry(ctx, tool_call, entry.exec);
         }
@@ -180,8 +186,8 @@ fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 
 /// Dispatch tool execution from registry entry
 /// Calls exec directly and handles auto-save via registry flags
-fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: tool_registry.ToolExecFunc) !ToolResult {
-    const ctx_local = tool_registry.ToolExecContext{
+fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: tools_equipped.ToolExecFunc) !ToolResult {
+    const ctx_local = tools.ToolExecContext{
         .allocator = ctx.allocator,
         .io = ctx.io,
         .db = ctx.db,
@@ -244,7 +250,10 @@ fn dispatchMCP(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
 
 /// Check if a tool name is registered (uses unified registry)
 pub fn isKnownTool(name: []const u8) bool {
-    return tool_registry.isKnownTool(name);
+    for (tools_equipped.UNIFIED_TOOL_REGISTRY()) |*tool| {
+        if (std.mem.eql(u8, name, tool.name)) return true;
+    }
+    return false;
 }
 
 /// Check if a tool name is registered or is an MCP tool
@@ -255,7 +264,15 @@ pub fn isKnownToolOrMCP(name: []const u8, config: *const config_mod.LlmConfig) b
 
 /// Get all tool names as a slice
 pub fn getToolNames() []const []const u8 {
-    return tool_registry.getToolNames();
+    const unified = tools_equipped.UNIFIED_TOOL_REGISTRY();
+    const names = comptime blk: {
+        var n: [unified.len][]const u8 = undefined;
+        for (unified, 0..) |tool, i| {
+            n[i] = tool.name;
+        }
+        break :blk n;
+    };
+    return &names;
 }
 
 // ============================================================================

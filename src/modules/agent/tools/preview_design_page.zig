@@ -220,10 +220,10 @@ fn renderElement(
         if (e.rotation != 0.0) try appendRotation(svg, allocator, e.x, e.y, h, e.rotation, scale);
         try svg.appendSlice(allocator, " />");
     } else if (std.mem.eql(u8, e.elem_type, "ellipse")) {
-        const cx = x + w / 2;
-        const cy = y + h / 2;
-        const rx = w / 2;
-        const ry = h / 2;
+        const cx = x + @divTrunc(w, 2);
+        const cy = y + @divTrunc(h, 2);
+        const rx = @divTrunc(w, 2);
+        const ry = @divTrunc(h, 2);
         try svg.appendSlice(allocator, "<ellipse");
         var buf: [32]u8 = undefined;
         try svg.appendSlice(allocator, " cx=\"");
@@ -365,7 +365,7 @@ fn appendRotation(
     // center in the parent coord space.
     const center_x = @as(i64, @intFromFloat(@as(f64, @floatFromInt(cx)) * scale));
     const center_y = @as(i64, @intFromFloat(@as(f64, @floatFromInt(cy)) * scale)) +
-        @as(i64, @intFromFloat(@as(f64, @floatFromInt(h)) * scale)) / 2;
+        @divTrunc(@as(i64, @intFromFloat(@as(f64, @floatFromInt(h)) * scale)), 2);
     var buf: [64]u8 = undefined;
     const deg = rotation * 180.0 / std.math.pi;
     try svg.appendSlice(allocator, " transform=\"rotate(");

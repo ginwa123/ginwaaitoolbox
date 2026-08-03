@@ -395,6 +395,35 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Deduplicate `UNIFIED_TOOL_REGISTRY` — single source of truth in `tools_equipped.zig`
+
+**Symptom (user report, task_1785779810982).** User: *"duplicate pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo { … i want you use from tools_equiped .zig file"*. The LLM tool registry was defined in TWO files: `tools_equipped.zig` (newer, includes `get_design_context` + `preview_design_page`) and `tool_registry.zig` (older legacy file). Two competing copies meant future tool additions had to be added in two places, and the older copy was silently missing the newest tools (the agent couldn't actually call `get_design_context` from the legacy copy).
+
+**Root cause.** The registry was migrated from `tool_registry.zig` to `tools_equipped.zig` as part of the `agentic_loop/` restructuring (PR #165 chain), but the old `tool_registry.zig` body was kept as a re-export shim. Two issues with that:
+1. **Latent compile bug**: `tools_equipped.zig:51` referenced `nalarcore.create_kanban_task_tool` (suffix), but `root.zig` only exposes `pub const create_kanban_task` (no suffix). Zig 0.16's lazy semantic analysis hid this — the build passed because `tools_equipped.UNIFIED_TOOL_REGISTRY()` was never actually called from any test, so its body was never analyzed.
+2. **Latent bug in `preview_design_page.zig`**: `@as(i64, @intFromFloat(...)) / 2` at line 368 — Zig 0.16 requires explicit `@divTrunc` / `@divFloor` / `@divExact` for signed division. Same lazy-analysis-hidden.
+3. **Latent bug in `show_preview.zig`**: `successEnvelope` referenced from `preview_design_page.zig:444` but was `fn` (not `pub fn`) — only surfaced when the full chain was analyzed.
+
+**What landed.** Single source of truth for the registry:
+- **Deleted** `src/ai_workflow/tui/agentic_loop/tool_registry.zig` (the duplicate). The file was 238 lines of import aliases + a copy of `UNIFIED_TOOL_REGISTRY()`; now both copies collapse to the one in `tools_equipped.zig`.
+- **`tools_equipped.zig`** (canonical, kept): unchanged in shape. Fixed the `nalarcore.create_kanban_task_tool` → `nalarcore.create_kanban_task` import bug so the function actually compiles when called.
+- **`handle_tool.zig`** (the only production caller): `tool_registry.UNIFIED_TOOL_REGISTRY()` → `tools_equipped.UNIFIED_TOOL_REGISTRY()`. `ToolExecFunc` type re-exported; `isKnownTool` / `getToolNames` rewritten to walk the registry directly (dropped the `tool_registry` indirection).
+- **`workflow.zig`**: `tool_registry = @import("tool_registry.zig")` → `@import("tools_equipped.zig")` (now matches the `tool_registry` variable name still used in a code comment).
+- **`handle_semantic_search.zig`**: removed unused `tool_registry` import.
+- **`preview_design_page.zig`**: fixed 5 instances of `i64 / 2` → `@divTrunc(_, 2)` (line 223-226 + line 368).
+- **`show_preview.zig`**: added `pub` to `successEnvelope` so cross-file callers (the `preview_design_page.zig` envelope wrap) can reach it.
+- **8 static-contract test files updated** to point `TOOL_REGISTRY_PATH` at `tools_equipped.zig` instead of the deleted `tool_registry.zig`, AND updated the `.exec =` patterns from `agentic_loop_mod.tools.execX` to `tools.execX` (because `tools_equipped.zig` imports `tools = @import("tools.zig")` directly): `kanban_list_test.zig`, `kanban_move_task_test.zig`, `set_git_worktree_test.zig`, `create_kanban_task_test.zig`, `set_design_page_test.zig`, `add_design_element_test.zig`, `update_design_element_test.zig`, `group_design_elements_test.zig`. The "tool_registry.zig imports X module" tests were deleted entirely (the file no longer has module imports — they're now in `tools_equipped.zig`).
+
+**Verification.**
+- `zig build` → all 3 binaries compile (Linux, native).
+- `zig build-obj -fno-emit-bin -target x86_64-windows-gnu` → clean (no errors).
+- `zig build-obj -fno-emit-bin -target aarch64-macos` → clean (no errors).
+- `zig build test --summary all` → **2278/2284 tests pass** (same as main; the 2 pre-existing leaks in `design_model_set_element_parent_test` are unrelated to this change).
+
+**Why this matters.** Before the dedup, every new tool had to be added in TWO places (`tools_equipped.zig` AND `tool_registry.zig`). The legacy copy was silently missing the 2 newest tools (`get_design_context`, `preview_design_page`) — meaning the LLM couldn't reach them through the dispatch path that `handle_tool.zig` actually uses. Now there's one registry to maintain, and lazy analysis can no longer hide compile bugs in any tool's body (the chain is fully wired).
+
+**Branch / commit.** `worktree/dedup-tool-registry` (15 files: 1 deleted, 14 modified). Pending squash-merge.
+
 ### 2026-08-06: Add `workspace_id` URL param when viewing a task (kanban / design mode)
 
 **Symptom (user report, task_1785774094183).** User: *"add workspace_id params when view the task, like in kanbanmode or design mode"*. The URL bar showed `?view=task&task=X&itemId=Y` with no `workspaceId`, so sharing / refreshing / back-buttoning the URL lost the kanban / design context.

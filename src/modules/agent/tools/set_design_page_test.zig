@@ -19,7 +19,7 @@ const text_normalize = nalarcore.helpers.text_normalize;
 const design_model = @import("../../../ai_workflow/tui/design_model.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/set_design_page.zig";
-const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tool_registry.zig";
+const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan
 /// The exec function was migrated from `tool_registry.zig` to
 /// `src/ai_workflow/tui/agentic_loop/tools_exec_set_design_page.zig`.
 const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_set_design_page.zig";
@@ -129,17 +129,17 @@ test "set_design_page description mentions idempotent behavior" {
 
 // ─── Static wiring tests ─────────────────────────────────────────────────
 
-test "tool_registry.zig imports set_design_page module" {
+test "tools_equipped.zig imports set_design_page module" {
+    // After deduplication of `UNIFIED_TOOL_REGISTRY` (2026-08-06), the
+    // registry body lives in `tools_equipped.zig` and no longer lives
+    // in `tool_registry.zig`. This test now reads the imports from
+    // the canonical home.
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
-    if (!contains(source, "set_design_page_mod")) {
-        std.debug.print("!! tool_registry.zig does not import set_design_page_mod !!\n", .{});
-        return error.SetDesignPageModImportMissing;
-    }
-    if (!contains(source, "set_design_page_tool")) {
-        std.debug.print("!! tool_registry.zig does not bind set_design_page_tool !!\n", .{});
-        return error.SetDesignPageToolBindingMissing;
+    if (!contains(source, "const set_design_page_mod = nalarcore.set_design_page;")) {
+        std.debug.print("!! tools_equipped.zig does not bind set_design_page_mod = nalarcore.set_design_page !!\n", .{});
+        return error.SetDesignPageModBindingMissing;
     }
 }
 
@@ -157,15 +157,20 @@ test "agentic_loop defines execSetDesignPage" {
 }
 
 test "UNIFIED_TOOL_REGISTRY contains set_design_page entry" {
+    // The registry body moved from `tool_registry.zig` (deleted) to
+    // `tools_equipped.zig` (canonical home) on 2026-08-06. The test
+    // now reads from the canonical file. tools_equipped.zig imports
+    // `tools = @import("tools.zig")` directly, so the `.exec` binding
+    // is `tools.execSetDesignPage` (NOT `agentic_loop_mod.tools.execSetDesignPage`).
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
     if (!contains(source, ".name = \"set_design_page\"")) {
         std.debug.print("!! UNIFIED_TOOL_REGISTRY is missing the set_design_page entry !!\n", .{});
         return error.RegistryEntryMissing;
     }
-    if (!contains(source, ".exec = agentic_loop_mod.tools.execSetDesignPage")) {
-        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = agentic_loop_mod.tools.execSetDesignPage !!\n", .{});
+    if (!contains(source, ".exec = tools.execSetDesignPage")) {
+        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = tools.execSetDesignPage !!\n", .{});
         return error.RegistryExecBindingMissing;
     }
     if (!contains(source, ".tool_def = set_design_page_mod.set_design_page_tool")) {

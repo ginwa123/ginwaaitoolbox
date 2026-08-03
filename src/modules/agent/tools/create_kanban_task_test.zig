@@ -15,7 +15,8 @@ const create_kanban_task = @import("create_kanban_task.zig");
 const text_normalize = nalarcore.helpers.text_normalize;
 
 const TOOL_PATH = "src/modules/agent/tools/create_kanban_task.zig";
-const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tool_registry.zig";
+const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan
+const TOOLS_EQUIPPED_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig";
 const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_create_kanban_task.zig";
 
 /// Read a source file from disk, relative to the project root.
@@ -501,13 +502,17 @@ test "executeCreateKanbanTaskToString rejects column_id that does not belong to 
 // tools_equipped surfaces would silently disable the tool. These
 // tests catch that.
 
-test "tool_registry imports create_kanban_task module" {
+test "tools_equipped imports create_kanban_task module" {
+    // After deduplication of `UNIFIED_TOOL_REGISTRY` (2026-08-06), the
+    // registry body lives in `tools_equipped.zig` and no longer lives
+    // in `tool_registry.zig`. This test now reads the imports from
+    // the canonical home.
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
-    if (!contains(source, "const create_kanban_task_mod = nalar_mod.create_kanban_task;")) {
+    if (!contains(source, "const kanban_create_task_tool = nalarcore.create_kanban_task;")) {
         std.debug.print(
-            "\n!! tool_registry.zig does not bind create_kanban_task_mod = nalar_mod.create_kanban_task !!\n",
+            "\n!! tools_equipped.zig does not bind create_kanban_task module !!\n",
             .{},
         );
         return error.CreateKanbanTaskModBindingMissing;
@@ -528,8 +533,13 @@ test "agentic_loop defines execCreateKanbanTask" {
 }
 
 test "UNIFIED_TOOL_REGISTRY contains create_kanban_task entry" {
+    // The registry body moved from `tool_registry.zig` (deleted) to
+    // `tools_equipped.zig` (canonical home) on 2026-08-06. The test
+    // now reads from the canonical file. tools_equipped.zig imports
+    // `tools = @import("tools.zig")` directly, so the `.exec` binding
+    // is `tools.execCreateKanbanTask` (NOT `agentic_loop_mod.tools.execCreateKanbanTask`).
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
     if (!contains(source, ".name = \"create_kanban_task\"")) {
         std.debug.print(
@@ -538,16 +548,16 @@ test "UNIFIED_TOOL_REGISTRY contains create_kanban_task entry" {
         );
         return error.RegistryNameEntryMissing;
     }
-    if (!contains(source, ".exec = agentic_loop_mod.tools.execCreateKanbanTask")) {
+    if (!contains(source, ".exec = tools.execCreateKanbanTask")) {
         std.debug.print(
-            "\n!! UNIFIED_TOOL_REGISTRY entry is missing .exec = agentic_loop_mod.tools.execCreateKanbanTask !!\n",
+            "\n!! UNIFIED_TOOL_REGISTRY entry is missing .exec = tools.execCreateKanbanTask !!\n",
             .{},
         );
         return error.RegistryExecBindingMissing;
     }
-    if (!contains(source, ".tool_def = create_kanban_task_mod.create_kanban_task_tool")) {
+    if (!contains(source, ".tool_def = kanban_create_task_tool.create_kanban_task_tool")) {
         std.debug.print(
-            "\n!! UNIFIED_TOOL_REGISTRY entry is missing .tool_def = create_kanban_task_mod.create_kanban_task_tool !!\n",
+            "\n!! UNIFIED_TOOL_REGISTRY entry is missing .tool_def = kanban_create_task_tool.create_kanban_task_tool !!\n",
             .{},
         );
         return error.RegistryToolDefBindingMissing;

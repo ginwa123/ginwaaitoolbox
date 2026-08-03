@@ -7,7 +7,7 @@ const llm_history = @import("../llm_history.zig");
 const build_msg_prompt = @import("build_messages_for_agent_prompt.zig");
 const models = @import("../models.zig");
 pub const on_event_sent = @import("../on_event_sent.zig");
-const tool_registry = @import("tool_registry.zig");
+const tool_registry = @import("tools_equipped.zig");
 const handle_tool = @import("handle_tool.zig").handle_tool;
 const notifications = nalarcore.notifications_mod;
 

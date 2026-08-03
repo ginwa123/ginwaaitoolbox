@@ -193,7 +193,7 @@ test "deriveBranchFromPath returns worktree/<basename>" {
 
 // ─── Static wiring tests (Chunk 3) ───────────────────────────────────────
 
-const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tool_registry.zig";
+const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan
 /// The exec function was migrated from `tool_registry.zig` to
 /// `src/ai_workflow/tui/agentic_loop/tools_exec_set_git_worktree.zig`
 /// (re-exported as `agentic_loop_mod.tools.execSetGitWorktree`).
@@ -209,16 +209,16 @@ const TOOL_EXEC_CONTEXT_PATH = "src/ai_workflow/tui/agentic_loop/tools.zig";
 /// trailing-comma format (`.tool_name,`) that this test grep matches.
 const TOOLS_EQUIPPED_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig";
 
-test "tool_registry.zig imports set_git_worktree module" {
+test "tools_equipped.zig imports set_git_worktree module" {
+    // After deduplication of `UNIFIED_TOOL_REGISTRY` (2026-08-06), the
+    // registry body lives in `tools_equipped.zig` and no longer lives
+    // in `tool_registry.zig`. This test now reads the imports from
+    // the canonical home.
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "set_git_worktree_mod") == null) {
-        std.debug.print("!! tool_registry.zig does not import set_git_worktree_mod !!\n", .{});
-        return error.SetGitWorktreeModImportMissing;
-    }
-    if (std.mem.indexOf(u8, source, "const set_git_worktree_mod = nalar_mod.set_git_worktree;") == null) {
-        std.debug.print("!! tool_registry.zig does not bind set_git_worktree_mod = nalar_mod.set_git_worktree !!\n", .{});
+    if (std.mem.indexOf(u8, source, "const set_git_worktree_mod = nalarcore.set_git_worktree;") == null) {
+        std.debug.print("!! tools_equipped.zig does not bind set_git_worktree_mod = nalarcore.set_git_worktree !!\n", .{});
         return error.SetGitWorktreeModBindingMissing;
     }
 }
@@ -242,8 +242,13 @@ test "agentic_loop defines execSetGitWorktree" {
 }
 
 test "UNIFIED_TOOL_REGISTRY contains set_git_worktree entry" {
+    // The registry body moved from `tool_registry.zig` (deleted) to
+    // `tools_equipped.zig` (canonical home) on 2026-08-06. The test
+    // now reads from the canonical file. tools_equipped.zig imports
+    // `tools = @import("tools.zig")` directly, so the `.exec` binding
+    // is `tools.execSetGitWorktree` (NOT `agentic_loop_mod.tools.execSetGitWorktree`).
     const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_REGISTRY_PATH);
+    const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
     // The registry entry should be a struct literal that wires the
     // exec function and the tool definition together.
@@ -251,10 +256,8 @@ test "UNIFIED_TOOL_REGISTRY contains set_git_worktree entry" {
         std.debug.print("!! UNIFIED_TOOL_REGISTRY is missing the set_git_worktree name entry !!\n", .{});
         return error.RegistryNameEntryMissing;
     }
-    // After migration, the registry entry references the re-exported
-    // function via `agentic_loop_mod.tools.execSetGitWorktree`.
-    if (std.mem.indexOf(u8, source, ".exec = agentic_loop_mod.tools.execSetGitWorktree") == null) {
-        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = agentic_loop_mod.tools.execSetGitWorktree !!\n", .{});
+    if (std.mem.indexOf(u8, source, ".exec = tools.execSetGitWorktree") == null) {
+        std.debug.print("!! UNIFIED_TOOL_REGISTRY entry is missing .exec = tools.execSetGitWorktree !!\n", .{});
         return error.RegistryExecBindingMissing;
     }
     if (std.mem.indexOf(u8, source, ".tool_def = set_git_worktree_mod.set_git_worktree_tool") == null) {

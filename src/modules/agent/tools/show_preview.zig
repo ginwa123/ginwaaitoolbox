@@ -143,7 +143,7 @@ fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
 /// Build the success envelope: `<show_preview>...fields...</show_preview>`.
 /// All string fields are XML-escaped. Numeric fields (`content_length`)
 /// are formatted via `bufPrint` and inserted raw (no escaping needed).
-fn successEnvelope(
+pub fn successEnvelope(
     allocator: std.mem.Allocator,
     preview_id: []const u8,
     content_type: []const u8,
