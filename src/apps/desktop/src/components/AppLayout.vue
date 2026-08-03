@@ -254,10 +254,27 @@ watch(
     if (wsId && itemId) {
       query.workspaceId = wsId
       query.itemId = itemId
-      // pageId is design-item-scoped — only include it when we're on
-      // a design item. Empty pageId means "default to first page" and
-      // is omitted from the URL to keep the URL clean.
-      if (pageId) query.pageId = pageId
+      // pageId is design-item-scoped — only include it when the active
+      // item is a design. Empty pageId means "default to first page"
+      // and is omitted from the URL to keep the URL clean. FIX
+      // (chatview-bug, task_1785726648589): pre-fix, the watcher wrote
+      // `pageId` to the URL based purely on `activeDesignPageId` being
+      // truthy — without checking the active item's type. When the
+      // user switched from a design to a kanban (or folder), the
+      // store's `activeDesignPageId` stayed stale (carried over from
+      // the design), and the URL ended up as
+      // `?view=workspace&itemId=KANBAN_ID&pageId=DESIGN_PAGE_ID`. On
+      // reload, the URL restoration would try to honor the stale page
+      // for the kanban (which doesn't have pages). The fix: look up
+      // the active item and only include pageId when it's a design.
+      if (pageId) {
+        const activeItem = workspacesStore.workspaces
+          .flatMap((ws) => ws.items)
+          .find((it) => it.id === itemId)
+        if (activeItem?.item_type === 'design') {
+          query.pageId = pageId
+        }
+      }
     }
     router.replace({ path: '/app', query })
   },

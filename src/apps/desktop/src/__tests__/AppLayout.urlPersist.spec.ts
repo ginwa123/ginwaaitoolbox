@@ -435,6 +435,164 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     wrapper.unmount()
   })
 
+  // FIX (chatview-bug, task_1785726648589): when the user navigates
+  // from a design item to a kanban (or folder), the store's
+  // `activeDesignPageId` is NOT reset by `setActiveWorkspaceItem` —
+  // it stays whatever the design's active page was. The URL
+  // watcher reads `[activeWorkspaceItemId, activeDesignPageId]` and
+  // writes the URL based on both. Pre-fix, the watcher included
+  // `pageId` in the URL purely because `activeDesignPageId` was
+  // truthy, without checking whether the new active item is a
+  // design. The URL ended up as
+  // `?view=workspace&itemId=KANBAN_ID&pageId=DESIGN_PAGE_ID` —
+  // stale, and a reload would try to restore the design page
+  // against a kanban that doesn't have pages. The fix: only
+  // include `pageId` in the URL when the active item is a design.
+  it('activeWorkspaceItem → URL watcher does NOT leak stale pageId when switching from design to kanban', async () => {
+    const replaceMock = vi.fn()
+    useRouteMock.mockReturnValue({
+      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID, pageId: PAGE_ID_1 },
+      path: '/app',
+      fullPath: '/app?view=workspace&workspaceId=ws_test&itemId=item_design_url&pageId=page_first',
+    } as any)
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    // Both design AND kanban items live in the same workspace.
+    ws.workspaces = [
+      {
+        id: WS_ID,
+        name: 'WS',
+        icon: '📁',
+        expanded: true,
+        items: [makeDesignItem(), makeKanbanItem()],
+      } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: DESIGN_ID,
+      pageId: PAGE_ID_1,
+    })
+    await nextTick()
+    await nextTick()
+    // AppLayout.onMounted calls initializeFromSystemFolder() which
+    // calls init() which overwrites `workspaces.value` with the
+    // (empty) API mock result. Re-set workspaces so the URL
+    // watcher's lookup of activeWorkspace succeeds.
+    ws.workspaces = [
+      {
+        id: WS_ID,
+        name: 'WS',
+        icon: '📁',
+        expanded: true,
+        items: [makeDesignItem(), makeKanbanItem()],
+      } as Workspace,
+    ]
+    await nextTick()
+    replaceMock.mockClear()
+    // Simulate the user clicking the kanban in the sidebar —
+    // activeWorkspaceItemId changes to the kanban. The store's
+    // activeDesignPageId is STILL PAGE_ID_1 (stale, set from the
+    // previous design mount) — that's the leak.
+    ws.setActiveWorkspaceItem(KANBAN_ID)
+    await nextTick()
+    await nextTick()
+    // The URL the watcher writes must NOT include pageId — the
+    // active item is a kanban, and pageId is design-item-scoped.
+    // We don't care which exact call the URL-sync watcher made;
+    // any router.replace after the item switch that includes a
+    // pageId would be the bug.
+    const calls = replaceMock.mock.calls
+    const lastCall = calls[calls.length - 1]
+    expect(lastCall).toBeDefined()
+    // lastCall[0] is the router.replace arg; non-null assertion
+    // is safe because expect(lastCall).toBeDefined() above
+    // narrowed `lastCall` (still possibly undefined per the
+    // index lookup — TS doesn't carry the toBeDefined narrowing
+    // across expressions).
+    const lastArg = lastCall![0] as { path: string; query: Record<string, string> }
+    expect(lastArg).toMatchObject({
+      path: '/app',
+      query: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: KANBAN_ID,
+      },
+    })
+    expect(lastArg.query.pageId).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  // FIX (chatview-bug, task_1785726648589, sibling case): same
+  // scenario as the kanban test above, but the user navigates from
+  // a design to a folder. Folders don't have design pages either,
+  // so the URL must NOT carry the stale pageId.
+  it('activeWorkspaceItem → URL watcher does NOT leak stale pageId when switching from design to folder', async () => {
+    const FOLDER_ID = 'item_folder_url'
+    const makeFolderItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
+      id: FOLDER_ID,
+      name: 'Folder',
+      item_type: 'folder',
+      path: '/tmp/folder',
+      tasks: [],
+      ...overrides,
+    })
+    const replaceMock = vi.fn()
+    useRouteMock.mockReturnValue({
+      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID, pageId: PAGE_ID_1 },
+      path: '/app',
+      fullPath: '/app?view=workspace&workspaceId=ws_test&itemId=item_design_url&pageId=page_first',
+    } as any)
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      {
+        id: WS_ID,
+        name: 'WS',
+        icon: '📁',
+        expanded: true,
+        items: [makeDesignItem(), makeFolderItem()],
+      } as Workspace,
+    ]
+    const wrapper = mountAppLayout(ws.workspaces, {
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: DESIGN_ID,
+      pageId: PAGE_ID_1,
+    })
+    await nextTick()
+    await nextTick()
+    ws.workspaces = [
+      {
+        id: WS_ID,
+        name: 'WS',
+        icon: '📁',
+        expanded: true,
+        items: [makeDesignItem(), makeFolderItem()],
+      } as Workspace,
+    ]
+    await nextTick()
+    replaceMock.mockClear()
+    // Simulate the user clicking the folder in the sidebar.
+    ws.setActiveWorkspaceItem(FOLDER_ID)
+    await nextTick()
+    await nextTick()
+    const calls = replaceMock.mock.calls
+    const lastCall = calls[calls.length - 1]
+    expect(lastCall).toBeDefined()
+    const lastArg = lastCall![0] as { path: string; query: Record<string, string> }
+    expect(lastArg).toMatchObject({
+      path: '/app',
+      query: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: FOLDER_ID,
+      },
+    })
+    expect(lastArg.query.pageId).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it('handleCloseTaskView preserves workspaceId + itemId when the active task belongs to a design', async () => {
     const replaceMock = vi.fn()
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
