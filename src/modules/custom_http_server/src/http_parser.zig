@@ -1,6 +1,8 @@
 const std = @import("std");
 const linux = std.posix.system;
 const Template = @import("template.zig");
+const context_mod = @import("context.zig");
+const ContextStore = context_mod.ContextStore;
 
 pub const HttpContext = struct {
     allocator: std.mem.Allocator,
@@ -8,6 +10,16 @@ pub const HttpContext = struct {
     /// Optional client ID for SSE connections (set after registerClient)
     client_id: ?[16]u8 = null,
 };
+
+/// Monotonic counter for the `ctx=<id>` cookie value. Each call returns
+/// a unique u64 within the server's lifetime. Used by
+/// `HttpResponse.redirectWithContext`. Wraparound is at 2^64 so it
+/// won't happen in any realistic uptime.
+var context_id_counter: std.atomic.Value(u64) = .init(0);
+
+fn nextContextId() u64 {
+    return context_id_counter.fetchAdd(1, .seq_cst);
+}
 
 /// Decode URL-encoded string (handles %XX, +, and all special chars)
 pub fn urlDecode(data: []const u8, allocator: std.mem.Allocator) ![]u8 {
@@ -57,6 +69,34 @@ pub fn urlDecode(data: []const u8, allocator: std.mem.Allocator) ![]u8 {
     return result[0..j];
 }
 
+/// Parse an `application/x-www-form-urlencoded` body into a key→value map.
+/// Empty body returns an empty map. Caller frees the map (and the duped
+/// key/value slices it owns) via `map.deinit()`. On partial-parse failure
+/// the map is freed by the errdefer so the caller never leaks.
+///
+/// The HTTP primitive underlying `HttpRequest.form`. Most callers should
+/// use `HttpRequest.form(T, allocator)` directly — this lower-level API
+/// is useful for advanced cases (e.g. partial parses, custom validation).
+pub fn parseFormBody(allocator: std.mem.Allocator, body: []const u8) !std.StringHashMap([]const u8) {
+    var map = std.StringHashMap([]const u8).init(allocator);
+    errdefer map.deinit();
+    if (body.len == 0) return map;
+
+    var it = std.mem.splitScalar(u8, body, '&');
+    while (it.next()) |pair| {
+        if (pair.len == 0) continue;
+        const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+        const raw_key = pair[0..eq];
+        const raw_val = pair[eq + 1 ..];
+        const key = try urlDecode(raw_key, allocator);
+        errdefer allocator.free(key);
+        const value = try urlDecode(raw_val, allocator);
+        errdefer allocator.free(value);
+        try map.put(key, value);
+    }
+    return map;
+}
+
 /// HTTP Request structure parsed from raw HTTP data
 pub const HttpRequest = struct {
     method: []const u8,
@@ -73,8 +113,83 @@ pub const HttpRequest = struct {
 
     _client_fd: i32,
 
+    /// Per-request session (cross-redirect state bag). Wired by the
+    /// listen loop right after parsing; tests construct one and set
+    /// this field directly. Handlers call `req.session.set(...)`,
+    /// `req.session.getString(...)`, and the redirect helper reads
+    /// `req.session.outgoing` after the handler returns. Keeping the
+    /// pointer on the request makes the API ergonomic
+    /// (`req.session.set(...)`) without sacrificing req's by-value
+    /// semantics.
+    ///
+    /// Default is `undefined` because there is no meaningful empty
+    /// Session value to point at — the listen loop / tests MUST set
+    /// this before any handler runs. A handler that reads
+    /// `req.session` without it being wired will segfault; that is
+    /// intentionally a hard error rather than a silent fall-back.
+    session: *Session = undefined,
+
     pub fn writeSSEEvent(self: *const HttpRequest, event: []const u8) void {
         _ = linux.write(self._client_fd, event.ptr, event.len);
+    }
+
+    /// Parse the request body as `application/x-www-form-urlencoded` and
+    /// return a `T` struct with each `[]const u8` field populated from the
+    /// matching form key.
+    ///
+    /// `T` must be a struct whose fields are all `[]const u8` and which
+    /// defines a `deinit(self: *@This(), allocator: Allocator) void`
+    /// method (each populated string is a heap allocation).
+    ///
+    /// Fields present in the form but missing from `T` are silently
+    /// dropped. Fields present in `T` but missing from the form keep
+    /// their default value (typically `""`).
+    ///
+    /// Returns:
+    ///   - `error.InvalidFormBody` if the body can't be parsed as
+    ///     urlencoded (e.g. undecodable percent sequence)
+    ///   - `error.OutOfMemory` on allocation failure
+    ///
+    /// Example model + handler:
+    /// ```zig
+    /// const LoginForm = struct {
+    ///     username: []const u8 = "",
+    ///     password: []const u8 = "",
+    ///     pub fn deinit(self: *@This(), a: Allocator) void {
+    ///         a.free(self.username);
+    ///         a.free(self.password);
+    ///     }
+    /// };
+    ///
+    /// var form = req.form(LoginForm, allocator) catch |err| switch (err) {
+    ///     error.InvalidFormBody => return res.redirect("/login?error=invalid_form").withSecurityHeaders(),
+    ///     else => return res.redirect("/login?error=server_error").withSecurityHeaders(),
+    /// };
+    /// defer form.deinit(allocator);
+    /// // use form.username, form.password (already URL-decoded)
+    /// ```
+    pub fn form(self: HttpRequest, comptime T: type, allocator: std.mem.Allocator) !T {
+        var map = parseFormBody(allocator, self.body) catch return error.InvalidFormBody;
+        // Defer: free every (key, value) the map owns, then the bucket array.
+        // StringHashMap.deinit() only frees the bucket array — the entries
+        // (key + value slices) are caller-owned. The transient map lifetime
+        // is bounded by this method, so we clean up here.
+        defer {
+            var it = map.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                allocator.free(entry.value_ptr.*);
+            }
+            map.deinit();
+        }
+
+        var result: T = .{};
+        inline for (@typeInfo(T).@"struct".fields) |field| {
+            if (map.get(field.name)) |raw_value| {
+                @field(result, field.name) = try allocator.dupe(u8, raw_value);
+            }
+        }
+        return result;
     }
 
     /// Free all heap-owned data:
@@ -105,6 +220,216 @@ pub const HttpRequest = struct {
 
         self.headers.deinit();
         self.params.deinit();
+    }
+};
+
+/// Per-request session — the cross-redirect state bag that lives across
+/// the cookie round-trip. The handler signature is
+/// `(ctx: *HttpContext, req: HttpRequest, session: *Session, res: HttpResponse)`:
+/// `req` is **by value** (a shallow copy from the post-route-match
+/// snapshot — see safety note below), `session` is the **only** pointer
+/// in the signature, and it is explicitly the per-request mutable state.
+///
+/// **Safety note for the by-value req:** the listen loop snapshots the
+/// post-`matchRoute` request into a struct copy before calling the
+/// handler. The copy shares `headers` / `params` / `query` map bucket
+/// arrays with the original (which the listen loop owns and deinits
+/// later). **Handlers MUST NOT mutate req.headers / req.params /
+/// req.query and MUST NOT call `req.deinit()` on the copy.** Reading is
+/// fine. The `Session` API is where mutability lives.
+pub const Session = struct {
+    /// Server-side session storage. Wired by `GinwaServer.context_store`
+    /// in main.zig. When `null`, the simple `set`/`get` API is
+    /// disabled — handlers will get `error.NoContextStore` on `set` /
+    /// `setInt` / `setBool` and `null` on `get` / `getString` / etc.
+    context_store: ?*ContextStore,
+    /// Context rebuilt from the incoming `Cookie: ctx=<id>` header.
+    /// BORROWED from `context_store`; never free this directly.
+    incoming: ?*context_mod.Context = null,
+    /// Cookie id that produced `incoming`. Used by `flashString` to
+    /// evict the entry from the store on consume. BORROWED from the
+    /// store's internal dup — freed by `store.remove(id)`.
+    incoming_id: ?[]const u8 = null,
+    /// Context accumulating values set this request. Lazily created by
+    /// the first `set` call; ownership transfers to the store via
+    /// `flushPending` on a redirect.
+    outgoing: ?*context_mod.Context = null,
+
+    /// Build a session with an optional pre-populated `incoming` and
+    /// `incoming_id`. The listen loop calls this after parsing the
+    /// request and looking up the cookie in the store. `incoming_id`
+    /// is the cookie id used to load `incoming` — needed by
+    /// `flashString` to evict the entry from the store on consume.
+    pub fn init(
+        store: ?*ContextStore,
+        incoming: ?*context_mod.Context,
+        incoming_id: ?[]const u8,
+    ) Session {
+        return .{
+            .context_store = store,
+            .incoming = incoming,
+            .incoming_id = incoming_id,
+        };
+    }
+
+    /// No-op deinit. Kept for symmetry with the other request-scoped
+    /// types so callers can write `defer session.deinit();` without
+    /// thinking. All fields are either borrowed (`context_store`,
+    /// `incoming`) or transferred-to-store (`outgoing`); nothing to free
+    /// here.
+    pub fn deinit(self: *Session) void {
+        _ = self;
+    }
+
+    /// Store a string value for the next request. The redirect helper
+    /// `HttpResponse.redirectWith` serialises pending values into a
+    /// cookie; the next request's `get`/`getString` reads them back.
+    ///
+    /// Returns `error.NoContextStore` if the server didn't wire a
+    /// `ContextStore` (no cookie round-trip is possible).
+    pub fn set(self: *Session, key: []const u8, value: []const u8) !void {
+        const store = self.context_store orelse return error.NoContextStore;
+        if (self.outgoing == null) {
+            self.outgoing = try store.newContext();
+        }
+        try self.outgoing.?.put(key, .{ .string = value });
+    }
+
+    /// Store an i64 for the next request.
+    pub fn setInt(self: *Session, key: []const u8, value: i64) !void {
+        const store = self.context_store orelse return error.NoContextStore;
+        if (self.outgoing == null) {
+            self.outgoing = try store.newContext();
+        }
+        try self.outgoing.?.put(key, .{ .int = value });
+    }
+
+    /// Store a bool for the next request.
+    pub fn setBool(self: *Session, key: []const u8, value: bool) !void {
+        const store = self.context_store orelse return error.NoContextStore;
+        if (self.outgoing == null) {
+            self.outgoing = try store.newContext();
+        }
+        try self.outgoing.?.put(key, .{ .bool = value });
+    }
+
+    /// Read a value by key. Walks outgoing (set this request) first,
+    /// then incoming (rebuilt from the previous request's cookie).
+    /// Returns `null` if no store is wired AND no incoming context is
+    /// available locally — the only way to read is via a populated
+    /// `incoming` (which itself requires a store).
+    pub fn get(self: *const Session, key: []const u8) ?context_mod.Value {
+        if (self.outgoing) |o| if (o.get(key)) |v| return v;
+        if (self.incoming) |i| return i.get(key);
+        return null;
+    }
+
+    /// Convenience: `get` projected to `[]const u8` (returns `null`
+    /// for any non-string value or missing key).
+    pub fn getString(self: *const Session, key: []const u8) ?[]const u8 {
+        return if (self.get(key)) |v| switch (v) {
+            .string => |s| s,
+            else => null,
+        } else null;
+    }
+
+    /// Convenience: `get` projected to `i64`.
+    pub fn getInt(self: *const Session, key: []const u8) ?i64 {
+        return if (self.get(key)) |v| switch (v) {
+            .int => |n| n,
+            else => null,
+        } else null;
+    }
+
+    /// Convenience: `get` projected to `bool`.
+    pub fn getBool(self: *const Session, key: []const u8) ?bool {
+        return if (self.get(key)) |v| switch (v) {
+            .bool => |b| b,
+            else => null,
+        } else null;
+    }
+
+    // ─── Rails-style flash messages (one-shot) ─────────────────────────
+    //
+    // The `flash` API matches Rails / Laravel / Django: set a value with
+    // `flash(k, v)` before redirecting; the next request reads it with
+    // `flashString(k)` (or `takeString`) which auto-evicts it from the
+    // store. Subsequent requests see nothing. Use this for "Welcome
+    // aboard!" banners and other one-shot notifications. For persistent
+    // per-user state (login flags, preferences) use the regular
+    // `set`/`getString` API.
+
+    /// Set a one-shot flash message. Same storage as `set` — the
+    /// difference is at read time: `flashString` evicts on consume.
+    /// Rails-style `flash[:notice] = "..."`.
+    pub fn flash(self: *Session, key: []const u8, value: []const u8) !void {
+        const store = self.context_store orelse return error.NoContextStore;
+        if (self.outgoing == null) {
+            self.outgoing = try store.newContext();
+        }
+        try self.outgoing.?.put(key, .{ .string = value });
+    }
+
+    /// Read a one-shot flash message AND evict it. Rails-style
+    /// `flash[:notice]`. After this call:
+    /// - the key is removed from the underlying Context
+    /// - if the Context is now empty AND it lives in the store, the
+    ///   whole entry is removed from the store
+    /// - subsequent requests with the same cookie see no incoming
+    ///
+    /// Returns `null` if no incoming context or the key isn't there.
+    /// The returned slice is owned by the per-request arena (ctx.allocator)
+    /// so the caller can use it freely for the duration of the request.
+    pub fn flashString(self: *Session, key: []const u8, allocator: std.mem.Allocator) ?[]const u8 {
+        const incoming = self.incoming orelse return null;
+        const val = incoming.get(key) orelse return null;
+        const str = switch (val) {
+            .string => |s| s,
+            else => return null,
+        };
+        // Copy the string BEFORE evicting — `incoming.remove(key)` frees
+        // the heap-allocated value back to the store's allocator, and
+        // returning a slice into freed memory would be use-after-free.
+        const owned = allocator.dupe(u8, str) catch return null;
+        _ = incoming.remove(key);
+        // If the Context is now empty AND it was loaded from the store,
+        // evict the whole entry. Empty contexts in the store are dead
+        // weight; removing them also frees the cookie id memory.
+        if (incoming.values.count() == 0) {
+            if (self.context_store) |store| {
+                if (self.incoming_id) |id| {
+                    store.remove(id);
+                    self.incoming = null;
+                    self.incoming_id = null;
+                }
+            }
+        }
+        return owned;
+    }
+
+    /// Move `outgoing` into the `ContextStore` and return the cookie id.
+    /// Returns `null` if there's no outgoing Context or it's empty.
+    /// Detaches `outgoing` so subsequent `set` calls start a fresh one.
+    ///
+    /// The returned id is store-owned memory (the store takes ownership
+    /// via `putOwned`). The caller (typically `redirectWith`) uses it
+    /// to build the cookie; the cookie's lifetime is bounded by
+    /// response.deinit, and the id's lifetime is bounded by store.deinit.
+    pub fn flushPending(self: *Session) !?[]const u8 {
+        const store = self.context_store orelse return null;
+        const out = self.outgoing orelse return null;
+        if (out.values.count() == 0) return null;
+
+        // Mint an opaque ID and hand it (and the Context) to the store.
+        // The store owns the id slice from here on — it's freed when
+        // the Context is removed or the store is destroyed.
+        var id_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &id_buf, nextContextId(), .little);
+        const id = try std.fmt.allocPrint(store.allocator, "{x}", .{id_buf});
+        try store.putOwned(id, out);
+
+        self.outgoing = null;
+        return id;
     }
 };
 
@@ -164,6 +489,21 @@ pub const HttpResponse = struct {
         return copy;
     }
 
+    /// Apply the 7 standard security response headers (CSP,
+    /// X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
+    /// Permissions-Policy, COOP, CORP) by delegating to
+    /// `security.applySecurityHeaders`. Chainable after withBody /
+    /// withJson / withRender.
+    ///
+    /// Call AFTER withBody/withJson/withRender so security headers
+    /// aren't accidentally overwritten by Content-Type / Content-Length.
+    pub fn withSecurityHeaders(self: HttpResponse) HttpResponse {
+        var copy = self;
+        const security = @import("security.zig");
+        security.applySecurityHeaders(&copy);
+        return copy;
+    }
+
     pub fn withJson(self: HttpResponse, json: []const u8) HttpResponse {
         var copy = self;
         copy.body = json;
@@ -173,9 +513,124 @@ pub const HttpResponse = struct {
         return copy;
     }
 
+    /// Build a 302 Found redirect to `location` with an empty body.
+    /// Sets `Content-Type: text/html; charset=utf-8` and `Content-Length: 0`
+    /// (some HTTP clients / proxies expect a body even on a redirect; this
+    /// makes the response shape uniform with `withBody` / `withRender`).
+    ///
+    /// Ownership: the `Location` header value is a slice the caller passes
+    /// in (typically a string literal or a heap slice from `allocPrint`).
+    /// The Content-Length value is heap-allocated and owned by the response
+    /// (via the per-request arena in production).
+    ///
+    /// The caller is responsible for attaching security headers:
+    /// `res.redirect("/").withSecurityHeaders()`.
+    ///
+    /// The caller is responsible for any auxiliary headers (e.g.
+    /// `Retry-After` on a 429 redirect) — `put` them on the returned
+    /// response before chaining `.withSecurityHeaders()`.
+    ///
+    /// Example (success):
+    /// ```zig
+    /// return res.redirect("/").withSecurityHeaders();
+    /// ```
+    ///
+    /// Example (redirect to an error page with a query code):
+    /// ```zig
+    /// const location = try std.fmt.allocPrint(
+    ///     allocator,
+    ///     "/signup?error={s}",
+    ///     .{code.label()},
+    /// );
+    /// // no defer free(location) — the Location header in the response
+    /// // owns the slice until the per-request arena reaps it.
+    /// return res.redirect(location).withSecurityHeaders();
+    /// ```
+    pub fn redirect(self: HttpResponse, location: []const u8) HttpResponse {
+        var copy = self;
+        copy.status_code = 302;
+        copy.status_text = "Found";
+        copy.body = "";
+        copy.headers.put("Location", location) catch @panic("OOM");
+        copy.headers.put("Content-Type", "text/html; charset=utf-8") catch @panic("OOM");
+        const len_str = std.fmt.allocPrint(self.allocator, "0", .{}) catch @panic("OOM");
+        copy.headers.put("Content-Length", len_str) catch @panic("OOM");
+        return copy;
+    }
+
+    /// 302 redirect that ALSO flushes any pending `req.session.set`
+    /// values into a `Set-Cookie` header. The next request's
+    /// `HttpRequest` will see those values via `req.session.get` /
+    /// `req.session.getString` / etc.
+    ///
+    /// This is the cookie + store + Context round-trip, hidden behind
+    /// one call. Used by the success path of `createUserHandler` to
+    /// carry the new user's name to the landing page.
+    ///
+    /// If `req.session` has no pending values, this is the same as
+    /// `redirect`.
+    pub fn redirectWith(self: HttpResponse, req: HttpRequest, location: []const u8) !HttpResponse {
+        var out = self.redirect(location);
+        if (try req.session.flushPending()) |id| {
+            const cookie = try std.fmt.allocPrint(
+                out.allocator,
+                "ctx={s}; Path=/; HttpOnly; SameSite=Strict",
+                .{id},
+            );
+            try out.headers.put("Set-Cookie", cookie);
+        }
+        return out;
+    }
+
+    /// Build a 302 Found redirect that ALSO carries a `Context` value bag
+    /// across the redirect via a `Set-Cookie: ctx=<id>` header. The
+    /// context is stored in `store` under a freshly-generated opaque ID;
+    /// the next request reads the cookie via `contextFromRequest` and
+    /// retrieves the same context.
+    ///
+    /// Cookie shape: `ctx=<hex-id>; Path=/; HttpOnly; SameSite=Strict`.
+    /// The hex ID is 16 hex chars (an 8-byte atomic counter) so each
+    /// redirect mints a unique value within a single server lifetime.
+    /// Production hardening should layer in entropy from `/dev/urandom`;
+    /// the cookie is still HttpOnly+SameSite=Strict which blocks most
+    /// attacks.
+    ///
+    /// Ownership: the `Set-Cookie` value string and the redirect's
+    /// `Content-Length` value are both allocated from `ctx.allocator`.
+    /// The arena reaps them at response-drop time; do NOT `defer
+    /// allocator.free(...)` them.
+    pub fn redirectWithContext(
+        self: HttpResponse,
+        location: []const u8,
+        ctx: *const context_mod.Context,
+        store: *ContextStore,
+    ) !HttpResponse {
+        // 8-byte ID from an atomic counter — unique per call. hex-encoded
+        // to 16 chars; cookie-safe (no special chars).
+        var id_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &id_buf, nextContextId(), .little);
+        const id = try std.fmt.allocPrint(ctx.allocator, "{x}", .{id_buf});
+        try store.put(id, @constCast(ctx));
+
+        var out = self.redirect(location);
+        // Allocate the cookie from the response's allocator (per-request
+        // arena in production) so `HttpResponse.deinit` can free it via
+        // the same allocator. Using `ctx.allocator` (the store) would
+        // cross-allocator free.
+        const cookie = try std.fmt.allocPrint(
+            out.allocator,
+            "ctx={s}; Path=/; HttpOnly; SameSite=Strict",
+            .{id},
+        );
+        try out.headers.put("Set-Cookie", cookie);
+        // The store duped the ID; we can free the original now.
+        ctx.allocator.free(id);
+        return out;
+    }
+
     /// Free all heap-owned data: the headers map and any header values
-    /// that were allocated by `withBody` / `withJson` (Content-Length and
-    /// Content-Type). Header keys/values from `headers.put(...)` are
+    /// that were allocated by `withBody` / `withJson` / `redirect`
+    /// (Content-Length). Header keys/values from `headers.put(...)` are
     /// caller-owned (caller frees the key + value strings).
     ///
     /// Production usage in http_server.zig does NOT call this because
@@ -183,11 +638,17 @@ pub const HttpResponse = struct {
     /// test code (where `std.testing.allocator` enforces leak detection)
     /// and for non-arena callers that want explicit ownership.
     pub fn deinit(self: *HttpResponse) void {
-        // The standard helper methods (withBody/withJson) use
+        // The standard helper methods (withBody/withJson/redirect) use
         // std.fmt.allocPrint(allocator, "{}", .{n}) for the
         // Content-Length value, which is heap-owned. Content-Type is
-        // a string literal ("application/json") so no free needed.
+        // a string literal so no free needed.
         if (self.headers.fetchRemove("Content-Length")) |kv| {
+            self.allocator.free(kv.value);
+        }
+        // redirectWithContext heap-allocates the Set-Cookie value via
+        // std.fmt.allocPrint. Free it here so test allocators don't
+        // report leaks. Production arena allocators no-op the free.
+        if (self.headers.fetchRemove("Set-Cookie")) |kv| {
             self.allocator.free(kv.value);
         }
         self.headers.deinit();
@@ -228,8 +689,16 @@ pub const HttpResponse = struct {
     }
 };
 
-/// Parse an HTTP request from raw bytes
-pub fn parseRequest(data: []const u8, allocator: std.mem.Allocator, _: std.Io, client_fd: i32) !HttpRequest {
+/// Parse an HTTP request from raw bytes. The listen loop separately
+/// builds a `Session` (looking up the incoming cookie via
+/// `context.contextFromRequest`) and threads it through to the handler
+/// — `parseRequest` itself stays at the HTTP layer only.
+pub fn parseRequest(
+    data: []const u8,
+    allocator: std.mem.Allocator,
+    _: std.Io,
+    client_fd: i32,
+) !HttpRequest {
     const header_end = std.mem.indexOf(u8, data, "\r\n\r\n") orelse {
         return error.IncompleteRequest;
     };
@@ -422,4 +891,202 @@ pub fn jsonResponseHelper(allocator: std.mem.Allocator, jsonStruct: JsonStruct) 
     };
 
     return HttpResponse.init(jsonStruct.status_code, status_text, allocator).withJson(jsonStruct.data);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Behavioural tests for HttpRequest.form() + HttpResponse.redirect()
+//
+//  These tests are colocated with the methods (in http_parser.zig) so they
+//  run whenever the file is compiled into a test binary. The gserverz
+//  module's own `zig build test` is pre-existing broken (Zig 0.16 rejects
+//  `@embedFile` of files outside the module path, and the test_runner has
+//  a truncated test), so the ginwasaas project-level `zig build test` is
+//  the canonical run. Both paths compile http_parser.zig and pick these
+//  tests up.
+// ═══════════════════════════════════════════════════════════════════════════
+
+test "HttpRequest.form: parses urlencoded body into typed struct" {
+    const LoginForm = struct {
+        username: []const u8 = "",
+        password: []const u8 = "",
+        pub fn deinit(self: *@This(), a: std.mem.Allocator) void {
+            a.free(self.username);
+            a.free(self.password);
+        }
+    };
+
+    var req: HttpRequest = .{
+        .method = "POST",
+        .path = "/login",
+        .version = "HTTP/1.1",
+        .headers = std.StringHashMap([]const u8).init(std.testing.allocator),
+        .body = "username=ada_l&password=correct-horse-battery",
+        .raw = "username=ada_l&password=correct-horse-battery",
+        .params = std.StringHashMap([]const u8).init(std.testing.allocator),
+        .query = std.StringHashMap([]const u8).init(std.testing.allocator),
+        ._client_fd = -1,
+    };
+    defer req.headers.deinit();
+    defer req.params.deinit();
+    defer req.query.deinit();
+
+    var form = try req.form(LoginForm, std.testing.allocator);
+    defer form.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("ada_l", form.username);
+    try std.testing.expectEqualStrings("correct-horse-battery", form.password);
+}
+
+test "HttpRequest.form: missing fields keep their struct default ('')" {
+    // Note: defaults must be the empty string "" (a string literal). Using
+    // any other literal (e.g. "0") would cause deinit to free a static
+    // address and crash — the form parser only allocates when a field
+    // is present in the body. Empty-string defaults are always safe.
+    const PartialForm = struct {
+        name: []const u8 = "",
+        nickname: []const u8 = "", // missing from body -> keeps default
+        pub fn deinit(self: *@This(), a: std.mem.Allocator) void {
+            a.free(self.name);
+            a.free(self.nickname);
+        }
+    };
+
+    var req: HttpRequest = .{
+        .method = "POST",
+        .path = "/x",
+        .version = "HTTP/1.1",
+        .headers = std.StringHashMap([]const u8).init(std.testing.allocator),
+        .body = "name=Alice",
+        .raw = "name=Alice",
+        .params = std.StringHashMap([]const u8).init(std.testing.allocator),
+        .query = std.StringHashMap([]const u8).init(std.testing.allocator),
+        ._client_fd = -1,
+    };
+    defer req.headers.deinit();
+    defer req.params.deinit();
+    defer req.query.deinit();
+
+    var form = try req.form(PartialForm, std.testing.allocator);
+    defer form.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("Alice", form.name);
+    try std.testing.expectEqualStrings("", form.nickname);
+}
+
+test "HttpRequest.form: url-decodes values (spaces + percent-encoding)" {
+    const CommentForm = struct {
+        body: []const u8 = "",
+        pub fn deinit(self: *@This(), a: std.mem.Allocator) void {
+            a.free(self.body);
+        }
+    };
+
+    var req: HttpRequest = .{
+        .method = "POST",
+        .path = "/x",
+        .version = "HTTP/1.1",
+        .headers = std.StringHashMap([]const u8).init(std.testing.allocator),
+        // "Hello World!" + "a@b.com" with percent-encoding
+        .body = "body=Hello+World%21",
+        .raw = "body=Hello+World%21",
+        .params = std.StringHashMap([]const u8).init(std.testing.allocator),
+        .query = std.StringHashMap([]const u8).init(std.testing.allocator),
+        ._client_fd = -1,
+    };
+    defer req.headers.deinit();
+    defer req.params.deinit();
+    defer req.query.deinit();
+
+    var form = try req.form(CommentForm, std.testing.allocator);
+    defer form.deinit(std.testing.allocator);
+
+    // "Hello+World%21" -> "Hello World!"
+    try std.testing.expectEqualStrings("Hello World!", form.body);
+}
+
+test "HttpRequest.form: empty body returns struct with all-default fields" {
+    const EmptyForm = struct {
+        x: []const u8 = "",
+        pub fn deinit(self: *@This(), a: std.mem.Allocator) void {
+            a.free(self.x);
+        }
+    };
+
+    var req: HttpRequest = .{
+        .method = "POST",
+        .path = "/x",
+        .version = "HTTP/1.1",
+        .headers = std.StringHashMap([]const u8).init(std.testing.allocator),
+        .body = "",
+        .raw = "",
+        .params = std.StringHashMap([]const u8).init(std.testing.allocator),
+        .query = std.StringHashMap([]const u8).init(std.testing.allocator),
+        ._client_fd = -1,
+    };
+    defer req.headers.deinit();
+    defer req.params.deinit();
+    defer req.query.deinit();
+
+    var form = try req.form(EmptyForm, std.testing.allocator);
+    defer form.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("", form.x);
+}
+
+test "HttpResponse.redirect: 302 + Location + empty body + Content-Type + Content-Length: 0" {
+    var res = HttpResponse.init(0, "", std.testing.allocator);
+    defer res.deinit();
+
+    var out = res.redirect("/");
+    defer out.deinit();
+
+    try std.testing.expectEqual(@as(u16, 302), out.status_code);
+    try std.testing.expectEqualStrings("Found", out.status_text);
+    try std.testing.expectEqualStrings("", out.body);
+    try std.testing.expectEqualStrings("/", out.headers.get("Location").?);
+    try std.testing.expectEqualStrings("text/html; charset=utf-8", out.headers.get("Content-Type").?);
+    try std.testing.expectEqualStrings("0", out.headers.get("Content-Length").?);
+}
+
+test "HttpResponse.redirect: chains with withSecurityHeaders" {
+    var res = HttpResponse.init(0, "", std.testing.allocator);
+    defer res.deinit();
+
+    var out = res.redirect("/landing").withSecurityHeaders();
+    defer out.deinit();
+
+    try std.testing.expectEqual(@as(u16, 302), out.status_code);
+    try std.testing.expectEqualStrings("/landing", out.headers.get("Location").?);
+    try std.testing.expect(out.headers.get("Content-Security-Policy") != null);
+    try std.testing.expect(out.headers.get("X-Frame-Options") != null);
+    try std.testing.expect(out.headers.get("X-Content-Type-Options") != null);
+}
+
+test "HttpResponse.redirect: original response unchanged (immutable-by-value)" {
+    var res = HttpResponse.init(200, "OK", std.testing.allocator);
+    defer res.deinit();
+
+    var out = res.redirect("/somewhere");
+    defer out.deinit();
+
+    // The original `res` still has its initial state — the method takes
+    // `self` by value and mutates the COPY.
+    try std.testing.expectEqual(@as(u16, 200), res.status_code);
+    try std.testing.expectEqualStrings("OK", res.status_text);
+    try std.testing.expect(res.headers.get("Location") == null);
+}
+
+test "HttpResponse.redirect: caller can attach Retry-After before withSecurityHeaders" {
+    var res = HttpResponse.init(0, "", std.testing.allocator);
+    defer res.deinit();
+
+    var out = res.redirect("/signup?error=rate_limited");
+    try out.headers.put("Retry-After", "60");
+    out = out.withSecurityHeaders();
+    defer out.deinit();
+
+    try std.testing.expectEqual(@as(u16, 302), out.status_code);
+    try std.testing.expectEqualStrings("/signup?error=rate_limited", out.headers.get("Location").?);
+    try std.testing.expectEqualStrings("60", out.headers.get("Retry-After").?);
+    try std.testing.expect(out.headers.get("Content-Security-Policy") != null);
 }

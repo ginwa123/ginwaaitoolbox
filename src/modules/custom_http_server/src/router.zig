@@ -3,21 +3,41 @@ const http_parser = @import("http_parser.zig");
 
 pub const Self = @This();
 
-/// Handler fn: (server_ctx, request, response) -> anyerror!void
-pub const HandlerFn = *const fn (ctx: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse;
+/// Handler fn: (ctx, request, response) -> anyerror!HttpResponse
+/// `ctx` is `HttpContext` BY VALUE (the per-request execution context:
+/// allocator + io + optional SSE client_id). HttpContext is a small
+/// value (3 fields) — passing by value avoids a pointer indirection on
+/// every handler call and matches the WebSocket handler convention.
+/// `req` is `HttpRequest` **BY VALUE** — a shallow snapshot from the
+/// post-route-match request. The cross-redirect session lives on
+/// `req.session` (set by the listen loop) — handlers call
+/// `req.session.set / getString / flushPending`, and the redirect
+/// helper `res.redirectWith(req, loc)` reads `req.session.outgoing`
+/// after the handler returns.
+pub const HandlerFn = *const fn (
+    ctx: http_parser.HttpContext,
+    req: http_parser.HttpRequest,
+    res: http_parser.HttpResponse,
+) anyerror!http_parser.HttpResponse;
 
-/// SSE streaming handler
-pub const SseHandlerFn = *const fn (ctx: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse;
+/// SSE streaming handler — same shape as `HandlerFn` plus the SSE-specific
+/// `client_id` lives on `ctx.client_id` (set by the listen loop after
+/// `sse_manager.registerClient`).
+pub const SseHandlerFn = *const fn (
+    ctx: http_parser.HttpContext,
+    req: http_parser.HttpRequest,
+    res: http_parser.HttpResponse,
+) anyerror!http_parser.HttpResponse;
 
 /// WebSocket handler.
 ///
 /// Unlike SSE handlers, the WebSocket handler is invoked AFTER the
 /// transport handshake has completed (the 101 response has already been
 /// sent). The handler receives the parsed `HttpRequest` (so it can read
-/// headers / query / params), the GinwaServer pointer (so it can read
-/// frames and broadcast via the WsManager), the client fd, and the
-/// client's 16-byte id (so it can send targeted messages or remove the
-/// client early).
+/// headers / query / params / session), the GinwaServer pointer (so
+/// it can read frames and broadcast via the WsManager), the client fd,
+/// and the client's 16-byte id (so it can send targeted messages or
+/// remove the client early).
 ///
 /// The handler runs in the same per-connection thread as the read loop
 /// (the listen loop spawns the handler on the worker thread). When the
@@ -52,8 +72,7 @@ pub const Route = struct {
     route_type: RouteType = .regular,
 };
 
-pub fn defaultHandler(_: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
-    _ = req;
+pub fn defaultHandler(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
     return res.withBody("");
 }
 
@@ -130,50 +149,72 @@ pub const RouteResult = union(enum) {
     handler: struct {
         handler: HandlerFn,
         ctx: http_parser.HttpContext,
+        req: http_parser.HttpRequest,
         res: http_parser.HttpResponse,
     },
     sse: struct {
         handler: SseHandlerFn,
         ctx: http_parser.HttpContext,
+        req: http_parser.HttpRequest,
     },
     websocket: struct {
         handler: WsHandlerFn,
         ctx: http_parser.HttpContext,
+        req: http_parser.HttpRequest,
     },
 };
 
-/// Route matching and execution - returns handler to execute
-pub fn matchRoute(self: *Self, req_method: []const u8, req_path: []const u8, req: *http_parser.HttpRequest, ctx: http_parser.HttpContext) ?RouteResult {
+/// Route matching and execution - returns handler to execute.
+///
+/// `req` is `*HttpRequest` (mutated to populate `req.params` from
+/// `:name` patterns); the returned `RouteResult` carries a snapshot
+/// value-copy of req with the populated params. The session pointer
+/// is already inside the request (`req.session`), so no separate
+/// session arg is needed. `ctx` is the per-request allocator + io
+/// (passed BY VALUE; HttpContext is a small 3-field struct).
+pub fn matchRoute(
+    self: *Self,
+    req_method: []const u8,
+    req_path: []const u8,
+    req: *http_parser.HttpRequest,
+    ctx: http_parser.HttpContext,
+) ?RouteResult {
     for (self.routes.items) |route| {
         // Try exact match first
         if (std.mem.eql(u8, req_method, route.method) and std.mem.eql(u8, req_path, route.path)) {
             if (route.ws_handler) |wsHandler| {
-                return .{ .websocket = .{ .handler = wsHandler, .ctx = ctx } };
+                return .{ .websocket = .{ .handler = wsHandler, .ctx = ctx, .req = req.* } };
             }
             if (route.sse_handler) |sseHandler| {
-                return .{ .sse = .{ .handler = sseHandler, .ctx = ctx } };
+                return .{ .sse = .{ .handler = sseHandler, .ctx = ctx, .req = req.* } };
             }
             const res = http_parser.HttpResponse.init(200, "OK", ctx.allocator);
-            return .{ .handler = .{ .handler = route.handler, .ctx = ctx, .res = res } };
+            return .{ .handler = .{ .handler = route.handler, .ctx = ctx, .req = req.*, .res = res } };
         }
 
         // Try pattern matching with params (e.g., /hello/:name)
         if (std.mem.eql(u8, req_method, route.method) and matchPathWithParams(route.path, req_path, &req.params)) {
             if (route.ws_handler) |wsHandler| {
-                return .{ .websocket = .{ .handler = wsHandler, .ctx = ctx } };
+                return .{ .websocket = .{ .handler = wsHandler, .ctx = ctx, .req = req.* } };
             }
             if (route.sse_handler) |sseHandler| {
-                return .{ .sse = .{ .handler = sseHandler, .ctx = ctx } };
+                return .{ .sse = .{ .handler = sseHandler, .ctx = ctx, .req = req.* } };
             }
             const res = http_parser.HttpResponse.init(200, "OK", ctx.allocator);
-            return .{ .handler = .{ .handler = route.handler, .ctx = ctx, .res = res } };
+            return .{ .handler = .{ .handler = route.handler, .ctx = ctx, .req = req.*, .res = res } };
         }
     }
     return null;
 }
 
 /// Legacy route handler for backward compatibility
-pub fn handleRoute(self: *Self, req_method: []const u8, req_path: []const u8, req: *http_parser.HttpRequest, ctx: http_parser.HttpContext) http_parser.HttpResponse {
+pub fn handleRoute(
+    self: *Self,
+    req_method: []const u8,
+    req_path: []const u8,
+    req: *http_parser.HttpRequest,
+    ctx: http_parser.HttpContext,
+) http_parser.HttpResponse {
     if (matchRoute(self, req_method, req_path, req, ctx)) |result| {
         switch (result) {
             .handler => |res_data| return res_data.res,

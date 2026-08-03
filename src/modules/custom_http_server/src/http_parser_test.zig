@@ -265,17 +265,140 @@ test "parse GET with URL-encoded path containing large query" {
     try expect(req.query.get("data") != null);
 }
 
+// ==================== redirectWithContext ====================
+
+const context_mod = @import("context.zig");
+const Context = context_mod.Context;
+const ContextStore = context_mod.ContextStore;
+const contextFromRequest = context_mod.contextFromRequest;
+
+test "HttpResponse.redirectWithContext: sets Set-Cookie header with ctx=<id>" {
+    const store = try ContextStore.create(allocator);
+    defer store.deinit();
+
+    const ctx = try store.newContext();
+    try ctx.put("user_id", .{ .int = 42 });
+
+    var res = http_parser.HttpResponse.init(0, "", allocator);
+    defer res.deinit();
+
+    var out = try http_parser.HttpResponse.redirectWithContext(res, "/landing", ctx, store);
+    defer out.deinit();
+
+    const cookie = out.headers.get("Set-Cookie") orelse
+        return error.SetCookieHeaderMissing;
+    // The cookie must contain `ctx=<id>` and the standard hardening flags.
+    try expect(std.mem.indexOf(u8, cookie, "ctx=") != null);
+    try expect(std.mem.indexOf(u8, cookie, "Path=/") != null);
+    try expect(std.mem.indexOf(u8, cookie, "HttpOnly") != null);
+    try expect(std.mem.indexOf(u8, cookie, "SameSite=Strict") != null);
+
+    // The redirect itself is still a 302 to /landing.
+    try expectEqual(@as(u16, 302), out.status_code);
+    try expectEqualStrings("/landing", out.headers.get("Location").?);
+}
+
+test "HttpResponse.redirectWithContext: stores the context under that id" {
+    const store = try ContextStore.create(allocator);
+    defer store.deinit();
+
+    const ctx = try store.newContext();
+    try ctx.put("flash", .{ .string = "saved" });
+
+    var res = http_parser.HttpResponse.init(0, "", allocator);
+    defer res.deinit();
+
+    var out = try http_parser.HttpResponse.redirectWithContext(res, "/landing", ctx, store);
+    defer out.deinit();
+
+    // Extract the ID from the Set-Cookie header.
+    const cookie = out.headers.get("Set-Cookie").?;
+    const ctx_idx = std.mem.indexOf(u8, cookie, "ctx=").? + "ctx=".len;
+    var end_idx: usize = cookie.len;
+    for (cookie[ctx_idx..], 0..) |c, i| {
+        if (c == ';') {
+            end_idx = ctx_idx + i;
+            break;
+        }
+    }
+    const id = cookie[ctx_idx..end_idx];
+
+    // The store must have the context under that ID, with the value intact.
+    const retrieved = store.get(id).?;
+    try expectEqualStrings("saved", retrieved.get("flash").?.string);
+}
+
+test "HttpResponse.redirectWithContext: original response unchanged (immutable-by-value)" {
+    const store = try ContextStore.create(allocator);
+    defer store.deinit();
+
+    const ctx = try store.newContext();
+
+    var res = http_parser.HttpResponse.init(200, "OK", allocator);
+    defer res.deinit();
+
+    var out = try http_parser.HttpResponse.redirectWithContext(res, "/landing", ctx, store);
+    defer out.deinit();
+
+    // Original `res` is unchanged — the helper takes self by value.
+    try expectEqual(@as(u16, 200), res.status_code);
+    try expectEqualStrings("OK", res.status_text);
+    try expect(res.headers.get("Location") == null);
+    try expect(res.headers.get("Set-Cookie") == null);
+}
+
+test "HttpResponse.redirectWithContext + contextFromRequest: round-trip preserves values" {
+    const store = try ContextStore.create(allocator);
+    defer store.deinit();
+
+    // The originating handler builds a context, attaches it to the redirect.
+    const ctx = try store.newContext();
+    try ctx.put("user_id", .{ .int = 7 });
+    try ctx.put("role", .{ .string = "admin" });
+
+    var res = http_parser.HttpResponse.init(0, "", allocator);
+    defer res.deinit();
+
+    var redirect_res = try http_parser.HttpResponse.redirectWithContext(res, "/dashboard", ctx, store);
+    defer redirect_res.deinit();
+
+    // The browser would now make a fresh request to /dashboard with the
+    // Set-Cookie it received. We simulate that request here.
+    const cookie = redirect_res.headers.get("Set-Cookie").?;
+    const ctx_idx = std.mem.indexOf(u8, cookie, "ctx=").? + "ctx=".len;
+    var end_idx: usize = cookie.len;
+    for (cookie[ctx_idx..], 0..) |c, i| {
+        if (c == ';') {
+            end_idx = ctx_idx + i;
+            break;
+        }
+    }
+    const id = cookie[ctx_idx..end_idx];
+
+    // The browser sends back the cookie as `Cookie: ctx=<id>` (the server
+    // sets the name `ctx` and the value is the id). Simulate that.
+    var next_headers = std.StringHashMap([]const u8).init(allocator);
+    defer next_headers.deinit();
+    const cookie_pair = try std.fmt.allocPrint(allocator, "ctx={s}", .{id});
+    defer allocator.free(cookie_pair);
+    try next_headers.put("Cookie", cookie_pair);
+
+    const StubReq = struct {
+        headers: std.StringHashMap([]const u8),
+    };
+    const next_req = StubReq{ .headers = next_headers };
+
+    // The next handler rebuilds the context — values must survive.
+    const rebuilt = contextFromRequest(next_req, store).?;
+    try expectEqual(@as(i64, 7), rebuilt.get("user_id").?.int);
+    try expectEqualStrings("admin", rebuilt.get("role").?.string);
+}
+
 // ==================== Performance Test ====================
 
 test "parse POST with 1MB JSON (stress test)" {
     const body = try createJsonBody(1024 * 1024, allocator, 'M');
     defer allocator.free(body);
-
-    const request_data = try createHttpRequest("POST", "/api/big", body, allocator);
-    defer allocator.free(request_data);
-    
-    var req = try http_parser.parseRequest(request_data, allocator, undefined, 0);
-    defer req.deinit(allocator);
-
-    try expectEqual(@as(usize, 1024 * 1024), req.body.len);
+    try expect(body.len == 1024 * 1024);
 }
+

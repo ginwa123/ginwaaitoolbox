@@ -4,14 +4,22 @@ const builtin = @import("builtin");
 
 pub const http_parser = @import("http_parser.zig");
 const router = @import("router.zig");
+pub const security = @import("security.zig");
 pub const sse_manager = @import("sse_manager.zig");
 pub const ws_manager = @import("websocket_manager.zig");
 pub const ws_frames = @import("websocket_frames.zig");
 pub const ws_handshake = @import("websocket_handshake.zig");
 pub const Template = @import("template.zig");
+pub const readHtml = @import("read_html.zig").readHtml;
+pub const context = @import("context.zig");
+const gserverz_context = context;
 pub const HttpRequest = http_parser.HttpRequest;
 pub const HttpResponse = http_parser.HttpResponse;
 pub const HttpContext = http_parser.HttpContext;
+pub const Session = http_parser.Session;
+pub const Context = context.Context;
+pub const ContextStore = context.ContextStore;
+pub const contextFromRequest = context.contextFromRequest;
 pub const response = http_parser;
 pub const SseManager = sse_manager.SseManager;
 pub const WsManager = ws_manager.WsManager;
@@ -211,6 +219,19 @@ pub const GinwaServer = struct {
     environment: ?*const std.process.Environ.Map = null,
     is_running: bool = false,
 
+    /// Server-side ContextStore passed to handlers via `HttpContext`.
+    /// Optional — handlers that don't use cross-redirect state can
+    /// ignore it. Initialised lazily: if `null` at request time, the
+    /// handler's HttpContext gets `context_store = null` and any
+    /// `redirectWithContext` call degrades to a plain redirect (or
+    /// returns an error, depending on the handler's policy).
+    context_store: ?*gserverz_context.ContextStore = null,
+
+    /// HMAC secret used by `security.csrfTokenIssue` / `csrfTokenValidate`.
+    /// Defaults to a dev-only constant; production deployments should
+    /// override via `server.csrf_secret = "..."` after `GinwaServer.init`.
+    csrf_secret: []const u8 = "dev-only-csrf-secret-change-in-prod",
+
     /// Optional fallback handler invoked when no route matches. It is
     /// expected to write a complete HTTP response directly to `fd` (status
     /// line, headers, body) — the listen loop will NOT call toBytes() /
@@ -339,11 +360,44 @@ pub const GinwaServer = struct {
                         };
                         defer req.headers.deinit();
 
-                        const http_ctx = http_parser.HttpContext{ .allocator = allocator, .io = server.io };
+                        const http_ctx = http_parser.HttpContext{
+                            .allocator = allocator,
+                            .io = server.io,
+                        };
+                        // Build the Session right after parsing. `incoming`
+                        // is populated from the Cookie header via
+                        // `contextFromRequest` so handlers can `session.getString`
+                        // without knowing about cookies, ContextStore, or
+                        // contextFromRequest. When the server has no
+                        // `context_store` wired, Session.context_store is
+                        // `null` and `session.set` returns
+                        // `error.NoContextStore` (handlers that need set
+                        // don't register against a no-store server).
+                        const lookup: context.LookupResult = if (server.context_store) |store|
+                            context.contextFromRequest(req, store)
+                        else
+                            .{ .context = null, .id = null };
+                        var session = http_parser.Session.init(
+                            server.context_store,
+                            lookup.context,
+                            lookup.id,
+                        );
+                        defer session.deinit();
+                        // Wire the session into the request so handlers can
+                        // call `req.session.set / getString` directly. The
+                        // pointer outlives the listen loop's handle scope.
+                        req.session = &session;
                         if (server.router.matchRoute(req.method, req.path, &req, http_ctx)) |result| {
                             switch (result) {
                                 .handler => |h| {
-                                    const final_res = h.handler(h.ctx, req, h.res) catch http_parser.internalError("Handler error", allocator);
+                                    // Handlers take `HttpContext` BY VALUE (allocator +
+                                    // io + optional SSE client_id — a small 3-field
+                                    // struct), `HttpRequest` BY VALUE (a shallow snapshot
+                                    // from the post-route-match request — see HttpRequest
+                                    // doc for the safety invariants), and `HttpResponse`.
+                                    // The session pointer is part of `req` (set by
+                                    // the listen loop before matchRoute).
+                                    const final_res = h.handler(h.ctx, h.req, h.res) catch http_parser.internalError("Handler error", allocator);
                                     const res_bytes = final_res.toBytes() catch {
                                         std.debug.print("Failed to build response\n", .{});
                                         _ = closeFd(fd);
@@ -404,7 +458,7 @@ pub const GinwaServer = struct {
                                     };
 
                                     // Run the user handler.
-                                    ws.handler(ws.ctx, req, @ptrCast(server), fd, &client_id) catch |err| {
+                                    ws.handler(ws.ctx, ws.req, @ptrCast(server), fd, &client_id) catch |err| {
                                         std.debug.print("WebSocket handler error: {s}\n", .{@errorName(err)});
                                     };
 
@@ -463,7 +517,7 @@ pub const GinwaServer = struct {
                                     var sse_ctx = sse.ctx;
                                     sse_ctx.client_id = client_id;
                                     const res = http_parser.HttpResponse.init(200, "OK", allocator);
-                                    _ = sse.handler(sse_ctx, req, res) catch |err| {
+                                    _ = sse.handler(sse_ctx, sse.req, res) catch |err| {
                                         if (err != error.WouldBlock) {
                                             std.debug.print("SSE handler error: {s}\n", .{@errorName(err)});
                                         }

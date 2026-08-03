@@ -26,4 +26,10 @@ test {
     _ = @import("websocket_manager_test.zig");
     // Jinja-style template engine — tokenizer, parser, renderer, inheritance
     _ = @import("template_test.zig");
+    // Security primitives — CSRF, rate limit, security headers, origin, body size
+    _ = @import("security_test.zig");
+    // readHtml helper — read template file with embedded-source fallback
+    _ = @import("read_html_test.zig");
+    // Per-request Context value bag + HttpResponse.redirectWithContext
+    _ = @import("context_test.zig");
 }
