@@ -400,35 +400,60 @@ const handleSelectItem = async (workspaceId: string, itemId: string) => {
   // payload doesn't carry silent defaults). Folders / designs /
   // chats don't get the sort param.
   //
+  // FIX (kanban-sort-independence, task_1785730557641, 2026-08-06,
+  // refresh follow-up): DO NOT overwrite the URL's existing `sorts`
+  // when the user re-navigates to the SAME kanban. Pre-fix, every
+  // Sidebar click on a kanban wrote `?sorts=col_X:updated_at:desc,...`
+  // for every column — clobbering the user's custom picks (e.g.
+  // col_X:name:desc) with the default. The fix: only write the
+  // default when the URL doesn't already have `sorts=` for this
+  // kanban. If the URL has sorts, preserve them (the user has
+  // already committed to those picks on a previous visit).
+  //
   // Build the `sorts` string from the kanban's columns. If the
   // columns aren't loaded yet, fetch them on demand (cheap HTTP
   // GET, idempotent) so the URL is complete on the first click.
   let sortsParam: string | undefined
   if (item?.item_type === 'kanban') {
-    const columns = item.kanban_columns ?? []
-    if (columns.length === 0) {
-      // Fire-and-await: the URL we emit must include the column ids,
-      // so we wait for the columns to land. fetchKanbanColumns is
-      // idempotent — safe to call even if columns are already in
-      // flight from elsewhere (e.g. Sidebar expansion).
-      try {
-        await workspacesStore.fetchKanbanColumns(workspaceId, itemId)
-      } catch {
-        // Swallow — the URL will simply omit `sorts` and the
-        // KanbanView mount path will apply its own fallback when
-        // columns arrive. Better than throwing mid-click.
+    // Preserve the existing URL's `sorts` for THIS kanban (the
+    // user has already committed to those picks). Only fall back
+    // to building the default if there's no existing sorts — this
+    // is the FIRST visit to this kanban (URL has no sorts at all,
+    // or the current itemId doesn't match the kanban in the URL).
+    const existingSorts = route.query.sorts as string | undefined
+    const urlItemId = route.query.itemId as string | undefined
+    if (existingSorts && urlItemId === itemId) {
+      // Re-navigation to the SAME kanban — preserve the user's
+      // existing sort picks so we don't clobber them with the
+      // default. The KanbanView's URL-restore on mount reads
+      // `sorts` and applies each entry to its column.
+      sortsParam = existingSorts
+    } else {
+      const columns = item.kanban_columns ?? []
+      if (columns.length === 0) {
+        // Fire-and-await: the URL we emit must include the column ids,
+        // so we wait for the columns to land. fetchKanbanColumns is
+        // idempotent — safe to call even if columns are already in
+        // flight from elsewhere (e.g. Sidebar expansion).
+        try {
+          await workspacesStore.fetchKanbanColumns(workspaceId, itemId)
+        } catch {
+          // Swallow — the URL will simply omit `sorts` and the
+          // KanbanView mount path will apply its own fallback when
+          // columns arrive. Better than throwing mid-click.
+        }
       }
-    }
-    // Re-read columns after the await (the store may have populated
-    // them by now).
-    const refreshedItem = workspacesStore.workspaces
-      .find((ws) => ws.id === workspaceId)
-      ?.items.find((i) => i.id === itemId)
-    const cols = refreshedItem?.kanban_columns ?? []
-    if (cols.length > 0) {
-      sortsParam = cols
-        .map((c) => `${c.id}:updated_at:desc`)
-        .join(',')
+      // Re-read columns after the await (the store may have populated
+      // them by now).
+      const refreshedItem = workspacesStore.workspaces
+        .find((ws) => ws.id === workspaceId)
+        ?.items.find((i) => i.id === itemId)
+      const cols = refreshedItem?.kanban_columns ?? []
+      if (cols.length > 0) {
+        sortsParam = cols
+          .map((c) => `${c.id}:updated_at:desc`)
+          .join(',')
+      }
     }
   }
   // Carry (workspaceId, itemId) into the URL so the kanban / folder /
