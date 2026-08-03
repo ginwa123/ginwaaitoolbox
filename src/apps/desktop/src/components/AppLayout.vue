@@ -274,6 +274,17 @@ watch(
           query.pageId = pageId
         }
       }
+      // FIX (kanban-sort-independence, task_1785730557641,
+      // 2026-08-06): preserve the per-column `sorts` query param so
+      // the URL survives navigation. Without this, this watcher
+      // (which fires on every workspaceItemId change) would clobber
+      // the URL with `{view, workspaceId, itemId}` and drop the
+      // `sorts=col_X:...` KanbanView wrote — making the per-column
+      // sort non-persistent across navigation + refresh.
+      const urlSorts = route.query.sorts as string | undefined
+      if (urlSorts) {
+        query.sorts = urlSorts
+      }
     }
     router.replace({ path: '/app', query })
   },
