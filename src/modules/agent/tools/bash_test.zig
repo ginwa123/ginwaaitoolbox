@@ -60,6 +60,76 @@ test "bash_tool: large output is truncated by byte count" {
     try testing.expect(result.stdout.len > 0);
 }
 
+test "bash_tool: many long lines (head -n 30) byte-truncated to max_output" {
+    // Regression test for the user report "bash tool truncated still too long":
+    //
+    // The agent ran `grep -rn 'invalid_id\|InvalidId\|invalid id' /home/.../src/ \
+    //   2>&1 | head -n 30`. `head -n 30` bounds the LINE count, but the BYTE
+    // count can still exceed max_output by an order of magnitude — the user's
+    // grep output included single-line minified JS in `node_modules/json5/
+    // dist/index.min.js` (one ~5000-char line per match). Total output was
+    // ~150 KB across only 30 lines. The truncated result was still huge.
+    //
+    // The expected contract:
+    //   1. result.truncated == true when output > max_output
+    //      (even when line count < max_lines — head -n 30 is NOT a guarantee
+    //      of small output).
+    //   2. result.stdout.len <= max_output (capped at the byte limit).
+    //   3. result.stdout_lines reports the TRUE pre-truncation count
+    //      so the LLM knows data was actually cut, not just blank.
+    //   4. NO FD LEAK after the truncated-by-byte path — a future refactor
+    //      that adds an early-return on truncation must still close both
+    //      reader-thread pipes (stdout + stderr) before returning, or the
+    //      agent accumulates 2 FDs per call until the OS hits the per-process
+    //      FD quota (`ulimit -n`, typically 1024 on Linux).
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
+
+    const allocator = testing.allocator;
+    const io = std.testing.io;
+
+    const fd_count_before = try countOpenFds();
+
+    // Reproduce the user's pattern: 30 lines × ~200 bytes = ~6 KB output.
+    // `yes` echoes its argument + newline; with max_output=2048 (~10 lines),
+    // the byte cap MUST fire around the 10th-11th line.
+    // 200 'x' chars = 20 groups of 10.
+    const long_line = "xxxxxxxxxx" ** 20;
+    const result = try bash.execute_bash(allocator, io, .{
+        .command = "yes '" ++ long_line ++ "' | head -n 30",
+        .cwd = "/tmp",
+        .max_output = 2048,
+        // Disable line-cap interference so we are testing the byte path
+        // in isolation (mirrors the single-line test above).
+        .max_lines = 999_999,
+        .mandatory_timeout = 5,
+    });
+    defer {
+        allocator.free(result.command);
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    const fd_count_after = try countOpenFds();
+
+    // 1. truncation flag fired
+    try testing.expect(result.truncated == true);
+    // 2. output capped at max_output bytes (not the full ~6 KB)
+    try testing.expect(result.stdout.len <= 2048);
+    try testing.expect(result.stdout.len > 0);
+    // 3. stdout_lines reports the TRUE count (>= 30) so the LLM knows
+    //    that 30 lines were produced and the visible output is only a slice
+    try testing.expect(result.stdout_lines >= 30);
+    // stderr empty
+    try testing.expect(std.mem.eql(u8, result.stderr, "No errors."));
+    // 4. NO FD leak — the byte-truncation path must close reader pipes
+    //    even though `head -n 30` produced clean EOF before truncation fired
+    const fd_diff: usize = if (fd_count_after > fd_count_before)
+        fd_count_after - fd_count_before
+    else
+        0;
+    try testing.expect(fd_diff == 0);
+}
+
 test "bash_tool: timeout fires on long-running command" {
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
 
