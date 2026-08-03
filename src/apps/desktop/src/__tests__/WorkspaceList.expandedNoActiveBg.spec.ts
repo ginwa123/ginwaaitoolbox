@@ -32,6 +32,7 @@ vi.mock('vue-router', async () => {
 const baseWorkspace = {
   id: 'ws_1',
   name: 'agentic coding',
+  icon: 'folder',
   expanded: true,
   items: [
     {
