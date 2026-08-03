@@ -120,13 +120,6 @@ pub const SqliteBackend = struct {
         var db: ?*c.sqlite3 = null;
         const rc = c.sqlite3_open(db_path.ptr, &db);
         if (rc != c.SQLITE_OK) {
-            const err_msg = c.sqlite3_errmsg(db);
-            // Demoted from `std.log.err` to `std.log.warn`: a bad path is
-            // a user-input error (not a programmer error), and the wrapper
-            // already surfaces it via the structured Error return value.
-            // Calling `err` here triggered `log_err_count > 0` in
-            // `zig build test`, which exited 1 even on passing assertions.
-            std.log.warn("SQLite: {s}", .{err_msg});
             _ = c.sqlite3_close(db);
             return switch (rc) {
                 c.SQLITE_CANTOPEN => Error.DatabaseNotFound,
@@ -175,8 +168,6 @@ pub const SqliteBackend = struct {
             }
         }
         if (rc != c.SQLITE_OK) {
-            const err_msg = c.sqlite3_errmsg(db);
-            std.log.warn("sqlite3_prepare_v2 error: {s}", .{err_msg});
             return Error.PrepareFailed;
         }
 
@@ -188,8 +179,6 @@ pub const SqliteBackend = struct {
                 rc = sqlite3_bind_text_isize(@ptrCast(stmt), param_idx, arg.ptr, @intCast(arg.len), SQLITE_DESTRUCTOR_TRANSIENT);
             }
             if (rc != c.SQLITE_OK) {
-                const err_msg = c.sqlite3_errmsg(db);
-                std.log.warn("sqlite3_bind_text error: {s}", .{err_msg});
                 return Error.BindFailed;
             }
         }
@@ -201,8 +190,6 @@ pub const SqliteBackend = struct {
             } else if (rc == c.SQLITE_DONE) {
                 break;
             } else {
-                const err_msg = c.sqlite3_errmsg(db);
-                std.log.warn("sqlite3_step error: {s}", .{err_msg});
                 return Error.ExecuteFailed;
             }
         }
@@ -228,9 +215,6 @@ pub const SqliteBackend = struct {
         var stmt: ?*c.sqlite3_stmt = null;
         const prep_rc = c.sqlite3_prepare_v2(db, sql.ptr, @intCast(sql.len), &stmt, null);
         if (prep_rc != c.SQLITE_OK) {
-            const err_msg = c.sqlite3_errmsg(db);
-            // Demoted from `std.log.err` — see `init` for rationale.
-            std.log.warn("Prepare failed: {s}", .{err_msg});
             return Error.PrepareFailed;
         }
         defer _ = c.sqlite3_finalize(stmt);
@@ -244,8 +228,6 @@ pub const SqliteBackend = struct {
 
         const step_rc = c.sqlite3_step(stmt);
         if (step_rc != c.SQLITE_ROW) {
-            const err_msg = c.sqlite3_errmsg(db);
-            std.log.warn("sqlite3_step error (queryRow): {s}", .{err_msg});
             return Error.RowNotFound;
         }
 
@@ -344,12 +326,9 @@ pub const SqliteBackend = struct {
                 return null;
             }
             if (rc != c.SQLITE_ROW) {
-                // Capture the SQL error message BEFORE returning so
-                // callers can surface it (e.g. "fts5: syntax error"
-                // instead of bare "QueryFailed"). Without `db` on the
-                // Rows struct, we could only print the rc number here.
+                // Capture the SQL error message so callers can surface it
+                // (e.g. "fts5: syntax error" instead of bare "QueryFailed").
                 self.captureError();
-                std.debug.print("sqlite3_step error (Rows.next): rc={}\n", .{rc});
                 return Error.QueryFailed;
             }
 
@@ -483,8 +462,6 @@ pub const SqliteBackend = struct {
             if (self.depth == 1) self.backend.mutex.unlock(self.backend.io);
 
             if (rc != c.SQLITE_OK) {
-                const err_msg = c.sqlite3_errmsg(db);
-                std.log.warn("sqlite3_exec {s} failed: {s}", .{ sql_slice, err_msg });
                 return Error.ExecuteFailed;
             }
         }
@@ -569,8 +546,6 @@ pub const SqliteBackend = struct {
             if (self.depth == 1) self.backend.mutex.unlock(self.backend.io);
 
             if (rc != c.SQLITE_OK) {
-                const err_msg = c.sqlite3_errmsg(db);
-                std.log.warn("sqlite3_exec {s} failed: {s}", .{ sql_slice, err_msg });
                 return Error.ExecuteFailed;
             }
         }
@@ -590,16 +565,12 @@ pub const SqliteBackend = struct {
         var stmt: ?*c.sqlite3_stmt = null;
         const prep_rc = c.sqlite3_prepare_v2(db, sql.ptr, @intCast(sql.len), &stmt, null);
         if (prep_rc != c.SQLITE_OK) {
-            const err_msg = c.sqlite3_errmsg(db);
-            std.log.warn("sqlite3_prepare_v2 error (query): {s}", .{err_msg});
             return Error.PrepareFailed;
         }
 
         for (argv, 0..) |arg, i| {
             const bind_rc = sqlite3_bind_text_isize(@ptrCast(stmt), @intCast(i + 1), arg.ptr, @intCast(arg.len), SQLITE_DESTRUCTOR_TRANSIENT);
             if (bind_rc != c.SQLITE_OK) {
-                const err_msg = c.sqlite3_errmsg(db);
-                std.log.warn("sqlite3_bind_text error (query): {s}", .{err_msg});
                 _ = c.sqlite3_finalize(stmt);
                 return Error.BindFailed;
             }
@@ -656,8 +627,6 @@ pub const SqliteBackend = struct {
         // Issue BEGIN. On any failure, the errdefer releases the mutex.
         const rc = c.sqlite3_exec(self.db.?, "BEGIN", null, null, null);
         if (rc != c.SQLITE_OK) {
-            const err_msg = c.sqlite3_errmsg(self.db.?);
-            std.log.warn("sqlite3_exec BEGIN failed: {s}", .{err_msg});
             return Error.ExecuteFailed;
         }
 
@@ -705,8 +674,6 @@ pub const SqliteBackend = struct {
 
         const rc = c.sqlite3_exec(self.db.?, &sql_buf, null, null, null);
         if (rc != c.SQLITE_OK) {
-            const err_msg = c.sqlite3_errmsg(self.db.?);
-            std.log.warn("sqlite3_exec {s} failed: {s}", .{ sql_slice, err_msg });
             self.transaction_depth -= 1;
             return Error.ExecuteFailed;
         }

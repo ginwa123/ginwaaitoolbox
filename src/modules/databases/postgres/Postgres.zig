@@ -157,8 +157,6 @@ pub const PostgresBackend = struct {
             return Error.OutOfMemory;
         }
         if (c.PQstatus(pgconn) != c.CONNECTION_OK) {
-            const err_msg = c.PQerrorMessage(pgconn);
-            std.log.warn("PostgreSQL connection failed: {s}", .{err_msg});
             c.PQfinish(pgconn);
             // Map connection failures to the closest SQLite Error variant.
             // PostgreSQL doesn't have distinct error codes for these at the
@@ -457,8 +455,6 @@ pub const PostgresBackend = struct {
                 return;
             },
             c.PGRES_FATAL_ERROR, c.PGRES_NONFATAL_ERROR => {
-                const err_msg = if (result) |r| c.PQresultErrorMessage(r) else c.PQerrorMessage(conn);
-                std.log.warn("PGexecParams error: {s}", .{err_msg});
                 return Error.ExecuteFailed;
             },
             else => return Error.ExecuteFailed,
@@ -511,8 +507,6 @@ pub const PostgresBackend = struct {
         );
 
         if (result == null) {
-            const err_msg = c.PQerrorMessage(conn);
-            std.log.warn("PGexecParams error (queryRow): {s}", .{err_msg});
             return Error.QueryFailed;
         }
         defer c.PQclear(result);
@@ -527,8 +521,6 @@ pub const PostgresBackend = struct {
             },
             c.PGRES_EMPTY_QUERY => return Error.RowNotFound,
             else => {
-                const err_msg = c.PQresultErrorMessage(result);
-                std.log.warn("PGresultStatus error (queryRow): {s}", .{err_msg});
                 return Error.QueryFailed;
             },
         }
@@ -738,8 +730,6 @@ pub const PostgresBackend = struct {
         // `c.PQclear` (error path).
 
         if (result == null) {
-            const err_msg = c.PQerrorMessage(conn);
-            std.log.warn("PGexecParams error (query): {s}", .{err_msg});
             return Error.QueryFailed;
         }
 
@@ -747,8 +737,6 @@ pub const PostgresBackend = struct {
         switch (status) {
             c.PGRES_TUPLES_OK => {},
             else => {
-                const err_msg = c.PQresultErrorMessage(result);
-                std.log.warn("PGresultStatus error (query): {s}", .{err_msg});
                 c.PQclear(result);
                 return Error.QueryFailed;
             },
@@ -826,8 +814,6 @@ pub const PostgresBackend = struct {
             switch (status) {
                 c.PGRES_COMMAND_OK => return,
                 else => {
-                    const err_msg = c.PQresultErrorMessage(result);
-                    std.log.warn("PG COMMIT/RELEASE failed: {s}", .{err_msg});
                     return Error.ExecuteFailed;
                 },
             }
@@ -879,8 +865,6 @@ pub const PostgresBackend = struct {
             switch (status) {
                 c.PGRES_COMMAND_OK => return,
                 else => {
-                    const err_msg = c.PQresultErrorMessage(result);
-                    std.log.warn("PG ROLLBACK failed: {s}", .{err_msg});
                     return Error.ExecuteFailed;
                 },
             }
@@ -904,8 +888,6 @@ pub const PostgresBackend = struct {
         }
         const status = c.PQresultStatus(result);
         if (status != c.PGRES_COMMAND_OK) {
-            const err_msg = c.PQresultErrorMessage(result);
-            std.log.warn("PG BEGIN failed: {s}", .{err_msg});
             return Error.ExecuteFailed;
         }
 
@@ -950,8 +932,6 @@ pub const PostgresBackend = struct {
         }
         const status = c.PQresultStatus(result);
         if (status != c.PGRES_COMMAND_OK) {
-            const err_msg = c.PQresultErrorMessage(result);
-            std.log.warn("PG SAVEPOINT failed: {s}", .{err_msg});
             self.transaction_depth -= 1;
             return Error.ExecuteFailed;
         }
