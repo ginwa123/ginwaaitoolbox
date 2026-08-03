@@ -395,6 +395,59 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Sidebar — PUSH URL on Standard Chat auto-create + routine run (`task_1785786201882`)
+
+**Symptom (user report, `task_1785786201882`).** User: *"when click header, and then the task, the url should not replace but append so it will be make sense"*. PR #178 (`bb2b9bd4`) wired `Sidebar.handleSelectTask` to `router.push` so the URL preserves the workspace context AND the browser back button returns to the kanban URL. Two parallel `view=task` paths were missed in that fix — they still used `router.replace`, clobbering the workspace URL in the browser history.
+
+**What landed (PR #180).**
+
+Two surgical changes in `src/apps/desktop/src/components/shell/Sidebar.vue`:
+
+1. **`handleAddTaskPick`** ('standard' branch) — auto-creates a Standard Chat task when the user clicks "+ Standard Chat" on a folder / design / chat item. `router.replace` → `router.push`.
+2. **`handleRunRoutine`** — fires a routine task and navigates to its chat. `router.replace` → `router.push`.
+
+Both paths also gain the `savedSortsParam` snapshot that `handleSelectTask` already does — the close-restore fallback in `handleCloseTaskView` reads `savedSortsParam` and writes it back to the workspace URL on close, matching all three `view=task` navigation paths under one contract.
+
+Not changed (intentionally):
+
+- `closeGitViewer` / `closeSkillViewer` / `closeCodeEditor` — close paths use `replace` (rewriting current state), correct as-is.
+- `handleCloseTaskView` — close uses `replace`, correct.
+- `AppLayout.handleNavigate('task')` — already uses `push`, no change.
+- `AppLayout.handleNavigate('workspace')` — already uses `push`, no change.
+- The URL sync watcher in `AppLayout.vue:240` — uses `replace` for same-view syncs (workspace ↔ workspace), correct.
+
+**Files (2 changed, +622/-13).**
+
+- `src/apps/desktop/src/components/shell/Sidebar.vue` — `handleAddTaskPick` + `handleRunRoutine` (`router.replace` → `router.push`, plus `savedSortsParam` snapshot), with explanatory block-comment.
+- `src/apps/desktop/src/__tests__/sidebarHandleCreateTaskUrl.spec.ts` (new, 9 tests) — drives the realistic two-step event flow (`add-task` emit on WorkspaceList → `pick` emit on AddTaskPickerDialog) to set the picker refs + trigger the handler.
+
+**Tests.** +9 net new behavioural tests in `sidebarHandleCreateTaskUrl.spec.ts`:
+
+1. `handleAddTaskPick` (`standard`) uses PUSH, never REPLACE
+2. `handleAddTaskPick` (`standard`) preserves `workspaceId` + `itemId`
+3. `handleAddTaskPick` (`standard`) snapshots `savedSortsParam`
+4. `handleAddTaskPick` (`standard`) preserves `sorts` in URL
+5. `handleAddTaskPick` fallback path (`api.createTask` rejects) still uses PUSH
+6. `handleRunRoutine` uses PUSH, never REPLACE
+7. `handleRunRoutine` preserves `workspaceId` + `itemId` + `sorts` + `session`
+8. `handleRunRoutine` snapshots `savedSortsParam`
+9. `handleRunRoutine` no-result branch bails without navigation
+
+**Verification.**
+
+- `bun run build` clean (vue-tsc passes, 2.55s)
+- `bunx vitest run src/__tests__/sidebarHandleCreateTaskUrl.spec.ts` → **9/9 pass**
+- Full suite: **2087 pass / 19 fail** — the 19 are pre-existing baseline (`DesignView.undoHidden×5`, `AppLayout.urlPersist×7`, `AppLayout.memoriesGate×4`, `DesignElement static×1`, `AppLayout.translateResize×1`, `DesignView.nudge×1`).
+- Zero regressions.
+
+**Lesson.** When a fix lands partially, a TDD pass over ALL parallel paths catches the stragglers. PR #178 wired `handleSelectTask` correctly. The two sibling paths (`handleAddTaskPick`, `handleRunRoutine`) missed the same review pass because they look identical at a glance. The fix is a 4-line `router.replace` → `router.push` change per path; the regression test suite catches it for future renamings.
+
+**Branch / commit / PR.**
+
+- Branch: `worktree/better-url-browser-standard-ai`
+- Commit: `b6e15da9`
+- PR: #180
+
 ### 2026-08-06: Kanban chatview dialog — 3rd size bump (make it bigger on kanban mode)
 
 **Symptom (user report).** User said *"make chatview dialog bigger on kanban mode"* with a screenshot showing the dialog occupying ~60% of the viewport width. Current sizing was 95vw × 90vh / max 1400×1000 — visible as a centered panel with ~150px margin on each side of a typical 1600px viewport.
