@@ -484,12 +484,8 @@ const handleItemDragEnd = () => {
           @click="handleWorkspaceClick(workspace.id)"
           class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-200"
           :style="{
-            backgroundColor: workspace.expanded
-              ? 'var(--semantic-active-bg)'
-              : 'transparent',
-            color: workspace.expanded
-              ? 'var(--semantic-active-text)'
-              : 'var(--semantic-text-muted)',
+            backgroundColor: 'transparent',
+            color: 'var(--semantic-text-muted)',
           }"
         >
           <!-- Grip handle — visible on hover, gives the user a "you can
