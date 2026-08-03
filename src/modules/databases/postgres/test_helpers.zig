@@ -107,6 +107,13 @@ pub var g_test_env_initialized: bool = false;
 /// One-shot init: probe the test PG instance. Tests skip themselves
 /// when `is_available` is false. Safe to call from any test — only
 /// the first call hits the network.
+///
+/// **NOT thread-safe.** Called only from the test runner's main
+/// thread. If a future test wants to spawn `std.Thread`s that hit
+/// the PG instance, that test must call `getOrStartTestInstance` from
+/// the main thread first to populate the cache, then pass
+/// `env.conninfo` to the workers (the `LEAK: createTempDb parallel`
+/// test does this).
 pub fn getOrStartTestInstance(allocator: std.mem.Allocator) TestEnv {
     if (g_test_env_initialized) return g_test_env;
 
@@ -165,8 +172,12 @@ pub fn nextDbCounter() u64 {
 /// within the same process so two tests in the same `zig test`
 /// invocation never share a DB.
 ///
-/// On any failure, returns the underlying error WITHOUT leaving a
-/// stray database behind (uses `errdefer`).
+/// Cleanup guarantee: on any failure (CREATE DATABASE fails,
+/// `db.init` fails, allocator fails for any intermediate buffer),
+/// the helper UNWINDS ALL ALLOCATED STATE — including dropping the
+/// database from the shared instance if CREATE DATABASE already
+/// succeeded. This means no test ever leaves a stray `nalar_pg_test_*`
+/// database on the PG server, even if a later step panics or errors.
 pub fn createTempDb(allocator: std.mem.Allocator, base_conninfo: []const u8) Error!TestDb {
     // 1. Generate a unique DB name.
     const counter_value = nextDbCounter();
@@ -178,10 +189,16 @@ pub fn createTempDb(allocator: std.mem.Allocator, base_conninfo: []const u8) Err
     );
     errdefer allocator.free(db_name);
 
-    // 2. CREATE DATABASE on the shared instance via the dedicated
-    //    helper. On failure, returns BEFORE we open the per-test
-    //    backend so there's nothing to clean up beyond `db_name`.
+    // 2. CREATE DATABASE on the shared instance. Track whether it
+    //    succeeded so the errdefer below can drop the database if a
+    //    LATER step fails. Without this tracking, a failed
+    //    `db.init(...)` would leave a stray `nalar_pg_test_*` DB on
+    //    the server.
+    var db_created = false;
+    errdefer if (db_created) dropDatabase(allocator, base_conninfo, db_name);
+
     try createDatabase(allocator, base_conninfo, db_name);
+    db_created = true;
 
     // 3. Open a PostgresBackend against the new database.
     var threaded = std.Io.Threaded.init(allocator, .{});
