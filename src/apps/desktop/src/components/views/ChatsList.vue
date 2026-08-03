@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
+import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import { VirtualScroller, formatRelativeTime } from '../../helpers'
 import * as api from '../../api'
 
@@ -22,6 +23,12 @@ const emit = defineEmits<{
 const navigationStore = useNavigationStore()
 const sidebarStore = useSidebarStore()
 const workspacesStore = useWorkspacesStore()
+
+// URL-driven "what is the main content area showing?". Derived from
+// the URL so the chat row's active background stays in sync with
+// refresh / deep links / browser back / forward — no store flag can
+// drift. See useCurrentMainView for the full contract.
+const currentMainView = useCurrentMainView()
 
 // Inject processingState from App.vue
 const processingState = inject<Ref<Record<string, boolean>>>('processingState', ref({}))
@@ -131,12 +138,11 @@ const loadChats = async () => {
     console.log('[ChatsList] loadChats called, fetching from API...')
     const data = await api.getChats('updated_at', chatsSortDirection.value, 30)
     console.log('[ChatsList] API returned:', data)
-    const savedSessionId = navigationStore.sessionId
     const sessions = data.sessions || []
     navItems.value = sessions.map((session: any) => ({
       id: session.session_id,
       name: session.session_name || 'New Chat',
-      active: savedSessionId === session.session_id,
+      active: currentMainView.value.kind === 'chat' && currentMainView.value.sessionId === session.session_id,
       processing: !!processingState.value[session.session_id], // Show spinner for any processing chat
       relativeTime: formatRelativeTime(session.updated_at),
       selected_profile_model: session.selected_profile_model || '',
