@@ -151,13 +151,8 @@ pub const ContextIPCTui = struct {
         const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop) " ++
             "VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)";
         const copy_session_name = try allocator.dupe(u8, session_name);
-        defer allocator.free(copy_session_name);
         const copy_cwd = try allocator.dupe(u8, effective_cwd);
-        defer allocator.free(copy_cwd);
-        const copy_session_id = try allocator.dupe(u8, session_id);
-        defer allocator.free(copy_session_id);
         const copy_profile = if (effective_profile.len > 0) try allocator.dupe(u8, effective_profile) else "";
-        defer if (copy_profile.len > 0) allocator.free(copy_profile);
         try self.db.exec(
             allocator,
             session_sql,
