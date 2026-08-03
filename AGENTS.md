@@ -434,6 +434,38 @@ The middle branch worked, but the first branch — `fetch ONLY URL-mentioned col
 
 **Branch / commit.** `main @ a357903a`. Plan: `docs/superpowers/plans/2026-08-06-kanban-onmount-single-fetch.md`.
 
+### 2026-08-06: Better URL browser — APPEND on task click, not REPLACE (PR #178, commit `bb2b9bd4`)
+
+**Symptom (user report, task_1785771871817).** *"when click task in kanban, no need replace url, but append the url browser"*. Clicking a task card in the kanban REPLACED the URL from `?view=workspace&workspaceId=W&itemId=K&sorts=col_a:updated_at:desc,col_b:…` to `?view=task&task=X&itemId=K` — dropping the kanban + per-column sort context AND clobbering the browser history so the back button skipped the kanban URL.
+
+**Fix.** `Sidebar.handleSelectTask` now spreads the current `route.query`'s breadcrumb fields (`workspaceId`, `itemId`, `pageId`, `sorts`) into the new query, then overrides `view: 'task'` / `task: taskId` / `itemId: parentItemId` on the spread. Uses `router.push` instead of `router.replace`. New helper `pickBreadcrumbFromQuery` extracts only the string-typed scalars (vue-router's `LocationQuery` values are `string | null | (string|null)[]`; arrays/nulls are dropped).
+
+**Behavioural matrix.**
+- From a kanban URL: task URL preserves `workspaceId`, `itemId`, `sorts`
+- From a design URL: task URL preserves `workspaceId`, `itemId`, `pageId`
+- From a deep-link task URL: task URL stays lean (no orphan workspace context injected)
+- All paths use `router.push` (browser back works)
+
+**Why NOT also touch `handleCloseTaskView`?** It reads `activeWorkspaceId`/`activeWorkspaceItemId`/`activeDesignPageId` from the store + `savedSortsParam` snapshot, which mirror the URL. The close handler still works correctly because the store reflects the URL state.
+
+**Why NOT `router.back()` on close?** Would be more "browser-back-button-natural" but riskier — the user might have navigated away from the kanban between clicking the task and closing it; back would go to an unexpected page. Minimal change preserves `router.replace` on close.
+
+**Why NOT delete `savedSortsParam` snapshot?** It remains the close-restore fallback for older URL patterns that land on task without kanban context. URL is the primary path; snapshot is the safety net.
+
+**Verification.**
+- `bunx vitest run src/__tests__/sidebarHandleSelectTaskUrl.spec.ts` — 5/5 pass (new)
+- `bunx vitest run src/__tests__/AppLayout.sortUrlRoundTrip.spec.ts` — 2/2 pass (round-trip contract intact)
+- `bun run build` — vue-tsc clean
+- Full suite: 2038 pass / 19 fail; the 19 failures are pre-existing on `main` (same 6 files: `DesignView.undoHidden×5`, `DesignView.nudge clamp×1`, `DesignElement static contract×1`, `AppLayout.translateResize×1`, `AppLayout.urlPersist×7`, `AppLayout.memoriesGate×4`)
+
+**Plan / branch / commit.**
+- `docs/superpowers/plans/2026-08-06-better-url-browser.md`
+- `.nalar/memories/better-url-browser-append-on-task-click.md` (project memory with the URL-as-breadcrumb pattern)
+- Branch: `worktree/better-url-browser` @ `bb2b9bd4` (+ `f174dcbb` memory commit)
+- PR: #178
+
+**Lesson.** When a navigation feels "off" to the user (URL dropped, back button wrong), the URL is probably being treated as a **state identifier** when it should be a **breadcrumb**. Use `router.push` to navigate; spread the current context into the new query so refresh + back + share-link all work. Use `router.replace` only for rewriting the *current* state (e.g. closing a dialog). See `.nalar/memories/better-url-browser-append-on-task-click.md` for the canonical pattern.
+
 ### 2026-08-06: Kanban — merge the two onMounted hooks into one (single fetch per column on mount)
 
 **Symptom (user report, task_1785730557641).** *"theres a double called same endpoint on kanban view, when mounted and when thers a quertsort, its very complicated your code, to many code that call same api, mounted should only one in @/src/apps/desktop/src/components/kanban/KanbanView.vue"*. DevTools Network panel showed the SAME per-column fetch endpoint called twice on mount — once from `loadColumnsAndTasks`, once from a separate URL restore `onMounted`.
