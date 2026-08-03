@@ -151,7 +151,7 @@ test "updateToolResultById updates content + is_loading=0 in place" {
     const id = try llm_history.saveToolResultPlaceholder(ctx.alloc, ctx.threaded.io(), &ctx.db, opts);
     defer ctx.alloc.free(id);
 
-    try llm_history.updateToolResultById(ctx.alloc, &ctx.db, "tcA", .{
+    try llm_history.updateToolResultById(ctx.alloc, ctx.threaded.io(), &ctx.db, "tcA", .{
         .content = "actual bash result",
         .diffview_before = null,
         .diffview_after = null,
@@ -173,7 +173,7 @@ test "updateToolResultById on a non-existent tool_call_id is a no-op (no error)"
 
     // No pre-existing placeholder — the UPDATE must be a no-op,
     // returning Ok(()) with 0 rows affected.
-    try llm_history.updateToolResultById(ctx.alloc, &ctx.db, "tc_ghost", .{
+    try llm_history.updateToolResultById(ctx.alloc, ctx.threaded.io(), &ctx.db, "tc_ghost", .{
         .content = "should be discarded",
         .diffview_before = null,
         .diffview_after = null,
@@ -201,7 +201,7 @@ test "updateToolResultById accepts and stores diffview_before / diffview_after" 
     const id = try llm_history.saveToolResultPlaceholder(ctx.alloc, ctx.threaded.io(), &ctx.db, opts);
     defer ctx.alloc.free(id);
 
-    try llm_history.updateToolResultById(ctx.alloc, &ctx.db, "tcA", .{
+    try llm_history.updateToolResultById(ctx.alloc, ctx.threaded.io(), &ctx.db, "tcA", .{
         .content = "diff content",
         .diffview_before = "old content",
         .diffview_after = "new content",
@@ -271,7 +271,7 @@ test "resolveStaleLoadingToolResults is idempotent on a session with no stranded
     };
     const id = try llm_history.saveToolResultPlaceholder(ctx.alloc, ctx.threaded.io(), &ctx.db, opts);
     defer ctx.alloc.free(id);
-    try llm_history.updateToolResultById(ctx.alloc, &ctx.db, "tcA", .{
+    try llm_history.updateToolResultById(ctx.alloc, ctx.threaded.io(), &ctx.db, "tcA", .{
         .content = "real result",
         .diffview_before = null,
         .diffview_after = null,
