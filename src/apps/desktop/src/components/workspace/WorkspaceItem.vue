@@ -2,6 +2,7 @@
 import { computed, inject, ref, type Ref } from 'vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import type { WorkspaceItem } from '../../stores/workspaces'
+import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import WorkspaceItemTaskRow from './WorkspaceItemTaskRow.vue'
 import DesignPageRow from './DesignPageRow.vue'
 import type { DesignPage } from '../../api'
@@ -76,6 +77,18 @@ const emit = defineEmits<{
 const isExpanded = computed(() => {
   return workspacesStore.expandedItemIds[props.item.id] === true
 })
+
+// URL-driven "what is the main content area showing?". The active row
+// styling is now sourced from the URL (?view=workspace&itemId=X) rather
+// than the `isActive` prop (which is still passed by the parent for
+// backwards-compat with other consumers and for the right-side active
+// dot). When the URL changes, the computed re-runs and the row styling
+// updates — no watcher needed, the template binding is enough.
+const currentMainView = useCurrentMainView()
+const isCurrentMainView = computed(() =>
+  currentMainView.value.kind === 'workspace'
+    && currentMainView.value.itemId === props.item.id,
+)
 
 // Computed: true if any of this item's tasks is currently being processed
 // by a worker. Drives the right-side yellow spinner on the item row so
@@ -485,8 +498,8 @@ const handlePinnedDrop = (event: DragEvent) => {
         <button
           @click="handleClick"
           class="flex-1 flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-all duration-200"
-          :style="isActive
-            ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
+          :style="isCurrentMainView
+            ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text); box-shadow: inset 2px 0 0 0 var(--color-violet);`
             : `color: var(--semantic-text-muted);`"
         >
           <!-- Processing spinner (LLM worker is running on one of this
