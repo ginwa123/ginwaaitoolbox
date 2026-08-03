@@ -519,7 +519,16 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
     // NEW (design-pages-in-workspace-tree plan, 2026-08-06): wipe the
     // design-pages cache so re-inits don't show stale pages from the
-    // previous session. Per-key refetch happens lazily on expand.
+    // previous session.
+    //
+    // UPDATED (auto-expand-design-pages plan, 2026-08-06): refetch
+    // happens EAGERLY in init() (parallel to the per-item tasks
+    // fetch below), not lazily on chevron click. The chevron handler
+    // still calls fetchDesignPages as a fallback for items that
+    // weren't in the workspace list at init time (rare, but
+    // defensive). The fetchDesignPages in-flight guard dedupes
+    // concurrent calls so the chevron and the init fetch share the
+    // same promise.
     resetDesignPagesCache()
 
     // Install the bus-backed session-event listeners (idempotent —
@@ -537,29 +546,49 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Load expanded item IDs for tasks list from localStorage
       expandedItemIds.value = expandedIds
 
-      // Step 2 + 3: fan out per-workspace items + per-item tasks in parallel.
-      // A per-item tasks fetch failure is best-effort (logged + empty tasks
-      // for that item) so a single bad item doesn't kill the whole init.
+      // Step 2 + 3 + 4: fan out per-workspace items + per-item tasks +
+      // per-design-item design pages in parallel. A per-item tasks
+      // fetch failure is best-effort (logged + empty tasks for that
+      // item) so a single bad item doesn't kill the whole init.
       //
       // Per-column pagination (Option B, 2026-08-06 amendment): for
       // KANBAN items, we no longer fire a board-wide task fetch in
       // init(). The kanban view fires per-column fetches on mount
       // (one per column), so the initial load is consistent. Folders
       // / other types still use the board-wide fetch.
+      //
+      // NEW (auto-expand-design-pages plan, 2026-08-06): design pages
+      // are fetched eagerly here for all DESIGN items so the sidebar
+      // tree shows pages immediately after a page refresh — without
+      // this, the sidebar tree's nested <DesignPageRow> children
+      // rendered empty until the user clicked the design item's
+      // chevron (which fired the lazy fetchDesignPages). Awaiting the
+      // fetch inside init() means the sidebar is fully populated when
+      // init() resolves — matching the user's "instant open" mental
+      // model. The fetchDesignPages in-flight guard (line below)
+      // dedupes concurrent calls, so a chevron click racing init()
+      // shares the same promise instead of double-fetching.
       workspaces.value = await Promise.all(
         (wsList || []).map(async (ws: Workspace) => {
           // Items for this workspace.
           const { items } = await api.getWorkspacesItems(ws.id)
 
           // Tasks for each item in this workspace (per-item, in parallel).
-          // Kanban items skip this — they populate per-column on
-          // mount via KanbanView.vue's per-column fetches.
+          // Kanban + design items skip this — kanban populates
+          // per-column on mount via KanbanView.vue's per-column
+          // fetches; design items don't have a tasks list (the
+          // sidebar template at WorkspaceItem.vue excludes the
+          // tasks region for item_type === 'design', per the
+          // design-pages-in-workspace-tree plan, 2026-08-06).
           const tasksByItem = new Map<string, Task[]>()
           await Promise.all(
             (items || []).map(async (item: WorkspaceItem) => {
-              if (item.item_type === 'kanban') {
-                // Defer to KanbanView onMount — fires per-column
-                // fetches with column_id set (per Option B).
+              if (item.item_type === 'kanban' || item.item_type === 'design') {
+                // Kanban: defer to KanbanView onMount — fires
+                // per-column fetches with column_id set (per Option B).
+                // Design: design items have no tasks list; the
+                // sidebar shows design pages instead (see
+                // design-pages-in-workspace-tree plan).
                 return
               }
               try {
@@ -572,6 +601,23 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
                 }
               } catch (err) {
                 console.error(`Failed to fetch tasks for item ${item.id}:`, err)
+              }
+            }),
+          )
+
+          // NEW (auto-expand-design-pages plan, 2026-08-06): design
+          // pages for each design item. Best-effort — a single bad
+          // fetch logs but doesn't block init (the chevron-toggle
+          // lazy fetch still works as a fallback). Awaiting keeps
+          // init's "loading" semantics consistent: the sidebar is
+          // fully populated when isLoading flips to false.
+          await Promise.all(
+            (items || []).map(async (item: WorkspaceItem) => {
+              if (item.item_type !== 'design') return
+              try {
+                await fetchDesignPages(ws.id, item.id)
+              } catch (err) {
+                console.error(`Failed to fetch design pages for item ${item.id}:`, err)
               }
             }),
           )

@@ -397,6 +397,50 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Auto-expand design pages in sidebar tree (sidebar empty after refresh)
+
+**Symptom (user report, task_1785772308817).** User: *"see workspace design,
+when refresh its empty, but when i click it the header it show, can you make
+all of that instant open"*. After a browser refresh, the workspace sidebar's
+expanded design item showed only `+ Add Page` (empty state). Clicking the
+design item's chevron (collapse-then-expand) made the pages appear.
+
+**Root cause.** `workspacesStore.init()` restored `expandedItemIds` from
+localStorage (so the design item stayed expanded), but it **never fetched
+design pages**. The `fetchDesignPages` action only fired lazily from
+`WorkspaceItem.vue::handleChevronToggle` when the user clicked the chevron.
+Pre-fix: refresh → init loads workspaces + items + tasks → `expandedItemIds[
+designId] === true` (restored) → `designPagesByItemId[designId] === undefined`
+(never fetched) → sidebar renders empty `v-if="isExpanded && item.item_type
+=== 'design'"` section. User clicks chevron → toggle (collapse) → click
+again → toggle (expand) + `fetchDesignPages` fires → cache populates → sidebar
+re-renders.
+
+**Fix.** `init()` now fires `fetchDesignPages(ws.id, item.id)` for every
+design item in parallel with the existing tasks fetch. Awaiting inside init
+means the sidebar is fully populated when `isLoading` flips to `false`. Bonus:
+also skip `getTasks` for design items (they don't have a tasks list — sidebar
+template excludes them per the design-pages-in-workspace-tree plan).
+
+**Files.** 2 modified:
+- `src/apps/desktop/src/stores/workspaces.ts` — fan-out block
+- `src/apps/desktop/src/__tests__/workspacesStoreInit.spec.ts` — +4 tests
+
+**Verification.**
+- `bun run build` clean (vue-tsc passes, 1.82s)
+- `bunx vitest run src/__tests__/workspacesStoreInit.spec.ts` — 9/9 pass
+  (was 5/5, +4 new)
+- `bunx vitest run` (full suite) — 2037 pass / 19 fail. The 19 failures are
+  PRE-EXISTING on main (2033 pass / 19 fail). Zero regressions.
+
+**Why NOT keep the lazy chevron-toggle fetch.** The chevron handler still
+fires `fetchDesignPages` as a fallback for design items added after init
+(rare, defensive). The in-flight guard dedupes concurrent calls so chevron +
+init share the same promise.
+
+**Branch.** `worktree/auto-expand-design-pages` (uncommitted).
+**Plan.** `docs/superpowers/plans/2026-08-06-auto-expand-design-pages.md`.
+
 ### 2026-08-06: Kanban — fetch OTHER columns with default sort when URL has sort entries for SOME columns (regression fix after onMounted merge)
 
 **Symptom (user report, task_1785730557641, follow-up).** After the previous `onMounted`-merge fix landed (`a5dcb686`), the user reported a regression: when the URL had sort entries for SOME columns, only those columns fetched on mount. The OTHER columns stayed empty until the user picked a sort or navigated. Screenshot: kanban with 7 columns + URL `?sorts=col_merged:name:desc,col_in_review_task:name:asc` showed only 2 columns loaded (the URL-mentioned ones). The other 5 columns rendered empty.
