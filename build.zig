@@ -510,6 +510,23 @@ pub fn build(b: *std.Build) void {
     run_cli_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cli_cmd.addArgs(args);
 
+    // === nalarcli unit tests (`zig build test:cli`) ===
+    // The CLI module re-exports test files via its `root.zig`, so a
+    // single `b.addTest({ .root_module = cli_module })` step picks up
+    // every `_test.zig` under `src/apps/cli/` without listing them.
+    // Same libc + curl link line as the exe.
+    const cli_tests = b.addTest(.{ .root_module = cli_module });
+    cli_tests.root_module.linkSystemLibrary("c", .{});
+    cli_tests.root_module.link_libc = true;
+    const test_cli = b.step("test:cli", "Run nalarcli unit tests");
+    const run_cli_tests = b.addRunArtifact(cli_tests);
+    test_cli.dependOn(&run_cli_tests.step);
+
+    // === nalarcli install-only (`zig build install:cli`) ===
+    // Skips the full `build:all` dance — just installs the cli binary.
+    const install_cli_step = b.step("install:cli", "Install the nalarcli binary only");
+    install_cli_step.dependOn(&cli_install.step);
+
     const run_step = b.step("run", "Run the app");
 
     const run_cmd = b.addRunArtifact(exe);

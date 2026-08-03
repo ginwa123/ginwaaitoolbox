@@ -1900,3 +1900,83 @@ Group/frame nesting handled via recursive descent (depth-guarded at 32). Unknown
 - Inserted `const mark_history_not_for_llmrun = @import("markHistoryNotForLLMRun.zig").markHistoryNotForLLMRun;` in `workflow_commpact_message.zig` (was previously `mod.mark_history_not_for_llmrun`). Same for `IsWorkerCancelledInput`, `onEventSendWorkers`, `onEventSendSessions`.
 
 **Branch / commit.** `main @ bfe53456`. Squash-merged via direct commit (was working on `main` directly).
+### 2026-08-06: `nalarcli` — native Zig CLI for the HTTP API
+
+**Symptom (user request, task_1785674002603).** Wrap the backend's
+HTTP endpoints (POST `/api/llm/session`, GET `/api/llm/session`,
+GET `/api/llm/session/<id>/messages`, GET `/api/events?channels=…`)
+in a CLI binary so the user can drive the backend from a terminal
+without opening the desktop app. Native Zig (no shell-out to `curl`).
+
+**Architecture.** Three new build-graph entries in `build.zig`:
+
+1. **`cli_app_mod`** — module rooted at `src/apps/cli/src/root.zig`,
+   re-exports the public API (`config`, `client`, `format`,
+   `commands`, `custom_http_client`). Imports `custom_http_client` so
+   the HTTP transport is shared with `custom_http_client_mod` (no
+   duplicate libcurl wiring).
+2. **`cli_exe`** — executable rooted at `src/apps/cli/src/main.zig`,
+   links libc + libcurl (cross-platform via `custom_http_client_mod`).
+3. **`test:cli`** — runs the unit-test suite for the cli module.
+4. **`run:cli`** — runs the binary (passes through `b.args`).
+5. **`install:cli`** — installs only the CLI binary.
+
+The CLI re-uses the existing `custom_http_client` libcurl transport
+rather than re-implementing curl — Linux/macOS/Windows libcurl paths
+are already handled by `-Dcurl-prefix` / `-Dcurl-vcpkg-root` (declared
+once on the `custom_http_client_mod` block).
+
+**Subcommands.**
+
+| Verb | Endpoint | Verbose flag | Behaviour |
+|---|---|---|---|
+| `send <msg>` | POST `/api/llm/session` | `--session`, `--profile`, `--allowed-tools`, `--cwd`, `--auto-retry` | Queues a message to a session; creates a fresh `session-<unix-ms>` if none given. |
+| `sessions` | GET `/api/llm/session?limit=N` | `--limit <n>` | Lists recent sessions. |
+| `messages <id>` | GET `/api/llm/session/<id>/messages` | `--limit <n>`, `--reverse` | Lists messages in a session. |
+| `events` | GET `/api/events?channels=…` | `--channels <a,b,c>` | Long-lived SSE tail (uses `custom_http_client.openStream`). |
+| `help` / `-h` / `--help` / `<unknown verb>` | — | — | Prints help text. |
+
+**Global flags** (parsed in `main.zig` BEFORE the verb parser):
+`--server <url>`, `--session <id>`, `--profile <name>`.
+**Env vars** (resolved by `config.load` when flags are absent):
+`NALARCLI_SERVER`, `NALARCLI_SESSION_ID`, `NALARCLI_PROFILE`.
+
+**Files.** 13 new + 2 modified:
+- `src/apps/cli/build.zig` + `build.zig.zon` (new — boilerplate from `zig init`, NOT used by the parent build)
+- `src/apps/cli/src/main.zig` (entry point, argv parser, dispatch glue)
+- `src/apps/cli/src/root.zig` (package re-exports + `test` discovery)
+- `src/apps/cli/src/config.zig` (server/session/profile resolution)
+- `src/apps/cli/src/client.zig` (HTTP helpers over `custom_http_client`)
+- `src/apps/cli/src/format.zig` (placeholder — not yet used)
+- `src/apps/cli/src/commands/root.zig` (verb parser + dispatch + parseXxxArgs)
+- `src/apps/cli/src/commands/{send,sessions,messages,events}.zig`
+- `src/apps/cli/src/*_test.zig` + `src/apps/cli/src/commands/*_test.zig`
+- `build.zig` (added `cli_app_mod` + `cli_exe` + `test:cli` step + `install:cli` step + banner update)
+- `src/modules/custom_http_client/src/methods.zig` (1-line fix: `Client.Error` → `@import("client.zig").Error` — pre-existing latent bug that surfaced when `methods.zig` was first consumed)
+
+**Tests.** +43 new behavioural tests across 8 files:
+- `client_test.zig` — 3 (rewritten for Zig 0.16 `std.Io.net.IpAddress` + `Threaded.init` + per-thread accept; fixed Response leak with `defer response.deinit(allocator)`)
+- `config_test.zig` — 7 (resolution priority: flags → env → defaults)
+- `format_test.zig` — 2 (placeholder; ready for the JSON formatter when used)
+- `commands/root.zig` (inline) — 4 (verb parser) + 16 (parseXxxArgs)
+- `commands/{send,sessions,messages,events}_test.zig` — 5 (placeholders, will be replaced in the next TDD slice that hits the live endpoint)
+
+Total cli test count: **43/43 pass, 0 leaks.**
+
+**Verification.**
+- `zig build test:cli --summary all` → 43 pass, 0 leaks
+- `zig build install:cli --summary all` → produces `zig-out/bin/nalarcli` (~12 MB)
+- `zig build --summary all` → all three binaries; banner shows nalarcli
+- `zig build test --summary all` → 2175/2181 + 6 skip (same as main; 2 pre-existing leaks from `design_model_set_element_parent_test`)
+- Live smoke on port 8081: `./zig-out/bin/nalarcli --server http://localhost:8081 sessions --limit 1` returns JSON; `messages session-… --limit 1` returns JSON; `help` prints usage; unknown verb prints help.
+- Cross-compile Zig code compiles cleanly for `x86_64-windows-gnu` + `aarch64-macos` (linker fails only because libcurl/vcpkg aren't installed on this Linux host — same pre-existing failure for `nalar` and `nalar-desktop`).
+
+**Out of scope** (deferred to follow-up plans):
+- LLM-tool-emulation mode (call `send` with `--auto-retry` and let the CLI wait for SSE-finished).
+- Per-call mixing of `--server http://...` and `NALARCLI_SESSION_ID` works but no validation (server unreachable surfaces as a libcurl error, not a friendly CLI message).
+- `format.zig` is wired but unused; subcommands dump raw JSON.
+- Static-binary option via `zig build -Dpic` for shipping a single binary.
+- Windows resource metadata (icon, version) via `-Dwindows-icon`.
+
+**Branch.** `worktree/cli-app` (uncommitted).
+

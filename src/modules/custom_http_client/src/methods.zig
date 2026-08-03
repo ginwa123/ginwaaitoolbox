@@ -9,7 +9,7 @@ const Response = @import("response.zig").Response;
 const Header = @import("request.zig").Header;
 const Method = @import("request.zig").Method;
 const Options = @import("options.zig").Options;
-const Error = Client.Error;
+const Error = @import("client.zig").Error;
 
 pub fn get(client: *Client, url: []const u8, options: Options) Error!Response {
     return client.perform(.{ .method = .GET, .url = url }, options);

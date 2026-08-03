@@ -1,18 +1,59 @@
-//! By convention, root.zig is the root source file when making a package.
+//! Public API surface for the `nalarcli` package.
+//!
+//! Re-exports the modules consumed by the CLI executable and the
+//! test runner. Keeping the surface small makes the build graph
+//! cheap to recompute.
+//!
+//! Test files in `tests/` are NOT auto-discovered by Zig's test
+//! runner (they're separate files, not transitive deps of any
+//! module). They must be explicitly `@import`-ed here so they run.
+//! Mirrors the convention used in
+//! `src/ai_workflow/tui/test_runner.zig` and other project runners.
+
+pub const config = @import("config.zig");
+pub const client = @import("client.zig");
+pub const format = @import("format.zig");
+pub const commands = @import("commands/root.zig");
+
+/// Re-export the lower-level HTTP client module so subcommands can
+/// write `@import("custom_http_client")` via the `cli` namespace:
+/// `cli.custom_http_client.Client`. We DON'T shadow the
+/// `custom_http_client` name (would conflict with `addImport`); the
+/// canonical access path from inside the `cli` package is the
+/// re-exported `custom_http_client` namespace below.
+pub const custom_http_client = @import("custom_http_client");
+
+// Test imports — keep them sorted alphabetically.
+test {
+    _ = @import("config_test.zig");
+    _ = @import("client_test.zig");
+    _ = @import("commands/sessions_test.zig");
+    _ = @import("commands/messages_test.zig");
+    _ = @import("commands/send_test.zig");
+    _ = @import("commands/events_test.zig");
+}
+
 const std = @import("std");
-const Io = std.Io;
+const testing = std.testing;
 
-/// This is a documentation comment to explain the `printAnotherMessage` function below.
-///
-/// Accepting an `Io.Writer` instance is a handy way to write reusable code.
-pub fn printAnotherMessage(writer: *Io.Writer) Io.Writer.Error!void {
-    try writer.print("Run `zig build test` to run the tests.\n", .{});
+test "root: format.prettyJson renders an object" {
+    const out = try format.prettyJson(testing.allocator, .{ .whitespace = .indent_2 }, .{
+        .id = "session-1",
+        .status = "send",
+    });
+    defer testing.allocator.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "\"session-1\"") != null);
 }
 
-pub fn add(a: i32, b: i32) i32 {
-    return a + b;
+test "root: client.buildUrl joins server + path" {
+    const u = try client.buildUrl(testing.allocator, "http://x:8081", "/api/llm/session");
+    defer testing.allocator.free(u);
+    try testing.expectEqualStrings("http://x:8081/api/llm/session", u);
 }
 
-test "basic add functionality" {
-    try std.testing.expect(add(3, 7) == 10);
+test "root: commands.parseCommand dispatches 'send' to Root" {
+    var buf: [256]u8 = undefined;
+    const args = [_][]const u8{ "send", "hello" };
+    const cmd = try commands.parseCommand(testing.allocator, &args, &buf);
+    try testing.expectEqual(commands.CommandKind.send, cmd.kind);
 }
