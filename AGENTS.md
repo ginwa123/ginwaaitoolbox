@@ -1546,3 +1546,70 @@ This is the original architecture from commit `77482f07`. The comparator deleted
 **Lesson.** When a user feedback comment ("i remove that and its become better") is acted on globally without checking per-column/per-instance independence, regression is silent. The user reported a single-column issue; the fix removed the per-column sort entirely. Tests like "renders cards in input order" (KanbanColumn.spec.ts) become the guard rail — if they fail to assert the per-column sort behaviour, the regression slips through.
 
 **Branch / commit.** `worktree/kanban-sort-independence` @ `911e6647`.
+
+### 2026-08-06: AI agent tools — `get_design_context` + `preview_design_page`
+
+**Symptom (user report, task_1785697326304).** *"ai agen tool, get design context, get view design"*. The agent could CREATE/EDIT design elements via `set_design_page` + `add_element` + `update_element`, but had no way to **read** the current design state or **see** it. The LLM had to call `bash` + `sqlite3` to peek at the DB or run `ls` on the on-disk design folder, neither of which gave it a useful mental model of the page.
+
+**Two new tools:**
+
+| Tool | Input | Output |
+|---|---|---|
+| `get_design_context` | `page_id` OR `workspace_item_id` (exactly one) | XML envelope listing every page + every element + every attribute (x/y/w/h/type/fill/rotation/parent_id/text_content/image_url/etc.) |
+| `preview_design_page` | `page_id` (required), `scale` (default 1.0, max 4.0) | SVG visualization rendered in the side panel via the existing `show_preview` `html` content-type sandboxed iframe |
+
+**`get_design_context` design.** Pure read, mirrors the `design_page_elements` DB wire shape. The agent sees EXACTLY what the DB stores (every column is rendered as an XML attribute, including `parent_id=""` for top-level). HTML bodies are intentionally NOT included — the agent can read them individually via `read_file` if needed (matches `set_design_page`'s convention). Empty `page_id` AND empty `workspace_item_id` → error; both set → error.
+
+```xml
+<design_context>
+  <pages count="2">
+    <page id="page_xxx" name="Login" width="1440" height="1024" position="0">
+      <design_page_elements count="3">
+        <element id="elem_aaa" page_id="page_xxx" name="clear-button" type="rectangle"
+                x="1356" y="16" width="60" height="24" fill="transparent"
+                parent_id="elem_bbb" ... />
+      </design_page_elements>
+    </page>
+  </pages>
+</design_context>
+```
+
+**`preview_design_page` design.** Generates a self-contained SVG (no external resources except `image` `href`s) and wraps it in the existing `<show_preview>` envelope (content_type="html"). The frontend's `PreviewContentRenderer` already renders `html` content-types via the sandboxed iframe — zero frontend changes needed. Each element type maps to the matching SVG primitive:
+
+| Element type | SVG | Notes |
+|---|---|---|
+| `rectangle` | `<rect>` | fill + stroke + corner_radius + rotation |
+| `ellipse` | `<ellipse>` | cx/cy = bbox center, rx/ry = bbox half |
+| `text` | `<text>` | y baseline = y + height, font_size = bbox height (min 8) |
+| `image` | `<image>` | href = image_url |
+| `frame` / `group` | `<g>` | recursive children render inside via tree walk |
+
+Group/frame nesting handled via recursive descent (depth-guarded at 32). Unknown element types render as a labeled outlined rectangle so the agent sees SOMETHING (no silent drops).
+
+**Scale factor.** Applied to both the SVG `viewBox` AND every element coordinate. `scale=2.0` doubles everything (so the agent can zoom into details). Capped at 4.0 to prevent a malicious LLM from requesting a 1000x page scaled to 4000x and OOM'ing the side panel renderer.
+
+**Implementation.** Zero backend schema changes — both tools use the existing `design_model.listPages` / `getPageWithElements` / `listPagesWithElements` / `loadElementHtml` APIs. Zero frontend changes — `preview_design_page` reuses the existing `PreviewContentRenderer` html path + `ShowPreview.vue` chat-output component.
+
+**Files (6 new + 4 edits).**
+- `src/modules/agent/tools/get_design_context.zig` — tool def + `executeGetDesignContextToString`
+- `src/modules/agent/tools/get_design_context_test.zig` — 8 behavioural + 5 wiring tests
+- `src/modules/agent/tools/preview_design_page.zig` — tool def + SVG generator + `executePreviewDesignPageToString`
+- `src/modules/agent/tools/preview_design_page_test.zig` — 10 behavioural + 5 wiring tests
+- `src/ai_workflow/tui/agentic_loop/tools_exec_get_design_context.zig` — exec wrapper
+- `src/ai_workflow/tui/agentic_loop/tools_exec_preview_design_page.zig` — exec wrapper
+- `src/root.zig` (+2 lines), `src/ai_workflow/tui/mod.zig` (+2 lines), `src/ai_workflow/tui/agentic_loop/tools.zig` (+2 lines), `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` (+2 imports + 4 entries)
+
+**Verification (worktree `worktree/agent-tool-design-context`).**
+- `zig build test --summary all`: **2184/2190 pass, 6 skip** (was 2168/2174 before, +16 new tests, 0 new failures)
+- 2 leaks reported — PRE-EXISTING in `design_model_set_element_parent_test.zig` cycle-rejection test, unrelated
+- `zig build install:linux:system` + `rm -rf zig-out/bin && zig build` → both `nalarcore-linux-x86_64` (82 MB) + `nalar-desktop` (13 MB) produced
+- Cross-compile `zig build-obj -target x86_64-windows-gnu` and `-target aarch64-macos` → both clean (no errors)
+- Live HTTP smoke on port 8080 (separate `$HOME`): server starts, `/api/workspaces` works → confirms the wiring doesn't break the existing design HTTP layer (the agent tools are LLM-side, not HTTP-side)
+
+**Out of scope (deferred).**
+- Per-element preview (the agent can always re-call with a closer view — the page preview is enough for v1)
+- SVG interactive overlays (e.g. click an element to highlight its `<rect>`) — pure read tool, no interaction model needed
+- Animated SVG (e.g. transitions during edit) — side panel is a static preview, not a canvas
+- Multi-page preview (one SVG per page) — out of scope; use `get_design_context` for the data shape
+
+**Plan.** `docs/superpowers/plans/2026-08-06-ai-agent-design-context-tool.md`.
