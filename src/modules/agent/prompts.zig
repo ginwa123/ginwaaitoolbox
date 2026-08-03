@@ -85,7 +85,7 @@ const PromptSection = struct {
 const PROMPT_SECTIONS: []const PromptSection = &.{
     // === LEAD: Orchestrator narrative (Philosophy B) ===
     .{ .name = "universal_rules", .content = UniversalRules },
-    .{ .name = "prompt_auto_fix", .content = PromptAutoFix },
+    // .{ .name = "prompt_auto_fix", .content = PromptAutoFix },
     .{ .name = "search_tool_rule", .content = SearchToolRule },
     .{ .name = "agent_directive", .content = Agent },
     .{ .name = "parallel_work", .content = ParallelWork },
@@ -100,7 +100,7 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
 
 
     // === Memory & docs ===
-    .{ .name = "memory_prompt", .content = MemoryPrompt },
+    // .{ .name = "memory_prompt", .content = MemoryPrompt },
     // .{ .name = "nalar_md", .content = NalarMdAutoUpdate },
     .{ .name = "global_memory_system", .content = GlobalMemorySystem },
     .{ .name = "local_memory_system", .content = LocalMemorySystem },
