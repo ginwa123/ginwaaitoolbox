@@ -2040,3 +2040,106 @@ Total cli test count: **43/43 pass, 0 leaks.**
 
 **Branch.** `worktree/cli-app` (uncommitted).
 
+### 2026-08-06: Tool-call loading placeholder — kill "Invalid function ID" on crash
+
+**Symptom (user report, task_1785784899843).** After the agent
+crashed mid-tool-execution (bash hangs, spawn_sub_agent dies,
+nalar SIGKILL'd, network hang during read_file), the next LLM
+request failed with `400 Bad Request: Invalid function ID tool
+call error`. The conversation had an assistant message declaring
+`tool_calls=[A, B, C]` but only some of the `role=tool` rows landed
+in the DB. OpenAI's API requires ALL `tool_call_id`s in the
+assistant message to have matching tool rows — even one missing
+fails the request, and every subsequent request fails the same
+way.
+
+**Why the current 2-phase pattern fails** (in `handle_tool.zig`):
+
+```zig
+// Phase 1: SINGLE INSERT — declares tool_calls=[A, B, C]
+_ = try llm_history.saveMessage(... { role=assistant, tool_calls=tc, ... });
+
+// Phase 2: for-loop — each iteration runs long-running tools then INSERTs the row
+for (tc) |tool_call| {
+    const exec_result = try dispatchTool(ctx, tool_call);  // LONG-RUNNING
+    try saveAndSendToolResult(... tool_call.id ...);      // crashes here → orphan id
+}
+```
+
+If the crash is mid-Phase-2, the assistant row exists but some
+tool rows don't. Next LLM call → API reject → stuck forever.
+
+**The fix (3-phase pattern)**:
+
+```
+Phase 1 (sync)  ── INSERT placeholder rows for ALL tool_calls
+Phase 2 (sync)  ── INSERT the assistant message with tool_calls
+Phase 3 (async) ── for each tool_call: run + UPDATE the row in place
+```
+
+If we crash between Phase 1 and Phase 3, the placeholders stay in
+the DB. A startup hook (`resolveStaleLoadingToolResults(session_id)`)
+replaces stranded placeholders with a synthetic "Tool execution
+interrupted" message, satisfying the API contract by ID.
+
+**Files (8 changed, +1012/-34).**
+
+- `src/migrations/migration.zig` — new `Migration068AddToolCallLoading` (adds `is_loading` column + partial UNIQUE INDEX on `tool_call_id`)
+- `src/migrations/migration_068_test.zig` (NEW) — 6 behavioural tests
+- `src/migrations/test_runner.zig` — register the new test
+- `src/ai_workflow/tui/llm_history.zig` — 3 new helpers (`saveToolResultPlaceholder`, `updateToolResultById`, `resolveStaleLoadingToolResults`)
+- `src/ai_workflow/tui/llm_history_tool_call_loading_test.zig` (NEW) — 9 behavioural tests
+- `src/ai_workflow/tui/agentic_loop/handle_tool.zig` — 3-phase rewrite (`saveAndSendToolResult` → `updateAndSendToolResult`)
+- `src/ai_workflow/tui/agentic_loop/workflow.zig` — call `resolveStaleLoadingToolResults` at top of worker loop
+- `src/ai_workflow/tui/test_runner.zig` — register the new test
+
+**Why the placeholder MUST have `is_feed_to_llm=1`.** If we mark
+it `is_feed_to_llm=0`, the conversation payload sent to the LLM
+omits the placeholder row → assistant message's `tool_calls=[A,
+B, C]` has no matching tool result for B/C → API rejects. So the
+placeholder is sent to the LLM with empty content. The LLM sees
+"tool call A completed with empty content" — acceptable as a
+"still running" sentinel. The startup hook then upgrades this to
+a more meaningful "interrupted" message before the next LLM call.
+
+**TDD trace.** RED (6 migration tests fail because the column
+doesn't exist) → GREEN (Migration 068 added). RED (9 helper tests
+fail because the helpers don't exist) → GREEN (helpers added).
+REFACTOR (handle_tool.zig 3-phase rewrite) → GREEN (existing 16
+inline `parseDiffViewFromResult` tests still pass + 0 regressions).
+
+**Verification.**
+
+- `zig build test --summary all` → **2293 pass / 6 skip / 0 fail** (was 2278/2290 before — +15 new tests). 2 leaks are PRE-EXISTING in `design_model_set_element_parent_test.zig`.
+- `zig build install:linux:system` → compiles (cp to /usr/local/bin fails on perms, expected).
+- `rm -rf zig-out/bin && zig build` → produces nalar (79 MB), nalarcore-linux-x86_64 (87 MB), nalar-desktop (13 MB), nalarcli (12 MB).
+- Cross-compile smoke (mandatory for SQL helpers — Zig's lazy semantic analysis can hide SQL prepare errors): `zig build-obj -fno-emit-bin -target x86_64-windows-gnu` and `-target aarch64-macos` both clean.
+
+**Why the UNIQUE INDEX on `tool_call_id` is partial.** Excludes
+empty-string `tool_call_id`s (the assistant message's `tool_call_id = ''`)
+so the assistant row doesn't conflict with the placeholders'
+`tool_call_id = 'tcA'` etc. Without it, a dispatcher race could
+create two placeholders for the same id.
+
+**Out of scope** (deferred to follow-ups):
+
+- **Per-tool recovery strategy**: for v1, all stranded tool results get a generic "interrupted" message. A future improvement could attempt to re-run idempotent tools (most are NOT — defer until user asks).
+- **Live "tool running" UI**: the chat view's existing Queue/Stop button is the visible indicator. No new UI needed.
+- **Migration backfill**: the startup hook handles any existing stranded rows on next launch. No separate backfill migration.
+- **Streaming placeholder content**: v1 commits empty content; a future enhancement could stream live updates via SSE.
+
+**Pitfalls (the non-obvious traps):**
+
+- The UPDATE preserves `created_at` and `created_iso` — those are the placeholder's "started at" time. Don't drift them on UPDATE; the LLM benefits from the gap between assistant and tool completion (visible in UI tooltips).
+- The startup hook is idempotent — calling it on a session with 0 stranded rows is a no-op. Safe to call on every iteration.
+- MCP tools (in `handle_mcp_tool.zig`) also go through `updateAndSendToolResult` — they get the same 3-phase benefit automatically because `handle_tool()` is the single dispatch point.
+- `spawn_sub_agent` specifically benefits: a child-agent run that takes 30+ minutes and gets killed at minute 20 leaves a placeholder that resolves to "interrupted" on next start (instead of permanently orphaning the tool_call_id).
+
+**Branch / commit / PR.**
+
+- Branch: `worktree/tool-call-loading-placeholder`
+- Squash commit: `5e19e4ad` ("fix(agent): kill 'Invalid function ID' on crash via 3-phase tool-call INSERT")
+- PR: #181
+- Plan: `docs/superpowers/plans/2026-08-06-tool-call-loading-placeholder.md`
+- Memory: `.nalar/memories/tool-call-loading-placeholder-2026-08-06.md` (project) + `~/.config/nalar/memories/openai-tool-call-api-contract.md` (cross-project)
+
