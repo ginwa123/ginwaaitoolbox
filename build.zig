@@ -544,7 +544,11 @@ pub fn build(b: *std.Build) void {
         mod.linkSystemLibrary("sqlite3", .{});
         mod.linkSystemLibrary("ssl", .{});
         mod.linkSystemLibrary("crypto", .{});
+        mod.linkSystemLibrary("pq", .{});
         mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+        // Debian/Ubuntu layout: libpq-fe.h lives in /usr/include/postgresql
+        // (Arch has it directly in /usr/include). Adding both is harmless.
+        mod.addIncludePath(.{ .cwd_relative = "/usr/include/postgresql" });
     } else if (target.result.os.tag == .macos) {
         // macOS native (Apple Silicon + Intel): use the system libsqlite3
         // provided by Homebrew. The vendored amalgamation compiled into
