@@ -1330,6 +1330,16 @@ pub fn getMessages(
 // Compacted Messages Query (is_feed_to_llm = 0)
 // =============================================================================
 
+/// Filter on the `is_feed_to_llm` column. The `search_history` tool
+/// surfaces this as `live_only` / `compacted_only` (mutually exclusive
+/// flags translated to one of these enum values at the tool boundary).
+///
+/// `.all` = no filter (default).
+/// `.live_only` = restrict to `is_feed_to_llm = 1` (current live context).
+/// `.compacted_only` = restrict to `is_feed_to_llm = 0` (dropped from
+/// context by compaction).
+pub const FeedFilter = enum { all, live_only, compacted_only };
+
 /// Options for filtering `getCompactedMessages`.
 pub const CompactedMessagesOptions = struct {
     /// When non-null, only return messages whose id is in this list.
@@ -1342,20 +1352,34 @@ pub const CompactedMessagesOptions = struct {
     since: ?[]const u8 = null,
     /// When non-null, only return messages with `created_at <= until`.
     until: ?[]const u8 = null,
+    /// When non-null, only return messages with `tool_name` matching
+    /// this value exactly (e.g. "bash", "read_file", "search_history").
+    /// Useful for "all `bash` invocations that ran `cargo test`".
+    tool_name: ?[]const u8 = null,
+    /// When non-null, only return messages with `parent_session_id` matching
+    /// this value. Used for sub-agent debugging — find every message in
+    /// any session whose parent is the given session id.
+    parent_session_id: ?[]const u8 = null,
+    /// When non-null, only return messages with `agent` matching this value
+    /// exactly. Useful when one session has multiple agents (planning vs
+    /// chat vs sub-agent).
+    agent: ?[]const u8 = null,
     /// Max number of rows to return. Defaults to 100 for safety — the
     /// caller can request up to 1000 explicitly. The `search_history`
     /// tool wraps this in its own user-facing limit parameter.
     limit: ?u32 = 100,
-    /// When `true`, include ALL messages for the session regardless of
-    /// `is_feed_to_llm` (live + compacted). When `false` (default),
-    /// restrict to `is_feed_to_llm = 0` (compacted only) — the original
-    /// semantic, preserved for compaction-test callers.
-    ///
-    /// Used by `search_history mode="session"` to return the full
-    /// conversation history. The LLM may want to re-read messages
-    /// still in its live context (e.g. "show me what I said earlier
-    /// today"), not just compacted ones.
+    /// DEPRECATED alias for `feed_filter = .all`. When `true`, equivalent
+    /// to `feed_filter = .all`; when `false` (default), equivalent to
+    /// `feed_filter = .compacted_only`. The new `feed_filter` field takes
+    /// precedence when both are set. Kept for back-compat with the test
+    /// suite (`llm_history_search_messages_fts_test.zig` uses
+    /// `.{ .include_all = true }`).
     include_all: bool = false,
+    /// When non-null, restrict rows by their `is_feed_to_llm` value via
+    /// this enum. When null, `effectiveFeedFilter()` falls back to the
+    /// legacy `include_all` boolean. New callers should prefer
+    /// `feed_filter` over `include_all` for clarity.
+    feed_filter: ?FeedFilter = null,
     /// Sort direction for `created_at`. Default `.asc` (chronological
     /// forward). `.desc` returns most-recent-first — useful for
     /// `search_history mode="session"` when the LLM wants to browse
@@ -1370,6 +1394,15 @@ pub const CompactedMessagesOptions = struct {
     /// `llm_history.CompactedMessagesOptions.Order` and use
     /// `@tagName(...)` to render it as a string for the wire format.
     pub const Order = enum { asc, desc };
+
+    /// Resolve the effective feed filter, falling back to the legacy
+    /// `include_all` boolean when `feed_filter` was not explicitly set.
+    /// This indirection lets new code use the enum while preserving
+    /// compatibility with the older boolean.
+    pub fn effectiveFeedFilter(self: CompactedMessagesOptions) FeedFilter {
+        if (self.feed_filter) |ff| return ff;
+        return if (self.include_all) .all else .compacted_only;
+    }
 };
 
 /// Lighter-weight return struct than `TUIHistory` — only the fields the
@@ -1419,6 +1452,20 @@ pub const SearchOptions = struct {
     since: ?[]const u8 = null,
     /// When non-null, upper bound on `created_at` (inclusive).
     until: ?[]const u8 = null,
+    /// When non-null, restrict rows by their `is_feed_to_llm` value via
+    /// the `FeedFilter` enum. See `getCompactedMessages` for the
+    /// per-enum-value SQL mapping. Default = `.all` (no filter).
+    feed_filter: FeedFilter = .all,
+    /// When non-null, exact-match filter on `llm_history.tool_name`.
+    /// e.g. `tool_name = "bash"` returns only `role=tool` rows where the
+    /// tool that produced the result was `bash`.
+    tool_name: ?[]const u8 = null,
+    /// When non-null, exact-match filter on `llm_history.parent_session_id`.
+    /// e.g. `parent_session_id = "s_parent"` returns only rows in any
+    /// session whose parent is `s_parent` (typically sub-agent runs).
+    parent_session_id: ?[]const u8 = null,
+    /// When non-null, exact-match filter on `llm_history.agent`.
+    agent: ?[]const u8 = null,
     /// Max rows to return. Defaults to 20 for safety; the caller can
     /// request up to 200 (the tool layer caps there). The FTS ranking
     /// does the rest of the filtering.
@@ -1498,9 +1545,10 @@ pub fn getCompactedMessages(
 
     // Build the WHERE clause incrementally. Each filter appends
     // AND <clause> to the base `h.session_id = ?`.
-    // `is_feed_to_llm = 0` is appended UNLESS `opts.include_all` is set;
-    // `search_history` mode="session" passes include_all=true to browse
-    // the full conversation history.
+    // `is_feed_to_llm = 0` is appended UNLESS `opts.effectiveFeedFilter()`
+    // resolves to `.all` (search_history mode="session" passes feed_filter
+    // = .all via `include_all = true` to browse the full conversation
+    // history).
     var sql: std.ArrayList(u8) = .empty;
     defer sql.deinit(allocator);
     try sql.appendSlice(allocator,
@@ -1515,8 +1563,10 @@ pub fn getCompactedMessages(
         \\WHERE h.session_id = ?
     );
 
-    if (!opts.include_all) {
-        try sql.appendSlice(allocator, " AND h.is_feed_to_llm = 0");
+    switch (opts.effectiveFeedFilter()) {
+        .all => {},
+        .live_only => try sql.appendSlice(allocator, " AND h.is_feed_to_llm = 1"),
+        .compacted_only => try sql.appendSlice(allocator, " AND h.is_feed_to_llm = 0"),
     }
 
     var bind_values: std.ArrayList([]const u8) = .empty;
@@ -1538,6 +1588,21 @@ pub fn getCompactedMessages(
     if (opts.role) |r| {
         try sql.appendSlice(allocator, " AND h.role = ?");
         try bind_values.append(allocator, r);
+    }
+
+    if (opts.tool_name) |tn| {
+        try sql.appendSlice(allocator, " AND h.tool_name = ?");
+        try bind_values.append(allocator, tn);
+    }
+
+    if (opts.parent_session_id) |psid| {
+        try sql.appendSlice(allocator, " AND h.parent_session_id = ?");
+        try bind_values.append(allocator, psid);
+    }
+
+    if (opts.agent) |a| {
+        try sql.appendSlice(allocator, " AND h.agent = ?");
+        try bind_values.append(allocator, a);
     }
 
     if (opts.since) |s| {
@@ -1706,6 +1771,27 @@ pub fn searchMessagesFts(
     if (opts.role) |r| {
         try sql.appendSlice(allocator, " AND h.role = ?");
         try bind_values.append(allocator, r);
+    }
+
+    switch (opts.feed_filter) {
+        .all => {},
+        .live_only => try sql.appendSlice(allocator, " AND h.is_feed_to_llm = 1"),
+        .compacted_only => try sql.appendSlice(allocator, " AND h.is_feed_to_llm = 0"),
+    }
+
+    if (opts.tool_name) |tn| {
+        try sql.appendSlice(allocator, " AND h.tool_name = ?");
+        try bind_values.append(allocator, tn);
+    }
+
+    if (opts.parent_session_id) |psid| {
+        try sql.appendSlice(allocator, " AND h.parent_session_id = ?");
+        try bind_values.append(allocator, psid);
+    }
+
+    if (opts.agent) |a| {
+        try sql.appendSlice(allocator, " AND h.agent = ?");
+        try bind_values.append(allocator, a);
     }
 
     if (opts.since) |s| {

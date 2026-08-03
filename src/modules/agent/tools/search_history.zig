@@ -33,6 +33,11 @@ pub const SearchHistoryInput = struct {
     /// when non-empty, also returns full <content> for these ids.
     /// Capped at `MAX_MESSAGE_IDS` (50) — passing more returns an error
     /// so the LLM can split the request.
+    ///
+    /// In mode="text", `message_ids` is also accepted: when non-empty,
+    /// the response includes the full <content> for the matching ids
+    /// alongside the FTS hit snippets. Avoids the mode-switch dance
+    /// when the LLM wants both the snippet AND the full body.
     message_ids: []const u8 = "",
     /// Optional exact-match role filter.
     role: []const u8 = "",
@@ -40,6 +45,34 @@ pub const SearchHistoryInput = struct {
     since: []const u8 = "",
     /// Optional upper bound on created_at (inclusive).
     until: []const u8 = "",
+    /// When true, restrict to rows with `is_feed_to_llm = 1` (currently in
+    /// the LLM's live context). Mutually exclusive with `compacted_only`.
+    live_only: bool = false,
+    /// When true, restrict to rows with `is_feed_to_llm = 0` (dropped from
+    /// the LLM's context by compaction). Mutually exclusive with
+    /// `live_only`.
+    compacted_only: bool = false,
+    /// Optional exact-match filter on `tool_name`. Useful for "find every
+    /// bash invocation that ran `cargo test`".
+    tool_name: []const u8 = "",
+    /// Optional exact-match filter on `parent_session_id`. Useful for
+    /// sub-agent debugging — find every message in any session whose parent
+    /// is the given session_id.
+    parent_session_id: []const u8 = "",
+    /// Optional exact-match filter on `agent`. Useful when one session has
+    /// multiple agents (planning vs chat vs sub-agent).
+    agent: []const u8 = "",
+    /// Optional relative lower bound, e.g. `"1h"`, `"30m"`, `"2d"`, `"1w"`.
+    /// Mutually exclusive with `since`. Expanded to an absolute ISO string
+    /// at the tool boundary.
+    since_relative: []const u8 = "",
+    /// Optional relative upper bound. Same units as `since_relative`.
+    /// Mutually exclusive with `until`.
+    until_relative: []const u8 = "",
+    /// Sugar: `"1h"` resolves to `since = now - 1h`, `until = now`.
+    /// Mutually exclusive with `since`, `until`, `since_relative`, and
+    /// `until_relative`. Useful for "give me the last hour".
+    relative_window: []const u8 = "",
     /// Max rows to return. Defaults to 20; tool layer caps at 200.
     limit: u32 = 20,
     /// Skip the first N results. mode="text" only — used to paginate
@@ -171,6 +204,20 @@ pub fn execute_search_history(
         return errorXml(allocator, "mode='session' requires non-empty session_id.");
     }
 
+    // Validate: live_only / compacted_only are mutually exclusive.
+    if (input.live_only and input.compacted_only) {
+        return errorXml(allocator,
+            "live_only and compacted_only are mutually exclusive — pick one or neither.");
+    }
+
+    // Resolve the effective feed filter from the two bool flags.
+    const feed_filter: llm_history.FeedFilter = if (input.live_only)
+        .live_only
+    else if (input.compacted_only)
+        .compacted_only
+    else
+        .all;
+
     const effective_limit = @min(input.limit, 200);
 
     if (is_text_mode) {
@@ -179,6 +226,10 @@ pub fn execute_search_history(
             .role = if (input.role.len > 0) input.role else null,
             .since = if (input.since.len > 0) input.since else null,
             .until = if (input.until.len > 0) input.until else null,
+            .feed_filter = feed_filter,
+            .tool_name = if (input.tool_name.len > 0) input.tool_name else null,
+            .parent_session_id = if (input.parent_session_id.len > 0) input.parent_session_id else null,
+            .agent = if (input.agent.len > 0) input.agent else null,
             .limit = effective_limit,
             .offset = if (input.offset > 0) input.offset else null,
         };
@@ -274,12 +325,22 @@ pub fn execute_search_history(
         .role = if (input.role.len > 0) input.role else null,
         .since = if (input.since.len > 0) input.since else null,
         .until = if (input.until.len > 0) input.until else null,
+        .tool_name = if (input.tool_name.len > 0) input.tool_name else null,
+        .parent_session_id = if (input.parent_session_id.len > 0) input.parent_session_id else null,
+        .agent = if (input.agent.len > 0) input.agent else null,
         .limit = effective_limit,
         // mode="session" returns the FULL conversation history (live +
         // compacted), not just compacted messages. The agent may want
         // to re-read something still in its live context, or browse the
-        // whole session regardless of compaction state.
-        .include_all = true,
+        // whole session regardless of compaction state. The `live_only` /
+        // `compacted_only` flags override this default — when set, the
+        // user is specifically asking for one or the other.
+        .feed_filter = if (input.live_only)
+            .live_only
+        else if (input.compacted_only)
+            .compacted_only
+        else
+            .all,
         .order = order_enum,
     };
 
