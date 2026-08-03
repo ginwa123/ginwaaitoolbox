@@ -1438,3 +1438,39 @@ is in place (`Rows.getLastErrorMessage`), but threading it through
 signature change or a different plumbing mechanism — deferred.
 
 **Branch.** `worktree/tool-error-better-message` (uncommitted).
+
+### 2026-08-06: Kanban — restore per-column sort independence (client-side comparator)
+
+**Symptom (user report, task_1785730557641).** User picks "Name (Z→A)" in one column's ⋮ menu → Sort tasks… modal. The DevTools Network panel shows ALL columns receiving `sort_by=name&direction=desc`. Every column renders in `name Z→A` order, NOT just the one the user picked.
+
+User feedback:
+- *"sort not indepedence per column, the goal should independecen per sort column"*
+- *"when i click sort it affected all"* (with DevTools screenshot showing `sort_by=name&direction=desc` on every column's fetch)
+
+**Root cause.** Commit `0ed7582d` ("feat(frontend): kanban VirtualScroller + default-sort URL behavior", 2026-08-06) removed the client-side `.sort()` in `KanbanColumn.cardsInColumn` AND deleted the `compareBySortMode` comparator. The justification was the user's "i remove that and its become better" comment — but the removal broke per-column independence, because the backend's `listWorkspaceItemTasksWithCursor` only accepts ONE `sort_field` + `sort_direction` per request.
+
+`fetchKanbanTasksForAllColumns` (workspaces.ts:1302) is correct in that it fetches each column in parallel — but every parallel fetch gets the SAME `sortBy` / `direction` from the caller. The caller (KanbanView.vue:442) takes the LAST-changed entry from `columnSorts` and passes it as the global sort. So picking "Name (Z→A)" in column A causes column B (Manual) to also be re-fetched in `name Z→A` order.
+
+**Fix (surgical).** Re-add the client-side sort comparator in `KanbanColumn.cardsInColumn`. The architecture becomes:
+
+1. **Backend** — each column fetch goes out with the LATEST changed sort (single `sortBy` / `direction` URL param, current behaviour).
+2. **Frontend** — each `KanbanColumn.cardsInColumn` applies its own local `sortBy` + `direction` to the incoming tasks. Two columns with different sorts display differently, even though they were fetched with the same wire order.
+
+This is the original architecture from commit `77482f07`. The comparator deleted in `0ed7582d` is restored verbatim — `name` (BINARY collate), `created_at` / `updated_at` (Date → ISO string), with `kanban_position asc` as the tiebreaker for stable ordering across equal sort-field values.
+
+**Files.** 4 changed:
+- `src/apps/desktop/src/components/kanban/KanbanColumn.vue` (+85/-35 — restore `.sort()`, restore `compareBySortMode`, update 3 doc comment blocks).
+- `src/apps/desktop/src/__tests__/KanbanColumn.spec.ts` (+7/-6 — rewrite the "renders cards in input order" test to assert `kanban_position asc`).
+- `src/apps/desktop/src/__tests__/KanbanColumn.sortIndependence.spec.ts` (NEW, 11 tests — default sort, 4 sort modes, tiebreaker, per-column independence [critical regression test], 3-column independence, `setSortMode` seam, `sortChange` emit).
+- `docs/superpowers/plans/2026-08-06-kanban-sort-independence.md` (NEW).
+
+**Verification.**
+- `bun run build` clean (vue-tsc passes).
+- `bunx vitest run src/__tests__/KanbanColumn.sortIndependence.spec.ts` — 11/11 pass.
+- `bunx vitest run src/__tests__/KanbanColumn.spec.ts` — 19/19 pass.
+- `bunx vitest run src/__tests__/KanbanView` — 53/53 pass.
+- `bunx vitest run` (full suite) — 2029 pass / 12 fail. The 12 failures are PRE-EXISTING on main (5 `DesignView.undoHidden`, 1 `DesignElement` static contract, 1 `DesignView.nudge clamp`, 1 `AppLayout.translateResize`, 4 `AppLayout.memoriesGate`). Zero regressions from this fix.
+
+**Lesson.** When a user feedback comment ("i remove that and its become better") is acted on globally without checking per-column/per-instance independence, regression is silent. The user reported a single-column issue; the fix removed the per-column sort entirely. Tests like "renders cards in input order" (KanbanColumn.spec.ts) become the guard rail — if they fail to assert the per-column sort behaviour, the regression slips through.
+
+**Branch / commit.** `worktree/kanban-sort-independence` @ `911e6647`.
