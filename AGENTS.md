@@ -389,13 +389,40 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 - If you discover a new pitfall, add it to the **Forbidden patterns**
   table above.
 
----
-
 ## 📜 Recent changes (changelog)
 
 > Append-only. After finishing a non-trivial task, add a short note here
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
+
+### 2026-08-06: Hide Send/Queue button while LLM is processing
+
+**Symptom (user report, task_1785772775411).** User: *"remove button queue when in processing"*. The chatview input area was showing BOTH a Stop button AND a Queue/Send button when the agent ran. The Queue button (orange, label "Queue", spinner) was visual noise — users cannot actually queue more work while the agent runs, so the button was misleading.
+
+**What landed.** Surgical frontend-only fix (`src/apps/desktop/src/components/file/FileInput.vue`):
+
+- Add `v-if="!isLLMProcessing"` to the submit button — hidden entirely during processing.
+- Simplify the inner ternaries from `isLoading || isLLMProcessing` to just `isLoading` (the `|| isLLMProcessing` branches are now unreachable since the button is hidden when processing).
+- Add `data-testid="send-message-button"` for testability.
+- Update the comment block above the Stop/Send buttons to explain the new behaviour.
+
+The brief network-in-flight moment (local `isLoading=true` BEFORE the SSE `worker created` event lands in `processingState`) **still** shows the button with its "Queue" label + spinner — only the actual agent-processing state hides it. Tests E and F in `FileInput.hideQueueButton.spec.ts` lock in this distinction.
+
+**Files.** 2 changed:
+- `src/apps/desktop/src/components/file/FileInput.vue` — 5-line code change + 10-line comment update.
+- `src/apps/desktop/src/__tests__/FileInput.hideQueueButton.spec.ts` (new) — 6 behavioural tests.
+
+**Verification.**
+- `bun run build` clean (vue-tsc passes, 3.65 s).
+- `bunx vitest run src/__tests__/FileInput.hideQueueButton.spec.ts` — 6/6 pass.
+- `bunx vitest run` (FileInput suite) — 26/26 pass (`FileInput.stopButton.spec.ts` 8 + `FileInput.hideQueueButton.spec.ts` 6 + `FileInput.spec.ts` 12).
+- `bunx vitest run` (full suite) — 2039 pass / 19 fail. The 19 are PRE-EXISTING baseline (`AppLayout.urlPersist` ×7 + `DesignView.undoHidden` ×5 + `DesignElement` static contract ×1 + `DesignView.nudge` ×1 + `AppLayout.translateResize` ×1 + `AppLayout.memoriesGate` ×4). None touched by this change.
+
+**Why NOT remove the Queue label entirely.** The user might still want the "I just clicked Send, the network call is in-flight" feedback during the brief window before the SSE event lands. Test E locks this in.
+
+**Plan.** `docs/superpowers/plans/2026-08-06-hide-queue-button-processing.md`.
+
+**Branch / commit.** `worktree/hide-queue-button-processing` @ `d8b91ca5`.
 
 ### 2026-08-06: Auto-expand design pages in sidebar tree (sidebar empty after refresh)
 

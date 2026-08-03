@@ -658,9 +658,16 @@ const sendMessage = () => {
         emits `stop-session`; parent (ChatView) translates to
         POST /api/llm/session/:session/stop. Auto-hides when the SSE
         `worker deleted` event lands (driven by the parent's
-        `isLLMProcessing` prop flipping to false). The Queue/Send
-        button on the right is intentionally preserved so the user
-        can still queue follow-up messages while the agent runs.
+        `isLLMProcessing` prop flipping to false).
+
+        The Send/Queue submit button on the right is HIDDEN while the
+        agent is processing (`v-if="!isLLMProcessing"`). The brief
+        network-in-flight moment (local `isLoading=true` BEFORE the
+        SSE `worker created` event lands in processingState) still
+        shows the button with its label flipped to "Queue" + spinner —
+        so users can see the in-flight submit state — but as soon as
+        the agent is actually running the button disappears. Only the
+        Stop button is visible during processing.
       -->
       <button
         v-if="isLLMProcessing"
@@ -694,15 +701,16 @@ const sendMessage = () => {
         </svg>
         <span>{{ isStopping ? 'Stopping…' : 'Stop' }}</span>
       </button>
-      <button type="submit" :disabled="isLoading || isLLMProcessing"
+      <button v-if="!isLLMProcessing" type="submit" :disabled="isLoading"
+        data-testid="send-message-button"
         class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200 border flex items-center gap-2"
-        :class="isLoading || isLLMProcessing ? 'cursor-not-allowed' : 'hover:opacity-90 active:scale-95'"
-        :style="isLoading || isLLMProcessing
+        :class="isLoading ? 'cursor-not-allowed' : 'hover:opacity-90 active:scale-95'"
+        :style="isLoading
           ? 'background-color: var(--color-orange); color: var(--color-bg); border-color: var(--color-border);'
           : 'background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg); border-color: var(--color-border);'">
-        <div v-if="isLoading || isLLMProcessing" class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
+        <div v-if="isLoading" class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
           style="border-color: var(--color-bg); border-top-color: transparent;"></div>
-        <span>{{ isLoading || isLLMProcessing ? 'Queue' : 'Send' }}</span>
+        <span>{{ isLoading ? 'Queue' : 'Send' }}</span>
       </button>
     </form>
   </div>
