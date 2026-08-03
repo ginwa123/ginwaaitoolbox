@@ -382,108 +382,122 @@ onMounted(() => {
     }
   })
 
-  // Fire the fetch directly with the most-recently-changed sort
-  // (last in the entries array — preserves insertion order).
-  // Use the LAST non-default sort (manual doesn't have a server
-  // equivalent).
-  const lastNonDefault = [...entries].reverse().find(
-    (e) => !(e.sortBy === 'position' && e.direction === 'asc'),
-  )
-  if (lastNonDefault) {
-    // Per-column initial fetch (Option B): sort affects every column,
-    // so fire one request per column with the restored sort.
-    const apiSortBy = lastNonDefault.sortBy === 'position'
-      ? undefined
-      : lastNonDefault.sortBy as 'created_at' | 'updated_at' | 'name'
-    void workspacesStore.fetchKanbanTasksForAllColumns(
-      props.workspaceId,
-      effectiveItemId.value,
-      10,
-      undefined,
-      apiSortBy,
-      lastNonDefault.direction,
-    )
-  } else {
-    // No non-default sort — fire plain per-column fetches (no
-    // sortBy/direction → backend default 'updated_at' / 'desc')
-    void workspacesStore.fetchKanbanTasksForAllColumns(
-      props.workspaceId,
-      effectiveItemId.value,
-    )
+  // Fire the fetch per-column for the restored sorts (URL restore's
+  // "show me the board as the user left it" path). Each column gets
+  // ITS OWN sortBy/direction. The caller is responsible for any
+  // columns NOT in the URL — those already received a default-sort
+  // fetch from the columns-load path (the SSE handler's mount-time
+  // re-fetch, see kanbanSse.ts).
+  //
+  // This is the "only the changed column's endpoint is called" path:
+  // when the URL has sorts for col_a only, col_a gets ONE fetch with
+  // its own sort. Other columns are left alone (their data is what
+  // it was).
+  //
+  // Default sort (position+asc) is a no-op — the URL probably
+  // contains it because the user clicked "Manual" earlier; we
+  // don't need to re-fetch because the initial mount's default-sort
+  // fetch already populated the column.
+  if (entries.length > 0) {
+    for (const entry of entries) {
+      if (entry.sortBy === 'position' && entry.direction === 'asc') {
+        // Default sort — no fetch (already loaded with default).
+        continue
+      }
+      const apiSortBy = entry.sortBy === 'position'
+        ? undefined
+        : entry.sortBy as 'created_at' | 'updated_at' | 'name'
+      void workspacesStore.fetchKanbanTasks(
+        props.workspaceId,
+        effectiveItemId.value,
+        entry.columnId,
+        10,
+        undefined, // cursor — reset to page 1 of the new sort
+        undefined, // q — no search filter
+        apiSortBy,
+        entry.direction,
+      )
+    }
   }
+  // (else: no sorts URL — caller already handles the initial fetch
+  //  via the SSE handler's mount-time flow + KanbanView.onMount's
+  //  earlier fetchKanbanColumns step.)
 })
 
-// Watcher on columnSorts changes → debounced fetch + URL write.
-// Triggered by the sort-change emit from each KanbanColumn.
-let sortFetchDebounceTimer: ReturnType<typeof setTimeout> | null = null
-
-const clearSortFetchDebounce = () => {
-  if (sortFetchDebounceTimer !== null) {
-    clearTimeout(sortFetchDebounceTimer)
-    sortFetchDebounceTimer = null
-  }
-}
-
+// Watcher on columnSorts changes → URL write only.
+// (Per-column sort independence, kanban-sort-independence, 2026-08-06,
+// take 2: the FETCH is now per-column, fired immediately inside
+// `handleColumnSortChange` below. The watcher ONLY writes the URL —
+// no debounced fetch needed because we only touch the column that
+// changed.)
+//
+// Plan: docs/superpowers/plans/2026-08-06-kanban-sort-independence.md
 watch(columnSorts, (next) => {
-  // URL write (synchronous — the user sees the URL update
-  // immediately).
   const encoded = encodeSortsParam(Object.values(next))
   const query: Record<string, string> = { view: 'workspace' }
   if (props.workspaceId) query.workspaceId = props.workspaceId
   if (effectiveItemId.value) query.itemId = effectiveItemId.value
   if (encoded) query.sorts = encoded
   router.replace({ path: '/app', query })
-
-  // Debounced fetch — fires only for non-default sorts, using the
-  // latest-changed sort as the backend sort param. The backend
-  // returns all tasks sorted per-column (Option B); each column's
-  // cardsInColumn then applies its own client-side sort on top.
-  clearSortFetchDebounce()
-  sortFetchDebounceTimer = setTimeout(() => {
-    sortFetchDebounceTimer = null
-    const entries = Object.values(columnSorts.value)
-    const last = entries[entries.length - 1]
-    if (!last) return
-    if (last.sortBy === 'position' && last.direction === 'asc') {
-      // Default sort — still fire per-column fetches (no sortBy
-      // param → backend default 'updated_at' desc).
-      void workspacesStore.fetchKanbanTasksForAllColumns(
-        props.workspaceId,
-        effectiveItemId.value,
-        10,
-      )
-      return
-    }
-    // The store's sortBy param excludes 'position' (no server
-    // equivalent); narrow at the call site so the type checker
-    // accepts the union.
-    const apiSortBy = last.sortBy === 'position'
-      ? undefined
-      : last.sortBy as 'created_at' | 'updated_at' | 'name'
-    void workspacesStore.fetchKanbanTasksForAllColumns(
-      props.workspaceId,
-      effectiveItemId.value,
-      10,
-      undefined,
-      apiSortBy,
-      last.direction,
-    )
-  }, 300)
-})
-
-onUnmounted(() => {
-  clearSortFetchDebounce()
 })
 
 // Handler for the column's sort-change emit. Updates the map
-// (which triggers the watcher above).
+// (which triggers the URL watcher above) AND fires the fetch
+// for ONLY the changed column — other columns' data is untouched
+// (they keep their previously-fetched state, which still matches
+// their own last sort).
+//
+// Properties:
+//   - Per-column fetch — only ONE endpoint hit per user pick
+//     (matching the user's preference: "only column a endpoint
+//     that called, other column should not call endpoint").
+//   - No debounce — sorting on column A doesn't affect column B's
+//     wire state, so we don't need to coalesce rapid changes
+//     across columns.
+//   - Wire data arrives in the column's own sort order — no
+//     client-side re-sort needed in KanbanColumn.cardsInColumn.
 const handleColumnSortChange = (
   columnId: string,
   payload: { sortBy: SortEntry['sortBy']; direction: SortEntry['direction'] },
 ) => {
+  // 1. Update the columnSorts map. Triggers the watcher above to
+  //    write the URL (`?sorts=col_X:...`).
   columnSorts.value = {
     ...columnSorts.value,
     [columnId]: { columnId, sortBy: payload.sortBy, direction: payload.direction },
+  }
+
+  // 2. Fire the fetch for ONLY this column with its own sort.
+  //    Other columns are untouched — their local tasks still
+  //    match their own last sort (the per-column fetch maintains
+  //    each column's data in its own sort order).
+  //
+  //    Default sort (position+asc) → no sortBy param → backend
+  //    uses its default ORDER BY (kanban_position asc).
+  if (payload.sortBy === 'position' && payload.direction === 'asc') {
+    void workspacesStore.fetchKanbanTasks(
+      props.workspaceId,
+      effectiveItemId.value,
+      columnId,
+      10,
+    )
+  } else {
+    // The store's sortBy param excludes 'position' (no server
+    // equivalent); narrow at the call site so the type checker
+    // accepts the union.
+    const apiSortBy = payload.sortBy === 'position'
+      ? undefined
+      : payload.sortBy as 'created_at' | 'updated_at' | 'name'
+    void workspacesStore.fetchKanbanTasks(
+      props.workspaceId,
+      effectiveItemId.value,
+      columnId,
+      10,
+      undefined, // cursor — reset to page 1 of the new sort
+      undefined, // q — no search filter
+      apiSortBy,
+      payload.direction,
+    )
   }
 }
 
