@@ -99,9 +99,11 @@ pub fn buildMessages(
         try BuildDynamicAgentContent(allocator, db, session_id);
     defer allocator.free(agentUsed);
 
+    // disable dynamic system prompt for cache call llm
     // buildAgentPrompt now handles processMessages internally
-    const activity_info = try agentic_loop.prompts_mod.makeActivityInfo(allocator, io, db, session_id);
-    defer allocator.free(activity_info);
+    // const activity_info = try agentic_loop.prompts_mod.makeActivityInfo(allocator, io, db, session_id);
+    // defer allocator.free(activity_info);
+    const activity_info = "";
 
     // Resolve environment for the Global Knowledge loader. The singleton
     // is the single source of truth for the process-level environment map.
