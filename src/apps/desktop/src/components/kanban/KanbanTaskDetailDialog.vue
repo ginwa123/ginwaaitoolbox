@@ -306,7 +306,15 @@ watch(
     // dropdown only opens when the user focuses the input, which is
     // itself a separate trigger; awaiting here would block the
     // focus call on a network round-trip for no benefit.
-    if (props.task && props.workspaceId) {
+    // NEW (plan: 2026-08-06-kanban-tags-autocomplete-in-create-mode):
+    // Removed `props.task` from the guard. The fetch needs only the
+    // kanban's workspace_item_id (from column.workspace_item_id),
+    // which is available in BOTH edit and create modes via the host
+    // bindings. The composable's fetchPage already short-circuits on
+    // empty item_id (useKanbanTagSuggestions.ts:73-76), so the gate
+    // was redundant AND was the reason the existing-tag dropdown never
+    // appeared in the "+ Add task" dialog.
+    if (props.workspaceId) {
       void tagSuggestions.ensureLoaded()
     }
     // NEW (plan: 2026-08-06-kanban-task-profile-selector). Fetch

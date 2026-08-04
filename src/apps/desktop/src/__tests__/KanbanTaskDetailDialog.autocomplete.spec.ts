@@ -155,9 +155,21 @@ describe('KanbanTaskDetailDialog — tag autocomplete wiring', () => {
     expect(frontendRow).not.toBeNull()
   })
 
-  it('does NOT fetch in create mode (no task exists yet — no item_id to fetch for)', async () => {
-    const spy = vi.spyOn(api, 'getKanbanTagSuggestions')
-    // mount in create mode with task=null
+  it('fetches in create mode when the column prop is present (so the new task can pick from existing tags)', async () => {
+    // Plan: docs/superpowers/plans/2026-08-06-kanban-tags-autocomplete-in-create-mode.md
+    // The previous test ("does NOT fetch in create mode") locked in a bug:
+    // users opening the "+ Add task" dialog could not see the kanban's
+    // existing tags in the dropdown. The fetch needs only the kanban's
+    // workspace_item_id (from the column prop), which is provided in
+    // BOTH edit and create modes. In create mode, host wires
+    // activeCreateColumn (always non-null when the dialog is open).
+    const spy = vi
+      .spyOn(api, 'getKanbanTagSuggestions')
+      .mockResolvedValue({
+        tags: [{ name: 'kanban', count: 5, last_used_at: null }],
+        has_more: false,
+      })
+
     document.body.innerHTML = ''
     wrapper = mount(KanbanTaskDetailDialog, {
       attachTo: document.body,
@@ -165,14 +177,116 @@ describe('KanbanTaskDetailDialog — tag autocomplete wiring', () => {
         show: true,
         mode: 'create',
         task: null,
+        column: COLUMN,            // provides workspace_item_id 'item_x'
         workspaceId: 'ws_x',
       },
     })
     await flushPromises()
     await flushPromises()
-    // ensureLoaded is gated on `props.task && props.workspaceId`, so
-    // create mode (task=null) must NOT trigger a fetch.
-    expect(spy).not.toHaveBeenCalled()
+    expect(spy).toHaveBeenCalledWith('ws_x', 'item_x', { limit: 8, offset: 0 })
+  })
+
+  it('renders the existing-tag dropdown in create mode so the user can one-click pick a tag', async () => {
+    // Plan: docs/superpowers/plans/2026-08-06-kanban-tags-autocomplete-in-create-mode.md
+    // Regression guard for the user-reported symptom: "when create a task,
+    // the auto tags not trigger". With the gate removed, focusing the tag
+    // input on a brand-new task must surface the kanban's existing tags
+    // (matching what the user already sees in the screenshot — kanban, git,
+    // git_worktree are existing kanban tags, and the user expects to be able
+    // to pick them in the new-task dropdown).
+    vi.spyOn(api, 'getKanbanTagSuggestions').mockResolvedValue({
+      tags: [
+        { name: 'kanban', count: 5, last_used_at: null },
+        { name: 'git', count: 3, last_used_at: null },
+        { name: 'git_worktree', count: 2, last_used_at: null },
+      ],
+      has_more: false,
+    })
+
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        mode: 'create',
+        task: null,
+        column: COLUMN,
+        workspaceId: 'ws_x',
+      },
+    })
+    await flushPromises()
+    await flushPromises()
+
+    const field = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-create-tags-field"]',
+    )
+    if (!field) throw new Error('tags field not found')
+    field.focus()
+    field.dispatchEvent(new Event('focus', { bubbles: true }))
+    await flushPromises()
+
+    // All three existing kanban tags should appear as suggestions. None are
+    // on the task yet (it's brand-new), so the exclude set is empty.
+    expect(
+      findInDom('[data-testid="kanban-task-detail-create-tags-suggestion-kanban"]'),
+    ).not.toBeNull()
+    expect(
+      findInDom('[data-testid="kanban-task-detail-create-tags-suggestion-git"]'),
+    ).not.toBeNull()
+    expect(
+      findInDom(
+        '[data-testid="kanban-task-detail-create-tags-suggestion-git_worktree"]',
+      ),
+    ).not.toBeNull()
+  })
+
+  it('clicking a suggestion in create mode adds the chip (one-click pick)', async () => {
+    // Plan: docs/superpowers/plans/2026-08-06-kanban-tags-autocomplete-in-create-mode.md
+    // End-to-end of the user request: open "+ Add task", focus tags input,
+    // click an existing tag in the dropdown, see the chip appear.
+    vi.spyOn(api, 'getKanbanTagSuggestions').mockResolvedValue({
+      tags: [
+        { name: 'kanban', count: 5, last_used_at: null },
+        { name: 'urgent', count: 1, last_used_at: null },
+      ],
+      has_more: false,
+    })
+
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        mode: 'create',
+        task: null,
+        column: COLUMN,
+        workspaceId: 'ws_x',
+      },
+    })
+    await flushPromises()
+    await flushPromises()
+
+    const field = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-create-tags-field"]',
+    )
+    if (!field) throw new Error('tags field not found')
+    field.focus()
+    field.dispatchEvent(new Event('focus', { bubbles: true }))
+    await flushPromises()
+
+    const kanbanSuggestion = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-create-tags-suggestion-kanban"]',
+    )
+    if (!kanbanSuggestion) throw new Error('kanban suggestion row not found')
+    // KanbanTagsInput uses `@mousedown.prevent` (not @click) so the blur
+    // doesn't dismiss the dropdown before commit fires.
+    kanbanSuggestion.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    await flushPromises()
+
+    const chip = findInDom(
+      '[data-testid="kanban-task-detail-create-tags-chip-kanban"]',
+    )
+    expect(chip).not.toBeNull()
   })
 
   it('resets the composable on dialog close + reopen so a fresh fetch is triggered', async () => {
