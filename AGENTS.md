@@ -2,6 +2,10 @@
 #Mandatory
 DONT KILL THE PORT 8081 SERVER,
 for testing use another port like 8080
+
+use cli graphify to exploration code
+
+
 > **Audience:** any AI agent (Claude, GPT, sub-agent, future-me) that writes,
 > edits, reviews, or tests code in this repo. Humans may also find it useful.
 >

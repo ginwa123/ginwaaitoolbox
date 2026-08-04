@@ -32,3 +32,7 @@ test_*.log
 .venv-func/
 .pytest_cache/
 tests/functional/__pycache__/
+
+
+/graphify-out
+/docs/graphify-out
