@@ -247,6 +247,23 @@ pub fn execute_search_history(
             allocator.free(hits);
         }
 
+        // Optional: full <content> for specific ids alongside the FTS hits.
+        // Same `message_ids` field as mode="session" — capped at
+        // MAX_MESSAGE_IDS. Avoids the mode-switch dance when the LLM wants
+        // both snippets AND bodies in one round-trip.
+        const text_parsed_ids = try parseMessageIds(allocator, input.message_ids);
+        defer {
+            for (text_parsed_ids) |id| allocator.free(id);
+            allocator.free(text_parsed_ids);
+        }
+        if (text_parsed_ids.len > MAX_MESSAGE_IDS) {
+            const msg = try std.fmt.allocPrint(allocator,
+                "Too many message_ids ({d} > max {d}). Split into batches of {d} or fewer.",
+                .{ text_parsed_ids.len, MAX_MESSAGE_IDS, MAX_MESSAGE_IDS });
+            defer allocator.free(msg);
+            return errorXml(allocator, msg);
+        }
+
         // `total_count` is the same on every row (it's COUNT(*) OVER ()
         // computed before LIMIT/OFFSET). Read it from the first hit;
         // fall back to 0 if the result set is empty.
@@ -290,7 +307,68 @@ pub fn execute_search_history(
             try xml.print(allocator, "      <snippet>{s}</snippet>\n", .{snip_e});
             try xml.appendSlice(allocator, "    </entry>\n");
         }
-        try xml.appendSlice(allocator, "  </results>\n</search_history>\n");
+        try xml.appendSlice(allocator, "  </results>\n");
+
+        // Full content block — only rendered when message_ids was provided.
+        if (text_parsed_ids.len > 0) {
+            // Lookup by id alone (no session_id filter). The LLM is asking
+            // for specific ids — scoping by session would be wrong if the
+            // LLM learned the id from a different scope (e.g. cross-session
+            // search). Use getMessagesByIds, the new no-session-filter
+            // helper.
+            const full_messages = llm_history.getMessagesByIds(allocator, db, text_parsed_ids) catch |err| {
+                const msg = try std.fmt.allocPrint(allocator, "Database query failed: {s}", .{@errorName(err)});
+                defer allocator.free(msg);
+                return errorXml(allocator, msg);
+            };
+            defer {
+                for (full_messages) |m| {
+                    var copy = m;
+                    copy.deinit(allocator);
+                }
+                allocator.free(full_messages);
+            }
+
+            // Index the requested ids for O(1) lookup of which body
+            // corresponds to which request.
+            var text_full_ids_set: std.StringHashMapUnmanaged(void) = .empty;
+            defer text_full_ids_set.deinit(allocator);
+            for (text_parsed_ids) |id| try text_full_ids_set.put(allocator, id, {});
+
+            try xml.appendSlice(allocator, "  <full_contents>\n");
+            for (full_messages) |m| {
+                if (!text_full_ids_set.contains(m.id)) continue;
+                const id_e = try xmlEscape(allocator, m.id);
+                defer allocator.free(id_e);
+                const role_e = try xmlEscape(allocator, m.role);
+                defer allocator.free(role_e);
+
+                try xml.appendSlice(allocator, "    <entry>\n");
+                try xml.print(allocator, "      <id>{s}</id>\n", .{id_e});
+                try xml.print(allocator, "      <session_id>{s}</session_id>\n", .{m.session_id});
+                try xml.print(allocator, "      <role>{s}</role>\n", .{role_e});
+                if (m.created_at.len > 0) {
+                    const ca_e = try xmlEscape(allocator, m.created_at);
+                    defer allocator.free(ca_e);
+                    try xml.print(allocator, "      <created_at>{s}</created_at>\n", .{ca_e});
+                }
+                // Truncate to MAX_FULL_CONTENT_BYTES (same convention as mode="session").
+                const was_truncated = m.content.len > MAX_FULL_CONTENT_BYTES;
+                const content_src: []const u8 = if (was_truncated)
+                    m.content[0..MAX_FULL_CONTENT_BYTES]
+                else
+                    m.content;
+                const content_e = try xmlEscape(allocator, content_src);
+                defer allocator.free(content_e);
+                try xml.print(allocator,
+                    "      <content truncated=\"{c}\">{s}</content>\n",
+                    .{ @as(u8, if (was_truncated) '1' else '0'), content_e });
+                try xml.appendSlice(allocator, "    </entry>\n");
+            }
+            try xml.appendSlice(allocator, "  </full_contents>\n");
+        }
+
+        try xml.appendSlice(allocator, "</search_history>\n");
         return try xml.toOwnedSlice(allocator);
     }
 

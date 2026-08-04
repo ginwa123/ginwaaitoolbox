@@ -1656,6 +1656,81 @@ pub fn getCompactedMessages(
     return try results.toOwnedSlice(allocator);
 }
 
+/// Look up messages by id alone, without a `session_id` filter.
+///
+/// Used by `search_history mode="text"` when `message_ids` is provided
+/// without a `session_id` scope — the LLM is asking for specific ids
+/// (e.g. ones it learned about from a previous call) without scoping
+/// to a session. `getCompactedMessages` always appends a session_id
+/// WHERE clause, so a separate query path is needed.
+///
+/// Returns the same `CompactedMessage` shape as `getCompactedMessages`.
+/// Caller owns the slice — free with `m.deinit(allocator)` per element
+/// and `allocator.free(results)` for the outer slice.
+///
+/// Returns an empty slice when `ids.len == 0` (no-op).
+pub fn getMessagesByIds(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    ids: []const []const u8,
+) ![]CompactedMessage {
+    if (ids.len == 0) return &.{};
+
+    var sql: std.ArrayList(u8) = .empty;
+    defer sql.deinit(allocator);
+    try sql.appendSlice(allocator,
+        \\SELECT
+        \\    h.id, h.session_id, COALESCE(h.role, 'assistant'),
+        \\    COALESCE(h.response_content, ''),
+        \\    h.tool_call_id, h.tool_name,
+        \\    COALESCE(h.model, ''), COALESCE(h.agent, ''),
+        \\    COALESCE(h.created_at, ''),
+        \\    COUNT(*) OVER () AS total
+        \\FROM llm_history h
+        \\WHERE h.id IN (
+    );
+    var bind_values: std.ArrayList([]const u8) = .empty;
+    defer bind_values.deinit(allocator);
+    for (ids, 0..) |id, i| {
+        if (i > 0) try sql.append(allocator, ',');
+        try sql.append(allocator, '?');
+        try bind_values.append(allocator, id);
+    }
+    try sql.appendSlice(allocator, ")");
+
+    var rows = try db.query(allocator, sql.items, bind_values.items);
+    defer rows.deinit();
+
+    var results: std.ArrayList(CompactedMessage) = .empty;
+    errdefer {
+        for (results.items) |m| {
+            var copy = m;
+            copy.deinit(allocator);
+        }
+        results.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        defer row.deinit(allocator);
+        const total_count: u32 = std.fmt.parseInt(u32, row.values[9], 10) catch 0;
+        const msg = CompactedMessage{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .session_id = try allocator.dupe(u8, row.values[1]),
+            .role = try allocator.dupe(u8, row.values[2]),
+            .content = try allocator.dupe(u8, row.values[3]),
+            .tool_call_id = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .tool_name = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .model = try allocator.dupe(u8, row.values[6]),
+            .agent = try allocator.dupe(u8, row.values[7]),
+            .created_at = try allocator.dupe(u8, row.values[8]),
+            .total_count = total_count,
+        };
+        try results.append(allocator, msg);
+    }
+
+    return try results.toOwnedSlice(allocator);
+}
+
 /// Full-text search over `llm_history.response_content` using SQLite FTS5.
 ///
 /// Joins the `messages_fts` virtual table to `llm_history` and returns

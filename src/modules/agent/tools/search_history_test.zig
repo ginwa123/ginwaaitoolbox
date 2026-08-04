@@ -649,3 +649,86 @@ test "execute_search_history: mode=text parent_session_id filter restricts to su
     try testing.expect(std.mem.indexOf(u8, xml, "<id>sub_b1</id>") == null);
     try testing.expect(std.mem.indexOf(u8, xml, "<count>1</count>") != null);
 }
+
+// =============================================================================
+// Chunk 4 — full content in mode="text"
+// =============================================================================
+// `message_ids` accepted in mode="text". When non-empty, the response
+// includes full <content> for those ids alongside the FTS hit snippets.
+
+test "execute_search_history: mode=text with message_ids includes full content for those ids" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    // 2 hits, 1 non-hit
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('h1','s_T','user','fix login bug',0)", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('h2','s_T','assistant','on it now',0)", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('h3','s_T','user','unrelated',0)", &.{});
+
+    // Ask for full content for h1 + h2 (both match + non-match would still
+    // be returned if requested). h3 is NOT in message_ids — full content
+    // is omitted even though it could match the FTS query (it doesn't).
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "text",
+        .query = "login",
+        .message_ids = "h1,h2",
+    });
+    defer alloc.free(xml);
+
+    // mode="text" header still includes the FTS hit count (only h1 matches "login").
+    try testing.expect(std.mem.indexOf(u8, xml, "<count>1</count>") != null);
+    // h1 is a FTS hit AND a requested message_id → present in <results>.
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>h1</id>") != null);
+    // h3 is NOT a requested id → never appears.
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>h3</id>") == null);
+    // The full_contents block IS rendered when message_ids is provided.
+    // Per-row content rendering is exercised by separate unit tests on
+    // `getMessagesByIds` in `llm_history_messages_by_ids_test.zig`.
+    try testing.expect(std.mem.indexOf(u8, xml, "<full_contents>") != null);
+}
+
+test "execute_search_history: mode=text message_ids > MAX_MESSAGE_IDS returns error XML" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    // 60 messages
+    var i: usize = 0;
+    while (i < 60) : (i += 1) {
+        const id_buf = try std.fmt.allocPrint(alloc, "h{d}", .{i});
+        defer alloc.free(id_buf);
+        try s.db.exec(alloc,
+            "INSERT INTO llm_history (id, session_id, role, response_content) " ++
+            "VALUES (?, 's_M', 'user', 'keyword hit')", &.{id_buf});
+    }
+
+    // 51 ids
+    var csv_buf: [256]u8 = undefined;
+    var csv_len: usize = 0;
+    i = 0;
+    while (i < 51) : (i += 1) {
+        const part = try std.fmt.bufPrint(csv_buf[csv_len..], "{s}h{d}", .{
+            if (i > 0) "," else "",
+            i,
+        });
+        csv_len += part.len;
+    }
+    const csv: []const u8 = csv_buf[0..csv_len];
+
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "text",
+        .query = "keyword",
+        .message_ids = csv,
+    });
+    defer alloc.free(xml);
+
+    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "Too many message_ids") != null);
+}
