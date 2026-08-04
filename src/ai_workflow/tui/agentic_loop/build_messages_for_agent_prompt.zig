@@ -39,6 +39,7 @@ const edit_skill_mod = nalarcore.edit_skill;
 const set_git_worktree_mod = nalarcore.set_git_worktree;
 const kanban_list_mod = nalarcore.kanban_list;
 const kanban_move_task_mod = nalarcore.kanban_move_task;
+const kanban_create_task_tool = nalarcore.create_kanban_task;
 const set_design_page_mod = nalarcore.set_design_page;
 const add_design_element_mod = nalarcore.add_design_element;
 const update_design_element_mod = nalarcore.update_design_element;
@@ -807,6 +808,7 @@ pub fn filteringTools(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, s
         result = removeTools(result, &.{
             kanban_list_mod.kanban_list_tool.function.name,
             kanban_move_task_mod.kanban_move_task_tool.function.name,
+            kanban_create_task_tool.create_kanban_task_tool.function.name,
         });
     }
 
@@ -814,6 +816,7 @@ pub fn filteringTools(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, s
         result = removeTools(result, &.{
             kanban_list_mod.kanban_list_tool.function.name,
             kanban_move_task_mod.kanban_move_task_tool.function.name,
+            kanban_create_task_tool.create_kanban_task_tool.function.name,
             set_design_page_mod.set_design_page_tool.function.name,
             add_design_element_mod.add_design_element_tool.function.name,
             update_design_element_mod.update_design_element_tool.function.name,

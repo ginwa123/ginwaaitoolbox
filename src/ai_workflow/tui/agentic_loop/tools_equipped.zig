@@ -79,6 +79,7 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         // kanban only
         kanban_list_mod.kanban_list_tool,
         kanban_move_task_mod.kanban_move_task_tool,
+        kanban_create_task_tool.create_kanban_task_tool,
 
         // design only
         set_design_page_mod.set_design_page_tool,
