@@ -784,6 +784,7 @@ For each plan file in the 178-file input set:
 #160 feat(kanban): Create task & run agent
 #161 feat(kanban): profile picker in New Task dialog
 #TBD feat(prompt): filter LLM tool list by parent item_type (design/folder/kanban) + 11 unit tests
+#TBD feat(sidebar): URL-driven single-active state — sidebar components derive "active" from `useCurrentMainView()` (route.query), not store flags; 2px violet left accent bar on item + page rows; 19 new tests, 0 regressions
 ```
 
 ### 10.2 Plan file inventory (all 178 files)
