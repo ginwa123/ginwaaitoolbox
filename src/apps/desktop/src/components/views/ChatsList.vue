@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
+import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import { VirtualScroller, formatRelativeTime } from '../../helpers'
 import * as api from '../../api'
 
@@ -22,6 +23,19 @@ const emit = defineEmits<{
 const navigationStore = useNavigationStore()
 const sidebarStore = useSidebarStore()
 const workspacesStore = useWorkspacesStore()
+
+// URL-driven "what is the main content area showing?". Derived from
+// the URL so the chat row's active background stays in sync with
+// refresh / deep links / browser back / forward — no store flag can
+// drift. See useCurrentMainView for the full contract.
+const currentMainView = useCurrentMainView()
+
+// Reactive active check for a chat row. Called from the template on
+// every render so the row's highlight stays in sync with URL changes
+// (pre-fix, `active` was set as a one-shot flag inside `loadChats()`
+// — leaving it stale after a chat → workspace navigation).
+const isCurrentChat = (sessionId: string): boolean =>
+  currentMainView.value.kind === 'chat' && currentMainView.value.sessionId === sessionId
 
 // Inject processingState from App.vue
 const processingState = inject<Ref<Record<string, boolean>>>('processingState', ref({}))
@@ -131,12 +145,15 @@ const loadChats = async () => {
     console.log('[ChatsList] loadChats called, fetching from API...')
     const data = await api.getChats('updated_at', chatsSortDirection.value, 30)
     console.log('[ChatsList] API returned:', data)
-    const savedSessionId = navigationStore.sessionId
     const sessions = data.sessions || []
     navItems.value = sessions.map((session: any) => ({
       id: session.session_id,
       name: session.session_name || 'New Chat',
-      active: savedSessionId === session.session_id,
+      // active state now derives from the URL via isCurrentChat() in
+      // the template (sidebar-single-active fix 2026-08-06). Storing
+      // it here would freeze the highlight at loadChats() time and
+      // leave stale `active: true` after navigation away from chat.
+      active: false,
       processing: !!processingState.value[session.session_id], // Show spinner for any processing chat
       relativeTime: formatRelativeTime(session.updated_at),
       selected_profile_model: session.selected_profile_model || '',
@@ -434,10 +451,10 @@ defineExpose({
           <button
             @click="setActive(item.id)"
             class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150 border-t border-transparent"
-            :class="item.active ? 'border-[--color-border]/60' : ''"
+            :class="isCurrentChat(item.id) ? 'border-[--color-border]/60' : ''"
             :style="
-              item.active
-                ? 'background: var(--semantic-active-bg); color: var(--semantic-active-text);'
+              isCurrentChat(item.id)
+                ? 'background: var(--semantic-active-bg); color: var(--semantic-active-text); box-shadow: inset 2px 0 0 0 var(--color-violet);'
                 : 'color: var(--semantic-text-muted);'
             "
           >

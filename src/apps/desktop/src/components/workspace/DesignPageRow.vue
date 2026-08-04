@@ -33,7 +33,9 @@
       deletePage    [page: DesignPage]
 -->
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { DesignPage } from '../../api'
+import { useCurrentMainView } from '../../composables/useCurrentMainView'
 
 const props = defineProps<{
   page: DesignPage
@@ -46,6 +48,18 @@ const emit = defineEmits<{
   selectPage: [page: DesignPage]
   deletePage: [page: DesignPage]
 }>()
+
+// URL-driven "what is the main content area showing?". The active
+// styling is now sourced from the URL (?view=workspace&pageId=X) rather
+// than the `isActivePage` prop (which is still passed by the parent for
+// backwards-compat with other consumers). When the URL changes, the
+// computed re-runs and the row styling updates — no watcher needed, the
+// template binding is enough.
+const currentMainView = useCurrentMainView()
+const isCurrentMainView = computed(() =>
+  currentMainView.value.kind === 'workspace'
+    && currentMainView.value.pageId === props.page.id,
+)
 
 const handleSelect = (): void => {
   emit('selectPage', props.page)
@@ -75,11 +89,12 @@ const handleKeydown = (event: KeyboardEvent): void => {
     tabindex="0"
     class="flex items-center gap-2 px-3 py-1 rounded text-xs group/page cursor-pointer transition-all duration-200 w-full text-left"
     :style="{
-      color: isActivePage ? 'var(--color-aqua)' : 'var(--semantic-text-dim)',
-      backgroundColor: isActivePage ? 'var(--semantic-active-bg)' : 'transparent',
+      color: isCurrentMainView ? 'var(--color-aqua)' : 'var(--semantic-text-dim)',
+      backgroundColor: isCurrentMainView ? 'var(--semantic-active-bg)' : 'transparent',
+      boxShadow: isCurrentMainView ? 'inset 2px 0 0 0 var(--color-violet)' : 'none',
     }"
     :data-testid="`design-page-row-${page.id}`"
-    :data-active-page="isActivePage ? 'true' : undefined"
+    :data-active-page="isCurrentMainView ? 'true' : undefined"
     :data-page-id="page.id"
     @click="handleSelect"
     @keydown="handleKeydown"

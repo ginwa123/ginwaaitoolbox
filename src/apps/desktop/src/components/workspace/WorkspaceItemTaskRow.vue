@@ -30,7 +30,7 @@
 // WorkspaceItemTaskCard.vue. The shared logic (event handlers +
 // routine computeds) now lives in composables/useTaskActions.ts.
 import { inject, ref, computed, type Ref } from 'vue'
-import { useWorkspacesStore } from '../../stores/workspaces'
+import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import { useTaskActions, type TaskComponentProps } from '../../composables/useTaskActions'
 
 // Re-inject processingState from App.vue (same key WorkspaceItem and
@@ -43,9 +43,20 @@ const processingState = inject<Ref<Record<string, boolean>>>(
   ref<Record<string, boolean>>({}),
 )
 
-const workspacesStore = useWorkspacesStore()
-
 const props = defineProps<TaskComponentProps>()
+
+// URL-driven "what is the main content area showing?". Active styling
+// for this task row derives from the URL (?view=task&task=X) rather
+// than from workspacesStore.activeTaskId. The store flag is still
+// mutated by AppLayout for view-routing (it must stay — removing it
+// would break the kanban-side task navigation), but the visual "is
+// this row active?" is now sourced from the URL so refresh / deep
+// links / browser back / forward all keep the row's highlight
+// consistent.
+const currentMainView = useCurrentMainView()
+const isActive = computed(() =>
+  currentMainView.value.kind === 'task' && currentMainView.value.taskId === props.task.id,
+)
 
 const emit = defineEmits<{
   selectTask: [taskId: string]
@@ -87,8 +98,8 @@ const {
     :data-drop-indicator="dropIndicator ?? undefined"
     data-task-row
     :style="{
-      color: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : 'var(--semantic-text-dim)',
-      backgroundColor: workspacesStore.activeTaskId === task.id ? 'var(--semantic-active-bg)' : 'transparent',
+      color: isActive ? 'var(--color-aqua)' : 'var(--semantic-text-dim)',
+      backgroundColor: isActive ? 'var(--semantic-active-bg)' : 'transparent',
       boxShadow: dropIndicatorBoxShadow,
     }"
     @click="handleSelectTask"
@@ -209,7 +220,7 @@ const {
       <span
         v-else-if="!isRoutine"
         class="w-1.5 h-1.5 rounded-full shrink-0"
-        :style="{ backgroundColor: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : 'var(--semantic-text-dim)' }"
+        :style="{ backgroundColor: isActive ? 'var(--color-aqua)' : 'var(--semantic-text-dim)' }"
       />
       <!-- Pin indicator (always visible when pinned). -->
       <span

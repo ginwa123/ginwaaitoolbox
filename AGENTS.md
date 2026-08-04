@@ -395,6 +395,54 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Sidebar single-active state (URL-driven)
+
+**Symptom (user report, task_1785793620170).** Sidebar showed multiple rows styled as "active" simultaneously (expanded workspace + active item + active page), making it impossible to tell which one the main content area was actually showing.
+
+**Root cause.** `WorkspaceList.vue` used `--semantic-active-bg` when `workspace.expanded === true`, conflating "expanded (UI state)" with "active (content relationship)". Additionally, the chat list kept its `active: true` flag set even after navigating to a workspace view (stale store state).
+
+**What landed (9 commits, branch `worktree/sidebar-single-active`).** URL is now the single source of truth for "what is the main content area showing".
+
+| Component | Before | After |
+|---|---|---|
+| ChatsList chat row | `active: savedSessionId === session.session_id` | URL-driven via `useCurrentMainView()` |
+| WorkspaceItemTaskRow task row | `workspacesStore.activeTaskId === task.id` | URL-driven |
+| WorkspaceItem item row | `props.isActive` | URL-driven + 2px violet left accent bar |
+| DesignPageRow page row | `props.isActivePage` | URL-driven + 2px violet left accent bar |
+| WorkspaceList expanded workspace | active bg | no bg; just chevron rotation |
+
+**[New]** `useCurrentMainView()` composable — derives `{kind, ...id}` from `route.query`. One place; sidebar components consume it.
+
+**Tests (22 new + 1 updated):**
+- 6 unit tests for `useCurrentMainView`
+- 4 ChatsList activeFromUrl tests
+- 1 updated test in `workspaceItemTask.spec.ts`
+- 4 WorkspaceItem.activeFromUrl tests
+- 4 DesignPageRow.activeFromUrl tests
+- 2 WorkspaceList.expandedNoActiveBg tests
+- 2 E2E tests in `sidebarSingleActive.spec.ts` (verifies right count of active rows per URL)
+
+**Verification (worktree `worktree/sidebar-single-active`):**
+- `bun run build`: clean (vue-tsc + vite, 1.65 s)
+- `bunx vitest run`: **2100 pass / 19 fail** — the 19 are the documented pre-existing baseline (DesignView.undoHidden×5, AppLayout.urlPersist×7, AppLayout.memoriesGate×4, DesignElement static×1, AppLayout.translateResize×1, DesignView.nudge×1). Zero regressions.
+
+**Behaviour now (per URL):**
+- `?view=workspace&itemId=X&pageId=Z` → item row + page row highlighted (item + page form a meaningful hierarchy breadcrumb). Workspace header NOT active.
+- `?view=workspace&itemId=X` (no pageId) → only the item row highlighted.
+- `?view=chat&session=X` → only the matching chat row highlighted. No workspace rows.
+- `?view=task&task=X` → only the matching task row highlighted. No workspace rows.
+
+**Out of scope (deferred, see `.nalar/memories/sidebar-dead-code-after-single-active.md`):**
+- `WorkspaceItemTaskCard` (kanban card) still uses store flag — out of sidebar scope.
+- `ChatsList.vue` template reads `item.active` not `currentMainView` — `resetActiveChat()` still needed. Future refactor.
+- Sidebar's dead `navItems`/`loadChats`/`loadMoreChats`/`updateChatId`/`activeChatName` refs — future cleanup.
+- DesignPageRow's dead `isActivePage` prop — future cleanup.
+- Browser-back-button may show stale active state (no watcher on `currentMainView` in components) — future fix.
+
+**Spec:** `docs/superpowers/specs/2026-08-06-sidebar-single-active-state-design.md`
+**Plan:** `docs/superpowers/plans/2026-08-06-sidebar-single-active-state.md`
+**Memory:** `.nalar/memories/sidebar-dead-code-after-single-active.md`
+
 ### 2026-08-06: Kanban chatview dialog — 3rd size bump (make it bigger on kanban mode)
 
 **Symptom (user report).** User said *"make chatview dialog bigger on kanban mode"* with a screenshot showing the dialog occupying ~60% of the viewport width. Current sizing was 95vw × 90vh / max 1400×1000 — visible as a centered panel with ~150px margin on each side of a typical 1600px viewport.
