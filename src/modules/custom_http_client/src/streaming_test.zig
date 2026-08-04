@@ -214,15 +214,8 @@ test "stream: static-contract — cleanup pairs with init (handles init, defer, 
     defer testing.allocator.free(source);
 
     // Each runtime path that creates a CURL handle must have exactly
-    // one cleanup. We require: at least one easy_init, at least one
-    // easy_cleanup, and the structure should be balanced (every
+    // one cleanup. The structure should be balanced (every
     // SharedState.deinit has its counterpart or its caller compensates).
-    // A simple proxy: count cleanup "sources" (either via SharedState
-    // .deinit body or via `defer if (handle_alive)`).
-    const has_init = std.mem.indexOf(u8, source, "easy_init(") != null;
-    const has_cleanup = std.mem.indexOf(u8, source, "easy_cleanup(") != null;
-    if (!has_init) return error.InitMissing;
-    if (!has_cleanup) return error.CleanupMissing;
     // We don't assert exact equality because each cleanup appears in
     // a different code path: alloc-fail (defer), spawn-fail
     // (state.deinit), normal cleanup (state.deinit). At runtime

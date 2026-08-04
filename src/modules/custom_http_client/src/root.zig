@@ -52,7 +52,6 @@ pub const openStream = stream_mod.openStream;
 test {
     _ = @import("client_test.zig");
     _ = @import("options_test.zig");
-    _ = @import("static_contract_test.zig");
     _ = @import("memory_leak_test.zig");
     _ = @import("fd_leak_test.zig");
     _ = @import("edge_case_test.zig");

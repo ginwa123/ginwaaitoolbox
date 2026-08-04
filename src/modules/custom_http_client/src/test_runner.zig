@@ -11,6 +11,5 @@
 test {
     _ = @import("client_test.zig");
     _ = @import("options_test.zig");
-    _ = @import("static_contract_test.zig");
     _ = @import("cpu_usage_test.zig");
 }

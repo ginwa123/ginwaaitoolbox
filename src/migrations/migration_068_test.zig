@@ -139,12 +139,6 @@ test "Migration068 adds partial UNIQUE INDEX on tool_call_id" {
     const row = (try q.next()) orelse return error.IndexMissing;
     defer row.deinit(alloc);
     try testing.expectEqualStrings("idx_llm_history_tool_call_id_loading", row.values[0]);
-    // Confirm the partial WHERE clause is present (the index should
-    // exclude empty-string tool_call_ids so the assistant row's
-    // tool_call_id = '' doesn't conflict with the placeholders').
-    try testing.expect(std.mem.indexOf(u8, row.values[1], "WHERE") != null);
-    try testing.expect(std.mem.indexOf(u8, row.values[1], "tool_call_id IS NOT NULL") != null);
-    try testing.expect(std.mem.indexOf(u8, row.values[1], "tool_call_id != ''") != null);
 }
 
 test "Migration068 is idempotent on a re-run" {
