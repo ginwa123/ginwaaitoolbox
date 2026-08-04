@@ -18,8 +18,7 @@
                 applies the per-column sort (sortBy + direction,
                 both stateful in this component) — wire data
                 arrives already in the column's own order.
-    3. Footer  — "+ Add" button → emits `add-task` with the column id.
-    4. Drop    — the cards area is a drop zone. dragover.preventDefault
+    3. Drop    — the cards area is a drop zone. dragover.preventDefault
                 (required by the HTML5 DnD spec to mark this as a
                 valid drop target), drop reads the task id from
                 `application/x-kanban-task-id` and emits `move-task`
@@ -32,7 +31,6 @@
       workspaceId  string (passed through to KanbanCard)
       itemId       string (passed through to KanbanCard)
     emits:
-      add-task           [columnId: string]
       move-task          [{ taskId: string, columnId: string, position: number }]
       rename-column      [{ columnId: string, name: string }]
       delete-column      [columnId: string]
@@ -66,7 +64,6 @@ const props = withDefaults(defineProps<{
 })
 
 const emit = defineEmits<{
-  addTask: [columnId: string]
   moveTask: [{ taskId: string; columnId: string; position: number }]
   renameColumn: [{ columnId: string; name: string }]
   deleteColumn: [columnId: string]
@@ -567,10 +564,10 @@ const handleColumnDrop = (event: DragEvent) => {
 }
 
 // ─── Footer add ────────────────────────────────────────────────────────────
-
-const handleAddClick = () => {
-  emit('addTask', props.column.id)
-}
+//
+// REMOVED (plan: 2026-08-06-kanban-add-task-button-placement). The
+// single global + Add task button in the kanban header
+// (KanbanView.vue) replaces per-column footer add buttons.
 </script>
 
 <template>
@@ -719,7 +716,7 @@ const handleAddClick = () => {
       {{ column.description }}
     </p>
 
-    <!-- ─── Cards (drop zone + virtual scroller) ────────────────────── -->
+  <!-- ─── Cards (drop zone + virtual scroller) ────────────────────── -->
     <!-- The wrapper <div> is the drop zone (receives dragover/drop for
          card moves between columns) AND the flex parent for the
          VirtualScroller below. VirtualScroller owns its own
@@ -826,27 +823,6 @@ const handleAddClick = () => {
         <span>{{ loadingMoreTasks ? 'Loading…' : 'Load more' }}</span>
       </button>
     </div>
-
-    <!-- ─── Footer "+ Add" button ────────────────────────────────────── -->
-    <footer
-      class="px-3 py-2 shrink-0"
-      style="border-top: 1px solid var(--color-border);"
-    >
-      <button
-        type="button"
-        class="w-full flex items-center justify-center gap-1 px-2 py-1.5 rounded text-xs font-medium hover:opacity-80 transition-opacity"
-        style="
-          background-color: var(--semantic-card-bg);
-          border: 1px dashed var(--color-border);
-          color: var(--semantic-text-dim);
-        "
-        :data-testid="`kanban-column-${column.id}-add-task`"
-        @click="handleAddClick"
-      >
-        <span aria-hidden="true">+</span>
-        <span>Add</span>
-      </button>
-    </footer>
 
     <!--
       Per-column sort modal (kanban-sort-by, plan Task 4). Opens

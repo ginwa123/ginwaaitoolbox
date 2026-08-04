@@ -253,9 +253,10 @@ describe('KanbanView — event pass-through', () => {
     // No addTask emit (the event is consumed locally).
     expect(wrapper.emitted('addTask')).toBeFalsy()
 
-    // Click "+ Add" on the column.
+    // Click the header + Add task button (was per-column footer
+    // before plan: 2026-08-06-kanban-add-task-button-placement).
     await wrapper
-      .find('[data-testid="kanban-column-col_x-add-task"]')
+      .find('[data-testid="kanban-add-task-button"]')
       .trigger('click')
     await flushPromises()
 
@@ -268,10 +269,14 @@ describe('KanbanView — event pass-through', () => {
       '[data-testid="kanban-task-detail-create-name"]',
     )
     expect(nameInput?.value).toBe('')
-    // The column name is visible in the metadata strip.
-    const colEl = document.querySelector('[data-testid="kanban-task-detail-column"]')
-    expect(colEl?.textContent).toContain('todo')
-    // No addTask emit ever fired.
+    // The column picker defaults to the first column (its
+    // testid is the new dropdown — see KanbanTaskDetailDialog).
+    const picker = document.querySelector(
+      '[data-testid="kanban-task-detail-column-picker"]',
+    )
+    expect(picker?.textContent).toContain('todo')
+    // No addTask emit ever fired (the event was removed when the
+    // per-column footer button was deleted).
     expect(wrapper.emitted('addTask')).toBeFalsy()
   })
 
@@ -637,7 +642,7 @@ describe('KanbanView — create-task flow', () => {
     wrapper = mountView(item)
     await flushPromises()
     await wrapper
-      .find('[data-testid="kanban-column-col_x-add-task"]')
+      .find('[data-testid="kanban-add-task-button"]')
       .trigger('click')
     await flushPromises()
     return wrapper!

@@ -1145,7 +1145,6 @@ const handleCreateTaskSave = async (payload: {
           :workspace-id="workspaceId"
           :item-id="itemId || item.id"
           :cwd="item.path || ''"
-          @add-task="handleViewCreateTask"
           @move-task="(payload) => emit('moveTask', payload)"
           @rename-column="(payload) => emit('renameColumn', payload)"
           @delete-column="(columnId) => emit('deleteColumn', columnId)"
