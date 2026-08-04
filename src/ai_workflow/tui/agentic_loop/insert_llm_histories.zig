@@ -370,7 +370,7 @@ test "inserLLMHistories: inserts exactly one row into llm_history for the given 
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -398,7 +398,7 @@ test "inserLLMHistories: inserted row carries the user-supplied response_content
     entity.role = "assistant";
     entity.finish_reason = "stop";
 
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -425,7 +425,7 @@ test "inserLLMHistories: updates sessions.cwd when a matching session row exists
 
     try s.db.exec(testing.allocator, "INSERT INTO sessions (id, cwd) VALUES ('s1', '/old/dir')", &.{});
 
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -450,7 +450,7 @@ test "inserLLMHistories: UPDATE sessions is a no-op when the session row does no
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -480,7 +480,7 @@ test "inserLLMHistories: stores is_input, is_output, is_thinking as 0/1" {
     entity.loop_index = 3;
     entity.temperature = 0.7;
 
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -512,7 +512,7 @@ test "inserLLMHistories: stores prompt/completion/total tokens" {
     entity.completion_tokens = 50;
     entity.total_tokens = 150;
 
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -540,7 +540,7 @@ test "inserLLMHistories: stores reasoning_content when present (nullable column)
     var entity = makeEntity();
     entity.reasoning_content = "step-by-step reasoning";
 
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -566,7 +566,7 @@ test "inserLLMHistories: stores empty string for null reasoning_content" {
     // entity.reasoning_content = null (default), is_feed_to_llm = false
     // → the implementation passes '' as the reasoning_content arg,
     // so the column holds '' not NULL. Document that contract.
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -594,7 +594,7 @@ test "inserLLMHistories: is_feed_to_llm=false is stored as '0'" {
     var entity = makeEntity();
     entity.is_feed_to_llm = false;
 
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -636,7 +636,7 @@ test "inserLLMHistories: joins multiple image_urls with '||' delimiter" {
     defer testing.allocator.free(entity.image_urls.?);
     defer for (entity.image_urls.?) |u| testing.allocator.free(u);
 
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -661,7 +661,7 @@ test "inserLLMHistories: stores empty image_url when image_urls is null" {
 
     // entity.image_urls = null → the implementation writes "" (no rows
     // are added to the combined buffer). Document that contract.
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -687,7 +687,7 @@ test "inserLLMHistories: is_emit_sse=true with event_bus=null is a safe no-op fo
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -709,7 +709,7 @@ test "inserLLMHistories: is_emit_sse=false short-circuits before any event_bus a
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try inserLLMHistories(.{
+    _ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -742,7 +742,7 @@ test "inserLLMHistories: is_skip_db=true inserts ZERO rows into llm_history" {
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -768,7 +768,7 @@ test "inserLLMHistories: is_skip_db=true leaves sessions.cwd untouched even when
 
     try s.db.exec(testing.allocator, "INSERT INTO sessions (id, cwd) VALUES ('s1', '/original/dir')", &.{});
 
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
@@ -798,7 +798,7 @@ test "inserLLMHistories: is_skip_db=false (default) preserves the existing DB-wr
     defer s.db.deinit();
     defer s.threaded.deinit();
 
-    try inserLLMHistories(.{
+_ = try inserLLMHistories(.{
         .allocator = testing.allocator,
         .io = s.threaded.io(),
         .db = &s.db,
