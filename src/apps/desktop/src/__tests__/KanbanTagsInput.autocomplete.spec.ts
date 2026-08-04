@@ -96,16 +96,63 @@ describe('KanbanTagsInput — autocomplete dropdown', () => {
     expect(wrapper.find('[data-testid="kanban-tags-input-suggestion-urgent"]').exists()).toBe(true)
   })
 
-  it('clicking a suggestion commits it as a tag and closes the dropdown', async () => {
+  it('clicking a suggestion commits it as a tag and KEEPS the dropdown open (user can pick more without re-focusing)', async () => {
+    // Plan: 2026-08-06-dropdown-tags-feedback. User feedback #2:
+    // "after enter select dropdown, the dropdown not show up agai, it
+    // should show up". The pre-fix behaviour closed the dropdown after
+    // every commit, forcing the user to click back into the input to
+    // pick the next tag. Keep the dropdown open so the user can pick
+    // N tags in one focused session.
     const wrapper = mount(KanbanTagsInput, {
-      props: { modelValue: [], suggestions: ['bug', 'urgent'] },
+      props: { modelValue: [], suggestions: ['bug', 'urgent', 'frontend'] },
     })
     await wrapper.find('[data-testid="kanban-tags-input-field"]').trigger('focus')
     await nextTick()
     await wrapper.find('[data-testid="kanban-tags-input-suggestion-bug"]').trigger('mousedown')
+    // Simulate v-model round-trip: parent updates modelValue in response
+    // to the emit. Without this, props.modelValue stays [] and the
+    // next assertion (the picked tag is filtered out) would fail.
+    await wrapper.setProps({ modelValue: ['bug'] })
     await nextTick()
+    // The chip was added.
     expect(wrapper.emitted('update:modelValue')![0]).toEqual([['bug']])
-    expect(wrapper.find('[data-testid="kanban-tags-input-suggestions"]').exists()).toBe(false)
+    // The dropdown stays open.
+    expect(wrapper.find('[data-testid="kanban-tags-input-suggestions"]').exists()).toBe(true)
+    // The picked tag is no longer in the list (filtered out by the
+    // "already on the task" check in filteredSuggestions).
+    expect(wrapper.find('[data-testid="kanban-tags-input-suggestion-bug"]').exists()).toBe(false)
+    // The other suggestions are still pickable.
+    expect(wrapper.find('[data-testid="kanban-tags-input-suggestion-urgent"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="kanban-tags-input-suggestion-frontend"]').exists()).toBe(true)
+  })
+
+  it('user can pick multiple tags in one focused session (regression for dropdown-closes-after-pick)', async () => {
+    // Plan: 2026-08-06-dropdown-tags-feedback. The user-reported flow:
+    // open dialog → focus tags input → click suggestion → click
+    // another suggestion → click another → ...  without the dropdown
+    // closing in between. After-pick filtering keeps the dropdown
+    // showing only the still-pickable tags.
+    const wrapper = mount(KanbanTagsInput, {
+      props: { modelValue: ['bug'], suggestions: ['bug', 'urgent', 'frontend', 'flaky'] },
+    })
+    await wrapper.find('[data-testid="kanban-tags-input-field"]').trigger('focus')
+    await nextTick()
+    // Dropdown is open with the unpicked suggestions.
+    expect(wrapper.find('[data-testid="kanban-tags-input-suggestion-urgent"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="kanban-tags-input-suggestion-frontend"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="kanban-tags-input-suggestion-flaky"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="kanban-tags-input-suggestion-bug"]').exists()).toBe(false)
+    // Pick another tag.
+    await wrapper.find('[data-testid="kanban-tags-input-suggestion-urgent"]').trigger('mousedown')
+    await wrapper.setProps({ modelValue: ['bug', 'urgent'] })
+    await nextTick()
+    // Dropdown still open, picked tag removed from the list.
+    expect(wrapper.find('[data-testid="kanban-tags-input-suggestions"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="kanban-tags-input-suggestion-urgent"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="kanban-tags-input-suggestion-frontend"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="kanban-tags-input-suggestion-flaky"]').exists()).toBe(true)
+    // The emitted values include the new tag appended to the existing chip.
+    expect(wrapper.emitted('update:modelValue')![0]).toEqual([['bug', 'urgent']])
   })
 
   it('ArrowDown + Enter commits the highlighted suggestion', async () => {
