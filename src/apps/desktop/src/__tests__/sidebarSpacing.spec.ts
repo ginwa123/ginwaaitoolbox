@@ -64,8 +64,10 @@ describe('ChatsList.vue spacing', () => {
   })
 
   it('active chat row gets a visible top border via :class', () => {
-    // Pattern: `:class="item.active ? 'border-[--color-border]/60' : ''"`
-    if (!source.includes("item.active ? 'border-[--color-border]/60'")) {
+    // Pattern: `:class="isCurrentChat(item.id) ? 'border-[--color-border]/60' : ''"`
+    // (URL-driven in 2026-08-06; the old `item.active ?` flag was set once in
+    // loadChats() and stayed stale after a chat → workspace navigation).
+    if (!source.includes("isCurrentChat(item.id) ? 'border-[--color-border]/60'")) {
       throw new Error(
         'ChatsList active chat row is missing the active-state top border (active row blends into the header above)',
       )
