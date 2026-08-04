@@ -1589,6 +1589,106 @@ test "search: search_result_to_string_flat with no matches emits empty header" {
     try testing.expect(std.mem.indexOf(u8, flat, "group_by_file=\"false\"") != null);
 }
 
+// =============================================================================
+// No-match output: include the actual pattern + path in the warning text so
+// the operator (and the frontend's header) can see what was searched.
+// (Plan: docs/superpowers/plans/2026-08-06-search-better-error.md)
+// =============================================================================
+
+test "search: executeSearch no-match warning includes the actual pattern and path" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "empty.txt",
+        .data = "no matches here\n",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "needle_NOT_FOUND",
+        .path = "empty.txt",
+    });
+    defer result.deinit(allocator);
+
+    // No matches.
+    try testing.expectEqual(@as(usize, 0), result.matches.items.len);
+
+    // The warning body MUST contain the literal pattern + path the LLM
+    // passed so the operator can see what was searched (fix for the
+    // "unknown" / "unknown pattern not found" rendering bug).
+    try testing.expect(std.mem.indexOf(u8, result.content, "needle_NOT_FOUND") != null);
+    try testing.expect(std.mem.indexOf(u8, result.content, "empty.txt") != null);
+    try testing.expect(std.mem.indexOf(u8, result.content, "<warning>") != null);
+    try testing.expect(std.mem.indexOf(u8, result.content, "</warning>") != null);
+}
+
+test "search: search_result_to_string_grouped no-match wraps warning in <search pattern=\"...\" path=\"...\">" {
+    const allocator = testing.allocator;
+
+    // Warning body now includes the pattern + path so the operator sees
+    // what was searched even when the header attributes get truncated by
+    // narrow UIs (the LLM passes "needle_NOT_FOUND" but the toast shows
+    // "needle_NO..."). Body text is the durable source of truth.
+    const result = search.SearchResult{
+        .matches = std.ArrayList(search.SearchMatch).empty,
+        .content = "<warning>no matches for pattern \"needle_NOT_FOUND\" in path \"/tmp/x\"</warning>",
+    };
+
+    const grouped = try search.search_result_to_string_grouped(
+        allocator,
+        result,
+        "needle_NOT_FOUND",
+        "/tmp/x",
+    );
+    defer allocator.free(grouped);
+
+    // The opening <search pattern="..." path="..."> wrapper MUST be present
+    // so the frontend header can extract the actual pattern + path. Before
+    // this fix, the no-match branch closed the tag immediately after the
+    // opening, never emitting pattern/path — the frontend fell back to
+    // "unknown" everywhere.
+    try testing.expect(std.mem.indexOf(u8, grouped, "<search pattern=\"needle_NOT_FOUND\"") != null);
+    try testing.expect(std.mem.indexOf(u8, grouped, "path=\"/tmp/x\"") != null);
+    // The warning body MUST survive inside the wrapper, not be silently
+    // dropped.
+    try testing.expect(std.mem.indexOf(u8, grouped, "no matches for pattern") != null);
+    try testing.expect(std.mem.indexOf(u8, grouped, "needle_NOT_FOUND") != null);
+    // And the closing tag MUST come after the warning body.
+    try testing.expect(std.mem.indexOf(u8, grouped, "</warning>") != null);
+    try testing.expect(std.mem.indexOf(u8, grouped, "</search>") != null);
+}
+
+test "search: search_result_to_string_flat no-match wraps warning in <search pattern=\"...\" path=\"...\">" {
+    const allocator = testing.allocator;
+
+    const result = search.SearchResult{
+        .matches = std.ArrayList(search.SearchMatch).empty,
+        .content = "<warning>no matches for pattern \"foo\" in path \"bar\"</warning>",
+    };
+
+    const flat = try search.search_result_to_string_flat(
+        allocator,
+        result,
+        "foo",
+        "bar",
+    );
+    defer allocator.free(flat);
+
+    try testing.expect(std.mem.indexOf(u8, flat, "<search pattern=\"foo\"") != null);
+    try testing.expect(std.mem.indexOf(u8, flat, "path=\"bar\"") != null);
+    try testing.expect(std.mem.indexOf(u8, flat, "no matches for pattern") != null);
+    try testing.expect(std.mem.indexOf(u8, flat, "</warning>") != null);
+    try testing.expect(std.mem.indexOf(u8, flat, "</search>") != null);
+}
+
 test "search: search_result_to_string_flat renders file/line/snippet per match" {
     const allocator = testing.allocator;
 
