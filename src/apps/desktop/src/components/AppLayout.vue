@@ -20,7 +20,7 @@ import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
 import DesignView from './design/DesignView.vue'
 import WorkspaceItemMemoriesView from './views/WorkspaceItemMemoriesView.vue'
 import { useNavigationStore } from '../stores/navigation'
-import { useWorkspacesStore } from '../stores/workspaces'
+import { useWorkspacesStore, type Task as TaskType } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
 import { useKanbanSseStore } from '../stores/kanbanSse'
 import { useDesignSseStore } from '../stores/designSse'
@@ -843,12 +843,85 @@ watch(
   { immediate: true },
 )
 
+// Captured from DesignView's `openChat` payload — the design page's
+// own name (NOT the workspace item name). The dialog's header uses
+// it as "Design Chat: <pageName>". Mirrors the FK-plan naming
+// convention (2026-07-28-design-page-workspace-item-task-fk.md).
+// Cleared when activeTask is cleared so a stale pageName from a prior
+// chat doesn't leak into the next opened chat's header.
+const activeDesignChatPageName = ref<string>('')
+
+// ─── Design chat task FK handle (plan: 2026-08-06-design-chat-as-dialog,
+//     bug fix from user report "the chat button keep not popup, chatview") ────
+//
+// Root cause: the design chat dialog's v-if gate was `activeTask && ...
+// item_type === 'design'`. The `activeTask` computed walks
+// `workspaces.value[].items[].tasks` looking for the task — but in
+// PRODUCTION design items have empty `tasks` arrays after `init()`:
+//   - `getWorkspacesItems` returns items WITHOUT tasks
+//     (WorkspaceItemInfo struct in llm_history.zig:3208 has no `tasks` field)
+//   - `init()` SKIPS `api.getTasks` for `item_type === 'design'`
+//     (workspaces.ts:639 — only folders + other types fetch per-item tasks)
+//   - The pre-fix 3-column [DesignView | resize-handle | ChatView]
+//     layout used the same gate — it was BROKEN in production too.
+//     The fix: capture the FK's `workspaceItemTaskId` directly via a
+//     separate ref (this one), build a synthetic Task for the dialog,
+//     and gate the dialog on THIS ref's truthiness — NOT on the
+//     store's `activeTask` computed. `setActiveTask(...)` is still
+//     called in `handleDesignOpenChat` (drives URL sync + handleCloseTaskView),
+//     but the dialog no longer depends on its computed.
+const activeDesignChatTaskId = ref<string>('')
+// Watch the store's `activeTaskId` directly (NOT the computed
+// `activeTask`) so the watcher fires even when activeTask stays
+// null the whole time (the case for design items — see the bug
+// comment above). handleCloseTaskView calls setActiveTask(null) →
+// activeTaskId.value becomes '' → this watcher fires → clear
+// activeDesignChatTaskId.value so the dialog unmounts.
+watch(
+  () => workspacesStore.activeTaskId,
+  (taskId) => {
+    if (!taskId) {
+      activeDesignChatTaskId.value = ''
+      activeDesignChatPageName.value = ''
+    }
+  },
+)
+
+// Synthetic Task for DesignChatDialog. ChatView's API expects a
+// Task object with at minimum `id` (chat-id) and `name` (for the
+// title fallback). Real design-chat tasks live in
+// `workspace_item_tasks` rows accessible via the per-page FK in
+// `design_pages.workspace_item_task_id` — but the store's
+// `workspaces.value[].items[].tasks` array is empty for design
+// items after init() (see the bug comment above), so the store's
+// `activeTask` computed returns null and we can't pass it
+// directly. Build a minimal Task from the captured FK info.
+//
+// `name` reads "Design Chat: <pageName>" when pageName is set,
+// otherwise falls back to "Design Chat" (matches the dialog's
+// header fallback). `taskType: 'standard'` matches the row created
+// at page-create time per the FK plan.
+const activeDesignChatTask = computed<TaskType | null>(() => {
+  if (!activeDesignChatTaskId.value) return null
+  return {
+    id: activeDesignChatTaskId.value,
+    name: activeDesignChatPageName.value
+      ? `Design Chat: ${activeDesignChatPageName.value}`
+      : 'Design Chat',
+    description: '',
+    taskType: 'standard',
+  } as TaskType
+})
+
 // ─── DesignChatDialog open state (plan: 2026-08-06-design-chat-as-dialog) ────
 //
 // Same v-model:show pattern as KanbanChatDialog above. The design
-// dialog opens whenever activeTask is set AND the active item is a
-// design — the gating happens in the template (v-if), not here, so
-// that this ref stays a pure mirror of "is there any active task?".
+// dialog opens whenever activeDesignChatTaskId is set AND the
+// active item is a design — the gating happens in the template
+// (v-if), not here. We drive `show` from `activeDesignChatTaskId`
+// (NOT from `activeTask` like the kanban version) because the
+// store's `activeTask` is null for design items (their tasks
+// array is empty post-init; see the bug comment below).
 //
 // 2026-08-06: prior to this plan, the design chat was rendered as a
 // RIGHT-side column of a 3-column DesignView | resize-handle |
@@ -860,25 +933,11 @@ watch(
 // DESIGN_WIDTH_STORAGE_KEY localStorage are removed below.
 const designChatDialogOpen = ref(false)
 watch(
-  () => activeTask.value,
-  (t) => {
-    designChatDialogOpen.value = !!t
+  () => activeDesignChatTaskId.value,
+  (id) => {
+    designChatDialogOpen.value = !!id
   },
   { immediate: true },
-)
-
-// Captured from DesignView's `openChat` payload — the design page's
-// own name (NOT the workspace item name). The dialog's header uses
-// it as "Design Chat: <pageName>". Mirrors the FK-plan naming
-// convention (2026-07-28-design-page-workspace-item-task-fk.md).
-// Cleared when activeTask is cleared so a stale pageName from a prior
-// chat doesn't leak into the next opened chat's header.
-const activeDesignChatPageName = ref<string>('')
-watch(
-  () => activeTask.value,
-  (t) => {
-    if (!t) activeDesignChatPageName.value = ''
-  },
 )
 
 // Close the chatview column (the 3-column layout's right pane).
@@ -907,6 +966,13 @@ const handleCloseTaskView = () => {
   // into a chat they thought they had closed.
   workspacesStore.setActiveTask(null)
   navigationStore.clearActiveChat()
+  // 2026-08-06 (design-chat-as-dialog bug fix): clearing
+  // activeTaskId above triggers the watcher at the top of this
+  // block which clears `activeDesignChatTaskId` and
+  // `activeDesignChatPageName` — that's how the dialog unmounts.
+  // (The watcher watches activeTaskId directly, NOT the computed
+  // activeTask, because activeTask is null for design items the
+  // whole time — see the comment at activeDesignChatTaskId.)
   // Preserve (workspaceId, itemId, pageId) when navigating back to
   // the workspace view — the active kanban/design item (and, for
   // design items, the active page) should survive a page reload.
@@ -1367,6 +1433,13 @@ const handleDesignOpenChat = async (payload: {
   // "Design Chat: <pageName>". Distinct from the workspace item's
   // name (which would be the parent design's name like "Design").
   activeDesignChatPageName.value = payload.pageName
+  // Bug fix (2026-08-06, user report "chat button keep not popup,
+  // chatview"): the dialog's v-if was previously gated on the
+  // store's `activeTask` computed, which is null for design items
+  // (their tasks array is empty post-init). Capture the FK's
+  // task id into a separate ref that the dialog actually reads;
+  // see `activeDesignChatTaskId` declaration above.
+  activeDesignChatTaskId.value = payload.workspaceItemTaskId
 }
 
 const handleDesignUpdateElement = async (
@@ -1574,6 +1647,14 @@ watch(chatSessionCwd, (newCwd) => {
     const sessionId = activeChatId.value.replace(/^chat-/, '')
     localStorage.setItem(`session_cwd_${sessionId}`, newCwd)
   }
+})
+
+// Expose the design chat open handler so tests can simulate the
+// user clicking the 💬 button in DesignView (which emits `openChat`).
+// In production, this is reached via the DesignView emit chain —
+// tests don't render DesignView because they stub it. Cheap seam.
+defineExpose({
+  handleDesignOpenChat,
 })
 </script>
 
@@ -1783,11 +1864,10 @@ watch(chatSessionCwd, (newCwd) => {
         v-if="
           activeWorkspaceItem &&
           activeWorkspaceItem.item_type === 'design' &&
-          activeTask &&
-          activeTaskWorkspaceItemId === activeWorkspaceItem.id
+          activeDesignChatTaskId
         "
         v-model:show="designChatDialogOpen"
-        :task="activeTask"
+        :task="activeDesignChatTask"
         :workspace-id="activeWorkspace?.id ?? ''"
         :item-id="activeWorkspaceItem.id"
         :page-name="activeDesignChatPageName"
