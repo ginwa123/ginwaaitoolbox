@@ -2504,7 +2504,7 @@ pub fn updateToolResultById(
     allocator: std.mem.Allocator,
     io: std.Io,
     db: *sqlite.SqliteBackend,
-    tool_call_id: []const u8,
+    id: []const u8,
     opts: UpdateToolResultOptions,
 ) !void {
     _ = io;
@@ -2515,7 +2515,7 @@ pub fn updateToolResultById(
         \\    diffview_before = COALESCE(?, diffview_before),
         \\    diffview_after = COALESCE(?, diffview_after),
         \\    is_loading = 0
-        \\WHERE tool_call_id = ?
+        \\WHERE id = ?
     ;
 
     // For diffview: an empty slice binds as NULL per project memory
@@ -2528,7 +2528,7 @@ pub fn updateToolResultById(
         opts.content,
         opts.diffview_before orelse "",
         opts.diffview_after orelse "",
-        tool_call_id,
+        id,
     };
     try db.exec(allocator, sql, sqlArgs);
 }
