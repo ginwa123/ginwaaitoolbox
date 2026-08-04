@@ -3809,6 +3809,17 @@ pub const WorkspaceItemTaskInfo = struct {
     /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md
     tags: []u8 = &.{},
 
+    /// `||`-delimited base64 data URLs (Migration 069 — kanban
+    /// image urls column). Empty string is the canonical "no
+    /// images" sentinel, matching the `description` / `tags`
+    /// patterns from Migrations 062 / 067. The frontend parses
+    /// this with `s.split('|').filter(Boolean)` — no JSON wrap,
+    /// no double-encoding — so the value you see in the DB is
+    /// the value you see in the network tab. Owned by the lister;
+    /// freed by `deinit`. Plan:
+    /// docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md
+    image_urls: []u8 = &.{},
+
     pub fn deinit(self: WorkspaceItemTaskInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.name);
@@ -3828,6 +3839,7 @@ pub const WorkspaceItemTaskInfo = struct {
         if (self.is_auto_retry_until_stop.len > 0) allocator.free(self.is_auto_retry_until_stop);
         if (self.last_finish_reason.len > 0) allocator.free(self.last_finish_reason);
         if (self.tags.len > 0) allocator.free(self.tags);
+        if (self.image_urls.len > 0) allocator.free(self.image_urls);
     }
 };
 
@@ -3887,6 +3899,7 @@ pub fn createWorkspaceItemTask(
     /// .validateAndNormalizeTags` to produce one. Plan:
     /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md
     tags: ?[]const u8,
+    image_urls: ?[]const u8,
 ) !WorkspaceItemTaskInfo {
     if (!std.mem.eql(u8, task_type, "standard") and !std.mem.eql(u8, task_type, "routine")) {
         return error.InvalidTaskType;
@@ -3924,6 +3937,7 @@ pub fn createWorkspaceItemTask(
     // description" / "no tags" (null vs empty string).
     const returned_desc: []const u8 = description orelse "";
     const returned_tags: []const u8 = tags orelse "";
+    const returned_image_urls: []const u8 = image_urls orelse "";
     {
         var cols_buf: std.ArrayList(u8) = .empty;
         defer cols_buf.deinit(allocator);
@@ -3965,6 +3979,22 @@ pub fn createWorkspaceItemTask(
             }
         }
 
+        // Migration 069 — same dynamic-SQL builder pattern for
+        // image_urls. The `||`-delimited string is opaque to the DB
+        // (TEXT), so we just bind it as a single slice. Empty string
+        // is the canonical "no images" sentinel — SQL '' literal
+        // (NOT NULL DEFAULT '').
+        if (image_urls) |u| {
+            if (u.len == 0) {
+                try cols_buf.appendSlice(allocator, ", image_urls");
+                try vals_buf.appendSlice(allocator, ", ''");
+            } else {
+                try cols_buf.appendSlice(allocator, ", image_urls");
+                try vals_buf.appendSlice(allocator, ", ?");
+                try bind_values.append(allocator, u);
+            }
+        }
+
         var sql_buf: std.ArrayList(u8) = .empty;
         defer sql_buf.deinit(allocator);
         try sql_buf.print(
@@ -3989,6 +4019,9 @@ pub fn createWorkspaceItemTask(
         // Persist the tags we just INSERTed (Migration 067). dupe
         // unconditionally so `deinit` can free consistently.
         .tags = try allocator.dupe(u8, returned_tags),
+        // Migration 069 — persist image_urls we just INSERTed. dupe
+        // unconditionally so `deinit` can free consistently.
+        .image_urls = try allocator.dupe(u8, returned_image_urls),
     };
 }
 

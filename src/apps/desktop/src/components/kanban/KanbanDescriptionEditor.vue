@@ -304,20 +304,22 @@ const addImageFile = async (file: File) => {
     return
   }
 
-  // EDIT MODE — upload immediately. Inline `![name](<url>)` is
-  // inserted into the description text so the user sees the image
-  // right away and can save with one click.
-  const uploadingIdx = previewFiles.value.length - 1
-  try {
-    const { url } = await api.uploadTaskAttachment(props.taskId, downscaled)
-    insertMarkdown(`![${downscaled.name}](${url})`)
-  } catch (err) {
-    console.error('[attachment] upload failed:', err)
-    // Roll back the preview thumbnail on failure so the user knows
-    // the upload didn't go through. Keep the user's text intact.
-    previewFiles.value.splice(uploadingIdx, 1)
-    if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl)
-  }
+  // EDIT MODE (Migration 069 — kanban image urls column). The
+  // task exists on the server. We stage the new image in
+  // `pendingFiles` and let the host PATCH the new column
+  // (`image_urls`) on Save — same orchestration as create mode.
+  // The previous edit-mode flow called `api.uploadTaskAttachment`
+  // (POST /.../attachments) and inserted `![name](url)` markdown
+  // into the description. The migration removed that endpoint
+  // entirely (the wildcard GET was broken, the POST was tied to
+  // the kanban's filesystem path) — see
+  // docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md.
+  //
+  // The dialog still surfaces the user's edits (add/remove)
+  // via the same `pendingFiles` array on Save; the host reads
+  // it and PATCHes `image_urls` via `updateTaskDetails`.
+  pendingFiles.value.push(previewEntry)
+  return
 }
 
 const insertMarkdown = (insertText: string) => {

@@ -879,6 +879,40 @@ const handleCreateTaskSave = async (payload: {
     // overwrites that. Position 0 = top of the column.
     await workspacesStore.moveTaskToColumn(wsId, itId, taskId, desiredColumnId, 0)
 
+    // NEW (Migration 069 — kanban image urls column). Persist the
+    // base64 data URLs onto the new task's `image_urls` column.
+    // Done AFTER moveTaskToColumn so the task row exists with the
+    // correct column assignment before the user sees it (the
+    // PATCH round-trips through the store's `updateTaskDetails`,
+    // which is optimistically reflected in the local task before
+    // the network response).
+    //
+    // In `create_and_run` mode we ALSO forward `uploadedImageUrls`
+    // to runAgentOnNewTask (below) so the chatview's first user
+    // message renders the images as thumbnails above the text —
+    // same UX as pasting an image directly into the chat input.
+    // In plain `create` mode the data is now persisted in the
+    // column so the kanban card / task detail dialog renders
+    // them too (the kanban-image-urls-column plan replaces the
+    // upload-then-URL flow that was broken by the attachment GET
+    // wildcard route bug).
+    if (uploadedImageUrls.length > 0) {
+      try {
+        await workspacesStore.updateTaskDetails(wsId, itId, taskId, {
+          imageUrls: uploadedImageUrls,
+        })
+      } catch (err) {
+        console.error(
+          '[handleCreateTaskSave] updateTaskDetails(imageUrls) failed:',
+          err,
+        )
+        createError.value = `Image save failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+        return
+      }
+    }
+
     // NEW (plan: 2026-08-06-kanban-create-task-run-agent). When the
     // user clicked "Create task & run agent", queue the title +
     // description as the first user message and route to the chat

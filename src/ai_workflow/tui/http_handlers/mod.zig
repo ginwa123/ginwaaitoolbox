@@ -83,11 +83,13 @@ pub const taskPinHandler = @import("task_pin.zig").taskPinHandler;
 // SSE event. See docs/plans/2026-07-26-kanban-task-notification-icon.md.
 pub const taskMarkHumanTouchedHandler = @import("task_mark_human_touched.zig").taskMarkHumanTouchedHandler;
 pub const tasksReorderPinnedHandler = @import("tasks_reorder_pinned.zig").tasksReorderPinnedHandler;
-// Task attachment upload/download handlers (Option C of the rich
-// description plan). Files live under the kanban's filesystem root;
-// see docs/superpowers/plans/2026-07-25-kanban-description-rich-editor.md.
-pub const taskAttachmentPostHandler = @import("task_attachment_post.zig").taskAttachmentPostHandler;
-pub const taskAttachmentGetHandler = @import("task_attachment_get.zig").taskAttachmentGetHandler;
+// Task attachment upload/download handlers — REMOVED 2026-08-06
+// (Migration 069 / kanban-image-urls-column plan). Replaced by the
+// `workspace_item_tasks.image_urls` column (`||`-delimited base64
+// data URLs) — see image_urls_validation.zig for the wire format
+// and validation. No filesystem path lookup, no broken `*` GET
+// wildcard route. The handler files task_attachment_post.zig and
+// task_attachment_get.zig have been deleted.
 pub const routinesRunHandler = @import("routines_run.zig").routinesRunHandler;
 pub const routinesListHandler = @import("routines_list.zig").routinesListHandler;
 

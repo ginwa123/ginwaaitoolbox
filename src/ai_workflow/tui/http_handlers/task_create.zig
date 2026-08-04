@@ -43,6 +43,7 @@ const memories_mod = nalarcore.memories;
 const cron = @import("../routines/cron.zig");
 const fire = @import("../routines/fire.zig");
 const tags_validation = @import("tags_validation.zig");
+const image_urls_validation = @import("image_urls_validation.zig");
 const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 
 /// Domain-level error set for `useCase`. Each variant maps to a
@@ -79,6 +80,12 @@ pub const TaskCreateError = error{
     // too long, or contains forbidden characters (only
     // [a-zA-Z0-9_-] allowed). See tags_validation.zig.
     InvalidTags,
+    // 400 / 413 — kanban image_urls validation (Migration 069). Either
+    // the joined string exceeds the 10 MB cap (ImageUrlsTooLarge →
+    // 413) or a segment fails the `data:image/...;base64,...` prefix
+    // check (InvalidImageUrls → 400). See image_urls_validation.zig.
+    InvalidImageUrls,
+    ImageUrlsTooLarge,
     // Underlying I/O / alloc errors (required by the type system
     // even though they're unreachable on the per-request arena)
     OutOfMemory,
@@ -365,6 +372,19 @@ fn createStandardTask(
         input.body.tags,
     ) catch return error.InvalidTags;
 
+    // Validate the image_urls payload (Migration 069). The wire
+    // format is the already-joined `||`-delimited string from the
+    // client; the helper validates each segment's `data:image/
+    // ...;base64,...` prefix and the total byte cap. The string is
+    // borrowed (per-request arena) and passed through to the
+    // model's INSERT.
+    const validated_image_urls = image_urls_validation.validateImageUrls(
+        input.body.image_urls orelse "",
+    ) catch |err| return switch (err) {
+        error.ImageUrlsTooLarge => error.ImageUrlsTooLarge,
+        error.InvalidImageUrl => error.InvalidImageUrls,
+    };
+
     const task = ai_mod.workspace_item_tasks.createWorkspaceItemTask(
         allocator,
         db,
@@ -374,6 +394,9 @@ fn createStandardTask(
         "standard",
         input.body.description,
         validated_tags,
+        // Migration 069 — image_urls. Borrowed from the per-request
+        // arena (validated above). Pass through verbatim.
+        validated_image_urls,
     ) catch return error.StandardTaskCreateFailed;
 
     // Chunk 5 of kanban-task-notification-icon: creating a card is
@@ -610,6 +633,8 @@ pub fn tasksCreateHandler(
             error.RoutineScheduleRequired, error.RoutineInitialPromptRequired,
             error.InvalidCronExpression, error.FailedToComputeNextFireTime => 400,
             error.InvalidTags => 400,
+            error.InvalidImageUrls => 400,
+            error.ImageUrlsTooLarge => 413,
             error.MemoryNameRequired, error.InvalidMemoryName,
             error.MemoryContentRequired => 400,
             error.WorkspaceItemNotFound => 404,
@@ -628,6 +653,8 @@ pub fn tasksCreateHandler(
             error.InvalidCronExpression => "Invalid cron expression",
             error.FailedToComputeNextFireTime => "Failed to compute next fire time",
             error.InvalidTags => "tags must be non-empty, ≤50 chars, and contain only letters, digits, hyphens, and underscores",
+            error.InvalidImageUrls => "image_urls must be `||`-delimited data:image/<mime>;base64,... URLs",
+            error.ImageUrlsTooLarge => "image_urls payload too large (max 10 MB)",
             error.MemoryNameRequired => "memory_name is required for memory tasks",
             error.InvalidMemoryName => "Invalid memory name (must end in .md, no /, no ..)",
             error.MemoryContentRequired => "memory_content is required for memory tasks",

@@ -1,9 +1,7 @@
 /**
- * Tests for KanbanView.handleCreateTaskSave's create-and-run branch
- * with create-mode image attachments (plan: 2026-08-06-kanban-image-
- * base64-in-chatview, replaces the upload-then-URL plan 2026-08-06-
- * kanban-no-base64-in-desc / 2026-08-06-kanban-image-attach-in-chatview
- * after the user directed the simpler design).
+ * Tests for KanbanView.handleCreateTaskSave's create flow with
+ * create-mode image attachments (plan: 2026-08-06-kanban-image-urls-column,
+ * Migration 069).
  *
  * Bug (pre-fix, original): when the user opened the kanban "Create
  * task" dialog and pasted an image into the description, the editor
@@ -12,25 +10,28 @@
  * for a 4 MB image). The DB TEXT column stored it, and downstream
  * renders (kanban card, detail dialog) had to display it.
  *
- * Intermediate fix (now superseded): upload each pending file after
- * `addTask` returns, patch the description with `![name](<url>)`
- * markdown, and forward the uploaded URLs to runAgentOnNewTask. The
- * GET endpoint's wildcard route turned out to be broken (separate
- * bug), so the URLs in the description rendered as broken-image
- * placeholders in the kanban card and produced 404 thumbnails in
- * the detail dialog.
+ * Intermediate fix (now superseded): upload each pending file via
+ * the filesystem-backed attachment endpoint
+ * (`POST /api/workspaces/tasks/<id>/attachments`) and patch the
+ * description with `![name](<url>)` markdown. The GET endpoint's
+ * wildcard route turned out to be broken (the custom router treats
+ * `*` as a literal segment), so the URLs in the description
+ * rendered as broken-image placeholders in the kanban card.
  *
- * CURRENT fix contract — TWO pieces (the editor + dialog unchanged):
+ * CURRENT fix contract (Migration 069 — kanban image urls column).
+ * Three pieces:
  *   1. KanbanDescriptionEditor in create mode (no taskId) stages the
  *      pasted file in `previewFiles` (visual) + `pendingFiles`
  *      (data, defineExpose). It does NOT touch the description text.
  *   2. (THIS FILE covers the host) KanbanView.handleCreateTaskSave
  *      converts each pendingFile.file to a `data:<mime>;base64,...`
- *      URL via FileReader.readAsDataURL, collects them in upload
- *      order, and passes the array as `imageUrls` to
- *      runAgentOnNewTask when mode === 'create_and_run'. The
- *      description stays plain text — no upload, no `![name](url)`
- *      markdown, no `data:image/` anywhere in the description.
+ *      URL via FileReader.readAsDataURL, then PATCHes the new
+ *      task's `image_urls` column via `updateTaskDetails({ imageUrls })`.
+ *      The description stays plain text — no `data:image/` anywhere.
+ *   3. In `create_and_run` mode the same `imageUrls` are ALSO
+ *      forwarded to runAgentOnNewTask so the chatview's first user
+ *      message renders them as thumbnails above the text (same UX
+ *      as pasting an image directly into the chat input).
  *
  * Pieces (1) is covered by KanbanDescriptionEditor.spec.ts and the
  * dialog contract by KanbanTaskDetailDialog.createAttachments.spec.ts.
@@ -93,9 +94,7 @@ function makeFile(name: string): File {
 
 // Stub the global FileReader so the host's readAsDataURL returns a
 // deterministic data URL that mirrors the source File's name + bytes.
-// Mirrors the pattern used in KanbanDescriptionEditor.spec.ts (where
-// addImageFile also relies on FileReader.onload firing on the next
-// macrotask).
+// Mirrors the pattern used in KanbanDescriptionEditor.spec.ts.
 function installFileReaderStub() {
   const originalReader = globalThis.FileReader
   class StubReader {
@@ -117,18 +116,13 @@ function installFileReaderStub() {
       }, 0)
     }
   }
-  // FileReader is defined as a class in jsdom; replacing the global
-  // with a plain class breaks instanceof checks elsewhere, so we
-  // monkey-patch the prototype methods instead. ChatView and other
-  // call sites call `new FileReader()` then set `.onload` and call
-  // `.readAsDataURL(blob)`.
   globalThis.FileReader = StubReader as unknown as typeof FileReader
   return () => {
     globalThis.FileReader = originalReader
   }
 }
 
-describe('KanbanView.handleCreateTaskSave — base64-direct image attach (create_and_run)', () => {
+describe('KanbanView.handleCreateTaskSave — image_urls column PATCH (Migration 069)', () => {
   let wrapper: VueWrapper | null = null
   let restoreReader: (() => void) | null = null
 
@@ -158,10 +152,9 @@ describe('KanbanView.handleCreateTaskSave — base64-direct image attach (create
     return wrapper!
   }
 
-  it('create + run: converts pending files to base64 data URLs and forwards to runAgentOnNewTask (no upload, no description patch)', async () => {
-    // Spy on the upload endpoint — must NEVER be called.
-    const uploadSpy = vi.spyOn(api, 'uploadTaskAttachment')
-
+  it('create + run: persists imageUrls on the new task AND forwards to runAgentOnNewTask', async () => {
+    // Spy on updateTaskDetails — it MUST be called with the data URLs
+    // (the new contract per Migration 069).
     const store = useWorkspacesStore()
     const addSpy = vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
     const updateSpy = vi.spyOn(store, 'updateTaskDetails').mockResolvedValue(undefined)
@@ -188,13 +181,7 @@ describe('KanbanView.handleCreateTaskSave — base64-direct image attach (create
     await new Promise((resolve) => setTimeout(resolve, 30))
     await flushPromises()
 
-    // 1. NO upload — the host does not call api.uploadTaskAttachment.
-    expect(uploadSpy).not.toHaveBeenCalled()
-    // 2. NO description patch — the description stays as the user
-    //    typed it (no base64, no `data:image/`, no `![name](url)`).
-    expect(updateSpy).not.toHaveBeenCalled()
-    // 3. addTask was called with the user's plain-text description
-    //    (no base64 injected).
+    // 1. addTask was called with the plain description (no base64).
     expect(addSpy).toHaveBeenCalledWith(
       'ws_1',
       'item_1',
@@ -203,7 +190,7 @@ describe('KanbanView.handleCreateTaskSave — base64-direct image attach (create
         description: 'See screenshots',
       }),
     )
-    // 4. moveTaskToColumn ran.
+    // 2. moveTaskToColumn ran.
     expect(moveSpy).toHaveBeenCalledWith(
       'ws_1',
       'item_1',
@@ -211,68 +198,36 @@ describe('KanbanView.handleCreateTaskSave — base64-direct image attach (create
       'col_todo',
       0,
     )
-    // 5. runAgentOnNewTask received the two data URLs (in upload
-    //    order) as imageUrls. The stub FileReader returns
-    //    `data:<mime>;base64,STUB_FOR_<name>` for each, so we can
-    //    assert the order + the data-URL prefix without depending on
-    //    the real base64 encoding.
-    expect(runSpy).toHaveBeenCalledTimes(1)
-    const runCall = runSpy.mock.calls[0]!
-    const params = runCall[3] as Record<string, unknown>
-    const imageUrls = params.imageUrls as string[]
+    // 3. updateTaskDetails PATCHed imageUrls with the two data URLs
+    //    (in upload order). This is the new contract — images are
+    //    stored inline on the task row, not uploaded to a separate
+    //    filesystem path.
+    const updateCalls = updateSpy.mock.calls
+    const imageUrlsCall = updateCalls.find(
+      (c) => (c[3] as Record<string, unknown>).imageUrls !== undefined,
+    )
+    expect(imageUrlsCall).toBeDefined()
+    const imageUrls = (imageUrlsCall![3] as Record<string, unknown>)
+      .imageUrls as string[]
     expect(Array.isArray(imageUrls)).toBe(true)
     expect(imageUrls.length).toBe(2)
     expect(imageUrls[0]).toMatch(/^data:image\/png;base64,/)
     expect(imageUrls[0]).toContain('STUB_FOR_one.png')
     expect(imageUrls[1]).toMatch(/^data:image\/png;base64,/)
     expect(imageUrls[1]).toContain('STUB_FOR_two.jpg')
-    // 6. Queue message is title + "\\n\\n" + description (plain text).
-    expect(params.queueMessage).toBe('Bug screenshot\n\nSee screenshots')
-    // 7. imageUrls is FORWARDED as a non-undefined value (not
-    //    silently dropped — this is the bug fix).
-    expect(imageUrls).not.toBeUndefined()
-  })
-
-  it('create + run with NO pending files: runAgentOnNewTask is called WITHOUT imageUrls key', async () => {
-    // The store-level default (imageUrls undefined) still flows
-    // through unchanged when the host has no files to convert.
-    const store = useWorkspacesStore()
-    vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
-    vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
-    const runSpy = vi
-      .spyOn(store, 'runAgentOnNewTask')
-      .mockResolvedValue({ status: 'send' })
-
-    const view = await mountView()
-    await (view.vm as any).handleCreateTaskSave({
-      mode: 'create_and_run',
-      name: 'No images',
-      description: 'Just text',
-      is_auto_retry_until_stop: '0',
-      tags: [],
-      pendingFiles: [],
-    })
-    await flushPromises()
-
+    // 4. runAgentOnNewTask received the same data URLs (so the chatview
+    //    can render thumbnails above the text).
     expect(runSpy).toHaveBeenCalledTimes(1)
     const params = runSpy.mock.calls[0]![3] as Record<string, unknown>
-    // Empty array is fine here — it's the absent-files contract.
-    // The store then forwards it as-is (or undefined if we choose,
-    // either is acceptable per workspacesStoreRunAgentImageUrls).
-    expect(
-      params.imageUrls === undefined ||
-        (Array.isArray(params.imageUrls) && params.imageUrls.length === 0),
-    ).toBe(true)
+    expect(params.imageUrls).toEqual(imageUrls)
+    // 5. Queue message is plain text (no base64).
+    expect(params.queueMessage).toBe('Bug screenshot\n\nSee screenshots')
   })
 
-  it('plain create mode (no run): still creates the task and moves it; pending files are ignored (no side effect)', async () => {
-    // The create-and-run path is the only place base64 forwarding
-    // matters (the agent's chat message is what carries image_urls).
-    // In plain `create` mode the user is just creating a task to
-    // edit later — the chat never starts, so there's no message to
-    // attach images to. The host should still NOT upload or patch
-    // the description (avoid the multi-MB base64-in-DB problem).
-    const uploadSpy = vi.spyOn(api, 'uploadTaskAttachment')
+  it('plain create mode (no run): persists imageUrls on the new task', async () => {
+    // The plain-create path is the critical fix — previously the
+    // imageUrls were silently dropped (the bug). Now the data URLs
+    // land in the image_urls column on the new task row.
     const store = useWorkspacesStore()
     const addSpy = vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
     const updateSpy = vi.spyOn(store, 'updateTaskDetails').mockResolvedValue(undefined)
@@ -292,11 +247,7 @@ describe('KanbanView.handleCreateTaskSave — base64-direct image attach (create
     await new Promise((resolve) => setTimeout(resolve, 30))
     await flushPromises()
 
-    expect(uploadSpy).not.toHaveBeenCalled()
-    expect(updateSpy).not.toHaveBeenCalled()
-    expect(moveSpy).toHaveBeenCalledWith('ws_1', 'item_1', 'task_new', 'col_todo', 0)
-    // The description passed to addTask is the user's text verbatim
-    // (no base64, no `![name](url)` — the host never touched it).
+    // 1. addTask was called with plain description (no base64).
     expect(addSpy).toHaveBeenCalledWith(
       'ws_1',
       'item_1',
@@ -305,5 +256,55 @@ describe('KanbanView.handleCreateTaskSave — base64-direct image attach (create
         description: 'User typed text',
       }),
     )
+    // 2. moveTaskToColumn ran.
+    expect(moveSpy).toHaveBeenCalledWith('ws_1', 'item_1', 'task_new', 'col_todo', 0)
+    // 3. updateTaskDetails PATCHed imageUrls (THIS IS THE FIX).
+    const updateCalls = updateSpy.mock.calls
+    const imageUrlsCall = updateCalls.find(
+      (c) => (c[3] as Record<string, unknown>).imageUrls !== undefined,
+    )
+    expect(imageUrlsCall).toBeDefined()
+    const imageUrls = (imageUrlsCall![3] as Record<string, unknown>)
+      .imageUrls as string[]
+    expect(imageUrls.length).toBe(1)
+    expect(imageUrls[0]).toMatch(/^data:image\/png;base64,/)
+    expect(imageUrls[0]).toContain('STUB_FOR_one.png')
+  })
+
+  it('create + run with NO pending files: image_urls column is NOT touched (empty array = no PATCH)', async () => {
+    // Empty input is a no-op — no PATCH, no runAgent imageUrls passed.
+    const store = useWorkspacesStore()
+    const addSpy = vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
+    const updateSpy = vi.spyOn(store, 'updateTaskDetails').mockResolvedValue(undefined)
+    const moveSpy = vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
+    const runSpy = vi
+      .spyOn(store, 'runAgentOnNewTask')
+      .mockResolvedValue({ status: 'send' })
+
+    const view = await mountView()
+    await (view.vm as any).handleCreateTaskSave({
+      mode: 'create_and_run',
+      name: 'No images',
+      description: 'Just text',
+      is_auto_retry_until_stop: '0',
+      tags: [],
+      pendingFiles: [],
+    })
+    await flushPromises()
+
+    expect(addSpy).toHaveBeenCalledTimes(1)
+    expect(moveSpy).toHaveBeenCalledTimes(1)
+    // No imageUrls PATCH when the user didn't attach any images.
+    const imageUrlsPatch = updateSpy.mock.calls.find(
+      (c) => (c[3] as Record<string, unknown>).imageUrls !== undefined,
+    )
+    expect(imageUrlsPatch).toBeUndefined()
+    // runAgent is still called, but imageUrls defaults to [].
+    expect(runSpy).toHaveBeenCalledTimes(1)
+    const params = runSpy.mock.calls[0]![3] as Record<string, unknown>
+    expect(
+      params.imageUrls === undefined ||
+        (Array.isArray(params.imageUrls) && params.imageUrls.length === 0),
+    ).toBe(true)
   })
 })
