@@ -413,7 +413,7 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 
 **[New]** `useCurrentMainView()` composable — derives `{kind, ...id}` from `route.query`. One place; sidebar components consume it.
 
-**Tests (19 new):**
+**Tests (22 new + 1 updated):**
 - 6 unit tests for `useCurrentMainView`
 - 4 ChatsList activeFromUrl tests
 - 1 updated test in `workspaceItemTask.spec.ts`

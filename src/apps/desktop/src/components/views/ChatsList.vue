@@ -443,7 +443,7 @@ defineExpose({
             :class="item.active ? 'border-[--color-border]/60' : ''"
             :style="
               item.active
-                ? 'background: var(--semantic-active-bg); color: var(--semantic-active-text);'
+                ? 'background: var(--semantic-active-bg); color: var(--semantic-active-text); box-shadow: inset 2px 0 0 0 var(--color-violet);'
                 : 'color: var(--semantic-text-muted);'
             "
           >
