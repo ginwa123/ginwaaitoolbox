@@ -448,8 +448,8 @@ pub fn handle_tool(
         for (tc) |tool_call| {
             if (!isKnownToolOrMCP(tool_call.function.name, config)) continue;
 
-            const id_llm_history = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
-            _ = try insertLLMHistories(.{
+            const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+            const id_llm_history = try insertLLMHistories(.{
                 .allocator = allocator,
                 .io = io,
                 .db = db,
@@ -458,7 +458,7 @@ pub fn handle_tool(
                 .event_bus = null,
                 .cwd = cwd,
                 .entity = .{
-                    .id = id_llm_history,
+                    .id = created_at,
                     .session_id = session_id,
                     .model = model,
                     .response_content = "",
@@ -479,10 +479,9 @@ pub fn handle_tool(
                     .is_input = false,
                     .is_output = true,
                     .image_urls = null,
-                    .created_at = id_llm_history,
+                    .created_at = created_at,
                     .is_feed_to_llm = true,
                     .tool_name = tool_call.function.name,
-
                 },
             });
             try list_id_that_was_loaded.append(allocator, id_llm_history);
