@@ -184,6 +184,16 @@ export interface Task {
   // literals in tests. Decoded from the wire JSON-encode string
   // (task.tags on the wire is a string; this is a string[]).
   tags?: string[]
+  // NEW (kanban image urls, plan:
+  // docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md,
+  // Migration 069). Array of base64 data URLs
+  // (`data:image/<mime>;base64,<payload>`). Empty array = no images.
+  // Optional for backwards compat with legacy task literals in
+  // tests. On the wire the field is `image_urls: string`
+  // (`||`-delimited, matching `llm_history.image_url` convention);
+  // the store splits on `|` and filters empty segments at every
+  // fetch site (folded into `normalizeTaskTags`).
+  imageUrls?: string[]
 }
 
 // localStorage keys for state persistence
@@ -198,9 +208,16 @@ const STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED = 'nalar-workspace-item-tasks-ex
 // convention (per the `Task` interface) is `tags?: string[]`. This
 // helper decodes the wire shape to the in-memory shape — applied
 // at every `api.getTasks` fetch site so the rest of the codebase
-// can treat tags as a plain array.
+// can treat tags as a plain array. Also decodes image_urls (the
+// `||`-delimited base64 data URL string) into a plain string[]
+// (Migration 069 — kanban image urls column). Plan:
+// docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md.
 function normalizeTaskTags(task: Task): Task {
   if (task.tags === undefined) {
+    // Still normalize imageUrls even when tags is missing (the
+    // fields are independent — a task can have tags but no images
+    // or vice versa).
+    normalizeTaskImageUrlsInPlace(task)
     return task
   }
   // Coerce anything (string, already-array, missing) to a string[].
@@ -218,8 +235,44 @@ function normalizeTaskTags(task: Task): Task {
   } else if (!Array.isArray(task.tags)) {
     task.tags = []
   }
+  normalizeTaskImageUrlsInPlace(task)
   return task
 }
+
+// Decode the `||`-delimited `image_urls` wire string into a `string[]`
+// (Migration 069 — kanban image urls column). The wire format is
+// `data:image/<mime>;base64,<payload>` joined by `||` — matching
+// the `llm_history.image_url` convention. Plan:
+// docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md.
+function normalizeTaskImageUrlsInPlace(task: Task): void {
+  if (task.imageUrls === undefined) return
+  // Already an array (legacy code paths / optimistic local writes).
+  if (Array.isArray(task.imageUrls)) return
+  // Wire format: `||`-delimited base64 data URLs.
+  //   ''           → [] (no images)
+  //   'data:...'   → ['data:...'] (one image)
+  //   'a||b||c'    → ['a', 'b', 'c'] (multiple images)
+  // Filter empty segments so trailing/consecutive `||` don't leak
+  // through as empty entries.
+  if (typeof task.imageUrls === 'string') {
+    const joined = task.imageUrls as string
+    if (joined === '') {
+      task.imageUrls = []
+    } else {
+      task.imageUrls = joined.split('|').filter((s) => s.length > 0)
+    }
+  } else {
+    task.imageUrls = []
+  }
+}
+
+// Decode the `||`-delimited `image_urls` wire string into a `string[]`
+// (Migration 069 — kanban image urls column). Applied at every
+// `api.getTasks` fetch site (folded into normalizeTaskTags below)
+// so the rest of the codebase can treat imageUrls as a plain array.
+// Plan: docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md.
+// (REMOVED — folded into normalizeTaskTags above. The InPlace
+// helper handles the imageUrls branch.)
 
 // ─── SSE local-mutation dedupe (Chunk 3 of design-drag-debounce-batch)
 // ─────────────────────────────────────────────────────────────────
@@ -1014,6 +1067,13 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // tag strings. Forwarded to api.createTask which JSON-encodes
       // for the wire. Empty array / undefined = no tags.
       tags?: string[]
+      // NEW (Migration 069 — kanban image urls column): array of
+      // base64 data URLs. Forwarded to api.createTask which
+      // `||`-joins for the wire (matching `llm_history.image_url`
+      // convention). Empty array / undefined = no images.
+      // Plan: docs/superpowers/plans/2026-08-06-kanban-image-urls-
+      // column.md.
+      imageUrls?: string[]
     },
   ): Promise<string | undefined> {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
@@ -1038,6 +1098,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         isAutoRetryUntilStop: params.isAutoRetryUntilStop,
         // Migration 067 — pass tags through.
         tags: params.tags,
+        // Migration 069 — pass image_urls through (the api helper
+        // `||`-joins the array for the wire).
+        imageUrls: params.imageUrls,
       })
       item.tasks.unshift(newTask)
       return newTask.id
@@ -3031,7 +3094,18 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     workspaceId: string,
     itemId: string,
     taskId: string,
-    fields: { name?: string; description?: string; tags?: string[] },
+    fields: {
+      name?: string
+      description?: string
+      tags?: string[]
+      // NEW (Migration 069 — kanban image urls column). Empty array
+      // = clear all images; undefined = leave unchanged. The
+      // api.updateTaskSimple helper `||`-joins the array for the
+      // wire (matching the `llm_history.image_url` convention).
+      // Plan: docs/superpowers/plans/2026-08-06-kanban-image-urls-
+      // column.md.
+      imageUrls?: string[]
+    },
   ) {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
     if (!workspace) return
@@ -3043,7 +3117,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // Build the patch — only include fields the caller actually sent.
     // A no-op patch (all undefined) is rejected early so we don't
     // burn an API call.
-    const patch: { name?: string; description?: string; tags?: string[] } = {}
+    const patch: {
+      name?: string
+      description?: string
+      tags?: string[]
+      imageUrls?: string[]
+    } = {}
     if (fields.name !== undefined) {
       const trimmed = fields.name.trim()
       if (!trimmed) return // empty name is never a valid update
@@ -3059,15 +3138,23 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     if (fields.tags !== undefined) {
       patch.tags = fields.tags
     }
+    // Migration 069 — kanban image urls. Empty array = clear all
+    // images; undefined = leave unchanged. The api.updateTaskSimple
+    // helper `||`-joins the array for the wire.
+    if (fields.imageUrls !== undefined) {
+      patch.imageUrls = fields.imageUrls
+    }
     if (Object.keys(patch).length === 0) return
 
     // Optimistic update — capture previous values for rollback.
     const previousName = task.name
     const previousDescription = task.description
     const previousTags = task.tags
+    const previousImageUrls = task.imageUrls
     if (patch.name !== undefined) task.name = patch.name
     if (patch.description !== undefined) task.description = patch.description
     if (patch.tags !== undefined) task.tags = patch.tags
+    if (patch.imageUrls !== undefined) task.imageUrls = patch.imageUrls
 
     // Keep the chat-view / chat-list header in sync if this is the
     // active task and a name change is part of the patch.
@@ -3084,6 +3171,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       task.name = previousName
       task.description = previousDescription
       task.tags = previousTags
+      task.imageUrls = previousImageUrls
       if (wasActive) {
         useNavigationStore().setActiveChatName(previousName)
       }

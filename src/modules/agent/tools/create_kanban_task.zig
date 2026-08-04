@@ -422,6 +422,11 @@ pub fn executeCreateKanbanTaskToString(
         // scope for the kanban-tags v1 plan; the user-facing wire
         // path is the primary entry point).
         null,
+        // image_urls (Migration 069) — the agent tool does not yet
+        // accept images. Pass null until the tool surface grows
+        // (the user-facing KanbanDetailDialog is the primary entry
+        // point per the kanban-image-urls-column plan).
+        null,
     ) catch {
         const msg = std.fmt.allocPrint(allocator,
             "Failed to INSERT task row into workspace_item_tasks",

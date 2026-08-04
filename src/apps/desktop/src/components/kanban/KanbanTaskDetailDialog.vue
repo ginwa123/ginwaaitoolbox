@@ -283,6 +283,13 @@ watch(
       // Migration 067 — prefill tags from the loaded task. tags?
       // is optional (legacy tasks may lack it); fallback to [].
       tags.value = props.task.tags ?? []
+      // Migration 069 — image_urls are loaded via the store's
+      // normalizeTaskTags (which splits the `||`-joined wire
+      // string into a `string[]`). imageUrls is a computed that
+      // tracks `props.task.imageUrls` so any PATCH that updates the
+      // task row optimistically (the host flow's
+      // `updateTaskDetails({ imageUrls })`) is reflected in the
+      // gallery without a re-open.
     }
     await nextTick()
     nameInput.value?.focus()
@@ -541,6 +548,21 @@ const filteredTagSuggestions = computed<string[]>(() => {
     .map((s) => s.name)
     .filter((n) => !excludeLower.has(n.toLowerCase()))
 })
+
+// NEW (Migration 069 — kanban image urls column). The dialog's
+// image gallery reads from the task row's `imageUrls` array. In
+// edit mode this is the persisted column (loaded via the store's
+// normalizeTaskTags from the `||`-joined wire string). In create
+// mode the editor stages add/remove ops in its own `previewFiles`
+// ref (mirrored into `pendingFiles` for the host to PATCH on save),
+// so the gallery is naturally empty until the task is persisted.
+//
+// Tracking `props.task?.imageUrls` directly (not a local ref) keeps
+// the gallery in sync with the host's optimistic
+// `updateTaskDetails({ imageUrls })` write — the store mutates the
+// task in place, the computed re-evaluates, the gallery re-renders
+// without any re-open dance.
+const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
 </script>
 
 <template>
@@ -707,6 +729,33 @@ const filteredTagSuggestions = computed<string[]>(() => {
                   ({{ description.length }} / {{ DESCRIPTION_MAX }})
                 </span>
               </label>
+
+              <!-- Migration 069 — kanban image urls gallery. Reads
+                   from task.imageUrls (set by the create-mode host
+                   flow OR loaded from the row on edit-mode open).
+                   Each image is a `data:image/<mime>;base64,...`
+                   URL (from the `||`-delimited column string split
+                   by the store's normalizeTaskTags). The editor
+                   handles add/remove via its existing
+                   `pendingFiles` mechanism; this gallery is the
+                   read-only display of what's currently persisted.
+                   Plan: docs/superpowers/plans/2026-08-06-kanban-
+                   image-urls-column.md. -->
+              <div
+                v-if="imageUrls.length > 0"
+                class="mb-3 flex flex-wrap gap-2"
+                data-testid="kanban-task-detail-image-gallery"
+              >
+                <img
+                  v-for="(url, idx) in imageUrls"
+                  :key="idx"
+                  :src="url"
+                  :alt="`Task image ${idx + 1}`"
+                  class="w-24 h-24 object-cover rounded border"
+                  style="border-color: var(--color-border);"
+                  :data-testid="`kanban-task-detail-image-${idx}`"
+                />
+              </div>
 
               <!-- Editor: shown in BOTH create + edit modes. The
                    previous "Preview" toggle button (which flipped to

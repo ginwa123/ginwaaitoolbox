@@ -240,6 +240,11 @@ test "createWorkspaceItemTask: description = null succeeds and stores ''" {
         // tags — Migration 067 added this arg; pre-Migration-067 callers
         // passed null. The migration_062_test exercises the description
         // path only; tags are exercised in migration_067_test.zig.
+        null,
+        // image_urls (Migration 069) — added as 8th-arg default-null;
+        // migration_062_test predates the column and exercises the
+        // description path only. image_urls is exercised in
+        // migration_069_test.zig.
         null);
     defer task.deinit(alloc);
 
@@ -264,6 +269,9 @@ test "createWorkspaceItemTask: description = '' (empty string) succeeds and stor
     const task = try createWorkspaceItemTask(alloc, &ctx.db,
         "t_desc_empty_061", "Empty description", parent_id, "standard", "",
         // tags — see comment on the null-tags branch above.
+        null,
+        // image_urls — null (omitted body field → empty-string
+        // sentinel). See migration_069_test for full-coverage tests.
         null);
     defer task.deinit(alloc);
 
@@ -283,6 +291,9 @@ test "createWorkspaceItemTask: description = 'hello world' succeeds and stores t
         "t_desc_filled_061", "With description", parent_id, "standard",
         "hello world from test",
         // tags — see comment on the null-tags branch above.
+        null,
+        // image_urls — null (omitted body field → empty-string
+        // sentinel). See migration_069_test for full-coverage tests.
         null);
     defer task.deinit(alloc);
 

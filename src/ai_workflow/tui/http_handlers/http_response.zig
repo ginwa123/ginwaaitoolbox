@@ -147,6 +147,15 @@ pub const TaskCreateRequest = struct {
     /// the row's `tags` column. Plan:
     /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md
     tags: ?[]const u8 = null,
+    /// `||`-delimited base64 data URLs (Migration 069 — kanban
+    /// image urls column). Null/undefined means "no images
+    /// supplied". The handler joins each URL with `||` before
+    /// persisting on the `image_urls` column. The frontend sends
+    /// raw base64 data URLs (`data:image/...;base64,...`) in the
+    /// same array order they want them rendered. Plan:
+    /// docs/superpowers/plans/2026-08-06-kanban-image-urls-
+    /// column.md.
+    image_urls: ?[]const u8 = null,
 };
 
 pub const TaskUpdateRequest = struct {

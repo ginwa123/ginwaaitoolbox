@@ -397,25 +397,28 @@ describe('KanbanDescriptionEditor — create-mode image paste (no taskId)', () =
     expect(exposed.pendingFiles.length).toBe(1)
   })
 
-  it('keeps pendingFiles empty in edit mode (real taskId uploads inline)', async () => {
-    // Edit-mode behavior remains unchanged: image uploads immediately,
-    // the URL is inserted as `![name](<url>)` markdown. pendingFiles
-    // should stay empty because there's nothing staged for upload-after-create.
-    fetchMock.mockResolvedValue(
-      jsonResponse({ success: true, url: '/api/workspaces/tasks/task_x/attachments/1.png', size: 1 }),
-    )
+  it('edit mode stages the pasted file into pendingFiles for the host to PATCH (Migration 069)', async () => {
+    // Migration 069 changed edit mode to use the same staged-
+    // pendingFiles flow as create mode (the old `uploadTaskAttachment`
+    // endpoint was deleted entirely). The editor's job is just to
+    // expose the file; the host's `updateTaskDetails({ imageUrls })`
+    // does the persistence. The textarea stays untouched — the
+    // new column carries the images.
     const wrapper = await mountEditor({ modelValue: '', taskId: 'task_x' })
     await pasteImage(wrapper, makeFile('inline.png'))
 
     const exposed = wrapper.vm as unknown as {
       pendingFiles: Array<{ file: File; previewUrl: string }>
     }
-    expect(exposed.pendingFiles.length).toBe(0)
+    expect(exposed.pendingFiles.length).toBe(1)
+    expect(exposed.pendingFiles[0]!.file.name).toBe('inline.png')
 
     const textarea = wrapper.find('textarea').element as HTMLTextAreaElement
-    // URL inserted in markdown (NOT base64), so textarea contains the URL.
-    expect(textarea.value).toContain('/api/workspaces/tasks/task_x/attachments/1.png')
+    // Description text is NEVER touched — no `data:image/`, no
+    // `base64,`, no upload URL. The image lives on the image_urls
+    // column instead.
     expect(textarea.value).not.toContain('data:image/')
     expect(textarea.value).not.toContain('base64,')
+    expect(textarea.value).not.toContain('/api/')
   })
 })

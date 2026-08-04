@@ -413,12 +413,13 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/kanban/tags", ai_mod.http_handlers.kanbanTagsListHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksCreateHandler);
     try gs.router.put("/api/workspaces/tasks/:task_id", ai_mod.http_handlers.tasksUpdateByIdHandler);
-    // Kanban task attachment upload (POST) + download (GET wildcard).
-    // Both routes share the same DB lookup chain (task -> item -> path)
-    // and resolve the on-disk path to
-    // <workspace_item.path>/.nalar/attachments/<task_id>/.
-    try gs.router.post("/api/workspaces/tasks/:task_id/attachments", ai_mod.http_handlers.taskAttachmentPostHandler);
-    try gs.router.get("/api/workspaces/tasks/:task_id/attachments/*", ai_mod.http_handlers.taskAttachmentGetHandler);
+    // Migration 069 (2026-08-06) removed the filesystem-backed
+    // kanban-task attachment endpoints (POST + GET wildcard). Task
+    // images now live inline on `workspace_item_tasks.image_urls` as
+    // `||`-delimited base64 data URLs — no upload path, no broken
+    // `*` wildcard GET route, no `<path>/.nalar/attachments/<task>/`
+    // clutter on disk. The frontend reads each image via
+    // `<img :src="task.imageUrls[i]">`.
     try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksUpdateHandler);
     try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksDeleteHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/run", ai_mod.http_handlers.routinesRunHandler);

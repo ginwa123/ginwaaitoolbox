@@ -379,6 +379,15 @@ export interface Task {
   // a JSON-encoded array string; the store normalizes via
   // `normalizeTaskTags` at every fetch site.
   tags?: string[]
+  // NEW (kanban image urls, Migration 069). Array of base64 data
+  // URLs (`data:image/<mime>;base64,<payload>`). Empty array = no
+  // images. Optional so legacy task literals in tests keep
+  // type-checking. On the wire the field is a `||`-delimited string
+  // (matching the `llm_history.image_url` convention); the store
+  // splits on `|` and filters empty segments on every fetch, and
+  // joins back with `||` before sending. Plan:
+  // docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md.
+  imageUrls?: string[]
 }
 
 // Health check
@@ -659,6 +668,15 @@ export async function createTask(
     // cap 50 chars per tag, case-insensitive dedupe). Plan:
     // docs/superpowers/plans/2026-07-28-kanban-task-tags.md.
     tags?: string[]
+    // NEW (Migration 069 — kanban image urls column). Array of
+    // base64 data URLs (`data:image/<mime>;base64,<payload>`).
+    // Empty array / undefined = no images. Forwarded as a
+    // `||`-delimited string on the wire (matching the
+    // `llm_history.image_url` convention). The backend validates
+    // each segment's `data:image/...;base64,...` prefix + the
+    // total 10 MB byte cap. Plan: docs/superpowers/plans/
+    // 2026-08-06-kanban-image-urls-column.md.
+    imageUrls?: string[]
   },
 ): Promise<Task> {
   const taskType = params.taskType ?? 'standard'
@@ -690,6 +708,13 @@ export async function createTask(
   // not an array — single source of truth for JSON shape.
   if (params.tags && params.tags.length > 0) {
     body.tags = JSON.stringify(params.tags)
+  }
+  // Migration 069 — image_urls. The wire shape is a `||`-delimited
+  // string (matching `llm_history.image_url`). The backend's
+  // image_urls_validation.validateImageUrls validates each segment's
+  // data URL prefix + the total 10 MB byte cap.
+  if (params.imageUrls && params.imageUrls.length > 0) {
+    body.image_urls = params.imageUrls.join('||')
   }
   return await apiFetch<Task>(`/workspaces/${workspaceId}/items/${itemId}/tasks`, {
     method: 'POST',
@@ -737,12 +762,24 @@ export async function updateTaskSimple(
     // NEW (kanban task tags, Migration 067): array of tag strings.
     // Forwarded as JSON-encoded string. Empty array = clear tags.
     tags?: string[]
+    // NEW (kanban image urls, Migration 069): array of base64 data
+    // URLs. Forwarded as `||`-delimited string (matching the
+    // `llm_history.image_url` convention). Empty array = clear
+    // images. Plan: docs/superpowers/plans/2026-08-06-kanban-image-
+    // urls-column.md.
+    imageUrls?: string[]
   },
 ): Promise<{ success: boolean }> {
   const body: Record<string, unknown> = { ...data }
   // Encode tags array as a JSON string for the wire (Migration 067).
   if (data.tags !== undefined) {
     body.tags = JSON.stringify(data.tags)
+  }
+  // Migration 069 — image_urls. `||`-join the array for the wire
+  // (matching `llm_history.image_url`). Empty array → empty string
+  // → SQL '' literal → DB clears the column.
+  if (data.imageUrls !== undefined) {
+    body.image_urls = data.imageUrls.join('||')
   }
   return await apiFetch<{ success: boolean }>(`/workspaces/tasks/${taskId}`, {
     method: 'PUT',
@@ -3271,34 +3308,13 @@ export async function unstageGitFiles(cwd: string, files: string[]): Promise<Git
   )
 }
 
-/**
- * Upload an image attachment for a kanban task. The server writes the
- * file to `<workspace_item.path>/.nalar/attachments/<task_id>/<n>.<ext>`
- * and returns a URL the frontend embeds in the markdown description as
- * `![name](<url>)`.
- *
- * Plan: docs/superpowers/plans/2026-07-25-kanban-description-rich-editor.md
- * (Option C: filesystem-backed attachments).
- */
-export async function uploadTaskAttachment(
-  taskId: string,
-  file: File,
-): Promise<{ url: string; size: number }> {
-  const url = `${API_BASE}/workspaces/tasks/${encodeURIComponent(taskId)}/attachments?filename=${encodeURIComponent(file.name)}`
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': file.type || 'application/octet-stream',
-    },
-    body: file,
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`Attachment upload failed (${response.status}): ${text}`)
-  }
-  const json = (await response.json()) as { success: boolean; url: string; size: number }
-  if (!json.success || !json.url) {
-    throw new Error('Attachment upload returned invalid response')
-  }
-  return { url: json.url, size: json.size }
-}
+// `uploadTaskAttachment` REMOVED 2026-08-06 (kanban-image-urls-column
+// plan). Task images now live inline on `workspace_item_tasks
+// .image_urls` as `||`-delimited base64 data URLs — no upload path,
+// no `GET` endpoint, no filesystem writes. The frontend converts
+// pasted/picked files to data URLs via `FileReader.readAsDataURL`
+// (in `KanbanView.handleCreateTaskSave` + the new editor
+// `pendingFiles` flow) and PATCHes the column with the joined
+// string via `api.updateTaskSimple`.
+//
+// Plan: docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md.
