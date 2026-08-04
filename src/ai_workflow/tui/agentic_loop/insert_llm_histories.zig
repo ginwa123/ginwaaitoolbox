@@ -32,7 +32,7 @@ pub const InsertLLMHistoriesInput = struct {
 
 pub fn inserLLMHistories(
     obj: InsertLLMHistoriesInput,
-) !void {
+) ![]const u8 {
     const allocator = obj.allocator;
     const db = obj.db;
     const logger = obj.logger;
@@ -225,6 +225,8 @@ pub fn inserLLMHistories(
             };
         }
     }
+
+    return allocator.dupe(u8, id);
 }
 
 /// Get all skills loaded for a session
