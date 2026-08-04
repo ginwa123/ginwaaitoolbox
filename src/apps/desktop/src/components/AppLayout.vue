@@ -13,13 +13,14 @@ import NotificationContainer from './shell/NotificationContainer.vue'
 import SseStatusBadge from './shell/SseStatusBadge.vue'
 import KanbanView from './kanban/KanbanView.vue'
 import KanbanChatDialog from './kanban/KanbanChatDialog.vue'
+import DesignChatDialog from './design/DesignChatDialog.vue'
 import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './kanban/KanbanSettingsDialog.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
 import DesignView from './design/DesignView.vue'
 import WorkspaceItemMemoriesView from './views/WorkspaceItemMemoriesView.vue'
 import { useNavigationStore } from '../stores/navigation'
-import { useWorkspacesStore } from '../stores/workspaces'
+import { useWorkspacesStore, type Task as TaskType } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
 import { useKanbanSseStore } from '../stores/kanbanSse'
 import { useDesignSseStore } from '../stores/designSse'
@@ -842,6 +843,103 @@ watch(
   { immediate: true },
 )
 
+// Captured from DesignView's `openChat` payload — the design page's
+// own name (NOT the workspace item name). The dialog's header uses
+// it as "Design Chat: <pageName>". Mirrors the FK-plan naming
+// convention (2026-07-28-design-page-workspace-item-task-fk.md).
+// Cleared when activeTask is cleared so a stale pageName from a prior
+// chat doesn't leak into the next opened chat's header.
+const activeDesignChatPageName = ref<string>('')
+
+// ─── Design chat task FK handle (plan: 2026-08-06-design-chat-as-dialog,
+//     bug fix from user report "the chat button keep not popup, chatview") ────
+//
+// Root cause: the design chat dialog's v-if gate was `activeTask && ...
+// item_type === 'design'`. The `activeTask` computed walks
+// `workspaces.value[].items[].tasks` looking for the task — but in
+// PRODUCTION design items have empty `tasks` arrays after `init()`:
+//   - `getWorkspacesItems` returns items WITHOUT tasks
+//     (WorkspaceItemInfo struct in llm_history.zig:3208 has no `tasks` field)
+//   - `init()` SKIPS `api.getTasks` for `item_type === 'design'`
+//     (workspaces.ts:639 — only folders + other types fetch per-item tasks)
+//   - The pre-fix 3-column [DesignView | resize-handle | ChatView]
+//     layout used the same gate — it was BROKEN in production too.
+//     The fix: capture the FK's `workspaceItemTaskId` directly via a
+//     separate ref (this one), build a synthetic Task for the dialog,
+//     and gate the dialog on THIS ref's truthiness — NOT on the
+//     store's `activeTask` computed. `setActiveTask(...)` is still
+//     called in `handleDesignOpenChat` (drives URL sync + handleCloseTaskView),
+//     but the dialog no longer depends on its computed.
+const activeDesignChatTaskId = ref<string>('')
+// Watch the store's `activeTaskId` directly (NOT the computed
+// `activeTask`) so the watcher fires even when activeTask stays
+// null the whole time (the case for design items — see the bug
+// comment above). handleCloseTaskView calls setActiveTask(null) →
+// activeTaskId.value becomes '' → this watcher fires → clear
+// activeDesignChatTaskId.value so the dialog unmounts.
+watch(
+  () => workspacesStore.activeTaskId,
+  (taskId) => {
+    if (!taskId) {
+      activeDesignChatTaskId.value = ''
+      activeDesignChatPageName.value = ''
+    }
+  },
+)
+
+// Synthetic Task for DesignChatDialog. ChatView's API expects a
+// Task object with at minimum `id` (chat-id) and `name` (for the
+// title fallback). Real design-chat tasks live in
+// `workspace_item_tasks` rows accessible via the per-page FK in
+// `design_pages.workspace_item_task_id` — but the store's
+// `workspaces.value[].items[].tasks` array is empty for design
+// items after init() (see the bug comment above), so the store's
+// `activeTask` computed returns null and we can't pass it
+// directly. Build a minimal Task from the captured FK info.
+//
+// `name` reads "Design Chat: <pageName>" when pageName is set,
+// otherwise falls back to "Design Chat" (matches the dialog's
+// header fallback). `taskType: 'standard'` matches the row created
+// at page-create time per the FK plan.
+const activeDesignChatTask = computed<TaskType | null>(() => {
+  if (!activeDesignChatTaskId.value) return null
+  return {
+    id: activeDesignChatTaskId.value,
+    name: activeDesignChatPageName.value
+      ? `Design Chat: ${activeDesignChatPageName.value}`
+      : 'Design Chat',
+    description: '',
+    taskType: 'standard',
+  } as TaskType
+})
+
+// ─── DesignChatDialog open state (plan: 2026-08-06-design-chat-as-dialog) ────
+//
+// Same v-model:show pattern as KanbanChatDialog above. The design
+// dialog opens whenever activeDesignChatTaskId is set AND the
+// active item is a design — the gating happens in the template
+// (v-if), not here. We drive `show` from `activeDesignChatTaskId`
+// (NOT from `activeTask` like the kanban version) because the
+// store's `activeTask` is null for design items (their tasks
+// array is empty post-init; see the bug comment below).
+//
+// 2026-08-06: prior to this plan, the design chat was rendered as a
+// RIGHT-side column of a 3-column DesignView | resize-handle |
+// ChatView layout, with a floating collapse button to hide it. The
+// 3-column took ~40% of the canvas even when "minimised". Switching
+// to a centred modal dialog (mirrors KanbanChatDialog) reclaims the
+// full canvas width — the dialog opens on top of the canvas with a
+// dimmed backdrop. The collapse-state + design resize handle +
+// DESIGN_WIDTH_STORAGE_KEY localStorage are removed below.
+const designChatDialogOpen = ref(false)
+watch(
+  () => activeDesignChatTaskId.value,
+  (id) => {
+    designChatDialogOpen.value = !!id
+  },
+  { immediate: true },
+)
+
 // Close the chatview column (the 3-column layout's right pane).
 // Triggered by the ChatView's ✕ header button. Clears the active
 // task and navigates to `view=workspace` so the URL remains the
@@ -868,6 +966,13 @@ const handleCloseTaskView = () => {
   // into a chat they thought they had closed.
   workspacesStore.setActiveTask(null)
   navigationStore.clearActiveChat()
+  // 2026-08-06 (design-chat-as-dialog bug fix): clearing
+  // activeTaskId above triggers the watcher at the top of this
+  // block which clears `activeDesignChatTaskId` and
+  // `activeDesignChatPageName` — that's how the dialog unmounts.
+  // (The watcher watches activeTaskId directly, NOT the computed
+  // activeTask, because activeTask is null for design items the
+  // whole time — see the comment at activeDesignChatTaskId.)
   // Preserve (workspaceId, itemId, pageId) when navigating back to
   // the workspace view — the active kanban/design item (and, for
   // design items, the active page) should survive a page reload.
@@ -921,141 +1026,19 @@ const handleCloseTaskView = () => {
 // would bleed prefs across modes). State and handlers mirror the
 // kanban block above but reference DESIGN_*.
 //
-// Bounds rationale:
-//   - MIN 360px: design canvas + internal Layers/Properties
-//     sidebar need at least ~360px total to render the page tabs,
-//     toolbar, canvas header, and a usable canvas strip. Going
-//     below 360px forces horizontal scroll on every chrome row.
-//   - MAX 1100px: above this the chat panel collapses to <30% on
-//     typical 1080p+ screens. Chat needs ~480px to be usable.
-//   - DEFAULT 65% (% of main area, when no persisted px): gives
-//     the canvas ~65% of the area, leaving the chat ~35% which
-//     is more than enough for streaming text + input. This is
-//     the dominant fix for the "chat takes too much space"
-//     complaint.
-const DESIGN_MIN_WIDTH = 360
-const DESIGN_MAX_WIDTH = 1100
-const DESIGN_DEFAULT_WIDTH = 65 // % of main area, used when no localStorage value exists
-const DESIGN_WIDTH_STORAGE_KEY = 'design-column-width'
-
-const loadDesignColumnWidth = (): number | null => {
-  if (typeof localStorage === 'undefined') return null
-  const saved = localStorage.getItem(DESIGN_WIDTH_STORAGE_KEY)
-  if (saved === null) return null
-  const parsed = parseInt(saved, 10)
-  if (isNaN(parsed) || parsed <= 0) return null
-  return parsed
-}
-
-const designColumnWidth = ref<number | null>(loadDesignColumnWidth())
-const isDesignResizing = ref(false)
-const designResizeStartX = ref(0)
-const designResizeStartWidth = ref(0)
-
-const startDesignResize = (e: MouseEvent | TouchEvent) => {
-  isDesignResizing.value = true
-  const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
-  designResizeStartX.value = clientX
-  // If the design column is currently percentage-sized (no
-  // persisted width yet), measure the rendered column width as
-  // the drag start point. Same fix as startKanbanResize.
-  const rendered = designResizeStartWidth.value
-  if (rendered <= 0) {
-    const el = document.querySelector(
-      '[data-design-three-column] > :first-child',
-    ) as HTMLElement | null
-    designResizeStartWidth.value = el?.getBoundingClientRect().width ?? 800
-  }
-  document.addEventListener('mousemove', handleDesignResize)
-  document.addEventListener('mouseup', stopDesignResize)
-  document.body.style.userSelect = 'none'
-  document.body.style.cursor = 'col-resize'
-  e.preventDefault()
-}
-
-const handleDesignResize = (e: MouseEvent | TouchEvent) => {
-  if (!isDesignResizing.value) return
-  const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
-  const deltaX = clientX - designResizeStartX.value
-  const newWidth = Math.max(
-    DESIGN_MIN_WIDTH,
-    Math.min(DESIGN_MAX_WIDTH, designResizeStartWidth.value + deltaX),
-  )
-  designColumnWidth.value = newWidth
-}
-
-const stopDesignResize = () => {
-  if (!isDesignResizing.value) return
-  isDesignResizing.value = false
-  document.removeEventListener('mousemove', handleDesignResize)
-  document.removeEventListener('mouseup', stopDesignResize)
-  document.body.style.userSelect = ''
-  document.body.style.cursor = ''
-  if (designColumnWidth.value !== null) {
-    try {
-      localStorage.setItem(DESIGN_WIDTH_STORAGE_KEY, String(designColumnWidth.value))
-    } catch {
-      // localStorage may throw in private-mode / quota-exceeded;
-      // silently ignore so the in-memory drag still works.
-    }
-  }
-}
-
-// Inline style for the design column. Mirrors kanbanColumnStyle
-// but uses the design-specific bounds + default. Returning the
-// shared kebab-case shape works because the design 3-column
-// branch just substitutes this computed where kanbanColumnStyle
-// was used.
-const designColumnStyle = computed(() => {
-  if (designColumnWidth.value !== null) {
-    return {
-      width: `${designColumnWidth.value}px`,
-      'min-width': `${DESIGN_MIN_WIDTH}px`,
-      'max-width': `${DESIGN_MAX_WIDTH}px`,
-      'flex-shrink': '0',
-    }
-  }
-  return {
-    flex: `0 1 ${DESIGN_DEFAULT_WIDTH}%`,
-    'min-width': `${DESIGN_MIN_WIDTH}px`,
-    'max-width': `${DESIGN_MAX_WIDTH}px`,
-  }
-})
-
-// ─── Design chat panel collapse (NEW, 2026-07-25) ────────────────────
-//
-// Fix for: "when open chat design, its take many space" — the
-// 3-column design+chat layout defaults the design column to
-// ~40% (KANBAN_MAX_WIDTH=720), which leaves very little canvas
-// room. Bumping the default to 65% (above) is the dominant fix,
-// but the user may still want ONE-CLICK collapse to focus on the
-// canvas without losing chat access (close = lose; collapse =
-// keep). This ref persists across reloads and renders a thin
-// vertical strip with a re-open button when collapsed.
-//
-// The collapsed state is intentionally LOCAL to AppLayout (not in
-// Pinia) — only this component renders the 3-column branch, and
-// keeping it here avoids coupling a UI affordance to a shared
-// store.
-const DESIGN_CHAT_COLLAPSED_KEY = 'design-chat-collapsed'
-
-const loadDesignChatCollapsed = (): boolean => {
-  if (typeof localStorage === 'undefined') return false
-  const saved = localStorage.getItem(DESIGN_CHAT_COLLAPSED_KEY)
-  if (saved === null) return false
-  return saved === '1' || saved === 'true'
-}
-
-const designChatCollapsed = ref<boolean>(loadDesignChatCollapsed())
-
-const toggleDesignChat = () => {
-  designChatCollapsed.value = !designChatCollapsed.value
-  try {
-    localStorage.setItem(DESIGN_CHAT_COLLAPSED_KEY, designChatCollapsed.value ? '1' : '0')
-  } catch {
-    // localStorage may throw; the toggle still works for this session.
-  }
-}
+// Bounds rationale + the entire RESIZE state machine
+// (DESIGN_MIN_WIDTH / DESIGN_MAX_WIDTH / DESIGN_DEFAULT_WIDTH /
+// DESIGN_WIDTH_STORAGE_KEY / loadDesignColumnWidth /
+// designColumnWidth / isDesignResizing / designResizeStartX /
+// designResizeStartWidth / startDesignResize / handleDesignResize /
+// stopDesignResize / designColumnStyle) + the COLLAPSE state
+// machine (DESIGN_CHAT_COLLAPSED_KEY / loadDesignChatCollapsed /
+// designChatCollapsed / toggleDesignChat) have been REMOVED as part
+// of the design-chat-as-dialog plan (2026-08-06). The design chat
+// no longer sits in a 3-column split — it's a centred modal dialog
+// (DesignChatDialog) that opens on top of the full-width canvas.
+// The resize handle and collapse toggle are gone with the 3-column
+// branch.
 
 // ─── Kanban main-content view (was inline in WorkspaceItem.vue;
 // now mounted here so the board lives in the main content area, not
@@ -1445,6 +1428,18 @@ const handleDesignOpenChat = async (payload: {
   // `taskHasMessages` probe. The previous 2026-07-28 per-page
   // naming-convention implementation has been replaced.
   workspacesStore.setActiveTask(payload.workspaceItemTaskId)
+  // 2026-08-06 (plan: design-chat-as-dialog): capture the design
+  // page's own name so DesignChatDialog's header reads
+  // "Design Chat: <pageName>". Distinct from the workspace item's
+  // name (which would be the parent design's name like "Design").
+  activeDesignChatPageName.value = payload.pageName
+  // Bug fix (2026-08-06, user report "chat button keep not popup,
+  // chatview"): the dialog's v-if was previously gated on the
+  // store's `activeTask` computed, which is null for design items
+  // (their tasks array is empty post-init). Capture the FK's
+  // task id into a separate ref that the dialog actually reads;
+  // see `activeDesignChatTaskId` declaration above.
+  activeDesignChatTaskId.value = payload.workspaceItemTaskId
 }
 
 const handleDesignUpdateElement = async (
@@ -1653,6 +1648,14 @@ watch(chatSessionCwd, (newCwd) => {
     localStorage.setItem(`session_cwd_${sessionId}`, newCwd)
   }
 })
+
+// Expose the design chat open handler so tests can simulate the
+// user clicking the 💬 button in DesignView (which emits `openChat`).
+// In production, this is reached via the DesignView emit chain —
+// tests don't render DesignView because they stub it. Cheap seam.
+defineExpose({
+  handleDesignOpenChat,
+})
 </script>
 
 <template>
@@ -1844,6 +1847,34 @@ watch(chatSessionCwd, (newCwd) => {
         :cwd="activeWorkspaceItem.path ?? ''"
         @close="handleCloseTaskView"
       />
+      <!--
+        Design chat dialog (plan: 2026-08-06-design-chat-as-dialog).
+        Mirrors the KanbanChatDialog mount above — same Teleport
+        pattern, same v-model:show binding driven by `activeTask`.
+        Mounted at the AppLayout level (NOT inside DesignView) so the
+        chat opens as a centred modal overlay rather than a side-by-
+        side column. Gated on `item_type === 'design'` so the dialog
+        only opens for design items — kanban / folder / standalone
+        chat use their own mounts. The pre-fix design+chat 3-column
+        branch (data-design-three-column) was removed; the dialog
+        reclaims the full canvas width. URL routing is handled by
+        AppLayout's existing handleCloseTaskView (re-used via @close).
+      -->
+      <DesignChatDialog
+        v-if="
+          activeWorkspaceItem &&
+          activeWorkspaceItem.item_type === 'design' &&
+          activeDesignChatTaskId
+        "
+        v-model:show="designChatDialogOpen"
+        :task="activeDesignChatTask"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
+        :page-name="activeDesignChatPageName"
+        :project-name="activeWorkspace?.name ?? ''"
+        :cwd="activeWorkspaceItem.path ?? ''"
+        @close="handleCloseTaskView"
+      />
       <!-- Task view (non-kanban parents, e.g. chat tasks): single
            column, no header. Preserved for backward compatibility. -->
       <ChatView
@@ -1878,159 +1909,20 @@ watch(chatSessionCwd, (newCwd) => {
            The :key forces a fresh mount on item switch so the page
            list re-fetches. DesignView emits page/element mutations
            which we forward to the workspaces store (or api layer
-           directly for page create — no store action yet). -->
-      <!-- Design + chat 3-column (NEW, 2026-07-14). Mirrors the
-           kanban+chat 3-column branch above: DesignView on the
-           left (~40%), resize handle in the middle, ChatView on
-           the right. Triggered when an active chat task exists
-           for the active design item (set via the top-right 💬
-           button's open-chat handler). The 3-col must appear
-           BEFORE the single-col DesignView v-else-if so it wins
-           when activeTask is set. The :key on DesignView forces
-           a fresh mount when the user navigates between designs;
-           ChatView uses 'task-<id>' so switching chats within
-           the same design remounts cleanly.
+           directly for page create — no store action yet).
 
-           IMPORTANT: this MUST be `v-else-if` (not `v-if`). The
-           whole main-content chain — code-editor, 3-col kanban,
-           task view, kanban view, this 3-col design, design
-           view, chatview, chats, workspace folder preview — must
-           stay in one v-if/v-else-if chain so the branches are
-           mutually exclusive. If this branch is `v-if` instead,
-           Vue starts a NEW chain here; the kanban branch above
-           (line ~1490) wins for chain A but `currentView ===
-           'workspace'` would also win for chain B, causing the
-           workspace folder preview card to render UNDER the
-           kanban board (regression introduced in commit
-           d0a05eb0 "feat(design): Figma-lite redesign — file-
-           backed HTML + 3 LLM tools", which added this 3-col
-           design block). Regression test:
-           AppLayout.kanban.spec.ts → "kanban renders alone,
-           workspace folder preview is not in DOM". -->
-      <div
-        v-else-if="
-          activeTask &&
-          activeWorkspaceItem &&
-          activeWorkspaceItem.item_type === 'design' &&
-          activeTaskWorkspaceItemId === activeWorkspaceItem.id
-        "
-        class="flex-1 flex min-h-0"
-        data-design-three-column
-      >
-        <div
-          class="flex flex-col h-full min-h-0"
-          :style="designColumnStyle"
-          style="border-right: 1px solid var(--color-border)"
-        >
-          <DesignView
-            :key="'design-' + activeWorkspaceItem.id"
-            :item="activeWorkspaceItem"
-            :workspace-id="activeWorkspace?.id ?? ''"
-            :item-id="activeWorkspaceItem.id"
-            @select-page="handleDesignSelectPage"
-            @select-element="handleDesignSelectElement"
-            @update-element="handleDesignUpdateElement"
-            @translate-element="handleDesignTranslateElement"
-            @resize-element="handleDesignResizeElement"
-            @delete-element="handleDesignDeleteElement"
-            @open-chat="handleDesignOpenChat"
-          />
-        </div>
-        <div
-          class="shrink-0 w-2 cursor-col-resize relative flex items-center justify-center bg-[var(--color-violet)]/15 hover:bg-[var(--color-violet)]/40 transition-colors"
-          :class="isDesignResizing ? '!bg-[var(--color-violet)]/60' : ''"
-          data-design-resize-handle
-          data-testid="design-resize-handle"
-          title="Drag to resize"
-          @mousedown="startDesignResize"
-        >
-          <svg
-            width="14"
-            height="2"
-            viewBox="0 0 14 2"
-            fill="currentColor"
-            class="text-[var(--color-violet)] opacity-70"
-            aria-hidden="true"
-          >
-            <circle cx="3" cy="1" r="1" />
-            <circle cx="7" cy="1" r="1" />
-            <circle cx="11" cy="1" r="1" />
-          </svg>
-        </div>
-        <!--
-          Chat column. When the user collapses the chat
-          (`designChatCollapsed === true`), hide the ChatView and
-          show a thin vertical strip with a re-open button — the
-          user keeps the chat accessible without it eating canvas
-          room. Default state is un-collapsed (the design column
-          is now sized 65% of main area, which is enough for both
-          to coexist comfortably).
-        -->
-        <div
-          v-if="!designChatCollapsed"
-          class="flex-1 flex flex-col h-full min-w-0 min-h-0 relative"
-          data-design-chat-column
-        >
-          <ChatView
-            :key="'task-' + activeTask.id"
-            :chat-id="activeTask.id"
-            :chat-name="activeTask.name"
-            :type="'task'"
-            :cwd="activeWorkspaceItem.path || ''"
-            :task-id="activeTask.id"
-            :task-name="activeTask.name"
-            :project-name="activeWorkspaceItem.name || ''"
-            :show-header="true"
-            @close="handleCloseTaskView"
-          />
-          <!--
-            Floating collapse button — pinned to the top-right of
-            the chat column. Lets the user collapse the chat
-            without going through the existing ✕ (which closes the
-            chat entirely). Sits below the SSE status pill
-            (top-3 right-12) so the two don't overlap.
-          -->
-          <button
-            type="button"
-            class="absolute top-2 right-12 z-30 w-7 h-7 rounded flex items-center justify-center text-sm hover:opacity-80 transition-opacity shadow"
-            style="
-              background-color: var(--semantic-sidebar-bg);
-              color: var(--semantic-text-dim);
-              border: 1px solid var(--color-border);
-            "
-            title="Hide chat (collapse to icon)"
-            aria-label="Hide chat"
-            data-testid="design-chat-collapse-button"
-            @click="toggleDesignChat"
-          >
-            <span aria-hidden="true">»</span>
-          </button>
-        </div>
-        <div
-          v-else
-          class="shrink-0 w-10 flex flex-col items-center pt-2"
-          style="
-            background-color: var(--semantic-sidebar-bg);
-            border-left: 1px solid var(--color-border);
-          "
-          data-design-chat-collapsed-strip
-        >
-          <button
-            type="button"
-            class="w-8 h-8 rounded flex items-center justify-center hover:opacity-80 transition-opacity"
-            style="
-              background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
-              color: var(--color-bg);
-            "
-            title="Expand chat"
-            aria-label="Expand chat"
-            data-testid="design-chat-expand-button"
-            @click="toggleDesignChat"
-          >
-            <span aria-hidden="true">💬</span>
-          </button>
-        </div>
-      </div>
+           2026-08-06 (plan: design-chat-as-dialog): the design chat
+           no longer shares this branch with a side-by-side chat
+           column. The previous 3-column [DesignView | resize-handle |
+           ChatView] layout (added in commit d0a05eb0, 2026-07-14)
+           took ~40-65% of the canvas for ChatView even when
+           "minimised". The chat is now a centred modal dialog
+           (DesignChatDialog) mounted at the AppLayout level above —
+           the canvas stays full-width behind a dimmed+blurred
+           backdrop. The pre-fix data-design-three-column branch,
+           data-design-resize-handle, design-chat-collapse-button,
+           and design-chat-expand-button are GONE with the resize /
+           collapse state machine. -->
       <DesignView
         v-else-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'design'"
         :key="'design-' + activeWorkspaceItem.id"
