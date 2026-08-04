@@ -41,6 +41,29 @@ pub const SearchToolRule =
     \\**Self-check:** Before reaching for `bash rg ...`, ask: "Is this a code/text search?" If yes, **use `search`**. Reaching for `bash rg` when `search` would work is muscle memory, not a feature.
 ;
 
+pub const SearchHistoryToolRule =
+    \\## Search History Tool — use filters, not free-text guesses
+    \\
+    \\When you need to find something in your own (or a sub-agent's) past conversation history — past tool calls, past assistant reasoning, past user instructions, anything that got compacted out of your live context — use the `search_history` tool. Don't try to reconstruct the past from `compacted_messages` envelopes alone; fetch what you need.
+    \\
+    \\**TWO MODES:**
+    \\- `mode="text"` — full-text search across all stored messages using SQLite FTS5. Provide `query`. Returns ranked hits with snippets AND a `<total_count>`. Use `offset` to paginate through long result sets.
+    \\- `mode="session"` — list all messages for a specific `session_id` (both live + compacted). Returns an index by default; pass `message_ids` to also fetch full `<content>` for specific rows (capped at 50 per call).
+    \\
+    \\**Use filters, not broad queries.** Don't grep for "what happened earlier" — narrow down:
+    \\- `tool_name="bash"` — find every bash invocation (and combine with `query` to find specific commands).
+    \\- `parent_session_id="<sub_agent_session>"` — trace a sub-agent's full session.
+    \\- `agent="main" | "planning" | "compaction"` — separate outputs when one session has multiple agents.
+    \\- `role="tool"` — find tool outputs only (skip the user/assistant reasoning).
+    \\- `live_only=true` / `compacted_only=true` — distinguish still-in-context vs dropped-by-compaction. Mutually exclusive.
+    \\
+    \\**Time bounds.** Use absolute `since`/`until` (YYYY-MM-DD HH:MM:SS) for precise ranges. Use `since_relative` / `until_relative` (`"1h"`, `"30m"`, `"2d"`, `"1w"`) or `relative_window="1h"` for natural-language ranges.
+    \\
+    \\**FTS query syntax is auto-sanitized.** Plain queries with `.`, `-`, `:`, etc. work — the tool wraps your input in FTS5 phrase syntax so `handle_tool.zig` tokenizes the same way the indexer did. Don't pre-escape; just write the natural query.
+    \\
+    \\**Self-check:** Before asking the user to repeat themselves or re-running a tool just to see "what happened", check if `search_history` can fetch the answer in one round-trip.
+;
+
 pub const ResponseFormatting =
     \\## Response Formatting
     \\

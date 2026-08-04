@@ -39,6 +39,7 @@ pub const GenerateSessionNameAgent = prompts.GenerateSessionNameAgent;
 pub const ResponseFormatting = prompts.ResponseFormatting;
 pub const UpdateActivityRule = prompts.UpdateActivityRule;
 pub const SearchToolRule = prompts.SearchToolRule;
+pub const SearchHistoryToolRule = prompts.SearchHistoryToolRule;
 
 // =============================================================================
 // PROMPT BUILDERS
@@ -87,6 +88,7 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
     .{ .name = "universal_rules", .content = UniversalRules },
     // .{ .name = "prompt_auto_fix", .content = PromptAutoFix },
     .{ .name = "search_tool_rule", .content = SearchToolRule },
+    .{ .name = "search_history_tool_rule", .content = SearchHistoryToolRule, .requires_tool = "search_history" },
     .{ .name = "agent_directive", .content = Agent },
     .{ .name = "parallel_work", .content = ParallelWork },
 

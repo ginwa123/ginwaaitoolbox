@@ -2199,3 +2199,28 @@ Discovered while verifying the bash test cherry-pick. Commit `20d061c6` ("call t
 
 **Lesson.** Follow-up "fix the invalid thing" commits need full regression coverage: if PR #181 had a regression test that covered the `UPDATE … WHERE tool_call_id = ?` round-trip, this would have been caught immediately. The `updateToolResultById` function is now well-tested by the suite — future changes to its WHERE clause will fail loudly.
 
+
+### 2026-08-04: search_history v2 — new filters + prompt wiring
+
+User: "is this tool only fetching is_llm_feed 0 or is_llm_seaf_feed 1 or search another memory session ?" → "any another suggestion ?" → "do top tier and mid tier, use git worktree and tdd development, and adjust with the system prompts too, @/src/modules/agent/prompts.zig".
+
+**Top tier (5 new filters):** `live_only` / `compacted_only` (mutually exclusive), `tool_name`, `parent_session_id`, `agent`, `since_relative` / `until_relative` / `relative_window`.
+
+**Mid tier (1 UX win):** `mode="text"` accepts `message_ids` → response includes a `<full_contents>` block with full bodies alongside the FTS hit snippets.
+
+**Backend:** `llm_history.zig` +75 lines (new `SearchOptions` fields, `getMessagesByIds` helper). `search_history.zig` +80 lines (new params, parseMessageIds, error XML for too-many-ids). **+18 new behavioural tests.**
+
+**Prompts:** new `SearchHistoryToolRule` in `core.zig` (gated on `requires_tool='search_history'` in `PROMPT_SECTIONS`), `CompactionAgent` updated to teach the next agent the filter vocabulary, `search_history` tool description updated with new params + FTS sanitization note + 4 new examples.
+
+**Verification:** 2304 pass / 6 skip / 2 leaks (pre-existing baseline). `x86_64-windows-gnu` + `aarch64-macos` cross-compile clean.
+
+**Out of scope:** `handle_tool.zig:487` void-bug (pre-existing PR #181 regression — `inserLLMHistories()` returns `!void` but called as if it returned `[]const u8`). Surface via `zig build` but hidden from `zig build test` by lazy semantic analysis. Separate fix.
+
+**Commits (worktree/search-history-v2):**
+- `4bd47c64` Chunk 1 — is_feed_to_llm filter
+- `e60e1bf9` Chunk 2 — tool_name filter
+- `a421076f` Chunk 3 — parent_session_id filter
+- `aee707e4` Chunk 4 — full `<content>` in mode="text" + INSERT-column fix
+- `9c2a5808` Prompts + tool description
+
+**Branch:** `worktree/search-history-v2`. **Plan:** `docs/superpowers/plans/2026-08-04-search-history-v2.md`. **Memory:** `.nalar/memories/search-history-v2-filters-2026-08-04.md`.

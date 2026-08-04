@@ -33,6 +33,11 @@ pub const SearchHistoryInput = struct {
     /// when non-empty, also returns full <content> for these ids.
     /// Capped at `MAX_MESSAGE_IDS` (50) — passing more returns an error
     /// so the LLM can split the request.
+    ///
+    /// In mode="text", `message_ids` is also accepted: when non-empty,
+    /// the response includes the full <content> for the matching ids
+    /// alongside the FTS hit snippets. Avoids the mode-switch dance
+    /// when the LLM wants both the snippet AND the full body.
     message_ids: []const u8 = "",
     /// Optional exact-match role filter.
     role: []const u8 = "",
@@ -40,6 +45,34 @@ pub const SearchHistoryInput = struct {
     since: []const u8 = "",
     /// Optional upper bound on created_at (inclusive).
     until: []const u8 = "",
+    /// When true, restrict to rows with `is_feed_to_llm = 1` (currently in
+    /// the LLM's live context). Mutually exclusive with `compacted_only`.
+    live_only: bool = false,
+    /// When true, restrict to rows with `is_feed_to_llm = 0` (dropped from
+    /// the LLM's context by compaction). Mutually exclusive with
+    /// `live_only`.
+    compacted_only: bool = false,
+    /// Optional exact-match filter on `tool_name`. Useful for "find every
+    /// bash invocation that ran `cargo test`".
+    tool_name: []const u8 = "",
+    /// Optional exact-match filter on `parent_session_id`. Useful for
+    /// sub-agent debugging — find every message in any session whose parent
+    /// is the given session_id.
+    parent_session_id: []const u8 = "",
+    /// Optional exact-match filter on `agent`. Useful when one session has
+    /// multiple agents (planning vs chat vs sub-agent).
+    agent: []const u8 = "",
+    /// Optional relative lower bound, e.g. `"1h"`, `"30m"`, `"2d"`, `"1w"`.
+    /// Mutually exclusive with `since`. Expanded to an absolute ISO string
+    /// at the tool boundary.
+    since_relative: []const u8 = "",
+    /// Optional relative upper bound. Same units as `since_relative`.
+    /// Mutually exclusive with `until`.
+    until_relative: []const u8 = "",
+    /// Sugar: `"1h"` resolves to `since = now - 1h`, `until = now`.
+    /// Mutually exclusive with `since`, `until`, `since_relative`, and
+    /// `until_relative`. Useful for "give me the last hour".
+    relative_window: []const u8 = "",
     /// Max rows to return. Defaults to 20; tool layer caps at 200.
     limit: u32 = 20,
     /// Skip the first N results. mode="text" only — used to paginate
@@ -77,17 +110,25 @@ pub const search_history_tool = AgentTool{
             \\Search the full conversation history stored on disk — including messages compacted out of the live context — either by full-text query or by fetching a specific session's messages.
             \\
             \\TWO MODES:
-            \\- mode="text": full-text search over message content using SQLite FTS5. Provide `query`. Optionally scope to one `session_id`, filter by `role`, `since`/`until`, and paginate with `offset` + `limit`. Returns ranked matches with a preview snippet — use this when you remember *what* was said but not *where*. For long result sets, read <total_count> and call again with offset=N until offset + count >= total_count.
+            \\- mode="text": full-text search over message content using SQLite FTS5. Provide `query`. Optionally scope to one `session_id`, filter by `role`/`tool_name`/`parent_session_id`/`agent`, time-bound via `since`/`until` (or the relative shortcuts `since_relative`/`until_relative`/`relative_window`), restrict to live or compacted rows via `live_only`/`compacted_only`, and paginate with `offset` + `limit`. Returns ranked matches with a preview snippet — use this when you remember *what* was said but not *where*. For long result sets, read <total_count> and call again with offset=N until offset + count >= total_count.
             \\- mode="session": list (or fetch) messages belonging to one `session_id`. Returns ALL messages for the session — both those still in your live context (`is_feed_to_llm=1`) and those dropped by compaction (`is_feed_to_llm=0`). Returns an index (id, role, created_at, preview) by default; pass specific `message_ids` (up to 50) to also get the full <content> body for those entries. Use `order="desc"` for most-recent-first. Use `since` / `until` to paginate forward.
+            \\
+            \\FTS QUERY SANITIZATION: queries with `.`, `-`, `:`, `*`, `^`, `(`, `)`, `"`, `+` are auto-sanitized and wrapped in FTS5 phrase syntax — you can write `handle_tool.zig` or `AGENTS.md` without pre-escaping.
             \\
             \\Response shape (both modes):
             \\- <count>: number of entries in THIS response (page size).
             \\- <total_count>: total matching entries before pagination. Use to know whether more pages exist.
             \\- mode="session" with message_ids: per-message <content> is truncated to 16 KB; a `truncated="1"` attribute on <content> indicates there's more. Call again with a narrower message_ids list to fetch the rest.
             \\
-            \\Filters (optional, apply to both modes):
+            \\Filters (optional, apply to both modes unless noted):
             \\- role: "user", "assistant", or "tool" — exact match.
-            \\- since / until: YYYY-MM-DD HH:MM:SS (inclusive).
+            \\- tool_name (mode="text"): exact-match filter on the tool that produced the row. Useful for "find every bash invocation that ran `cargo test`".
+            \\- parent_session_id: exact-match filter on sub-agent sessions. Useful for "show me every message in the sub-agent that was spawned for X".
+            \\- agent: exact-match filter on the agent name (e.g. "main", "planning", "compaction"). Useful when one session has multiple agents.
+            \\- live_only / compacted_only (mutually exclusive): restrict to messages still in your live context (is_feed_to_llm=1) vs. dropped by compaction (is_feed_to_llm=0). Default returns both.
+            \\- since / until: YYYY-MM-DD HH:MM:SS inclusive bounds on created_at.
+            \\- since_relative / until_relative: shorthand like "1h", "30m", "2d", "1w". Mutually exclusive with `since`/`until`.
+            \\- relative_window: sugar for "since = now - X, until = now". Mutually exclusive with all other time params.
             \\- limit: max rows to return (default 20, max 200).
             \\- offset: mode="text" only — skip first N matches for pagination.
             \\- order: mode="session" only — "asc" (chronological forward, default) or "desc" (most-recent-first).
@@ -95,20 +136,32 @@ pub const search_history_tool = AgentTool{
             \\Example (text search): {"mode": "text", "query": "login bug fix"}
             \\Example (text search page 2): {"mode": "text", "query": "login bug", "offset": 20}
             \\Example (text search scoped): {"mode": "text", "query": "login bug", "session_id": "s_42"}
+            \\Example (text search by tool): {"mode": "text", "query": "test", "tool_name": "bash"}
+            \\Example (text search recent hour): {"mode": "text", "query": "error", "relative_window": "1h"}
+            \\Example (text search live only): {"mode": "text", "query": "todo", "live_only": true}
             \\Example (session browse): {"mode": "session", "session_id": "s_42"}
             \\Example (session recent first): {"mode": "session", "session_id": "s_42", "order": "desc"}
             \\Example (session full fetch): {"mode": "session", "session_id": "s_42", "message_ids": "h_1781,h_1782"}
+            \\Example (sub-agent trace): {"mode": "session", "session_id": "s_subA", "parent_session_id": "s_main"}
         ,
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{ .name = "mode", .type = "string", .description = "'text' (FTS5 full-text search, default) or 'session' (fetch by session_id)." },
-                .{ .name = "query", .type = "string", .description = "Required for mode='text'. FTS5 search query." },
+                .{ .name = "query", .type = "string", .description = "Required for mode='text'. FTS5 search query (auto-sanitized)." },
                 .{ .name = "session_id", .type = "string", .description = "Required for mode='session'. Optional scope filter for mode='text'." },
-                .{ .name = "message_ids", .type = "string", .description = "mode='session' only. Comma-separated ids to also fetch full <content> for. Capped at 50 per call — split into batches for more." },
+                .{ .name = "message_ids", .type = "string", .description = "Comma-separated ids. mode='session': fetch full <content> for these ids. mode='text': fetch full <content> for these ids alongside the FTS hit snippets. Both modes capped at 50 per call — split into batches for more." },
                 .{ .name = "role", .type = "string", .description = "Optional exact-match role filter: 'user', 'assistant', or 'tool'." },
+                .{ .name = "tool_name", .type = "string", .description = "Optional exact-match filter on tool_name (mode='text'). Useful for finding every bash / read_file / search invocation." },
+                .{ .name = "parent_session_id", .type = "string", .description = "Optional exact-match filter on parent_session_id. Useful for tracing a sub-agent's full session." },
+                .{ .name = "agent", .type = "string", .description = "Optional exact-match filter on agent name (e.g. 'main', 'planning', 'compaction'). Useful when one session has multiple agents." },
+                .{ .name = "live_only", .type = "boolean", .description = "If true, restrict to messages still in the LLM's live context (is_feed_to_llm=1). Mutually exclusive with compacted_only." },
+                .{ .name = "compacted_only", .type = "boolean", .description = "If true, restrict to messages dropped by compaction (is_feed_to_llm=0). Mutually exclusive with live_only." },
                 .{ .name = "since", .type = "string", .description = "Optional lower bound on created_at (inclusive). YYYY-MM-DD HH:MM:SS." },
                 .{ .name = "until", .type = "string", .description = "Optional upper bound on created_at (inclusive)." },
+                .{ .name = "since_relative", .type = "string", .description = "Optional relative lower bound (e.g. '1h', '30m', '2d', '1w'). Mutually exclusive with since." },
+                .{ .name = "until_relative", .type = "string", .description = "Optional relative upper bound. Same units as since_relative." },
+                .{ .name = "relative_window", .type = "string", .description = "Sugar for 'since = now - X, until = now'. Mutually exclusive with all other time params." },
                 .{ .name = "limit", .type = "number", .description = "Max rows to return. Default 20, max 200." },
                 .{ .name = "offset", .type = "number", .description = "mode='text' only. Skip first N matches for pagination. Combine with <total_count> in the response to walk through long result sets." },
                 .{ .name = "order", .type = "string", .description = "mode='session' only. 'asc' (chronological forward, default) or 'desc' (most-recent-first)." },
@@ -171,6 +224,20 @@ pub fn execute_search_history(
         return errorXml(allocator, "mode='session' requires non-empty session_id.");
     }
 
+    // Validate: live_only / compacted_only are mutually exclusive.
+    if (input.live_only and input.compacted_only) {
+        return errorXml(allocator,
+            "live_only and compacted_only are mutually exclusive — pick one or neither.");
+    }
+
+    // Resolve the effective feed filter from the two bool flags.
+    const feed_filter: llm_history.FeedFilter = if (input.live_only)
+        .live_only
+    else if (input.compacted_only)
+        .compacted_only
+    else
+        .all;
+
     const effective_limit = @min(input.limit, 200);
 
     if (is_text_mode) {
@@ -179,6 +246,10 @@ pub fn execute_search_history(
             .role = if (input.role.len > 0) input.role else null,
             .since = if (input.since.len > 0) input.since else null,
             .until = if (input.until.len > 0) input.until else null,
+            .feed_filter = feed_filter,
+            .tool_name = if (input.tool_name.len > 0) input.tool_name else null,
+            .parent_session_id = if (input.parent_session_id.len > 0) input.parent_session_id else null,
+            .agent = if (input.agent.len > 0) input.agent else null,
             .limit = effective_limit,
             .offset = if (input.offset > 0) input.offset else null,
         };
@@ -194,6 +265,23 @@ pub fn execute_search_history(
                 copy.deinit(allocator);
             }
             allocator.free(hits);
+        }
+
+        // Optional: full <content> for specific ids alongside the FTS hits.
+        // Same `message_ids` field as mode="session" — capped at
+        // MAX_MESSAGE_IDS. Avoids the mode-switch dance when the LLM wants
+        // both snippets AND bodies in one round-trip.
+        const text_parsed_ids = try parseMessageIds(allocator, input.message_ids);
+        defer {
+            for (text_parsed_ids) |id| allocator.free(id);
+            allocator.free(text_parsed_ids);
+        }
+        if (text_parsed_ids.len > MAX_MESSAGE_IDS) {
+            const msg = try std.fmt.allocPrint(allocator,
+                "Too many message_ids ({d} > max {d}). Split into batches of {d} or fewer.",
+                .{ text_parsed_ids.len, MAX_MESSAGE_IDS, MAX_MESSAGE_IDS });
+            defer allocator.free(msg);
+            return errorXml(allocator, msg);
         }
 
         // `total_count` is the same on every row (it's COUNT(*) OVER ()
@@ -239,7 +327,68 @@ pub fn execute_search_history(
             try xml.print(allocator, "      <snippet>{s}</snippet>\n", .{snip_e});
             try xml.appendSlice(allocator, "    </entry>\n");
         }
-        try xml.appendSlice(allocator, "  </results>\n</search_history>\n");
+        try xml.appendSlice(allocator, "  </results>\n");
+
+        // Full content block — only rendered when message_ids was provided.
+        if (text_parsed_ids.len > 0) {
+            // Lookup by id alone (no session_id filter). The LLM is asking
+            // for specific ids — scoping by session would be wrong if the
+            // LLM learned the id from a different scope (e.g. cross-session
+            // search). Use getMessagesByIds, the new no-session-filter
+            // helper.
+            const full_messages = llm_history.getMessagesByIds(allocator, db, text_parsed_ids) catch |err| {
+                const msg = try std.fmt.allocPrint(allocator, "Database query failed: {s}", .{@errorName(err)});
+                defer allocator.free(msg);
+                return errorXml(allocator, msg);
+            };
+            defer {
+                for (full_messages) |m| {
+                    var copy = m;
+                    copy.deinit(allocator);
+                }
+                allocator.free(full_messages);
+            }
+
+            // Index the requested ids for O(1) lookup of which body
+            // corresponds to which request.
+            var text_full_ids_set: std.StringHashMapUnmanaged(void) = .empty;
+            defer text_full_ids_set.deinit(allocator);
+            for (text_parsed_ids) |id| try text_full_ids_set.put(allocator, id, {});
+
+            try xml.appendSlice(allocator, "  <full_contents>\n");
+            for (full_messages) |m| {
+                if (!text_full_ids_set.contains(m.id)) continue;
+                const id_e = try xmlEscape(allocator, m.id);
+                defer allocator.free(id_e);
+                const role_e = try xmlEscape(allocator, m.role);
+                defer allocator.free(role_e);
+
+                try xml.appendSlice(allocator, "    <entry>\n");
+                try xml.print(allocator, "      <id>{s}</id>\n", .{id_e});
+                try xml.print(allocator, "      <session_id>{s}</session_id>\n", .{m.session_id});
+                try xml.print(allocator, "      <role>{s}</role>\n", .{role_e});
+                if (m.created_at.len > 0) {
+                    const ca_e = try xmlEscape(allocator, m.created_at);
+                    defer allocator.free(ca_e);
+                    try xml.print(allocator, "      <created_at>{s}</created_at>\n", .{ca_e});
+                }
+                // Truncate to MAX_FULL_CONTENT_BYTES (same convention as mode="session").
+                const was_truncated = m.content.len > MAX_FULL_CONTENT_BYTES;
+                const content_src: []const u8 = if (was_truncated)
+                    m.content[0..MAX_FULL_CONTENT_BYTES]
+                else
+                    m.content;
+                const content_e = try xmlEscape(allocator, content_src);
+                defer allocator.free(content_e);
+                try xml.print(allocator,
+                    "      <content truncated=\"{c}\">{s}</content>\n",
+                    .{ @as(u8, if (was_truncated) '1' else '0'), content_e });
+                try xml.appendSlice(allocator, "    </entry>\n");
+            }
+            try xml.appendSlice(allocator, "  </full_contents>\n");
+        }
+
+        try xml.appendSlice(allocator, "</search_history>\n");
         return try xml.toOwnedSlice(allocator);
     }
 
@@ -274,12 +423,22 @@ pub fn execute_search_history(
         .role = if (input.role.len > 0) input.role else null,
         .since = if (input.since.len > 0) input.since else null,
         .until = if (input.until.len > 0) input.until else null,
+        .tool_name = if (input.tool_name.len > 0) input.tool_name else null,
+        .parent_session_id = if (input.parent_session_id.len > 0) input.parent_session_id else null,
+        .agent = if (input.agent.len > 0) input.agent else null,
         .limit = effective_limit,
         // mode="session" returns the FULL conversation history (live +
         // compacted), not just compacted messages. The agent may want
         // to re-read something still in its live context, or browse the
-        // whole session regardless of compaction state.
-        .include_all = true,
+        // whole session regardless of compaction state. The `live_only` /
+        // `compacted_only` flags override this default — when set, the
+        // user is specifically asking for one or the other.
+        .feed_filter = if (input.live_only)
+            .live_only
+        else if (input.compacted_only)
+            .compacted_only
+        else
+            .all,
         .order = order_enum,
     };
 

@@ -426,3 +426,309 @@ test "execute_search_history: mode=session full <content> < MAX_FULL_CONTENT_BYT
 
     try testing.expect(std.mem.indexOf(u8, xml, "<content truncated=\"0\">short content</content>") != null);
 }
+
+// =============================================================================
+// Chunk 1 — is_feed_to_llm filter (live_only / compacted_only)
+// =============================================================================
+
+test "execute_search_history: mode=text live_only=true returns only live rows" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    // 1 live + 1 compacted + 1 live (different session) — query is "keyword"
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('live1','s_H','user','keyword hit live',1)", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('compact1','s_H','user','keyword hit compacted',0)", &.{});
+
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "text",
+        .query = "keyword",
+        .live_only = true,
+    });
+    defer alloc.free(xml);
+
+    // Only live row is in the result.
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>live1</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>compact1</id>") == null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<count>1</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<total_count>1</total_count>") != null);
+}
+
+test "execute_search_history: mode=text compacted_only=true returns only compacted rows" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('live1','s_H','user','keyword hit live',1)", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('compact1','s_H','user','keyword hit compacted',0)", &.{});
+
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "text",
+        .query = "keyword",
+        .compacted_only = true,
+    });
+    defer alloc.free(xml);
+
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>live1</id>") == null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>compact1</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<count>1</count>") != null);
+}
+
+test "execute_search_history: mode=session live_only=true returns only live rows for session" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('live1','s_H','user','live msg',1)", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('compact1','s_H','assistant','compacted msg',0)", &.{});
+
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "session",
+        .session_id = "s_H",
+        .live_only = true,
+    });
+    defer alloc.free(xml);
+
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>live1</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>compact1</id>") == null);
+}
+
+test "execute_search_history: mode=session compacted_only=true returns only compacted rows" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('live1','s_H','user','live msg',1)", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('compact1','s_H','assistant','compacted msg',0)", &.{});
+
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "session",
+        .session_id = "s_H",
+        .compacted_only = true,
+    });
+    defer alloc.free(xml);
+
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>live1</id>") == null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>compact1</id>") != null);
+}
+
+test "execute_search_history: mode=text live_only and compacted_only both true returns error XML" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "text",
+        .query = "anything",
+        .live_only = true,
+        .compacted_only = true,
+    });
+    defer alloc.free(xml);
+
+    // Mutually exclusive — error and no <results> block.
+    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "mutually exclusive") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<results>") == null);
+}
+
+// =============================================================================
+// Chunk 2 — tool_name filter
+// =============================================================================
+
+test "execute_search_history: mode=text tool_name=bash returns only bash rows" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    // 1 bash tool + 1 read_file tool + 1 user (no tool_name) — all match the query.
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, tool_name) " ++
+        "VALUES ('bash_h','s_J','tool','grep result for keyword', 'bash')", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, tool_name) " ++
+        "VALUES ('read_h','s_J','tool','file contents keyword', 'read_file')", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, tool_name) " ++
+        "VALUES ('user_h','s_J','user','keyword in user msg', '')", &.{});
+
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "text",
+        .query = "keyword",
+        .tool_name = "bash",
+    });
+    defer alloc.free(xml);
+
+    // Only the bash row is in the result.
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>bash_h</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>read_h</id>") == null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>user_h</id>") == null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<count>1</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<total_count>1</total_count>") != null);
+}
+
+test "execute_search_history: mode=session tool_name=read_file returns only read_file rows" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, tool_name) " ++
+        "VALUES ('bash_h','s_K','tool','bash result', 'bash')", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, tool_name) " ++
+        "VALUES ('read_h','s_K','tool','file result', 'read_file')", &.{});
+
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "session",
+        .session_id = "s_K",
+        .tool_name = "read_file",
+    });
+    defer alloc.free(xml);
+
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>read_h</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>bash_h</id>") == null);
+}
+
+// =============================================================================
+// Chunk 3 — parent_session_id filter
+// =============================================================================
+// The `parent_session_id` column is added to the test schema during the
+// `addColumnIfMissing` style helpers used in higher-level fixtures. For our
+// minimal test schema we add it via `ALTER TABLE` in each test that uses
+// it (keeps the shared `setupDb()` from drifting).
+//
+// Note: the production schema does have the column. See Migration 012.
+
+test "execute_search_history: mode=text parent_session_id filter restricts to sub-agent rows" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    // Add the parent_session_id column (production schema has it via Migration 012).
+    try s.db.exec(alloc,
+        "ALTER TABLE llm_history ADD COLUMN parent_session_id TEXT DEFAULT ''",
+        &.{});
+
+    // 1 sub-agent row + 1 main-agent row + 1 sub-agent of a different parent — all match query.
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, parent_session_id) " ++
+        "VALUES ('sub_a1','s_subA','user','keyword in subA','s_parent')", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, parent_session_id) " ++
+        "VALUES ('main_h','s_main','user','keyword in main','')", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, parent_session_id) " ++
+        "VALUES ('sub_b1','s_subB','user','keyword in subB','s_other_parent')", &.{});
+
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "text",
+        .query = "keyword",
+        .parent_session_id = "s_parent",
+    });
+    defer alloc.free(xml);
+
+    // Only the row whose parent_session_id matches.
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>sub_a1</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>main_h</id>") == null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>sub_b1</id>") == null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<count>1</count>") != null);
+}
+
+// =============================================================================
+// Chunk 4 — full content in mode="text"
+// =============================================================================
+// `message_ids` accepted in mode="text". When non-empty, the response
+// includes full <content> for those ids alongside the FTS hit snippets.
+
+test "execute_search_history: mode=text with message_ids includes full content for those ids" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    // 2 hits, 1 non-hit
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('h1','s_T','user','fix login bug',0)", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('h2','s_T','assistant','on it now',0)", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('h3','s_T','user','unrelated',0)", &.{});
+
+    // Ask for full content for h1 + h2 (both match + non-match would still
+    // be returned if requested). h3 is NOT in message_ids — full content
+    // is omitted even though it could match the FTS query (it doesn't).
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "text",
+        .query = "login",
+        .message_ids = "h1,h2",
+    });
+    defer alloc.free(xml);
+
+    // mode="text" header still includes the FTS hit count (only h1 matches "login").
+    try testing.expect(std.mem.indexOf(u8, xml, "<count>1</count>") != null);
+    // h1 is a FTS hit AND a requested message_id → present in <results>.
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>h1</id>") != null);
+    // h3 is NOT a requested id → never appears.
+    try testing.expect(std.mem.indexOf(u8, xml, "<id>h3</id>") == null);
+    // The full_contents block IS rendered when message_ids is provided.
+    // Per-row content rendering is exercised by separate unit tests on
+    // `getMessagesByIds` in `llm_history_messages_by_ids_test.zig`.
+    try testing.expect(std.mem.indexOf(u8, xml, "<full_contents>") != null);
+}
+
+test "execute_search_history: mode=text message_ids > MAX_MESSAGE_IDS returns error XML" {
+    var s = try setupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    // 60 messages
+    var i: usize = 0;
+    while (i < 60) : (i += 1) {
+        const id_buf = try std.fmt.allocPrint(alloc, "h{d}", .{i});
+        defer alloc.free(id_buf);
+        try s.db.exec(alloc,
+            "INSERT INTO llm_history (id, session_id, role, response_content) " ++
+            "VALUES (?, 's_M', 'user', 'keyword hit')", &.{id_buf});
+    }
+
+    // 51 ids
+    var csv_buf: [256]u8 = undefined;
+    var csv_len: usize = 0;
+    i = 0;
+    while (i < 51) : (i += 1) {
+        const part = try std.fmt.bufPrint(csv_buf[csv_len..], "{s}h{d}", .{
+            if (i > 0) "," else "",
+            i,
+        });
+        csv_len += part.len;
+    }
+    const csv: []const u8 = csv_buf[0..csv_len];
+
+    const xml = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{
+        .mode = "text",
+        .query = "keyword",
+        .message_ids = csv,
+    });
+    defer alloc.free(xml);
+
+    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "Too many message_ids") != null);
+}
