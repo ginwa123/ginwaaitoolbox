@@ -449,7 +449,7 @@ pub fn handle_tool(
             if (!isKnownToolOrMCP(tool_call.function.name, config)) continue;
 
             const id_llm_history = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
-            try insertLLMHistories(.{
+            _ = try insertLLMHistories(.{
                 .allocator = allocator,
                 .io = io,
                 .db = db,
