@@ -6,8 +6,8 @@
 //! | Item type    | Removed tools                                                   |
 //! |--------------|-----------------------------------------------------------------|
 //! | `design`     | kanban_list, kanban_move_task                                   |
-//! | `folder`     | kanban_list, kanban_move_task, set_design_page, add_design_element, update_design_element, group_design_elements, set_element_parent, move_design_element |
-//! | `kanban`     | set_design_page, add_design_element, update_design_element, group_design_elements, set_element_parent, move_design_element |
+//! | `folder`     | kanban_list, kanban_move_task, set_design_page, add_design_element, update_design_element, group_design_elements, set_element_parent, move_design_element, move_element_to_page |
+//! | `kanban`     | set_design_page, add_design_element, update_design_element, group_design_elements, set_element_parent, move_design_element, move_element_to_page |
 //! | any other    | (no filter — tools pass through unchanged)                       |
 //! | empty/unbound session_id | (no filter — tools pass through unchanged)             |
 //!
@@ -141,10 +141,10 @@ const mock_other_tool = AgentTool{
     },
 };
 
-/// The "all relevant tools" fixture: 8 production tools + 2 mocks.
+/// The "all relevant tools" fixture: 9 production tools + 2 mocks.
 /// Order is interleaved (kanban / design / unknown / kanban / other /
 /// design) to verify order-independence.
-fn allTools() [10]AgentTool {
+fn allTools() [11]AgentTool {
     return [_]AgentTool{
         nalarcore.kanban_list.kanban_list_tool,
         nalarcore.set_design_page.set_design_page_tool,
@@ -156,6 +156,7 @@ fn allTools() [10]AgentTool {
         nalarcore.group_design_elements.group_design_element_tool,
         nalarcore.set_element_parent.set_element_parent_tool,
         nalarcore.move_design_element.move_design_element_tool,
+        nalarcore.move_element_to_page.move_element_to_page_tool,
     };
 }
 
@@ -210,20 +211,21 @@ test "filteringTools — design parent removes kanban tools and keeps design too
     // so both slices describe the same backing array. We do not
     // double-free.
 
-    // Length check: 10 - 2 (kanban_* removed) = 8.
-    try testing.expectEqual(@as(usize, 8), filtered.len);
+    // Length check: 11 - 2 (kanban_* removed) = 9.
+    try testing.expectEqual(@as(usize, 9), filtered.len);
 
     // Removed: 2 kanban tools.
     try expectNamedCount(filtered, "kanban_list", 0);
     try expectNamedCount(filtered, "kanban_move_task", 0);
 
-    // Kept: 6 design tools (one each).
+    // Kept: 7 design tools (one each).
     try expectNamedCount(filtered, "set_design_page", 1);
     try expectNamedCount(filtered, "add_element", 1);
     try expectNamedCount(filtered, "update_element", 1);
     try expectNamedCount(filtered, "group_elements", 1);
     try expectNamedCount(filtered, "set_element_parent", 1);
     try expectNamedCount(filtered, "move_design_element", 1);
+    try expectNamedCount(filtered, "move_element_to_page", 1);
 
     // Kept: 2 mocks (not in any filter list — Figma-style).
     try expectNamedCount(filtered, "mock_unknown_tool", 1);
@@ -250,10 +252,10 @@ test "filteringTools — folder parent removes all kanban + design tools" {
     var tools = allTools();
     const filtered = try filteringTools(alloc, &ctx.db, "sess_folder", &tools);
 
-    // Length check: 10 - 8 (kanban_* + all 6 design tools) = 2 (mocks).
+    // Length check: 11 - 9 (kanban_* + all 7 design tools) = 2 (mocks).
     try testing.expectEqual(@as(usize, 2), filtered.len);
 
-    // Removed: 2 kanban + 6 design.
+    // Removed: 2 kanban + 7 design.
     try expectNamedCount(filtered, "kanban_list", 0);
     try expectNamedCount(filtered, "kanban_move_task", 0);
     try expectNamedCount(filtered, "set_design_page", 0);
@@ -262,6 +264,7 @@ test "filteringTools — folder parent removes all kanban + design tools" {
     try expectNamedCount(filtered, "group_elements", 0);
     try expectNamedCount(filtered, "set_element_parent", 0);
     try expectNamedCount(filtered, "move_design_element", 0);
+    try expectNamedCount(filtered, "move_element_to_page", 0);
 
     // Kept: only the 2 mocks.
     try expectNamedCount(filtered, "mock_unknown_tool", 1);
@@ -288,16 +291,17 @@ test "filteringTools — kanban parent removes design tools and keeps kanban too
     var tools = allTools();
     const filtered = try filteringTools(alloc, &ctx.db, "sess_kanban", &tools);
 
-    // Length check: 10 - 6 (design tools removed) = 4 (2 kanban + 2 mocks).
+    // Length check: 11 - 7 (design tools removed) = 4 (2 kanban + 2 mocks).
     try testing.expectEqual(@as(usize, 4), filtered.len);
 
-    // Removed: 6 design tools.
+    // Removed: 7 design tools.
     try expectNamedCount(filtered, "set_design_page", 0);
     try expectNamedCount(filtered, "add_element", 0);
     try expectNamedCount(filtered, "update_element", 0);
     try expectNamedCount(filtered, "group_elements", 0);
     try expectNamedCount(filtered, "set_element_parent", 0);
     try expectNamedCount(filtered, "move_design_element", 0);
+    try expectNamedCount(filtered, "move_element_to_page", 0);
 
     // Kept: 2 kanban + 2 mocks.
     try expectNamedCount(filtered, "kanban_list", 1);
@@ -326,8 +330,8 @@ test "filteringTools — chat parent returns tools unchanged (no branch matches)
     var tools = allTools();
     const filtered = try filteringTools(alloc, &ctx.db, "sess_chat", &tools);
 
-    // No filter fires for `chat` — all 10 tools pass through.
-    try testing.expectEqual(@as(usize, 10), filtered.len);
+    // No filter fires for `chat` — all 11 tools pass through.
+    try testing.expectEqual(@as(usize, 11), filtered.len);
 
     // Every name appears exactly once.
     try expectNamedCount(filtered, "kanban_list", 1);
@@ -338,6 +342,7 @@ test "filteringTools — chat parent returns tools unchanged (no branch matches)
     try expectNamedCount(filtered, "group_elements", 1);
     try expectNamedCount(filtered, "set_element_parent", 1);
     try expectNamedCount(filtered, "move_design_element", 1);
+    try expectNamedCount(filtered, "move_element_to_page", 1);
     try expectNamedCount(filtered, "mock_unknown_tool", 1);
     try expectNamedCount(filtered, "mock_other_tool", 1);
 }
@@ -365,10 +370,11 @@ test "filteringTools — empty session_id returns tools unchanged" {
     var tools = allTools();
     const filtered = try filteringTools(alloc, &ctx.db, "", &tools);
 
-    try testing.expectEqual(@as(usize, 10), filtered.len);
+    try testing.expectEqual(@as(usize, 11), filtered.len);
     try expectNamedCount(filtered, "kanban_list", 1);
     try expectNamedCount(filtered, "kanban_move_task", 1);
     try expectNamedCount(filtered, "set_design_page", 1);
+    try expectNamedCount(filtered, "move_element_to_page", 1);
 }
 
 // ─── Test 6: unbound session (no task matches) → null context ─────────
@@ -398,9 +404,10 @@ test "filteringTools — unbound session_id returns tools unchanged" {
         &tools,
     );
 
-    try testing.expectEqual(@as(usize, 10), filtered.len);
+    try testing.expectEqual(@as(usize, 11), filtered.len);
     try expectNamedCount(filtered, "kanban_list", 1);
     try expectNamedCount(filtered, "kanban_move_task", 1);
+    try expectNamedCount(filtered, "move_element_to_page", 1);
 }
 
 // ─── Test 7: empty tools list — no-op regardless of parent ────────────
@@ -480,6 +487,7 @@ test "filteringTools — design-only tools + kanban parent returns empty" {
         nalarcore.group_design_elements.group_design_element_tool,
         nalarcore.set_element_parent.set_element_parent_tool,
         nalarcore.move_design_element.move_design_element_tool,
+        nalarcore.move_element_to_page.move_element_to_page_tool,
     };
     const filtered = try filteringTools(alloc, &ctx.db, "sess_kanban", &tools);
 
@@ -503,7 +511,7 @@ test "filteringTools — filter outcome is independent of input order" {
         "sess_design",
     );
 
-    // The "before" array: 10 tools in interleaved order (test 1's
+    // The "before" array: 11 tools in interleaved order (test 1's
     // fixture). Verify the post-filter names match.
     var before = allTools();
     const filtered = try filteringTools(alloc, &ctx.db, "sess_design", &before);
@@ -513,11 +521,12 @@ test "filteringTools — filter outcome is independent of input order" {
     const before_slice = names_before.items;
     std.mem.sort([]const u8, before_slice, {}, lessThanStr);
 
-    // The "after" array: SAME 10 tools, but in a completely different
+    // The "after" array: SAME 11 tools, but in a completely different
     // order. Build it from scratch so the test doesn't share state
     // with `before`.
     var after = [_]AgentTool{
         nalarcore.move_design_element.move_design_element_tool,
+        nalarcore.move_element_to_page.move_element_to_page_tool,
         nalarcore.set_element_parent.set_element_parent_tool,
         nalarcore.kanban_move_task.kanban_move_task_tool,
         nalarcore.update_design_element.update_design_element_tool,
@@ -586,7 +595,7 @@ test "filteringTools — folder branch and kanban-only branch never both fire" {
     };
     const filtered = try filteringTools(alloc, &ctx.db, "sess_folder", &tools);
 
-    // 10 → 8 (kanban+design removed) → here we expect mock to survive.
+    // 11 → 9 (kanban+design removed) → here we expect mock to survive.
     try testing.expectEqual(@as(usize, 1), filtered.len);
     try expectNamedCount(filtered, "mock_unknown_tool", 1);
     try expectNamedCount(filtered, "kanban_list", 0);
