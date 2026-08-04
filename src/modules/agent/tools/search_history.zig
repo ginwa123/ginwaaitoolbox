@@ -110,17 +110,25 @@ pub const search_history_tool = AgentTool{
             \\Search the full conversation history stored on disk — including messages compacted out of the live context — either by full-text query or by fetching a specific session's messages.
             \\
             \\TWO MODES:
-            \\- mode="text": full-text search over message content using SQLite FTS5. Provide `query`. Optionally scope to one `session_id`, filter by `role`, `since`/`until`, and paginate with `offset` + `limit`. Returns ranked matches with a preview snippet — use this when you remember *what* was said but not *where*. For long result sets, read <total_count> and call again with offset=N until offset + count >= total_count.
+            \\- mode="text": full-text search over message content using SQLite FTS5. Provide `query`. Optionally scope to one `session_id`, filter by `role`/`tool_name`/`parent_session_id`/`agent`, time-bound via `since`/`until` (or the relative shortcuts `since_relative`/`until_relative`/`relative_window`), restrict to live or compacted rows via `live_only`/`compacted_only`, and paginate with `offset` + `limit`. Returns ranked matches with a preview snippet — use this when you remember *what* was said but not *where*. For long result sets, read <total_count> and call again with offset=N until offset + count >= total_count.
             \\- mode="session": list (or fetch) messages belonging to one `session_id`. Returns ALL messages for the session — both those still in your live context (`is_feed_to_llm=1`) and those dropped by compaction (`is_feed_to_llm=0`). Returns an index (id, role, created_at, preview) by default; pass specific `message_ids` (up to 50) to also get the full <content> body for those entries. Use `order="desc"` for most-recent-first. Use `since` / `until` to paginate forward.
+            \\
+            \\FTS QUERY SANITIZATION: queries with `.`, `-`, `:`, `*`, `^`, `(`, `)`, `"`, `+` are auto-sanitized and wrapped in FTS5 phrase syntax — you can write `handle_tool.zig` or `AGENTS.md` without pre-escaping.
             \\
             \\Response shape (both modes):
             \\- <count>: number of entries in THIS response (page size).
             \\- <total_count>: total matching entries before pagination. Use to know whether more pages exist.
             \\- mode="session" with message_ids: per-message <content> is truncated to 16 KB; a `truncated="1"` attribute on <content> indicates there's more. Call again with a narrower message_ids list to fetch the rest.
             \\
-            \\Filters (optional, apply to both modes):
+            \\Filters (optional, apply to both modes unless noted):
             \\- role: "user", "assistant", or "tool" — exact match.
-            \\- since / until: YYYY-MM-DD HH:MM:SS (inclusive).
+            \\- tool_name (mode="text"): exact-match filter on the tool that produced the row. Useful for "find every bash invocation that ran `cargo test`".
+            \\- parent_session_id: exact-match filter on sub-agent sessions. Useful for "show me every message in the sub-agent that was spawned for X".
+            \\- agent: exact-match filter on the agent name (e.g. "main", "planning", "compaction"). Useful when one session has multiple agents.
+            \\- live_only / compacted_only (mutually exclusive): restrict to messages still in your live context (is_feed_to_llm=1) vs. dropped by compaction (is_feed_to_llm=0). Default returns both.
+            \\- since / until: YYYY-MM-DD HH:MM:SS inclusive bounds on created_at.
+            \\- since_relative / until_relative: shorthand like "1h", "30m", "2d", "1w". Mutually exclusive with `since`/`until`.
+            \\- relative_window: sugar for "since = now - X, until = now". Mutually exclusive with all other time params.
             \\- limit: max rows to return (default 20, max 200).
             \\- offset: mode="text" only — skip first N matches for pagination.
             \\- order: mode="session" only — "asc" (chronological forward, default) or "desc" (most-recent-first).
@@ -128,20 +136,32 @@ pub const search_history_tool = AgentTool{
             \\Example (text search): {"mode": "text", "query": "login bug fix"}
             \\Example (text search page 2): {"mode": "text", "query": "login bug", "offset": 20}
             \\Example (text search scoped): {"mode": "text", "query": "login bug", "session_id": "s_42"}
+            \\Example (text search by tool): {"mode": "text", "query": "test", "tool_name": "bash"}
+            \\Example (text search recent hour): {"mode": "text", "query": "error", "relative_window": "1h"}
+            \\Example (text search live only): {"mode": "text", "query": "todo", "live_only": true}
             \\Example (session browse): {"mode": "session", "session_id": "s_42"}
             \\Example (session recent first): {"mode": "session", "session_id": "s_42", "order": "desc"}
             \\Example (session full fetch): {"mode": "session", "session_id": "s_42", "message_ids": "h_1781,h_1782"}
+            \\Example (sub-agent trace): {"mode": "session", "session_id": "s_subA", "parent_session_id": "s_main"}
         ,
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{ .name = "mode", .type = "string", .description = "'text' (FTS5 full-text search, default) or 'session' (fetch by session_id)." },
-                .{ .name = "query", .type = "string", .description = "Required for mode='text'. FTS5 search query." },
+                .{ .name = "query", .type = "string", .description = "Required for mode='text'. FTS5 search query (auto-sanitized)." },
                 .{ .name = "session_id", .type = "string", .description = "Required for mode='session'. Optional scope filter for mode='text'." },
-                .{ .name = "message_ids", .type = "string", .description = "mode='session' only. Comma-separated ids to also fetch full <content> for. Capped at 50 per call — split into batches for more." },
+                .{ .name = "message_ids", .type = "string", .description = "Comma-separated ids. mode='session': fetch full <content> for these ids. mode='text': fetch full <content> for these ids alongside the FTS hit snippets. Both modes capped at 50 per call — split into batches for more." },
                 .{ .name = "role", .type = "string", .description = "Optional exact-match role filter: 'user', 'assistant', or 'tool'." },
+                .{ .name = "tool_name", .type = "string", .description = "Optional exact-match filter on tool_name (mode='text'). Useful for finding every bash / read_file / search invocation." },
+                .{ .name = "parent_session_id", .type = "string", .description = "Optional exact-match filter on parent_session_id. Useful for tracing a sub-agent's full session." },
+                .{ .name = "agent", .type = "string", .description = "Optional exact-match filter on agent name (e.g. 'main', 'planning', 'compaction'). Useful when one session has multiple agents." },
+                .{ .name = "live_only", .type = "boolean", .description = "If true, restrict to messages still in the LLM's live context (is_feed_to_llm=1). Mutually exclusive with compacted_only." },
+                .{ .name = "compacted_only", .type = "boolean", .description = "If true, restrict to messages dropped by compaction (is_feed_to_llm=0). Mutually exclusive with live_only." },
                 .{ .name = "since", .type = "string", .description = "Optional lower bound on created_at (inclusive). YYYY-MM-DD HH:MM:SS." },
                 .{ .name = "until", .type = "string", .description = "Optional upper bound on created_at (inclusive)." },
+                .{ .name = "since_relative", .type = "string", .description = "Optional relative lower bound (e.g. '1h', '30m', '2d', '1w'). Mutually exclusive with since." },
+                .{ .name = "until_relative", .type = "string", .description = "Optional relative upper bound. Same units as since_relative." },
+                .{ .name = "relative_window", .type = "string", .description = "Sugar for 'since = now - X, until = now'. Mutually exclusive with all other time params." },
                 .{ .name = "limit", .type = "number", .description = "Max rows to return. Default 20, max 200." },
                 .{ .name = "offset", .type = "number", .description = "mode='text' only. Skip first N matches for pagination. Combine with <total_count> in the response to walk through long result sets." },
                 .{ .name = "order", .type = "string", .description = "mode='session' only. 'asc' (chronological forward, default) or 'desc' (most-recent-first)." },

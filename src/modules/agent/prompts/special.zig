@@ -122,6 +122,26 @@ pub const CompactionAgent =
     \\role, and a short preview. The next agent can use that index to re-read
     \\the original messages on demand.
     \\
+    \\Filters available on both modes (use these to scope your searches):
+    \\- `role`: "user" | "assistant" | "tool" — exact match.
+    \\- `tool_name` (mode="text"): exact-match filter on the tool that produced
+    \\  the row. Useful for "find every bash invocation that ran `cargo test`".
+    \\- `parent_session_id`: exact-match filter on sub-agent sessions.
+    \\  Useful for "show me every message in the sub-agent that was spawned for X".
+    \\- `agent`: exact-match filter on the agent name (e.g. "main",
+    \\  "planning", "compaction"). Useful when one session has multiple agents.
+    \\- `live_only` / `compacted_only` (mode="text"): restrict to messages still
+    \\  in the LLM's live context (is_feed_to_llm=1) vs. dropped by compaction
+    \\  (is_feed_to_llm=0). Default returns both. Mutually exclusive.
+    \\- `since` / `until`: YYYY-MM-DD HH:MM:SS inclusive bounds on created_at.
+    \\- `since_relative` / `until_relative` / `relative_window`: shorthand
+    \\  time bounds — `"1h"`, `"30m"`, `"2d"`, `"1w"`. Mutually exclusive
+    \\  with the absolute `since`/`until`. `relative_window="1h"` means
+    \\  "since = now - 1h, until = now" — useful for "give me the last hour".
+    \\- `limit`: max rows (default 20, cap 200).
+    \\- `offset` (mode="text"): pagination — pair with <total_count> in the
+    \\  response to know when to stop.
+    \\
     \\Implications for your output:
     \\- You do NOT need to paste full tool outputs, file contents, or long
     \\  assistant responses verbatim — the agent will fetch them on demand.
