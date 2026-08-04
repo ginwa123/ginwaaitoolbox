@@ -36,6 +36,7 @@ pub const execUpdateElement = @import("tools_exec_update_element.zig").execUpdat
 pub const execGroupElements = @import("tools_exec_group_elements.zig").execGroupElements;
 pub const execSetElementParent = @import("tools_exec_set_element_parent.zig").execSetElementParent;
 pub const execMoveDesignElement = @import("tools_exec_move_design_element.zig").execMoveDesignElement;
+pub const execMoveElementToPage = @import("tools_exec_move_element_to_page.zig").execMoveElementToPage;
 pub const execShowPreview = @import("tools_exec_show_preview.zig").execShowPreview;
 pub const execGetDesignContext = @import("tools_exec_get_design_context.zig").execGetDesignContext;
 pub const execPreviewDesignPage = @import("tools_exec_preview_design_page.zig").execPreviewDesignPage;
@@ -79,6 +80,18 @@ pub const ToolExecContext = struct {
     active_loops: *ActiveLoops,
     selected_profile_model: []const u8 = "",
     cwd_override: ?[]const u8 = null,
+    /// The active design page id (when the LLM is in a design-item
+    /// session). Empty string means "no active design page" — the
+    /// design tools (move_design_element, set_design_page, etc.)
+    /// require this. The agentic loop sets it from
+    /// `activeDesignPageId` in the session state.
+    ///
+    /// Added 2026-08-06 for the `move_element_to_page` tool — the
+    /// LLM needs to know which page the element is currently on
+    /// (the model function takes `source_page_id` as a required
+    /// param). Default empty so existing call sites continue to
+    /// compile.
+    active_page_id: []const u8 = "",
 };
 
 pub const ToolExecResult = struct {

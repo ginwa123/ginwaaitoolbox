@@ -479,6 +479,11 @@ pub fn main(init: std.process.Init) !void {
     // SQL transaction. See
     // docs/superpowers/plans/2026-08-06-move-element-with-descendants.md (Chunk 2, Task 2.2).
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/move-batch", ai_mod.http_handlers.designElementsMoveBatchHandler);
+    // Cross-page element relocate. Changes the element's `page_id` from
+    // `:page_id` (path) to a target page in the body. Cascades to
+    // transitive descendants when `apply_to_children=true` (default).
+    // Plan: docs/superpowers/plans/2026-08-06-move-element-to-page.md (Chunk 2).
+    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/move-to-page", ai_mod.http_handlers.designElementsMoveToPageHandler);
 
     // testing debug
     try gs.router.post("/test/shutdown", ai_mod.http_handlers.shutdownHandler);

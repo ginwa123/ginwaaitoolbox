@@ -110,6 +110,11 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     // build test actually runs them. See
     // docs/superpowers/plans/2026-08-06-move-element-with-descendants.md (Chunk 2).
     _ = @import("http_handlers/design_elements_move_batch.zig");
+    // Inline tests for the move-to-page handler `useCase` live at the
+    // bottom of design_elements_move_to_page.zig — registered here so
+    // zig build test actually runs them. See
+    // docs/superpowers/plans/2026-08-06-move-element-to-page.md (Chunk 2).
+    _ = @import("http_handlers/design_elements_move_to_page.zig");
     _ = @import("http_handlers/kanban_copy_spec_test.zig");
     _ = @import("http_handlers/tasks_move_test.zig");
     _ = @import("http_handlers/tasks_create_kanban_test.zig");
@@ -126,6 +131,7 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     _ = @import("on_event_sent_design_test.zig");
     _ = @import("gitignore_vendor_sqlite3_test.zig");
     _ = @import("../../modules/agent/tools/show_preview_test.zig");
+    _ = @import("../../modules/agent/tools/move_element_to_page_test.zig");
     // _ = @import("extract_base64_image_urls_test.zig"); // DISABLED - 9 failing tests (investigation shows std.testing.expectEqualStrings has a bug with literal strings)
     // _ = @import("session_db_test.zig"); // DISABLED - pre-existing test errors (see session_db_test.zig for details)
     _ = @import("agentic_loop/test_runner.zig");

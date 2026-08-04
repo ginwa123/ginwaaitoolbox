@@ -82,6 +82,11 @@ const emit = defineEmits<{
   // workspacesStore.reparentDesignElementsBatch. Independent of the
   // Ungroup action (which dissolves the selected group itself).
   leaveGroup: [elementId: string]
+  // NEW (Chunk 7, design-move-to-page plan, 2026-08-06): bubble the
+  // "Move to page..." selection up to the host so it can open the
+  // MoveToPageDialog with the right element id. The dialog handles
+  // the actual API call after the user picks a target page.
+  moveToPage: [elementId: string]
   selectAll: []
   bringToFront: [targetIds: string[]]
   bringForward: [targetIds: string[]]
@@ -409,6 +414,7 @@ const handleMoveDown = (elementId: string): void => {
       @group="(ids) => emit('group', ids)"
       @ungroup="(id) => emit('ungroup', id)"
       @leave-group="(id) => emit('leaveGroup', id)"
+      @move-to-page="(id) => emit('moveToPage', id)"
       @select-all="emit('selectAll')"
       @bring-to-front="(ids) => emit('bringToFront', ids)"
       @bring-forward="(ids) => emit('bringForward', ids)"

@@ -183,6 +183,9 @@ pub const designElementsReparentBatchHandler = @import("design_elements_reparent
 // Server-side cascade move. POST /api/workspaces/:w/items/:i/design/pages/:p/elements/move-batch
 // — see docs/superpowers/plans/2026-08-06-move-element-with-descendants.md (Chunk 2).
 pub const designElementsMoveBatchHandler = @import("design_elements_move_batch.zig").designElementsMoveBatchHandler;
+// Cross-page element relocate. POST /api/workspaces/:w/items/:i/design/pages/:p/elements/:eid/move-to-page
+// — see docs/superpowers/plans/2026-08-06-move-element-to-page.md (Chunk 2).
+pub const designElementsMoveToPageHandler = @import("design_elements_move_to_page.zig").designElementsMoveToPageHandler;
 pub const designElementsUngroupHandler = @import("design_elements_ungroup.zig").designElementsUngroupHandler;
 
 // Session to client IDs monitoring

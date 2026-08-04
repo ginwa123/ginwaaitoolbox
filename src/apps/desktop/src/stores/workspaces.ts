@@ -2493,6 +2493,65 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     return created
   }
 
+  // Move a single element (and its subtree when apply_to_children=true)
+  // from `sourcePageId` to `newPageId`. Backend returns the moved
+  // elements; we mirror by:
+  //   1. Removing the moved ids from `item.design_elements` IF the
+  //      active page happens to be the source page (we have the
+  //      source's elements in local memory only when source == active).
+  //   2. Setting `activeDesignPageId` to `newPageId` (Q6 default — the
+  //      user navigates to the target page so they can see the result).
+  //   3. Refetching the target page's elements so the canvas shows
+  //      the moved elements (the active-page elements are the source
+  //      of truth for the canvas render).
+  // The source page's elements will be refreshed the next time the
+  // user navigates back (the existing `fetchDesignElements` watcher
+  // fires on `activeDesignPageId` change).
+  //
+  // Plan: docs/superpowers/plans/2026-08-06-move-element-to-page.md (Chunk 5)
+  async function moveDesignElementToPage(
+    workspaceId: string,
+    itemId: string,
+    sourcePageId: string,
+    elementId: string,
+    input: {
+      new_page_id: string
+      apply_to_children?: boolean
+    },
+  ): Promise<DesignElement[] | undefined> {
+    try {
+      const { updated } = await api.moveDesignElementToPage(
+        workspaceId,
+        itemId,
+        sourcePageId,
+        elementId,
+        input,
+      )
+      const item = findItem(workspaceId, itemId)
+      // Mirror: remove moved ids from the source page's elements if
+      // they're in local memory (the source page is the active page).
+      if (item && item.design_elements && activeDesignPageId.value === sourcePageId) {
+        const movedIds = new Set(updated.map((el) => el.id))
+        for (let i = item.design_elements.length - 1; i >= 0; i--) {
+          if (movedIds.has(item.design_elements[i]!.id)) {
+            item.design_elements.splice(i, 1)
+          }
+        }
+      }
+      // Q6 default: navigate to the target page. Also triggers the
+      // existing watcher to refetch the target page's elements.
+      activeDesignPageId.value = input.new_page_id
+      // Re-fetch the target page explicitly so the canvas reflects the
+      // moved elements immediately (the watcher's debounce may add
+      // latency the user notices on click).
+      await fetchDesignElements(workspaceId, itemId, input.new_page_id)
+      return updated
+    } catch (err) {
+      console.error('[workspacesStore.moveDesignElementToPage] API call failed:', err)
+      return undefined
+    }
+  }
+
   // Manually fire a routine. Returns the backend's
   // `{ session_id }` on success, or `undefined` on failure (the
   // caller's responsibility to navigate / show an error).
@@ -3689,6 +3748,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     resizeDesignElement,
     updateDesignElementsGeometryBatch,
     moveDesignElementsBatch,
+    moveDesignElementToPage,
     updateDesignElementHtml,
     deleteDesignElement,
     deleteDesignPage,

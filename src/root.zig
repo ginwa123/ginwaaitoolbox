@@ -448,6 +448,7 @@ pub const update_design_element = @import("modules/agent/tools/update_design_ele
 pub const group_design_elements = @import("modules/agent/tools/group_design_elements.zig");
 pub const set_element_parent = @import("modules/agent/tools/set_element_parent.zig");
 pub const move_design_element = @import("modules/agent/tools/move_design_element.zig");
+pub const move_element_to_page = @import("modules/agent/tools/move_element_to_page.zig");
 pub const get_design_context = @import("modules/agent/tools/get_design_context.zig");
 pub const preview_design_page = @import("modules/agent/tools/preview_design_page.zig");
 

@@ -1566,6 +1566,316 @@ pub fn moveElementsWithDescendantsBatch(
     return results.toOwnedSlice(allocator);
 }
 
+// ─── moveElementToPage ────────────────────────────────────────────────────
+//
+// Plan: docs/superpowers/plans/2026-08-06-move-element-to-page.md (Chunk 1)
+//
+// Cross-page element relocate. Changes `page_id` (and `position` on the
+// target page) instead of `x`/`y`. Mirrors the cascade semantics of
+// `moveElementsWithDescendantsBatch`: when `apply_to_children = true`
+// (default), the moved subtree includes the root AND every transitive
+// descendant, in one SQL transaction.
+//
+// Behaviour:
+//   1. Same-page guard (cheap) → `SamePage`.
+//   2. Pre-flight: the element must exist on `source_page_id`.
+//      Different-page `element_id` → `ElementNotFound`.
+//   3. Pre-flight: the target page must exist (`PageNotFound`).
+//   4. Cross-design guard: the target must be on the same `item_id`
+//      as the source page → `CrossDesign`.
+//   5. Resolve the moved-subtree element ids via recursive CTE (depth-
+//      limited at 10000 as a cycle safety net).
+//   6. Begin transaction. For each subtree element:
+//      a. SET page_id = target_page_id.
+//      b. For the ROOT only: SET position = (MAX(position) on target
+//         page) + 1 — append-at-end per Q5 default.
+//   7. Auto-detach (Q4 default): if the root's parent_id is non-empty
+//      AND that parent is NOT in the moved subtree (i.e. the parent
+//      stays behind on the source page), SET parent_id = NULL on the
+//      root. Otherwise descendants would carry a cross-page parent_id
+//      reference (schema invariant violated).
+//   8. Commit. On error before commit, rollback leaves DB unchanged.
+//   9. Re-SELECT the moved subtree via `getElement` (heap-owned for
+//      the caller).
+//  10. Emit a `design_elements_geometry_batch_updated` SSE event with
+//      the deduped subtree element ids (best-effort; SSE failure
+//      doesn't fail the request — same as the sibling cascade handler).
+//
+// The function is single-element only (no batch). Followup plan can
+// add `moveElementsToPageBatch` if the LLM needs to relayout multiple
+// elements across pages in one call.
+
+pub const MoveElementToPageInput = struct {
+    /// The page the element currently lives on. The element must exist
+    /// here (any other page → `ElementNotFound`).
+    source_page_id: []const u8,
+    /// The element id to move. The cascade moves every transitive
+    /// descendant too when `apply_to_children = true`.
+    element_id: []const u8,
+    /// The destination page. Must exist and share the design item
+    /// with `source_page_id`.
+    target_page_id: []const u8,
+    /// Default true. When true, every transitive descendant of
+    /// `element_id` moves with it (Figma parity); when false, only the
+    /// root itself moves (descendants stay on the source page as
+    /// top-level orphans).
+    apply_to_children: bool = true,
+};
+
+pub const MoveElementToPageError = error{
+    /// `source_page_id` and `target_page_id` are equal — no-op, rejected
+    /// upfront to avoid an unnecessary transaction.
+    SamePage,
+    /// The element_id doesn't exist on the source page (either absent
+    /// entirely or on a different page).
+    ElementNotFound,
+    /// The target page id doesn't match any row in `design_pages`.
+    PageNotFound,
+    /// The target page exists but lives on a different design item.
+    CrossDesign,
+    /// Any DB-side failure (PrepareFailed / ExecuteFailed / etc.).
+    DbError,
+    /// Allocator failure.
+    OutOfMemory,
+};
+
+pub fn moveElementToPage(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: MoveElementToPageInput,
+) anyerror![]DesignElement {
+    // 1. Same-page guard. Cheap, fail fast.
+    if (std.mem.eql(u8, input.source_page_id, input.target_page_id)) {
+        return error.SamePage;
+    }
+
+    // 2. Look up the element + verify it lives on the source page.
+    //    Returns the element's existing page_id + parent_id (NULL →
+    //    '' via COALESCE).
+    const ElementLookup = struct {
+        page_id: []u8,
+        parent_id: []u8,
+    };
+    const elem_lookup: ElementLookup = blk: {
+        var q = try db.query(allocator,
+            \\SELECT page_id, COALESCE(parent_id, '')
+            \\FROM design_page_elements WHERE id = ?
+        , &.{input.element_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.ElementNotFound;
+        defer row.deinit(allocator);
+        break :blk .{
+            .page_id = try allocator.dupe(u8, row.values[0]),
+            .parent_id = try allocator.dupe(u8, row.values[1]),
+        };
+    };
+    defer allocator.free(elem_lookup.page_id);
+    defer allocator.free(elem_lookup.parent_id);
+
+    // The element may exist on a DIFFERENT page than the one the caller
+    // thinks it's on — treat that as ElementNotFound (don't leak the
+    // cross-page detail to the caller).
+    if (!std.mem.eql(u8, elem_lookup.page_id, input.source_page_id)) {
+        return error.ElementNotFound;
+    }
+
+    // 3. Look up the source page's (workspace_id, item_id) JOIN for the
+    //    SSE event payload. Source page must exist (it should, since
+    //    the element is on it — but defensive).
+    const SourceContext = struct {
+        workspace_id: []u8,
+        item_id: []u8,
+    };
+    const source_ctx: SourceContext = blk: {
+        var q = try db.query(allocator,
+            \\SELECT wi.workspace_id, dp.workspace_item_id
+            \\FROM design_pages dp
+            \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
+            \\WHERE dp.id = ?
+        , &.{input.source_page_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.PageNotFound;
+        defer row.deinit(allocator);
+        break :blk .{
+            .workspace_id = try allocator.dupe(u8, row.values[0]),
+            .item_id = try allocator.dupe(u8, row.values[1]),
+        };
+    };
+    defer allocator.free(source_ctx.workspace_id);
+    defer allocator.free(source_ctx.item_id);
+
+    // 4. Look up the target page. Verifies (a) it exists and (b) it
+    //    lives on the same design item as the source page.
+    const target_item_id: []u8 = blk: {
+        var q = try db.query(allocator,
+            \\SELECT workspace_item_id FROM design_pages WHERE id = ?
+        , &.{input.target_page_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.PageNotFound;
+        defer row.deinit(allocator);
+        break :blk try allocator.dupe(u8, row.values[0]);
+    };
+    defer allocator.free(target_item_id);
+    if (!std.mem.eql(u8, target_item_id, source_ctx.item_id)) {
+        return error.CrossDesign;
+    }
+
+    // 5. Resolve the moved-subtree element ids.
+    //    - apply_to_children = true  → root + every transitive descendant
+    //      (recursive CTE, LIMIT 10000 cycle safety)
+    //    - apply_to_children = false → just the root
+    var subtree_ids: std.ArrayList([]u8) = .empty;
+    defer {
+        for (subtree_ids.items) |id| allocator.free(id);
+        subtree_ids.deinit(allocator);
+    }
+
+    if (input.apply_to_children) {
+        var q = try db.query(allocator,
+            \\WITH RECURSIVE subtree(id) AS (
+            \\    SELECT id FROM design_page_elements
+            \\        WHERE id = ? AND page_id = ?
+            \\    UNION ALL
+            \\    SELECT dpe.id FROM design_page_elements dpe
+            \\        JOIN subtree s ON dpe.parent_id = s.id
+            \\    LIMIT 10000
+            \\)
+            \\SELECT id FROM subtree
+        , &.{ input.element_id, input.source_page_id });
+        defer q.deinit();
+        while (try q.next()) |row| {
+            defer row.deinit(allocator);
+            try subtree_ids.append(allocator, try allocator.dupe(u8, row.values[0]));
+        }
+    } else {
+        try subtree_ids.append(allocator, try allocator.dupe(u8, input.element_id));
+    }
+
+    // 6. Begin transaction.
+    var tx = try db.begin();
+    var committed = false;
+    defer if (!committed) tx.rollback() catch {};
+
+    // 7. UPDATE page_id for every subtree element. One dynamic
+    //    IN-list statement covers the whole subtree (same pattern as
+    //    `moveElementsWithDescendantsBatch`).
+    {
+        var sql_buf: std.ArrayList(u8) = .empty;
+        defer sql_buf.deinit(allocator);
+        try sql_buf.appendSlice(allocator,
+            \\UPDATE design_page_elements
+            \\SET page_id = ?, updated_at = datetime('now')
+            \\WHERE id IN (
+        );
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(allocator);
+        try argv.append(allocator, input.target_page_id);
+        for (subtree_ids.items, 0..) |id, i| {
+            if (i > 0) try sql_buf.append(allocator, ',');
+            try sql_buf.append(allocator, '?');
+            try argv.append(allocator, id);
+        }
+        try sql_buf.append(allocator, ')');
+        try tx.exec(allocator, sql_buf.items, argv.items);
+    }
+
+    // 8. Q4 default — auto-detach the root when its parent isn't in
+    //    the moved subtree. The parent's `parent_id` chain stays on
+    //    the source page; if we kept the link, the root would carry a
+    //    cross-page parent_id (violating the "parent lives on the same
+    //    page" invariant).
+    //
+    // Skip when: root is top-level (parent_id empty), or the parent IS
+    // part of the moved subtree (we're moving a group with its parent).
+    if (elem_lookup.parent_id.len > 0) {
+        var parent_in_subtree = false;
+        for (subtree_ids.items) |id| {
+            if (std.mem.eql(u8, id, elem_lookup.parent_id)) {
+                parent_in_subtree = true;
+                break;
+            }
+        }
+        if (!parent_in_subtree) {
+            try tx.exec(allocator,
+                \\UPDATE design_page_elements
+                \\SET parent_id = NULL, updated_at = datetime('now')
+                \\WHERE id = ?
+            , &.{input.element_id});
+        }
+    }
+
+    // 9. Append-at-end for the root's `position` on the target page
+    //    (Q5 default). Descendants' positions are NOT adjusted here;
+    //    they're irrelevant for rendering (the page-level rendering
+    //    order is by `position` and descendants within a group render
+    //    in tree order — a separate column tracks that ordering, not
+    //    the page-level `position`). The schema's `position` is
+    //    rendered for top-level elements only; children within a
+    //    group use `parent_id` + their own `position` for inter-child
+    //    ordering on the target page's independent sort.
+    //
+    // We don't refresh `updated_at` here (the row already got it from
+    // the bulk UPDATE above).
+    {
+        const next_pos_str = blk: {
+            var q = try tx.query(allocator,
+                \\SELECT COALESCE(MAX(position), -1)
+                \\FROM design_page_elements WHERE page_id = ?
+            , &.{input.target_page_id});
+            defer q.deinit();
+            const row = (try q.next()) orelse return error.DbError;
+            defer row.deinit(allocator);
+            const max_pos = std.fmt.parseInt(i64, row.values[0], 10) catch 0;
+            break :blk try std.fmt.allocPrint(allocator, "{d}", .{max_pos + 1});
+        };
+        defer allocator.free(next_pos_str);
+        try tx.exec(allocator,
+            "UPDATE design_page_elements SET position = ? WHERE id = ?",
+            &.{ next_pos_str, input.element_id });
+    }
+
+    // 10. Commit.
+    try tx.commit();
+    committed = true;
+
+    // 11. Re-SELECT the moved subtree. `getElement` allocates fresh
+    //     strings on each call, so the returned slice is fully owned
+    //     — caller releases with `freeElements`.
+    var results: std.ArrayList(DesignElement) = .empty;
+    errdefer {
+        for (results.items) |e| freeElement(allocator, e);
+        results.deinit(allocator);
+    }
+    for (subtree_ids.items) |id| {
+        const el = getElement(allocator, db, id) catch return error.DbError;
+        try results.append(allocator, el);
+    }
+
+    // 12. SSE event. Best-effort — failure here does NOT fail the
+    //     request (the optimistic mirror in the frontend store handles
+    //     the primary state; other tabs may need a manual refresh).
+    var element_ids_buf: std.ArrayList([]const u8) = .empty;
+    defer element_ids_buf.deinit(allocator);
+    for (subtree_ids.items) |id| try element_ids_buf.append(allocator, id);
+    const updated_at: i64 = blk: {
+        var tv: std.c.timeval = undefined;
+        _ = std.c.gettimeofday(&tv, null);
+        break :blk @intCast(tv.sec);
+    };
+    // The event carries source_page_id for "from" + the moved ids; the
+    // frontend reads page_id from the moved elements themselves to
+    // route the update.
+    on_event_sent_design.onEventSendDesignElementsGeometryBatchUpdated(allocator, .{
+        .workspace_id = source_ctx.workspace_id,
+        .item_id = source_ctx.item_id,
+        .page_id = input.target_page_id,
+        .element_ids = element_ids_buf.items,
+        .updated_at = updated_at,
+    }) catch {};
+
+    return results.toOwnedSlice(allocator);
+}
+
 // ─── groupElements ────────────────────────────────────────────────────────
 
 pub const GroupElementsInput = struct {
@@ -4927,4 +5237,510 @@ test "moveElementsWithDescendantsBatch handles deeply nested subtree (depth 3+)"
     try testing_move_batch.expectEqual(@as(i64, 107), try moveBatchReadY(alloc, &ctx.db, g3));
     try testing_move_batch.expectEqual(@as(i64, 155), try moveBatchReadX(alloc, &ctx.db, leaf));
     try testing_move_batch.expectEqual(@as(i64, 157), try moveBatchReadY(alloc, &ctx.db, leaf));
+}
+
+// ─── Behavioural tests for `moveElementToPage` (2026-08-06) ───
+//
+// Plan: docs/superpowers/plans/2026-08-06-move-element-to-page.md (Chunk 1)
+//
+// Inline tests per the project rule (see
+// `nalar-agentic-loop-inline-tests-required.md`). Mirrors the
+// `moveElementsWithDescendantsBatch` inline-test pattern above (lines
+// 4327-4929).
+
+const testing_move_to_page = std.testing;
+
+fn setupMoveToPageDbAndItem() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_id: []const u8,
+    item_path: []u8,
+    /// Page A — the source page (where the element initially lives).
+    source_page_id: []u8,
+    /// Page B — the target page (where the element will be moved to).
+    target_page_id: []u8,
+} {
+    const alloc = testing_move_to_page.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '')
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    UNIQUE (workspace_item_id, name),
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 375, height INTEGER NOT NULL DEFAULT 667,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle', rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '', stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0, opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '', text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '', parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    var tmp = testing_move_to_page.tmpDir(.{});
+    var tmpdir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_len = try tmp.dir.realPath(testing_move_to_page.io, &tmpdir_buf);
+    const tmpdir_path = try testing_move_to_page.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
+
+    const item_id_const = "item_move_to_page";
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)",
+        &.{ item_id_const, tmpdir_path });
+
+    const item_id_slice = try alloc.dupe(u8, item_id_const);
+
+    const source_page_id = try setDesignPage(alloc, &db, .{
+        .item_id = item_id_slice,
+        .page_name = "source",
+        .width = 1440,
+        .height = 1024,
+    });
+    const target_page_id = try setDesignPage(alloc, &db, .{
+        .item_id = item_id_slice,
+        .page_name = "target",
+        .width = 1440,
+        .height = 1024,
+    });
+
+    return .{
+        .db = db,
+        .threaded = threaded,
+        .item_id = item_id_slice,
+        .item_path = tmpdir_path,
+        .source_page_id = source_page_id,
+        .target_page_id = target_page_id,
+    };
+}
+
+fn teardownMoveToPageDb(db: *sqlite.SqliteBackend, threaded: *std.Io.Threaded) void {
+    db.deinit();
+    threaded.deinit();
+}
+
+/// Read the element's `page_id` column from the DB (returns the empty
+/// string when NULL is stored).
+fn moveToPageReadPageId(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    element_id: []const u8,
+) ![]u8 {
+    var q = try db.query(alloc,
+        "SELECT COALESCE(page_id, '') FROM design_page_elements WHERE id = ?",
+        &.{element_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ElementNotFound;
+    defer row.deinit(alloc);
+    return try alloc.dupe(u8, row.values[0]);
+}
+
+/// Read the element's `parent_id` column from the DB (returns the empty
+/// string when NULL is stored).
+fn moveToPageReadParentId(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    element_id: []const u8,
+) ![]u8 {
+    var q = try db.query(alloc,
+        "SELECT COALESCE(parent_id, '') FROM design_page_elements WHERE id = ?",
+        &.{element_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ElementNotFound;
+    defer row.deinit(alloc);
+    return try alloc.dupe(u8, row.values[0]);
+}
+
+test "moveElementToPage moves a leaf with no children to another page (cascade is a no-op)" {
+    const alloc = testing_move_to_page.allocator;
+    var ctx = try setupMoveToPageDbAndItem();
+    defer teardownMoveToPageDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.source_page_id);
+    defer alloc.free(ctx.target_page_id);
+
+    const leaf = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.source_page_id,
+        .name = "leaf",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 100, .y = 50, .width = 80, .height = 40,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(leaf);
+
+    const updated = try moveElementToPage(alloc, &ctx.db, .{
+        .source_page_id = ctx.source_page_id,
+        .element_id = leaf,
+        .target_page_id = ctx.target_page_id,
+        .apply_to_children = true,
+    });
+    defer freeElements(alloc, updated);
+
+    try testing_move_to_page.expectEqual(@as(usize, 1), updated.len);
+    try testing_move_to_page.expectEqualStrings(leaf, updated[0].id);
+    try testing_move_to_page.expectEqualStrings(ctx.target_page_id, updated[0].page_id);
+
+    // x/y UNCHANGED — this is a page move, not a coordinate translate.
+    try testing_move_to_page.expectEqual(@as(i64, 100), updated[0].x);
+    try testing_move_to_page.expectEqual(@as(i64, 50), updated[0].y);
+
+    // DB persistence check.
+    const persisted_pid = try moveToPageReadPageId(alloc, &ctx.db, leaf);
+    defer alloc.free(persisted_pid);
+    try testing_move_to_page.expectEqualStrings(ctx.target_page_id, persisted_pid);
+}
+
+test "moveElementToPage moves a group with 2 children atomically (subtree on target)" {
+    const alloc = testing_move_to_page.allocator;
+    var ctx = try setupMoveToPageDbAndItem();
+    defer teardownMoveToPageDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.source_page_id);
+    defer alloc.free(ctx.target_page_id);
+
+    const group = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.source_page_id,
+        .name = "g",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 50, .y = 100, .width = 200, .height = 150,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group);
+
+    const child1 = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.source_page_id,
+        .name = "c1",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 70, .y = 110, .width = 30, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = group,
+    });
+    defer alloc.free(child1);
+
+    const child2 = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.source_page_id,
+        .name = "c2",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 200, .y = 200, .width = 30, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = group,
+    });
+    defer alloc.free(child2);
+
+    const updated = try moveElementToPage(alloc, &ctx.db, .{
+        .source_page_id = ctx.source_page_id,
+        .element_id = group,
+        .target_page_id = ctx.target_page_id,
+        .apply_to_children = true,
+    });
+    defer freeElements(alloc, updated);
+
+    // Subtree = 3 elements: group + 2 children. ALL on target page now.
+    try testing_move_to_page.expectEqual(@as(usize, 3), updated.len);
+    for (updated) |el| {
+        try testing_move_to_page.expectEqualStrings(ctx.target_page_id, el.page_id);
+    }
+
+    // Children retain parent_id = group (group is also on the target page,
+    // so the FK is still valid).
+    const c1_pid = try moveToPageReadParentId(alloc, &ctx.db, child1);
+    defer alloc.free(c1_pid);
+    try testing_move_to_page.expectEqualStrings(group, c1_pid);
+
+    const c2_pid = try moveToPageReadParentId(alloc, &ctx.db, child2);
+    defer alloc.free(c2_pid);
+    try testing_move_to_page.expectEqualStrings(group, c2_pid);
+}
+
+test "moveElementToPage moves a group with grandchildren (depth-2 cascade)" {
+    const alloc = testing_move_to_page.allocator;
+    var ctx = try setupMoveToPageDbAndItem();
+    defer teardownMoveToPageDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.source_page_id);
+    defer alloc.free(ctx.target_page_id);
+
+    const parent_group = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.source_page_id,
+        .name = "outer",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 100, .y = 100, .width = 300, .height = 300,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(parent_group);
+
+    const child_group = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.source_page_id,
+        .name = "inner",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 150, .y = 150, .width = 100, .height = 100,
+        .fill = "#cccccc", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = parent_group,
+    });
+    defer alloc.free(child_group);
+
+    const leaf = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.source_page_id,
+        .name = "leaf",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 170, .y = 170, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = child_group,
+    });
+    defer alloc.free(leaf);
+
+    const updated = try moveElementToPage(alloc, &ctx.db, .{
+        .source_page_id = ctx.source_page_id,
+        .element_id = parent_group,
+        .target_page_id = ctx.target_page_id,
+        .apply_to_children = true,
+    });
+    defer freeElements(alloc, updated);
+
+    // Subtree = 3 elements (parent_group + child_group + leaf).
+    try testing_move_to_page.expectEqual(@as(usize, 3), updated.len);
+    for (updated) |el| {
+        try testing_move_to_page.expectEqualStrings(ctx.target_page_id, el.page_id);
+    }
+
+    // The leaf's parent_id still points to child_group (still on target page).
+    const leaf_pid = try moveToPageReadParentId(alloc, &ctx.db, leaf);
+    defer alloc.free(leaf_pid);
+    try testing_move_to_page.expectEqualStrings(child_group, leaf_pid);
+}
+
+test "moveElementToPage auto-clears parent_id when the parent is NOT being moved" {
+    // Q4 default (from the spec): when the selected element has a
+    // parent_id pointing to an element that's NOT in the moved subtree
+    // (i.e. the parent stays on the source page), the parent_id is
+    // auto-cleared so the element moves as top-level on the target page.
+    // Otherwise we'd have a cross-page parent reference, which violates
+    // the invariant "parent_id must live on the same page".
+    const alloc = testing_move_to_page.allocator;
+    var ctx = try setupMoveToPageDbAndItem();
+    defer teardownMoveToPageDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.source_page_id);
+    defer alloc.free(ctx.target_page_id);
+
+    // outer group on the source page — stays on the source page.
+    const outer = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.source_page_id,
+        .name = "outer",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 400, .height = 400,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(outer);
+
+    // inner child of outer — this is what gets moved.
+    const inner = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.source_page_id,
+        .name = "inner",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 50, .y = 50, .width = 80, .height = 60,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = outer,
+    });
+    defer alloc.free(inner);
+
+    const updated = try moveElementToPage(alloc, &ctx.db, .{
+        .source_page_id = ctx.source_page_id,
+        .element_id = inner,
+        .target_page_id = ctx.target_page_id,
+        .apply_to_children = true,
+    });
+    defer freeElements(alloc, updated);
+
+    // Subtree of `inner` is just itself (no children), so 1 element.
+    try testing_move_to_page.expectEqual(@as(usize, 1), updated.len);
+    try testing_move_to_page.expectEqualStrings(ctx.target_page_id, updated[0].page_id);
+
+    // parent_id is cleared (top-level on the target page).
+    const inner_pid = try moveToPageReadParentId(alloc, &ctx.db, inner);
+    defer alloc.free(inner_pid);
+    try testing_move_to_page.expectEqualStrings("", inner_pid);
+
+    // The outer group is STILL on the source page.
+    const outer_pid = try moveToPageReadPageId(alloc, &ctx.db, outer);
+    defer alloc.free(outer_pid);
+    try testing_move_to_page.expectEqualStrings(ctx.source_page_id, outer_pid);
+}
+
+test "moveElementToPage rejects SamePage (source == target)" {
+    const alloc = testing_move_to_page.allocator;
+    var ctx = try setupMoveToPageDbAndItem();
+    defer teardownMoveToPageDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.source_page_id);
+    defer alloc.free(ctx.target_page_id);
+
+    const leaf = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.source_page_id,
+        .name = "l",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(leaf);
+
+    const result = moveElementToPage(alloc, &ctx.db, .{
+        .source_page_id = ctx.source_page_id,
+        .element_id = leaf,
+        .target_page_id = ctx.source_page_id, // same as source!
+        .apply_to_children = true,
+    });
+    try testing_move_to_page.expectError(error.SamePage, result);
+}
+
+test "moveElementToPage rejects CrossDesign (target on different item)" {
+    const alloc = testing_move_to_page.allocator;
+    var ctx = try setupMoveToPageDbAndItem();
+    defer teardownMoveToPageDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.source_page_id);
+    defer alloc.free(ctx.target_page_id);
+
+    // Create a SECOND design item with its own page.
+    var tmp2 = testing_move_to_page.tmpDir(.{});
+    var tmp2_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp2_len = try tmp2.dir.realPath(testing_move_to_page.io, &tmp2_buf);
+    const tmp2_path = try testing_move_to_page.allocator.dupe(u8, tmp2_buf[0..tmp2_len]);
+    defer alloc.free(tmp2_path);
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES ('item_other', 'ws_test', 'design', ?)",
+        &.{tmp2_path});
+    const item_other_slice = try alloc.dupe(u8, "item_other");
+    defer alloc.free(item_other_slice);
+    const other_page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = item_other_slice,
+        .page_name = "other",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(other_page_id);
+
+    // Add the leaf on the source page.
+    const leaf = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.source_page_id,
+        .name = "l",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(leaf);
+
+    // Try to move it to a page on a DIFFERENT design item — must error.
+    const result = moveElementToPage(alloc, &ctx.db, .{
+        .source_page_id = ctx.source_page_id,
+        .element_id = leaf,
+        .target_page_id = other_page_id, // different design item!
+        .apply_to_children = true,
+    });
+    try testing_move_to_page.expectError(error.CrossDesign, result);
+}
+
+test "moveElementToPage rejects PageNotFound (target does not exist)" {
+    const alloc = testing_move_to_page.allocator;
+    var ctx = try setupMoveToPageDbAndItem();
+    defer teardownMoveToPageDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.source_page_id);
+    defer alloc.free(ctx.target_page_id);
+
+    const leaf = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = ctx.source_page_id,
+        .name = "l",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(leaf);
+
+    const result = moveElementToPage(alloc, &ctx.db, .{
+        .source_page_id = ctx.source_page_id,
+        .element_id = leaf,
+        .target_page_id = "page_nonexistent",
+        .apply_to_children = true,
+    });
+    try testing_move_to_page.expectError(error.PageNotFound, result);
+}
+
+test "moveElementToPage rejects ElementNotFound (element not on source page)" {
+    const alloc = testing_move_to_page.allocator;
+    var ctx = try setupMoveToPageDbAndItem();
+    defer teardownMoveToPageDb(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+    defer alloc.free(ctx.source_page_id);
+    defer alloc.free(ctx.target_page_id);
+
+    const result = moveElementToPage(alloc, &ctx.db, .{
+        .source_page_id = ctx.source_page_id,
+        .element_id = "elem_nonexistent",
+        .target_page_id = ctx.target_page_id,
+        .apply_to_children = true,
+    });
+    try testing_move_to_page.expectError(error.ElementNotFound, result);
 }
