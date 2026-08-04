@@ -511,9 +511,24 @@ test {
     _ = @import("modules/event_bus/src/test_runner.zig");
     _ = @import("modules/http/test_runner.zig");
     _ = @import("modules/logger/test_runner.zig"); // needs Zig 0.16 API updates
+    // custom_http_server tests run mostly through the module's own
+    // `zig build test` (run from src/modules/custom_http_server/). The
+    // two exceptions live here because they need the parent project's
+    // root + on-disk fixtures:
+    //   - test_session_lifecycle.zig + sse_chunked_test.zig — already
+    //     discovered by the module's test_runner.zig when that build
+    //     runs, but the parent imports them directly too so they're
+    //     covered even if the module's own build isn't exercised.
+    //   - read_html_test.zig — orphaned from ginwasaas; its fixtures
+    //     (`src/handlers/landing.html`) don't exist in ginwaaitoolbox.
+    //     Excluded from BOTH the parent and the module's test_runner
+    //     until the test is fixed/moved.
+    //   - sse_keepalive_test.zig (the 60 s soak) — EXCLUDED here on
+    //     purpose. It eats ~120 s of wall-clock and dominates
+    //     `zig build test` runtime. Run it via the module's own build:
+    //     `cd src/modules/custom_http_server && zig build test`.
     _ = @import("modules/custom_http_server/src/test_session_lifecycle.zig");
     _ = @import("modules/custom_http_server/src/sse_chunked_test.zig");
-    _ = @import("modules/custom_http_server/src/sse_keepalive_test.zig"); // 60s SSE soak test
     _ = @import("modules/test_runner.zig");
     _ = @import("modules/notification/test_runner.zig");
     _ = @import("migrations/test_runner.zig");

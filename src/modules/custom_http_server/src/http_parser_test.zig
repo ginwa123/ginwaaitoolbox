@@ -389,9 +389,11 @@ test "HttpResponse.redirectWithContext + contextFromRequest: round-trip preserve
     const next_req = StubReq{ .headers = next_headers };
 
     // The next handler rebuilds the context — values must survive.
-    const rebuilt = contextFromRequest(next_req, store).?;
-    try expectEqual(@as(i64, 7), rebuilt.get("user_id").?.int);
-    try expectEqualStrings("admin", rebuilt.get("role").?.string);
+    // contextFromRequest returns a LookupResult struct ({context: ?*Context,
+    // id: ?[]const u8}) — drill into .context before calling .get().
+    const rebuilt = contextFromRequest(next_req, store);
+    try expectEqual(@as(i64, 7), rebuilt.context.?.get("user_id").?.int);
+    try expectEqualStrings("admin", rebuilt.context.?.get("role").?.string);
 }
 
 // ==================== Performance Test ====================
