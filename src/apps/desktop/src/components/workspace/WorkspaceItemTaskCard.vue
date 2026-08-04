@@ -264,6 +264,21 @@ const typeBadge = computed<string | null>(() => {
   if (t === 'memory') return 'memory'
   return null
 })
+
+// Git-branch badge (plan:
+//   docs/superpowers/plans/2026-08-06-kanban-task-git-branch.md).
+// Returns the branch name to display, or null when:
+//   - the task has no git_branch field (undefined / null)
+//   - the backend returned an empty string (not a git repo, detached
+//     HEAD, spawn failure)
+// Null results in NO badge rendered (graceful no-op for non-git
+// workspaces / tasks without worktree + non-git cwd).
+const gitBranchBadge = computed<string | null>(() => {
+  const b = props.task.git_branch
+  if (typeof b !== 'string') return null
+  if (b.length === 0) return null
+  return b
+})
 </script>
 
 <template>
@@ -579,7 +594,7 @@ const typeBadge = computed<string | null>(() => {
          keeps the row pinned to the left edge if a future flex parent
          defaults to centered alignment. -->
     <div
-      v-if="lastUpdatedLabel || typeBadge"
+      v-if="lastUpdatedLabel || typeBadge || gitBranchBadge"
       class="flex items-center gap-1.5 pt-1 text-[10px] flex-wrap self-start w-full"
       style="color: var(--semantic-text-dim);"
       data-testid="task-meta"
@@ -610,6 +625,37 @@ const typeBadge = computed<string | null>(() => {
       >
         <span aria-hidden="true">·</span>
         <span>{{ typeBadge }}</span>
+      </span>
+      <!-- Git-branch badge (plan:
+           docs/superpowers/plans/2026-08-06-kanban-task-git-branch.md).
+           Shows the task's current git branch (worktree branch when
+           bound, else the workspace's current branch). Backend
+           computes via `git -C <cwd> symbolic-ref --short HEAD` per
+           request; null when cwd is not a git repo or HEAD is
+           detached. GitHub-style fork/branch SVG icon (12px) +
+           branch name, truncated for long names. Tooltip shows the
+           full branch name on hover. -->
+      <span
+        v-if="gitBranchBadge"
+        class="inline-flex items-center gap-1 max-w-[8rem] truncate"
+        :title="gitBranchBadge"
+        data-testid="task-git-branch"
+      >
+        <svg
+          class="w-3 h-3 shrink-0"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          stroke-width="2"
+          aria-hidden="true"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"
+          />
+        </svg>
+        <span class="truncate">{{ gitBranchBadge }}</span>
       </span>
     </div>
   </button>

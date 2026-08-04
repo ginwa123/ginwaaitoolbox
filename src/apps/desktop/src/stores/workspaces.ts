@@ -194,6 +194,19 @@ export interface Task {
   // the store splits on `|` and filters empty segments at every
   // fetch site (folded into `normalizeTaskTags`).
   imageUrls?: string[]
+  // NEW (kanban task git-branch badge, plan:
+  //   docs/superpowers/plans/2026-08-06-kanban-task-git-branch.md).
+  // The current git branch for the task's cwd — worktree cwd if
+  // bound (`session.git_worktree_cwd`), else the parent workspace
+  // item's `path`. Computed on-demand per request by the backend.
+  // Null when the cwd is not a git repo or HEAD is detached; UI
+  // omits the badge in that case. snake_case matches the wire
+  // shape (`git_branch` from `WorkspaceItemTaskResponse`) and the
+  // existing convention in this interface (`task_type`,
+  // `is_pinned`, `kanban_column_id`, etc.) — `api.getTasks` returns
+  // wire tasks raw, so the wire name IS the TS name. No
+  // normalization needed.
+  git_branch?: string | null
 }
 
 // localStorage keys for state persistence
