@@ -76,6 +76,13 @@ file so future sessions pick it up automatically.
    profile files consumed by `agents.zig` / `change_agent.zig`. Only the
    root `NALAR.md` is the project-conventions doc (and this file replaces
    it).
+5. **NEVER write static-contract tests** (Zig OR Vue/TS). Behavioural
+   tests only — call the function and assert the return, or mount the
+   component and assert the DOM. Source-grep tests
+   (`@embedFile(...).indexOf(...)` in Zig, `fs.readFileSync(...)` + `.includes(...)`
+   in TS) lock in identifiers, catch zero runtime bugs, and block
+   legitimate refactors. See the dedicated lesson below
+   (🚫 Static-contract tests are banned).
 
 ---
 
@@ -374,6 +381,105 @@ API (DELETE endpoint) or use `pytest`'s `tmp_path` fixture.
 | `signal.SIGTERM` on Windows in a Python script                             | `signal.SIGTERM` works on Windows in Python, but `signal.SIGKILL` does NOT. Use `taskkill /F` or `process.kill()` for unconditional. |
 | `subprocess.run("cmd /c ...")`                                              | `cmd` is Windows-only. Use the cross-platform `subprocess.run([...])` (list form).   |
 | Hardcoded `os.path.expanduser("~/.config/nalar")`                          | On Windows, `~/.config/` is not the convention; use `os.environ["HOME"]` + `Path` joining. |
+| Zig: `@embedFile(...).indexOf(u8, source, "token") != null` test          | Static-contract — locks in identifiers, catches zero runtime bugs. Use behavioural tests. See the dedicated lesson below. |
+| TS: `fs.readFileSync('X.vue')` + `expect(source).toContain('token')` test  | Same anti-pattern in Vue/TS — locks in source text instead of behaviour. See the dedicated lesson below. |
+
+---
+
+## 🚫 Static-contract tests are banned — lesson
+
+**Rule (user, 2026-07-29, restated 2026-08-06): NEVER write static-contract
+tests in Zig OR Vue/TS.** A static-contract test reads source code as text
+and asserts that it contains certain substrings. It does NOT exercise the
+function it claims to test. It provides zero behavioural coverage and
+blocks legitimate refactors.
+
+### What counts as static-contract
+
+| Pattern (Zig)                                                           | Pattern (Vue/TS)                                            |
+|-------------------------------------------------------------------------|-------------------------------------------------------------|
+| `const source = @embedFile("foo.zig")` + `std.mem.indexOf(u8, source, "X") != null` | `import fs from 'fs'` + `expect(fs.readFileSync('X.vue').includes('Y')).toBe(true)` |
+| `readFileAlloc(...)` + `indexOf(u8, source, "token")`                    | `expect(wrapper.html()).toContain('class="my-class"')` (without a corresponding functional assertion) |
+| Grep-for-imports (`expect(source).toMatch(/^import .* from/`)`)          | Tailwind class-string assertions on the rendered DOM that lock in the exact class names |
+| "Does the file mention function F?" assertions                          | "Does the file mention template T?" assertions              |
+
+### Why they're useless
+
+1. **They test the SOURCE, not the BEHAVIOUR.** A function body can contain
+   the literal token `SetConsoleCtrlHandler` AND still be wrong (wrong arg
+   order, wrong control event, wrong call-convention). The test passes.
+2. **They block legitimate refactors.** Rename `SIG.DFL` → `Sigdf` and your
+   build breaks — even though the behaviour is identical. The test
+   cargo-culted the identifier.
+3. **They miss the actual bug.** Static-contract tests are most often
+   written *because* the real bug (a behaviour the function should have) is
+   hard to exercise — so the test "pivots" to checking that the file
+   contains the keyword. The bug ships unchanged.
+4. **They make `@compileError`-gated code invisible.** A `@compileError`
+   branch in the source is REPLACED with the error string at comptime, so
+   the substring check passes against the error message instead of the
+   real code path. Lazy semantic analysis hides this further (the body
+   never executes).
+5. **They grow into hundreds of tests.** Project grep: ~60 static-contract
+   tests across Zig and Vue/TS at last count (most in `crash_handler_test.zig`,
+   `signal_handlers_test.zig`, `daemon_test.zig`, `sse_chunked_test.zig`,
+   `task_mark_human_touched_test.zig`, `task_touch_propagation_test.zig`,
+   `llm_history_notification_test.zig`, `notifications_test.zig`,
+   `glob_test.zig`, `frontend_log_*_test.zig`, `memories_crud_test.zig`,
+   `local_memories_crud_test.zig`, `design_elements_group_test.zig`,
+   `unified_events_sse_test.zig`, `session_create_migration_063_test.zig`,
+   `session_update_migration_063_test.zig`, `llm_history_routines_test.zig`,
+   `cpu_usage_test.zig`, `streaming_test.zig`, `custom_http_client/src/static_contract_test.zig`,
+   `DesignElement.spec.ts`, `PropertiesPanel.spec.ts`,
+   `AddDesignElementDialog.spec.ts`, `LayersPanel.spec.ts`,
+   `DesignElementPreview.spec.ts`, `viteConfig.spec.ts`, `sidebarSpacing.spec.ts`).
+   Every one of them either has a behavioural equivalent OR is
+   redundant with `zig build` / `vue-tsc`.
+
+### What to do instead (behavioural testing)
+
+| You wanted to test                  | Write a behavioural test that…                                                          |
+|-------------------------------------|------------------------------------------------------------------------------------------|
+| "Handler X calls `updateTaskLastHumanTouchedAt`" | Stand up an in-memory DB + the handler → assert the row's column flipped to the new value |
+| "Migration adds a UNIQUE INDEX"     | Run the migration on `:memory:` → attempt a duplicate INSERT → assert `error.ExecuteFailed` |
+| "Notifier spawns a reaper thread"   | Spawn the notifier → send 100 notifications → check `ls /proc/$PID/fd | wc -l` doesn't grow unbounded |
+| "`comptime builtin.os.tag` switch"  | Take the function's address (`const fp = &fn;`) → assert it compiles on every platform (cross-compile smoke) |
+| "Component renders with class X"    | `mount(Component)` → `wrapper.attributes('class')` contains 'X' (the rendered DOM is the source of truth, not the .vue file) |
+| "Component imports helper Y"        | Call helper Y's effect through the component → assert the effect happened                |
+
+### Project audit (as of 2026-08-06)
+
+A "delete useless tests" task identified ~60 static-contract tests across
+~25 files (Zig + Vue/TS). Deletion criterion:
+
+1. **Whole-file deletion** when 100% of the file's tests are static-contract
+   (e.g. `custom_http_client/src/static_contract_test.zig`,
+   `task_mark_human_touched_test.zig`, `task_touch_propagation_test.zig`,
+   `llm_history_routines_test.zig`, `session_create_migration_063_test.zig`,
+   `session_update_migration_063_test.zig`).
+2. **Per-test deletion** when a file mixes static-contract + behavioural
+   tests — keep the behavioural ones, delete only the `test "..."` blocks
+   that grep source (e.g. `crash_handler_test.zig`,
+   `signal_handlers_test.zig`, `daemon_test.zig`, `notifications_test.zig`,
+   `sse_chunked_test.zig`, `llm_history_notification_test.zig`,
+   `glob_test.zig`, `migration_068_test.zig`,
+   `custom_http_client/src/cpu_usage_test.zig`,
+   `custom_http_client/src/streaming_test.zig`, `sidebarSpacing.spec.ts`).
+3. **Grandfathered but broken** — `DesignElement.spec.ts`,
+   `LayersPanel.spec.ts`, `DesignElementPreview.spec.ts`,
+   `PropertiesPanel.spec.ts`, `AddDesignElementDialog.spec.ts`,
+   `viteConfig.spec.ts`, `DesignView.gestureCapture.spec.ts`,
+   `LayersPanel.reorder.spec.ts`, `PropertiesPanel.htmlSave.spec.ts`,
+   `standardChatSkipDialog.spec.ts`, `workspaceItemTaskCard.spec.ts`,
+   `sseIsInputOutput.spec.ts`, `DesignElementPreview.spec.ts` —
+   banned but not yet deleted (the "19 pre-existing failures" baseline
+   in every test count since 2026-07-29). Future cleanup.
+
+### Reference
+
+- Cross-project memory: `~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md`
+- Agentic-loop README: `src/ai_workflow/tui/agentic_loop/README.md` "inline
+  tests required" section (also bans per-file test files in that dir)
 
 ---
 
