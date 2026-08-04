@@ -52,15 +52,21 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
 
     if (search_result.matches.items.len == 0) {
-        const inner = try ctx.allocator.dupe(u8, search_result.content);
-        search_result.deinit(ctx.allocator);
-        const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, true, null, inner);
-        return ToolExecResult{ .output = output, .output_allocated = true };
+        // No matches — route through the formatter so the <search
+        // pattern="..." path="..."> wrapper is emitted alongside the
+        // <warning>no matches for pattern "X" in path "Y"</warning>
+        // body. The frontend's parser relies on the wrapper to render
+        // the actual pattern + path in the toast header (without it,
+        // the operator sees "unknown" / "unknown" everywhere — the
+        // bug this branch previously masked). See
+        // docs/superpowers/plans/2026-08-06-search-better-error.md.
     }
 
     // Honor group_by_file flag — was previously dead code (always called
     // the grouped variant). Use the flat variant when the caller asked
-    // for ungrouped output.
+    // for ungrouped output. Both branches handle the empty-matches case
+    // by emitting `<search pattern="X" path="Y"><warning>...</warning></search>`
+    // so the frontend always has the wrapper attributes to extract.
     const inner = if (parsed.value.group_by_file)
         try search_tool_mod.search_result_to_string_grouped(
             ctx.allocator,
