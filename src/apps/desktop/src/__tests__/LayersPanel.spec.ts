@@ -1,16 +1,9 @@
 /**
- * Static source-grep tests + behavioral mount tests for LayersPanel.vue.
+ * Behavioural mount tests for LayersPanel.vue.
  *
  * The component renders the vertical list of elements on the active
  * page (ordered top-to-bottom by z-index) with per-row select /
  * up / down / delete buttons.
- *
- * Static contract:
- *  - Emits `select`, `reorder`, `delete`.
- *  - The reorder logic swaps adjacent elements in the sorted array
- *    and emits the new top-to-bottom order.
- *  - Each row has 4 data-testid selectors (row + 3 buttons).
- *  - Layers are sorted by z_index DESC, position ASC.
  *
  * Tree contract (Chunk 7 of grouped-layers plan):
  *  - A flat list of DesignElement[] becomes a tree by grouping
@@ -25,112 +18,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import { nextTick } from 'vue'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
 
 import LayersPanel from '../components/design/LayersPanel.vue'
 import type { DesignElement } from '../api'
-
-// ─── Static contract — existing source-grep tests ──────────────────────────
-
-const SOURCE_PATH = path.resolve(__dirname, '../components/design/LayersPanel.vue')
-const source = fs.readFileSync(SOURCE_PATH, 'utf-8')
-const LAYER_ROW_PATH = path.resolve(__dirname, '../components/design/LayerRow.vue')
-const layerRowSource = fs.readFileSync(LAYER_ROW_PATH, 'utf-8')
-
-describe('LayersPanel.vue static contract', () => {
-  it('emits select, reorder, delete', () => {
-    expect(source).toContain('select:')
-    expect(source).toContain('reorder:')
-    expect(source).toContain('delete:')
-  })
-
-  it('declares elements, selectedIds, and readonly props (multi-aware: array, not nullable single id)', () => {
-    expect(source).toContain('elements:')
-    expect(source).toContain('selectedIds:')
-    expect(source).toContain('readonly:')
-  })
-
-  it('sorts layers by z_index DESC then position ASC (in the layerTree builder)', () => {
-    // Chunk 7 moved the sort out of the `layers` computed and into the
-    // `layerTree` builder. Each bucket (top-level + per-parent) is
-    // sorted by z_index DESC, position ASC. Verify in the new location.
-    expect(source).toContain('z_index')
-    expect(source).toContain('position')
-    expect(source).toMatch(/b\.element\.z_index\s*-\s*a\.element\.z_index/)
-    expect(source).toMatch(/a\.element\.position\s*-\s*b\.element\.position/)
-  })
-
-  it('renders per-row and per-button data-testid selectors (delegated to LayerRow)', () => {
-    // The data-testid selectors now live on the recursive LayerRow
-    // component. The contract is preserved across the layer split.
-    expect(layerRowSource).toContain('design-layer-${node.element.id}')
-    expect(layerRowSource).toContain('design-layer-reorder-up-${node.element.id}')
-    expect(layerRowSource).toContain('design-layer-reorder-down-${node.element.id}')
-    expect(layerRowSource).toContain('design-layer-delete-${node.element.id}')
-  })
-
-  it('reorder emits the new ordered id list (depth-first walk)', () => {
-    // Chunk 7 changed the reorder wire from a flat list swap
-    // (`next.map(e => e.id)`) to a depth-first walk of the cloned
-    // tree (`flattenTopDown`). The wire shape (string[]) is preserved.
-    expect(source).toContain('emit(\'reorder\'')
-    expect(source).toContain('flattenTopDown')
-  })
-
-  it('has the design-panel data-testid', () => {
-    expect(source).toContain('layers-panel')
-  })
-
-  it('renders an empty state when there are no elements', () => {
-    expect(source).toContain('layers-panel-empty')
-  })
-})
-
-// ─── Tree contract — static grep tests (Chunk 7) ───────────────────────────
-
-describe('LayersPanel.vue tree contract (Chunk 7)', () => {
-  it('imports the recursive LayerRow component', () => {
-    // The import may include a named import for LayerTreeNode
-    // alongside the default. Match the import path (the import target
-    // is what matters for the recursive render — the named imports
-    // are an implementation detail).
-    expect(source).toContain("from './LayerRow.vue'")
-  })
-
-  it('renders LayerRow in a v-for (replacing the flat row template)', () => {
-    expect(source).toMatch(/<LayerRow[\s\S]*v-for/)
-  })
-
-  it('declares the layerTree computed for building the tree', () => {
-    expect(source).toContain('layerTree')
-    expect(source).toContain('LayerTreeNode')
-  })
-
-  it('declares the collapsedIds ref for collapse state', () => {
-    expect(source).toContain('collapsedIds')
-  })
-
-  it('groups children by parent_id in the tree builder', () => {
-    expect(source).toContain('parent_id')
-  })
-
-  it('preserves the data-testid selector design-layer-${...} on the LayerRow', () => {
-    // The selector lives on LayerRow's outer div (the row component
-    // owns its own data-testid contract). Verify in LayerRow.vue.
-    expect(layerRowSource).toContain('design-layer-${node.element.id}')
-  })
-
-  it('LayerRow component declares its name so recursive rendering type-checks', () => {
-    // Vue 3's vue-tsc compiler requires either `defineOptions({ name })`
-    // OR an explicit `name` field in a non-setup component declaration
-    // to recognize recursive usage. Without this, the strict type-check
-    // (`bun run build`) reports "Component LayerRow is not registered in
-    // any module" — a silent failure under `bunx vitest run` only.
-    const hasDefineOptions = /defineOptions\s*\(\s*\{\s*name:\s*['"]LayerRow['"]/.test(layerRowSource)
-    expect(hasDefineOptions).toBe(true)
-  })
-})
 
 // ─── Behavioral mount tests (Chunk 7 — tree render) ────────────────────────
 

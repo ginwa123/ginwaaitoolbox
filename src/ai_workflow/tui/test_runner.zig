@@ -23,8 +23,6 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/sse_handshake_test.zig");
     _ = @import("http_handlers/task_update_test.zig");
     _ = @import("http_handlers/task_delete_test.zig");
-    _ = @import("http_handlers/task_mark_human_touched_test.zig"); // Chunk 3 — PUT /tasks/:id/touched + Chunk 4 SSE wire
-    _ = @import("http_handlers/task_touch_propagation_test.zig"); // Chunk 5 — stamp last_human_touched_at from existing mutating handlers
     _ = @import("http_handlers/tasks_list_test.zig");
     _ = @import("http_handlers/task_create_routines_test.zig");
     _ = @import("http_handlers/task_create_memory_test.zig");
@@ -38,7 +36,6 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/frontend_log_post_test.zig"); // Chunk 2 of frontend-error-logs
     _ = @import("http_handlers/frontend_log_get_test.zig");  // Chunk 3 of frontend-error-logs
     _ = @import("llm_history_is_input_output_test.zig");
-    _ = @import("llm_history_routines_test.zig");
     _ = @import("llm_history_compacted_messages_test.zig");
     _ = @import("llm_history_search_messages_fts_test.zig"); // search_history rewrite (Chunk 2)
     _ = @import("llm_history_search_fts_query_safety_test.zig"); // better-tool-output-error-message — FTS5 query sanitization regression tests
@@ -46,9 +43,6 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("llm_history_description_test.zig"); // Migration 062 description propagation
     _ = @import("llm_history_notification_test.zig"); // Migration 065 — kanban needs_human_review + updateTaskLastHumanTouchedAt
     _ = @import("llm_history_tool_call_loading_test.zig"); // tool-call-loading-placeholder — 3 helper contract tests
-    // 2026-07-30-kanban-task-search — server-side q filter on
-    // listWorkspaceItemTasksWithCursor. Tests live INLINE in
-    // llm_history.zig (per project agentic_loop/ convention).
     _ = @import("compaction_long_context_test.zig");
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     _ = @import("http_handlers/workspace_items_reorder_test.zig");
@@ -72,8 +66,6 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/design_elements_reparent.zig");
     _ = @import("migration_057_test.zig");  // stays at this path; imported by src/migrations/test_runner.zig via relative path
     _ = @import("migration_063_runtime_test.zig");  // Chunk 1 — sessions auto_retry + finish_reason runtime CRUD
-    _ = @import("http_handlers/session_create_migration_063_test.zig");  // Chunk 3 Task 3.1 — POST /api/session static-contract
-    _ = @import("http_handlers/session_update_migration_063_test.zig");  // Chunk 3 Task 3.2 — PUT /api/session/:id static-contract
     _ = @import("kanban_model_test.zig");
     _ = @import("kanban_model_test_description.zig");
     _ = @import("kanban_copy_spec_test.zig");

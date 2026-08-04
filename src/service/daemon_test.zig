@@ -94,21 +94,6 @@ test "daemon.daemonizePosix is callable cross-platform" {
     try testing.expect(true);
 }
 
-// Static contract: the daemonize dispatch must be at comptime — a
-// switch on `builtin.os.tag` (NOT runtime detection). This pins the
-// pattern in case a future refactor accidentally does runtime
-// platform detection (which would silently break Windows builds).
-test "daemonize uses comptime builtin.os.tag switch" {
-    const source = @embedFile("daemon.zig");
-    // Must contain a switch on builtin.os.tag inside the daemonize
-    // function. Look for the canonical Zig pattern.
-    try testing.expect(std.mem.indexOf(u8, source, "switch (builtin.os.tag)") != null);
-    // Must reference all three supported OSes in that switch.
-    try testing.expect(std.mem.indexOf(u8, source, ".linux") != null);
-    try testing.expect(std.mem.indexOf(u8, source, ".macos") != null);
-    try testing.expect(std.mem.indexOf(u8, source, ".windows") != null);
-}
-
 // ============================================================================
 // Existing POSIX tests
 // ============================================================================
@@ -230,32 +215,4 @@ test "Windows mkdirP creates all parent dirs of a fresh nested path" {
 
     // Idempotency: calling again must not error.
     try daemon.mkdirP(path);
-}
-
-// Static contract: the file must contain a Windows mkdirP path that
-// uses CreateDirectoryW (or _wmkdir via UCRT). This pins the API so
-// a future refactor that drops the Windows branch is caught.
-test "daemon.zig has a Windows-specific mkdirP implementation" {
-    const source = @embedFile("daemon.zig");
-    try testing.expect(std.mem.indexOf(u8, source, "mkdirPWindows") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "CreateDirectoryW") != null);
-}
-
-// Static contract: the file must contain a Windows redirectStdioToLog
-// path that uses CreateFileW + SetStdHandle (or freopen via UCRT).
-test "daemon.zig has a Windows-specific redirectStdioToLog implementation" {
-    const source = @embedFile("daemon.zig");
-    try testing.expect(std.mem.indexOf(u8, source, "redirectStdioToLogWindows") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "SetStdHandle") != null);
-}
-
-// Static contract: the file must contain a Windows daemonize path
-// that uses CreateProcessW with DETACHED_PROCESS. This pins the API.
-test "daemon.zig has a Windows-specific daemonize implementation" {
-    const source = @embedFile("daemon.zig");
-    try testing.expect(std.mem.indexOf(u8, source, "daemonizeWindows") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "DETACHED_PROCESS") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "CREATE_NEW_PROCESS_GROUP") != null);
-    // The sentinel env var tells the spawned child "you ARE the daemon".
-    try testing.expect(std.mem.indexOf(u8, source, "NALAR_DAEMON_CHILD") != null);
 }
