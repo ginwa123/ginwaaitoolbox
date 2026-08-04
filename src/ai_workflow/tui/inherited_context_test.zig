@@ -78,6 +78,32 @@ test "parseMode - 'Last:7' (mixed case prefix) returns Mode.last{7}" {
     try std.testing.expect(m.last == 7);
 }
 
+// --- isSubagent helper (no DB needed) ------------------------------------
+
+test "isSubagent - empty parent_session_id returns false (not a subagent)" {
+    try std.testing.expect(!ic.isSubagent("session_xyz", ""));
+}
+
+test "isSubagent - empty session_id returns false (defensive)" {
+    try std.testing.expect(!ic.isSubagent("", "parent_xyz"));
+}
+
+test "isSubagent - both empty returns false" {
+    try std.testing.expect(!ic.isSubagent("", ""));
+}
+
+test "isSubagent - session_id equal parent_session_id returns false (not a subagent)" {
+    try std.testing.expect(!ic.isSubagent("session_xyz", "session_xyz"));
+}
+
+test "isSubagent - session_id differs from parent_session_id returns true (IS a subagent)" {
+    try std.testing.expect(ic.isSubagent("session_child", "session_parent"));
+}
+
+test "isSubagent - case-sensitive (different case is treated as different)" {
+    try std.testing.expect(ic.isSubagent("Session_xyz", "session_xyz"));
+}
+
 // --- Formatter tests (need DB) --------------------------------------------
 
 const nalarcore = @import("nalarcore");
@@ -129,7 +155,7 @@ test "formatHistory - mode .none short-circuits to empty string" {
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "parent_sess", .none);
+    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "parent_sess", .none);
     defer alloc.free(out);
     try std.testing.expectEqualStrings("", out);
 }
@@ -147,7 +173,7 @@ test "formatHistory - last:5 filters out tool messages" {
     try seedMessage(alloc, &ctx.db, "m5", "p", "2024-01-01 00:00:05", "tool", "{\"result\":\"ok\"}");
     try seedMessage(alloc, &ctx.db, "m6", "p", "2024-01-01 00:00:06", "user", "Thanks");
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "p", .{ .last = 5 });
+    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .{ .last = 5 });
     defer alloc.free(out);
 
     try std.testing.expect(std.mem.indexOf(u8, out, "## Conversation History From Parent Agent") != null);
@@ -177,7 +203,7 @@ test "formatHistory - last:1 returns only the last user/assistant turn" {
     try seedMessage(alloc, &ctx.db, "m2", "p", "2024-01-01 00:00:02", "assistant", "second");
     try seedMessage(alloc, &ctx.db, "m3", "p", "2024-01-01 00:00:03", "user", "third");
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "p", .{ .last = 1 });
+    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .{ .last = 1 });
     defer alloc.free(out);
 
     try std.testing.expect(std.mem.indexOf(u8, out, "**[user]**: third") != null);
@@ -196,7 +222,7 @@ test "formatHistory - since_last_user starts at the last user message" {
     try seedMessage(alloc, &ctx.db, "m3", "p", "2024-01-01 00:00:03", "user", "second_user");
     try seedMessage(alloc, &ctx.db, "m4", "p", "2024-01-01 00:00:04", "assistant", "after_second");
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "p", .since_last_user);
+    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .since_last_user);
     defer alloc.free(out);
 
     // 'since_last_user' = from the last user message (m3) to the end.
@@ -222,7 +248,7 @@ test "formatHistory - all mode caps at 50 messages and adds truncation notice" {
         try seedMessage(alloc, &ctx.db, id, "p", ts, "user", "x");
     }
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "p", .all);
+    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .all);
     defer alloc.free(out);
 
     try std.testing.expect(std.mem.indexOf(u8, out, "more messages omitted") != null);
@@ -242,7 +268,7 @@ test "formatHistory - empty parent history returns empty string" {
     defer ctx.threaded.deinit();
 
     // No rows seeded.
-    const out = try ic.formatHistory(alloc, &ctx.db, "p", .all);
+    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .all);
     defer alloc.free(out);
     try std.testing.expectEqualStrings("", out);
 }
@@ -253,9 +279,67 @@ test "formatHistory - empty parent_session_id returns empty string" {
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "", .all);
+    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "", .all);
     defer alloc.free(out);
     try std.testing.expectEqualStrings("", out);
+}
+
+test "formatHistory - empty session_id returns empty string (defensive, new arg)" {
+    const alloc = std.testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Seed some history for the "parent" so we can confirm the empty
+    // session_id short-circuit beats the DB read (no DB hit expected).
+    try seedMessage(alloc, &ctx.db, "m1", "p", "2024-01-01 00:00:01", "user", "should NOT appear");
+    try seedMessage(alloc, &ctx.db, "m2", "p", "2024-01-01 00:00:02", "assistant", "should NOT appear");
+
+    const out = try ic.formatHistory(alloc, &ctx.db, "", "p", .{ .last = 5 });
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("", out);
+    // Header must NOT appear because we short-circuit before fetching.
+    try std.testing.expect(std.mem.indexOf(u8, out, "should NOT appear") == null);
+}
+
+test "formatHistory - session_id equal parent_session_id returns empty string (NOT a subagent)" {
+    const alloc = std.testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Seed parent history — but the subagent guard says "session equals
+    // parent → not a subagent → empty string". So the seeded messages
+    // must NOT appear in the output.
+    try seedMessage(alloc, &ctx.db, "m1", "self", "2024-01-01 00:00:01", "user", "should NOT appear");
+    try seedMessage(alloc, &ctx.db, "m2", "self", "2024-01-01 00:00:02", "assistant", "should NOT appear");
+
+    const out = try ic.formatHistory(alloc, &ctx.db, "self", "self", .{ .last = 5 });
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("", out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "should NOT appear") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "## Conversation History From Parent Agent") == null);
+}
+
+test "formatHistory - session_id differs from parent_session_id returns parent history (IS a subagent)" {
+    const alloc = std.testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try seedMessage(alloc, &ctx.db, "m1", "parent_sess", "2024-01-01 00:00:01", "user", "from parent: a question");
+    try seedMessage(alloc, &ctx.db, "m2", "parent_sess", "2024-01-01 00:00:02", "assistant", "from parent: an answer");
+    // A row tagged with the SAME session_id as the child (the subagent)
+    // should never come back, because we filter by parent_session_id.
+    try seedMessage(alloc, &ctx.db, "m3", "child_sess", "2024-01-01 00:00:03", "user", "from child — must NOT appear");
+
+    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "parent_sess", .{ .last = 5 });
+    defer alloc.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "## Conversation History From Parent Agent") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "**[user]**: from parent: a question") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "**[assistant]**: from parent: an answer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "from child") == null);
 }
 
 test "formatHistory - 20KB byte cap emits truncation notice" {
@@ -280,7 +364,7 @@ test "formatHistory - 20KB byte cap emits truncation notice" {
         try seedMessage(alloc, &ctx.db, id, "p", ts, "user", big_content);
     }
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "p", .all);
+    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .all);
     defer alloc.free(out);
 
     // Byte cap should have fired (we seeded 30 KB of content, cap is 20 KB).
@@ -301,7 +385,7 @@ test "formatHistory - DB query failure returns the documented fallback string" {
     // Drop the table so the formatter's SELECT will fail.
     try ctx.db.exec(alloc, "DROP TABLE llm_history", &.{});
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "p", .all);
+    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .all);
     defer alloc.free(out);
 
     try std.testing.expectEqualStrings("(failed to load parent conversation history)", out);
@@ -317,7 +401,7 @@ test "formatHistory - empty content rows are filtered out" {
     try seedMessage(alloc, &ctx.db, "m2", "p", "2024-01-01 00:00:02", "assistant", ""); // empty
     try seedMessage(alloc, &ctx.db, "m3", "p", "2024-01-01 00:00:03", "user", "Bye");
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "p", .{ .last = 5 });
+    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .{ .last = 5 });
     defer alloc.free(out);
 
     try std.testing.expect(std.mem.indexOf(u8, out, "**[user]**: Hello") != null);

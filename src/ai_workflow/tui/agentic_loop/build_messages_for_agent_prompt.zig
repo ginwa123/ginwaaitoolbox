@@ -147,10 +147,14 @@ pub fn buildMessages(
     const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, filtered_tools, activity_info, environment, sub_agents_listing, workspaceContext, kanbanStatusContent, designStatusContent);
 
     // Render inherited parent conversation history (if requested) and append
-    // it to the system prompt as a labelled, read-only block.
+    // it to the system prompt as a labelled, read-only block. The formatter
+    // itself detects whether this session is a sub-agent (session_id !=
+    // parent_session_id); if the two are equal (or either is empty), it
+    // short-circuits to "" without hitting the DB.
     const inherited_md = inherited_context.formatHistory(
         allocator,
         db,
+        session_id, // the current agent's session_id (vs. parent's)
         parent_session_id, // the parent's session_id, NOT the sub-agent's
         inherited_context.parseMode(inherited_context_mode) catch .none,
     ) catch blk: {
