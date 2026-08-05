@@ -2591,3 +2591,47 @@ User: "is this tool only fetching is_llm_feed 0 or is_llm_seaf_feed 1 or search 
 - Plan: inline (single-component surgical fix; below the threshold for a separate plan doc)
 - PR: pending squash-merge candidate
 - Worktree: `/home/ginwa/ginwaaitoolbox/.worktrees/design-page-delete-confirm`
+
+### 2026-08-06: save_memory + load_memory tools (SQLite FTS5)
+
+**Symptom (user request, task `task_1785958319567`).** *"new tool save memory and load memory — using sqlite fulltext search."* The agent needed a way to persist short, structured notes (preferences, decisions, facts) that survive across sessions and recall them via free-text search. The existing `list_memory` only enumerates file-based markdown memories by H1 title; the existing `search_history` is for forensic searches of past chat messages, not first-class notes.
+
+**What landed (7 new files + 4 modified).** Two new LLM-callable tools:
+- `save_memory` (UPSERT by id; auto-generates `mem_<16-hex>` opaque token when id is empty; content capped at 1 MiB; tags stored as `||`-joined string matching the project's `tags`/`image_urls` convention).
+- `load_memory` (FTS5 phrase search with snippets — **context anti-bloat by default**: only `<snippet>` (10-token window with `[match]` markers); `with_content=true` opt-in truncates at 2 KiB per row; `limit` default 10, hard cap 50 → worst case ~100 KiB response).
+
+Backed by Migration 070:
+- `agent_memories` table (id TEXT PK, content TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '', created_at/updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)
+- `idx_agent_memories_updated` (DESC index for future "recent memories" UIs)
+- `agent_memories_fts` — **non-external-content** FTS5 over `content` + `tags` (porter unicode61 remove_diacritics 2) so `snippet()` works
+- 3 sync triggers (INSERT/DELETE/UPDATE) mirroring source mutations into the FTS index
+- Backfill INSERT (no-op on fresh DB)
+
+**Architecture decisions (locked-in for future agents).**
+- **Two tools, not one with `action` param.** Matches the user's literal wording and the existing pattern (`add_skill` / `edit_skill` / `view_skill` are separate).
+- **Global scope only.** No workspace_id / session_id. Memory is meant to "remember this across sessions and projects".
+- **Caller-provided `id` slug with auto-fallback.** Lets the agent do UPSERT by passing the same id (no need to remember the auto-generated token for the "update" path).
+- **`mem_<16-hex>` id format.** Opaque, collision-free for 10K rows (~1 in 10^19), agent treats as a token. Matches `llm_history` message id convention.
+- **Tags as `||`-joined string.** Matches Migration 067/069 convention.
+- **FTS5 sanitization via existing `escapeFtsQuery`.** Reuses the same helper `search_history` uses — don't reinvent.
+- **No `delete_memory` tool.** Per user decision ("memory never can be deleted"). UPSERT replaces; the DELETE trigger is still installed for completeness (a future cleanup migration stays covered).
+- **Snippets only by default.** Prevents context bloat. `with_content=true` opt-in is capped at 2 KiB per row (MAX_FULL_CONTENT_BYTES).
+
+**Pitfalls encountered during TDD (record for future agents).**
+1. **`defer` in for-loop iteration freed the LIKE pattern before `db.query` ran** (use-after-free). Fix: collect patterns in an `ArrayList` and free them at function exit.
+2. **`COUNT(*) OVER ()` can't run directly over an FTS5 virtual table.** Fix: wrap FTS5 access in a subquery, then run the window function on the wrapper (same pattern as `searchMessagesFts` in `llm_history.zig:1797`).
+3. **`INSERT OR REPLACE` preserves the rowid but loses `created_at`** (DELETE+INSERT semantics). Acceptable for v1; future plan can use `INSERT ... ON CONFLICT DO UPDATE` to preserve `created_at`.
+4. **Non-external-content FTS5 vs `snippet()`.** External-content FTS5 returns NULL for `snippet()` per SQLite docs. The migration non-comment explicitly justifies the duplication of content into `agent_memories_fts` to enable the 10-token snippet with `[match]` markers.
+5. **`agent_memories` re-export.** Added to `root.zig` alongside `save_memory` / `load_memory` tool re-exports — otherwise `nalarcore.save_memory` in `tools_equipped.zig` is undefined and the binary fails to link.
+6. **Test fixtures MUST match production data shape, NOT hand-rolled schemas.** All 20+ tests use `MigrationManager.registerAllMigrations` + `runMigrations` to walk the full 70-migration chain — no hand-rolled `CREATE TABLE agent_memories`. Per `llm-history-test-use-migrations-module.md`.
+7. **`std.Thread.sleep` doesn't exist in Zig 0.16.** Use `std.c.nanosleep(&ts, null)` (mirrors `security.zig`'s `generateNonce`). `std.c.getrandom` takes `(buf.ptr, buf.len, flags)` — not `(slice, flags)`.
+
+**Verification.**
+- `zig build test --summary all` → 2326 pass (+34 from baseline 2292), 6 skip, 6 pre-existing failures (PR #181 tool-call-loading-placeholder regressions documented in AGENTS.md), 1 crash (pre-existing).
+- `zig build` → 3 binaries produced (`nalarcore-linux-x86_64` 88 MB, `nalar-desktop` 13 MB, `nalarcli` 12 MB).
+- Cross-compile smoke → `zig build-obj -fno-emit-bin -target x86_64-windows-gnu` + `-target aarch64-macos` both clean (no errors).
+- File count: 7 new files + 4 modified. Test count: 20 new behavioural tests across 4 files (6 migration + 9 helpers + 1 helper inline + 8 save_memory + 12 load_memory).
+
+**Why this matters.** The agent's mental model was previously: *"I forget everything between sessions unless it's in a chat log I can search."* With save_memory + load_memory, the agent can now persist and recall structured facts (preferences, decisions, lookup keys) with FTS5-grade relevance ranking, without polluting `search_history` with operational noise.
+
+**Branch / commit.** `worktree/save-load-memory-fts5` @ `0dd73609` (Task 4), `cb9b12fe` (Tasks 5+6 wiring). Plan: `docs/superpowers/plans/2026-08-06-save-load-memory-fts5.md`. Spec: `docs/superpowers/specs/2026-08-06-save-load-memory-fts5-design.md`. PR: pending.
