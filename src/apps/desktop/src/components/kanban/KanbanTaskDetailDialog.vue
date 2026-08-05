@@ -796,7 +796,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                 <button
                   type="button"
                   @click.stop="toggleColumnPicker"
-                  class="px-2 py-0.5 rounded text-xs hover:opacity-80 inline-flex items-center gap-1"
+                  class="min-w-[180px] px-2 py-0.5 rounded text-xs hover:opacity-80 inline-flex items-center justify-between gap-1"
                   style="
                     background-color: var(--semantic-sidebar-bg);
                     border: 1px solid var(--color-border);
@@ -809,7 +809,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                 </button>
                 <div
                   v-if="isColumnPickerOpen"
-                  class="absolute top-full mt-1 left-0 w-max rounded-lg shadow-lg z-20 overflow-hidden"
+                  class="absolute top-full mt-1 left-0 min-w-[180px] rounded-lg shadow-lg z-20 overflow-hidden"
                   style="
                     background-color: var(--semantic-card-bg);
                     border: 1px solid var(--color-border);

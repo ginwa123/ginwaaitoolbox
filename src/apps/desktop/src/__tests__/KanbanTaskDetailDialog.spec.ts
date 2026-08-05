@@ -797,17 +797,20 @@ describe('KanbanTaskDetailDialog — column dropdown (create mode)', () => {
     ).toBeNull()
   })
 
-  // NEW (2026-08-06, dropdown width/style follow-up). The dropdown
-  // sizes to its CONTENT (max-content) — as wide as the longest
-  // item ("in_review_planning" + checkmark + padding), but no wider.
-  // It is NOT the trigger width (long names would clip) and NOT the
-  // full body width (looks disproportionate when items are short
-  // like "drop" or "merged"). The wrapper is `relative` (sizes to
-  // trigger button content); the dropdown is `absolute left-0 w-max`
-  // anchored to the wrapper's left edge with width:max-content.
-  // Items get no `border-top` separator (matches the profile picker
-  // dropdown styling).
-  it('create mode: dropdown sizes to its content (max-content width, anchored to trigger left edge)', async () => {
+  // NEW (2026-08-06, dropdown width/style follow-up v3). User feedback
+  // round 3: BOTH the trigger button AND the dropdown should be
+  // wider than a tiny pill — they should match each other at a
+  // proper button width (~180px). Long column names like
+  // "in_review_planning" fit on one line; short names like "todo"
+  // show with the natural empty space on the right (matches the
+  // standard <select> element UX where the button width is the
+  // widest option width).
+  // - Trigger: `min-w-[180px]` + `justify-between` so chevron sits
+  //   right; text "todo" sits left.
+  // - Dropdown: `absolute top-full mt-1 left-0 min-w-[180px]` —
+  //   anchored to wrapper's left edge, same min-width as trigger.
+  // Items get no `border-top` separator (matches profile picker).
+  it('create mode: trigger and dropdown both have min-w-[180px] and match in width', async () => {
     mountCreateWithColumns([
       { id: 'col_x', name: 'todo' },
       { id: 'col_y', name: 'in_review_planning' },
@@ -825,17 +828,19 @@ describe('KanbanTaskDetailDialog — column dropdown (create mode)', () => {
     expect(trigger).not.toBeNull()
     expect(dropdown).not.toBeNull()
 
-    // Dropdown is positioned with `left-0` (anchored to wrapper's
-    // left edge) + `w-max` (width: max-content — sized to the
-    // widest item). NOT full body width (no `w-full`), NOT just
-    // the trigger width (no `inset-x-0` with non-w-full wrapper).
+    // Trigger is a wide button, not a tiny pill.
+    const triggerClass = trigger!.getAttribute('class') ?? ''
+    expect(triggerClass).toContain('min-w-[180px]')
+    expect(triggerClass).toContain('justify-between')
+
+    // Dropdown matches the trigger width via min-w-[180px] + left-0
+    // anchored to wrapper's left edge. NOT full body width.
     const dropdownClass = dropdown!.getAttribute('class') ?? ''
+    expect(dropdownClass).toContain('min-w-[180px]')
     expect(dropdownClass).toContain('left-0')
-    expect(dropdownClass).toContain('w-max')
+    expect(dropdownClass).not.toContain('w-full')
     expect(dropdownClass).not.toContain('inset-x-0')
-    expect(dropdownClass).not.toMatch(/\bw-full\b/)
-    // No fixed min-w override.
-    expect(dropdownClass).not.toMatch(/\bmin-w-\[/)
+    expect(dropdownClass).not.toContain('w-max')
 
     // Items have no border-top separator (matches profile picker style).
     const item = dropdown!.querySelector<HTMLElement>(
