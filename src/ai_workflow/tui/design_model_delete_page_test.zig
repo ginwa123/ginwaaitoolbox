@@ -196,6 +196,12 @@ fn dirExists(io: std.Io, path: []const u8) bool {
     return true;
 }
 
+fn fileExists(io: std.Io, path: []const u8) bool {
+    var f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+    f.close(io);
+    return true;
+}
+
 // ─── Behavioural tests ───────────────────────────────────────────────────
 
 test "deletePage returns false when page_id does not exist" {
@@ -244,7 +250,7 @@ test "deletePage removes the design_pages row + cascade-deletes elements" {
     try testing.expect(!try elementIdExists(alloc, &ctx.db, "elem_home_a"));
 }
 
-test "deletePage rmdirs the on-disk page directory derived from design_page_elements.file_path" {
+test "deletePage unlinks each element's HTML file individually (per-file, NOT recursive directory delete)" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.db.deinit();
@@ -261,21 +267,49 @@ test "deletePage rmdirs the on-disk page directory derived from design_page_elem
     // Sanitized dir = "<item_path>/.nalar/design/Login".
     const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".nalar/design/Login" });
     defer alloc.free(page_dir);
-    const elem_path = try insertElementWithDiskFile(
+    const login_btn_path = try insertElementWithDiskFile(
         alloc, &ctx.db, ctx.threaded.io(),
         "elem_login_button", page_id, page_dir, "login-button",
     );
-    defer alloc.free(elem_path);
+    defer alloc.free(login_btn_path);
+    const forgot_link_path = try insertElementWithDiskFile(
+        alloc, &ctx.db, ctx.threaded.io(),
+        "elem_forgot_link", page_id, page_dir, "forgot-link",
+    );
+    defer alloc.free(forgot_link_path);
 
-    // Sanity: directory exists before delete.
-    try testing.expect(dirExists(ctx.threaded.io(), page_dir));
+    // A non-DB-tracked file the user dropped into the page directory
+    // manually (e.g. a stray `README.md` or `.DS_Store`). Per-file
+    // deletion must NOT touch this — only the files tracked in
+    // `design_page_elements.file_path` should be removed. This
+    // is the regression guard against the pre-fix code that
+    // recursively deleted the whole folder.
+    const stray_file_path = try std.fs.path.join(alloc, &.{ page_dir, "user-note.txt" });
+    defer alloc.free(stray_file_path);
+    {
+        const f = try std.Io.Dir.cwd().createFile(ctx.threaded.io(), stray_file_path, .{});
+        f.close(ctx.threaded.io());
+        try std.Io.Dir.cwd().writeFile(ctx.threaded.io(), .{ .sub_path = stray_file_path, .data = "user-added note" });
+    }
+
+    // Sanity: all three files exist before delete.
+    try testing.expect(fileExists(ctx.threaded.io(), login_btn_path));
+    try testing.expect(fileExists(ctx.threaded.io(), forgot_link_path));
+    try testing.expect(fileExists(ctx.threaded.io(), stray_file_path));
 
     const was_deleted = try design_model.deletePage(alloc, ctx.threaded.io(), &ctx.db, page_id);
     try testing.expect(was_deleted);
 
-    // Directory gone after delete — derived from file_path via
-    // std.fs.path.dirname, NOT from workspace_items.path.
-    try testing.expect(!dirExists(ctx.threaded.io(), page_dir));
+    // Each DB-tracked file is gone after delete (per-file deletion,
+    // mirrors deleteElement's pattern).
+    try testing.expect(!fileExists(ctx.threaded.io(), login_btn_path));
+    try testing.expect(!fileExists(ctx.threaded.io(), forgot_link_path));
+
+    // The non-DB-tracked file MUST still exist — per-file deletion
+    // does NOT recursively walk the folder. This is the regression
+    // guard for the 2026-08-06 review (user said: "should delete on
+    // file not file inside folder recursivly").
+    try testing.expect(fileExists(ctx.threaded.io(), stray_file_path));
 }
 
 test "deletePage succeeds (no-op on disk) when page has no elements yet" {

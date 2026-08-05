@@ -531,27 +531,30 @@ A "delete useless tests" task identified ~60 static-contract tests across
 
 The pre-fix `deletePage` JOINed `workspace_items` to read `wi.path` + `dp.name`, then formatted `<path>/.nalar/design/<sanitized_page>` to rmdir the on-disk folder. The user wanted the directory derivation to come from `design_page_elements` instead — every element row's `file_path` already includes the absolute workspace item path as a prefix, so we don't need the JOIN at all.
 
-**What landed (4 files, +232/-119).**
+**What landed (4 files, +466/-130).**
 
 - **`src/ai_workflow/tui/design_model.zig`** — `deletePage` now:
   1. SELECTs `workspace_item_id` + `workspace_item_task_id` from `design_pages` ONLY (no JOIN).
-  2. SELECTs `file_path` from any `design_page_elements` row with matching `page_id`.
-  3. Derives the page directory via `std.fs.path.dirname(file_path)`.
-  4. rmdirs that directory. Best-effort (no error on missing dir).
-  5. Emits the SSE event with `workspace_id = ""` (no listener currently uses it; future consumers can resolve from `item_id`).
+  2. SELECTs every `file_path` from `design_page_elements` rows with matching `page_id`.
+  3. After the SQL DELETE, **unlinks each element's HTML file individually via `design_io.deleteFileIfExists`** (mirrors `deleteElement`'s pattern).
+  4. Emits the SSE event with `workspace_id = ""` (no listener currently uses it; future consumers can resolve from `item_id`).
 
-- **`src/ai_workflow/tui/design_model_delete_page_test.zig`** (NEW, 5 behavioural tests) — covers: missing page_id → false, page row + element row cascade-deleted, on-disk directory rmdired, no-element page → SQL delete succeeds, paired `workspace_item_tasks` cascade-deleted. Enables `PRAGMA foreign_keys = ON` in the test setup to match the documented `ON DELETE CASCADE` contract on `design_page_elements.page_id`.
+- **`src/ai_workflow/tui/design_model_delete_page_test.zig`** (NEW, 5 behavioural tests) — covers: missing page_id → false, page row + element row cascade-deleted, **per-file unlink + non-DB file in the page directory SURVIVES** (regression guard for the 2026-08-06 review), no-element page → SQL delete succeeds, paired `workspace_item_tasks` cascade-deleted. Enables `PRAGMA foreign_keys = ON` in the test setup to match the documented `ON DELETE CASCADE` contract on `design_page_elements.page_id`.
 
 - **`src/ai_workflow/tui/test_runner.zig`** — registered the new test file.
 
 **Why this matters.** Two benefits from removing the `workspace_items` access:
 1. **No JOIN, no read on `workspace_items`** — fewer SQL calls per page-delete.
-2. **Cleanup survives a missing/empty parent row** — if the `workspace_items` row was already deleted or its `path` column is NULL/empty (a real risk on legacy installs), the old code silently skipped the rmdir and left the on-disk folder as an orphan. The new code derives the path from `file_path` which is guaranteed to exist whenever the page has elements.
+2. **Cleanup survives a missing/empty parent row** — if the `workspace_items` row was already deleted or its `path` column is NULL/empty (a real risk on legacy installs), the old code silently skipped the rmdir and left the on-disk folder as an orphan. The new code derives paths from `design_page_elements.file_path` which is guaranteed to exist whenever the page has elements.
+
+**2026-08-06 review feedback (PR #197).** The first cut of this PR used `design_io.deleteDirectoryRecursively` to rmdir the entire page directory. The reviewer (repo owner) replied: *"this is wrong, should delete on file not file inside folder recursivly"*. The fix: switched to per-file unlink via `design_io.deleteFileIfExists` so a user-dropped `.DS_Store` / `README.md` / screenshot in the page folder is preserved (only the files explicitly tracked in `design_page_elements.file_path` are removed). The regression guard for this is now baked into the test: a stray `user-note.txt` in the page directory MUST still exist after `deletePage`.
 
 **TDD trace.**
 
-- RED: pre-fix code, `deletePage removes the design_pages row + cascade-deletes elements` failed because `PRAGMA foreign_keys = ON` was enabled in the test setup to match the documented contract — FK enforcement is OFF in production by default, so the pre-fix code left orphan element rows.
-- GREEN: switched the directory lookup to `std.fs.path.dirname(file_path)` (5/5 new tests pass).
+- RED (round 1): pre-fix code, `deletePage removes the design_pages row + cascade-deletes elements` failed because `PRAGMA foreign_keys = ON` was enabled in the test setup to match the documented contract — FK enforcement is OFF in production by default, so the pre-fix code left orphan element rows.
+- GREEN (round 1): switched to `std.fs.path.dirname(file_path)` + `deleteDirectoryRecursively`.
+- RED (round 2): the "per-file, not recursive directory delete" test failed on round-1 impl because `deleteDirectoryRecursively` also removed the stray `user-note.txt` in the page directory.
+- GREEN (round 2): switched to per-file `deleteFileIfExists` (5/5 new tests pass).
 
 **Verification.**
 
@@ -562,11 +565,14 @@ The pre-fix `deletePage` JOINed `workspace_items` to read `wi.path` + `dp.name`,
 
 **Pitfalls (record for future agents).**
 
-- **`std.fs.path.dirname` returns a slice into the input** — `file_path` is owned by the SQLite `Row`. The slice dangles when `row.deinit(allocator)` fires (the project memory `zig-slice-headers-across-defer-lifetimes` documents this exact trap). Solution: `allocator.dupe(u8, dir_slice)` BEFORE the defer fires (the dupe copies the bytes to a fresh allocation). Without the dupe, the slice header points at freed memory → 0xAA bytes on read.
+- **`std.fs.path.dirname` is no longer used** — round-1 used this to derive the directory from `file_path`. Round-2 dropped it entirely; we now use `file_path` directly (per-file delete).
+- **`row.values[0]` is a slice into the row's backing buffer** — collected into a heap-owned `std.ArrayList([]u8)` (`allocator.dupe` each entry) BEFORE the deferred `row.deinit` runs (per project memory `zig-slice-headers-across-defer-lifetimes`). Without the dupe, the slice header would point at freed memory → 0xAA bytes on read.
 - **`workspace_id` in the SSE event is now `""`** — no listener consumes `design_page_deleted` today, so this is a safe wire-shape change. If a future consumer needs `workspace_id`, they can resolve via `workspace_items` lookup on `item_id` rather than re-shaping this function.
+- **`io: std.Io` parameter is now unused** — per-file `deleteFileIfExists` doesn't need an Io runtime. The signature still includes `io` for wire-compatibility with the handler; `_ = io;` documents the unused intent.
 - **FK enforcement is OFF by default in this codebase** — the pre-fix code relied on `ON DELETE CASCADE` (declared on `design_page_elements.page_id` via migration 056) to remove element rows, but SQLite never enforced it. My new test enables `PRAGMA foreign_keys = ON` to match the documented contract; production code still doesn't enforce it. This is a pre-existing latent inconsistency, not introduced by this change.
+- **Per-file delete leaves the empty directory behind** — if the user manually deletes every element from a page, the `<page_name>/` directory is still on disk (empty). This is the correct behaviour per the 2026-08-06 review: don't touch the folder, only the files the DB knows about. A future rmdir-empty-dir cleanup pass could be added if the empty dirs become noisy.
 
-**Branch / commit.** `worktree/delete-page-no-workspace-items-join` (3 files modified + 1 new). Squash-merge candidate.
+**Branch / PR.** `worktree/delete-page-no-workspace-items-join` → PR #197. Squash-merge candidate (2 commits: round-1 impl + round-2 review fix).
 
 ### 2026-08-06: Design — move element to another page (context menu + LLM tool)
 

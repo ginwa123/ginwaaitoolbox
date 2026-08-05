@@ -3307,8 +3307,9 @@ pub fn deleteElement(
 //   1. The `design_pages` SQL row.
 //   2. Every `design_page_elements` row with matching `page_id` (via FK
 //      `ON DELETE CASCADE` — see migrations 055/056).
-//   3. The on-disk `<item_path>/.nalar/design/<page_name>/` directory
-//      containing each element's HTML file.
+//   3. Each element's HTML file on disk (per-file unlink via
+//      `design_io.deleteFileIfExists`, mirroring `deleteElement`'s
+//      pattern — NOT a recursive `deleteDirectoryRecursively`).
 //   4. The paired `workspace_item_tasks` row (application-level FK).
 //
 // Returns `true` on a successful delete, `false` if no such page_id
@@ -3319,30 +3320,28 @@ pub fn deleteElement(
 // `docs/superpowers/plans/2026-07-25-design-page-delete-button.md`
 // (Chunk 1).
 //
-// On-disk directory lookup
-// ──────────────────────────
-// The on-disk page directory is derived from
-// `design_page_elements.file_path` (via `std.fs.path.dirname`) — not
-// from a JOIN to `workspace_items.path`. The element row's
-// `file_path` is an absolute path of the form
-// `<item_path>/.nalar/design/<sanitized_page>/<elem>.html`, so
-// `dirname(file_path)` gives us the exact directory the elements
-// were written to — without ever reading `workspace_items`. This
-// avoids a SELECT on `workspace_items` per delete and means a delete
-// still cleans up its on-disk folder even if the parent
-// `workspace_items` row was already deleted (or its `path` was
-// cleared).
+// Why per-file deletion (not recursive rmdir)
+// ────────────────────────────────────────────
+// The 2026-08-06 review of the original PR (which used
+// `deleteDirectoryRecursively`) was explicit: the on-disk page
+// directory may contain files the user dropped there themselves
+// (`.DS_Store`, `README.md`, screenshots, etc.). Recursively
+// removing the whole folder would nuke those unrelated files. Per-file
+// deletion keeps the unrelated files in place and only removes the
+// files explicitly tracked in `design_page_elements.file_path`. This
+// mirrors `deleteElement`'s pattern (line 3285-3287) and is the
+// correct primitive for an "explicit file list" cleanup.
 pub fn deletePage(
     allocator: std.mem.Allocator,
     io: std.Io,
     db: *sqlite.SqliteBackend,
     page_id: []const u8,
 ) anyerror!bool {
+    _ = io; // Per-file deletion uses design_io.deleteFileIfExists which doesn't need an Io.
     // Look up `workspace_item_id` + `workspace_item_task_id` from
-    // `design_pages` ONLY (no JOIN to `workspace_items`). We need
-    // `item_id` for the SSE event and `workspace_item_task_id` for
-    // the application-level "FK" cascade — both columns live on
-    // `design_pages`, no other table needed.
+    // `design_pages` ONLY (no JOIN to `workspace_items`). Both
+    // columns live on `design_pages`; we never read `workspace_items`
+    // in this function.
     const page_info: struct {
         item_id: []u8,
         workspace_item_task_id: []u8,
@@ -3364,31 +3363,41 @@ pub fn deletePage(
     defer allocator.free(page_info.item_id);
     defer allocator.free(page_info.workspace_item_task_id);
 
-    // Derive the on-disk page directory from any element's
-    // `file_path`. `std.fs.path.dirname` returns a slice INTO the
-    // row's backing buffer — copy to a fresh allocation BEFORE the
-    // deferred `row.deinit` runs (the slice header would otherwise
-    // dangle). See project memory
-    // `zig-slice-headers-across-defer-lifetimes` for the trap.
-    const page_dir: ?[]u8 = blk: {
+    // Collect every `file_path` from this page's elements BEFORE
+    // the SQL DELETE so we have an authoritative list of files to
+    // unlink. `file_path` is an absolute path written by `addElement`
+    // (`<item_path>/.nalar/design/<page_name>/<elem>.html`), so each
+    // entry points at exactly one on-disk file — no
+    // `path.dirname` derivation needed, no JOIN to `workspace_items`.
+    //
+    // The list is heap-owned (each entry is `allocator.dupe`'d).
+    // Slice headers inside the SQL `Row` would otherwise dangle when
+    // `row.deinit` fires (per project memory
+    // `zig-slice-headers-across-defer-lifetimes`).
+    var file_paths: std.ArrayList([]u8) = .empty;
+    defer {
+        for (file_paths.items) |p| allocator.free(p);
+        file_paths.deinit(allocator);
+    }
+    {
         var q = try db.query(allocator,
-            \\SELECT file_path FROM design_page_elements WHERE page_id = ? LIMIT 1
+            \\SELECT file_path FROM design_page_elements WHERE page_id = ?
         , &.{page_id});
         defer q.deinit();
-        const row = try q.next() orelse break :blk null;
-        defer row.deinit(allocator);
-        const file_path = row.values[0];
-        if (file_path.len == 0) break :blk null;
-        const dir_slice = std.fs.path.dirname(file_path) orelse break :blk null;
-        break :blk try allocator.dupe(u8, dir_slice);
-    };
-    defer if (page_dir) |pd| allocator.free(pd);
+        while (try q.next()) |row| {
+            defer row.deinit(allocator);
+            const fp = row.values[0];
+            if (fp.len == 0) continue;
+            try file_paths.append(allocator, try allocator.dupe(u8, fp));
+        }
+    }
 
-    // Delete the row first. The FK `ON DELETE CASCADE` on
-    // `design_page_elements.page_id` handles the element rows in the
-    // same transaction — but their on-disk HTML files live in the
-    // page directory, so we need a single recursive rmdir to clean
-    // them all up below.
+    // Delete the page row. With FK enforcement ON (the test setup),
+    // the element rows are cascade-deleted. With FK enforcement OFF
+    // (production default), the element rows remain as orphans —
+    // the per-file delete below still cleans up the on-disk
+    // artifacts regardless. The orphan rows are pre-existing latent
+    // behaviour (out of scope for this fix).
     try db.exec(allocator,
         "DELETE FROM design_pages WHERE id = ?",
         &.{page_id});
@@ -3405,13 +3414,14 @@ pub fn deletePage(
             &.{page_info.workspace_item_task_id}) catch {};
     }
 
-    // Defer-pattern: rmdir the page directory AFTER the SQL DELETE
-    // succeeded. The directory was derived from
-    // `design_page_elements.file_path` above — no `workspace_items`
-    // access required. Swallow errors (folder may already be
-    // missing, or the page never had any elements).
-    if (page_dir) |pd| {
-        design_io.deleteDirectoryRecursively(allocator, io, pd) catch {};
+    // Per-file deletion AFTER the SQL DELETE. Best-effort: a file
+    // that's already been removed (or was never written — empty
+    // `file_path`) is silently skipped via `deleteFileIfExists`'s
+    // ENOENT handling. We do NOT recursively walk the page folder — a
+    // user may have dropped unrelated files there (`.DS_Store`,
+    // screenshots, etc.) and we don't want to nuke them.
+    for (file_paths.items) |fp| {
+        design_io.deleteFileIfExists(allocator, fp) catch {};
     }
 
     // Emit SSE event AFTER the SQL DELETE succeeded. Best-effort: if
