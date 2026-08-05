@@ -205,4 +205,35 @@ describe('Sidebar.handleDeleteDesignPage — confirmation dialog (2026-08-06)', 
     expect(deleteSpy).not.toHaveBeenCalled()
     wrapper.unmount()
   })
+
+  it('onConfirm error path surfaces the failure via notifyError (no unhandled rejection)', async () => {
+    // Regression guard for the only piece of new logic in this diff:
+    // the try/catch around `workspacesStore.deleteDesignPage` MUST
+    // call `useNotificationStore().notifyError('Failed to delete page', ...)`
+    // on rejection so a failed backend DELETE isn't a silent UX failure.
+    // Without this test, a future refactor could remove the try/catch
+    // and the dialog would still appear to work (4 happy-path tests pass).
+    const store = useWorkspacesStore()
+    const { useNotificationStore } = await import('../stores/notifications')
+    vi.spyOn(store, 'deleteDesignPage').mockRejectedValue(new Error('boom'))
+    const notifySpy = vi.spyOn(useNotificationStore(), 'notifyError').mockImplementation(() => {})
+    store.workspaces = [{ id: WS_ID, name: 'WS', items: [baseItem] }] as any
+
+    const wrapper = mountSidebar()
+    const sidebar = wrapper.vm as any
+    sidebar.handleDeleteDesignPage(WS_ID, ITEM_ID, PAGE_ID)
+    await nextTick()
+
+    const confirmBtn = findButtonByText(/^delete$/i)
+    expect(confirmBtn).toBeDefined()
+    confirmBtn!.click()
+    await nextTick()
+    // Flush the microtask queue so the onConfirm async catches its
+    // rejection and calls notifyError.
+    await Promise.resolve()
+    await nextTick()
+
+    expect(notifySpy).toHaveBeenCalledWith('Failed to delete page', 'boom')
+    wrapper.unmount()
+  })
 })
