@@ -2250,6 +2250,42 @@ export async function moveDesignElementsBatch(
   )
 }
 
+/**
+ * Move an element to a different page in the same design item.
+ *
+ * Mirrors the backend `POST .../elements/:element_id/move-to-page`
+ * endpoint. Changes the element's `page_id` (and `position` on the
+ * target page) instead of `x`/`y`. When `apply_to_children=true` (the
+ * default), the move cascades to every transitive descendant via a
+ * recursive CTE in one SQL transaction (same semantics as
+ * `moveDesignElementsBatch` but cross-page).
+ *
+ * Plan: docs/superpowers/plans/2026-08-06-move-element-to-page.md (Chunk 4)
+ */
+export interface MoveElementToPageInput {
+  /** REQUIRED. The destination page id. Must be on the same design item. */
+  new_page_id: string
+  /** Default true. When true, every transitive descendant moves too. */
+  apply_to_children?: boolean
+}
+
+export interface MoveElementToPageResponse {
+  updated: DesignElement[]
+}
+
+export async function moveDesignElementToPage(
+  workspaceId: string,
+  itemId: string,
+  sourcePageId: string,
+  elementId: string,
+  input: MoveElementToPageInput,
+): Promise<MoveElementToPageResponse> {
+  return await apiFetch<MoveElementToPageResponse>(
+    `/workspaces/${workspaceId}/items/${itemId}/design/pages/${sourcePageId}/elements/${elementId}/move-to-page`,
+    { method: 'POST', body: input },
+  )
+}
+
 // Skills API
 export interface Skill {
   name: string

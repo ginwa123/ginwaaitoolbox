@@ -338,6 +338,46 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
    * On error: the store's error surfaces via `notificationStore.
    * notifyError(...)`.
    */
+  async function moveToPage(
+    elementId: string,
+    newPageId: string,
+  ): Promise<void> {
+    if (!args) {
+      console.warn('[useDesignHandlers.moveToPage] no args provided; skipping')
+      return
+    }
+    const workspaceId = readId(args.workspaceId)
+    const itemId = readId(args.itemId)
+    const pageId = readId(args.pageId)
+    if (!workspaceId || !itemId || !pageId || !elementId || !newPageId) {
+      // Missing ids — quiet no-op (same contract as `leaveGroup`).
+      return
+    }
+    try {
+      const updated = await workspacesStore.moveDesignElementToPage(
+        workspaceId,
+        itemId,
+        pageId,
+        elementId,
+        { new_page_id: newPageId, apply_to_children: true },
+      )
+      if (!updated) {
+        // Store action already showed an error toast.
+        return
+      }
+      // Clear selection — the element has moved to a different page
+      // and the canvas on the source page no longer shows it (matches
+      // `leaveGroup` UX).
+      args.selectedIds.value = new Set()
+      notificationStore.notifyError(
+        `Moved "${updated[0]?.name ?? elementId}" to the target page.`,
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      notificationStore.notifyError(message, 'Failed to move element to page.')
+    }
+  }
+
   async function leaveGroup(elementId: string): Promise<void> {
     if (!args) {
       console.warn('[useDesignHandlers.leaveGroup] no args provided; skipping')
@@ -480,5 +520,6 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
     leaveGroup,
     reparentLayers,
     moveElementWithDescendants,
+    moveToPage,
   }
 }

@@ -75,6 +75,7 @@ import LayersPanel from './LayersPanel.vue'
 import PropertiesPanel from './PropertiesPanel.vue'
 import AddDesignElementDialog from './AddDesignElementDialog.vue'
 import DesignContextMenu from './DesignContextMenu.vue'
+import MoveToPageDialog from './MoveToPageDialog.vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import { useNotificationStore } from '../../stores/notifications'
 import { useDesignHandlers } from '../../composables/useDesignHandlers'
@@ -252,6 +253,18 @@ const pagesError = ref<string | null>(null)
 const activePage = computed(() =>
   pages.value.find((p) => p.id === activePageId.value) ?? null,
 )
+
+// NEW (2026-08-06, design-move-to-page plan, Chunk 8): pass-through
+// computed properties for the MoveToPageDialog. `pages` is already
+// scoped to `effectiveItemId.value`; we just need the selected
+// element's name (looked up from the local elements list).
+const pagesForMoveDialog = computed<DesignPage[]>(() => pages.value)
+const elementNameForMoveDialog = computed<string>(() => {
+  const id = moveToPageDialogElementId.value
+  if (!id) return ''
+  const el = elements.value.find((e) => e.id === id)
+  return el?.name ?? id
+})
 
 // ─── Elements state (mirrors item.design_elements) ─────────────────────
 
@@ -1405,6 +1418,39 @@ const handleDesignLeaveGroupFromContextMenu = (elementId: string): void => {
   void designHandlers.leaveGroup(elementId)
 }
 
+// NEW (2026-08-06, design-move-to-page plan, Chunk 8): open the
+// MoveToPageDialog with the right-clicked element. The dialog
+// itself drives the API call — we just open it with the right
+// element id and source page. The MoveToPageDialog handles errors
+// internally (error message via the toast).
+const moveToPageDialogElementId = ref<string>('')
+const moveToPageDialogVisible = computed({
+  get: () => moveToPageDialogElementId.value !== '',
+  set: (v) => {
+    if (!v) moveToPageDialogElementId.value = ''
+  },
+})
+const handleDesignMoveToPageFromContextMenu = (elementId: string): void => {
+  if (!elementId) return
+  if (!props.workspaceId || !effectiveItemId.value || !activePageId.value) return
+  moveToPageDialogElementId.value = elementId
+}
+const handleDesignMoveToPageDialogSelect = async (newPageId: string): Promise<void> => {
+  const elementId = moveToPageDialogElementId.value
+  if (!elementId || !props.workspaceId || !effectiveItemId.value || !activePageId.value) {
+    moveToPageDialogElementId.value = ''
+    return
+  }
+  const success = await designHandlers.moveToPage(elementId, newPageId)
+  // Close the dialog regardless — failure already shows an error toast.
+  moveToPageDialogElementId.value = ''
+  // Q6: handler navigates to the target page on success (no-op on failure).
+  void success
+}
+const handleDesignMoveToPageDialogClose = (): void => {
+  moveToPageDialogElementId.value = ''
+}
+
 // Chunk 2: group drag. When the user drags any element that's part of
 // a multi-selection, DesignElement emits `groupDrag` with the cursor
 // delta (design-px, zoom-adjusted). We translate that into N individual
@@ -2241,6 +2287,7 @@ watch(
             @send-backward="() => dispatchReorder('send_backward')"
             @send-to-back="() => dispatchReorder('send_to_back')"
             @context-menu-delete="handleDesignContextMenuDelete"
+            @move-to-page="handleDesignMoveToPageFromContextMenu"
           />
         </div>
 
@@ -2294,12 +2341,29 @@ watch(
       @ungroup="handleDesignUngroupFromContextMenu"
       @leave-group="handleDesignLeaveGroupFromContextMenu"
       @select-all="handleDesignSelectAll"
+      @move-to-page="handleDesignMoveToPageFromContextMenu"
       @bring-to-front="() => dispatchReorder('bring_to_front')"
       @bring-forward="() => dispatchReorder('bring_forward')"
       @send-backward="() => dispatchReorder('send_backward')"
       @send-to-back="() => dispatchReorder('send_to_back')"
       @delete="handleDesignContextMenuDelete"
       @close="canvasContextMenu.close()"
+    />
+
+    <!-- NEW (2026-08-06, design-move-to-page plan, Chunk 8): centred
+         modal for choosing the target page when the user clicks
+         "Move to page..." in the right-click menu. Mounted at the
+         AppLayout-equivalent level so it escapes the canvas's
+         transform/overflow contexts.
+         Pages list comes from workspacesStore.designPagesByItemId
+         (single source of truth shared with the sidebar tree). -->
+    <MoveToPageDialog
+      :visible="moveToPageDialogVisible"
+      :element-name="elementNameForMoveDialog"
+      :current-page-id="activePageId"
+      :pages="pagesForMoveDialog"
+      @close="handleDesignMoveToPageDialogClose"
+      @select="handleDesignMoveToPageDialogSelect"
     />
   </section>
 </template>

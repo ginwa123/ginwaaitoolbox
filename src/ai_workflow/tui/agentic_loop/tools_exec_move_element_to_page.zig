@@ -1,0 +1,105 @@
+//! Tool executor for `move_element_to_page` — wraps the tool's
+//! `executeMoveElementToPageToString` into the `ToolExecContext` /
+//! `ToolExecResult` shape used by the agentic loop's tool dispatcher.
+//!
+//! Plan: docs/superpowers/plans/2026-08-06-move-element-to-page.md
+//! (Chunk 3, Task 3.2)
+
+const std = @import("std");
+const nalarcore = @import("nalarcore");
+const tools = @import("tools.zig");
+
+const ToolExecContext = tools.ToolExecContext;
+const ToolExecResult = tools.ToolExecResult;
+const agent = nalarcore.agent;
+const move_element_to_page_mod = nalarcore.move_element_to_page;
+const wrapToolOutput = tools.wrapToolOutput;
+
+pub fn execMoveElementToPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        move_element_to_page_mod.MoveElementToPageInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(
+            ctx.allocator,
+            "move_element_to_page failed to parse input: {s}",
+            .{@errorName(err)},
+        );
+        const output = try wrapToolOutput(
+            ctx.allocator,
+            "move_element_to_page",
+            tc.function.arguments,
+            false,
+            err_msg,
+            "",
+        );
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    // The tool needs the *active* page_id — the agentic loop currently
+    // passes the page context through `ctx.cwd` or a similar channel.
+    // For now, call the model layer directly with the active page id
+    // that the LLM has previously set via set_design_page. The
+    // higher-level orchestration (page-context plumbing) is out of
+    // scope for this tool wrapper.
+    //
+    // TODO(2026-08-06 follow-up): wire ctx.active_page_id through the
+    // ToolExecContext so the tool knows which page the LLM is
+    // currently looking at. For now we require the caller to provide
+    // it via a dedicated field on ctx.
+    const active_page_id = ctx.active_page_id;
+
+    const inner = move_element_to_page_mod.executeMoveElementToPageToString(
+        ctx.allocator,
+        ctx.db,
+        active_page_id,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(
+            ctx.allocator,
+            "move_element_to_page failed: {s}",
+            .{@errorName(err)},
+        );
+        const output = try wrapToolOutput(
+            ctx.allocator,
+            "move_element_to_page",
+            tc.function.arguments,
+            false,
+            err_msg,
+            "",
+        );
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer ctx.allocator.free(inner);
+
+    // Detect <move_element_to_page><error>...</error></move_element_to_page>
+    // and surface it as a tool failure (consistent with every other
+    // tool wrapper in this directory).
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(
+            ctx.allocator,
+            "move_element_to_page",
+            tc.function.arguments,
+            false,
+            err_msg,
+            inner,
+        );
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(
+        ctx.allocator,
+        "move_element_to_page",
+        tc.function.arguments,
+        true,
+        null,
+        inner,
+    );
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}

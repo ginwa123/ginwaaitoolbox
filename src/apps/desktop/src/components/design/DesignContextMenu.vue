@@ -65,6 +65,7 @@ const emit = defineEmits<{
   group: [targetIds: string[]]
   leaveGroup: [targetId: string]
   ungroup: [targetId: string]
+  moveToPage: [targetId: string]
   selectAll: []
   bringToFront: [targetIds: string[]]
   bringForward: [targetIds: string[]]
@@ -124,12 +125,17 @@ const reorderItems = computed(() => [
   { id: 'send-to-back', label: 'Send to back', acc: acc('⌘⇧[', 'Ctrl+Shift+['), emitName: 'sendToBack' as const },
 ])
 
+// "Move to page…" is enabled only when EXACTLY ONE element is selected.
+// Mirrors Q2 (single element only, button greyed when multi-select).
+const canMoveToPage = computed(() => props.targetIds.length === 1)
+
 // Estimated menu footprint for viewport edge clamping. Counted
-// from the items[] below: 9 buttons + 2 separators = 11 rows × 40px
-// tall; 220px wide minimum.
+// from the items[] below: 11 buttons + 2 separators = 13 rows × 40px
+// tall; 220px wide minimum. (Updated to include "Move to page…"
+// which sits before the reorder items.)
 const MENU_WIDTH = 220
 const MENU_ROW_HEIGHT = 40
-const MENU_ROWS = 11
+const MENU_ROWS = 13
 const VIEWPORT_MARGIN = 8
 
 const edgeClampedStyle = computed(() => {
@@ -219,6 +225,17 @@ function dispatchReorder(item: typeof reorderItems.value[number]): void {
         <span class="text-xs" style="color: var(--semantic-text-dim);">{{ acc('⌘A', 'Ctrl+A') }}</span>
       </button>
       <div class="h-px my-1" style="background-color: var(--color-border);" data-testid="design-context-menu-separator-1" />
+      <button
+        type="button"
+        class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
+        style="color: var(--semantic-text);"
+        :disabled="!canMoveToPage"
+        data-testid="design-context-menu-move-to-page"
+        @click="emit('moveToPage', targetIds[0]!)"
+      >
+        <span>Move to page...</span>
+        <span class="text-xs" style="color: var(--semantic-text-dim);">&nbsp;</span>
+      </button>
       <button
         v-for="item in reorderItems"
         :key="item.id"

@@ -525,6 +525,125 @@ A "delete useless tests" task identified ~60 static-contract tests across
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Design — move element to another page (context menu + LLM tool)
+
+**Symptom (user report, task_1785847404640).** *"design mode, move another elements ... the feature is menu, write a plan to do that"*. No way to relocate a design element from one page to another — users had to copy element data, delete source, recreate on target. Painful and error-prone.
+
+**What landed.** Right-click any design element → "Move to page..." menu item → centered modal listing all OTHER pages in the design item → click target → element (and descendants if it's a group/frame) relocate atomically. Mirrors Figma's "Move to Page" UX. Includes a new `move_element_to_page` LLM tool for the AI agent.
+
+**Architecture.**
+
+| Layer | File | Change |
+|---|---|---|
+| Design model | `src/ai_workflow/tui/design_model.zig` | New `moveElementToPage(...)` — recursive CTE UPDATE on `page_id` + `parent_id` (auto-detach non-selected parents). Pre-flight: `SamePage`, `CrossDesign`, `PageNotFound`, `ElementNotFound`. 8 inline tests. |
+| HTTP handler | `src/ai_workflow/tui/http_handlers/design_elements_move_to_page.zig` | `POST /api/workspaces/:w/items/:i/design/pages/:p/elements/:eid/move-to-page`. Body: `{ new_page_id, apply_to_children }`. 6 inline tests covering each error case + cascade off. |
+| Route | `src/main.zig` | 1 line register. |
+| LLM tool | `src/modules/agent/tools/move_element_to_page.zig` | Tool def + `executeMoveElementToPageToString(...)`. 4 inline tests. Registered in `tools_exec_move_element_to_page.zig` + `tools_equipped.zig`. |
+| Frontend API | `src/apps/desktop/src/api/index.ts` | `moveDesignElementToPage(...)` wrapper. |
+| Frontend store | `src/apps/desktop/src/stores/workspaces.ts` | `moveElementsToPage(...)` with optimistic mirror + rollback. |
+| Frontend modal | `src/apps/desktop/src/components/design/MoveToPageDialog.vue` | New centered `<Teleport>` modal. Lists OTHER pages sorted by `position`. `data-testid="move-to-page-dialog"`. |
+| Context menu | `src/apps/desktop/src/components/design/DesignContextMenu.vue` | New 11th menu item "Move to page...". `canMoveToPage`: single-select only. `data-testid="design-context-menu-move-to-page"`. |
+| Bubble | `src/apps/desktop/src/components/design/LayersPanel.vue` | New `moveToPage` emit. |
+| Handler | `src/apps/desktop/src/composables/useDesignHandlers.ts` | `moveToPage(elementId, newPageId)` — navigates to target page on success (Q6 default). |
+| Mount | `src/apps/desktop/src/components/design/DesignView.vue` | `handleDesignMoveToPageFromContextMenu` opens the dialog. Dialog mounted at DesignView level. |
+
+**Behavioural matrix.**
+
+| Scenario | Result |
+|---|---|
+| Right-click element on page A → "Move to page..." → click page B | Element (and any descendants) move from page A → page B. User is navigated to page B to see the result. |
+| Multi-select (≥2 elements) | Menu item disabled. v1 only handles single elements (or their subtrees). |
+| Only one page in the design | Modal shows "This is the only page". |
+| Source page == target page | Backend: `SamePage` (400). Modal: only filters out current page, so this case is unreachable from UI. |
+| Cross-design move (target on different design item) | Backend: `CrossDesign` (400). LLM tool: returns `<move_element_to_page><error>...</error></move_element_to_page>`. |
+| Cascade off (`apply_to_children=false`) | Only the root moves. Descendants stay behind as top-level orphans on source page. |
+
+**TDD trace.**
+
+| Chunk | RED → GREEN |
+|---|---|
+| 1. Backend design model | 8 inline tests in `design_model.zig` (cascade, no-cascade, error cases) |
+| 2. Backend HTTP handler | 6 inline tests in `design_elements_move_to_page.zig` |
+| 3. Backend LLM tool | 4 inline tests in `move_element_to_page_test.zig` |
+| 4. Frontend modal + menu | wired into existing `LayersPanel.contextMenu.spec.ts` (9 tests pass + 4 new for menu items) |
+| 5. Frontend handler + store | covered by component integration |
+| 9. Manual + visual smoke | passes |
+
+**Verification.**
+
+```bash
+cd /home/ginwa/ginwaaitoolbox/.worktrees/design-move-to-page
+
+# Backend tests
+timeout 180 zig build test --summary all
+# 2269/2278 pass, 6 skip, 3 fail, 18 leaks
+# The 3 failures + 18 leaks are PRE-EXISTING on main (committed in
+# PR #181's undo regression commit `20d061c6`). ZERO new failures.
+
+# Build
+timeout 180 zig build install:linux:system
+# 2/4 steps succeeded; `cp` to /usr/local/bin/nalar fails on perms
+# (expected); zig-out/bin/nalar binary IS produced.
+timeout 240 bash -c 'rm -rf zig-out/bin && zig build'
+# All 4 binaries produced (nalar, nalarcore-linux-x86_64, nalar-desktop, nalarcli).
+
+# Cross-compile smoke (mandatory — Zig's lazy analysis can hide SQL
+# CTE errors without these)
+zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
+  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+# clean (exit 0)
+zig build-obj -fno-emit-bin -target aarch64-macos -lc \
+  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+# clean (exit 0)
+
+# Frontend
+cd src/apps/desktop
+timeout 120 bun run build
+# 1.61s, clean
+timeout 240 bunx vitest run
+# 4 failed / 212 passed (216 total)
+# Same 4 failing files as main (pre-existing baseline):
+# AppLayout.memoriesGate ×5, AppLayout.urlPersist ×7,
+# DesignView.nudge clamp ×1, sidebarKanbanSortUrl ×1.
+# Zero regressions from this work.
+```
+
+**Bugs surfaced during verification.**
+
+1. **Duplicate `@move-to-page` attribute in `LayersPanel.vue` line 417-418** — my first cut added the emit to TWO template rows (the row body + a wrapper). Vue 3 mounts the wrapper's listener separately → double-fire. Fix: keep only the row body emit. Caught by running the full vitest suite and grepping for the duplicate.
+
+2. **`freeElements` missing on `executeMoveElementToPageToString`** — `design_model.moveElementToPage` returns a `[]const DesignElement` that the caller MUST free (per the function's docstring). My first cut skipped the `defer design_model.freeElements(...)`. Detected by the leak detector (9 leaked allocations). Fix: 1 line. Caught by the `zig build test` summary showing `27 leaks` vs main's `18 leaks`.
+
+**Why NOT use `Mem.eqlIgnoreCase("websocket\r", "websocket")`-style hidden behavior tests.** Strict behavioural tests verify the wire response shape (`<move_element_to_page><moved><element id="..." page_id="..." name="..." type="..."/></moved></move_element_to_page>`) AND the error envelope. Both forms include the original args (`new_page_id`/`element_id`) so the LLM can recover from a typo or stale id, matching the existing tool-def pattern.
+
+**Out of scope (deferred to follow-ups).**
+
+- **Bulk multi-page move** — v1 moves one element (or its subtree) per call. A future plan could batch `N` elements across `N` pages in one transaction.
+- **Drag-from-canvas-to-page-row in the sidebar** — different UX with different semantics (the sidebar's `reparentLayers` handler is for within-page hierarchy). Future plan.
+- **Position clamping if target page is smaller** — element can end up off-screen; user drags. (Figma doesn't clamp either.)
+- **Cross-design move** — rejected with `CrossDesign` (400). v1 restricts to same design item.
+- **SSE event for the move** — the existing `design_elements_geometry_batch_updated` event covers coordinate changes. A new `design_elements_page_changed` event is a future enhancement (lets OTHER tabs watching the design reconcile without an explicit page refresh). v1 relies on the optimistic store mirror.
+- **Per-page filter or "search pages"** — when the design has 50+ pages, the modal scrolls. Future polish.
+
+**Pitfalls.**
+
+- **`parent_id` is auto-cleared on the root when not selected** (Q4 default). If an element has `parent_id = "elem_x"` (inside a group) and you move only the root, the child's `parent_id` is cleared so it's now a top-level orphan on the target page. Documented in the inline test `moveElementToPage auto-clears parent_id when the parent is NOT being moved`.
+- **Cascade uses recursive CTE with `apply_to_children=true` by default** — same shape as the existing `moveElementsWithDescendantsBatch`. The plan picked **A — Cascade by default** (matches user's "move element parent will be move all child" mental model).
+- **`<MoveToPageDialog>` is mounted at DesignView level** (not AppLayout) — the user's active design item is the natural scope; an AppLayout-level mount would need to filter pages across all design items.
+- **`data-testid="move-to-page-dialog"`** for the modal, **`data-testid="design-context-menu-move-to-page"`** for the menu item — match the spec.
+
+**Files reference.**
+
+- New: `src/modules/agent/tools/move_element_to_page.zig`, `src/modules/agent/tools/move_element_to_page_test.zig`, `src/ai_workflow/tui/http_handlers/design_elements_move_to_page.zig`, `src/ai_workflow/tui/agentic_loop/tools_exec_move_element_to_page.zig`, `src/apps/desktop/src/components/design/MoveToPageDialog.vue`
+- Modified: 13 files across backend + frontend + LLM tool registry
+- No migration (no schema change).
+- Plan: `docs/superpowers/plans/2026-08-06-move-element-to-page.md`
+- Spec: `docs/superpowers/specs/2026-08-06-move-element-to-page-design.md`
+
+**Branch / commit (pending).**
+
+- Branch: `worktree/design-move-to-page`
+- Commits: pending squash-merge to `main`
 ### 2026-08-06: Kanban "+ Add task" — single header button + dropdown column picker
 
 **Symptom (user report, task_1785865184856).** Every kanban column had a `+ Add` button in its footer (7 columns = 7 buttons). User wanted one global button + dropdown column selection inside the create dialog.
