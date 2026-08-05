@@ -798,11 +798,14 @@ describe('KanbanTaskDetailDialog — column dropdown (create mode)', () => {
   })
 
   // NEW (2026-08-06, dropdown width/style follow-up). The dropdown
-  // should be the SAME WIDTH as the trigger button — visually anchored
-  // to the trigger's left edge, anchored to its right edge via
-  // `inset-x-0`. No `min-w-[...]` overriding. Items get no `border-top`
-  // separator (matches the profile picker dropdown styling).
-  it('create mode: dropdown width matches the trigger button width', async () => {
+  // should span the FULL WIDTH of the dialog body (matching the
+  // Task Name input above it) — NOT just the small trigger button
+  // width. The wrapper is `relative w-full`, the dropdown is
+  // `absolute top-full mt-1 inset-x-0`. So the dropdown anchors to
+  // both edges of the full-width wrapper = full body width.
+  // Items get no `border-top` separator (matches the profile picker
+  // dropdown styling).
+  it('create mode: dropdown width spans the full dialog body (matches the Task Name input)', async () => {
     mountCreateWithColumns([
       { id: 'col_x', name: 'todo' },
       { id: 'col_y', name: 'in_review_planning' },
@@ -820,16 +823,21 @@ describe('KanbanTaskDetailDialog — column dropdown (create mode)', () => {
     expect(trigger).not.toBeNull()
     expect(dropdown).not.toBeNull()
 
-    // The dropdown width should equal the trigger width (inset-x-0
-    // anchors both edges to the wrapper, which sizes to the trigger).
-    // jsdom doesn't compute layout sizes, so we assert on the
-    // inline-style absence of `min-w-...` AND on the class `inset-x-0`
-    // being present (Tailwind utility).
+    // The dropdown is positioned with `inset-x-0` (left:0 + right:0)
+    // so it spans the full width of its containing block — the
+    // wrapper. The wrapper is `w-full` of the metadata strip, which
+    // is `w-full` of the dialog body. The Task Name input above is
+    // ALSO `w-full` of the body. So both share the same width.
     const dropdownClass = dropdown!.getAttribute('class') ?? ''
     expect(dropdownClass).toContain('inset-x-0')
-    // No min-w override that would make the dropdown wider than the
-    // trigger for short column names.
+    // No min-w override that would constrain the dropdown to a
+    // fixed small width.
     expect(dropdownClass).not.toMatch(/\bmin-w-\[/)
+
+    // The wrapper is `w-full` (full width of the metadata strip,
+    // which equals the body width = input width).
+    const wrapper = trigger!.parentElement
+    expect(wrapper?.className ?? '').toContain('w-full')
 
     // Items have no border-top separator (matches profile picker style).
     const item = dropdown!.querySelector<HTMLElement>(

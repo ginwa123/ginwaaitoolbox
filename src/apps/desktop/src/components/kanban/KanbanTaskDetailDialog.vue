@@ -791,7 +791,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
               <div
                 v-if="isCreateMode && props.availableColumns.length > 0"
                 ref="columnPickerRef"
-                class="relative"
+                class="relative w-full"
               >
                 <button
                   type="button"
