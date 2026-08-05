@@ -525,6 +525,49 @@ A "delete useless tests" task identified ~60 static-contract tests across
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: `design_model.deletePage` derives on-disk page directory from `design_page_elements.file_path` (no JOIN to `workspace_items`)
+
+**Symptom (user report, task `task_1785957229448`).** User: *"do not delete form workspace items, when deleting, do not get from workspace items table, but from design_pages_element instead, change this code"*.
+
+The pre-fix `deletePage` JOINed `workspace_items` to read `wi.path` + `dp.name`, then formatted `<path>/.nalar/design/<sanitized_page>` to rmdir the on-disk folder. The user wanted the directory derivation to come from `design_page_elements` instead — every element row's `file_path` already includes the absolute workspace item path as a prefix, so we don't need the JOIN at all.
+
+**What landed (4 files, +232/-119).**
+
+- **`src/ai_workflow/tui/design_model.zig`** — `deletePage` now:
+  1. SELECTs `workspace_item_id` + `workspace_item_task_id` from `design_pages` ONLY (no JOIN).
+  2. SELECTs `file_path` from any `design_page_elements` row with matching `page_id`.
+  3. Derives the page directory via `std.fs.path.dirname(file_path)`.
+  4. rmdirs that directory. Best-effort (no error on missing dir).
+  5. Emits the SSE event with `workspace_id = ""` (no listener currently uses it; future consumers can resolve from `item_id`).
+
+- **`src/ai_workflow/tui/design_model_delete_page_test.zig`** (NEW, 5 behavioural tests) — covers: missing page_id → false, page row + element row cascade-deleted, on-disk directory rmdired, no-element page → SQL delete succeeds, paired `workspace_item_tasks` cascade-deleted. Enables `PRAGMA foreign_keys = ON` in the test setup to match the documented `ON DELETE CASCADE` contract on `design_page_elements.page_id`.
+
+- **`src/ai_workflow/tui/test_runner.zig`** — registered the new test file.
+
+**Why this matters.** Two benefits from removing the `workspace_items` access:
+1. **No JOIN, no read on `workspace_items`** — fewer SQL calls per page-delete.
+2. **Cleanup survives a missing/empty parent row** — if the `workspace_items` row was already deleted or its `path` column is NULL/empty (a real risk on legacy installs), the old code silently skipped the rmdir and left the on-disk folder as an orphan. The new code derives the path from `file_path` which is guaranteed to exist whenever the page has elements.
+
+**TDD trace.**
+
+- RED: pre-fix code, `deletePage removes the design_pages row + cascade-deletes elements` failed because `PRAGMA foreign_keys = ON` was enabled in the test setup to match the documented contract — FK enforcement is OFF in production by default, so the pre-fix code left orphan element rows.
+- GREEN: switched the directory lookup to `std.fs.path.dirname(file_path)` (5/5 new tests pass).
+
+**Verification.**
+
+- `zig build test --summary all` → **2297 pass / 6 skip / 4 fail** (the 4 fails are the documented pre-existing baseline — `llm_history_tool_call_loading_test` × 3 + `show_preview_test` × 1; my 5 new tests are in the 2297 pass column).
+- `zig build-obj -fno-emit-bin -target x86_64-windows-gnu` → clean.
+- `zig build-obj -fno-emit-bin -target aarch64-macos` → clean.
+- `rm -rf zig-out/bin && zig build` → all 3 binaries produced (`nalarcore-linux-x86_64` 88 MB, `nalar-desktop` 13 MB, `nalarcli` 12 MB).
+
+**Pitfalls (record for future agents).**
+
+- **`std.fs.path.dirname` returns a slice into the input** — `file_path` is owned by the SQLite `Row`. The slice dangles when `row.deinit(allocator)` fires (the project memory `zig-slice-headers-across-defer-lifetimes` documents this exact trap). Solution: `allocator.dupe(u8, dir_slice)` BEFORE the defer fires (the dupe copies the bytes to a fresh allocation). Without the dupe, the slice header points at freed memory → 0xAA bytes on read.
+- **`workspace_id` in the SSE event is now `""`** — no listener consumes `design_page_deleted` today, so this is a safe wire-shape change. If a future consumer needs `workspace_id`, they can resolve via `workspace_items` lookup on `item_id` rather than re-shaping this function.
+- **FK enforcement is OFF by default in this codebase** — the pre-fix code relied on `ON DELETE CASCADE` (declared on `design_page_elements.page_id` via migration 056) to remove element rows, but SQLite never enforced it. My new test enables `PRAGMA foreign_keys = ON` to match the documented contract; production code still doesn't enforce it. This is a pre-existing latent inconsistency, not introduced by this change.
+
+**Branch / commit.** `worktree/delete-page-no-workspace-items-join` (3 files modified + 1 new). Squash-merge candidate.
+
 ### 2026-08-06: Design — move element to another page (context menu + LLM tool)
 
 **Symptom (user report, task_1785847404640).** *"design mode, move another elements ... the feature is menu, write a plan to do that"*. No way to relocate a design element from one page to another — users had to copy element data, delete source, recreate on target. Painful and error-prone.
