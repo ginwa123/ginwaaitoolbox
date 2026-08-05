@@ -90,23 +90,19 @@
   html {
     overflow-x: hidden;
     /*
-     * `touch-action: manipulation` lets the browser handle single-finger
-     * pan + double-tap (and disables the 300 ms tap delay) while
-     * SUPPRESSING multi-finger pinch-zoom. The desktop webview
-     * (WebKitGTK / WKWebView / WebView2) interprets pinch as page-level
-     * zoom by default; without this, the entire app shell scales when
-     * the user pinches over the sidebar / kanban / chat / settings.
-     * The design canvas has its own pinch handler (DesignView.vue) that
-     * is unaffected — `manipulation` doesn't block custom Pointer Events
-     * listeners, only the browser's native gesture.
+     * Removed `touch-action: manipulation` (formerly suppressed the
+     * host webview's multi-finger pinch-zoom on the desktop app shell).
+     * The host webview's native Ctrl+wheel / pinch page-zoom now
+     * works everywhere in the desktop app — the design canvas (the
+     * only place with a zoom feature) has its own wheel + pinch
+     * handlers in `DesignView.vue` that call `preventDefault()` and
+     * perform cursor-anchored zoom on the canvas only.
      */
-    touch-action: manipulation;
   }
 
   body {
     @apply bg-[--color-bg] text-[--color-fg] font-sans antialiased;
     overflow-x: hidden;
-    touch-action: manipulation;
   }
 
   /* Selection */

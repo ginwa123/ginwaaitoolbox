@@ -1668,7 +1668,7 @@ defineExpose({
       @toggle-collapse="toggleSidebar"
       @resize="handleSidebarResize"
     />
-    <main class="flex-1 flex flex-col overflow-hidden relative" style="touch-action: pan-x pan-y">
+    <main class="flex-1 flex flex-col overflow-hidden relative">
       <!-- Git File Viewer (shown when view is gitfile) -->
       <GitFileViewer
         v-if="currentView === 'gitfile' && gitViewerFile && rightSidebarCwd"
