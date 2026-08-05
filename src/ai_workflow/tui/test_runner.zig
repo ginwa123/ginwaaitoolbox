@@ -52,6 +52,7 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("design_model_parent_id_test.zig"); // 2026-07-28-grouped-layers (Chunk 1) — parent_id round-trip
     _ = @import("design_model_group_test.zig"); // 2026-07-28-grouped-layers (Chunk 2) — groupElements + updateElement parent_id
     _ = @import("design_model_delete_parent_test.zig"); // 2026-07-28-grouped-layers (Chunk 4) — deleteElement NULLs children
+    _ = @import("design_model_delete_page_test.zig"); // 2026-08-06 — deletePage derives page dir from design_page_elements.file_path (no JOIN to workspace_items)
     _ = @import("design_model_add_element_parent_test.zig"); // 2026-07-29 — addElement accepts parent_id (Task 1)
     _ = @import("design_model_set_element_parent_test.zig"); // 2026-07-29 — setElementParent re-parents with cycle detection (Task 2)
     

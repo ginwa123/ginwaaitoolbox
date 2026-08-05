@@ -3307,8 +3307,10 @@ pub fn deleteElement(
 //   1. The `design_pages` SQL row.
 //   2. Every `design_page_elements` row with matching `page_id` (via FK
 //      `ON DELETE CASCADE` — see migrations 055/056).
-//   3. The on-disk `<item_path>/.nalar/design/<sanitized_page_name>/`
-//      directory containing each element's HTML file.
+//   3. Each element's HTML file on disk (per-file unlink via
+//      `design_io.deleteFileIfExists`, mirroring `deleteElement`'s
+//      pattern — NOT a recursive `deleteDirectoryRecursively`).
+//   4. The paired `workspace_item_tasks` row (application-level FK).
 //
 // Returns `true` on a successful delete, `false` if no such page_id
 // exists (idempotent — caller treats 404 as success).
@@ -3317,56 +3319,85 @@ pub fn deleteElement(
 // exposes it, only the DesignView tab-strip × button. See plan
 // `docs/superpowers/plans/2026-07-25-design-page-delete-button.md`
 // (Chunk 1).
+//
+// Why per-file deletion (not recursive rmdir)
+// ────────────────────────────────────────────
+// The 2026-08-06 review of the original PR (which used
+// `deleteDirectoryRecursively`) was explicit: the on-disk page
+// directory may contain files the user dropped there themselves
+// (`.DS_Store`, `README.md`, screenshots, etc.). Recursively
+// removing the whole folder would nuke those unrelated files. Per-file
+// deletion keeps the unrelated files in place and only removes the
+// files explicitly tracked in `design_page_elements.file_path`. This
+// mirrors `deleteElement`'s pattern (line 3285-3287) and is the
+// correct primitive for an "explicit file list" cleanup.
 pub fn deletePage(
     allocator: std.mem.Allocator,
     io: std.Io,
     db: *sqlite.SqliteBackend,
     page_id: []const u8,
 ) anyerror!bool {
-    // Look up workspace_id + workspace_item_id + item_path + page_name
-    // + workspace_item_task_id BEFORE the SQL DELETE so we can both
-    // emit the SSE event, rmdir the on-disk page folder, AND clean
-    // up the paired workspace_item_tasks row. The application-level
-    // "FK" we maintain via the UNIQUE index has no SQL cascade, so we
-    // do the cascade by hand here. Single JOIN query that returns
-    // all five pieces of context — mirrors `deleteElement`'s lookup.
-    const Lookup = struct {
-        workspace_id: []u8,
+    _ = io; // Per-file deletion uses design_io.deleteFileIfExists which doesn't need an Io.
+    // Look up `workspace_item_id` + `workspace_item_task_id` from
+    // `design_pages` ONLY (no JOIN to `workspace_items`). Both
+    // columns live on `design_pages`; we never read `workspace_items`
+    // in this function.
+    const page_info: struct {
         item_id: []u8,
-        item_path: []u8,
-        page_name: []u8,
         workspace_item_task_id: []u8,
-    };
-    const lookup: Lookup = blk: {
+    } = blk: {
         var q = try db.query(allocator,
-            \\SELECT wi.workspace_id, dp.workspace_item_id, wi.path, dp.name,
+            \\SELECT dp.workspace_item_id,
             \\       COALESCE(dp.workspace_item_task_id, '')
             \\FROM design_pages dp
-            \\JOIN workspace_items wi ON wi.id = dp.workspace_item_id
             \\WHERE dp.id = ?
         , &.{page_id});
         defer q.deinit();
         const row = (try q.next()) orelse return false;
         defer row.deinit(allocator);
         break :blk .{
-            .workspace_id = try allocator.dupe(u8, row.values[0]),
-            .item_id = try allocator.dupe(u8, row.values[1]),
-            .item_path = try allocator.dupe(u8, row.values[2]),
-            .page_name = try allocator.dupe(u8, row.values[3]),
-            .workspace_item_task_id = try allocator.dupe(u8, row.values[4]),
+            .item_id = try allocator.dupe(u8, row.values[0]),
+            .workspace_item_task_id = try allocator.dupe(u8, row.values[1]),
         };
     };
-    defer allocator.free(lookup.workspace_id);
-    defer allocator.free(lookup.item_id);
-    defer allocator.free(lookup.item_path);
-    defer allocator.free(lookup.page_name);
-    defer allocator.free(lookup.workspace_item_task_id);
+    defer allocator.free(page_info.item_id);
+    defer allocator.free(page_info.workspace_item_task_id);
 
-    // Delete the row first. The FK `ON DELETE CASCADE` on
-    // `design_page_elements.page_id` handles the element rows in the
-    // same transaction — but their on-disk HTML files live in the
-    // page directory, so we need a single recursive rmdir to clean
-    // them all up below.
+    // Collect every `file_path` from this page's elements BEFORE
+    // the SQL DELETE so we have an authoritative list of files to
+    // unlink. `file_path` is an absolute path written by `addElement`
+    // (`<item_path>/.nalar/design/<page_name>/<elem>.html`), so each
+    // entry points at exactly one on-disk file — no
+    // `path.dirname` derivation needed, no JOIN to `workspace_items`.
+    //
+    // The list is heap-owned (each entry is `allocator.dupe`'d).
+    // Slice headers inside the SQL `Row` would otherwise dangle when
+    // `row.deinit` fires (per project memory
+    // `zig-slice-headers-across-defer-lifetimes`).
+    var file_paths: std.ArrayList([]u8) = .empty;
+    defer {
+        for (file_paths.items) |p| allocator.free(p);
+        file_paths.deinit(allocator);
+    }
+    {
+        var q = try db.query(allocator,
+            \\SELECT file_path FROM design_page_elements WHERE page_id = ?
+        , &.{page_id});
+        defer q.deinit();
+        while (try q.next()) |row| {
+            defer row.deinit(allocator);
+            const fp = row.values[0];
+            if (fp.len == 0) continue;
+            try file_paths.append(allocator, try allocator.dupe(u8, fp));
+        }
+    }
+
+    // Delete the page row. With FK enforcement ON (the test setup),
+    // the element rows are cascade-deleted. With FK enforcement OFF
+    // (production default), the element rows remain as orphans —
+    // the per-file delete below still cleans up the on-disk
+    // artifacts regardless. The orphan rows are pre-existing latent
+    // behaviour (out of scope for this fix).
     try db.exec(allocator,
         "DELETE FROM design_pages WHERE id = ?",
         &.{page_id});
@@ -3377,29 +3408,20 @@ pub fn deletePage(
     // delete the task row leaves it as an orphan (visible in the
     // sidebar until the user manually cleans it up), but the page
     // itself is gone — the user's primary action succeeded.
-    if (lookup.workspace_item_task_id.len > 0) {
+    if (page_info.workspace_item_task_id.len > 0) {
         db.exec(allocator,
             "DELETE FROM workspace_item_tasks WHERE id = ?",
-            &.{lookup.workspace_item_task_id}) catch {};
+            &.{page_info.workspace_item_task_id}) catch {};
     }
 
-    // Defer-pattern: rmdir the page directory AFTER the SQL DELETE
-    // succeeded. Swallow errors (folder may already be missing, or
-    // the user has no `path` on their workspace_item).
-    if (lookup.item_path.len > 0 and lookup.page_name.len > 0) {
-        const sanitized_page = design_io.sanitizeFilename(allocator, lookup.page_name) catch null;
-        if (sanitized_page) |sp| {
-            defer allocator.free(sp);
-            var page_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const page_dir = std.fmt.bufPrint(
-                &page_dir_buf,
-                "{s}/.nalar/design/{s}",
-                .{ lookup.item_path, sp },
-            ) catch null;
-            if (page_dir) |pd| {
-                design_io.deleteDirectoryRecursively(allocator, io, pd) catch {};
-            }
-        }
+    // Per-file deletion AFTER the SQL DELETE. Best-effort: a file
+    // that's already been removed (or was never written — empty
+    // `file_path`) is silently skipped via `deleteFileIfExists`'s
+    // ENOENT handling. We do NOT recursively walk the page folder — a
+    // user may have dropped unrelated files there (`.DS_Store`,
+    // screenshots, etc.) and we don't want to nuke them.
+    for (file_paths.items) |fp| {
+        design_io.deleteFileIfExists(allocator, fp) catch {};
     }
 
     // Emit SSE event AFTER the SQL DELETE succeeded. Best-effort: if
@@ -3407,10 +3429,16 @@ pub fn deletePage(
     // fails, the caller still gets a successful return value — SSE
     // is a hint, not a hard contract. The lookup slices are still
     // alive at this point; the function-level defers haven't fired.
+    //
+    // `workspace_id` is intentionally empty: we no longer JOIN
+    // `workspace_items` in this function. No listener currently
+    // subscribes to `design_page_deleted`, so the wire-shape change
+    // is safe; future consumers can look up `workspace_id` from
+    // `item_id` if needed.
     on_event_sent_design.onEventSendDesignPageDeleted(allocator, .{
         .action = "deleted",
-        .workspace_id = lookup.workspace_id,
-        .item_id = lookup.item_id,
+        .workspace_id = "",
+        .item_id = page_info.item_id,
         .page_id = page_id,
     }) catch {};
     return true;
