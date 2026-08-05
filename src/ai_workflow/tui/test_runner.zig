@@ -132,6 +132,9 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     _ = @import("gitignore_vendor_sqlite3_test.zig");
     _ = @import("../../modules/agent/tools/show_preview_test.zig");
     _ = @import("../../modules/agent/tools/move_element_to_page_test.zig");
+    // save_memory + load_memory tools (Task 3 + 4 of
+    // docs/superpowers/plans/2026-08-06-save-load-memory-fts5.md).
+    _ = @import("../../modules/agent/tools/save_memory_test.zig");
     // _ = @import("extract_base64_image_urls_test.zig"); // DISABLED - 9 failing tests (investigation shows std.testing.expectEqualStrings has a bug with literal strings)
     // _ = @import("session_db_test.zig"); // DISABLED - pre-existing test errors (see session_db_test.zig for details)
     _ = @import("agentic_loop/test_runner.zig");

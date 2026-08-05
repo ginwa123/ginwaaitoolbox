@@ -96,7 +96,6 @@ pub const MAX_CONTENT_BYTES: usize = 1 << 20; // 1 MiB
 ///   - DB errors propagate verbatim
 pub fn saveMemory(
     allocator: std.mem.Allocator,
-    io: std.Io,
     db: *sqlite.SqliteBackend,
     args: SaveMemoryArgs,
 ) !MemoryRow {
@@ -135,7 +134,7 @@ pub fn saveMemory(
     if (args.id.len == 0) generated_id = @constCast(id);
     defer if (generated_id) |g| allocator.free(g);
 
-    const row = (try getMemoryById(allocator, io, db, id)) orelse return error.RowNotFoundAfterInsert;
+    const row = (try getMemoryById(allocator, db, id)) orelse return error.RowNotFoundAfterInsert;
     return row;
 }
 
@@ -144,11 +143,9 @@ pub fn saveMemory(
 /// cleanly).
 pub fn getMemoryById(
     allocator: std.mem.Allocator,
-    io: std.Io,
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?MemoryRow {
-    _ = io; // Reserved for future streaming; not used in v1.
     var q = try db.query(allocator,
         "SELECT id, content, tags, COALESCE(created_at, ''), COALESCE(updated_at, '') " ++
             "FROM agent_memories WHERE id = ?",
@@ -227,12 +224,9 @@ pub const LoadOptions = struct {
 /// `llm_history.zig:1770` for the full rationale.
 pub fn loadMemoriesByFts(
     allocator: std.mem.Allocator,
-    io: std.Io,
     db: *sqlite.SqliteBackend,
     opts: LoadOptions,
 ) ![]MemoryHit {
-    _ = io; // Reserved for future streaming; not used in v1.
-
     if (opts.query.len == 0) return allocator.alloc(MemoryHit, 0);
 
     // Sanitize the FTS5 query — same helper `search_history` uses.

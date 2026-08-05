@@ -43,7 +43,7 @@ test "saveMemory: inserts a new row with auto-generated mem_<16-hex> id" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const row = try agent_memories.saveMemory(alloc, ctx.threaded.io(), &ctx.db, .{
+    const row = try agent_memories.saveMemory(alloc, &ctx.db, .{
         .content = "the user's preferred LLM is claude-sonnet-4-5",
         .tags = &.{"preferences", "user"},
         .id = "",
@@ -78,7 +78,7 @@ test "saveMemory: UPSERTs when caller passes an existing id" {
     defer ctx.db.deinit();
 
     // First insert.
-    const first = try agent_memories.saveMemory(alloc, ctx.threaded.io(), &ctx.db, .{
+    const first = try agent_memories.saveMemory(alloc, &ctx.db, .{
         .content = "original content",
         .tags = &.{"preferences"},
         .id = "user-preferred-model",
@@ -91,7 +91,7 @@ test "saveMemory: UPSERTs when caller passes an existing id" {
     _ = std.c.nanosleep(&ts, null);
 
     // UPSERT with the same id.
-    const second = try agent_memories.saveMemory(alloc, ctx.threaded.io(), &ctx.db, .{
+    const second = try agent_memories.saveMemory(alloc, &ctx.db, .{
         .content = "updated content — user switched to claude-opus-4-1",
         .tags = &.{"preferences", "updated"},
         .id = "user-preferred-model",
@@ -125,7 +125,7 @@ test "saveMemory: empty content returns InvalidContent" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const result = agent_memories.saveMemory(alloc, ctx.threaded.io(), &ctx.db, .{
+    const result = agent_memories.saveMemory(alloc, &ctx.db, .{
         .content = "",
         .tags = &.{},
         .id = "should-not-be-inserted",
@@ -144,7 +144,7 @@ test "saveMemory: content > 1 MiB returns ContentTooLarge" {
     defer alloc.free(oversize);
     @memset(oversize, 'x');
 
-    const result = agent_memories.saveMemory(alloc, ctx.threaded.io(), &ctx.db, .{
+    const result = agent_memories.saveMemory(alloc, &ctx.db, .{
         .content = oversize,
         .tags = &.{},
         .id = "oversize-memory",
@@ -159,19 +159,19 @@ test "loadMemoriesByFts: returns ranked hits with snippets" {
     defer ctx.db.deinit();
 
     // Insert 3 memories.
-    const row1 = try agent_memories.saveMemory(alloc, ctx.threaded.io(), &ctx.db, .{
+    const row1 = try agent_memories.saveMemory(alloc, &ctx.db, .{
         .content = "the user's preferred model is claude-sonnet for coding tasks",
         .tags = &.{"preferences"},
         .id = "mem-coding",
     });
     defer agent_memories.freeMemoryRow(alloc, row1);
-    const row2 = try agent_memories.saveMemory(alloc, ctx.threaded.io(), &ctx.db, .{
+    const row2 = try agent_memories.saveMemory(alloc, &ctx.db, .{
         .content = "the project's database is SQLite with FTS5 enabled",
         .tags = &.{"project"},
         .id = "mem-database",
     });
     defer agent_memories.freeMemoryRow(alloc, row2);
-    const row3 = try agent_memories.saveMemory(alloc, ctx.threaded.io(), &ctx.db, .{
+    const row3 = try agent_memories.saveMemory(alloc, &ctx.db, .{
         .content = "claude-sonnet is also the user's preferred writing model",
         .tags = &.{"preferences"},
         .id = "mem-writing",
@@ -179,7 +179,7 @@ test "loadMemoriesByFts: returns ranked hits with snippets" {
     defer agent_memories.freeMemoryRow(alloc, row3);
 
     // Search for "preferred" — should return 2 hits (coding + writing).
-    const hits = try agent_memories.loadMemoriesByFts(alloc, ctx.threaded.io(), &ctx.db, .{
+    const hits = try agent_memories.loadMemoriesByFts(alloc, &ctx.db, .{
         .query = "preferred",
         .tags = &.{},
         .limit = 10,
@@ -211,19 +211,19 @@ test "loadMemoriesByFts: AND-filters by tags" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const row1 = try agent_memories.saveMemory(alloc, ctx.threaded.io(), &ctx.db, .{
+    const row1 = try agent_memories.saveMemory(alloc, &ctx.db, .{
         .content = "memory one with model preference",
         .tags = &.{"preferences", "user"},
         .id = "mem-one",
     });
     defer agent_memories.freeMemoryRow(alloc, row1);
-    const row2 = try agent_memories.saveMemory(alloc, ctx.threaded.io(), &ctx.db, .{
+    const row2 = try agent_memories.saveMemory(alloc, &ctx.db, .{
         .content = "memory two with project context",
         .tags = &.{"preferences", "project"},
         .id = "mem-two",
     });
     defer agent_memories.freeMemoryRow(alloc, row2);
-    const row3 = try agent_memories.saveMemory(alloc, ctx.threaded.io(), &ctx.db, .{
+    const row3 = try agent_memories.saveMemory(alloc, &ctx.db, .{
         .content = "memory three with project context",
         .tags = &.{"project"},
         .id = "mem-three",
@@ -233,7 +233,7 @@ test "loadMemoriesByFts: AND-filters by tags" {
     // Search for "context" + filter by tags=["project"] → should return
     // mem-two + mem-three (both have "project" tag) but NOT mem-one
     // (only has "preferences" + "user").
-    const hits = try agent_memories.loadMemoriesByFts(alloc, ctx.threaded.io(), &ctx.db, .{
+    const hits = try agent_memories.loadMemoriesByFts(alloc, &ctx.db, .{
         .query = "context",
         .tags = &.{"project"},
         .limit = 10,
@@ -251,7 +251,7 @@ test "loadMemoriesByFts: AND-filters by tags" {
     try testing.expectEqual(@as(u32, 2), hits[0].total_count);
 
     // AND filter — tags=["preferences", "project"] → only mem-two has BOTH.
-    const hits2 = try agent_memories.loadMemoriesByFts(alloc, ctx.threaded.io(), &ctx.db, .{
+    const hits2 = try agent_memories.loadMemoriesByFts(alloc, &ctx.db, .{
         .query = "context",
         .tags = &.{ "preferences", "project" },
         .limit = 10,
@@ -282,7 +282,7 @@ test "loadMemoriesByFts: paginates via limit + offset and reports total_count" {
         defer alloc.free(id);
         const content = std.fmt.allocPrint(alloc, "match row number {d}", .{i}) catch unreachable;
         defer alloc.free(content);
-        const row = try agent_memories.saveMemory(alloc, ctx.threaded.io(), &ctx.db, .{
+        const row = try agent_memories.saveMemory(alloc, &ctx.db, .{
             .content = content,
             .tags = &.{},
             .id = id,
@@ -292,7 +292,7 @@ test "loadMemoriesByFts: paginates via limit + offset and reports total_count" {
 
     // Page 1: limit=10 offset=0 → 10 rows, total=15.
     {
-        const hits = try agent_memories.loadMemoriesByFts(alloc, ctx.threaded.io(), &ctx.db, .{
+        const hits = try agent_memories.loadMemoriesByFts(alloc, &ctx.db, .{
             .query = "match",
             .tags = &.{},
             .limit = 10,
@@ -311,7 +311,7 @@ test "loadMemoriesByFts: paginates via limit + offset and reports total_count" {
 
     // Page 2: limit=10 offset=10 → 5 rows, total=15.
     {
-        const hits = try agent_memories.loadMemoriesByFts(alloc, ctx.threaded.io(), &ctx.db, .{
+        const hits = try agent_memories.loadMemoriesByFts(alloc, &ctx.db, .{
             .query = "match",
             .tags = &.{},
             .limit = 10,
@@ -333,7 +333,7 @@ test "loadMemoriesByFts: paginates via limit + offset and reports total_count" {
     // an out-of-bounds access. The total_count on every previous page
     // already verified it stays at 15 throughout.)
     {
-        const hits = try agent_memories.loadMemoriesByFts(alloc, ctx.threaded.io(), &ctx.db, .{
+        const hits = try agent_memories.loadMemoriesByFts(alloc, &ctx.db, .{
             .query = "match",
             .tags = &.{},
             .limit = 10,
@@ -356,7 +356,7 @@ test "getMemoryById: returns the row when id exists, null otherwise" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const row1 = try agent_memories.saveMemory(alloc, ctx.threaded.io(), &ctx.db, .{
+    const row1 = try agent_memories.saveMemory(alloc, &ctx.db, .{
         .content = "the test memory content",
         .tags = &.{"test"},
         .id = "test-id-exists",
@@ -364,13 +364,13 @@ test "getMemoryById: returns the row when id exists, null otherwise" {
     defer agent_memories.freeMemoryRow(alloc, row1);
 
     // Existing id → returns the row.
-    const found = (try agent_memories.getMemoryById(alloc, ctx.threaded.io(), &ctx.db, "test-id-exists")) orelse return error.GetReturnedNull;
+    const found = (try agent_memories.getMemoryById(alloc, &ctx.db, "test-id-exists")) orelse return error.GetReturnedNull;
     defer agent_memories.freeMemoryRow(alloc, found);
     try testing.expectEqualStrings("test-id-exists", found.id);
     try testing.expectEqualStrings("the test memory content", found.content);
     try testing.expectEqualStrings("test", found.tags);
 
     // Missing id → returns null (not error).
-    const missing = try agent_memories.getMemoryById(alloc, ctx.threaded.io(), &ctx.db, "no-such-id");
+    const missing = try agent_memories.getMemoryById(alloc, &ctx.db, "no-such-id");
     try testing.expect(missing == null);
 }
