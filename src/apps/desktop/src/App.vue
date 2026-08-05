@@ -5,32 +5,6 @@ import * as api from './api'
 import { installSseBus, useSseBus } from './helpers/sseBus'
 import { useNavigationStore } from './stores/navigation'
 
-// ─── Global wheel-zoom suppressor ──────────────────────────────────────
-//
-// The desktop webview (WebKitGTK / WKWebView / WebView2) interprets
-// `Ctrl+wheel` and `metaKey+wheel` (trackpad pinch on macOS emits
-// wheel-with-ctrlKey) as PAGE-level zoom — scaling the ENTIRE app shell
-// (sidebar + main + every component). That conflicts with the design
-// canvas's own cursor-anchored zoom (`DesignView.vue::handleCanvasWheel`,
-// line 1844), which only scales the canvas via `transform: scale()`.
-//
-// This capture-phase listener cancels the browser's default zoom by
-// calling `preventDefault()` on every `wheel` event that carries a
-// zoom modifier. We deliberately do NOT call `stopPropagation()` so the
-// design canvas's bubble-phase `@wheel` handler still fires and performs
-// its own cursor-anchored zoom. The handler is a no-op for events
-// without zoom modifiers, so plain scroll/wheel behaviour (page scroll,
-// sidebar scroll, etc.) is preserved.
-//
-// We pair this with `touch-action: manipulation` on html/body
-// (`style.css`) to block the mobile/touch pinch gesture at the CSS
-// layer too, and `maximum-scale=1.0, user-scalable=no` on the viewport
-// meta (`index.html`) to block the host webview's own zoom surface.
-const handleGlobalWheel = (event: WheelEvent): void => {
-  if (!event.ctrlKey && !event.metaKey) return
-  event.preventDefault()
-}
-
 // LLM processing state - provided to child components
 // Object mapping sessionId to processing status (using object instead of Set for better reactivity)
 const processingState = ref<Record<string, boolean>>({})
@@ -91,16 +65,6 @@ const isProcessing = (sessionId: string) => !!processingState.value[sessionId]
 let offWorker: (() => void) | null = null
 
 onMounted(() => {
-  // Install the global wheel-zoom suppressor in CAPTURE phase so it
-  // runs before any bubble-phase `@wheel` handler on child components.
-  // The host webview's page-zoom default fires AT THE PHASE END, so a
-  // capture-phase `preventDefault()` is the only place that reliably
-  // cancels it across the entire app shell (sidebar, kanban, chat,
-  // settings, etc.). Child component `@wheel` listeners (e.g.
-  // DesignView's `handleCanvasWheel`) still fire normally because we
-  // do NOT call `stopPropagation()`.
-  window.addEventListener('wheel', handleGlobalWheel, { passive: false, capture: true })
-
   // `installSseBus(_app?: App)` takes an optional `App` parameter for
   // future `provide()` use; the module-singleton implementation
   // doesn't use it, so we pass nothing. Idempotent: a second call
@@ -155,14 +119,6 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  // Remove the global wheel-zoom suppressor. Symmetric with the
-  // `addEventListener` in `onMounted` — same `{ passive: false,
-  // capture: true }` flags so the listener identity matches exactly.
-  // Without this, HMR re-mounts and route-level remounts would
-  // accumulate stale listeners (each calling `preventDefault()` on
-  // every ctrl+wheel).
-  window.removeEventListener('wheel', handleGlobalWheel, { capture: true })
-
   // Unsubscribe the worker listener first so any in-flight event
   // dispatched during the unmount window doesn't try to mutate
   // unmounted reactive state.

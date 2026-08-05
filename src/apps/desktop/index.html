@@ -4,18 +4,15 @@
     <meta charset="UTF-8">
     <link rel="icon" href="/favicon.ico">
     <!--
-      Lock the viewport scale to 1.0. The desktop app uses a dedicated
-      design canvas (DesignView.vue) for its own cursor-anchored zoom
-      (Ctrl+wheel, trackpad pinch). Without these viewport locks, the
-      host webview (WebKitGTK / WKWebView / WebView2) applies its own
-      PAGE-level zoom on Ctrl+wheel / multi-finger pinch, which scales
-      the ENTIRE app shell — sidebar + main + everything — instead of
-      just the design canvas. `user-scalable=no` and `maximum-scale=1.0`
-      block that path; the canvas keeps its own zoom behaviour via
-      `@wheel="handleCanvasWheel"` (DesignView.vue:1844) and the global
-      capture-phase wheel handler in App.vue.
+      The desktop app shell uses the host webview's native page-zoom
+      (Ctrl+wheel / multi-finger pinch). The design canvas (the only
+      place with its own zoom feature) calls `preventDefault()` on the
+      wheel event inside its `@wheel` handler so the canvas-only zoom
+      wins over the native page-zoom while the cursor is inside the
+      canvas. See `DesignView.vue::handleCanvasWheel` for the canvas
+      handler.
     -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Vite App</title>
   </head>
   <body>
