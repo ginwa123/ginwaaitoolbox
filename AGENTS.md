@@ -525,6 +525,58 @@ A "delete useless tests" task identified ~60 static-contract tests across
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Migration runner — silent startup (task_1785961970151)
+
+**Symptom (user report, with screenshot).** First-time nalar startup
+spammed stdout with 69 `Running migration: <name> (version N)` lines
+plus a final `Current schema version: 0` line — visually noise-heavy
+and dominated the entire terminal scrollback. User asked: *"remove
+verbose log"*.
+
+**What landed (2 lines removed).** `MigrationManager.runMigrations`
+(`src/migrations/migration.zig:1592-1606`) had two `std.debug.print`
+calls — one for the current schema version, one per migration that
+actually ran. Both removed. The migration runner still executes all
+69 migrations + writes the `schema_migrations` row for each — the
+behaviour is identical, only the chatty stdout is gone.
+
+```diff
+ const currentVersion = self.getCurrentVersion();
+-std.debug.print("Current schema version: {d}\n", .{currentVersion});
+
+ for (self.migrations.items) |migration| {
+     if (migration.version > currentVersion) {
+-        std.debug.print("Running migration: {s} (version {d})\n", .{ migration.name, migration.version });
+         try migration.up(self.db, self.allocator);
+```
+
+**Verification.**
+
+- `zig build test --summary all` — 2297/2307 pass, 6 skip, 4 fail, 18 leaks.
+  The 4 fails + 18 leaks are PRE-EXISTING baseline from `inserLLMHistories`
+  (commit `20d061c6` regression, documented in AGENTS.md).
+  **Zero new failures** from this change.
+- `zig build-obj -fno-emit-bin -target x86_64-windows-gnu` — clean.
+- `zig build-obj -fno-emit-bin -target aarch64-macos` — clean.
+- Fresh `$HOME` smoke (`./zig-out/bin/nalar --port 8090 --static-dir /tmp`):
+  stdout is now 5 lines (HOME path, config-created warning, missing-api-key
+  warning, "Agent is ready to serve!"). No migration lines.
+
+**Why `std.debug.print` is the right primitive to remove.** The migration
+runner fires once per `nalar` startup on a fresh DB — it's not a
+per-request log path, and there are no callers that capture stdout.
+The `std.debug.print` calls were pure stdout noise. If we ever need a
+verbose mode (e.g. `nalar --verbose-migrations`), the right primitive
+is a `verbose: bool` parameter on `runMigrations` that gates the same
+two prints — left out for now because nothing in the codebase asks
+for it.
+
+**Why NOT add a single summary line.** The "single line" pattern
+("Applied 69 migrations in 12ms") would be a UX regression — it's
+still stdout noise on every startup, and the user explicitly asked
+to remove the verbose log. Silent migrations are the right default;
+debug info belongs in a logger (out of scope for this commit).
+
 ### 2026-08-06: Sidebar task click — URL no longer clobbered to `view=workspace` (task_1785959660154)
 
 **Symptom (user report, with DevTools screenshot):** clicking a task in the sidebar tree did not navigate to the task view. URL bar stayed at `?view=workspace&workspaceId=X&itemId=Y` instead of becoming `?view=task&task=Z&workspaceId=X&itemId=Y`. The user's console showed `buildTaskUrlQuery` correctly emitting `{ view: 'task', task, workspaceId, itemId }` — so the URL was *built* right, but the browser's URL was *applied* wrong.

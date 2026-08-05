@@ -1593,11 +1593,9 @@ pub const MigrationManager = struct {
         try self.db.exec(self.allocator, "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL)", &[_][]const u8{});
 
         const currentVersion = self.getCurrentVersion();
-        std.debug.print("Current schema version: {d}\n", .{currentVersion});
 
         for (self.migrations.items) |migration| {
             if (migration.version > currentVersion) {
-                std.debug.print("Running migration: {s} (version {d})\n", .{ migration.name, migration.version });
                 try migration.up(self.db, self.allocator);
                 const versionStr = try std.fmt.allocPrint(self.allocator, "{}", .{migration.version});
                 defer self.allocator.free(versionStr);
