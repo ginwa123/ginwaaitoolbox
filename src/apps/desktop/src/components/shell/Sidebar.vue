@@ -861,16 +861,26 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
   })
 }
 
-const handleSelectTask = (taskId: string) => {
-  console.log("[handleSelectTask], task: ", taskId)
+const handleSelectTask = async (taskId: string) => {
   const currentSorts = route.query?.sorts
   if (typeof currentSorts === 'string' && currentSorts.length > 0) {
     workspacesStore.savedSortsParam = currentSorts
   }
-  workspacesStore.setActiveTask(taskId)
-  if (chatsListRef.value) {
-    chatsListRef.value.resetActiveChat()
-  }
+  // FIX (task-url-overwrite, task_1785959660154, 2026-08-06):
+  // Set the navigation flag BEFORE mutating the store. The
+  // AppLayout URL sync watcher reads `workspacesStore.isNavigatingToTask`
+  // and returns early when it's true — closing the race window
+  // between setActiveTask's synchronous store mutation (which
+  // fires the watcher) and Vue Router's asynchronous URL update
+  // (which would otherwise leave the watcher seeing
+  // `route.query.view === 'workspace'` and clobbering the in-flight
+  // task URL with `router.replace({ view: 'workspace', ... })`).
+  workspacesStore.isNavigatingToTask = true
+  try {
+    workspacesStore.setActiveTask(taskId)
+    if (chatsListRef.value) {
+      chatsListRef.value.resetActiveChat()
+    }
   // NEW (better-url-browser, 2026-08-06): APPEND the URL instead
   // of REPLACE. The user reported "when click task in kanban, no
   // need replace url, but append the url browser" — clicking a
@@ -905,6 +915,13 @@ const handleSelectTask = (taskId: string) => {
   // / refreshing that URL lost the workspace context. The helper
   // reads from the store FIRST (authoritative source) and falls back
   // to the current URL only when no active store state exists.
+  //
+  // `await router.push(...)` is critical: Vue Router updates the
+  // route ref asynchronously (during the navigation guard / scroll
+  // sequence). Awaiting ensures the URL is `view=task&task=X` by
+  // the time any subsequent watcher fires. Even with the flag
+  // guard, awaiting is the cleanest close — the flag's `finally`
+  // clears only after the navigation is committed.
   const query = buildTaskUrlQuery({
     taskId,
     activeWorkspaceId: workspacesStore.activeWorkspace?.id ?? null,
@@ -919,8 +936,10 @@ const handleSelectTask = (taskId: string) => {
   // `itemId` derived from `activeWorkspaceItemId` is included via the
   // helper's store-derived value (NOT the `parentItemId` we computed
   // above — they should be equal but the store is authoritative).
-  router.push({ path: '/app', query })
-  console.log("[handleSelectTask] end handleSelectTask")
+  await router.push({ path: '/app', query })
+  } finally {
+    workspacesStore.isNavigatingToTask = false
+  }
 }
 
 // pickBreadcrumbFromQuery moved to `helpers/buildTaskUrlQuery.ts`
