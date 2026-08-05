@@ -2558,15 +2558,18 @@ User: "is this tool only fetching is_llm_feed 0 or is_llm_seaf_feed 1 or search 
 
 **Branch:** `worktree/search-history-v2`. **Plan:** `docs/superpowers/plans/2026-08-04-search-history-v2.md`. **Memory:** `.nalar/memories/search-history-v2-filters-2026-08-04.md`.
 
-### 2026-08-06: Design — confirmation dialog before deleting a design page
+### 2026-08-06: Design — confirmation dialog before deleting a design page (PR #195)
+
+**Code review (subagent `subagent_1785917792361049159`).** Approved with one Important finding (\"error notification path is uncovered\") addressed in commit `72304c1c` by adding a 5th test that mocks `deleteDesignPage` to reject and asserts `useNotificationStore().notifyError('Failed to delete page', ...)` is called.
 
 **Symptom (user report, task `1785912441877`).** Clicking × on a design page row in the sidebar tree (per the `design-pages-in-workspace-tree` plan, 2026-08-06) DELETED the page immediately — too easy to nuke a page by accident. Every other delete (workspace / item / task) already shows the `<ConfirmDialog>` via `openDeleteConfirm(...)`.
 
 **What landed (commit `9ed71a57`, branch `worktree/design-page-delete-confirm`).** Surgical frontend fix: `Sidebar.handleDeleteDesignPage` now wraps `workspacesStore.deleteDesignPage` in `openDeleteConfirm({ title: 'Delete Page', message: 'Delete this design page? This cannot be undone.', onConfirm: ... })` — matching the existing pattern for workspaces / items / tasks. No backend, DB, or migration changes. The store's `deleteDesignPage` action still handles cache + active-page fallback + error notification; we just gate it behind confirmation.
 
-**Files (2 changed).**
+**Files (3 changed).**
 - `src/apps/desktop/src/components/shell/Sidebar.vue` — `handleDeleteDesignPage` now opens `<ConfirmDialog>` (23 +/11 -).
-- `src/apps/desktop/src/__tests__/Sidebar.deleteDesignPageConfirm.spec.ts` (new) — 4 behavioural tests.
+- `src/apps/desktop/src/__tests__/Sidebar.deleteDesignPageConfirm.spec.ts` (new) — 5 behavioural tests.
+- `AGENTS.md` — changelog entry (this section).
 
 **Behaviour.**
 - Click × → `<ConfirmDialog>` opens with title "Delete Page" + "Delete this design page? This cannot be undone."
