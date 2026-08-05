@@ -1034,21 +1034,33 @@ const handleSelectDesignPage = (
   emit('navigate', 'workspace', undefined, undefined, workspaceId, itemId, pageId)
 }
 
-// The store's `deleteDesignPage` action already updates the cache
-// + falls back `activeDesignPageId` to a sensible next page. We
-// only need to surface errors via the notification store so a
-// failed backend DELETE isn't silent.
-const handleDeleteDesignPage = async (
+// NEW (2026-08-06, task 1785912441877): design-page delete now
+// requires confirmation, matching the existing pattern for
+// workspaces / items / tasks (`handleDeleteWorkspace` etc.).
+//
+// Clicking × on a design page in the sidebar tree is too easy to
+// do by accident — every other delete (workspace / item / task)
+// already shows the <ConfirmDialog>. The store's
+// `deleteDesignPage` action still handles cache + active-page
+// fallback + error notification; we just gate it behind the same
+// confirm dialog so a stray click can't nuke a page.
+const handleDeleteDesignPage = (
   workspaceId: string,
   itemId: string,
   pageId: string,
 ) => {
-  try {
-    await workspacesStore.deleteDesignPage(workspaceId, itemId, pageId)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    useNotificationStore().notifyError('Failed to delete page', message)
-  }
+  openDeleteConfirm({
+    title: 'Delete Page',
+    message: 'Delete this design page? This cannot be undone.',
+    onConfirm: async () => {
+      try {
+        await workspacesStore.deleteDesignPage(workspaceId, itemId, pageId)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        useNotificationStore().notifyError('Failed to delete page', message)
+      }
+    },
+  })
 }
 
 // "+ Add Page" button. The store's `addDesignPage` action returns
