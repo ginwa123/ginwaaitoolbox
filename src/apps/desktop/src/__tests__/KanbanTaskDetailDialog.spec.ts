@@ -798,14 +798,16 @@ describe('KanbanTaskDetailDialog — column dropdown (create mode)', () => {
   })
 
   // NEW (2026-08-06, dropdown width/style follow-up). The dropdown
-  // should span the FULL WIDTH of the dialog body (matching the
-  // Task Name input above it) — NOT just the small trigger button
-  // width. The wrapper is `relative w-full`, the dropdown is
-  // `absolute top-full mt-1 inset-x-0`. So the dropdown anchors to
-  // both edges of the full-width wrapper = full body width.
+  // sizes to its CONTENT (max-content) — as wide as the longest
+  // item ("in_review_planning" + checkmark + padding), but no wider.
+  // It is NOT the trigger width (long names would clip) and NOT the
+  // full body width (looks disproportionate when items are short
+  // like "drop" or "merged"). The wrapper is `relative` (sizes to
+  // trigger button content); the dropdown is `absolute left-0 w-max`
+  // anchored to the wrapper's left edge with width:max-content.
   // Items get no `border-top` separator (matches the profile picker
   // dropdown styling).
-  it('create mode: dropdown width spans the full dialog body (matches the Task Name input)', async () => {
+  it('create mode: dropdown sizes to its content (max-content width, anchored to trigger left edge)', async () => {
     mountCreateWithColumns([
       { id: 'col_x', name: 'todo' },
       { id: 'col_y', name: 'in_review_planning' },
@@ -823,21 +825,17 @@ describe('KanbanTaskDetailDialog — column dropdown (create mode)', () => {
     expect(trigger).not.toBeNull()
     expect(dropdown).not.toBeNull()
 
-    // The dropdown is positioned with `inset-x-0` (left:0 + right:0)
-    // so it spans the full width of its containing block — the
-    // wrapper. The wrapper is `w-full` of the metadata strip, which
-    // is `w-full` of the dialog body. The Task Name input above is
-    // ALSO `w-full` of the body. So both share the same width.
+    // Dropdown is positioned with `left-0` (anchored to wrapper's
+    // left edge) + `w-max` (width: max-content — sized to the
+    // widest item). NOT full body width (no `w-full`), NOT just
+    // the trigger width (no `inset-x-0` with non-w-full wrapper).
     const dropdownClass = dropdown!.getAttribute('class') ?? ''
-    expect(dropdownClass).toContain('inset-x-0')
-    // No min-w override that would constrain the dropdown to a
-    // fixed small width.
+    expect(dropdownClass).toContain('left-0')
+    expect(dropdownClass).toContain('w-max')
+    expect(dropdownClass).not.toContain('inset-x-0')
+    expect(dropdownClass).not.toMatch(/\bw-full\b/)
+    // No fixed min-w override.
     expect(dropdownClass).not.toMatch(/\bmin-w-\[/)
-
-    // The wrapper is `w-full` (full width of the metadata strip,
-    // which equals the body width = input width).
-    const wrapper = trigger!.parentElement
-    expect(wrapper?.className ?? '').toContain('w-full')
 
     // Items have no border-top separator (matches profile picker style).
     const item = dropdown!.querySelector<HTMLElement>(

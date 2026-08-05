@@ -791,7 +791,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
               <div
                 v-if="isCreateMode && props.availableColumns.length > 0"
                 ref="columnPickerRef"
-                class="relative w-full"
+                class="relative"
               >
                 <button
                   type="button"
@@ -809,7 +809,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                 </button>
                 <div
                   v-if="isColumnPickerOpen"
-                  class="absolute top-full mt-1 inset-x-0 rounded-lg shadow-lg z-20 overflow-hidden"
+                  class="absolute top-full mt-1 left-0 w-max rounded-lg shadow-lg z-20 overflow-hidden"
                   style="
                     background-color: var(--semantic-card-bg);
                     border: 1px solid var(--color-border);
