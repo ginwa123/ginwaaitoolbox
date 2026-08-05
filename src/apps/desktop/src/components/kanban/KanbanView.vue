@@ -575,6 +575,21 @@ const handleOpenSettings = () => {
   emit('openSettings')
 }
 
+// NEW (plan: 2026-08-06-kanban-add-task-button-placement). Open the
+// create dialog with the first column pre-selected. The header
+// button does NOT preserve a previously-picked column — every fresh
+// open starts at the leftmost column. Matches the "Add task" mental
+// model (form opens in its default state). The dialog's column
+// dropdown (KanbanTaskDetailDialog) is the affordance for picking a
+// different column; its `column-change` emit drives the host's
+// `activeCreateColumnId` so the submit-time `moveTaskToColumn` lands
+// the task in the chosen column.
+const handleOpenCreateDialog = () => {
+  const firstColumn = sortedColumns.value[0]
+  if (!firstColumn) return  // disabled button covers this, defensive
+  handleViewCreateTask(firstColumn.id)
+}
+
 // ─── "Set project root" banner (backfill UX) ─────────────────────────────
 //
 // When a kanban has `path = null` (the user created it before the path
@@ -1044,6 +1059,30 @@ const handleCreateTaskSave = async (payload: {
       </button>
       <KanbanSearchInput v-model="searchQuery" />
 
+      <!-- NEW (plan: 2026-08-06-kanban-add-task-button-placement). One
+           global + Add task button (replaces per-column footer add
+           buttons — see KanbanColumn.vue cleanup). Opens the create
+           dialog with the first column pre-selected; the dialog's
+           column dropdown lets the user pick a different column.
+           Disabled when the kanban has zero columns; the `title`
+           attribute explains the disabled state. -->
+      <button
+        type="button"
+        class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+        style="
+          background-color: var(--semantic-sidebar-bg);
+          border: 1px solid var(--color-border);
+          color: var(--semantic-text-muted);
+        "
+        data-testid="kanban-add-task-button"
+        :disabled="sortedColumns.length === 0"
+        :title="sortedColumns.length ? 'Add a task to this kanban' : 'Add columns first in Settings'"
+        @click="handleOpenCreateDialog"
+      >
+        <span aria-hidden="true">➕</span>
+        <span class="ml-1">Add task</span>
+      </button>
+
       <button
         type="button"
         class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
@@ -1106,7 +1145,6 @@ const handleCreateTaskSave = async (payload: {
           :workspace-id="workspaceId"
           :item-id="itemId || item.id"
           :cwd="item.path || ''"
-          @add-task="handleViewCreateTask"
           @move-task="(payload) => emit('moveTask', payload)"
           @rename-column="(payload) => emit('renameColumn', payload)"
           @delete-column="(columnId) => emit('deleteColumn', columnId)"
@@ -1173,11 +1211,13 @@ const handleCreateTaskSave = async (payload: {
     mode="create"
     :task="null"
     :column="activeCreateColumn"
+    :available-columns="sortedColumns"
     :cwd="item.path || ''"
     :workspace-id="workspaceId"
     :error-message="createError"
     @create="(payload) => handleCreateTaskSave({ ...payload, mode: 'create' })"
     @create-and-run="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_and_run' })"
+    @column-change="(columnId) => activeCreateColumnId = columnId"
   />
 </template>
 

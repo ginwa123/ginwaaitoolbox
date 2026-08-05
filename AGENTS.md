@@ -525,6 +525,42 @@ A "delete useless tests" task identified ~60 static-contract tests across
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Kanban "+ Add task" — single header button + dropdown column picker
+
+**Symptom (user report, task_1785865184856).** Every kanban column had a `+ Add` button in its footer (7 columns = 7 buttons). User wanted one global button + dropdown column selection inside the create dialog.
+
+**What landed (3 commits, branch `worktree/kanban-add-button-placement`).**
+
+- **KanbanColumn.vue** — REMOVED the per-column footer `+ Add` button (handler + emit + template block + docstring). The `No tasks yet` empty-state placeholder is kept.
+- **KanbanView.vue** — ADDED a single `➕ Add task` button in the header (between search input and Settings button). Disabled when the kanban has zero columns (title `Add columns first in Settings`). Click opens the create dialog with the first column pre-selected. Wired `@column-change` from the dialog so the host's `activeCreateColumnId` stays in sync when the user picks a different column in the dialog's dropdown.
+- **KanbanTaskDetailDialog.vue** — REPLACED the read-only column label in create mode with an interactive dropdown (mirrors the profile picker pattern: button trigger + ▾ dropdown with ✓ checkmark + click-outside close). Pick emits `column-change` so the host updates `activeCreateColumnId` in real-time. Edit mode keeps the read-only strip (the task is already in a column — migrating it is out of scope).
+
+**Files (3 components + 3 tests, +448/-135).**
+
+- `src/apps/desktop/src/components/kanban/KanbanColumn.vue` — remove footer add
+- `src/apps/desktop/src/components/kanban/KanbanView.vue` — add header button + wire column-change
+- `src/apps/desktop/src/components/kanban/KanbanTaskDetailDialog.vue` — column dropdown + new prop + new emit
+- `src/apps/desktop/src/__tests__/KanbanColumn.spec.ts` — delete `KanbanColumn — footer add` describe block
+- `src/apps/desktop/src/__tests__/KanbanView.spec.ts` — update existing create-task tests + add 5 new tests
+- `src/apps/desktop/src/__tests__/KanbanTaskDetailDialog.spec.ts` — add 6 new column-dropdown tests
+
+**Tests.** 11 new behavioural tests (6 dialog + 5 view). 1 test deleted (footer add). Full suite: **1990 pass / 14 fail** — the 14 are PRE-EXISTING on main (4 `AppLayout.memoriesGate`, 7 `AppLayout.urlPersist`, 2 `sidebarKanbanSortUrl`, 1 `DesignView.nudge`). Zero regressions. vue-tsc clean.
+
+**Out of scope (deferred).**
+
+- In-column `+ Add` link when the column is empty (user said "only one button").
+- Keyboard shortcut (e.g. `c` or `n`) for the header button.
+- Drag-and-drop from outside the kanban into a specific column.
+- Single-column behaviour: dropdown still shows with the single item + ✓ (visually consistent — user can see what column they're adding to). No special "if single, hide dropdown" branching.
+
+**Branch / commit / PR.**
+
+- Branch: `worktree/kanban-add-button-placement`
+- Commits: `9f22893e` (feat: dialog column dropdown) + `b21eca26` (feat: header + Add task button) + `ffa395b2` (refactor: remove per-column footer)
+- Spec: `docs/superpowers/specs/2026-08-06-kanban-add-task-button-placement-design.md`
+- Plan: `docs/superpowers/plans/2026-08-06-kanban-add-task-button-placement.md`
+- PR: pending (squash-merge candidate)
+
 ### 2026-08-06: Sidebar single-active state (URL-driven)
 
 **Symptom (user report, task_1785793620170).** Sidebar showed multiple rows styled as "active" simultaneously (expanded workspace + active item + active page), making it impossible to tell which one the main content area was actually showing.

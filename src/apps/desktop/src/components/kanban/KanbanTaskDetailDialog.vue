@@ -70,7 +70,7 @@
   for theme compatibility.
 -->
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import type { Task, KanbanColumn } from '../../stores/workspaces'
 import { useKanbanTagSuggestions } from '../../composables/useKanbanTagSuggestions'
 import KanbanDescriptionEditor from './KanbanDescriptionEditor.vue'
@@ -95,6 +95,13 @@ const props = withDefaults(
     // Empty string = no fetch attempted (legacy callers + tests
     // that don't care about suggestions).
     workspaceId?: string
+    // NEW (plan: 2026-08-06-kanban-add-task-button-placement). The
+    // available columns for the create-mode column dropdown. Empty
+    // array = no dropdown rendered (legacy callers, edit mode, or
+    // kanbans that haven't loaded columns yet). Edit mode passes
+    // empty. The host (KanbanView) passes `sortedColumns` from the
+    // active kanban.
+    availableColumns?: KanbanColumn[]
   }>(),
   {
     mode: 'edit',
@@ -102,6 +109,7 @@ const props = withDefaults(
     errorMessage: null,
     cwd: '',
     workspaceId: '',
+    availableColumns: (): KanbanColumn[] => [],
   },
 )
 
@@ -200,6 +208,14 @@ const emit = defineEmits<{
       pendingFiles: PreviewFile[]
     },
   ]
+  // NEW (plan: 2026-08-06-kanban-add-task-button-placement). Create
+  // mode only. Fires when the user picks a different column from the
+  // create-mode dropdown. The parent (KanbanView) updates its
+  // `activeCreateColumnId` so the final `moveTaskToColumn` on submit
+  // puts the new task in the chosen column. Edit mode does not emit
+  // this event — the task is already in a column, and migrating an
+  // existing task to a new column is out of scope.
+  'column-change': [columnId: string]
 }>()
 
 // ─── Form state ──────────────────────────────────────────────────────────
@@ -246,6 +262,35 @@ const isProfilePickerOpen = ref(false)
 const profilePickerRef = ref<HTMLElement | null>(null)
 const availableProfiles = ref<ProfileEntry[]>([])
 const profilesLoading = ref(false)
+
+// NEW (plan: 2026-08-06-kanban-add-task-button-placement). Column
+// dropdown state (create mode only). selectedColumnId mirrors the
+// parent's `column` prop on dialog open; the picker emits
+// `column-change` so the host updates its activeCreateColumnId in
+// real-time. Click outside the picker closes it (mirrors the profile
+// picker behaviour).
+const selectedColumnId = ref<string | null>(props.column?.id ?? null)
+const isColumnPickerOpen = ref(false)
+const columnPickerRef = ref<HTMLElement | null>(null)
+const toggleColumnPicker = () => {
+  isColumnPickerOpen.value = !isColumnPickerOpen.value
+}
+const selectColumn = (id: string) => {
+  selectedColumnId.value = id
+  isColumnPickerOpen.value = false
+  emit('column-change', id)
+}
+const handleDocumentClickColumn = (event: MouseEvent) => {
+  if (!isColumnPickerOpen.value) return
+  const target = event.target as Node | null
+  if (
+    columnPickerRef.value &&
+    target &&
+    !columnPickerRef.value.contains(target)
+  ) {
+    isColumnPickerOpen.value = false
+  }
+}
 
 // File preview modal state. Opened when the user clicks a file-path
 // chip in either the inline MarkdownDescription (display mode) or the
@@ -327,6 +372,39 @@ watch(
   },
   { immediate: true },
 )
+
+// NEW (plan: 2026-08-06-kanban-add-task-button-placement). Sync
+// selectedColumnId from the parent's `column` prop. Two scenarios:
+//   (a) Dialog opens — props.show flips false→true, parent passes
+//       the latest column via `props.column`, selectedColumnId
+//       re-syncs to match.
+//   (b) User changes the column in the dropdown — emit `column-change`,
+//       host updates activeCreateColumnId, the parent's computed
+//       `activeCreateColumn` re-flows, `props.column?.id` re-emits,
+//       this watcher fires with the SAME id (no infinite loop —
+//       re-assigning selectedColumnId to its current value is a no-op).
+watch(
+  () => [props.show, props.column?.id] as const,
+  ([show, columnId]) => {
+    if (show && isCreateMode.value) {
+      selectedColumnId.value = columnId ?? null
+    }
+  },
+)
+
+// NEW (plan: 2026-08-06-kanban-add-task-button-placement). Register
+// the click-outside listener for the column picker at mount,
+// deregister at unmount. Mirrors the profile picker's pattern (the
+// profile picker uses inline @click.stop on its dropdown to avoid
+// the same listener — both approaches are fine; the column picker
+// uses the document listener because the dropdown is a sibling of
+// the trigger button rather than a child).
+onMounted(() => {
+  document.addEventListener('click', handleDocumentClickColumn)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', handleDocumentClickColumn)
+})
 
 // Dirty tracking — the Save button enables only when the form is
 // ready to submit. Two semantics:
@@ -702,7 +780,62 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
               style="color: var(--semantic-text-dim);"
               data-testid="kanban-task-detail-metadata"
             >
-              <span v-if="columnLabel" data-testid="kanban-task-detail-column">
+              <!-- NEW (plan: 2026-08-06-kanban-add-task-button-placement).
+                   Column picker (create mode only). Replaces the read-only
+                   column strip in create mode — the user picks the target
+                   column inside the dialog (mirrors the profile picker
+                   pattern: button trigger + ▾ dropdown + ✓ checkmark +
+                   click-outside close). Pick emits column-change so the
+                   host updates activeCreateColumnId in real-time. Edit mode
+                   falls through to the static strip below. -->
+              <div
+                v-if="isCreateMode && props.availableColumns.length > 0"
+                ref="columnPickerRef"
+                class="relative"
+              >
+                <button
+                  type="button"
+                  @click.stop="toggleColumnPicker"
+                  class="px-2 py-0.5 rounded text-xs hover:opacity-80 inline-flex items-center gap-1"
+                  style="
+                    background-color: var(--semantic-sidebar-bg);
+                    border: 1px solid var(--color-border);
+                    color: var(--semantic-text);
+                  "
+                  data-testid="kanban-task-detail-column-picker"
+                >
+                  <span>{{ columnLabel }}</span>
+                  <span class="text-[10px]">▾</span>
+                </button>
+                <div
+                  v-if="isColumnPickerOpen"
+                  class="absolute top-full mt-1 left-0 min-w-[180px] rounded-lg shadow-lg z-20 overflow-hidden"
+                  style="
+                    background-color: var(--semantic-card-bg);
+                    border: 1px solid var(--color-border);
+                  "
+                  data-testid="kanban-task-detail-column-picker-dropdown"
+                  @click.stop
+                >
+                  <button
+                    v-for="col in props.availableColumns"
+                    :key="col.id"
+                    type="button"
+                    @click="selectColumn(col.id)"
+                    class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between"
+                    style="color: var(--semantic-text); border-top: 1px solid var(--color-border);"
+                    :data-testid="`kanban-task-detail-column-picker-item-${col.id}`"
+                  >
+                    <span class="font-medium">{{ col.name }}</span>
+                    <span v-if="selectedColumnId === col.id">✓</span>
+                  </button>
+                </div>
+              </div>
+              <!-- Edit mode: read-only strip (unchanged). -->
+              <span
+                v-else-if="columnLabel"
+                data-testid="kanban-task-detail-column"
+              >
                 {{ columnLabel }}
               </span>
               <span v-if="!isCreateMode && taskTypeLabel" data-testid="kanban-task-detail-type">

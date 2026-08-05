@@ -636,3 +636,164 @@ describe('KanbanTaskDetailDialog — create mode', () => {
     expect(findInDom('[data-testid="kanban-task-detail-error"]')).toBeNull()
   })
 })
+
+// ─── Column dropdown (create mode) — plan 2026-08-06-kanban-add-task-button-placement ───
+//
+// Replaces the read-only column label in create mode with an
+// interactive dropdown. Mirrors the profile picker pattern
+// (button trigger + ▾ dropdown + ✓ checkmark + click-outside close).
+// Picking a column emits column-change so the host can update its
+// activeCreateColumnId in real-time. Edit mode keeps the static
+// strip — migrating an existing task to a new column is out of scope.
+describe('KanbanTaskDetailDialog — column dropdown (create mode)', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    findAllInDom('[data-testid="kanban-task-detail-dialog"]').forEach((el) =>
+      el.remove(),
+    )
+  })
+
+  // Helper: mount the dialog in create mode with the given columns
+  // and an optional initial column (defaults to the first).
+  function mountCreateWithColumns(
+    columns: { id: string; name: string }[],
+    initialColumnId: string | null = columns[0]?.id ?? null,
+  ): VueWrapper {
+    const fullColumns: KanbanColumn[] = columns.map((c) => ({
+      id: c.id,
+      name: c.name,
+      workspace_item_id: 'item_1',
+      position: 0,
+      created_at: '2026-06-21 12:00:00',
+    }))
+    const initialColumn = initialColumnId
+      ? fullColumns.find((c) => c.id === initialColumnId) ?? null
+      : null
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        mode: 'create',
+        task: null,
+        column: initialColumn,
+        availableColumns: fullColumns,
+        workspaceId: 'ws_1',
+      },
+    })
+    return wrapper
+  }
+
+  it('create mode: column is rendered as a dropdown button (not a static text strip)', async () => {
+    mountCreateWithColumns([{ id: 'col_x', name: 'todo' }])
+    await flushPromises()
+    // Dropdown trigger renders with the expected testid.
+    expect(
+      findInDom('[data-testid="kanban-task-detail-column-picker"]'),
+    ).not.toBeNull()
+    // The static strip (legacy testid) does NOT render in create mode.
+    expect(findInDom('[data-testid="kanban-task-detail-column"]')).toBeNull()
+  })
+
+  it('create mode: column dropdown defaults to the column prop', async () => {
+    mountCreateWithColumns([
+      { id: 'col_x', name: 'todo' },
+      { id: 'col_y', name: 'in progress' },
+    ])
+    await flushPromises()
+    const trigger = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-column-picker"]',
+    )
+    expect(trigger?.textContent).toContain('todo')
+  })
+
+  it('create mode: opening the dropdown and picking a column emits column-change', async () => {
+    const w = mountCreateWithColumns([
+      { id: 'col_x', name: 'todo' },
+      { id: 'col_y', name: 'in progress' },
+    ])
+    await flushPromises()
+
+    // Open the dropdown.
+    clickInDom('[data-testid="kanban-task-detail-column-picker"]')
+    await flushPromises()
+    // Pick the second column.
+    clickInDom('[data-testid="kanban-task-detail-column-picker-item-col_y"]')
+    await flushPromises()
+
+    expect(w.emitted('column-change')).toBeTruthy()
+    expect(w.emitted('column-change')?.[0]).toEqual(['col_y'])
+  })
+
+  it('create mode: single-column kanban — dropdown renders with the single item + checkmark', async () => {
+    mountCreateWithColumns([{ id: 'col_x', name: 'todo' }])
+    await flushPromises()
+    clickInDom('[data-testid="kanban-task-detail-column-picker"]')
+    await flushPromises()
+    const item = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-column-picker-item-col_x"]',
+    )
+    expect(item).not.toBeNull()
+    expect(item?.textContent).toContain('✓')
+  })
+
+  it('edit mode: column is rendered as a static text strip (no dropdown)', async () => {
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        mode: 'edit',
+        task: {
+          id: 'task_1',
+          name: 'existing task',
+          description: '',
+          kanban_column_id: 'col_x',
+        },
+        column: {
+          id: 'col_x',
+          name: 'todo',
+          workspace_item_id: 'item_1',
+          position: 0,
+          created_at: '2026-06-21 12:00:00',
+        },
+        availableColumns: [],  // edit mode ignores availableColumns
+      },
+    })
+    await flushPromises()
+    // Static strip renders (legacy testid).
+    expect(findInDom('[data-testid="kanban-task-detail-column"]')).not.toBeNull()
+    // Dropdown does NOT render.
+    expect(
+      findInDom('[data-testid="kanban-task-detail-column-picker"]'),
+    ).toBeNull()
+  })
+
+  it('create mode: clicking outside the dropdown closes it', async () => {
+    mountCreateWithColumns([
+      { id: 'col_x', name: 'todo' },
+      { id: 'col_y', name: 'in progress' },
+    ])
+    await flushPromises()
+    clickInDom('[data-testid="kanban-task-detail-column-picker"]')
+    await flushPromises()
+    // Dropdown is open.
+    expect(
+      findInDom('[data-testid="kanban-task-detail-column-picker-dropdown"]'),
+    ).not.toBeNull()
+    // Dispatch a click on document.body (outside the picker).
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    // Dropdown is closed.
+    expect(
+      findInDom('[data-testid="kanban-task-detail-column-picker-dropdown"]'),
+    ).toBeNull()
+  })
+})
