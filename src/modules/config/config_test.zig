@@ -1600,3 +1600,169 @@ test "active_profile: empty string normalises to null" {
 
     try std.testing.expect(cfg.active_profile == null);
 }
+
+// ---------------------------------------------------------------------------
+//
+// profiles_models: arbitrary key names (not just profile1..profile4)
+//
+// Regression for "profile not selected as effective on demand" (task_1785963505875).
+// Config.zig previously hardcoded a 4-field schema
+// (ProfilesModelsJson { profile1, profile2, profile3, profile4 }); the
+// parse-from-slice with `ignore_unknown_fields = true` silently dropped
+// every other key. So `profiles_models: { "900ribu": {...} }` became
+// `profiles_models: {}` after load, and the workflow emitted:
+//   WORKFLOW: selected_profile_model '900ribu' not found in LlmConfig.profiles_models
+// …falling back to top-level config silently. The fix replaces the
+// hardcoded schema with a json.Value reparse that iterates the object's
+// keys (mirroring the existing mcp_servers parser). These tests verify
+// that arbitrary profile names — including the user's "900ribu" — make
+// it into cfg.profiles_models.
+// ---------------------------------------------------------------------------
+
+test "profiles_models: arbitrary name 'alpha' is loaded" {
+    // Pre-fix: ProfilesModelsJson hardcodes profile1..profile4 keys;
+    //           `alpha` is silently dropped → cfg.profiles_models is empty.
+    // Post-fix: `alpha` appears in cfg.profiles_models with its fields intact.
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k",
+        \\  "model": "default-model",
+        \\  "base_url": "https://default.example.com",
+        \\  "profiles_models": {
+        \\    "alpha": {
+        \\      "model": "alpha-model",
+        \\      "base_url": "https://alpha.example.com",
+        \\      "api_key": "alpha-key",
+        \\      "thinking": "auto",
+        \\      "temperature": "auto",
+        \\      "url_style": "anthropic"
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    // The profile name must be preserved verbatim (no renaming to
+    // profile1..profile4).
+    const entry = cfg.profiles_models.getEntry("alpha");
+    try std.testing.expect(entry != null);
+    try std.testing.expectEqualStrings("alpha-model", entry.?.value_ptr.model);
+    try std.testing.expectEqualStrings("https://alpha.example.com", entry.?.value_ptr.base_url);
+    try std.testing.expectEqualStrings("alpha-key", entry.?.value_ptr.api_key);
+    try std.testing.expectEqualStrings("anthropic", entry.?.value_ptr.url_style);
+}
+
+test "profiles_models: numeric prefix name '900ribu' is loaded" {
+    // The user's actual profile name (per /home/ginwa/.config/nalar/config.json
+    // at the time of the bug report). Pre-fix this returned null and
+    // the workflow fell back to top-level config silently.
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "default-key",
+        \\  "model": "default-model",
+        \\  "base_url": "https://default.example.com",
+        \\  "profiles_models": {
+        \\    "900ribu": {
+        \\      "model": "MiniMax-M3",
+        \\      "base_url": "https://api.example.com/v1",
+        \\      "api_key": "user-key-900ribu",
+        \\      "thinking": "auto",
+        \\      "temperature": "auto",
+        \\      "url_style": "openai"
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    const entry = cfg.profiles_models.getEntry("900ribu");
+    try std.testing.expect(entry != null);
+    try std.testing.expectEqualStrings("MiniMax-M3", entry.?.value_ptr.model);
+    try std.testing.expectEqualStrings("user-key-900ribu", entry.?.value_ptr.api_key);
+}
+
+test "profiles_models: multiple arbitrary names all loaded" {
+    // Defends against the pre-fix schema only loading the first 4
+    // named slots. Three user-named profiles must all be present.
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k",
+        \\  "model": "m",
+        \\  "base_url": "b",
+        \\  "profiles_models": {
+        \\    "alpha": { "model": "alpha-model", "api_key": "a-key" },
+        \\    "beta": { "model": "beta-model", "api_key": "b-key" },
+        \\    "gamma": { "model": "gamma-model", "api_key": "g-key" }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(@as(u32, 3), cfg.profiles_models.count());
+
+    const a = cfg.profiles_models.getEntry("alpha");
+    try std.testing.expect(a != null);
+    try std.testing.expectEqualStrings("alpha-model", a.?.value_ptr.model);
+
+    const b = cfg.profiles_models.getEntry("beta");
+    try std.testing.expect(b != null);
+    try std.testing.expectEqualStrings("beta-model", b.?.value_ptr.model);
+
+    const g = cfg.profiles_models.getEntry("gamma");
+    try std.testing.expect(g != null);
+    try std.testing.expectEqualStrings("gamma-model", g.?.value_ptr.model);
+}
+
+test "profiles_models: empty {} → cfg.profiles_models.count is 0" {
+    // Pre-fix this passed (the schema decoded {} as 4 nulls which
+    // produced no entries), but it's still worth pinning so the
+    // post-fix json.Value iteration doesn't accidentally crash on
+    // an empty object.
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k",
+        \\  "model": "m",
+        \\  "base_url": "b",
+        \\  "profiles_models": {}
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), cfg.profiles_models.count());
+}
+
+test "profiles_models: missing key → cfg.profiles_models.count is 0 (back-compat)" {
+    // Legacy configs that never declared profiles_models must still
+    // load cleanly. The post-fix `if (config_json.profiles_models) |…|`
+    // short-circuits when the key is absent.
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k",
+        \\  "model": "m",
+        \\  "base_url": "b"
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), cfg.profiles_models.count());
+}

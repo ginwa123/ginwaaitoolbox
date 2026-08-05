@@ -525,6 +525,92 @@ A "delete useless tests" task identified ~60 static-contract tests across
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Config parser — arbitrary `profiles_models` keys (task_1785963505875)
+
+**Symptom (user report).** User said *"when change profile via chatview
+i think the profile is not selected as effective on demand"* —
+the dropdown chip showed the picked profile name but the actual LLM
+call used the top-level config (same model in the user's case, but a
+different `api_key`/`base_url` profile would be silently ignored).
+
+**Live evidence** (from `/tmp/agentic_coding.log`):
+
+```
+WORKFLOW: selected_profile_model '900ribu' not found in LlmConfig.profiles_models, using top-level config
+[CHECKPOINT] loop iter start session_id=task_1785959915548 loop_counter=183 retry_count=0 effective_model=MiniMax-M3
+```
+
+`WORKFLOW: selected_profile_model '900ribu' not found` was the smoking
+gun — the session row carries `900ribu` (set by PUT
+`/api/llm/session/:id`) but `LlmConfig.getProfile('900ribu')` returned
+null, so the cascade silently fell through to top-level.
+
+**Root cause.** `src/modules/config/Config.zig:288-293` hardcoded the
+`profiles_models` schema as exactly four fields:
+
+```zig
+const ProfilesModelsJson = struct {
+    profile1: ?ProfileJson = null,
+    profile2: ?ProfileJson = null,
+    profile3: ?ProfileJson = null,
+    profile4: ?ProfileJson = null,
+};
+```
+
+`parseFromSlice` with `ignore_unknown_fields = true` (line 479)
+silently DROPS every other key. So `profiles_models: { "900ribu":
+{...} }` became `profiles_models: {}` after load. The NalarSettings UI
+lets the user name their profiles anything — every name other than
+`profile1`..`profile4` was broken.
+
+**Fix (surgical).** Replace the hardcoded schema with a `json.Value`
+reparse + key iterator — the same pattern the existing `mcp_servers`
+parser (Config.zig:441-469) already uses for its arbitrary-key object.
+The `ProfilesModelsJson` struct is deleted (no remaining references).
+Cost: 1 extra alloc + 1 extra parse per profile — negligible for
+typical 1-5 profiles.
+
+**Verification (TDD).**
+
+- RED: 3 new tests in `config_test.zig` fail on pre-fix code:
+  `profiles_models: arbitrary name 'alpha' is loaded`,
+  `numeric prefix name '900ribu' is loaded`, `multiple arbitrary names all loaded`.
+- GREEN: after the fix all 5 new tests pass. Total `zig build test`
+  is **2302/2312 pass / 6 skip / 4 fail** — the 4 failures are the
+  documented pre-existing baseline (`llm_history_tool_call_loading_test`
+  × 3 + `show_preview_test` × 1), unrelated to this change. Zero new
+  regressions.
+
+**Live smoke.** Restart nalar on port 8082 (don't kill 8081 — the user's
+instance), POST `/api/llm/session` with `selected_profile_model:
+900ribu`. Pre-fix log shows the "not found" warning; post-fix log
+shows `[CHECKPOINT] loop iter start session_id=user-900ribu
+loop_counter=0 retry_count=0 effective_model=user-actual-model` with
+zero "not found" warnings. The user's profile name resolves to the
+profile's model correctly.
+
+**Cross-compile smoke.** `zig build-obj -fno-emit-bin -target
+x86_64-windows-gnu` and `-target aarch64-macos` both clean (no errors).
+The fix only changes parsing logic — no platform-specific code.
+
+**Why this slipped past previous tests.** The existing
+`active_profile` plan (commit `328eabf6` in worktree `change-profile-bug`)
+added `active_profile` field round-trip and `resolveProfileField`
+cascade. Its tests covered `active_profile` reads + the cascade helper,
+but nobody wrote a test for `profiles_models` *loading* user-named
+keys — because the pre-existing schema silently dropped them, and the
+existing tests only used the keys `profile1`..`profile4` that the
+hardcoded schema accepted.
+
+**Files.** 2 modified + 1 new memory + 1 new plan.
+
+- `src/modules/config/Config.zig` — replaced hardcoded schema with json.Value iterator
+- `src/modules/config/config_test.zig` — +5 behavioural tests
+- `.nalar/memories/profile-not-effective-on-demand-2026-08-06.md` (new)
+- `docs/superpowers/plans/2026-08-06-config-profiles-arbitrary-keys.md` (new)
+
+No DB / migration / wire changes. Branch: `worktree/investigate-profile-bug`.
+
 ### 2026-08-06: Migration runner — silent startup (task_1785961970151)
 
 **Symptom (user report, with screenshot).** First-time nalar startup
