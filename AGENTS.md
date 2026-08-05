@@ -2557,3 +2557,34 @@ User: "is this tool only fetching is_llm_feed 0 or is_llm_seaf_feed 1 or search 
 - `9c2a5808` Prompts + tool description
 
 **Branch:** `worktree/search-history-v2`. **Plan:** `docs/superpowers/plans/2026-08-04-search-history-v2.md`. **Memory:** `.nalar/memories/search-history-v2-filters-2026-08-04.md`.
+
+### 2026-08-06: Design — confirmation dialog before deleting a design page
+
+**Symptom (user report, task `1785912441877`).** Clicking × on a design page row in the sidebar tree (per the `design-pages-in-workspace-tree` plan, 2026-08-06) DELETED the page immediately — too easy to nuke a page by accident. Every other delete (workspace / item / task) already shows the `<ConfirmDialog>` via `openDeleteConfirm(...)`.
+
+**What landed (commit `9ed71a57`, branch `worktree/design-page-delete-confirm`).** Surgical frontend fix: `Sidebar.handleDeleteDesignPage` now wraps `workspacesStore.deleteDesignPage` in `openDeleteConfirm({ title: 'Delete Page', message: 'Delete this design page? This cannot be undone.', onConfirm: ... })` — matching the existing pattern for workspaces / items / tasks. No backend, DB, or migration changes. The store's `deleteDesignPage` action still handles cache + active-page fallback + error notification; we just gate it behind confirmation.
+
+**Files (2 changed).**
+- `src/apps/desktop/src/components/shell/Sidebar.vue` — `handleDeleteDesignPage` now opens `<ConfirmDialog>` (23 +/11 -).
+- `src/apps/desktop/src/__tests__/Sidebar.deleteDesignPageConfirm.spec.ts` (new) — 4 behavioural tests.
+
+**Behaviour.**
+- Click × → `<ConfirmDialog>` opens with title "Delete Page" + "Delete this design page? This cannot be undone."
+- Click Delete (red button) → `workspacesStore.deleteDesignPage(workspaceId, itemId, pageId)` fires.
+- Click Cancel / × / backdrop → no delete.
+
+**TDD trace.** RED (4 fail on pre-fix code that calls delete immediately + the 3 dialog-button assertions fail because no dialog is rendered) → GREEN (after wrapping in `openDeleteConfirm`, all 4 pass).
+
+**Tests.** 4 new behavioural tests (no static-contract, per user rule 2026-07-29). Dialog uses `<Teleport to="body">`, so DOM assertions go through `document.body.querySelector` (per `vue-teleport-vitest-document-queryselector` skill).
+
+**Verification.**
+- `bun run build` clean (vue-tsc passes, 2.47s).
+- `bunx vitest run` — 2000 pass / 14 fail. The 14 are PRE-EXISTING on `main` per AGENTS.md baseline (AppLayout.urlPersist ×7, AppLayout.memoriesGate ×4, DesignView.nudge clamp ×1, sidebarKanbanSortUrl ×2). **Zero regressions.**
+- `bunx vitest run src/__tests__/Sidebar.deleteDesignPageConfirm.spec.ts` — 4/4 pass.
+
+**Branch / commit / Plan / PR.**
+- Branch: `worktree/design-page-delete-confirm`
+- Commit: `9ed71a57`
+- Plan: inline (single-component surgical fix; below the threshold for a separate plan doc)
+- PR: pending squash-merge candidate
+- Worktree: `/home/ginwa/ginwaaitoolbox/.worktrees/design-page-delete-confirm`
