@@ -809,7 +809,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                 </button>
                 <div
                   v-if="isColumnPickerOpen"
-                  class="absolute top-full mt-1 left-0 min-w-[180px] rounded-lg shadow-lg z-20 overflow-hidden"
+                  class="absolute top-full mt-1 inset-x-0 rounded-lg shadow-lg z-20 overflow-hidden"
                   style="
                     background-color: var(--semantic-card-bg);
                     border: 1px solid var(--color-border);
@@ -823,7 +823,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                     type="button"
                     @click="selectColumn(col.id)"
                     class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between"
-                    style="color: var(--semantic-text); border-top: 1px solid var(--color-border);"
+                    style="color: var(--semantic-text);"
                     :data-testid="`kanban-task-detail-column-picker-item-${col.id}`"
                   >
                     <span class="font-medium">{{ col.name }}</span>

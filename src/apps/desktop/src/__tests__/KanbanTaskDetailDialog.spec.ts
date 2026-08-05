@@ -796,4 +796,47 @@ describe('KanbanTaskDetailDialog — column dropdown (create mode)', () => {
       findInDom('[data-testid="kanban-task-detail-column-picker-dropdown"]'),
     ).toBeNull()
   })
+
+  // NEW (2026-08-06, dropdown width/style follow-up). The dropdown
+  // should be the SAME WIDTH as the trigger button — visually anchored
+  // to the trigger's left edge, anchored to its right edge via
+  // `inset-x-0`. No `min-w-[...]` overriding. Items get no `border-top`
+  // separator (matches the profile picker dropdown styling).
+  it('create mode: dropdown width matches the trigger button width', async () => {
+    mountCreateWithColumns([
+      { id: 'col_x', name: 'todo' },
+      { id: 'col_y', name: 'in_review_planning' },
+    ])
+    await flushPromises()
+    clickInDom('[data-testid="kanban-task-detail-column-picker"]')
+    await flushPromises()
+
+    const trigger = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-column-picker"]',
+    )
+    const dropdown = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-column-picker-dropdown"]',
+    )
+    expect(trigger).not.toBeNull()
+    expect(dropdown).not.toBeNull()
+
+    // The dropdown width should equal the trigger width (inset-x-0
+    // anchors both edges to the wrapper, which sizes to the trigger).
+    // jsdom doesn't compute layout sizes, so we assert on the
+    // inline-style absence of `min-w-...` AND on the class `inset-x-0`
+    // being present (Tailwind utility).
+    const dropdownClass = dropdown!.getAttribute('class') ?? ''
+    expect(dropdownClass).toContain('inset-x-0')
+    // No min-w override that would make the dropdown wider than the
+    // trigger for short column names.
+    expect(dropdownClass).not.toMatch(/\bmin-w-\[/)
+
+    // Items have no border-top separator (matches profile picker style).
+    const item = dropdown!.querySelector<HTMLElement>(
+      '[data-testid="kanban-task-detail-column-picker-item-col_y"]',
+    )
+    expect(item).not.toBeNull()
+    const itemStyle = item!.getAttribute('style') ?? ''
+    expect(itemStyle).not.toMatch(/border-top/i)
+  })
 })
