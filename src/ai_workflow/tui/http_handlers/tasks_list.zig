@@ -131,6 +131,7 @@ fn parseInput(query: anytype) TasksListInput {
 fn useCase(
     allocator: std.mem.Allocator,
     db: *nalarcore.sqlite.SqliteBackend,
+    io: std.Io,
     input: TasksListInput,
 ) TasksListError!TasksListResult {
     const result = ai_mod.workspace_item_tasks.listWorkspaceItemTasksWithCursor(
@@ -148,6 +149,16 @@ fn useCase(
         for (result.tasks) |task| task.deinit(allocator);
         allocator.free(result.tasks);
     }
+
+    // Kanban-task-git-branch (plan:
+    // docs/superpowers/plans/2026-08-06-kanban-task-git-branch.md).
+    // Fetch the parent workspace item's `path` once — it's the
+    // fallback cwd for tasks that don't have a worktree bound.
+    // `path` is column 4 of `workspace_items` (id, workspace_id,
+    // item_type, name, path, created_at, updated_at). Empty string
+    // when no row exists or path is NULL.
+    const item_path = fetchWorkspaceItemPath(allocator, db, input.item_id) catch "";
+    defer if (item_path.len > 0) allocator.free(item_path);
 
     // Convert to response format.
     var task_responses = std.ArrayList(http_response.WorkspaceItemTaskResponse).empty;
@@ -172,6 +183,20 @@ fn useCase(
             .last_status = r.last_status.dbValue(),
             .last_error = r.last_error,
         } else null;
+
+        // Compute git_branch for this task's cwd.
+        // Prefer the task's worktree cwd; fall back to the item path.
+        // Empty string when neither is set → no badge on the frontend.
+        const cwd = if (task.git_worktree_cwd.len > 0)
+            task.git_worktree_cwd
+        else
+            item_path;
+        const git_branch: ?[]const u8 = blk: {
+            if (cwd.len == 0) break :blk null;
+            const branch = resolveGitBranch(allocator, io, cwd);
+            if (branch.len == 0) break :blk null;
+            break :blk branch;
+        };
 
         try task_responses.append(allocator, http_response.WorkspaceItemTaskResponse{
             .id = task.id,
@@ -203,6 +228,12 @@ fn useCase(
             // string borrowed from WorkspaceItemTaskInfo.tags (the
             // per-request arena reaps it on request teardown).
             .tags = task.tags,
+            // Kanban-task-git-branch: computed on-demand per task
+            // from the task's cwd (worktree or item path). The
+            // borrowed slice is owned by the per-request arena (the
+            // subprocess stdout is allocated into the arena) and
+            // stays valid until the request ends.
+            .git_branch = git_branch,
         });
     }
 
@@ -249,6 +280,7 @@ pub fn tasksListHandler(
     res: gserverz.HttpResponse,
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
+    const io = ctx.io;
 
     const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
@@ -264,7 +296,7 @@ pub fn tasksListHandler(
     var input = parseInput(req.query);
     input.item_id = item_id;
 
-    const data = useCase(allocator, sqlite_db, input) catch |err| {
+    const data = useCase(allocator, sqlite_db, io, input) catch |err| {
         const status: u16 = switch (err) {
             error.ItemIdRequired => 400,
             error.QueryFailed => 500,
@@ -282,4 +314,73 @@ pub fn tasksListHandler(
     };
 
     return res.jsonResponse(.{ .status_code = 200, .data = data });
+}
+
+// =====================================================================
+// Git branch resolution (kanban-task-git-branch plan, 2026-08-06)
+// =====================================================================
+
+/// Look up the parent workspace item's `path`. Used as the fallback
+/// cwd for the git_branch lookup when a task has no worktree bound.
+///
+/// Single SQL query (1 row expected — workspace_item_id PKs are
+/// unique). Returns the empty string when the row is missing or the
+/// path column is NULL — caller treats empty as "no badge".
+fn fetchWorkspaceItemPath(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    item_id: []const u8,
+) ![]u8 {
+    var rows = db.query(
+        allocator,
+        "SELECT COALESCE(path, '') FROM workspace_items WHERE id = ?",
+        &.{item_id},
+    ) catch return "";
+    defer rows.deinit();
+    const row = (try rows.next()) orelse return "";
+    defer row.deinit(allocator);
+    return try allocator.dupe(u8, row.values[0]);
+}
+
+/// Run `git -C <path> symbolic-ref --short HEAD` and fall back to
+/// `git -C <path> rev-parse --abbrev-ref HEAD` for detached HEAD.
+/// Returns the trimmed branch name (e.g. "main", "feature/x") or
+/// the empty string for: non-repo, detached HEAD ("HEAD" literal),
+/// permission denied, spawn failure, etc. Caller maps empty → null.
+///
+/// Both attempts are best-effort — git is not always available, and
+/// the path may not be a repo. Any error returns ""; we never surface
+/// a 500 for git failures because the kanban card is best-effort
+/// decoration.
+///
+/// Cross-platform: `git` is required on Linux/macOS/Windows;
+/// the path argument goes through the OS's subprocess argv (no
+/// manual `/` or `\\` joins).
+fn resolveGitBranch(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+) []const u8 {
+    // Attempt 1: symbolic-ref --short HEAD. Fails on detached HEAD
+    // (returns non-zero exit with a "not a symbolic ref" message).
+    const sym_argv = [_][]const u8{ "git", "-C", path, "symbolic-ref", "--short", "HEAD" };
+    if (std.process.run(allocator, io, .{ .argv = &sym_argv })) |sym_result| {
+        if (sym_result.term.exited == 0) {
+            return std.mem.trim(u8, sym_result.stdout, " \n\r\t");
+        }
+        // Fall through to attempt 2.
+    } else |_| {
+        // Spawn failure (e.g. git not on PATH) — give up silently.
+        return "";
+    }
+
+    // Attempt 2: rev-parse --abbrev-ref HEAD. Works for detached HEAD
+    // too (returns literal "HEAD"), which we map to "" so the
+    // frontend omits the badge.
+    const rev_argv = [_][]const u8{ "git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD" };
+    const rev_result = std.process.run(allocator, io, .{ .argv = &rev_argv }) catch return "";
+    if (rev_result.term.exited != 0) return "";
+    const branch = std.mem.trim(u8, rev_result.stdout, " \n\r\t");
+    if (std.mem.eql(u8, branch, "HEAD")) return "";
+    return branch;
 }

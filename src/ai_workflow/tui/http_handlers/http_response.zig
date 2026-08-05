@@ -493,6 +493,16 @@ pub const WorkspaceItemTaskResponse = struct {
     /// JSON.parse. Plan:
     /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md.
     tags: []const u8 = "",
+
+    /// Computed `git rev-parse --abbrev-ref HEAD` output for the
+    /// task's cwd (`session.git_worktree_cwd` if bound, otherwise
+    /// `workspace_items.path`). Computed on-demand per task by the
+    /// handler — no DB column. Null when the cwd is empty, the path
+    /// is not a git repo, the HEAD is detached, or the subprocess
+    /// fails. Used by the frontend's kanban card to render the
+    /// GitHub-style fork/branch badge in the meta row. Plan:
+    /// docs/superpowers/plans/2026-08-06-kanban-task-git-branch.md
+    git_branch: ?[]const u8 = null,
 };
 
 pub const WorkspaceItemTaskListResponse = struct {

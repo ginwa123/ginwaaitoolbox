@@ -3,7 +3,11 @@
 DONT KILL THE PORT 8081 SERVER,
 for testing use another port like 8080
 
-use cli graphify to exploration code
+## Code Exploration with Graphify
+
+Before exploring or making changes in an unfamiliar or large codebase, use the `graphify` CLI to build a knowledge graph of the repo instead of manually grepping through files.
+
+**Setup (once per environment):**
 
 
 > **Audience:** any AI agent (Claude, GPT, sub-agent, future-me) that writes,
@@ -12,6 +16,22 @@ use cli graphify to exploration code
 > **Authority:** this file is loaded automatically by every agent at session
 > start. Treat the rules below as non-negotiable. If a rule conflicts with a
 > specific task, surface the conflict to the user before acting.
+
+
+**Usage:**
+- `graphify ./path` — build the knowledge graph for a project or folder
+- `graphify query "<question>"` — ask a question against the graph
+- `graphify path <A> <B>` — trace the relationship/path between two nodes (e.g., functions, files)
+- `graphify explain <node>` — get an explanation of what a specific node does and why
+
+**When to use it:**
+- Onboarding to an unfamiliar repo or module
+- Before refactoring, to see what depends on what
+- Tracing how a function, class, or file is used across the codebase
+- Investigating "god nodes" (highly-connected core components) or unexpected cross-file connections
+
+**Why:** Graphify combines Tree-sitter static analysis with LLM-driven semantic extraction to produce an interactive `graph.html`, a queryable `graph.json`, and a `GRAPH_REPORT.md` audit report in `graphify-out/`. It only sends semantic descriptions to the AI model — never raw source code.
+
 
 ---
 
@@ -624,6 +644,41 @@ timeout 240 bunx vitest run
 
 - Branch: `worktree/design-move-to-page`
 - Commits: pending squash-merge to `main`
+### 2026-08-06: Kanban "+ Add task" — single header button + dropdown column picker
+
+**Symptom (user report, task_1785865184856).** Every kanban column had a `+ Add` button in its footer (7 columns = 7 buttons). User wanted one global button + dropdown column selection inside the create dialog.
+
+**What landed (3 commits, branch `worktree/kanban-add-button-placement`).**
+
+- **KanbanColumn.vue** — REMOVED the per-column footer `+ Add` button (handler + emit + template block + docstring). The `No tasks yet` empty-state placeholder is kept.
+- **KanbanView.vue** — ADDED a single `➕ Add task` button in the header (between search input and Settings button). Disabled when the kanban has zero columns (title `Add columns first in Settings`). Click opens the create dialog with the first column pre-selected. Wired `@column-change` from the dialog so the host's `activeCreateColumnId` stays in sync when the user picks a different column in the dialog's dropdown.
+- **KanbanTaskDetailDialog.vue** — REPLACED the read-only column label in create mode with an interactive dropdown (mirrors the profile picker pattern: button trigger + ▾ dropdown with ✓ checkmark + click-outside close). Pick emits `column-change` so the host updates `activeCreateColumnId` in real-time. Edit mode keeps the read-only strip (the task is already in a column — migrating it is out of scope).
+
+**Files (3 components + 3 tests, +448/-135).**
+
+- `src/apps/desktop/src/components/kanban/KanbanColumn.vue` — remove footer add
+- `src/apps/desktop/src/components/kanban/KanbanView.vue` — add header button + wire column-change
+- `src/apps/desktop/src/components/kanban/KanbanTaskDetailDialog.vue` — column dropdown + new prop + new emit
+- `src/apps/desktop/src/__tests__/KanbanColumn.spec.ts` — delete `KanbanColumn — footer add` describe block
+- `src/apps/desktop/src/__tests__/KanbanView.spec.ts` — update existing create-task tests + add 5 new tests
+- `src/apps/desktop/src/__tests__/KanbanTaskDetailDialog.spec.ts` — add 6 new column-dropdown tests
+
+**Tests.** 11 new behavioural tests (6 dialog + 5 view). 1 test deleted (footer add). Full suite: **1990 pass / 14 fail** — the 14 are PRE-EXISTING on main (4 `AppLayout.memoriesGate`, 7 `AppLayout.urlPersist`, 2 `sidebarKanbanSortUrl`, 1 `DesignView.nudge`). Zero regressions. vue-tsc clean.
+
+**Out of scope (deferred).**
+
+- In-column `+ Add` link when the column is empty (user said "only one button").
+- Keyboard shortcut (e.g. `c` or `n`) for the header button.
+- Drag-and-drop from outside the kanban into a specific column.
+- Single-column behaviour: dropdown still shows with the single item + ✓ (visually consistent — user can see what column they're adding to). No special "if single, hide dropdown" branching.
+
+**Branch / commit / PR.**
+
+- Branch: `worktree/kanban-add-button-placement`
+- Commits: `9f22893e` (feat: dialog column dropdown) + `b21eca26` (feat: header + Add task button) + `ffa395b2` (refactor: remove per-column footer)
+- Spec: `docs/superpowers/specs/2026-08-06-kanban-add-task-button-placement-design.md`
+- Plan: `docs/superpowers/plans/2026-08-06-kanban-add-task-button-placement.md`
+- PR: pending (squash-merge candidate)
 
 ### 2026-08-06: Sidebar single-active state (URL-driven)
 

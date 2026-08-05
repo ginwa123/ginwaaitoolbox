@@ -503,11 +503,25 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
 
     if (matches.items.len == 0) {
         if (result.stderr.len > 0) {
+            // ripgrep surfaced an error (regex parse error, permission
+            // denied, etc). Surface stderr verbatim — it already names the
+            // root cause. Don't append pattern/path because the stderr is
+            // the source of truth.
             try output.appendSlice(allocator, "<warning>");
             try output.appendSlice(allocator, result.stderr);
             try output.appendSlice(allocator, "</warning>");
         } else {
-            try output.appendSlice(allocator, "<warning>pattern not found</warning>");
+            // Clean no-match (rg exit code 1, empty stderr). Include the
+            // pattern + path the LLM passed so the operator can see exactly
+            // what was searched — without this the frontend falls back to
+            // "unknown pattern not found" and the operator can't tell
+            // whether the LLM typed a typo or just got unlucky. See
+            // docs/superpowers/plans/2026-08-06-search-better-error.md.
+            try output.appendSlice(allocator, "<warning>no matches for pattern \"");
+            try output.appendSlice(allocator, input.pattern);
+            try output.appendSlice(allocator, "\" in path \"");
+            try output.appendSlice(allocator, input.path);
+            try output.appendSlice(allocator, "\"</warning>");
         }
     }
 
@@ -531,6 +545,15 @@ pub fn search_result_to_string_grouped(allocator: std.mem.Allocator, result: Sea
     try output.appendSlice(allocator, "\">\n");
 
     if (result.matches.items.len == 0) {
+        // No matches — include the warning body (which now carries the
+        // pattern + path the LLM passed) inside the <search> tag. The
+        // frontend's parser relies on pattern="..." path="..." being
+        // present so it can render the actual args in the toast header;
+        // if we close the tag here without the body, the operator sees
+        // "unknown" / "unknown" in the chatview (the bug this commit
+        // fixes). See docs/superpowers/plans/2026-08-06-search-better-error.md.
+        try output.appendSlice(allocator, result.content);
+        try output.appendSlice(allocator, "\n");
         try output.appendSlice(allocator, "</search>\n");
         return try output.toOwnedSlice(allocator);
     }
@@ -624,6 +647,15 @@ pub fn search_result_to_string_flat(allocator: std.mem.Allocator, result: Search
     try output.appendSlice(allocator, "\" path=\"");
     try output.appendSlice(allocator, search_path);
     try output.appendSlice(allocator, "\" group_by_file=\"false\">\n");
+
+    if (result.matches.items.len == 0) {
+        // No matches — include the warning body inside the <search> tag
+        // (see search_result_to_string_grouped comment for rationale).
+        try output.appendSlice(allocator, result.content);
+        try output.appendSlice(allocator, "\n");
+        try output.appendSlice(allocator, "</search>\n");
+        return try output.toOwnedSlice(allocator);
+    }
 
     for (result.matches.items) |m| {
         const trimmed_snippet = std.mem.trim(u8, m.snippet, &std.ascii.whitespace);

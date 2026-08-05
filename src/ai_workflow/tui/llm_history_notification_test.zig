@@ -156,7 +156,8 @@ test "needs_human_review predicate returns 1 when finish_reason='stop' AND no hu
         \\  name TEXT,
         \\  status TEXT,
         \\  last_finish_reason TEXT,
-        \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\  git_worktree_cwd TEXT
         \\)
     , &.{});
 
@@ -214,7 +215,8 @@ test "needs_human_review predicate returns 0 when human touched AFTER the AI fin
         \\CREATE TABLE sessions (
         \\  id TEXT PRIMARY KEY, name TEXT, status TEXT,
         \\  last_finish_reason TEXT,
-        \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\  git_worktree_cwd TEXT
         \\)
     , &.{});
     try db.exec(alloc,
@@ -279,7 +281,8 @@ test "needs_human_review predicate returns 0 when finish_reason is 'tool_calls' 
         \\CREATE TABLE sessions (
         \\  id TEXT PRIMARY KEY, name TEXT, status TEXT,
         \\  last_finish_reason TEXT,
-        \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\  git_worktree_cwd TEXT
         \\)
     , &.{});
     try db.exec(alloc,
@@ -334,7 +337,7 @@ test "needs_human_review predicate returns 0 when no sessions row exists for the
         \\)
     , &.{});
     try db.exec(alloc,
-        "CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT, status TEXT, last_finish_reason TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT, status TEXT, last_finish_reason TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, git_worktree_cwd TEXT)",
         &.{});
     try db.exec(alloc,
         "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_1','ws_1','kanban')",

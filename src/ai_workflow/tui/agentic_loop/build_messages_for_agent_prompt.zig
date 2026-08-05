@@ -39,6 +39,7 @@ const edit_skill_mod = nalarcore.edit_skill;
 const set_git_worktree_mod = nalarcore.set_git_worktree;
 const kanban_list_mod = nalarcore.kanban_list;
 const kanban_move_task_mod = nalarcore.kanban_move_task;
+const kanban_create_task_tool = nalarcore.create_kanban_task;
 const set_design_page_mod = nalarcore.set_design_page;
 const add_design_element_mod = nalarcore.add_design_element;
 const update_design_element_mod = nalarcore.update_design_element;
@@ -99,9 +100,11 @@ pub fn buildMessages(
         try BuildDynamicAgentContent(allocator, db, session_id);
     defer allocator.free(agentUsed);
 
+    // disable dynamic system prompt for cache call llm
     // buildAgentPrompt now handles processMessages internally
-    const activity_info = try agentic_loop.prompts_mod.makeActivityInfo(allocator, io, db, session_id);
-    defer allocator.free(activity_info);
+    // const activity_info = try agentic_loop.prompts_mod.makeActivityInfo(allocator, io, db, session_id);
+    // defer allocator.free(activity_info);
+    const activity_info = "";
 
     // Resolve environment for the Global Knowledge loader. The singleton
     // is the single source of truth for the process-level environment map.
@@ -147,10 +150,14 @@ pub fn buildMessages(
     const systemContent = try prompt.build_agent_prompt(allocator, io, cwd, skills, memoryMd, backgroundProcessmessage, agentUsed, filtered_tools, activity_info, environment, sub_agents_listing, workspaceContext, kanbanStatusContent, designStatusContent);
 
     // Render inherited parent conversation history (if requested) and append
-    // it to the system prompt as a labelled, read-only block.
+    // it to the system prompt as a labelled, read-only block. The formatter
+    // itself detects whether this session is a sub-agent (session_id !=
+    // parent_session_id); if the two are equal (or either is empty), it
+    // short-circuits to "" without hitting the DB.
     const inherited_md = inherited_context.formatHistory(
         allocator,
         db,
+        session_id, // the current agent's session_id (vs. parent's)
         parent_session_id, // the parent's session_id, NOT the sub-agent's
         inherited_context.parseMode(inherited_context_mode) catch .none,
     ) catch blk: {
@@ -808,6 +815,7 @@ pub fn filteringTools(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, s
         result = removeTools(result, &.{
             kanban_list_mod.kanban_list_tool.function.name,
             kanban_move_task_mod.kanban_move_task_tool.function.name,
+            kanban_create_task_tool.create_kanban_task_tool.function.name,
         });
     }
 
@@ -815,6 +823,7 @@ pub fn filteringTools(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, s
         result = removeTools(result, &.{
             kanban_list_mod.kanban_list_tool.function.name,
             kanban_move_task_mod.kanban_move_task_tool.function.name,
+            kanban_create_task_tool.create_kanban_task_tool.function.name,
             set_design_page_mod.set_design_page_tool.function.name,
             add_design_element_mod.add_design_element_tool.function.name,
             update_design_element_mod.update_design_element_tool.function.name,

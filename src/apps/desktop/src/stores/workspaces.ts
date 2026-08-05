@@ -194,6 +194,19 @@ export interface Task {
   // the store splits on `|` and filters empty segments at every
   // fetch site (folded into `normalizeTaskTags`).
   imageUrls?: string[]
+  // NEW (kanban task git-branch badge, plan:
+  //   docs/superpowers/plans/2026-08-06-kanban-task-git-branch.md).
+  // The current git branch for the task's cwd — worktree cwd if
+  // bound (`session.git_worktree_cwd`), else the parent workspace
+  // item's `path`. Computed on-demand per request by the backend.
+  // Null when the cwd is not a git repo or HEAD is detached; UI
+  // omits the badge in that case. snake_case matches the wire
+  // shape (`git_branch` from `WorkspaceItemTaskResponse`) and the
+  // existing convention in this interface (`task_type`,
+  // `is_pinned`, `kanban_column_id`, etc.) — `api.getTasks` returns
+  // wire tasks raw, so the wire name IS the TS name. No
+  // normalization needed.
+  git_branch?: string | null
 }
 
 // localStorage keys for state persistence
@@ -212,12 +225,19 @@ const STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED = 'nalar-workspace-item-tasks-ex
 // `||`-delimited base64 data URL string) into a plain string[]
 // (Migration 069 — kanban image urls column). Plan:
 // docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md.
+// Also decodes the wire's snake_case `updated_at` / `created_at`
+// strings into the camelCase `updatedAt` / `createdAt` Date fields
+// the kanban card's meta-row time pill reads
+// (WorkspaceItemTaskCard.vue::lastUpdated). Without this mapping the
+// pill is always empty — the wire returns snake_case strings but
+// the Task interface declares Date types.
 function normalizeTaskTags(task: Task): Task {
   if (task.tags === undefined) {
-    // Still normalize imageUrls even when tags is missing (the
-    // fields are independent — a task can have tags but no images
-    // or vice versa).
+    // Still normalize imageUrls + dates even when tags is missing
+    // (the fields are independent — a task can have tags but no
+    // images or vice versa).
     normalizeTaskImageUrlsInPlace(task)
+    normalizeTaskDatesInPlace(task)
     return task
   }
   // Coerce anything (string, already-array, missing) to a string[].
@@ -236,7 +256,60 @@ function normalizeTaskTags(task: Task): Task {
     task.tags = []
   }
   normalizeTaskImageUrlsInPlace(task)
+  normalizeTaskDatesInPlace(task)
   return task
+}
+
+// Parse the backend's wire-format datetime string into a Date.
+// Backend format: `"YYYY-MM-DD HH:MM:SS"` (UTC, from SQLite DATETIME
+// columns) OR an ISO 8601 string (`"YYYY-MM-DDTHH:MM:SSZ"` / with
+// offset). Returns undefined for null / empty / malformed input so
+// the consumer can fall through to the next candidate (e.g.
+// `createdAt` when `updatedAt` is missing).
+//
+// Why a separate helper instead of inlining into normalizeTaskDatesInPlace:
+//   - the same parsing logic is needed for `routine.next_run_at` in
+//     other parts of the codebase; keeping it as a pure function
+//     makes future call sites trivial.
+//   - the per-line parse is the kind of thing you want a TypeScript
+//     unit test against directly, not buried inside an in-place
+//     mutator.
+function parseBackendDatetime(value: unknown): Date | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined
+  // Normalise "YYYY-MM-DD HH:MM:SS" → "YYYY-MM-DDTHH:MM:SS" so the
+  // Date ctor parses it. Then inject an explicit `Z` (UTC) when the
+  // string has no timezone marker — the backend stores UTC strings
+  // without an explicit zone.
+  const isoish = value.includes('T') ? value : value.replace(' ', 'T')
+  const hasZone =
+    isoish.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(isoish)
+  const d = new Date(hasZone ? isoish : isoish + 'Z')
+  return Number.isNaN(d.getTime()) ? undefined : d
+}
+
+// Wire→in-memory date normalization for tasks.
+// The backend returns `created_at` and `updated_at` as snake_case UTC
+// strings (`"2026-08-05 04:24:56"`). The `Task` interface declares
+// `createdAt?: Date` and `updatedAt?: Date` (camelCase, Date object).
+// This helper bridges the two — but ONLY when the camelCase field is
+// absent. The "only when missing" guard preserves optimistic local
+// writes from `addTask` (workspaces.ts:1147) which set
+// `updatedAt: new Date()` directly. A re-fetch must never overwrite a
+// fresh optimistic Date with a stale wire string.
+function normalizeTaskDatesInPlace(task: Task): void {
+  // The wire fields aren't declared on the local `Task` interface
+  // (only the camelCase Date variants are), so we cast through
+  // `unknown` to access them. This is the same pattern used by the
+  // existing tags + imageUrls normalizers in this file.
+  const wire = task as unknown as Record<string, unknown>
+  if (task.updatedAt === undefined) {
+    const parsed = parseBackendDatetime(wire['updated_at'])
+    if (parsed !== undefined) task.updatedAt = parsed
+  }
+  if (task.createdAt === undefined) {
+    const parsed = parseBackendDatetime(wire['created_at'])
+    if (parsed !== undefined) task.createdAt = parsed
+  }
 }
 
 // Decode the `||`-delimited `image_urls` wire string into a `string[]`

@@ -258,6 +258,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-08-06-kanban-chat-as-dialog.md` | ✅ | Kanban chat converted from side-by-side pane to centered modal dialog. See §3.7.7 below. |
 | `2026-08-06-kanban-sort-by.md` | ✅ | Per-column sort: each column's ⋮ menu has "Sort tasks…" opening a centered modal with 7 sort modes (Manual / Created / Updated / Name × asc/desc). State is per-column (no URL persistence, no store). See §3.7.8 below. |
 | `2026-08-06-kanban-per-column-pagination.md` | ✅ | Per-column pagination: backend `?column_id=` filter; frontend `WorkspaceItem.columnPagination: Record<col, {cursor, hasMore, isLoading}>`; new `loadMoreTasksForColumn(ws, item, columnId)` action; each kanban column paginates independently. See §3.7.9 below. |
+| `2026-08-06-kanban-task-git-branch.md` | ✅ | Each kanban task card displays a GitHub-style fork/branch icon + branch name in the meta row. Backend computes `git -C <cwd> symbolic-ref --short HEAD` on-demand per request (cwd = `session.git_worktree_cwd` or `workspace_item.path`); frontend reads `task.git_branch` and renders the badge. No DB column, no migration. See §3.7.10 below. |
 
 #### 3.7.1 Kanban task "AI finished — awaiting review" notification icon (2026-07-26)
 
@@ -490,6 +491,38 @@ Each kanban column paginates independently. The "Load more" / auto-load sentinel
 **Out of scope.** Per-column COUNT endpoint (the heuristic handles sparse columns via auto-load resolution). URL persistence of cursors (cursors are transient). Per-column search (search stays board-wide).
 
 **Plan:** `docs/superpowers/plans/2026-08-06-kanban-per-column-pagination.md`
+
+#### 3.7.10 Kanban task — git-branch badge (2026-08-06)
+
+Each kanban task card displays a small GitHub-style fork/branch icon + branch name in the meta row. Lets the user see at a glance which branch each task is running against (worktree branch when bound, else the workspace's current branch).
+
+**UX.** The badge sits at the end of the meta row, right after the task-type label. 12×12 SVG fork/branch icon (matches GitHub's Branches-page icon — `M6 3v12M18 9a3 3 0 100-6…`) + branch name, truncated for long branches (`max-w-[8rem] truncate`). Tooltip on hover shows the full branch name. Both hidden when the workspace isn't a git repo or HEAD is detached.
+
+**Visibility rules.**
+
+| `task.git_branch` | Result |
+|---|---|
+| non-empty string | Render fork/branch icon + name |
+| `''` (empty) | No badge (graceful fallback) |
+| `null` / `undefined` | No badge (legacy tasks predate the column) |
+
+**Wire (backend — commit `1130e5cd`).** No DB column, no migration (per user direction 2026-08-06: compute on-demand from cwd). The handler in `tasks_list.zig::useCase` shells out to `git -C <cwd> symbolic-ref --short HEAD` for each task's cwd. Falls back to `git -C <cwd> rev-parse --abbrev-ref HEAD` for detached HEAD (returns literal `"HEAD"` → `null`).
+
+**cwd resolution per task:**
+1. `session.git_worktree_cwd` (already JOINed in the `sessions` LEFT JOIN; new column 22 in the kanban SELECT) — preferred when non-empty.
+2. `workspace_items.path` — fallback. Fetched once per request via `fetchWorkspaceItemPath(item_id)`.
+3. Empty / not a git repo / detached HEAD → `git_branch: null`.
+
+**Frontend wiring (this PR).** `Task` interface gains `git_branch?: string | null` (snake_case to match the wire format + the existing convention in this interface — `task_type`, `is_pinned`, `kanban_column_id`, etc.). `WorkspaceItemTaskCard.vue` adds a `gitBranchBadge` computed (returns `null` for empty/null/undefined) + a `<span data-testid="task-git-branch">` rendering the icon + name, gated on the meta row's `v-if` (`lastUpdatedLabel || typeBadge || gitBranchBadge`).
+
+**No frontend cache.** The backend computes per request (one subprocess per task, ~5 ms each). A 20-task kanban adds ~100 ms to a render — within budget for "click column → board renders". The original `ensureBranch` / `branchCache` LRU pattern from the plan is NOT used; the backend's per-request computation is fast enough to skip the front-end cache entirely. If a hot path needs optimization later, a request-batching endpoint can coalesce N cwd lookups into one HTTP roundtrip.
+
+**Tests.** 9 new behavioural tests in `WorkspaceItemTaskCard.gitBranch.spec.ts` (renders when set / hides when null/empty/undefined / fork-branch SVG icon shape / truncate class / title attribute / alongside type badge / alone with no type badge). All other existing tests unchanged — 14 pre-existing failures on main (AppLayout.memoriesGate/urlPersist + sidebarKanbanSortUrl + DesignView.nudge) are unchanged in count.
+
+**Out of scope.** Auto-refresh on `git checkout` (would need SSE event for branch change — separate feature). Per-task branch override UI (read-only display for v1). Branch picker dropdown on the task card. Showing remote tracking branch (e.g. `origin/main`).
+
+**Plan:** `docs/superpowers/plans/2026-08-06-kanban-task-git-branch.md`
+**Commits:** `1130e5cd` (backend) + this PR (frontend).
 
 ### 3.8 Frontend — Design Canvas (Workspace Item Type)
 
@@ -785,6 +818,7 @@ For each plan file in the 178-file input set:
 #161 feat(kanban): profile picker in New Task dialog
 #TBD feat(prompt): filter LLM tool list by parent item_type (design/folder/kanban) + 11 unit tests
 #TBD feat(sidebar): URL-driven single-active state — sidebar components derive "active" from `useCurrentMainView()` (route.query), not store flags; 2px violet left accent bar on item + page rows; 19 new tests, 0 regressions
+#TBD feat(kanban): git-branch badge on task card — backend `git_branch` field on `WorkspaceItemTaskResponse` (computed on-demand per request via `git -C <cwd> symbolic-ref --short HEAD`); frontend renders GitHub fork/branch SVG + branch name in meta row; no DB column. See §3.7.10.
 ```
 
 ### 10.2 Plan file inventory (all 178 files)

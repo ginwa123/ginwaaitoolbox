@@ -253,9 +253,10 @@ describe('KanbanView — event pass-through', () => {
     // No addTask emit (the event is consumed locally).
     expect(wrapper.emitted('addTask')).toBeFalsy()
 
-    // Click "+ Add" on the column.
+    // Click the header + Add task button (was per-column footer
+    // before plan: 2026-08-06-kanban-add-task-button-placement).
     await wrapper
-      .find('[data-testid="kanban-column-col_x-add-task"]')
+      .find('[data-testid="kanban-add-task-button"]')
       .trigger('click')
     await flushPromises()
 
@@ -268,10 +269,14 @@ describe('KanbanView — event pass-through', () => {
       '[data-testid="kanban-task-detail-create-name"]',
     )
     expect(nameInput?.value).toBe('')
-    // The column name is visible in the metadata strip.
-    const colEl = document.querySelector('[data-testid="kanban-task-detail-column"]')
-    expect(colEl?.textContent).toContain('todo')
-    // No addTask emit ever fired.
+    // The column picker defaults to the first column (its
+    // testid is the new dropdown — see KanbanTaskDetailDialog).
+    const picker = document.querySelector(
+      '[data-testid="kanban-task-detail-column-picker"]',
+    )
+    expect(picker?.textContent).toContain('todo')
+    // No addTask emit ever fired (the event was removed when the
+    // per-column footer button was deleted).
     expect(wrapper.emitted('addTask')).toBeFalsy()
   })
 
@@ -637,7 +642,7 @@ describe('KanbanView — create-task flow', () => {
     wrapper = mountView(item)
     await flushPromises()
     await wrapper
-      .find('[data-testid="kanban-column-col_x-add-task"]')
+      .find('[data-testid="kanban-add-task-button"]')
       .trigger('click')
     await flushPromises()
     return wrapper!
@@ -916,6 +921,142 @@ describe('KanbanView — create-task flow', () => {
       expect.objectContaining({
         tags: ['original', 'fresh'],
       }),
+    )
+  })
+})
+
+// ─── Header + Add task button (plan 2026-08-06-kanban-add-task-button-placement) ──
+//
+// Replaces the per-column footer + Add button with a single header
+// button. Click opens the create dialog with the first column
+// pre-selected; the dialog's column dropdown (Task 1) lets the user
+// pick a different column. Column-change in the dialog updates
+// activeCreateColumnId so moveTaskToColumn at submit time uses the
+// chosen column.
+describe('KanbanView — header + Add task button', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    document
+      .querySelectorAll('[data-testid="kanban-task-detail-dialog"]')
+      .forEach((el) => el.remove())
+    vi.restoreAllMocks()
+  })
+
+  it('renders the header + Add task button', async () => {
+    const item = makeItem({
+      kanban_columns: [makeColumn({ id: 'col_x', name: 'todo', position: 0 })],
+    })
+    wrapper = mountView(item)
+    await flushPromises()
+    expect(
+      wrapper.find('[data-testid="kanban-add-task-button"]').exists(),
+    ).toBe(true)
+  })
+
+  it('disables the header button when there are no columns', async () => {
+    const item = makeItem({ kanban_columns: [] })
+    wrapper = mountView(item)
+    await flushPromises()
+    const btn = wrapper.find('[data-testid="kanban-add-task-button"]')
+    expect(btn.exists()).toBe(true)
+    expect(btn.attributes('disabled')).toBeDefined()
+    // Helpful tooltip explains the disabled state.
+    expect(btn.attributes('title')).toContain('Add columns first')
+  })
+
+  it('enables the header button when at least one column exists', async () => {
+    const item = makeItem({
+      kanban_columns: [makeColumn({ id: 'col_x', name: 'todo', position: 0 })],
+    })
+    wrapper = mountView(item)
+    await flushPromises()
+    const btn = wrapper.find('[data-testid="kanban-add-task-button"]')
+    expect(btn.attributes('disabled')).toBeUndefined()
+  })
+
+  it('clicking the header button opens the create dialog with the first column pre-selected', async () => {
+    const item = makeItem({
+      kanban_columns: [
+        makeColumn({ id: 'col_x', name: 'todo', position: 0 }),
+        makeColumn({ id: 'col_y', name: 'in progress', position: 1 }),
+      ],
+    })
+    wrapper = mountView(item)
+    await flushPromises()
+    await wrapper.find('[data-testid="kanban-add-task-button"]').trigger('click')
+    await flushPromises()
+    // The dialog renders.
+    expect(
+      document.querySelector('[data-testid="kanban-task-detail-dialog"]'),
+    ).not.toBeNull()
+    // The dropdown defaults to the first column.
+    const picker = document.querySelector(
+      '[data-testid="kanban-task-detail-column-picker"]',
+    )
+    expect(picker?.textContent).toContain('todo')
+  })
+
+  it('column-change in the dialog updates the active create column (so moveTaskToColumn uses the chosen column at submit)', async () => {
+    const item = makeItem({
+      kanban_columns: [
+        makeColumn({ id: 'col_x', name: 'todo', position: 0 }),
+        makeColumn({ id: 'col_y', name: 'in progress', position: 1 }),
+      ],
+    })
+    wrapper = mountView(item)
+    await flushPromises()
+    const { useWorkspacesStore } = await import('../stores/workspaces')
+    const store = useWorkspacesStore()
+    vi.spyOn(store, 'addTask').mockResolvedValue('task_new_1')
+    const moveTaskSpy = vi
+      .spyOn(store, 'moveTaskToColumn')
+      .mockResolvedValue(undefined)
+
+    // Open the dialog via the header button (defaults to col_x).
+    await wrapper.find('[data-testid="kanban-add-task-button"]').trigger('click')
+    await flushPromises()
+
+    // Open the column dropdown first, THEN pick col_y.
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="kanban-task-detail-column-picker"]',
+      )!
+      .click()
+    await flushPromises()
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="kanban-task-detail-column-picker-item-col_y"]',
+      )!
+      .click()
+    await flushPromises()
+
+    // Fill the name and submit.
+    const nameInput = document.querySelector<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-create-name"]',
+    )
+    nameInput!.value = 'My new task'
+    nameInput!.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="kanban-task-detail-save"]')!
+      .click()
+    await flushPromises()
+    await flushPromises()  // await handleCreateTaskSave await chain
+
+    // moveTaskToColumn uses col_y (the chosen column), not col_x.
+    expect(moveTaskSpy).toHaveBeenCalledWith(
+      WS_ID,
+      ITEM_ID,
+      'task_new_1',
+      'col_y',
+      0,
     )
   })
 })

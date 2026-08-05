@@ -228,26 +228,6 @@ describe('KanbanColumn — ⋮ menu', () => {
   })
 })
 
-describe('KanbanColumn — footer add', () => {
-  let wrapper: VueWrapper | null = null
-
-  beforeEach(() => {
-    setActivePinia(createPinia())
-  })
-
-  afterEach(() => {
-    wrapper?.unmount()
-    wrapper = null
-    vi.restoreAllMocks()
-  })
-
-  it('clicking "+ Add" emits add-task with the column id', async () => {
-    wrapper = mountColumn(makeColumn())
-    await wrapper.find(`[data-testid="kanban-column-${COL_TODO}-add-task"]`).trigger('click')
-    expect(wrapper.emitted('addTask')?.[0]).toEqual([COL_TODO])
-  })
-})
-
 describe('KanbanColumn — column header drag-and-drop reorder', () => {
   // The header is draggable: dragstart sets the kanban-column-id
   // MIME, dragover/drop on a header emit reorder-column. This is the

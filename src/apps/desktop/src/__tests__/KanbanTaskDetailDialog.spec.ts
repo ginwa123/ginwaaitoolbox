@@ -636,3 +636,218 @@ describe('KanbanTaskDetailDialog — create mode', () => {
     expect(findInDom('[data-testid="kanban-task-detail-error"]')).toBeNull()
   })
 })
+
+// ─── Column dropdown (create mode) — plan 2026-08-06-kanban-add-task-button-placement ───
+//
+// Replaces the read-only column label in create mode with an
+// interactive dropdown. Mirrors the profile picker pattern
+// (button trigger + ▾ dropdown + ✓ checkmark + click-outside close).
+// Picking a column emits column-change so the host can update its
+// activeCreateColumnId in real-time. Edit mode keeps the static
+// strip — migrating an existing task to a new column is out of scope.
+describe('KanbanTaskDetailDialog — column dropdown (create mode)', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    findAllInDom('[data-testid="kanban-task-detail-dialog"]').forEach((el) =>
+      el.remove(),
+    )
+  })
+
+  // Helper: mount the dialog in create mode with the given columns
+  // and an optional initial column (defaults to the first).
+  function mountCreateWithColumns(
+    columns: { id: string; name: string }[],
+    initialColumnId: string | null = columns[0]?.id ?? null,
+  ): VueWrapper {
+    const fullColumns: KanbanColumn[] = columns.map((c) => ({
+      id: c.id,
+      name: c.name,
+      workspace_item_id: 'item_1',
+      position: 0,
+      created_at: '2026-06-21 12:00:00',
+    }))
+    const initialColumn = initialColumnId
+      ? fullColumns.find((c) => c.id === initialColumnId) ?? null
+      : null
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        mode: 'create',
+        task: null,
+        column: initialColumn,
+        availableColumns: fullColumns,
+        workspaceId: 'ws_1',
+      },
+    })
+    return wrapper
+  }
+
+  it('create mode: column is rendered as a dropdown button (not a static text strip)', async () => {
+    mountCreateWithColumns([{ id: 'col_x', name: 'todo' }])
+    await flushPromises()
+    // Dropdown trigger renders with the expected testid.
+    expect(
+      findInDom('[data-testid="kanban-task-detail-column-picker"]'),
+    ).not.toBeNull()
+    // The static strip (legacy testid) does NOT render in create mode.
+    expect(findInDom('[data-testid="kanban-task-detail-column"]')).toBeNull()
+  })
+
+  it('create mode: column dropdown defaults to the column prop', async () => {
+    mountCreateWithColumns([
+      { id: 'col_x', name: 'todo' },
+      { id: 'col_y', name: 'in progress' },
+    ])
+    await flushPromises()
+    const trigger = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-column-picker"]',
+    )
+    expect(trigger?.textContent).toContain('todo')
+  })
+
+  it('create mode: opening the dropdown and picking a column emits column-change', async () => {
+    const w = mountCreateWithColumns([
+      { id: 'col_x', name: 'todo' },
+      { id: 'col_y', name: 'in progress' },
+    ])
+    await flushPromises()
+
+    // Open the dropdown.
+    clickInDom('[data-testid="kanban-task-detail-column-picker"]')
+    await flushPromises()
+    // Pick the second column.
+    clickInDom('[data-testid="kanban-task-detail-column-picker-item-col_y"]')
+    await flushPromises()
+
+    expect(w.emitted('column-change')).toBeTruthy()
+    expect(w.emitted('column-change')?.[0]).toEqual(['col_y'])
+  })
+
+  it('create mode: single-column kanban — dropdown renders with the single item + checkmark', async () => {
+    mountCreateWithColumns([{ id: 'col_x', name: 'todo' }])
+    await flushPromises()
+    clickInDom('[data-testid="kanban-task-detail-column-picker"]')
+    await flushPromises()
+    const item = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-column-picker-item-col_x"]',
+    )
+    expect(item).not.toBeNull()
+    expect(item?.textContent).toContain('✓')
+  })
+
+  it('edit mode: column is rendered as a static text strip (no dropdown)', async () => {
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        mode: 'edit',
+        task: {
+          id: 'task_1',
+          name: 'existing task',
+          description: '',
+          kanban_column_id: 'col_x',
+        },
+        column: {
+          id: 'col_x',
+          name: 'todo',
+          workspace_item_id: 'item_1',
+          position: 0,
+          created_at: '2026-06-21 12:00:00',
+        },
+        availableColumns: [],  // edit mode ignores availableColumns
+      },
+    })
+    await flushPromises()
+    // Static strip renders (legacy testid).
+    expect(findInDom('[data-testid="kanban-task-detail-column"]')).not.toBeNull()
+    // Dropdown does NOT render.
+    expect(
+      findInDom('[data-testid="kanban-task-detail-column-picker"]'),
+    ).toBeNull()
+  })
+
+  it('create mode: clicking outside the dropdown closes it', async () => {
+    mountCreateWithColumns([
+      { id: 'col_x', name: 'todo' },
+      { id: 'col_y', name: 'in progress' },
+    ])
+    await flushPromises()
+    clickInDom('[data-testid="kanban-task-detail-column-picker"]')
+    await flushPromises()
+    // Dropdown is open.
+    expect(
+      findInDom('[data-testid="kanban-task-detail-column-picker-dropdown"]'),
+    ).not.toBeNull()
+    // Dispatch a click on document.body (outside the picker).
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    // Dropdown is closed.
+    expect(
+      findInDom('[data-testid="kanban-task-detail-column-picker-dropdown"]'),
+    ).toBeNull()
+  })
+
+  // NEW (2026-08-06, dropdown width/style follow-up v3). User feedback
+  // round 3: BOTH the trigger button AND the dropdown should be
+  // wider than a tiny pill — they should match each other at a
+  // proper button width (~180px). Long column names like
+  // "in_review_planning" fit on one line; short names like "todo"
+  // show with the natural empty space on the right (matches the
+  // standard <select> element UX where the button width is the
+  // widest option width).
+  // - Trigger: `min-w-[180px]` + `justify-between` so chevron sits
+  //   right; text "todo" sits left.
+  // - Dropdown: `absolute top-full mt-1 left-0 min-w-[180px]` —
+  //   anchored to wrapper's left edge, same min-width as trigger.
+  // Items get no `border-top` separator (matches profile picker).
+  it('create mode: trigger and dropdown both have min-w-[180px] and match in width', async () => {
+    mountCreateWithColumns([
+      { id: 'col_x', name: 'todo' },
+      { id: 'col_y', name: 'in_review_planning' },
+    ])
+    await flushPromises()
+    clickInDom('[data-testid="kanban-task-detail-column-picker"]')
+    await flushPromises()
+
+    const trigger = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-column-picker"]',
+    )
+    const dropdown = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-column-picker-dropdown"]',
+    )
+    expect(trigger).not.toBeNull()
+    expect(dropdown).not.toBeNull()
+
+    // Trigger is a wide button, not a tiny pill.
+    const triggerClass = trigger!.getAttribute('class') ?? ''
+    expect(triggerClass).toContain('min-w-[180px]')
+    expect(triggerClass).toContain('justify-between')
+
+    // Dropdown matches the trigger width via min-w-[180px] + left-0
+    // anchored to wrapper's left edge. NOT full body width.
+    const dropdownClass = dropdown!.getAttribute('class') ?? ''
+    expect(dropdownClass).toContain('min-w-[180px]')
+    expect(dropdownClass).toContain('left-0')
+    expect(dropdownClass).not.toContain('w-full')
+    expect(dropdownClass).not.toContain('inset-x-0')
+    expect(dropdownClass).not.toContain('w-max')
+
+    // Items have no border-top separator (matches profile picker style).
+    const item = dropdown!.querySelector<HTMLElement>(
+      '[data-testid="kanban-task-detail-column-picker-item-col_y"]',
+    )
+    expect(item).not.toBeNull()
+    const itemStyle = item!.getAttribute('style') ?? ''
+    expect(itemStyle).not.toMatch(/border-top/i)
+  })
+})

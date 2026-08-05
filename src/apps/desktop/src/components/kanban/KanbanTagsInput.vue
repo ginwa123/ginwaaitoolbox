@@ -229,7 +229,14 @@ function commitSuggestion(suggestion: string): void {
   emit('update:modelValue', [...props.modelValue, suggestion])
   draftInput.value = ''
   highlightedIndex.value = -1
-  isFocused.value = false
+  // KEEP the dropdown open so the user can pick multiple tags without
+  // re-focusing the input. Pre-fix, this line set `isFocused.value = false`,
+  // which collapsed the dropdown after every pick — user feedback
+  // 2026-08-06: "after enter select dropdown, the dropdown not show up
+  // agai, it should show up". The suggestion's @mousedown.prevent stops
+  // the input from blurring, so isFocused stays true naturally; the
+  // suggestion's row is filtered out of `filteredSuggestions` because
+  // the new tag is now in modelValue, leaving the remaining picks visible.
 }
 
 function moveHighlight(direction: 1 | -1): void {

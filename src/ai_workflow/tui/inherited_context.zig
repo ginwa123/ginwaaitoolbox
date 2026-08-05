@@ -36,6 +36,30 @@ pub fn parseMode(raw: []const u8) ParseError!Mode {
     return error.InvalidInheritedContextMode;
 }
 
+/// Subagent detection predicate.
+///
+/// A sub-agent is a child session whose `parent_session_id` refers to a
+/// different session than its own `session_id`. Returns `false` (i.e.
+/// "NOT a subagent — do NOT inherit parent history") when:
+///
+///   - `parent_session_id` is empty (the caller IS the parent), or
+///   - `session_id` is empty (defensive — a session-less caller has no
+///     parent context to inherit), or
+///   - `session_id` equals `parent_session_id` (data-anomaly guard: if
+///     a parent_session_id was set but points at the current session,
+///     treat it as "not a subagent" — never inherit your own history as
+///     if it were a parent's).
+///
+/// Used by `formatHistory` to short-circuit and by any other
+/// subagent-aware prompt logic. Comparison is case-sensitive to match
+/// session_id semantics in the rest of the codebase.
+pub fn isSubagent(session_id: []const u8, parent_session_id: []const u8) bool {
+    if (parent_session_id.len == 0) return false;
+    if (session_id.len == 0) return false;
+    if (std.mem.eql(u8, session_id, parent_session_id)) return false;
+    return true;
+}
+
 // -- Formatter -------------------------------------------------------------
 
 const HEADER =
@@ -50,7 +74,10 @@ const HEADER =
 
 /// Fetch user/assistant messages from the parent's history and render them as
 /// a Markdown block. Returns an empty string when:
-///   - `parent_session_id` is empty
+///   - `session_id` is empty (defensive — no caller to attach the block to)
+///   - `parent_session_id` is empty (the caller IS the parent)
+///   - `session_id == parent_session_id` (NOT a subagent — same session
+///     as the parent; surfaced by `isSubagent` returning false)
 ///   - the parent has no user/assistant messages
 ///   - `mode` is `.none`
 ///   - the DB query fails (logged warning, not propagated)
@@ -60,10 +87,13 @@ const HEADER =
 pub fn formatHistory(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
+    session_id: []const u8,
     parent_session_id: []const u8,
     mode: Mode,
 ) ![]const u8 {
+    if (session_id.len == 0) return try allocator.dupe(u8, "");
     if (parent_session_id.len == 0) return try allocator.dupe(u8, "");
+    if (std.mem.eql(u8, session_id, parent_session_id)) return try allocator.dupe(u8, "");
     if (mode == .none) return try allocator.dupe(u8, "");
 
     const messages = fetchUserAssistantMessages(allocator, db, parent_session_id, mode) catch |err| {

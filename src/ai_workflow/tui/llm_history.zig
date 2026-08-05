@@ -3820,6 +3820,24 @@ pub const WorkspaceItemTaskInfo = struct {
     /// docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md
     image_urls: []u8 = &.{},
 
+    /// Joined from `sessions.git_worktree_cwd` (Migration 046).
+    /// Empty string when no session row exists or no worktree is
+    /// bound. Owned by the lister; freed by `deinit`. Used by
+    /// `tasks_list.zig::useCase` to compute `git_branch` per task
+    /// (preferred cwd for the `git rev-parse --abbrev-ref HEAD`
+    /// subprocess; falls back to `workspace_items.path` when empty).
+    /// Plan: docs/superpowers/plans/2026-08-06-kanban-task-git-branch.md
+    git_worktree_cwd: []u8 = &.{},
+
+    /// Computed `git rev-parse --abbrev-ref HEAD` output for the
+    /// task's cwd (`git_worktree_cwd` or the parent
+    /// `workspace_items.path`). Null when the cwd is empty, the
+    /// path is not a git repo, the HEAD is detached, or the
+    /// subprocess fails. The frontend uses this to render the
+    /// GitHub-style fork/branch badge in the kanban card meta row.
+    /// Owned by the lister; freed by `deinit`.
+    git_branch: ?[]u8 = null,
+
     pub fn deinit(self: WorkspaceItemTaskInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.name);
@@ -3840,6 +3858,8 @@ pub const WorkspaceItemTaskInfo = struct {
         if (self.last_finish_reason.len > 0) allocator.free(self.last_finish_reason);
         if (self.tags.len > 0) allocator.free(self.tags);
         if (self.image_urls.len > 0) allocator.free(self.image_urls);
+        if (self.git_worktree_cwd.len > 0) allocator.free(self.git_worktree_cwd);
+        if (self.git_branch) |gb| allocator.free(gb);
     }
 };
 
@@ -4478,7 +4498,7 @@ pub fn listWorkspaceItemTasksWithCursor(
         // passthrough column at index 21:
         //   21: t.tags — JSON-encode array string ('' when no tags).
         //       NOT NULL DEFAULT '' so always present.
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at IS NULL OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at IS NULL OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, '') FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
         .{ cursor_clause, column_id_clause, q_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -4515,7 +4535,8 @@ pub fn listWorkspaceItemTasksWithCursor(
     while (try rows.next()) |row| {
         // Row indices (post-Migration-063-attended-toggle JOIN,
         // post-Migration-065-notification-icon JOIN,
-        // post-Migration-067-tags):
+        // post-Migration-067-tags,
+        // post-kanban-task-git-branch plan 2026-08-06):
         //   0: id, 1: name, 2: workspace_item_id, 3: description,
         //   4: created_at, 5: updated_at, 6: task_type,
         //   7: is_pinned, 8: pinned_position, 9: kanban_column_id,
@@ -4523,7 +4544,9 @@ pub fn listWorkspaceItemTasksWithCursor(
         //   18: is_auto_retry_until_stop (joined from sessions),
         //   19: last_finish_reason (joined from sessions),
         //   20: needs_human_review (CASE derived),
-        //   21: tags (Migration 067 — JSON-encode array string).
+        //   21: tags (Migration 067 — JSON-encode array string),
+        //   22: git_worktree_cwd (Migration 046 — joined from sessions).
+        //       COALESCE'd to '' when no session row exists.
         const task_type = if (row.values[6].len > 0)
             try allocator.dupe(u8, row.values[6])
         else
@@ -4572,6 +4595,10 @@ pub fn listWorkspaceItemTasksWithCursor(
             // Kanban task tags (Migration 067): index 21. NOT NULL
             // DEFAULT '' so always present.
             .tags = try allocator.dupe(u8, row.values[21]),
+            // Session worktree cwd (Migration 046): index 22. COALESCE'd
+            // to '' in the SQL when no session row exists. Empty string
+            // is the canonical "no worktree" sentinel.
+            .git_worktree_cwd = try allocator.dupe(u8, row.values[22]),
         };
         try tasks.append(allocator, task);
         row.deinit(allocator);
@@ -5016,7 +5043,8 @@ fn setupDb() !TestCtx {
         \\    id TEXT PRIMARY KEY,
         \\    is_auto_retry_until_stop TEXT DEFAULT '0',
         \\    last_finish_reason TEXT,
-        \\    updated_at TEXT
+        \\    updated_at TEXT,
+        \\    git_worktree_cwd TEXT
         \\)
     , &.{});
     return .{ .db = db, .threaded = threaded };
