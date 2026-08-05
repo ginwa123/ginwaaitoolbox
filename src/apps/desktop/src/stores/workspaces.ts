@@ -471,6 +471,17 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Active task within the selected workspace item
   const activeTaskId = ref<string | null>(null)
 
+  // FIX (task-url-overwrite, task_1785959660154, 2026-08-06):
+  // Navigation flag the AppLayout URL sync watcher checks before
+  // mirroring activeWorkspaceItemId / activeDesignPageId to the URL.
+  // Set true at the start of Sidebar.handleSelectTask and cleared
+  // after the router.push resolves. The flag closes the race window
+  // between setActiveTask's synchronous store mutation (which fires
+  // the watcher) and Vue Router's asynchronous URL update (which
+  // would otherwise leave the watcher seeing `route.query.view ===
+  // 'workspace'` and clobbering the in-flight task URL).
+  const isNavigatingToTask = ref(false)
+
   // Kanban sort-by round-trip preservation (plan 2026-08-06-kanban-
   // sort-by.md): when the user opens a kanban task from the kanban
   // board, Sidebar snapshots the current `?sorts=` into this field.
@@ -3699,6 +3710,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     activeWorkspaceItemId,
     expandedItemIds,
     activeTaskId,
+    // FIX (task-url-overwrite, task_1785959660154, 2026-08-06):
+    // Navigation flag the AppLayout URL sync watcher checks before
+    // mirroring activeWorkspaceItemId / activeDesignPageId to the
+    // URL. Set true at the start of Sidebar.handleSelectTask and
+    // cleared after the router.push resolves.
+    isNavigatingToTask,
     // Kanban sort-by round-trip preservation (plan 2026-08-06):
     // snapshots the active `?sorts=` when the user enters a task
     // view, read back by AppLayout.handleCloseTaskView to restore

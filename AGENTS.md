@@ -525,6 +525,199 @@ A "delete useless tests" task identified ~60 static-contract tests across
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Config parser — arbitrary `profiles_models` keys (task_1785963505875)
+
+**Symptom (user report).** User said *"when change profile via chatview
+i think the profile is not selected as effective on demand"* —
+the dropdown chip showed the picked profile name but the actual LLM
+call used the top-level config (same model in the user's case, but a
+different `api_key`/`base_url` profile would be silently ignored).
+
+**Live evidence** (from `/tmp/agentic_coding.log`):
+
+```
+WORKFLOW: selected_profile_model '900ribu' not found in LlmConfig.profiles_models, using top-level config
+[CHECKPOINT] loop iter start session_id=task_1785959915548 loop_counter=183 retry_count=0 effective_model=MiniMax-M3
+```
+
+`WORKFLOW: selected_profile_model '900ribu' not found` was the smoking
+gun — the session row carries `900ribu` (set by PUT
+`/api/llm/session/:id`) but `LlmConfig.getProfile('900ribu')` returned
+null, so the cascade silently fell through to top-level.
+
+**Root cause.** `src/modules/config/Config.zig:288-293` hardcoded the
+`profiles_models` schema as exactly four fields:
+
+```zig
+const ProfilesModelsJson = struct {
+    profile1: ?ProfileJson = null,
+    profile2: ?ProfileJson = null,
+    profile3: ?ProfileJson = null,
+    profile4: ?ProfileJson = null,
+};
+```
+
+`parseFromSlice` with `ignore_unknown_fields = true` (line 479)
+silently DROPS every other key. So `profiles_models: { "900ribu":
+{...} }` became `profiles_models: {}` after load. The NalarSettings UI
+lets the user name their profiles anything — every name other than
+`profile1`..`profile4` was broken.
+
+**Fix (surgical).** Replace the hardcoded schema with a `json.Value`
+reparse + key iterator — the same pattern the existing `mcp_servers`
+parser (Config.zig:441-469) already uses for its arbitrary-key object.
+The `ProfilesModelsJson` struct is deleted (no remaining references).
+Cost: 1 extra alloc + 1 extra parse per profile — negligible for
+typical 1-5 profiles.
+
+**Verification (TDD).**
+
+- RED: 3 new tests in `config_test.zig` fail on pre-fix code:
+  `profiles_models: arbitrary name 'alpha' is loaded`,
+  `numeric prefix name '900ribu' is loaded`, `multiple arbitrary names all loaded`.
+- GREEN: after the fix all 5 new tests pass. Total `zig build test`
+  is **2302/2312 pass / 6 skip / 4 fail** — the 4 failures are the
+  documented pre-existing baseline (`llm_history_tool_call_loading_test`
+  × 3 + `show_preview_test` × 1), unrelated to this change. Zero new
+  regressions.
+
+**Live smoke.** Restart nalar on port 8082 (don't kill 8081 — the user's
+instance), POST `/api/llm/session` with `selected_profile_model:
+900ribu`. Pre-fix log shows the "not found" warning; post-fix log
+shows `[CHECKPOINT] loop iter start session_id=user-900ribu
+loop_counter=0 retry_count=0 effective_model=user-actual-model` with
+zero "not found" warnings. The user's profile name resolves to the
+profile's model correctly.
+
+**Cross-compile smoke.** `zig build-obj -fno-emit-bin -target
+x86_64-windows-gnu` and `-target aarch64-macos` both clean (no errors).
+The fix only changes parsing logic — no platform-specific code.
+
+**Why this slipped past previous tests.** The existing
+`active_profile` plan (commit `328eabf6` in worktree `change-profile-bug`)
+added `active_profile` field round-trip and `resolveProfileField`
+cascade. Its tests covered `active_profile` reads + the cascade helper,
+but nobody wrote a test for `profiles_models` *loading* user-named
+keys — because the pre-existing schema silently dropped them, and the
+existing tests only used the keys `profile1`..`profile4` that the
+hardcoded schema accepted.
+
+**Files.** 2 modified + 1 new memory + 1 new plan.
+
+- `src/modules/config/Config.zig` — replaced hardcoded schema with json.Value iterator
+- `src/modules/config/config_test.zig` — +5 behavioural tests
+- `.nalar/memories/profile-not-effective-on-demand-2026-08-06.md` (new)
+- `docs/superpowers/plans/2026-08-06-config-profiles-arbitrary-keys.md` (new)
+
+No DB / migration / wire changes. Branch: `worktree/investigate-profile-bug`.
+
+### 2026-08-06: Migration runner — silent startup (task_1785961970151)
+
+**Symptom (user report, with screenshot).** First-time nalar startup
+spammed stdout with 69 `Running migration: <name> (version N)` lines
+plus a final `Current schema version: 0` line — visually noise-heavy
+and dominated the entire terminal scrollback. User asked: *"remove
+verbose log"*.
+
+**What landed (2 lines removed).** `MigrationManager.runMigrations`
+(`src/migrations/migration.zig:1592-1606`) had two `std.debug.print`
+calls — one for the current schema version, one per migration that
+actually ran. Both removed. The migration runner still executes all
+69 migrations + writes the `schema_migrations` row for each — the
+behaviour is identical, only the chatty stdout is gone.
+
+```diff
+ const currentVersion = self.getCurrentVersion();
+-std.debug.print("Current schema version: {d}\n", .{currentVersion});
+
+ for (self.migrations.items) |migration| {
+     if (migration.version > currentVersion) {
+-        std.debug.print("Running migration: {s} (version {d})\n", .{ migration.name, migration.version });
+         try migration.up(self.db, self.allocator);
+```
+
+**Verification.**
+
+- `zig build test --summary all` — 2297/2307 pass, 6 skip, 4 fail, 18 leaks.
+  The 4 fails + 18 leaks are PRE-EXISTING baseline from `inserLLMHistories`
+  (commit `20d061c6` regression, documented in AGENTS.md).
+  **Zero new failures** from this change.
+- `zig build-obj -fno-emit-bin -target x86_64-windows-gnu` — clean.
+- `zig build-obj -fno-emit-bin -target aarch64-macos` — clean.
+- Fresh `$HOME` smoke (`./zig-out/bin/nalar --port 8090 --static-dir /tmp`):
+  stdout is now 5 lines (HOME path, config-created warning, missing-api-key
+  warning, "Agent is ready to serve!"). No migration lines.
+
+**Why `std.debug.print` is the right primitive to remove.** The migration
+runner fires once per `nalar` startup on a fresh DB — it's not a
+per-request log path, and there are no callers that capture stdout.
+The `std.debug.print` calls were pure stdout noise. If we ever need a
+verbose mode (e.g. `nalar --verbose-migrations`), the right primitive
+is a `verbose: bool` parameter on `runMigrations` that gates the same
+two prints — left out for now because nothing in the codebase asks
+for it.
+
+**Why NOT add a single summary line.** The "single line" pattern
+("Applied 69 migrations in 12ms") would be a UX regression — it's
+still stdout noise on every startup, and the user explicitly asked
+to remove the verbose log. Silent migrations are the right default;
+debug info belongs in a logger (out of scope for this commit).
+
+### 2026-08-06: Sidebar task click — URL no longer clobbered to `view=workspace` (task_1785959660154)
+
+**Symptom (user report, with DevTools screenshot):** clicking a task in the sidebar tree did not navigate to the task view. URL bar stayed at `?view=workspace&workspaceId=X&itemId=Y` instead of becoming `?view=task&task=Z&workspaceId=X&itemId=Y`. The user's console showed `buildTaskUrlQuery` correctly emitting `{ view: 'task', task, workspaceId, itemId }` — so the URL was *built* right, but the browser's URL was *applied* wrong.
+
+**Root cause.** Three-way race between `setActiveTask`, `router.push`, and the AppLayout URL sync watcher:
+1. `Sidebar.handleSelectTask` calls `workspacesStore.setActiveTask(taskId)`.
+2. `setActiveTask` synchronously mutates `activeWorkspaceItemId` to the task's parent item via the parent-discovery loop in `workspaces.ts:3031-3107`.
+3. `handleSelectTask` then calls `router.push({ view: 'task', task, workspaceId, itemId })`.
+4. Vue Router resolves the push asynchronously (the route ref updates after the navigation guard / scroll / etc.).
+5. The AppLayout URL sync watcher at `AppLayout.vue:241` watches `[activeWorkspaceItemId, activeDesignPageId]` and fires on the next microtask after step 2 — BEFORE Vue Router has applied the URL change.
+6. The watcher reads `route.query.view` which is still the OLD view (typically `'workspace'`), passes the existing guard `if (currentView !== 'workspace' && currentView !== undefined) return`, and calls `router.replace({ view: 'workspace', workspaceId, itemId, ... })` — clobbering the URL.
+7. Vue Router's `replace` semantics overwrite the push's history entry — the URL ends up at `view=workspace`. The task never shows up.
+
+**Fix (two changes):**
+
+1. **`workspaces.ts:472-481` + `AppLayout.vue:241`** — new `isNavigatingToTask` ref in the workspaces store. The URL sync watcher returns early when the flag is set, closing the race window between `setActiveTask`'s synchronous store mutation and Vue Router's asynchronous URL update.
+
+2. **`Sidebar.vue:864` (handleSelectTask)** — now:
+   - Sets `isNavigatingToTask = true` BEFORE `setActiveTask` (so the watcher returns early when it fires after the store mutation).
+   - `await router.push(...)` so Vue Router updates the route ref BEFORE the `finally` clears the flag. Without `await`, the watcher could still fire with stale `route.query`.
+   - Wraps block in `try/finally` so the flag clears even if the push throws.
+
+**Why the flag is the right primitive.**
+- A `route.query.task` check would NOT work — the race is between the store mutation (sync) and Vue Router's URL update (async). At the moment the watcher fires, `route.query.task` is still undefined because the push hasn't applied yet.
+- Removing the parent discovery from `setActiveTask` would break the active workspace item mirror (the kanban view wouldn't show the new kanban).
+- The flag is the surgical, minimum-blast-radius fix that doesn't change the store's behaviour or the URL contract.
+
+**Tests (3 new, all green).**
+
+- `src/apps/desktop/src/__tests__/AppLayout.taskClickUrlOverwrite.spec.ts`:
+  - `clicking a task under the SAME active folder does not clobber the task URL (regression)` — the happy path (no `activeWorkspaceItemId` change).
+  - `clicking a task under a DIFFERENT workspace item does not clobber the task URL (regression)` — **the bug repro**. Sets `isNavigatingToTask = true` before mutating the store, mimicking Sidebar's flow.
+  - `URL sync watcher DOES overwrite when navigation flag is NOT set (regression-guard)` — confirms the flag is the only guard (no flag → URL gets synced normally, matching pre-fix behaviour).
+- Existing `src/__tests__/sidebarHandleSelectTaskUrl.spec.ts` (8 tests pass) — Sidebar is invoked with the flag automatically through the production code path.
+
+**Verification.**
+
+- `bun run build` → vue-tsc clean, vite build OK.
+- `bunx vitest run src/__tests__/AppLayout.taskClickUrlOverwrite.spec.ts` → 3/3 pass.
+- `bunx vitest run` (full suite) → **2003 pass / 14 fail** — the 14 are PRE-EXISTING on `main` (matches the documented baseline in AGENTS.md: `DesignView.undoHidden ×5`, `AppLayout.urlPersist ×7`, `sidebarKanbanSortUrl ×2` etc.). Zero regressions from this fix.
+
+**Branch / commit.** `main @ e0ac2139`. Worktree `worktree/fix-task-url-overwrite` (kept for rebase / follow-up).
+
+**Out of scope (deferred).**
+
+- Mid-stream cancellation in `Agent.zig::callStreaming` (cancel only fires at iteration boundaries today).
+- SSE disconnect-diagnosis refinement (the recent `classifyDisconnectSuspect` PR is unrelated to this bug).
+- Replacing the flag with a `markRaw`-based race-condition guard (Vue 3 doesn't have a clean primitive for this; the flag is the idiomatic workaround).
+
+**Pitfalls (record for future agents).**
+
+- The `await router.push(...)` is NOT optional even with the flag set. The flag closes the *store-vs-watcher* race, but the `await` ensures the *router-vs-watcher* race is also closed (the watcher re-fires when `route.query` changes after the push resolves).
+- The watcher read `route.query.view` SYNCHRONOUSLY at fire time — no `await` on the route ref. Without `await`, the watcher fires with stale `route.query.view` (the OLD view before the push). This is the subtle bug the `await` closes.
+- `finally` is critical — if the push throws (e.g. navigation guard rejects), the flag must still clear so subsequent navigations work.
+
 ### 2026-08-06: `design_model.deletePage` derives on-disk page directory from `design_page_elements.file_path` (no JOIN to `workspace_items`)
 
 **Symptom (user report, task `task_1785957229448`).** User: *"do not delete form workspace items, when deleting, do not get from workspace items table, but from design_pages_element instead, change this code"*.

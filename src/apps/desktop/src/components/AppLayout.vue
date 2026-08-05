@@ -243,9 +243,42 @@ watch(
   ([itemId, pageId]) => {
     const wsId = workspacesStore.activeWorkspace?.id ?? ''
     const currentView = route.query.view as string | undefined
+    // FIX (task-url-overwrite, task_1785959660154, 2026-08-06):
+    // The URL sync watcher must NOT fire while Sidebar is in the
+    // middle of a task navigation. The race that broke this:
+    // Sidebar.handleSelectTask calls
+    // workspacesStore.setActiveTask(taskId) (which synchronously
+    // mutates activeWorkspaceItemId to the task's parent item via
+    // the parent-discovery loop in workspaces.ts:3031-3107) and then
+    // calls router.push({ view: 'task', task, workspaceId, itemId }).
+    // Vue Router resolves the push asynchronously (the route ref
+    // updates after the navigation guard / scroll / etc.). This
+    // watcher fires on the next microtask after the store mutation —
+    // BEFORE Vue Router has applied the URL change. At that moment
+    // route.query.view is still the OLD view (typically
+    // 'workspace'), the existing guard
+    // `if (currentView !== 'workspace' && currentView !== undefined) return`
+    // does NOT return early, and the watcher clobbers the URL with
+    // `router.replace({ view: 'workspace', workspaceId, itemId, ... })`.
+    // The pending `router.push({ view: 'task', ... })` is then
+    // applied AFTER the replace, but Vue Router's `replace`
+    // semantics overwrite the push's history entry — the URL ends
+    // up at view=workspace and the task never shows up.
+    //
+    // User report (task_1785959660154): "select task not show up
+    // ... buildTaskUrlQuery view is task, but the url browser
+    // still using view workspace".
+    //
+    // The fix: a `isNavigatingToTask` ref is set true at the start
+    // of Sidebar.handleSelectTask and cleared after the URL update
+    // completes. The watcher returns early when the flag is set,
+    // so the race window is closed. The flag is stored in the
+    // workspaces store (the natural home for cross-component view
+    // state).
+    if (workspacesStore.isNavigatingToTask) return
     // Only sync when we're on the workspace view — all other views
     // (chat, task, settings, gitfile, skill, code-editor) have their
-    // own URL contract and should not be overwritten.
+    // own URL contract and should be preserved.
     if (currentView !== 'workspace' && currentView !== undefined) return
     const urlWsId = route.query.workspaceId as string | undefined
     const urlItemId = route.query.itemId as string | undefined
