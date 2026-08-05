@@ -34,5 +34,6 @@ test {
     _ = @import("migration_067_test.zig");  // workspace_item_tasks.tags (kanban task tags, Task 1)
     _ = @import("migration_068_test.zig");  // llm_history.is_loading + UNIQUE INDEX on tool_call_id (tool-call-loading-placeholder plan)
     _ = @import("migration_069_test.zig");  // workspace_item_tasks.image_urls (kanban-image-urls-column plan, 2026-08-06)
+    _ = @import("migration_070_test.zig");  // agent_memories + agent_memories_fts FTS5 (save-load-memory-fts5 plan, 2026-08-06)
     _ = @import("../ai_workflow/tui/migration_057_test.zig");  // v6 design element properties — kept at old path on this branch
 }

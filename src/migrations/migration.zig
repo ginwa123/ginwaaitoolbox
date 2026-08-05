@@ -1815,6 +1815,10 @@ pub const allMigrations: []const Migration = &.{
     // images or base 64 in kanban description, after create a task or
     // run aent").
     .{ .version = Migration069AddTaskImageUrls.version, .name = Migration069AddTaskImageUrls.name, .up = Migration069AddTaskImageUrls.up },
+    // Migration 070 — agent_memories table + agent_memories_fts FTS5 +
+    // 3 sync triggers. Backs the save_memory + load_memory agent tools
+    // (Task task_1785958319567, plan 2026-08-06-save-load-memory-fts5).
+    .{ .version = Migration070AddAgentMemories.version, .name = Migration070AddAgentMemories.name, .up = Migration070AddAgentMemories.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -2707,5 +2711,131 @@ pub const Migration069AddTaskImageUrls = struct {
             "image_urls",
             "image_urls TEXT NOT NULL DEFAULT ''",
         );
+    }
+};
+
+// ============================================================================
+// Migration 070 — `agent_memories` + `agent_memories_fts` for save_memory /
+// load_memory tools
+// ============================================================================
+//
+// What this migration creates
+// ────────────────────────────
+// The `save_memory` + `load_memory` agent tools (Task
+// `task_1785958319567`, plan `2026-08-06-save-load-memory-fts5`) need a
+// dedicated SQLite table + FTS5 index for short, structured notes that
+// the agent can save on demand and recall via free-text search. This
+// migration creates:
+//
+//   1. `agent_memories` — the source table
+//      (id TEXT PK, content TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '',
+//       created_at/updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)
+//   2. `agent_memories_fts` — a non-external-content FTS5 virtual table
+//      over `content` + `tags` (porter+unicode61 tokenizer)
+//   3. 3 sync triggers (INSERT/DELETE/UPDATE) that mirror source-table
+//      mutations into the FTS5 index
+//   4. An index on `updated_at DESC` for the future "most-recent
+//      memories" UI surface (not used by v1 tools)
+//   5. A backfill INSERT that no-ops on a fresh DB
+//
+// Why non-external-content
+// ─────────────────────────
+// `snippet()` returns NULL for external-content FTS5 tables. The
+// `load_memory` tool needs snippets to render compact `<snippet>` blocks
+// (10 tokens with `[match]` markers — see `load_memory.zig::successXml`).
+// Duplicating content costs ~2x storage but enables the only UX feature
+// that matters here. This matches the existing `messages_fts` pattern
+// (Migration 058 — see `migration.zig:1511` for the rationale).
+//
+// Tags as `||`-joined string
+// ───────────────────────────
+// Matches the project's convention for string-list columns
+// (`workspace_item_tasks.tags` from Migration 067,
+// `workspace_item_tasks.image_urls` from Migration 069). The frontend
+// parses with `s.split('|').filter(Boolean)` — no JSON overhead at the
+// SQL layer. The FTS5 tokenizer splits on `|` like any non-word char.
+//
+// No DELETE tool — UPSERT replaces
+// ────────────────────────────────
+// The `save_memory` tool uses INSERT-or-UPDATE (UPSERT) to overwrite
+// existing memories with the same `id`. There is no `delete_memory`
+// tool by user decision ("memory never can be deleted"). The DELETE
+// trigger is still installed for completeness — if a future plan adds a
+// delete affordance or a DB cleanup migration, the FTS5 index stays in
+// sync automatically.
+//
+// Plan: docs/superpowers/plans/2026-08-06-save-load-memory-fts5.md
+// Task: task_1785958319567
+pub const Migration070AddAgentMemories = struct {
+    pub const version: u32 = 70;
+    pub const name = "add_agent_memories";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // 1. Source table. `tags` is the canonical "no tags" sentinel
+        //    ('') — matches `description` / `tags` / `image_urls`
+        //    conventions from Migrations 062 / 067 / 069.
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agent_memories (
+            \\    id TEXT PRIMARY KEY,
+            \\    content TEXT NOT NULL,
+            \\    tags TEXT NOT NULL DEFAULT '',
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            \\)
+        , &[_][]const u8{});
+
+        // 2. updated_at index for future "recent memories" surfaces. The
+        //    v1 `load_memory` tool orders by FTS5 rank (not by
+        //    updated_at), but the index is cheap and unblocks future
+        //    listing UIs without another migration.
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_memories_updated " ++
+                "ON agent_memories(updated_at DESC)",
+            &[_][]const u8{});
+
+        // 3. FTS5 virtual table. NON-external-content so `snippet()`
+        //    works. Same porter+unicode61+remove_diacritics tokenizer
+        //    as `messages_fts` (Migration 058) so the two FTS5 indices
+        //    behave identically for the LLM.
+        try db.exec(allocator,
+            \\CREATE VIRTUAL TABLE IF NOT EXISTS agent_memories_fts USING fts5(
+            \\    content,
+            \\    tags,
+            \\    tokenize='porter unicode61 remove_diacritics 2'
+            \\)
+        , &[_][]const u8{});
+
+        // 4. Sync triggers — same pattern as Migration 058. Plain
+        //    DELETE FROM / INSERT INTO (NOT the special
+        //    `INSERT INTO <fts>(<fts>, rowid, ...) VALUES('delete', ...)`
+        //    form, which is reserved for external-content tables).
+        try db.exec(allocator,
+            \\CREATE TRIGGER IF NOT EXISTS agent_memories_ai AFTER INSERT ON agent_memories BEGIN
+            \\  INSERT INTO agent_memories_fts(rowid, content, tags)
+            \\  VALUES (new.rowid, new.content, new.tags);
+            \\END
+        , &[_][]const u8{});
+
+        try db.exec(allocator,
+            \\CREATE TRIGGER IF NOT EXISTS agent_memories_ad AFTER DELETE ON agent_memories BEGIN
+            \\  DELETE FROM agent_memories_fts WHERE rowid = old.rowid;
+            \\END
+        , &[_][]const u8{});
+
+        try db.exec(allocator,
+            \\CREATE TRIGGER IF NOT EXISTS agent_memories_au AFTER UPDATE ON agent_memories BEGIN
+            \\  DELETE FROM agent_memories_fts WHERE rowid = old.rowid;
+            \\  INSERT INTO agent_memories_fts(rowid, content, tags)
+            \\  VALUES (new.rowid, new.content, new.tags);
+            \\END
+        , &[_][]const u8{});
+
+        // 5. Backfill. On a fresh DB this is a no-op (zero rows). On an
+        //    existing DB that somehow has rows without FTS5 coverage
+        //    (shouldn't happen, but defensive), this catches them up.
+        try db.exec(allocator,
+            \\INSERT INTO agent_memories_fts(rowid, content, tags)
+            \\SELECT rowid, content, tags FROM agent_memories
+        , &[_][]const u8{});
     }
 };
