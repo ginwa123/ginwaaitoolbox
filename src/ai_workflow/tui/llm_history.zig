@@ -3820,6 +3820,15 @@ pub const WorkspaceItemTaskInfo = struct {
     /// docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md
     image_urls: []u8 = &.{},
 
+    /// Per-task cwd override (Migration 070). Each kanban task can
+    /// carry its own cwd path; the session_create handler reads
+    /// `task.cwd` before falling back to `workspace_items.path` and
+    /// the per-session sandbox. Empty string is the canonical "no
+    /// per-task cwd" sentinel — column is NOT NULL DEFAULT ''.
+    /// Owned by the lister; freed by `deinit`. Plan:
+    /// docs/superpowers/plans/2026-08-06-kanban-cwd-session-optional.md
+    cwd: []u8 = &.{},
+
     /// Joined from `sessions.git_worktree_cwd` (Migration 046).
     /// Empty string when no session row exists or no worktree is
     /// bound. Owned by the lister; freed by `deinit`. Used by
@@ -3858,6 +3867,7 @@ pub const WorkspaceItemTaskInfo = struct {
         if (self.last_finish_reason.len > 0) allocator.free(self.last_finish_reason);
         if (self.tags.len > 0) allocator.free(self.tags);
         if (self.image_urls.len > 0) allocator.free(self.image_urls);
+        if (self.cwd.len > 0) allocator.free(self.cwd);
         if (self.git_worktree_cwd.len > 0) allocator.free(self.git_worktree_cwd);
         if (self.git_branch) |gb| allocator.free(gb);
     }
@@ -3920,6 +3930,15 @@ pub fn createWorkspaceItemTask(
     /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md
     tags: ?[]const u8,
     image_urls: ?[]const u8,
+    /// Per-task cwd override (Migration 070 — kanban-cwd-session-
+    /// optional plan, 2026-08-06). Null = no cwd supplied (column
+    /// omitted from INSERT, DEFAULT '' applies, row is cwd-less);
+    /// empty slice = SQL '' literal which stores '' (the canonical
+    /// "no per-task cwd" sentinel, matches the description /
+    /// tags / image_urls pattern); non-empty slice = absolute path
+    /// on disk that becomes the cwd for this task's chat sessions
+    /// (overrides the kanban-level path + the per-session sandbox).
+    cwd: ?[]const u8,
 ) !WorkspaceItemTaskInfo {
     if (!std.mem.eql(u8, task_type, "standard") and !std.mem.eql(u8, task_type, "routine")) {
         return error.InvalidTaskType;
@@ -3958,6 +3977,7 @@ pub fn createWorkspaceItemTask(
     const returned_desc: []const u8 = description orelse "";
     const returned_tags: []const u8 = tags orelse "";
     const returned_image_urls: []const u8 = image_urls orelse "";
+    const returned_cwd: []const u8 = cwd orelse "";
     {
         var cols_buf: std.ArrayList(u8) = .empty;
         defer cols_buf.deinit(allocator);
@@ -4015,6 +4035,26 @@ pub fn createWorkspaceItemTask(
             }
         }
 
+        // Migration 070 — same dynamic-SQL builder pattern for the
+        // per-task cwd override. The raw path string is opaque to
+        // the DB (TEXT), so we just bind it as a single slice.
+        // Empty string is the canonical "no per-task cwd" sentinel —
+        // SQL '' literal (NOT NULL DEFAULT ''). Same bind-safety
+        // caveat as description / tags / image_urls: empty slice
+        // binds as NULL via `?`, but the column is NOT NULL, so we
+        // must use the SQL '' literal branch for the empty-string
+        // case.
+        if (cwd) |c| {
+            if (c.len == 0) {
+                try cols_buf.appendSlice(allocator, ", cwd");
+                try vals_buf.appendSlice(allocator, ", ''");
+            } else {
+                try cols_buf.appendSlice(allocator, ", cwd");
+                try vals_buf.appendSlice(allocator, ", ?");
+                try bind_values.append(allocator, c);
+            }
+        }
+
         var sql_buf: std.ArrayList(u8) = .empty;
         defer sql_buf.deinit(allocator);
         try sql_buf.print(
@@ -4042,6 +4082,12 @@ pub fn createWorkspaceItemTask(
         // Migration 069 — persist image_urls we just INSERTed. dupe
         // unconditionally so `deinit` can free consistently.
         .image_urls = try allocator.dupe(u8, returned_image_urls),
+        // Migration 070 — persist the per-task cwd we just
+        // INSERTed. dupe unconditionally so `deinit` can free
+        // consistently (the empty-string path also gets duped — a
+        // 0-byte allocation, freed via `free('cwd')` which is a
+        // no-op for length-0 slices per std.mem.Allocator).
+        .cwd = try allocator.dupe(u8, returned_cwd),
     };
 }
 
@@ -4498,7 +4544,7 @@ pub fn listWorkspaceItemTasksWithCursor(
         // passthrough column at index 21:
         //   21: t.tags — JSON-encode array string ('' when no tags).
         //       NOT NULL DEFAULT '' so always present.
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at IS NULL OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, '') FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at IS NULL OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
         .{ cursor_clause, column_id_clause, q_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -4536,7 +4582,8 @@ pub fn listWorkspaceItemTasksWithCursor(
         // Row indices (post-Migration-063-attended-toggle JOIN,
         // post-Migration-065-notification-icon JOIN,
         // post-Migration-067-tags,
-        // post-kanban-task-git-branch plan 2026-08-06):
+        // post-kanban-task-git-branch plan 2026-08-06,
+        // post-Migration-070-cwd):
         //   0: id, 1: name, 2: workspace_item_id, 3: description,
         //   4: created_at, 5: updated_at, 6: task_type,
         //   7: is_pinned, 8: pinned_position, 9: kanban_column_id,
@@ -4547,6 +4594,9 @@ pub fn listWorkspaceItemTasksWithCursor(
         //   21: tags (Migration 067 — JSON-encode array string),
         //   22: git_worktree_cwd (Migration 046 — joined from sessions).
         //       COALESCE'd to '' when no session row exists.
+        //   23: cwd (Migration 070 — per-task cwd override). NOT NULL
+        //       DEFAULT '' so always present; empty string is the
+        //       "no per-task cwd" sentinel.
         const task_type = if (row.values[6].len > 0)
             try allocator.dupe(u8, row.values[6])
         else
@@ -4599,6 +4649,11 @@ pub fn listWorkspaceItemTasksWithCursor(
             // to '' in the SQL when no session row exists. Empty string
             // is the canonical "no worktree" sentinel.
             .git_worktree_cwd = try allocator.dupe(u8, row.values[22]),
+            // Per-task cwd (Migration 070): index 23. NOT NULL
+            // DEFAULT '' so always present; empty string is the
+            // "no per-task cwd" sentinel that the session_create
+            // handler reads as "fall back to kanban-level path".
+            .cwd = try allocator.dupe(u8, row.values[23]),
         };
         try tasks.append(allocator, task);
         row.deinit(allocator);
@@ -4794,7 +4849,8 @@ fn setupDbWithTagsForKanban() !struct { db: sqlite.SqliteBackend, threaded: std.
         \\  id TEXT PRIMARY KEY,
         \\  workspace_item_id TEXT NOT NULL,
         \\  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        \\  tags TEXT NOT NULL DEFAULT ''
+        \\  tags TEXT NOT NULL DEFAULT '',
+        \\  cwd TEXT NOT NULL DEFAULT ''
         \\)
     , &.{});
     try db.exec(alloc, "INSERT INTO workspace_items (id, workspace_id) VALUES ('item_x', 'ws_x')", &.{});
@@ -5023,7 +5079,8 @@ fn setupDb() !TestCtx {
         \\    kanban_column_id TEXT,
         \\    kanban_position INTEGER DEFAULT 0,
         \\    last_human_touched_at INTEGER,
-        \\    tags TEXT NOT NULL DEFAULT ''
+        \\    tags TEXT NOT NULL DEFAULT '',
+        \\    cwd TEXT NOT NULL DEFAULT ''
         \\)
     , &.{});
     try db.exec(alloc,

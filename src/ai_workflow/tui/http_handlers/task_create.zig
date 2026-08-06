@@ -86,6 +86,16 @@ pub const TaskCreateError = error{
     // check (InvalidImageUrls → 400). See image_urls_validation.zig.
     InvalidImageUrls,
     ImageUrlsTooLarge,
+    // 400 — per-task cwd validation (Migration 070). Either:
+    //   - the path exceeds 4 KiB (CwdTooLong → 400)
+    //   - the path is not absolute (CwdNotAbsolute → 400)
+    //   - the path contains a control character (CwdContainsControlChar → 400)
+    // Existence of the path is NOT validated here — that's an
+    // OS-level concern surfaced by the agent's first cwd-using
+    // tool call. See session_create.zig's 3-level fallback chain.
+    CwdTooLong,
+    CwdNotAbsolute,
+    CwdContainsControlChar,
     // Underlying I/O / alloc errors (required by the type system
     // even though they're unreachable on the per-request arena)
     OutOfMemory,
@@ -135,6 +145,15 @@ pub const StandardResult = struct {
     /// the arena reaper on request teardown (matches the lifetime
     /// pattern of the other borrowed slices in StandardResult).
     tags: []const u8 = "",
+    /// Per-task cwd (Migration 070 — kanban-cwd-session-optional
+    /// plan, 2026-08-06). Borrowed from the per-request arena
+    /// (validated above). Mirrors what we just INSERTed into the
+    /// `cwd` column. Frontend's KanbanView reads this on the
+    /// subsequent `getTasks` to populate `task.cwd` for the
+    /// session_create 3-level fallback chain (per-task cwd →
+    /// kanban path → sandbox). Empty string is the canonical
+    /// "no per-task cwd" sentinel.
+    cwd: []const u8 = "",
 };
 
 // Typed response structs. Serialized via std.json.Stringify.valueAlloc
@@ -185,6 +204,11 @@ const StandardResponse = struct {
     /// task tags feature). Empty string means the task has no
     /// tags. Plan: docs/superpowers/plans/2026-07-28-kanban-task-tags.md
     tags: []const u8 = "",
+    /// Per-task cwd override (Migration 070). Empty string means
+    /// the task has no per-task cwd (falls back to kanban-level
+    /// path + sandbox). Plan: docs/superpowers/plans/2026-08-06-
+    /// kanban-cwd-session-optional.md
+    cwd: []const u8 = "",
     created_at: ?[]const u8 = null,
     updated_at: ?[]const u8 = null,
 };
@@ -385,6 +409,31 @@ fn createStandardTask(
         error.InvalidImageUrl => error.InvalidImageUrls,
     };
 
+    // Validate the per-task cwd payload (Migration 070). The wire
+    // format is an absolute path string from the FilePickerDialog
+    // (or empty / null for cwd-less). Validation is intentionally
+    // minimal: the OS-level cwd check happens at agent-run time
+    // (the session_create sandbox-create path + every tool's spawn
+    // call would surface a nonexistent dir as a 500 to the user).
+    // Here we just trim + reject control chars + cap at 4 KiB to
+    // bound memory + reject relative paths to avoid surprising the
+    // user with a "cd to nowhere" first turn.
+    const validated_cwd = blk: {
+        const raw = input.body.cwd orelse "";
+        if (raw.len == 0) break :blk raw;
+        if (raw.len > 4096) return error.CwdTooLong;
+        // Must start with '/' (absolute path). Frontend's
+        // FilePickerDialog only emits absolute paths; this guard
+        // protects against a misbehaving API client (curl, etc.).
+        if (raw[0] != '/') return error.CwdNotAbsolute;
+        // Reject any control characters (\x00..\x1f or \x7f). Paths
+        // with embedded NULs would crash std.fs.path.join downstream.
+        for (raw) |c| {
+            if (c < 0x20 or c == 0x7f) return error.CwdContainsControlChar;
+        }
+        break :blk raw;
+    };
+
     const task = ai_mod.workspace_item_tasks.createWorkspaceItemTask(
         allocator,
         db,
@@ -397,6 +446,16 @@ fn createStandardTask(
         // Migration 069 — image_urls. Borrowed from the per-request
         // arena (validated above). Pass through verbatim.
         validated_image_urls,
+        // Migration 070 — per-task cwd override. Borrowed from the
+        // per-request arena (validated above). Pass through verbatim.
+        // When null the column is omitted from the INSERT and DEFAULT
+        // '' applies (cwd-less task). Empty string serializes as the
+        // SQL '' literal (canonical "no per-task cwd" sentinel). A
+        // non-empty path becomes the cwd for this task's chat
+        // sessions, overriding the kanban-level path + sandbox
+        // fallback chain in session_create.zig::useCase. Plan:
+        // docs/superpowers/plans/2026-08-06-kanban-cwd-session-optional.md
+        validated_cwd,
     ) catch return error.StandardTaskCreateFailed;
 
     // Chunk 5 of kanban-task-notification-icon: creating a card is
@@ -551,6 +610,10 @@ fn createStandardTask(
         // Migration 067 — kanban task tags. Borrowed from the
         // per-request arena; the arena reaps it on request teardown.
         .tags = validated_tags,
+        // Migration 070 — per-task cwd override. Borrowed from the
+        // per-request arena (validated above). Mirrors what we just
+        // INSERTed into the `cwd` column.
+        .cwd = validated_cwd,
     };
 }
 
@@ -635,6 +698,9 @@ pub fn tasksCreateHandler(
             error.InvalidTags => 400,
             error.InvalidImageUrls => 400,
             error.ImageUrlsTooLarge => 413,
+            error.CwdTooLong,
+            error.CwdNotAbsolute,
+            error.CwdContainsControlChar => 400,
             error.MemoryNameRequired, error.InvalidMemoryName,
             error.MemoryContentRequired => 400,
             error.WorkspaceItemNotFound => 404,
@@ -655,6 +721,9 @@ pub fn tasksCreateHandler(
             error.InvalidTags => "tags must be non-empty, ≤50 chars, and contain only letters, digits, hyphens, and underscores",
             error.InvalidImageUrls => "image_urls must be `||`-delimited data:image/<mime>;base64,... URLs",
             error.ImageUrlsTooLarge => "image_urls payload too large (max 10 MB)",
+            error.CwdTooLong => "cwd path too long (max 4 KiB)",
+            error.CwdNotAbsolute => "cwd must be an absolute path",
+            error.CwdContainsControlChar => "cwd contains a control character",
             error.MemoryNameRequired => "memory_name is required for memory tasks",
             error.InvalidMemoryName => "Invalid memory name (must end in .md, no /, no ..)",
             error.MemoryContentRequired => "memory_content is required for memory tasks",
@@ -725,6 +794,12 @@ pub fn tasksCreateHandler(
                     // valueAlloc copies it into the response JSON,
                     // so no use-after-free.
                     .tags = r.tags,
+                    // Migration 070 — per-task cwd override. Same
+                    // borrowed-slice lifetime as `r.tags` (per-
+                    // request arena, reaped on request teardown;
+                    // valueAlloc copies it into the response JSON,
+                    // so no use-after-free).
+                    .cwd = r.cwd,
                 },
                 .{},
             ),

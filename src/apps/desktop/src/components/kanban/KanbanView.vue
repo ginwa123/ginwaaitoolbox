@@ -823,6 +823,13 @@ const handleCreateTaskSave = async (payload: {
   //   - chatview still renders thumbnails (from message.image_urls)
   // Empty array (not undefined) when no images were attached.
   pendingFiles?: PreviewFile[]
+  // NEW (Migration 070 — kanban-cwd-session-optional plan).
+  // Per-task cwd override. The dialog's folder picker populates
+  // this field; skipped / picker-canceled leaves it as '' (the
+  // canonical "no per-task cwd" sentinel — backend stores '' and
+  // the session_create 3-level fallback chain falls back to the
+  // kanban-level path + the per-session sandbox).
+  cwdSession?: string
 }) => {
   if (!activeCreateColumnId.value) return
   createBusy.value = true
@@ -842,6 +849,13 @@ const handleCreateTaskSave = async (payload: {
       // KanbanTagsInput has already validated + deduped). The store
       // + api layer JSON-encode + send; backend persists.
       tags: payload.tags,
+      // Migration 070 — forward the per-task cwd override from
+      // the dialog. The store + api layer pass it through to
+      // workspaces_item_tasks.cwd on the wire. Empty string is
+      // the canonical "no per-task cwd" sentinel (backend stores
+      // '' and the session_create 3-level fallback chain handles
+      // the resolution).
+      cwd: payload.cwdSession,
     })
     if (!taskId) {
       createError.value = 'Failed to create task — please retry.'
@@ -945,7 +959,18 @@ const handleCreateTaskSave = async (payload: {
         taskId,
         {
           queueMessage,
-          cwd: props.item.path || '',
+          // NEW (Migration 070 — kanban-cwd-session-optional plan).
+          // 3-level cwd resolution chain:
+          //   1. payload.cwdSession (per-task — user picked in dialog)
+          //   2. props.item.path     (kanban-level fallback)
+          //   3. ''                  (backend sandbox fallback)
+          // The backend re-derives this chain defensively in
+          // session_create.zig::useCase, but the frontend's
+          // resolution is the primary contract.
+          cwd:
+            payload.cwdSession ||
+            props.item.path ||
+            '',
           isAutoRetryUntilStop: payload.is_auto_retry_until_stop,
           // NEW (plan: 2026-08-06-kanban-task-profile-selector).
           // Empty/undefined defaults to '' (= backend default).

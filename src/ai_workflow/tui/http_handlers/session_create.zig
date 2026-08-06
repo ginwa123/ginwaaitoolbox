@@ -122,10 +122,46 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
 
     var effective_cwd: []const u8 = "";
     if (cwd_session.len > 0) {
+        // Explicit per-call override wins (the frontend's
+        // KanbanView threads the resolved cwd through to
+        // runAgentOnNewTask → api.sendChatMessage's cwdSession
+        // param. The frontend's resolution chain already covers
+        // per-task cwd → kanban path → '' — so an explicit value
+        // here means "the frontend already chose").
         effective_cwd = try alloc.dupe(u8, cwd_session);
     } else {
-        effective_cwd = createSandbox(alloc, io, environment, session_id) catch
-            environment.get("TMPDIR") orelse "/tmp";
+        // Server-side fallback (defense-in-depth). If the frontend
+        // sent cwd_session = '' but session_id matches an
+        // existing task, derive the cwd from the 3-level chain:
+        //   1. workspace_item_tasks.cwd     (Migration 070, per-task)
+        //   2. workspace_items.path         (kanban-level cwd)
+        //   3. createSandbox(...)             (per-session TMPDIR fallback)
+        // Used when the frontend is older / buggy / a non-Vue
+        // client (e.g. curl, LLM tool emit_run_agent). For the
+        // Vue path the frontend always sends cwd_session explicitly
+        // (potentially ''), so this branch mostly handles non-Vue
+        // call sites + re-emit safety.
+        if (parsed.session_id.len > 0) {
+            effective_cwd = resolveCwdFromTaskOrItem(
+                alloc,
+                di,
+                parsed.session_id,
+            ) catch |err| blk: {
+                std.log.warn(
+                    "session_create: cwd fallback lookup failed (non-fatal, falling back to sandbox): {s}",
+                    .{@errorName(err)},
+                );
+                break :blk createSandbox(alloc, io, environment, session_id) catch
+                    environment.get("TMPDIR") orelse "/tmp";
+            };
+            if (effective_cwd.len == 0) {
+                effective_cwd = createSandbox(alloc, io, environment, session_id) catch
+                    environment.get("TMPDIR") orelse "/tmp";
+            }
+        } else {
+            effective_cwd = createSandbox(alloc, io, environment, session_id) catch
+                environment.get("TMPDIR") orelse "/tmp";
+        }
     }
 
     var image_urls: []const u8 = "";
@@ -210,4 +246,51 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
         .is_auto_retry_until_stop = effective_auto_retry,
         .last_finish_reason = "",
     });
+}
+
+/// Server-side cwd fallback chain (Migration 070). Returns the
+/// first non-empty path in the chain:
+///   1. `workspace_item_tasks.cwd` (per-task override)
+///   2. `workspace_items.path` (kanban-level cwd)
+///   3. `""` (caller falls back to createSandbox)
+///
+/// Borrows slices from the per-request arena; safe to return because
+/// the arena reaps everything on request teardown. The returned slice
+/// is one of the SQL row values — the caller MUST NOT free it.
+///
+/// Returns `""` when the session_id has no matching task row
+/// (e.g. legacy sessions created before Migration 070) — caller is
+/// responsible for falling back to `createSandbox(...)` on empty.
+fn resolveCwdFromTaskOrItem(
+    alloc: std.mem.Allocator,
+    di: *nalarcore.ContextIPCTui,
+    session_id: []const u8,
+) ![]const u8 {
+    // Single JOIN'd query — cheaper than two separate SELECTs and
+    // avoids any race where the task exists but the parent item
+    // is gone (extremely unlikely; both columns have FK semantics).
+    var q = di.db.query(alloc,
+        \\SELECT t.cwd, wi.path
+        \\FROM workspace_item_tasks t
+        \\JOIN workspace_items wi ON wi.id = t.workspace_item_id
+        \\WHERE t.id = ?
+    , &.{session_id}) catch return "";
+    defer q.deinit();
+
+    const row = (q.next() catch return "") orelse return "";
+    defer row.deinit(alloc);
+
+    // The row has exactly 2 values: t.cwd (Migration 070), wi.path.
+    // Migration 070 made `t.cwd` NOT NULL DEFAULT '' so this is
+    // always a valid slice (possibly empty). `wi.path` is nullable
+    // in legacy schemas (Migration 033 added it as nullable; later
+    // migrations tightened it for kanban / design but NOT for
+    // other workspace_item subtypes) — guard with len > 0.
+    const task_cwd = row.values[0];
+    if (task_cwd.len > 0) return task_cwd;
+
+    const item_path = row.values[1];
+    if (item_path.len > 0) return item_path;
+
+    return "";
 }

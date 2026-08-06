@@ -3,21 +3,26 @@
 
   Two-input modal flow:
     1. User types a name in the name input
-    2. User clicks the "Choose folder..." button to open the
-       FilePickerDialog (modal 2, on top) and selects a project
-       root on disk
-    3. User clicks Add → emits `create(name, path)`
+    2. (OPTIONAL) User clicks "Choose folder..." to open the
+       FilePickerDialog (modal 2, on top) and select a project
+       root on disk — used as the cwd for every chat session
+       created under this kanban's tasks when the task itself
+       does not pick a cwd
+    3. User clicks Add → emits `create(name, path)` (path is the
+       empty string when the user skipped the picker)
     4. Parent (Sidebar) calls workspacesStore.addKanbanItem(...)
        which POSTs to /api/workspaces/:wsId/items/kanban with the
-       chosen path as `workspace_items.path` (the cwd for every
-       chat session created under this kanban's tasks)
+       chosen path as `workspace_items.path`. The backend
+       (`workspace_items_create_kanban.zig`) stores `NULL` when
+       the path is empty.
 
-  The path is REQUIRED. Without it, every chat session in this
-  kanban's tasks is cwd-less — git/file tools fail with "no such
-  directory". Existing kanbans created before this field existed
-  have `path = NULL` in the DB; they can backfill via the
-  KanbanView "Set project root" banner (which uses the same
-  FilePickerDialog to pick a folder).
+  The path is OPTIONAL since 2026-08-06 (task "make cwd session
+  as optional"). A kanban without a path is cwd-less — the
+  `session_create.zig` handler creates a fresh sandbox directory
+  under `$TMPDIR` for each chat session whose parent task didn't
+  pick a cwd (Migration 070). The picker is also in the
+  KanbanTaskDetailDialog (create mode) so each task can pick its
+  own per-task cwd — different tasks can target different folders.
 
   Public API:
     props:  show (boolean)
@@ -75,7 +80,14 @@ const handleFolderSelected = (path: string) => {
 
 const handleCreate = () => {
   const trimmedName = name.value.trim()
-  if (trimmedName && selectedPath.value) {
+  // Path is OPTIONAL (since 2026-08-06) — only `name` is required.
+  // Empty string is forwarded when the user skipped the picker;
+  // the backend's `NULLIF(?, '')` writes `NULL` for empty paths,
+  // creating a cwd-less kanban. The session_create handler then
+  // creates a sandbox directory per chat session when the
+  // session's `cwd_session` field is empty (matches the
+  // pre-fix code path for older cwd-less kanbans).
+  if (trimmedName) {
     emit('create', trimmedName, selectedPath.value)
     handleClose()
   }
@@ -198,7 +210,15 @@ onBeforeUnmount(() => {
             </p>
           </div>
 
-          <!-- Project Root (folder picker) -->
+          <!-- Project Root (folder picker) — OPTIONAL since 2026-08-06.
+            Picker opens on demand via the button. When the user
+            clicks the button WITHOUT picking a folder (or skips
+            it entirely), the kanban is created with `path = ''`
+            and the backend stores NULL — the kanban is cwd-less.
+            The "Set project root" banner in KanbanView surfaces
+            the option to backfill later. The hint "(optional)"
+            mirrors the AddItemDialog / CreateWorktreeDialog
+            convention. -->
           <div class="px-5 pb-4">
             <label
               class="block text-xs font-medium mb-2"
@@ -208,7 +228,7 @@ onBeforeUnmount(() => {
               <span
                 class="ml-1 text-[10px]"
                 style="color: var(--semantic-text-dim);"
-              >(used as cwd for chat sessions)</span>
+              >(optional — used as cwd for chat sessions)</span>
             </label>
             <button
               type="button"
@@ -227,9 +247,9 @@ onBeforeUnmount(() => {
             >
               <span
                 class="truncate flex-1 text-left font-mono"
-                :title="selectedPath"
+                :title="selectedPath || 'No project root — kanban will be cwd-less'"
               >
-                {{ selectedPath || 'Choose folder...' }}
+                {{ selectedPath || 'Skip (no project root)' }}
               </span>
               <span
                 v-if="selectedPath"
@@ -264,7 +284,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               @click="handleCreate"
-              :disabled="!name.trim() || !selectedPath"
+              :disabled="!name.trim()"
               data-testid="add-kanban-submit"
               class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               style="

@@ -78,6 +78,8 @@ import type { PreviewFile } from '../file/FilePreview.vue'
 import KanbanTagsInput from './KanbanTagsInput.vue'
 import FilePreviewModal from './FilePreviewModal.vue'
 import * as api from '../../api'
+import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
+import FilePickerDialog from '../FilePickerDialog.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -178,6 +180,16 @@ const emit = defineEmits<{
       // returns the new taskId, then patches the description with
       // `![name](<url>)` markdown via `updateTaskDetails`.
       pendingFiles: PreviewFile[]
+      // NEW (Migration 070 — kanban-cwd-session-optional plan).
+      // Per-task cwd override. Absolute path on disk or '' for
+      // cwd-less. Empty string is the canonical "no per-task cwd"
+      // sentinel — the backend stores '' and the session_create
+      // 3-level fallback chain falls back to the kanban's path +
+      // the per-session sandbox. The dialog's folder picker
+      // (NEW) populates this field; skipped / picker-canceled
+      // leaves it as ''. Plan:
+      // docs/superpowers/plans/2026-08-06-kanban-cwd-session-optional.md
+      cwdSession?: string
     },
   ]
   // Emitted in edit mode when the user flips the unattended toggle.
@@ -206,6 +218,13 @@ const emit = defineEmits<{
       // NEW (plan: 2026-08-06-kanban-no-base64-in-desc). Mirror of
       // the `pendingFiles` field on the `create` emit above.
       pendingFiles: PreviewFile[]
+      // NEW (Migration 070 — kanban-cwd-session-optional plan).
+      // Mirror of the `cwdSession` field on the `create` emit
+      // above. The dialog's folder picker populates this in both
+      // create and create-and-run modes; the host threads it into
+      // runAgentOnNewTask's `cwd` (overriding the kanban-level path
+      // + sandbox fallback).
+      cwdSession?: string
     },
   ]
   // NEW (plan: 2026-08-06-kanban-add-task-button-placement). Create
@@ -279,6 +298,62 @@ const selectColumn = (id: string) => {
   selectedColumnId.value = id
   isColumnPickerOpen.value = false
   emit('column-change', id)
+}
+
+// NEW (Migration 070 — kanban-cwd-session-optional plan). Per-task
+// cwd picker state (create mode only). Default: when the parent
+// kanban has a path, pre-populate the picker with that path (the
+// kanban's project root becomes the new task's per-task cwd by
+// default; the user can change or skip). When the parent kanban is
+// cwd-less, the picker starts empty.
+//
+// `cwdSession` is the per-task cwd we emit to the parent. Empty
+// string = "no per-task cwd" (falls back to kanban-level path +
+// sandbox). The picker writes the absolute path; the picker dialog's
+// "cancel" / backdrop-close leaves it empty.
+const cwdSession = ref<string>('')
+const isCwdPickerOpen = ref(false)
+const cwdPickerRef = ref<HTMLElement | null>(null)
+// Pre-populate from the parent kanban's `cwd` prop on dialog open.
+// The parent (KanbanView) passes the kanban's `path` (kanban-level
+// cwd) as this prop — when set, the new task's per-task cwd defaults
+// to it (the user can change or skip). When the parent kanban is
+// cwd-less, the picker starts empty.
+watch(
+  () => props.show,
+  (show) => {
+    if (show && isCreateMode.value) {
+      cwdSession.value = props.cwd ?? ''
+    }
+  },
+)
+const toggleCwdPicker = () => {
+  isCwdPickerOpen.value = !isCwdPickerOpen.value
+}
+const selectCwd = (path: string) => {
+  cwdSession.value = path
+  isCwdPickerOpen.value = false
+}
+const handleDocumentClickCwd = (event: MouseEvent) => {
+  if (!isCwdPickerOpen.value) return
+  const target = event.target as Node | null
+  if (
+    cwdPickerRef.value &&
+    target &&
+    !cwdPickerRef.value.contains(target)
+  ) {
+    isCwdPickerOpen.value = false
+  }
+}
+// FilePickerDialog data adapter — same `path: string => Promise<T[]>`
+// contract used by AddKanbanDialog. Mirrors its loadItemsForPicker
+// helper (kept duplicated, not extracted, per the AddKanbanDialog
+// comment).
+const loadFoldersForCwdPicker = async (
+  path: string,
+): Promise<FolderEntry[]> => {
+  const data = path ? await listFolder(path) : await getSystemFolder()
+  return (data.entries || []) as FolderEntry[]
 }
 const handleDocumentClickColumn = (event: MouseEvent) => {
   if (!isColumnPickerOpen.value) return
@@ -401,9 +476,13 @@ watch(
 // the trigger button rather than a child).
 onMounted(() => {
   document.addEventListener('click', handleDocumentClickColumn)
+  // NEW (Migration 070 — kanban-cwd-session-optional plan). Same
+  // pattern for the per-task cwd picker.
+  document.addEventListener('mousedown', handleDocumentClickCwd)
 })
 onUnmounted(() => {
   document.removeEventListener('click', handleDocumentClickColumn)
+  document.removeEventListener('mousedown', handleDocumentClickCwd)
 })
 
 // Dirty tracking — the Save button enables only when the form is
@@ -489,6 +568,18 @@ const handleSave = () => {
         // array (not undefined) so the host can use the length
         // without a guard.
         pendingFiles: [...(descriptionEditorRef.value?.pendingFiles ?? [])],
+        // NEW (Migration 070 — kanban-cwd-session-optional plan).
+        // Per-task cwd override. The dialog's folder picker
+        // populates `cwdSession` (defaults to the parent kanban's
+        // path when set; empty when the kanban is cwd-less or the
+        // user skipped the picker). Empty string is the canonical
+        // "no per-task cwd" sentinel — the backend stores '' and
+        // the session_create 3-level fallback chain falls back to
+        // the kanban-level path + the per-session sandbox. Host
+        // threads this through to workspacesStore.addTask's
+        // `cwd` param and to runAgentOnNewTask's `cwd` for the
+        // create-and-run flow.
+        cwdSession: cwdSession.value,
       })
     } else {
       emit('save', {
@@ -534,6 +625,10 @@ const handleRunAgent = () => {
     // handleSave's pendingFiles — see that handler for the
     // orchestration contract.
     pendingFiles: [...(descriptionEditorRef.value?.pendingFiles ?? [])],
+    // NEW (Migration 070 — kanban-cwd-session-optional plan).
+    // Mirror of handleSave's cwdSession — see that handler for the
+    // 3-level fallback chain contract.
+    cwdSession: cwdSession.value,
   })
 }
 
@@ -845,6 +940,35 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
               <span v-if="!isCreateMode && task?.is_pinned" data-testid="kanban-task-detail-pinned">
                 Pinned
               </span>
+              <!-- NEW (Migration 070 — kanban-cwd-session-optional
+                   plan). Edit mode: read-only strip showing the
+                   task's per-task cwd. The user can't change it
+                   here yet (edit-mode cwd change is out of scope
+                   for this PR — create + delete + recreate covers
+                   the common case; the kanban-level "Set project
+                   root" banner covers the rare case). The hint
+                   explains how to change it. Plan: docs/superpowers/
+                   plans/2026-08-06-kanban-cwd-session-optional.md -->
+              <span
+                v-if="!isCreateMode && (task?.cwd ?? '') !== ''"
+                class="ml-2 text-[11px] truncate max-w-[240px] inline-block align-middle font-mono"
+                style="color: var(--semantic-text-dim);"
+                :title="`Project root: ${task?.cwd}`"
+                data-testid="kanban-task-detail-cwd-readonly"
+              >
+                <span aria-hidden="true">📂</span>
+                <span class="ml-1">{{ task?.cwd }}</span>
+              </span>
+              <span
+                v-if="!isCreateMode && (task?.cwd ?? '') === ''"
+                class="ml-2 text-[11px]"
+                style="color: var(--semantic-text-dim);"
+                title="No per-task cwd set. Falls back to the kanban's project root (or per-session sandbox if neither is set)."
+                data-testid="kanban-task-detail-cwd-readonly-empty"
+              >
+                <span aria-hidden="true">📂</span>
+                <span class="ml-1">no project root</span>
+              </span>
             </div>
 
             <!-- Description — editor by default in both modes (preserves the
@@ -958,6 +1082,60 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
               style="border-top: 1px solid var(--color-border);"
               data-testid="kanban-task-detail-profile-and-unattended"
             >
+              <!-- NEW (Migration 070 — kanban-cwd-session-optional
+                   plan). Per-task cwd picker (create mode only).
+                   Same trigger pattern as the profile picker (button
+                   toggle + click-outside close). Pre-populated from
+                   the parent kanban's path on dialog open; user can
+                   pick a different folder or skip. Empty string is
+                   the canonical "no per-task cwd" sentinel. Plan:
+                   docs/superpowers/plans/2026-08-06-kanban-cwd-session-optional.md -->
+              <div ref="cwdPickerRef" class="relative shrink-0">
+                <button
+                  type="button"
+                  @click.stop="toggleCwdPicker"
+                  class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 hover:opacity-80"
+                  style="
+                    background-color: cwdSession
+                      ? 'var(--semantic-active-bg)'
+                      : 'var(--semantic-sidebar-bg)';
+                    border: 1px solid var(--color-border);
+                    color: cwdSession
+                      ? 'var(--semantic-text)'
+                      : 'var(--semantic-text-dim)';
+                  "
+                  :title="
+                    cwdSession
+                      ? `Project root: ${cwdSession}`
+                      : 'No project root (optional)'
+                  "
+                  data-testid="kanban-task-detail-cwd-picker"
+                >
+                  <span aria-hidden="true">📂</span>
+                  <span class="ml-1 font-mono truncate max-w-[180px] inline-block align-middle">
+                    {{ cwdSession || 'Skip (no project root)' }}
+                  </span>
+                  <span class="ml-1 text-[10px]">▾</span>
+                </button>
+                <div
+                  v-if="isCwdPickerOpen"
+                  class="absolute z-30 mt-1 left-0"
+                  data-testid="kanban-task-detail-cwd-picker-dropdown"
+                >
+                  <FilePickerDialog
+                    v-model="isCwdPickerOpen"
+                    mode="folder"
+                    :load-items="loadFoldersForCwdPicker"
+                    :key-for="(e: any) => e.path as string"
+                    :path-for="(e: any) => e.path as string"
+                    :is-expandable="(e: any) => e.is_directory as boolean"
+                    :label-for="(e: any) => e.name as string"
+                    :close-on-select="true"
+                    title="Select Per-Task Project Root"
+                    @select="selectCwd"
+                  />
+                </div>
+              </div>
               <!-- NEW (plan: 2026-08-06-kanban-task-profile-selector).
                    Profile-model picker. Loads from LlmConfig; mirrors
                    ChatView's picker pattern. -->

@@ -574,6 +574,12 @@ describe('KanbanTaskDetailDialog — create mode', () => {
         selectedProfile: '',
         // NEW (plan: 2026-08-06-kanban-no-base64-in-desc).
         pendingFiles: [],
+        // NEW (Migration 070 — kanban-cwd-session-optional plan).
+        // Empty string = no per-task cwd (falls back to kanban path
+        // + sandbox). The dialog's cwd picker was added in create
+        // mode; this test doesn't drive the picker so the field
+        // carries the default '' value.
+        cwdSession: '',
       },
     ])
   })
@@ -606,6 +612,10 @@ describe('KanbanTaskDetailDialog — create mode', () => {
         selectedProfile: '',
         // NEW (plan: 2026-08-06-kanban-no-base64-in-desc).
         pendingFiles: [],
+        // NEW (Migration 070 — kanban-cwd-session-optional plan).
+        // Empty string = no per-task cwd. See comment on the
+        // earlier "emits create" test for the full rationale.
+        cwdSession: '',
       },
     ])
   })

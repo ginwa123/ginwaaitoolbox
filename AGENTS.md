@@ -2747,3 +2747,84 @@ User: "is this tool only fetching is_llm_feed 0 or is_llm_seaf_feed 1 or search 
 - Plan: inline (single-component surgical fix; below the threshold for a separate plan doc)
 - PR: pending squash-merge candidate
 - Worktree: `/home/ginwa/ginwaaitoolbox/.worktrees/design-page-delete-confirm`
+
+### 2026-08-06: Per-task `cwd_session` + optional kanban cwd (Migration 070)
+
+**Symptom (user report, task_1785959915548).** *"when user want to create a kanban, make cwd session as optional ... after we create a kanban, and then want to add task, add field input to select folder so it will become a cwd session"*.
+
+Two-part user request:
+1. Make the `project_root` picker OPTIONAL in the "Add Project Kanban" dialog.
+2. Add a folder picker in the "Add Task" dialog so the user can pick a per-task cwd when adding a task — different tasks can target different folders.
+
+**The full chain (per-task cwd wins, kanban cwd is fallback):**
+```
+RequestSession.cwd_session       (explicit per-call override — frontend sends)
+  ↓ if empty
+workspace_item_tasks.cwd         ← NEW column (Migration 070) — per-task cwd
+  ↓ if empty
+workspace_items.path             (kanban-level cwd — pre-existing)
+  ↓ if empty
+createSandbox($TMPDIR/session_<id>/)  (per-session fallback — pre-existing)
+```
+
+Each task can now carry its own cwd; the kanban's path is just the default for tasks that didn't pick one.
+
+**What landed.**
+
+**Backend (Zig):**
+- **Migration 070** — `ALTER TABLE workspace_item_tasks ADD COLUMN cwd TEXT NOT NULL DEFAULT ''`. Registered in `allMigrations`. Idempotent on re-run. Pre-existing rows backfill to `''`. 5 column tests + 3 `createWorkspaceItemTask` round-trip tests (`migration_070_test.zig`).
+- **`WorkspaceItemTaskInfo.cwd`** — new field + `deinit` free.
+- **`listWorkspaceItemTasksWithCursor`** SELECT — includes `t.cwd` at index 23 (row indices comment + struct literal updated).
+- **`createWorkspaceItemTask`** — accepts `cwd: ?[]const u8` as 10th arg. Dynamic SQL builder (null → omit, `""` → SQL `''` literal, non-empty → bind via `?`) — same shape as `description` / `tags` / `image_urls` (avoids the empty-slice-binds-as-NULL footgun).
+- **`TaskCreateRequest.cwd` + `TaskUpdateRequest.cwd`** — wire types.
+- **`WorkspaceItemTaskResponse.cwd`** — wire type for tasks_list responses.
+- **`task_create.zig::validated_cwd`** — absolute-path check, ≤ 4 KiB cap, no control chars. 3 new error variants (`CwdTooLong`, `CwdNotAbsolute`, `CwdContainsControlChar`) → 400 with descriptive messages.
+- **`task_update.zig`** — PATCH branch for `cwd` (same validation + dynamic SQL builder).
+- **`tasks_list.zig`** — populates `.cwd` on every task response.
+- **`create_kanban_task.zig` (LLM tool)** — passes `null` for cwd (the LLM picks a name; cwd is irrelevant at this layer).
+- **`session_create.zig::useCase`** — **3-level fallback chain**. Explicit `cwd_session` wins; otherwise looks up `task.cwd` via `resolveCwdFromTaskOrItem`; otherwise `item.path`; otherwise `createSandbox`. The frontend's resolution is the primary contract; the backend re-derives defensively for non-Vue clients (curl, LLM tool, future API integrations).
+
+**Frontend (Vue/TS):**
+- **`api.createTask` / `api.updateTaskSimple`** — accept `cwd?: string` on the wire (`body.cwd`).
+- **`Task` interface** — `cwd?: string` field.
+- **`workspacesStore.addTask`** — forwards `cwd?: string` to `api.createTask`.
+- **`KanbanTaskDetailDialog.vue`** — **NEW** folder picker in create mode (pre-populated from the parent kanban's `cwd` prop; user can change or skip). The picker uses the same `FilePickerDialog` + `loadFoldersForCwdPicker` adapter as `AddKanbanDialog`. Edit mode: read-only strip showing the current `task.cwd` (or "no project root" hint). The picker writes `cwdSession` to the `create` + `create-and-run` emit payloads.
+- **`KanbanView.handleCreateTaskSave`** — 3-level frontend fallback in the cwd-resolution for `runAgentOnNewTask`: `payload.cwdSession || props.item.path || ''`.
+- **`AddKanbanDialog.vue`** — **`project_root` picker is now OPTIONAL**. Hint: "(optional — used as cwd for chat sessions)". Placeholder: "Skip (no project root)". Submit button enables on `!name.trim()` only (no path requirement). The kanban becomes cwd-less; the pre-existing "Set project root" banner in `KanbanView` still surfaces for backfill.
+
+**Why per-task cwd (B) was chosen over lazy kanban assignment (A).**
+- User's intent: *"add field input to select folder so it will become a cwd session"* — the picked folder is for THAT task's session, not the kanban's. Different tasks can target different repos.
+- Reuse of existing data model — `workspace_item_tasks` already has per-task fields (description, tags, image_urls); adding `cwd` fits naturally; the kanban path stays as a fallback column.
+- Flexibility — different tasks can target different folders.
+
+**Tests.**
+- **Backend**: `zig build test --summary all` — **2305/2315 pass, 4 fail** (pre-existing). +8 new tests (5 migration column + 3 createWorkspaceItemTask round-trip). Zero new fails. Zero new leaks (18 pre-existing leaks).
+- **Frontend**: `bun run build` clean (vue-tsc + vite, ~2.7s). `bunx vitest run` — 2006 pass / 14 fail. The 14 are PRE-EXISTING on `main` (AppLayout.urlPersist ×7, AppLayout.memoriesGate ×4, DesignView.nudge clamp ×1, sidebarKanbanSortUrl ×2 — all unrelated to this work). +3 new tests pass (the optional path AddKanbanDialog tests).
+- Updated 3 existing emit tests (`emits create`, `emits create with unattended`, `emits create-and-run with mode create_and_run`) to include `cwdSession: ''` in the expected payload — the dialog now emits this field.
+
+**Cross-compile smoke.** Both `zig build-obj -target x86_64-windows-gnu` and `zig build-obj -target aarch64-macos` are clean.
+
+**Behavioural matrix.**
+
+| Scenario | cwd_session sent to backend | Where agent runs |
+|---|---|---|
+| Task created with picker → "/home/me/proj-A" | "/home/me/proj-A" (per-task) | /home/me/proj-A |
+| Task created without picker (cwd-less kanban) | '' (empty) → backend falls back | Per-session sandbox |
+| Task created without picker, kanban has path "/home/parent" | "/home/parent" (kanban-level fallback) | /home/parent |
+| Task created with picker → "/home/A", kanban path "/home/parent" | "/home/A" (per-task wins) | /home/A |
+| Edit-mode: user changes cwd after creation | PUT body.cwd updated | Future sessions use new cwd |
+| Kanban created without path | '' → backend stores NULL | Per-session sandbox per task |
+
+**Pitfalls (record for future agents).**
+- **`cwd` (NOT `cwd_session`)** for the new column — the legacy HTTP `cwd_session` is a different concept (explicit per-call override on `RequestSession`). To avoid name-clash, the per-task column is just `cwd`. Wire field matches the column name. Frontend `Task.cwd` reads + `api.createTask.cwd` write.
+- **`cwd` is **NOT** in `imageUrls`'s `||`-joined string convention** — `cwd` is a single absolute path, no parsing/splitting at fetch sites.
+- **Edit-mode cwd change** is OUT OF SCOPE for this PR — the dialog's edit mode shows the cwd as a read-only strip. User can delete + recreate the task to change cwd, OR rely on the kanban-level "Set project root" banner for the rare case. Future plan if requested.
+- **The `addTask` API path persists `cwd` directly** — no second `updateTaskDetails` patch needed (unlike `imageUrls` which uses an update-then-imageUrls pattern because cwdSession is fetched via the `cwd` POST param). The image_urls pattern is for the late-upload-then-patch flow; cwd is set at creation time.
+- **Frontend 3-level fallback in `runAgentOnNewTask`** — the backend re-derives the same chain for non-Vue clients. Both layers doing the same chain is intentional defense-in-depth (Vue path is the primary contract; the backend chain protects curl / LLM tool callers).
+- **Test setup `setupDb` must include `task_type TEXT NOT NULL DEFAULT 'standard'`** — without it, `createWorkspaceItemTask` (which always INSERTs task_type) fails with "no such column: task_type". This bit me on the first round-trip test; pinned in the migration_070_test setupDb comment.
+- **Returned `cwd` slice is borrowed from the per-request arena** — same lifetime pattern as `tags` / `image_urls` / `git_worktree_cwd`. The session_create `resolveCwdFromTaskOrItem` returns a borrowed slice; the caller (useCase) must NOT free it.
+
+**Branch / commit / Plan / PR.**
+- Branch: `worktree/kanban-cwd-session-optional`
+- Commit: pending (working tree has all changes; ready for commit + PR)
+- Plan: `docs/superpowers/plans/2026-08-06-kanban-cwd-session-optional.md` (written before implementation, user-approved)

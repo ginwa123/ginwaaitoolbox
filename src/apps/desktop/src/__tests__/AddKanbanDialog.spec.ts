@@ -166,16 +166,63 @@ describe('AddKanbanDialog', () => {
     expect(findInDom('[data-testid="add-kanban-name-error"]')).toBeNull()
   })
 
-  it('Add button is disabled when no folder is picked (even with a valid name)', async () => {
+  it('Add button is enabled with a valid name even when no folder is picked (path is optional since 2026-08-06)', async () => {
     wrapper = mountDialog(true)
     await flushPromises()
     const nameInput = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')!
     nameInput.value = 'Sprint 12'
     nameInput.dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
-    // No folder picked → button still disabled (path is required).
+    // No folder picked → button is STILL enabled (path is optional
+    // since 2026-08-06 — the backend stores NULL when the path
+    // is empty; the kanban is cwd-less until the user backfills
+    // via the "Set project root" banner in KanbanView).
     const btn = findInDom<HTMLButtonElement>('[data-testid="add-kanban-submit"]')
-    expect(btn?.disabled).toBe(true)
+    expect(btn?.disabled).toBe(false)
+  })
+
+  // ─── Optional path (2026-08-06) ────────────────────────────────────
+  //
+  // Since the "make cwd session as optional" task, the user can
+  // submit the dialog with a valid name AND no folder picked.
+  // The create event must emit `create(name, '')` — the empty path
+  // string is the cwd-less kanban signal. The backend's
+  // `workspace_items_create_kanban.zig` writes NULL when the path
+  // is empty, and `session_create.zig` creates a sandbox directory
+  // per chat session when `cwd_session` is empty (the existing
+  // pre-fix behavior for legacy cwd-less kanbans).
+  //
+  // The "Set project root" banner in KanbanView surfaces after
+  // creation, offering the user a way to backfill the path via
+  // the same FilePickerDialog.
+
+  it('emits create(name, "") when Add is clicked without picking a folder (cwd-less kanban)', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    const nameInput = findInDom<HTMLInputElement>('[data-testid="add-kanban-name"]')!
+    nameInput.value = 'Quick Sprint'
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    // Skip the picker entirely → click Add directly.
+    clickInDom('[data-testid="add-kanban-submit"]')
+    // create event carries name + EMPTY path (the cwd-less signal).
+    expect(wrapper.emitted('create')?.[0]).toEqual(['Quick Sprint', ''])
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('renders the "Skip (no project root)" placeholder when no folder is picked', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    const folderBtn = findInDom<HTMLElement>('[data-testid="add-kanban-choose-folder"]')
+    expect(folderBtn?.textContent).toContain('Skip (no project root)')
+  })
+
+  it('shows "(optional — used as cwd for chat sessions)" hint above the picker', async () => {
+    wrapper = mountDialog(true)
+    await flushPromises()
+    const dialog = findInDom('[data-testid="add-kanban-dialog"]')
+    expect(dialog?.textContent).toContain('(optional')
+    expect(dialog?.textContent).toContain('used as cwd for chat sessions')
   })
 
   it('typing a name + picking a folder enables the Add button', async () => {

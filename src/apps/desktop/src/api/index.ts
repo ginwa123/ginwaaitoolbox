@@ -388,6 +388,16 @@ export interface Task {
   // joins back with `||` before sending. Plan:
   // docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md.
   imageUrls?: string[]
+  // NEW (Migration 070 — kanban-cwd-session-optional plan).
+  // Per-task cwd override (absolute path on disk, or '' for
+  // cwd-less). Optional so legacy task literals in tests keep
+  // type-checking. The frontend's KanbanView reads this on every
+  // task fetch and threads it into the 3-level cwd fallback chain
+  // (per-task cwd → kanban-level path → sandbox) at
+  // runAgentOnNewTask time. Empty string is the canonical
+  // "no per-task cwd" sentinel — falls back to the kanban's
+  // `path` + the per-session sandbox.
+  cwd?: string
   // NEW (kanban task git-branch badge, plan:
   //   docs/superpowers/plans/2026-08-06-kanban-task-git-branch.md).
   // The current git branch for the task's cwd — worktree cwd if
@@ -692,6 +702,16 @@ export async function createTask(
     // total 10 MB byte cap. Plan: docs/superpowers/plans/
     // 2026-08-06-kanban-image-urls-column.md.
     imageUrls?: string[]
+    // NEW (Migration 070 — kanban-cwd-session-optional plan).
+    // Per-task cwd override. Absolute path on disk or '' for
+    // cwd-less. When undefined, the backend stores NULL (cwd-less
+    // task — falls back to the kanban-level path + sandbox).
+    // The frontend's KanbanTaskDetailDialog passes the picked
+    // folder via this field on task-create. The session_create
+    // 3-level fallback chain reads the persisted value via the
+    // task fetch + threads it into `runAgentOnNewTask` →
+    // `api.sendChatMessage`'s `cwdSession` arg.
+    cwd?: string
   },
 ): Promise<Task> {
   const taskType = params.taskType ?? 'standard'
@@ -730,6 +750,14 @@ export async function createTask(
   // data URL prefix + the total 10 MB byte cap.
   if (params.imageUrls && params.imageUrls.length > 0) {
     body.image_urls = params.imageUrls.join('||')
+  }
+  // Migration 070 — per-task cwd override. Forward verbatim
+  // (the backend's `validated_cwd` block validates it — absolute
+  // path, ≤ 4 KiB, no control chars). Empty string forwards as
+  // the explicit "no per-task cwd" sentinel; undefined forwards
+  // as null (column omitted from INSERT, DEFAULT '' applies).
+  if (params.cwd !== undefined) {
+    body.cwd = params.cwd
   }
   return await apiFetch<Task>(`/workspaces/${workspaceId}/items/${itemId}/tasks`, {
     method: 'POST',
@@ -783,6 +811,16 @@ export async function updateTaskSimple(
     // images. Plan: docs/superpowers/plans/2026-08-06-kanban-image-
     // urls-column.md.
     imageUrls?: string[]
+    // NEW (Migration 070 — kanban-cwd-session-optional plan).
+    // Per-task cwd override. Semantics:
+    //   - undefined: leave unchanged (no-op).
+    //   - '': clear per-task cwd (falls back to kanban-level path
+    //     + sandbox).
+    //   - '/home/me/repo-A': set per-task cwd to this path.
+    // Forwarded verbatim on the wire (the backend's
+    // `validated_cwd` block in task_update.zig re-validates on
+    // every PUT).
+    cwd?: string
   },
 ): Promise<{ success: boolean }> {
   const body: Record<string, unknown> = { ...data }

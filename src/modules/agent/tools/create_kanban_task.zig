@@ -427,6 +427,14 @@ pub fn executeCreateKanbanTaskToString(
         // (the user-facing KanbanDetailDialog is the primary entry
         // point per the kanban-image-urls-column plan).
         null,
+        // cwd (Migration 070 — kanban-cwd-session-optional plan) —
+        // the agent tool does not accept per-task cwd yet. Pass
+        // null (column omitted from INSERT, DEFAULT '' applies —
+        // cwd-less task). Future work: surface `cwd` on the tool
+        // schema so the agent can explicitly target a different
+        // folder than the kanban's default. The user-facing
+        // KanbanDetailDialog is the primary entry point for now.
+        null,
     ) catch {
         const msg = std.fmt.allocPrint(allocator,
             "Failed to INSERT task row into workspace_item_tasks",

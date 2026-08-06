@@ -47,6 +47,15 @@ pub const TaskUpdateError = error{
     /// too long, or contains forbidden characters (only
     /// [a-zA-Z0-9_-] allowed). See tags_validation.zig.
     InvalidTags,
+    /// Per-task cwd validation (Migration 070 — kanban-cwd-session-
+    /// optional plan). Mirrors the same errors as the create
+    /// handler — 4 KiB cap, absolute-path requirement, no control
+    /// characters. Existence of the path is NOT validated (OS-
+    /// level concern surfaced by the agent's first cwd-using
+    /// tool call).
+    CwdTooLong,
+    CwdNotAbsolute,
+    CwdContainsControlChar,
 };
 
 /// Slice of optional fields the client may send. Mirrors
@@ -110,6 +119,9 @@ fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
             error.BadCron => 400,
             error.InvalidJson => 400,
             error.InvalidTags => 400,
+            error.CwdTooLong,
+            error.CwdNotAbsolute,
+            error.CwdContainsControlChar => 400,
             error.OutOfMemory => 500,
         };
         const message: []const u8 = switch (err) {
@@ -123,6 +135,9 @@ fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
             error.FailedToUpdateRoutine => "Failed to update routine",
             error.FailedToUpdateTask => "Failed to update task",
             error.InvalidTags => "tags must be non-empty, ≤50 chars, and contain only letters, digits, hyphens, and underscores",
+            error.CwdTooLong => "cwd path too long (max 4 KiB)",
+            error.CwdNotAbsolute => "cwd must be an absolute path",
+            error.CwdContainsControlChar => "cwd contains a control character",
             error.OutOfMemory => "Out of memory",
         };
         return res.jsonResponse(.{
@@ -238,6 +253,46 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
         } else {
             try sql_buf.appendSlice(allocator, "?");
             try bind_values.append(allocator, validated_tags);
+        }
+        try sql_buf.appendSlice(allocator, " WHERE id = ?");
+        try bind_values.append(allocator, task_id);
+
+        input.db.exec(allocator, sql_buf.items, bind_values.items) catch return error.FailedToUpdateTask;
+    }
+
+    // Per-task cwd branch (Migration 070 — kanban-cwd-session-
+    // optional plan). Same shape as description + tags: present
+    // (non-null) means overwrite; empty string is the canonical
+    // "no per-task cwd" sentinel and IS persisted (user actively
+    // cleared the cwd); null means "leave unchanged".
+    //
+    // Same validation as the create handler — absolute path,
+    // ≤ 4 KiB, no control characters. Existence is NOT checked
+    // here (OS-level concern surfaced by the agent's first
+    // cwd-using tool call).
+    if (input.body.cwd) |raw_cwd| {
+        // Reuse the create-handler validation. Mirrors the create
+        // path exactly so a value that's accepted at create time
+        // is also accepted at update time (and vice versa).
+        if (raw_cwd.len > 4096) return error.CwdTooLong;
+        if (raw_cwd.len > 0 and raw_cwd[0] != '/') return error.CwdNotAbsolute;
+        for (raw_cwd) |c| {
+            if (c < 0x20 or c == 0x7f) return error.CwdContainsControlChar;
+        }
+
+        var sql_buf: std.ArrayList(u8) = .empty;
+        defer sql_buf.deinit(allocator);
+        var bind_values: std.ArrayList([]const u8) = .empty;
+        defer bind_values.deinit(allocator);
+
+        try sql_buf.appendSlice(allocator,
+            "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
+        try sql_buf.appendSlice(allocator, ", cwd = ");
+        if (raw_cwd.len == 0) {
+            try sql_buf.appendSlice(allocator, "''");
+        } else {
+            try sql_buf.appendSlice(allocator, "?");
+            try bind_values.append(allocator, raw_cwd);
         }
         try sql_buf.appendSlice(allocator, " WHERE id = ?");
         try bind_values.append(allocator, task_id);

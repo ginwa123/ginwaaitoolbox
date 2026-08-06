@@ -156,6 +156,20 @@ pub const TaskCreateRequest = struct {
     /// docs/superpowers/plans/2026-08-06-kanban-image-urls-
     /// column.md.
     image_urls: ?[]const u8 = null,
+    /// Per-task cwd override (Migration 070 — kanban-cwd-session-
+    /// optional plan, 2026-08-06). Null/undefined = no cwd
+    /// supplied (column omitted from INSERT, DEFAULT '' applies,
+    /// row is cwd-less — falls back to the kanban's `path` +
+    /// the per-session sandbox). Empty string = explicit "no
+    /// per-task cwd" sentinel. Non-empty string = absolute path on
+    /// disk that becomes the cwd for this task's chat sessions,
+    /// overriding the kanban-level cwd + the per-session sandbox.
+    /// Frontend sends the raw string from the FilePickerDialog in
+    /// the Add Task dialog; the backend stores it verbatim (no
+    /// validation beyond `len == 0` and existence checks happen
+    /// at agent-run time via the OS). The 3-level fallback chain
+    /// lives in `session_create.zig::useCase`.
+    cwd: ?[]const u8 = null,
 };
 
 pub const TaskUpdateRequest = struct {
@@ -186,6 +200,16 @@ pub const TaskUpdateRequest = struct {
     /// and dedupes case-insensitively. Plan:
     /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md.
     tags: ?[]const u8 = null,
+    /// Per-task cwd override (Migration 070 — kanban-cwd-session-
+    /// optional plan, 2026-08-06). Semantics:
+    ///   - null/undefined  → don't change existing cwd (no-op).
+    ///   - `""` (empty string) → clear per-task cwd (sets `cwd = ''`,
+    ///     falls back to kanban-level path + sandbox).
+    ///   - `"/home/me/repo-A"` → replace per-task cwd with this path
+    ///     (validation: must be an absolute path; existence is
+    ///     checked at agent-run time via the OS).
+    /// Plan: docs/superpowers/plans/2026-08-06-kanban-cwd-session-optional.md
+    cwd: ?[]const u8 = null,
 };
 
 pub const GitStageResponse = struct {
@@ -493,6 +517,16 @@ pub const WorkspaceItemTaskResponse = struct {
     /// JSON.parse. Plan:
     /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md.
     tags: []const u8 = "",
+
+    /// Per-task cwd override (Migration 070 — kanban-cwd-session-
+    /// optional plan, 2026-08-06). Empty string is the canonical
+    /// "no per-task cwd" sentinel (NOT NULL DEFAULT ''). Mirrors
+    /// `WorkspaceItemTaskInfo.cwd`. The frontend's
+    /// KanbanTaskDetailDialog (edit mode) renders this read-only
+    /// strip; KanbanView's `runAgentOnNewTask` flow uses it as the
+    /// per-task cwd in the 3-level fallback chain (per-task cwd →
+    /// kanban-level path → per-session sandbox).
+    cwd: []const u8 = "",
 
     /// Computed `git rev-parse --abbrev-ref HEAD` output for the
     /// task's cwd (`session.git_worktree_cwd` if bound, otherwise

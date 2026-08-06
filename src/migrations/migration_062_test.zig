@@ -245,6 +245,11 @@ test "createWorkspaceItemTask: description = null succeeds and stores ''" {
         // migration_062_test predates the column and exercises the
         // description path only. image_urls is exercised in
         // migration_069_test.zig.
+        null,
+        // cwd (Migration 070) — null (omitted body field → empty-string
+        // sentinel). migration_062_test predates Migration 070 and
+        // exercises the description path only; cwd is fully covered in
+        // migration_070_test.zig.
         null);
     defer task.deinit(alloc);
 
@@ -272,6 +277,8 @@ test "createWorkspaceItemTask: description = '' (empty string) succeeds and stor
         null,
         // image_urls — null (omitted body field → empty-string
         // sentinel). See migration_069_test for full-coverage tests.
+        null,
+        // cwd (Migration 070) — null. See comment above.
         null);
     defer task.deinit(alloc);
 
@@ -294,6 +301,8 @@ test "createWorkspaceItemTask: description = 'hello world' succeeds and stores t
         null,
         // image_urls — null (omitted body field → empty-string
         // sentinel). See migration_069_test for full-coverage tests.
+        null,
+        // cwd (Migration 070) — null. See comment above.
         null);
     defer task.deinit(alloc);
 

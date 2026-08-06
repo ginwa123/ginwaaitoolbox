@@ -211,6 +211,15 @@ fn useCase(
             .pinned_position = task.pinned_position,
             .kanban_column_id = task.kanban_column_id,
             .kanban_position = task.kanban_position,
+            // Migration 070 — per-task cwd override. Borrowed
+            // from the per-request arena (owned by WorkspaceItemTaskInfo
+            // .deinit, stays valid until the outer useCase defer
+            // runs). Empty string is the canonical "no per-task
+            // cwd" sentinel. The frontend reads this via
+            // useCurrentMainView's task fetch + threads it into the
+            // session_create 3-level fallback chain (per-task cwd →
+            // kanban path → sandbox).
+            .cwd = task.cwd,
             // Auto-retry-until-stop: slice borrow from `task` (owned
             // by WorkspaceItemTaskInfo.deinit, stays valid until the
             // outer defer at the top of useCase runs). The response

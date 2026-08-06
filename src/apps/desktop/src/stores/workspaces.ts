@@ -194,6 +194,15 @@ export interface Task {
   // the store splits on `|` and filters empty segments at every
   // fetch site (folded into `normalizeTaskTags`).
   imageUrls?: string[]
+  // NEW (Migration 070 — kanban-cwd-session-optional plan).
+  // Per-task cwd override. Absolute path on disk or '' for
+  // cwd-less. Optional for backwards compat with legacy task
+  // literals in tests. The frontend's KanbanView reads this on
+  // every task fetch and threads it into the 3-level cwd
+  // fallback chain (per-task cwd → kanban-level path → sandbox)
+  // at runAgentOnNewTask time. Empty string is the canonical
+  // "no per-task cwd" sentinel.
+  cwd?: string
   // NEW (kanban task git-branch badge, plan:
   //   docs/superpowers/plans/2026-08-06-kanban-task-git-branch.md).
   // The current git branch for the task's cwd — worktree cwd if
@@ -1158,6 +1167,15 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Plan: docs/superpowers/plans/2026-08-06-kanban-image-urls-
       // column.md.
       imageUrls?: string[]
+      // NEW (Migration 070 — kanban-cwd-session-optional plan).
+      // Per-task cwd override. Forwarded to api.createTask as
+      // `cwd` on the wire. Absolute path on disk or '' for
+      // cwd-less. The frontend's Add Task dialog passes the picked
+      // folder through this param; KanbanView's `runAgentOnNewTask`
+      // uses the persisted value (read back via getTasks) on every
+      // chat session run — chain: task.cwd → kanban.path → sandbox.
+      // Plan: docs/superpowers/plans/2026-08-06-kanban-cwd-session-optional.md
+      cwd?: string
     },
   ): Promise<string | undefined> {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
@@ -1185,6 +1203,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         // Migration 069 — pass image_urls through (the api helper
         // `||`-joins the array for the wire).
         imageUrls: params.imageUrls,
+        // Migration 070 — pass the per-task cwd through (absolute
+        // path on disk or '' for cwd-less). The api helper forwards
+        // verbatim; the backend's validated_cwd block re-validates
+        // (absolute, ≤ 4 KiB, no control chars) before INSERT.
+        cwd: params.cwd,
       })
       item.tasks.unshift(newTask)
       return newTask.id
