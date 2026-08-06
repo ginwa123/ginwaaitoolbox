@@ -148,10 +148,23 @@ describe('NalarSettings (orchestrator)', () => {
   // ─── Clear active profile (plan 2026-08-06-reset-active-profile) ──
   // Plan: Settings → Profiles → Reset button next to the active pill
   // emits `clearActive` → orchestrator calls saveNalarConfig with
-  // `active_profile: null` → the backend cascade falls through to
-  // top-level config for every chat / task. The button is gated on
-  // `activeProfile !== null` (a no-op when no active is set).
-  it('saves active_profile: null when the Reset button is clicked', async () => {
+  // `active_profile: ""` (empty string) → the backend handler at
+  // `nalar_config_put.zig:246-252` interprets empty as "clear" and
+  // sets `config_json.active_profile = null` on disk → the cascade
+  // falls through to top-level config for every chat / task. The
+  // button is gated on `activeProfile !== null` (a no-op when no
+  // active is set).
+  //
+  // Why empty string (not `undefined`)?
+  // Pre-fix the frontend sent `active_profile: undefined`, which JSON
+  // serialisation strips to no key in the PUT body. The backend's
+  // `?[]const u8` type couldn't distinguish "key absent" from
+  // "key: null" — both yielded `None` and the handler skipped the
+  // field. Using `undefined` left the user's "Set active" default
+  // in place (the Reset button silently failed). The empty-string
+  // sentinel works within the existing wire contract — the handler
+  // already maps `ap.len == 0` to "clear" exactly for this purpose.
+  it('saves active_profile: "" when the Reset button is clicked', async () => {
     mockGet.mockResolvedValueOnce({
       profiles: { work: { model: 'm' }, home: { model: 'm2' } },
       active_profile: 'work',
@@ -171,14 +184,13 @@ describe('NalarSettings (orchestrator)', () => {
     const resetBtn = wrapper.find('[data-testid="reset-active-btn"]')
     expect(resetBtn.exists()).toBe(true)
 
-    // Click Reset → saveNalarConfig receives { ..., active_profile: undefined }
-    // (the key is omitted on serialization, so the test asserts the key
-    // is gone rather than null).
+    // Click Reset → saveNalarConfig receives { ..., active_profile: '' }.
+    // The backend interprets empty-string as "clear".
     await resetBtn.trigger('click')
     await flushPromises()
     expect(mockSave).toHaveBeenCalledTimes(1)
     const savedConfig = mockSave.mock.calls[0]![0] as Record<string, unknown>
-    expect('active_profile' in savedConfig ? savedConfig.active_profile : undefined).toBeUndefined()
+    expect(savedConfig.active_profile).toBe('')
   })
 
   it('emits a success notification when the Reset button is clicked', async () => {

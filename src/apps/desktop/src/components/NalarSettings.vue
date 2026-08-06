@@ -461,25 +461,28 @@ async function setActiveProfile(name: string) {
 }
 
 // Clear the active profile — same instant-save path as setActiveProfile,
-// but writes `active_profile: undefined` to config.json (the key is
-// omitted on serialization, so the file is identical to a hand-edited
-// version that simply omits the field). The backend
-// `nalar_config_put.zig` handler already treats a missing key as
-// "no active profile" (same as the `null` path). After the save,
-// `resolveProfileField` in workflow.zig falls through to top-level
-// config for every new chat / task.
+// but writes `active_profile: ""` (empty string) to config.json. The
+// `nalar_config_put.zig:246-252` handler treats an empty `active_profile`
+// value as "clear" (sets `config_json.active_profile = null` on disk).
+//
+// Why empty string and not `undefined` / JSON null?
+// Pre-fix the frontend sent `active_profile: undefined`, which JSON.stringify
+// strips to no key in the PUT body. The backend's `?[]const u8` type
+// couldn't distinguish "key absent" from "key: null" — both yielded
+// `None` and the handler skipped the field. Using `undefined` left the
+// user's "Set active" default in place (the Reset button silently
+// failed). The empty-string sentinel works within the existing wire
+// contract — the handler at nalar_config_put.zig:250 already maps
+// `ap.len == 0` to "clear" exactly for this purpose.
 //
 // Mirrors the existing `setActiveProfile` flow so the UI feedback
-// (success / error notification) is consistent. The `as NalarConfig`
-// cast is needed because `active_profile: undefined` narrows the
-// type to `{ active_profile?: string }` only after the spread merges
-// in the rest of the config.
+// (success / error notification) is consistent.
 async function clearActiveProfile() {
   const previous = activeProfile.value
   activeProfile.value = null
   isSettingActive.value = true
   try {
-    await saveNalarConfig({ ...(config.value ?? {}), active_profile: undefined } as NalarConfig)
+    await saveNalarConfig({ ...(config.value ?? {}), active_profile: '' } as NalarConfig)
     emit('notification', `Active profile cleared — using top-level config`, 'success')
   } catch (err) {
     activeProfile.value = previous // optimistic-rollback on failure
