@@ -144,4 +144,79 @@ describe('NalarSettings (orchestrator)', () => {
     const topLevel = savedConfig.sub_agents as Array<{ name: string }> | undefined
     expect(topLevel ?? []).not.toContainEqual(expect.objectContaining({ name: 'coder' }))
   })
+
+  // ─── Clear active profile (plan 2026-08-06-reset-active-profile) ──
+  // Plan: Settings → Profiles → Reset button next to the active pill
+  // emits `clearActive` → orchestrator calls saveNalarConfig with
+  // `active_profile: null` → the backend cascade falls through to
+  // top-level config for every chat / task. The button is gated on
+  // `activeProfile !== null` (a no-op when no active is set).
+  it('saves active_profile: null when the Reset button is clicked', async () => {
+    mockGet.mockResolvedValueOnce({
+      profiles: { work: { model: 'm' }, home: { model: 'm2' } },
+      active_profile: 'work',
+    })
+    mockSave.mockResolvedValueOnce({ success: true })
+    const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+
+    // Switch to Profiles tab.
+    const profileTab = wrapper.findAll('button[role="tab"]')[1]!
+    await profileTab.trigger('click')
+    await flushPromises()
+
+    // The active pill should show 'work' and the Reset button should
+    // be visible.
+    expect(wrapper.text()).toContain('work')
+    const resetBtn = wrapper.find('[data-testid="reset-active-btn"]')
+    expect(resetBtn.exists()).toBe(true)
+
+    // Click Reset → saveNalarConfig receives { ..., active_profile: undefined }
+    // (the key is omitted on serialization, so the test asserts the key
+    // is gone rather than null).
+    await resetBtn.trigger('click')
+    await flushPromises()
+    expect(mockSave).toHaveBeenCalledTimes(1)
+    const savedConfig = mockSave.mock.calls[0]![0] as Record<string, unknown>
+    expect('active_profile' in savedConfig ? savedConfig.active_profile : undefined).toBeUndefined()
+  })
+
+  it('emits a success notification when the Reset button is clicked', async () => {
+    mockGet.mockResolvedValueOnce({
+      profiles: { work: { model: 'm' } },
+      active_profile: 'work',
+    })
+    mockSave.mockResolvedValueOnce({ success: true })
+    const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+
+    const profileTab = wrapper.findAll('button[role="tab"]')[1]!
+    await profileTab.trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="reset-active-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('notification')?.some(e => e[1] === 'success')).toBe(true)
+  })
+
+  it('restores the previous active profile when saveNalarConfig fails (optimistic rollback)', async () => {
+    mockGet.mockResolvedValueOnce({
+      profiles: { work: { model: 'm' } },
+      active_profile: 'work',
+    })
+    mockSave.mockRejectedValueOnce(new Error('network down'))
+    const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+
+    const profileTab = wrapper.findAll('button[role="tab"]')[1]!
+    await profileTab.trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="reset-active-btn"]').trigger('click')
+    await flushPromises()
+
+    // After the failed save, the local activeProfile should still
+    // reflect the original value (rolled back from the optimistic null).
+    expect(wrapper.text()).toContain('work')
+    // And an error notification should fire.
+    expect(wrapper.emitted('notification')?.some(e => e[1] === 'error')).toBe(true)
+  })
 })
