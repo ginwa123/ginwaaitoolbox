@@ -191,7 +191,7 @@ describe('PreviewContentRenderer', () => {
   // preview" button, and a max-w-full on the container so the iframe
   // can never overflow its chat-bubble column.
   describe('variant: inline (chat-bubble layout)', () => {
-    it('applies a compact max-h-[320px] to the html iframe (not the 480px side-panel default)', () => {
+    it('applies min-h-[480px] to the html iframe so typical content fits without a scrollbar', () => {
       const wrapper = mount(PreviewContentRenderer, {
         props: {
           contentType: 'html',
@@ -202,9 +202,12 @@ describe('PreviewContentRenderer', () => {
       const iframeContainer = wrapper.find('[data-testid="preview-html-container"]')
       expect(iframeContainer.exists()).toBe(true)
       const classes = iframeContainer.attributes('class') ?? ''
-      expect(classes).toContain('max-h-[320px]')
-      // The side-panel default `min-h-[480px]` must NOT be present.
-      expect(classes).not.toContain('min-h-[480px]')
+      // Inline iframe uses min-h-[480px] (NOT the old max-h-[320px]
+      // cap which forced a scrollbar on every HTML preview).
+      expect(classes).toContain('min-h-[480px]')
+      // The 320px cap is gone — long content can scroll OR user clicks
+      // Open full, but typical content fits without a scrollbar.
+      expect(classes).not.toContain('max-h-[320px]')
     })
 
     it('caps iframe width at the chat-bubble width (max-w-full)', () => {
@@ -259,7 +262,7 @@ describe('PreviewContentRenderer', () => {
       }
     })
 
-    it('default variant is "side" (no max-h-[320px], no "Open full" button)', () => {
+    it('default variant is "side" (no max-w-full, no "Open full" button)', () => {
       const wrapper = mount(PreviewContentRenderer, {
         props: {
           contentType: 'html',
@@ -269,7 +272,8 @@ describe('PreviewContentRenderer', () => {
       // No variant passed → defaults to 'side' (back-compat).
       const iframeContainer = wrapper.find('[data-testid="preview-html-container"]')
       const classes = iframeContainer.attributes('class') ?? ''
-      expect(classes).not.toContain('max-h-[320px]')
+      // Side variant uses h-full (fills panel), not max-w-full (chat column)
+      expect(classes).not.toContain('max-w-full')
       expect(wrapper.find('[data-testid="preview-open-full-button"]').exists()).toBe(false)
     })
   })

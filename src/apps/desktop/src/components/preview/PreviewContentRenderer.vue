@@ -208,22 +208,29 @@ function openFullPreview() {
     <!--
       HTML iframe container — sizing differs by variant:
         side   : min-h-[480px], fills the parent (full-width panel)
-        inline : max-h-[320px] + max-w-full (fits the chat bubble)
-                 + has an "Open full preview" button below for the
-                 user to see the HTML at full width in a new tab.
+        inline : min-h-[480px] + max-w-full (fits the chat column)
+                 + has an "Open full preview" button so the user can
+                 see the page at full width in a new tab when the
+                 content overflows the inline area.
+
+      Why NO max-h for inline: the previous 320px cap forced a
+      scrollbar even on normal-sized HTML (cards, dashboards, simple
+      pages). 480px is the typical viewport height — most user HTML
+      fits without scrolling, and the "Open full" button covers the
+      long-content case.
     -->
     <div
       v-else-if="contentType === 'html' && htmlSrcDoc"
       data-testid="preview-html-container"
       :class="isInline
-        ? 'relative max-w-full max-h-[320px] rounded overflow-hidden border border-[var(--color-border)] bg-white'
+        ? 'relative max-w-full min-h-[480px] rounded overflow-hidden border border-[var(--color-border)] bg-white'
         : 'h-full min-h-[480px] rounded overflow-hidden border border-[var(--color-border)] bg-white'"
     >
       <iframe
         sandbox="allow-scripts"
         :srcdoc="htmlSrcDoc"
         :class="isInline
-          ? 'w-full max-h-[320px] border-0 block'
+          ? 'w-full min-h-[480px] border-0 block'
           : 'w-full h-full min-h-[480px] border-0 block'"
         :title="args.title || 'HTML preview'"
         data-testid="preview-html-iframe"
