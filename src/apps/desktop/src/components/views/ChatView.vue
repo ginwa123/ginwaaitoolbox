@@ -38,6 +38,8 @@ import SetGitWorktree from '../tool_outputs/SetGitWorktree.vue'
 import ReadCompactedMessages from '../tool_outputs/ReadCompactedMessages.vue'
 import KanbanMove from '../tool_outputs/KanbanMove.vue'
 import KanbanList from '../tool_outputs/KanbanList.vue'
+import SaveMemory from '../tool_outputs/SaveMemory.vue'
+import LoadMemory from '../tool_outputs/LoadMemory.vue'
 import ShowPreview from '../tool_outputs/ShowPreview.vue'
 import SearchHistory from '../tool_outputs/SearchHistory.vue'
 import PreviewSidePanel from '../preview/PreviewSidePanel.vue'
@@ -2521,6 +2523,16 @@ const compactSession = async () => {
                           />
                           <KanbanList
                             v-else-if="msg.tool_name === 'kanban_list'"
+                            :content="innerToolData(msg)"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <SaveMemory
+                            v-else-if="msg.tool_name === 'save_memory'"
+                            :content="innerToolData(msg)"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <LoadMemory
+                            v-else-if="msg.tool_name === 'load_memory'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />

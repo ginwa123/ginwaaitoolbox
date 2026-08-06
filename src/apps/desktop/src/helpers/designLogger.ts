@@ -138,6 +138,7 @@ export type DesignReason =
   | 'drag:noop:readonly'           // gesture blocked by readonly
   | 'drag:noop:preview'            // gesture blocked by preview mode
   | 'drag:noop:button≠0'           // pointerdown with non-primary button
+  | 'drag:noop:child-of-group'     // pointerdown on a child element nested inside a parent group/frame (drag suppressed — user must drag the parent)
   | 'drag:throttled-skip'          // onMove fired but throttle suppressed emit
   | 'drag:throttled-emit'          // onMove fired and throttle passed
   | 'drag:trailing-emit'           // pointerup trailing emit (capture final pos)

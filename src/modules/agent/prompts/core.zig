@@ -64,6 +64,40 @@ pub const SearchHistoryToolRule =
     \\**Self-check:** Before asking the user to repeat themselves or re-running a tool just to see "what happened", check if `search_history` can fetch the answer in one round-trip.
 ;
 
+pub const MemoryToolRule =
+    \\## Memory Tools — save_memory + load_memory (FTS5, cross-session)
+    \\
+    \\When you need to **persist a fact, preference, or decision across sessions** — or **recall one from a previous session** — use `save_memory` (write) and `load_memory` (read). Don't re-ask the user for preferences they've given before, don't re-derive facts you've already verified, and don't pollute `search_history` with operational notes that should live as structured memory.
+    \\
+    \\These are **AGENT-MANAGED notes** (auto-inserted into a SQLite FTS5 index), distinct from the curated `.md` files in `~/.config/nalar/memories/` (auto-injected into your prompt as `## Global Knowledge` at runtime). Use `save_memory` for short, structured facts you'd otherwise re-ask the user; use the `.md` surface for hand-curated insights (architecture notes, project conventions, "Zig 0.16 removed `std.posix.*`" facts).
+    \\
+    \\**TWO TOOLS — UPSERT + FTS SEARCH:**
+    \\- `save_memory({ content, tags?, id? })` — UPSERT by `id`. Omit `id` (or pass `""`) to auto-generate `mem_<16-hex>`. Pass a stable caller-provided `id` slug to UPDATE an existing row (e.g. `id="user-pref-theme"`). `content` must be 1 KiB – 1 MiB; empty or oversized is rejected (no silent truncation).
+    \\- `load_memory({ query, tags?, limit?, offset?, with_content? })` — FTS5 phrase search over `content` AND `tags`. Returns ranked hits with a `<snippet>` (10-token window with `[match]` markers). `with_content=true` opt-in to fetch the full body (capped at 2 KiB per row — anti-bloat default). `limit` default 10, hard cap 50. Use `<total_count>` + `offset` to paginate.
+    \\
+    \\**WIRE FORMAT — three contracts stay in sync:**
+    \\- `tags` is **a single string** (e.g. `"dark-mode||preferences"`), NOT a JSON array. The schema, parser, and storage all read it as `[]const u8`; storage splits into `[]const []const u8` at the boundary. The `||` separator is preferred; `|`, `,`, and space are accepted for robustness.
+    \\- `id` format is `mem_<16-hex>` (auto-generated) OR a caller-provided slug for UPSERT. Treat the format as opaque — never parse it.
+    \\- Storage is **permanent** — there is no `delete_memory` tool by design. To "forget" something, `save_memory` a new entry that supersedes it.
+    \\
+    \\**FTS5 query syntax is auto-sanitized.** Plain queries with `.`, `-`, `:`, etc. work — the tool wraps your input in FTS5 phrase syntax so `handle_tool.zig` tokenizes the same way the indexer did. Don't pre-escape; just write the natural query.
+    \\
+    \\**WHEN TO CALL `save_memory`:**
+    \\- **User preferences:** dark mode, theme, model choice, language, working hours, profile name.
+    \\- **Project conventions:** build commands, test suites, deploy steps, code style.
+    \\- **Decisions worth remembering:** "use Bun, not npm", "binary lives at `/usr/local/bin/nalar`", "test via `zig build test --summary all`".
+    \\- **Lookup keys:** model aliases, session_id conventions, kanban column id → meaning mappings.
+    \\- **Anything the user has corrected you about twice** (this is the threshold to persist — single corrections stay in context).
+    \\
+    \\**WHEN TO CALL `load_memory`:**
+    \\- **First user message of a new session**, when prior context is likely useful: `load_memory(query="<inferred topic>", with_content=true)`.
+    \\- **User asks "do you remember…" / "last time we…" / "we discussed…"** — always start with `load_memory` before guessing.
+    \\- **Before re-discovering a fact** (auth path, build command, profile mapping) — scan first; if no hit, proceed to discover, then `save_memory` so the next session skips it.
+    \\- **For long-running work on a known project**: do `load_memory(query="<project-name>")` once on entry to surface prior conventions and decisions.
+    \\
+    \\**Self-check:** Before asking the user to re-state a preference they've already given, call `load_memory`. Before re-deriving a fact you've verified before, call `save_memory` so the next agent (or you, after compaction) skips the work.
+;
+
 pub const ResponseFormatting =
     \\## Response Formatting
     \\

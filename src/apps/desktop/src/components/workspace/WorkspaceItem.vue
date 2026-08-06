@@ -71,6 +71,11 @@ const emit = defineEmits<{
   selectDesignPage: [workspaceId: string, itemId: string, pageId: string]
   deleteDesignPage: [workspaceId: string, itemId: string, pageId: string]
   addDesignPage: [workspaceId: string, itemId: string]
+  // NEW (rename-design-pages plan, 2026-08-06): ⋮ menu "Rename"
+  // item forwards the page to Sidebar which opens the
+  // RenameDesignPageModal. Pure pass-through — same pattern as
+  // selectDesignPage / deleteDesignPage.
+  renameDesignPage: [workspaceId: string, itemId: string, pageId: string, currentName: string]
 }>()
 
 // Computed: check if item is expanded (tasks visible)
@@ -303,6 +308,14 @@ const handleSelectDesignPage = (page: DesignPage) => {
 
 const handleDeleteDesignPage = (page: DesignPage) => {
   emit('deleteDesignPage', props.workspaceId, props.item.id, page.id)
+}
+
+// NEW (rename-design-pages plan, 2026-08-06): pass-through for the
+// "Rename" item from the <DesignPageRow> ⋮ menu. WorkspaceList /
+// Sidebar are responsible for opening the modal; we just bubble
+// the payload up the chain.
+const handleRenameDesignPage = (page: DesignPage) => {
+  emit('renameDesignPage', props.workspaceId, props.item.id, page.id, page.name)
 }
 
 // "+ Add Page" — emits to Sidebar which calls the store action.
@@ -755,6 +768,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           :item-id="item.id"
           :is-active-page="workspacesStore.activeDesignPageId === page.id"
           @select-page="handleSelectDesignPage"
+          @rename-page="handleRenameDesignPage"
           @delete-page="handleDeleteDesignPage"
         />
         <!-- "+ Add Page" button (bare text + hover, matching the

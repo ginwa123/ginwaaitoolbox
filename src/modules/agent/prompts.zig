@@ -40,6 +40,7 @@ pub const ResponseFormatting = prompts.ResponseFormatting;
 pub const UpdateActivityRule = prompts.UpdateActivityRule;
 pub const SearchToolRule = prompts.SearchToolRule;
 pub const SearchHistoryToolRule = prompts.SearchHistoryToolRule;
+pub const MemoryToolRule = prompts.MemoryToolRule;
 
 // =============================================================================
 // PROMPT BUILDERS
@@ -89,6 +90,7 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
     // .{ .name = "prompt_auto_fix", .content = PromptAutoFix },
     .{ .name = "search_tool_rule", .content = SearchToolRule },
     .{ .name = "search_history_tool_rule", .content = SearchHistoryToolRule, .requires_tool = "search_history" },
+    .{ .name = "memory_tool_rule", .content = MemoryToolRule, .requires_tool = "load_memory" },
     .{ .name = "agent_directive", .content = Agent },
     .{ .name = "parallel_work", .content = ParallelWork },
 
@@ -104,8 +106,8 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
     // === Memory & docs ===
     // .{ .name = "memory_prompt", .content = MemoryPrompt },
     // .{ .name = "nalar_md", .content = NalarMdAutoUpdate },
-    .{ .name = "global_memory_system", .content = GlobalMemorySystem },
-    .{ .name = "local_memory_system", .content = LocalMemorySystem },
+    // .{ .name = "global_memory_system", .content = GlobalMemorySystem },
+    // .{ .name = "local_memory_system", .content = LocalMemorySystem },
     .{ .name = "git_prompt", .content = GitPrompt },
 
     // === Response formatting (last — applies to everything above) ===

@@ -2264,9 +2264,64 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     workspaceId: string,
     itemId: string,
     pageId: string,
-    patch: { width: number; height: number },
+    patch: { width: number; height: number; name?: string },
   ): Promise<DesignPage> {
     return await updateDesignPageApi(workspaceId, itemId, pageId, patch)
+  }
+
+  // NEW (2026-08-06 — design page rename menu). Rename a single
+  // design page in-place. Mirrors the optimistic-update + rollback
+  // pattern from `renameTask`:
+  //
+  //   1. Trim the new name; refuse empty / unchanged (no-op → return).
+  //   2. Snapshot the previous name; optimistically mirror into the
+  //      `designPagesByItemId` cache so the sidebar tree re-renders
+  //      without waiting for the API round-trip.
+  //   3. PATCH the page via `updateDesignPage({ name })`. On any
+  //      error (4xx, 5xx, network), roll back to the previous name.
+  //
+  // The cache is the single source of truth for design page metadata
+  // — both the sidebar tree and DesignView read from it. No
+  // additional replication is required to keep the visuals in sync.
+  //
+  // No active-page fallback needed — renaming the active page is a
+  // pure metadata change; the canvas keeps rendering whatever page
+  // it was already on (the URL/sidebar re-renders the new name, but
+  // DesignView's local state still points at the same page_id).
+  async function renameDesignPage(
+    workspaceId: string,
+    itemId: string,
+    pageId: string,
+    newName: string,
+  ): Promise<void> {
+    const cached = designPagesByItemId.value[itemId] ?? []
+    const idx = cached.findIndex((p) => p.id === pageId)
+    if (idx === -1) return
+    const page = cached[idx]
+    if (!page) return
+
+    const trimmed = newName.trim()
+    if (!trimmed || trimmed === page.name) return
+
+    const previousName = page.name
+    // Optimistic update on the cached struct (Pinia's reactive proxy
+    // sees this assignment and re-renders the sidebar tree).
+    page.name = trimmed
+
+    try {
+      await updateDesignPageApi(workspaceId, itemId, pageId, {
+        width: page.width,
+        height: page.height,
+        name: trimmed,
+      })
+    } catch (err) {
+      // Roll back to the previous name on any error. The cache ref
+      // is the same — the rollback re-assignment is visible to
+      // every active component reading from the store.
+      page.name = previousName
+      console.error('Failed to rename design page:', err)
+      throw err
+    }
   }
 
   // Server-side cascade move. Each item's (dx, dy) applies to the
@@ -3866,6 +3921,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     deleteDesignElement,
     deleteDesignPage,
     updateDesignPage,
+    renameDesignPage,
     groupDesignElements,
     ungroupDesignElements,
     reparentDesignElementsBatch,

@@ -42,6 +42,10 @@ const emit = defineEmits<{
   selectDesignPage: [workspaceId: string, itemId: string, pageId: string]
   deleteDesignPage: [workspaceId: string, itemId: string, pageId: string]
   addDesignPage: [workspaceId: string, itemId: string]
+  // NEW (rename-design-pages plan, 2026-08-06): ⋮ menu "Rename"
+  // item forwards the page from WorkspaceItem → WorkspaceList → Sidebar.
+  // Sidebar opens RenameDesignPageModal + calls the store action.
+  renameDesignPage: [workspaceId: string, itemId: string, pageId: string, currentName: string]
   // NEW (Chunk 7 of task-routines plan): emitted by
   // <WorkspaceItem> when the routine-task branch in
   // <WorkspaceItemTask> fires the routine's pencil or Run Now
@@ -591,6 +595,7 @@ const handleItemDragEnd = () => {
             @select-design-page="(ws, item, pageId) => emit('selectDesignPage', ws, item, pageId)"
             @delete-design-page="(ws, item, pageId) => emit('deleteDesignPage', ws, item, pageId)"
             @add-design-page="(ws, item) => emit('addDesignPage', ws, item)"
+            @rename-design-page="(ws, item, pageId, currentName) => emit('renameDesignPage', ws, item, pageId, currentName)"
           />
           <!-- Add Item Button. Minimal: bare text "+ Add Item" with
                a subtle opacity transition on hover. NO SVG, NO

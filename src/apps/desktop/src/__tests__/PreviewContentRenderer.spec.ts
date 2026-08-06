@@ -179,4 +179,208 @@ describe('PreviewContentRenderer', () => {
     expect(wrapper.find('img').exists()).toBe(false)
     expect(wrapper.find('iframe').exists()).toBe(false)
   })
+
+  // ─── Variant prop (2026-08-06) ────────────────────────────────────
+  //
+  // The renderer is used in TWO layouts: the side panel (full-width
+  // 480px column with a tall iframe) and the chat bubble (variable
+  // width, scrollable bubble, "Open full preview" affordance). The
+  // default behavior (no variant prop) matches the original side-
+  // panel sizing for back-compat. Passing `variant="inline"` switches
+  // to a compact inline layout: shorter min-height, "Open full
+  // preview" button, and a max-w-full on the container so the iframe
+  // can never overflow its chat-bubble column.
+  describe('variant: inline (chat-bubble layout)', () => {
+    it('does NOT enforce a fixed min-h on the container (auto-resize sets the height from the iframe postMessage)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      const iframeContainer = wrapper.find('[data-testid="preview-html-container"]')
+      expect(iframeContainer.exists()).toBe(true)
+      const classes = iframeContainer.attributes('class') ?? ''
+      // No fixed min-h on the container — the iframe's height is set
+      // dynamically by the AUTO_RESIZE_SCRIPT via postMessage.
+      expect(classes).not.toContain('min-h-[480px]')
+      // The old max-h-[320px] cap is also gone.
+      expect(classes).not.toContain('max-h-[320px]')
+      // Iframe gets a min-height style of 200px as an initial fallback
+      // (before the postMessage arrives) so empty/short HTML still
+      // renders something visible.
+      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]')
+      expect(iframe.attributes('style')).toContain('min-height: 200px')
+    })
+
+    it('caps iframe width at the chat-bubble width (max-w-full)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      const iframeContainer = wrapper.find('[data-testid="preview-html-container"]')
+      const classes = iframeContainer.attributes('class') ?? ''
+      expect(classes).toContain('max-w-full')
+    })
+
+    it('renders an "Open full preview" button next to the html iframe (inline only)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      const openBtn = wrapper.find('[data-testid="preview-open-full-button"]')
+      expect(openBtn.exists()).toBe(true)
+    })
+
+    it('does NOT render the "Open full preview" button in side-panel variant (no need — full-width panel)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'side',
+        },
+      })
+      expect(wrapper.find('[data-testid="preview-open-full-button"]').exists()).toBe(false)
+    })
+
+    it('does NOT render the "Open full preview" button for non-html content types (markdown/code/text/image)', () => {
+      // The "open full" affordance only applies to html (which is the
+      // content type that has a fixed width + scrolling; markdown /
+      // code / text already flow naturally; image is already responsive).
+      for (const ct of ['markdown', 'text', 'code', 'image'] as const) {
+        const wrapper = mount(PreviewContentRenderer, {
+          props: {
+            contentType: ct,
+            args: { content: ct === 'image' ? 'data:image/png;base64,abc' : 'body' },
+            variant: 'inline',
+          },
+        })
+        expect(wrapper.find('[data-testid="preview-open-full-button"]').exists()).toBe(false)
+      }
+    })
+
+    it('default variant is "side" (no max-w-full, no "Open full" button)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+        },
+      })
+      // No variant passed → defaults to 'side' (back-compat).
+      const iframeContainer = wrapper.find('[data-testid="preview-html-container"]')
+      const classes = iframeContainer.attributes('class') ?? ''
+      // Side variant uses h-full (fills panel), not max-w-full (chat column)
+      expect(classes).not.toContain('max-w-full')
+      expect(wrapper.find('[data-testid="preview-open-full-button"]').exists()).toBe(false)
+    })
+  })
+
+  // ─── Auto-resize (2026-08-06) ─────────────────────────────────────
+  //
+  // The inline iframe auto-resizes to fit its content height via a
+  // postMessage protocol: a tiny script inside the iframe (prepended
+  // to the srcdoc by PreviewContentRenderer) reports its scrollHeight
+  // back to the parent, which adjusts the iframe height. This way the
+  // user sees the full HTML without a scrollbar in the inline chat
+  // bubble.
+  describe('auto-resize via postMessage', () => {
+    it('embeds an auto-resize script in the iframe srcdoc', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]')
+      const srcdoc = iframe.attributes('srcdoc') ?? ''
+      // The auto-resize script must be embedded before the user's HTML
+      // so it runs at parse time and sets up its listeners.
+      expect(srcdoc).toContain('show-preview-auto-resize')
+      expect(srcdoc).toContain('parent.postMessage')
+    })
+
+    it('updates iframe height when the iframe posts a height message', async () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
+      // Simulate the iframe posting its height.
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { source: 'show-preview-auto-resize', height: 777 },
+        }),
+      )
+      await wrapper.vm.$nextTick()
+      // The iframe's inline style should reflect the reported height.
+      expect(iframe.style.height).toBe('777px')
+    })
+
+    it('clamps the reported height to a minimum (200px) so empty content still renders', async () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { source: 'show-preview-auto-resize', height: 50 },
+        }),
+      )
+      await wrapper.vm.$nextTick()
+      expect(iframe.style.height).toBe('200px')
+    })
+
+    it('clamps the reported height to a maximum (2000px) so runaway content does not break the chat', async () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { source: 'show-preview-auto-resize', height: 99999 },
+        }),
+      )
+      await wrapper.vm.$nextTick()
+      expect(iframe.style.height).toBe('2000px')
+    })
+
+    it('ignores messages with the wrong source (other iframes in the page)', async () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
+      const initialStyle = iframe.style.height
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { source: 'some-other-source', height: 500 },
+        }),
+      )
+      await wrapper.vm.$nextTick()
+      // Style unchanged because we filter by source.
+      expect(iframe.style.height).toBe(initialStyle)
+    })
+  })
 })

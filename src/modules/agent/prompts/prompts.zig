@@ -24,6 +24,7 @@ pub const ResponseFormatting = core.ResponseFormatting;
 pub const UpdateActivityRule = core.UpdateActivityRule;
 pub const SearchToolRule = core.SearchToolRule;
 pub const SearchHistoryToolRule = core.SearchHistoryToolRule;
+pub const MemoryToolRule = core.MemoryToolRule;
 
 pub const Agent = agent.Agent;
 

@@ -285,13 +285,6 @@ pub const LlmConfig = struct {
     /// Profiles storage after parsing from JSON
     pub const ProfilesMap = std.StringHashMap(LlmProfile);
 
-    const ProfilesModelsJson = struct {
-        profile1: ?ProfileJson = null,
-        profile2: ?ProfileJson = null,
-        profile3: ?ProfileJson = null,
-        profile4: ?ProfileJson = null,
-    };
-
     /// A single header (key/value pair) for an MCP server request.
     pub const McpHeader = struct {
         key: []const u8,
@@ -468,26 +461,67 @@ pub const LlmConfig = struct {
             }
         }
 
-        // Parse profiles_models into ProfilesMap
+        // Parse profiles_models into ProfilesMap.
+        //
+        // 2026-08-06-config-profiles-arbitrary-keys: the previous
+        // implementation parsed `profiles_models` against a hardcoded
+        // 4-field schema (profile1..profile4); every other profile
+        // name — including the user's "900ribu" — was silently dropped
+        // by `parseFromSlice` with `ignore_unknown_fields = true`,
+        // causing the workflow to fall through to top-level config
+        // when the user picked a profile via the chatview picker.
+        //
+        // Now we re-stringify the JSON object and reparse it as a
+        // generic `json.Value`, then iterate over its keys to feed
+        // each entry to `addProfile` under its original key. Same
+        // pattern as the existing `mcp_servers` parser above; the
+        // extra alloc + parse per profile is negligible (typical
+        // configs have 1-5 profiles).
         if (config_json.profiles_models) |profiles| {
             const profiles_str = std.json.Stringify.valueAlloc(allocator, profiles, .{}) catch {
                 return error.InvalidJson;
             };
             defer allocator.free(profiles_str);
 
-            const profiles_parsed = json.parseFromSlice(ProfilesModelsJson, allocator, profiles_str, .{
+            const profiles_parsed = json.parseFromSlice(json.Value, allocator, profiles_str, .{
                 .ignore_unknown_fields = true,
             }) catch {
                 return error.InvalidJson;
             };
             defer profiles_parsed.deinit();
 
-            const profiles_data = profiles_parsed.value;
+            switch (profiles_parsed.value) {
+                .object => |obj| {
+                    var it = obj.iterator();
+                    while (it.next()) |entry| {
+                        // entry.key_ptr.* is the user-chosen profile
+                        // name (e.g. "900ribu"). entry.value_ptr is a
+                        // json.Value for the profile object.
+                        const profile_json_str = std.json.Stringify.valueAlloc(
+                            allocator,
+                            entry.value_ptr,
+                            .{},
+                        ) catch continue;
+                        defer allocator.free(profile_json_str);
 
-            try addProfile(&config.profiles_models, "profile1", profiles_data.profile1, allocator);
-            try addProfile(&config.profiles_models, "profile2", profiles_data.profile2, allocator);
-            try addProfile(&config.profiles_models, "profile3", profiles_data.profile3, allocator);
-            try addProfile(&config.profiles_models, "profile4", profiles_data.profile4, allocator);
+                        const profile_parsed = json.parseFromSlice(
+                            ProfileJson,
+                            allocator,
+                            profile_json_str,
+                            .{ .ignore_unknown_fields = true },
+                        ) catch continue;
+                        defer profile_parsed.deinit();
+
+                        try addProfile(
+                            &config.profiles_models,
+                            entry.key_ptr.*,
+                            profile_parsed.value,
+                            allocator,
+                        );
+                    }
+                },
+                else => {},
+            }
         }
 
         // Parse top-level sub_agents (skip-with-warning on bad entries).
