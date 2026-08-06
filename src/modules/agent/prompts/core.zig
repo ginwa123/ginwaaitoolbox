@@ -65,9 +65,11 @@ pub const SearchHistoryToolRule =
 ;
 
 pub const MemoryToolRule =
-    \\## Memory Tools — save_memory + load_memory (FTS5, cross-session)
+    \\## Memory Tools — save_memory + load_memory (FTS5, cross-session) — MANDATORY USE
     \\
-    \\When you need to **persist a fact, preference, or decision across sessions** — or **recall one from a previous session** — use `save_memory` (write) and `load_memory` (read). Don't re-ask the user for preferences they've given before, don't re-derive facts you've already verified, and don't pollute `search_history` with operational notes that should live as structured memory.
+    \\**These tools are NOT optional.** Persisting and recalling facts across sessions is a core part of doing this job well. Failing to call `load_memory` when prior context exists, or failing to call `save_memory` when a fact should persist, is a task failure — treat it with the same seriousness as skipping a required build step.
+    \\
+    \\`save_memory` (write) and `load_memory` (read) are how you **persist a fact, preference, or decision across sessions** or **recall one from a previous session**. Never re-ask the user for a preference they've already given. Never re-derive a fact you've already verified. Never let operational notes rot in `search_history` when they belong in structured memory instead.
     \\
     \\These are **AGENT-MANAGED notes** (auto-inserted into a SQLite FTS5 index), distinct from the curated `.md` files in `~/.config/nalar/memories/` (auto-injected into your prompt as `## Global Knowledge` at runtime). Use `save_memory` for short, structured facts you'd otherwise re-ask the user; use the `.md` surface for hand-curated insights (architecture notes, project conventions, "Zig 0.16 removed `std.posix.*`" facts).
     \\
@@ -82,22 +84,27 @@ pub const MemoryToolRule =
     \\
     \\**FTS5 query syntax is auto-sanitized.** Plain queries with `.`, `-`, `:`, etc. work — the tool wraps your input in FTS5 phrase syntax so `handle_tool.zig` tokenizes the same way the indexer did. Don't pre-escape; just write the natural query.
     \\
-    \\**WHEN TO CALL `save_memory`:**
-    \\- **User preferences:** dark mode, theme, model choice, language, working hours, profile name.
+    \\**REQUIRED — call `load_memory` in these situations, no exceptions:**
+    \\- **First user message of any session.** Before doing anything else, run `load_memory(query="<inferred topic>", with_content=true)`. Skipping this step is not allowed.
+    \\- **User asks "do you remember…" / "last time we…" / "we discussed…"** — `load_memory` first, always. Never guess or fabricate a recollection.
+    \\- **Before re-discovering any fact** (auth path, build command, profile mapping) — scan first; if no hit, discover it, then immediately `save_memory` so the next session doesn't repeat the work.
+    \\- **On entry to any long-running or recurring project** — `load_memory(query="<project-name>")` once, unconditionally, to surface prior conventions and decisions before proceeding.
+    \\
+    \\**REQUIRED — call `save_memory` in these situations, no exceptions:**
+    \\- **User preferences:** dark mode, theme, model choice, language, working hours, profile name. Capture these the moment they're stated, not "if convenient."
     \\- **Project conventions:** build commands, test suites, deploy steps, code style.
     \\- **Decisions worth remembering:** "use Bun, not npm", "binary lives at `/usr/local/bin/nalar`", "test via `zig build test --summary all`".
     \\- **Lookup keys:** model aliases, session_id conventions, kanban column id → meaning mappings.
-    \\- **Anything the user has corrected you about twice** (this is the threshold to persist — single corrections stay in context).
+    \\- **Any correction from the user, even once.** Do not wait for a second correction — persist it immediately so it's never repeated.
     \\
-    \\**WHEN TO CALL `load_memory`:**
-    \\- **First user message of a new session**, when prior context is likely useful: `load_memory(query="<inferred topic>", with_content=true)`.
-    \\- **User asks "do you remember…" / "last time we…" / "we discussed…"** — always start with `load_memory` before guessing.
-    \\- **Before re-discovering a fact** (auth path, build command, profile mapping) — scan first; if no hit, proceed to discover, then `save_memory` so the next session skips it.
-    \\- **For long-running work on a known project**: do `load_memory(query="<project-name>")` once on entry to surface prior conventions and decisions.
+    \\**Hard gate — self-check before every response:**
+    \\1. Am I about to ask the user something they may have already told me? → `load_memory` first. Asking twice is a failure.
+    \\2. Am I about to re-derive a fact I may have verified before? → `load_memory` first.
+    \\3. Did I just learn a preference, convention, decision, or correction? → `save_memory` before moving on. Do not defer this "for later."
+    \\4. Is this the first turn of the session? → `load_memory` must already have been called before you do anything else.
     \\
-    \\**Self-check:** Before asking the user to re-state a preference they've already given, call `load_memory`. Before re-deriving a fact you've verified before, call `save_memory` so the next agent (or you, after compaction) skips the work.
+    \\Treat these checks as blocking, not advisory. If you catch yourself skipping one, stop and call the tool before continuing.
 ;
-
 pub const ResponseFormatting =
     \\## Response Formatting
     \\
