@@ -467,4 +467,215 @@ describe('DesignElement drag', () => {
     // groupDrag should NOT fire in single-element mode.
     expect(wrapper.emitted('groupDrag')).toBeUndefined()
   })
+
+  // ─── Child-of-group drag suppression (2026-08-06) ─────────────────
+  // User request: elements nested inside a parent group/frame should
+  // NOT be independently movable. Clicking a child still selects it
+  // (so the user can edit properties), but pointer-drag is suppressed.
+  // The user has to drag the parent group / frame header to move the
+  // whole subtree. Resize handles still work on the child (Figma
+  // parity — child resize is independent, only child move is blocked).
+  //
+  // Wire-form note: the backend uses `COALESCE(parent_id, '')` so a
+  // top-level element arrives as `parent_id = ''`. A nested element
+  // arrives as `parent_id = 'elem_<parent>'`. Legacy shapes may have
+  // `parent_id = null` or `undefined` — both are treated as top-level.
+
+  it('drag on a child element (parent_id set) does NOT emit translate', async () => {
+    const CHILD: DesignElementApi = {
+      ...ELEMENT,
+      id: 'el_child',
+      // The bug: child elements could be dragged independently. The
+      // fix: drag is suppressed, only select fires.
+      parent_id: 'el_parent_group',
+    }
+    const wrapper = mount(DesignElement, {
+      props: { element: CHILD, selected: true, zoom: 1.0 },
+    })
+    const root = wrapper.find('[data-design-element]').element as HTMLElement
+    root.setPointerCapture = () => {}
+    root.releasePointerCapture = () => {}
+    root.hasPointerCapture = (): boolean => true
+    let moveHandler: any, upHandler: any
+    ;(root as any).addEventListener = (type: string, cb: any) => {
+      if (type === 'pointermove') moveHandler = cb
+      if (type === 'pointerup') upHandler = cb
+    }
+    ;(root as any).removeEventListener = () => {}
+
+    root.dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true,
+    }))
+    // Attempt a drag — the engine should NOT register any handler
+    // because the early-return fires before addEventListener.
+    if (moveHandler) {
+      moveHandler(new PointerEvent('pointermove', {
+        clientX: 150, clientY: 130, pointerId: 1,
+      }))
+      upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
+    }
+    await flushPromises()
+
+    // The whole point: no translate, no groupDrag, no update. The
+    // child is selectable (still emits select) but not draggable.
+    expect(wrapper.emitted('translate')).toBeUndefined()
+    expect(wrapper.emitted('groupDrag')).toBeUndefined()
+    expect(wrapper.emitted('update')).toBeUndefined()
+    // Selection still happens (the user can edit properties).
+    expect(wrapper.emitted('select')?.[0]).toEqual([
+      { elementId: 'el_child', additive: false },
+    ])
+    // No dragStart/dragEnd either — the suppress happens before the
+    // gesture state machine starts.
+    expect(wrapper.emitted('dragStart')).toBeUndefined()
+    expect(wrapper.emitted('dragEnd')).toBeUndefined()
+  })
+
+  it('resize on a child element still emits resize (resize handles unaffected)', async () => {
+    const CHILD: DesignElementApi = {
+      ...ELEMENT,
+      id: 'el_child_resize',
+      parent_id: 'el_parent_group',
+    }
+    const wrapper = mount(DesignElement, {
+      props: { element: CHILD, selected: true, zoom: 1.0 },
+    })
+    const nwHandle = wrapper.find(`[data-testid="design-element-handle-${CHILD.id}-nw"]`)
+    const nwEl = nwHandle.element as HTMLElement
+    nwEl.setPointerCapture = () => {}
+    nwEl.releasePointerCapture = () => {}
+    nwEl.hasPointerCapture = (): boolean => true
+    let moveHandler: any
+    ;(nwEl as any).addEventListener = (type: string, cb: any) => {
+      if (type === 'pointermove') moveHandler = cb
+    }
+    ;(nwEl as any).removeEventListener = () => {}
+
+    nwEl.dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true,
+    }))
+    moveHandler(new PointerEvent('pointermove', {
+      clientX: 70, clientY: 60, pointerId: 1,
+    }))
+    await new Promise((r) => setTimeout(r, 300))
+    const resizes = wrapper.emitted('resize') ?? []
+    const lastResize = resizes[resizes.length - 1]?.[0] as any
+    // Only the move branch is blocked — resize fires normally.
+    expect(lastResize).toBeDefined()
+    expect(lastResize.width).toBe(230)
+    expect(lastResize.height).toBe(240)
+  })
+
+  it('drag on a top-level element (parent_id === "") still emits translate (regression guard)', async () => {
+    // parent_id is the empty string (the backend's COALESCE form for
+    // NULL). This is the boundary case — empty string means top-level.
+    const TOP_LEVEL: DesignElementApi = {
+      ...ELEMENT,
+      id: 'el_top',
+      parent_id: '',
+    }
+    const wrapper = mount(DesignElement, {
+      props: { element: TOP_LEVEL, selected: true, zoom: 1.0 },
+    })
+    const root = wrapper.find('[data-design-element]').element as HTMLElement
+    root.setPointerCapture = () => {}
+    root.releasePointerCapture = () => {}
+    root.hasPointerCapture = (): boolean => true
+    let moveHandler: any, upHandler: any
+    ;(root as any).addEventListener = (type: string, cb: any) => {
+      if (type === 'pointermove') moveHandler = cb
+      if (type === 'pointerup') upHandler = cb
+    }
+    ;(root as any).removeEventListener = () => {}
+
+    root.dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true,
+    }))
+    moveHandler(new PointerEvent('pointermove', {
+      clientX: 150, clientY: 130, pointerId: 1,
+    }))
+    upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
+    await flushPromises()
+
+    const translates = wrapper.emitted('translate') ?? []
+    expect(translates.length).toBeGreaterThan(0)
+    const lastTranslate = translates[translates.length - 1]?.[0] as any
+    expect(lastTranslate).toMatchObject({ dx: 50, dy: 30 })
+  })
+
+  it('drag on a child element with parent_id = null (legacy shape) is treated as top-level', async () => {
+    // Legacy elements returned by the API before parent_id was added
+    // have `parent_id = null` (or undefined). They should be treated
+    // as top-level — drag is allowed.
+    const LEGACY: DesignElementApi = {
+      ...ELEMENT,
+      id: 'el_legacy',
+      parent_id: null,
+    }
+    const wrapper = mount(DesignElement, {
+      props: { element: LEGACY, selected: true, zoom: 1.0 },
+    })
+    const root = wrapper.find('[data-design-element]').element as HTMLElement
+    root.setPointerCapture = () => {}
+    root.releasePointerCapture = () => {}
+    root.hasPointerCapture = (): boolean => true
+    let moveHandler: any, upHandler: any
+    ;(root as any).addEventListener = (type: string, cb: any) => {
+      if (type === 'pointermove') moveHandler = cb
+      if (type === 'pointerup') upHandler = cb
+    }
+    ;(root as any).removeEventListener = () => {}
+
+    root.dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true,
+    }))
+    moveHandler(new PointerEvent('pointermove', {
+      clientX: 150, clientY: 130, pointerId: 1,
+    }))
+    upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
+    await flushPromises()
+
+    const translates = wrapper.emitted('translate') ?? []
+    expect(translates.length).toBeGreaterThan(0)
+  })
+
+  it('multi-select containing children still triggers groupDrag (parent_id ignored in multi-select)', async () => {
+    // Multi-select already routes through the groupDrag branch (the
+    // `triggerGroupDrag = (inMultiselect || isGroupLike) && mode === 'move'`
+    // check). The child-blocks-move guard has an `!inMultiSelect`
+    // exception, so a multi-select of children can still move.
+    const CHILD: DesignElementApi = {
+      ...ELEMENT,
+      id: 'el_child_multi',
+      parent_id: 'el_parent_group',
+    }
+    const wrapper = mount(DesignElement, {
+      // Two-child multi-select — neither is at top-level.
+      props: { element: CHILD, selectedIds: ['el_child_multi', 'el_child_2'], zoom: 1.0 },
+    })
+    const root = wrapper.find('[data-design-element]').element as HTMLElement
+    root.setPointerCapture = () => {}
+    root.releasePointerCapture = () => {}
+    root.hasPointerCapture = (): boolean => true
+    let moveHandler: any, upHandler: any
+    ;(root as any).addEventListener = (type: string, cb: any) => {
+      if (type === 'pointermove') moveHandler = cb
+      if (type === 'pointerup') upHandler = cb
+    }
+    ;(root as any).removeEventListener = () => {}
+
+    root.dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true,
+    }))
+    moveHandler(new PointerEvent('pointermove', {
+      clientX: 150, clientY: 130, pointerId: 1,
+    }))
+    upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
+
+    // Multi-select → groupDrag, NOT translate. The child-suppress guard
+    // never fires because inMultiSelect=true short-circuits the guard.
+    const groupDrags = wrapper.emitted('groupDrag') ?? []
+    expect(groupDrags.length).toBeGreaterThan(0)
+    expect(wrapper.emitted('translate')).toBeUndefined()
+  })
 })

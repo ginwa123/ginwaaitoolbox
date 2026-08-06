@@ -195,6 +195,16 @@ type ResizeHandle = 'nw' | 'n' | 'ne' | 'w' | 'e' | 'sw' | 's' | 'se'
 
 const isDragging = ref(false)
 
+// True when this element is nested inside a parent group/frame. The
+// backend's `COALESCE(parent_id, '')` returns '' for top-level rows,
+// non-empty for nested rows. Legacy / pre-migration shapes may
+// return `null` or `undefined` — both are treated as top-level so
+// legacy elements remain draggable.
+const isChildOfGroup = computed(() => {
+  const pid = props.element.parent_id
+  return !!pid && pid !== ''
+})
+
 const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // The 8 resize handles are children of the .design-element wrapper.
   // The wrapper also has a @pointerdown handler (for 'move'). Without
@@ -263,6 +273,36 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     element: abbrevElement(props.element),
     extra: { additive: event.shiftKey, mode },
   })
+
+  // ─── Child-of-group: block single-element move drag ─────────────────
+  // User request (2026-08-06, drag-on-child-element bug): a child
+  // element nested inside a parent group/frame should NOT be
+  // independently movable. The selection still fires (the
+  // `emit('select', ...)` above) so the user can edit the child's
+  // properties in the side panel, but the pointer-drag is suppressed.
+  // To move the row, the user must click on the parent group/frame's
+  // bounding box (the body of the group's element, which in the
+  // LayersPanel is the row immediately above the children).
+  //
+  // Placement: BEFORE dragStart so the parent's undo-state capture
+  // doesn't fire for a gesture that will never happen. The multi-
+  // select exception preserves the existing behaviour where a
+  // multi-child selection can still move (the triggerGroupDrag
+  // branch below would handle it via groupDrag — child-drag is the
+  // only mode suppressed).
+  //
+  // Exception: `mode === 'move'` only. Resize handles still work on
+  // the child (Figma parity — child resize is independent, only
+  // child move is blocked).
+  const inMultiSelect = props.selectedIds.length > 1 && props.selectedIds.includes(props.element.id)
+  if (mode === 'move' && isChildOfGroup.value && !inMultiSelect) {
+    designLogger.debug({
+      reason: 'drag:noop:child-of-group',
+      caller: 'DesignElement.startDrag',
+      element: abbrevElement(props.element),
+    })
+    return
+  }
 
   // Undo/redo plan (Chunk 4): emit drag-start BEFORE the gesture
   // branches so the parent can capture pre-state. For single-element
@@ -737,7 +777,11 @@ onUnmounted(() => {
     class="design-element absolute"
     :class="[
       selected || selectedIds.includes(element.id) ? 'selected' : '',
-      readonly ? 'cursor-default' : 'cursor-move',
+      readonly
+        ? 'cursor-default'
+        : isChildOfGroup
+          ? 'cursor-pointer'
+          : 'cursor-move',
       isDragging ? 'dragging' : '',
     ]"
     :style="elementStyle"
