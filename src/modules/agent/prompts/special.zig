@@ -154,6 +154,31 @@ pub const CompactionAgent =
     \\- Verbose pastes of tool outputs, file contents, or transcript are
     \\  ANTI-PATTERNS. The next agent fetches what it needs; your job is the
     \\  synthesized handoff, not a verbatim copy.
+    \\
+    \\━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    \\CROSS-SESSION MEMORY (save_memory + load_memory)
+    \\━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    \\You and the next agent BOTH have `save_memory` and `load_memory` tools (a
+    \\SQLite FTS5 surface, distinct from the `.md` memory files auto-injected
+    \\into the prompt as `## Global Knowledge`). They persist structured notes
+    \\across sessions — `save_memory` UPSERTs by `id` (omit to create, pass to
+    \\update), `load_memory` runs an FTS5 phrase search with snippet-only output
+    \\by default; pass `with_content=true` to fetch full bodies (2 KiB cap per row).
+    \\
+    \\**Implications for your handoff:**
+    \\- If the user asked you to remember a fact across sessions, include a hint
+    \\  in the plan like `save_memory id="<slug>" content="<fact>"` so the next
+    \\  agent can persist it (instead of pasting the value verbatim into the plan).
+    \\- If the next agent will need to recall a previous preference or decision,
+    \\  hint `load_memory query="<topic>"` instead of pasting the value — the
+    \\  agent will fetch the current canonical version via FTS5.
+    \\- Don't suggest `save_memory` for transient state (current file contents,
+    \\  one-off values) — that's what `<File State>` is for. Memory is for facts
+    \\  that must survive across sessions.
+    \\- If the user already told you a stable preference earlier in this session
+    \\  and you see a future plan relying on it, propose the `save_memory` call
+    \\  in your "Next Action" or "Remaining Steps" so the next agent doesn't
+    \\  re-derive it.
 ;
 
 pub const GenerateSessionNameAgent =

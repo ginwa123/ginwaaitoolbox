@@ -3233,3 +3233,699 @@ renders literal `&lt;p&gt;` instead of an actual `<p>` element.
 - Rename via DesignView toolbar — the active page's name is visible in the toolbar but there's no rename affordance there yet.
 - Bulk rename (rename multiple pages at once) — would need a new endpoint.
 - Persist the original name on rename for migration / rollback — no `previous_name` column exists today.
+## 🎓 Cross-cutting patterns (consolidated 2026-08-06)
+
+> These are the most reusable patterns that emerged from 22+ fixes
+> shipped on 2026-08-06. The detailed per-bug writeups lived in
+> `.nalar/memories/<topic>-YYYY-MM-DD.md` — deleted after
+> consolidation. Git history is the source of truth for any specific
+> bug. This section captures patterns that should apply to future
+> work, regardless of which file or feature touches them.
+
+### 1. SSE handlers must mirror local state BEFORE refetch
+
+When an SSE event signals a state mutation (`moved`, `assigned`,
+`updated`, `deleted`, etc), the handler MUST mutate the local
+Pinia store to match the event payload BEFORE triggering the
+refetch. Otherwise the merge logic (`filter local → merge wire`)
+leaves a stale local copy because it trusts the local field as
+authoritative for "what's in this column / parent / workspace".
+
+Applies to any resource that has:
+1. A "moved / reassigned / mutated" SSE event.
+2. A merge logic that uses a local field as the filter key
+   (e.g. `kanban_column_id`, `parent_id`, `workspace_id`).
+3. A non-UI mutator (agent tool, another tab, another user).
+
+```ts
+// BAD — trust the wire response alone
+onSseEvent(event) {
+  fetchResource(event.id)  // returns fresh data, but local in-memory
+                            // still has a copy with the OLD field value
+}
+
+// GOOD — mirror first, then refetch
+onSseEvent(event) {
+  if (event.moved) {
+    localCopy.state_field = event.new_state   // ← mirror
+  }
+  fetchResource(event.id)                      // merge is now consistent
+}
+```
+
+Reference: `sse-event-mirror-before-refetch.md`. Also applies to
+design layers (already uses `registerRecentLocalMutations` 1.5s TTL).
+
+### 2. URL is breadcrumb, not just identifier
+
+When the user navigates between views, the URL should preserve
+the breadcrumb context (`workspaceId`, `itemId`, `pageId`,
+`sorts`) so browser-back, refresh, and share-link all work.
+
+- `router.push` — for "navigating somewhere new" (open a task).
+- `router.replace` — for "rewriting the current state" (close a
+  dialog, in-place filter).
+
+```ts
+// Pre-fix (REPLACE — clobbers history, drops context):
+router.replace({ path: '/app', query: { view: 'task', task, itemId } })
+
+// Post-fix (APPEND — preserves context, history intact):
+const query = {
+  ...pickBreadcrumbFromQuery(route.query),  // string-only scalars
+  view: 'task', task, itemId,
+}
+router.push({ path: '/app', query })
+```
+
+The URL sync watcher in `AppLayout.vue` is the source of truth for
+mirroring store changes to the URL. Guard it with an
+`isNavigatingToTask` ref so the watcher doesn't clobber an
+in-flight `router.push` from elsewhere:
+
+```ts
+if (isNavigatingToTask.value) return  // ← guard
+```
+
+Also gate `pageId` on the active item's `item_type === 'design'` —
+otherwise `pageId` leaks from a design URL into a kanban URL when
+switching items.
+
+References: `better-url-browser-append-on-task-click.md`,
+`url-pageid-leak-design-to-non-design.md`.
+
+### 3. Wire formats always carry input params (even on error/empty)
+
+Every tool-output envelope (`<search>`, `<show_preview>`, etc.)
+MUST include the input args on every response — including
+error/empty cases. The frontend relies on the wrapper to render
+"what was searched" / "what was called". A no-match or error
+response without the wrapper silently falls back to "unknown"
+in the UI.
+
+```xml
+<!-- WRONG: bypasses the formatter, drops the wrapper -->
+<warning>pattern not found</warning>
+
+<!-- RIGHT: wrapper + body with the actual args -->
+<search pattern="X" path="Y">
+  <warning>no matches for pattern "X" in path "Y"</warning>
+</search>
+```
+
+Anti-pattern: "bypass the formatter for simple cases" (the
+no-match case in `search` was the smoking gun). The formatters
+know the contract; trust them.
+
+References: `search-better-error-2026-08-06.md`,
+`save-memory-bug-2026-08-06.md` (tags wire format),
+`show-preview-parameters-xml-vs-json-2026-08-06.md` (XML/JSON drift).
+
+### 4. Test fixtures MUST match production wire shape
+
+Convenience fixtures (e.g. `JSON.stringify(params)` instead of
+the actual XML form produced by `jsonArgsToXml`) silently mask
+production bugs. The fixture matches the OLD backend, not the
+current production wire shape.
+
+When debugging a "works in test but not in production" symptom,
+the fixture is the first place to check. Compare against a live
+`agentic_coding.log` capture or a backend unit test for the
+actual wire format.
+
+References: `show-preview-parameters-xml-vs-json-2026-08-06.md`,
+`save-memory-bug-2026-08-06.md`.
+
+### 5. Zig lazy semantic analysis hides compile bugs
+
+Zig 0.16 only analyzes a function body if it's actually called
+by the test runner. Removing a redundant file (e.g. duplicate
+`tool_registry.zig`) forces the canonical path's body to be
+analyzed end-to-end for the first time. Expect latent compile
+errors:
+
+1. **Missing `pub` on helpers** — `fn helper()` becomes an error
+   when called from a now-analyzed caller.
+2. **Signed integer division** — `x / 2` requires `@divTrunc`,
+   `@divFloor`, or `@divExact` in Zig 0.16.
+3. **Typos in identifier paths** — e.g.
+   `nalarcore.create_kanban_task_tool` vs
+   `nalarcore.create_kanban_task`.
+
+Always verify with `zig build test --summary all` AFTER a
+consolidation. Static-contract tests don't catch these.
+
+Reference: `dedup-tool-registry-2026-08-06.md`.
+
+### 6. Use migrations module in test setup (not hand-rolled schema)
+
+Hand-creating SQLite schema in `setupDb()` is a maintenance trap.
+The schema drifts from production (new `NOT NULL` columns are
+missed) and tests pass against an outdated schema.
+
+Always:
+```zig
+var manager = migration.MigrationManager.init(alloc, &db);
+defer manager.deinit();
+try migration.registerAllMigrations(&manager);
+try manager.runMigrations();
+```
+
+Trade-off: ~50 ms extra per test setup. Acceptable cost for
+schema-safety. Reviewers flag this consistently.
+
+Reference: `llm-history-test-use-migrations-module.md`.
+
+### 7. Per-component / per-instance state isolation
+
+When a "global" sort/filter/setting is applied to N instances
+of a component (columns, layers, pages), use per-instance
+primitives in the store, NOT a shared watcher that fans out N
+parallel updates.
+
+Anti-pattern: `fetchKanbanTasksForAllColumns` fans out the SAME
+sort to every column — one column's change triggers N endpoint
+calls.
+
+Correct pattern: each column fetches its own data with its own
+sort. The `fetchKanbanTasks(columnId, sortBy, direction)`
+primitive is the right tool for per-column changes.
+
+Reference: `kanban-per-column-sort-independence-client-side.md`.
+
+### 8. Surface trade-offs FIRST, don't document in "Out of scope"
+
+When a fix introduces a UX trade-off ("when X, Y is left
+empty"), SURFACE IT FIRST as a question to the user. Don't
+document in "Out of scope" and proceed. The user often rejects
+the trade-off silently, discovering it after the fix is merged.
+
+Two acceptable patterns:
+1. Ask the user explicitly before implementing.
+2. Implement the safer default (no regression) and skip the
+   trade-off entirely.
+
+Anti-pattern: tests asserting the trade-off — locks in the
+behaviour and creates the impression it was deliberate when it
+was actually a unilateral agent decision.
+
+Reference: `~/.config/nalar/memories/out-of-scope-trade-offs-need-user-confirmation.md`.
+
+### 9. 3-phase tool call INSERT pattern
+
+When the assistant declares `tool_calls=[A, B, C]` and tool
+execution can crash mid-loop (long-running, network hang,
+process kill), use a 3-phase INSERT:
+
+```
+Phase 1 (sync)  ── INSERT placeholder rows for ALL tool_calls
+Phase 2 (sync)  ── INSERT the assistant message with tool_calls
+Phase 3 (async) ── for each tool_call: run + UPDATE the row in place
+```
+
+If we crash between Phase 1 and 3, the placeholders stay in the
+DB. A startup hook replaces stranded placeholders with a
+synthetic "Tool execution interrupted" message before the next
+LLM call, satisfying the OpenAI API contract by ID.
+
+**Critical**: the placeholder MUST have `is_feed_to_llm=1`. If
+`0`, the conversation payload sent to the LLM omits the
+placeholder row → assistant message's `tool_calls=[A, B, C]`
+has no matching tool result → API rejects.
+
+Migration pattern:
+```sql
+ALTER TABLE llm_history ADD COLUMN is_loading INTEGER NOT NULL DEFAULT 0;
+CREATE UNIQUE INDEX llm_history_tool_call_id_loading_idx
+  ON llm_history(tool_call_id)
+  WHERE tool_call_id IS NOT NULL AND tool_call_id != '';
+```
+
+Reference: `tool-call-loading-placeholder-2026-08-06.md`.
+
+### 10. Inline CSS for stacking-aware visual properties
+
+For `position: absolute` elements with explicit z-index, the
+z-index MUST be in the inline style. DOM order alone controls
+stacking for absolute-positioned elements without explicit
+z-index CSS.
+
+Right-click reorder + keyboard shortcuts update the DB z_index
+correctly, but the canvas visual stacking didn't change because
+the inline `style` didn't include `z-index`.
+
+Fix: `elementStyle.zIndex = props.element.z_index`.
+
+Reference: `design-z-index-inlinestyle-fix-2026-08-06.md`.
+
+### 11. Document mousedown listener cleanup
+
+Click-outside-to-close dropdowns need document `mousedown`
+listeners. Add on open, REMOVE on close. Without cleanup, every
+menu-open leaks a global listener. With many rows, this leaks
+across the whole UI.
+
+Use `document.addEventListener` on open,
+`document.removeEventListener` in a paired cleanup function or
+`onUnmounted`.
+
+References: kanban column ⋮ menu, design page ⋮ menu, sidebar
+dead-code audit (Task 8).
+
+### 12. workspacesStore.init() wipes manually-assigned fixtures
+
+Mounting `<AppLayout>` ALWAYS triggers `init()`. `init()` does
+`workspaces.value = await Promise.all(api.getWorkspaces().map(...))`,
+which REPLACES whatever the test set on the ref. The
+previously-injected workspace tree is gone.
+
+In tests, mock the init-phase API calls to return the per-test
+fixture:
+```ts
+vi.spyOn(api, 'getWorkspaces').mockImplementation(async () => ({
+  workspaces: store.workspaces as any,
+}))
+vi.spyOn(api, 'getTasks').mockImplementation(async (wsId, itemId) => {
+  const item = findItemInStore(wsId, itemId)
+  return { tasks: item.tasks ?? [], has_more: false, next_cursor: null }
+})
+```
+
+`as any` casts on items are necessary because the store's
+internal `Task` type doesn't include every variant
+(`task_type: 'memory'`), even though runtime data may include
+memory-task fixtures from other tests. The cast is local to the
+test mock — production code keeps the strict type.
+
+### 13. Per-task / per-instance storage columns (tags, image_urls, cwd)
+
+When adding per-task fields, the canonical pattern is:
+
+1. Migration: `ALTER TABLE workspace_item_tasks ADD COLUMN <name> TEXT NOT NULL DEFAULT ''`
+2. Backend: dynamic SQL builder (`null` → omit, `""` → SQL `''`
+   literal, non-empty → bind `?`).
+3. Frontend in-memory: `T[]` array; wire format: `||`-joined
+   string.
+4. Storage layer takes `[]const []const u8` (array); boundary
+   split happens at tool layer.
+5. Test fixture MUST match production wire shape (Pattern 4).
+
+References: `kanban-image-urls-column-2026-08-06.md` (Migration 069),
+`per-task-cwd-session-optional.md` (Migration 070).
+
+### 14. Module-level singleton ref for SSR-safe localStorage
+
+For user-controlled UI preferences (preview display mode, panel
+dismiss state), use a module-level singleton ref + re-sync on
+each call:
+
+```ts
+const mode = ref(loadFromLocalStorage())
+const setMode = (newMode) => {
+  saveToLocalStorage(newMode)
+  mode.value = newMode
+}
+```
+
+The re-sync is a single localStorage read per call (fast +
+idempotent in production because `setMode` persists on every
+flip). SSR-safe (returns default when `localStorage` is
+undefined). Testable (the localStorage read is per-call, so
+tests can pre-set the key).
+
+Reference: `show-preview-display-mode-2026-08-06.md`.
+
+### 15. Vue 3 reactivity requires `ref()`, not plain objects
+
+`{ value: T }` looks like a `Ref<T>` but is NOT reactive.
+Mutations to `.value` on a plain object don't trigger
+re-renders. Always import `ref` from Vue and call `ref(T)` to
+produce a reactive proxy.
+
+Symptom: computed never re-evaluates despite mutation
+propagating.
+
+When a test injects a ref via `provide()`, ALWAYS create it
+with Vue's `ref()` factory. The TS type `{ value: T }` is
+structurally identical to `Ref<T>` but only the real `ref()`
+produces a reactive proxy.
+
+Reference: `chatview-stop-button-2026-08-06.md` (the
+`processingState` test fixture).
+
+### 16. Vite HMR sometimes requires hard refresh
+
+Vite HMR updates source modules in place. For pure template
+changes, HMR is invisible. For `computed` changes that depend
+on defines (e.g. adding a `.sort()` step to a `cardsInColumn`
+filter), HMR can leave the previous cache in place — the page
+still renders but the new comparator isn't invoked.
+
+Detection recipe when user reports "fix doesn't work":
+1. Verify the fix is in source (`grep`).
+2. Verify Vite is serving the corrected file
+   (`curl http://localhost:5173/src/<file>?direct | grep`).
+3. Run unit tests (`bunx vitest run <file>`) — bypasses HMR.
+4. Ask user to **hard refresh** (Ctrl+Shift+R / Cmd+Shift+R).
+
+If all three pass, the fix is deployed. Tell the user to hard
+refresh.
+
+Don't restart the dev server or rebuild the desktop binary to
+fix Vite issues — the dev server uses LIVE source; the binary
+embeds the OLD bundle.
+
+Reference: `vite-hmr-computed-sort-needs-hard-refresh.md`.
+
+### 17. SQL bind: empty string uses literal branch, not NULL
+
+For `NOT NULL DEFAULT ''` columns, an empty `[]const u8` bind
+becomes `NULL`, which violates the constraint. Split
+INSERT/UPDATE into "with-X" / "without-X" forms:
+
+```zig
+// Standard pattern (null → omit column, DEFAULT '' applies):
+if (x_opt) |x| {
+    try db.exec("UPDATE table SET col = ? WHERE id = ?", .{ x, id });
+} else {
+    try db.exec("UPDATE table SET id = ?", .{id});  // omitted, DEFAULT applies
+}
+
+// For zero-length (not null), use SQL '' literal:
+try db.exec("UPDATE table SET col = '' WHERE id = ?", .{id});  // ← NOT bound
+```
+
+Reference: `kanban-image-urls-column-2026-08-06.md` (image_urls
+handling).
+
+### 18. Config / settings schemas must accept arbitrary user-named keys
+
+Hardcoded config schemas
+(e.g. `profiles_models: { profile1, profile2, profile3, profile4 }`)
+silently drop user-named keys. `parseFromSlice` with
+`ignore_unknown_fields = true` DROPS every key not in the schema.
+Use `json.Value` reparse + key iterator instead — same pattern as
+the existing `mcp_servers` parser.
+
+```zig
+// Re-stringify each entry, re-parse to ProfileJson, addProfile.
+switch (profiles_parsed.value) {
+    .object => |obj| {
+        var it = obj.iterator();
+        while (it.next()) |entry| {
+            // ... addProfile(&config.profiles_models, entry.key_ptr.*, ...)
+        }
+    },
+    else => {},
+}
+```
+
+Reference: `profile-not-effective-on-demand-2026-08-06.md`.
+
+### 19. `@click.stop` on nested triggers inside role="button" rows
+
+A `<div role="button">` doesn't auto-prevent child click events.
+Clicking a child element (⋮ trigger, × button) fires BOTH the
+child's handler AND the outer row's handler. Symptom: clicking
+⋮ navigates to the page before opening the dropdown.
+
+Fix: `@click.stop` on the child trigger. Or use a real
+`<button>` (with `<div role="button">` as the outer) so the
+click semantics are isolated.
+
+References: design page ⋮ menu, kanban column ⋮ menu, sidebar
+row buttons.
+
+### 20. Merge patterns for parallel branches
+
+When merging branches with overlapping additions (e.g. CLI
+scaffolding on both `main` and `worktree/cli-app`):
+
+- For BUILD GRAPH / module re-exports: take HEAD (most complete
+  version) and surgically ADD the missing chunks.
+- For add/add conflicts where "theirs" is the real code: `git
+  checkout --theirs` (e.g. `src/apps/cli/src/main.zig` where
+  main had zig-init boilerplate but cli-app had real code).
+- For APPEND-ONLY files (AGENTS.md, docs/SPEC.md): take HEAD's
+  entries first, then APPEND the other branch's chronologically
+  older entries. Acceptable to lose strict chronological
+  ordering for personal changelogs.
+
+Always check `comm -12 main_files cli_files` BEFORE merging —
+empty intersection = safe to proceed without disturbing
+parallel workers.
+
+Reference: `cli-app-merge-2026-08-06.md`.
+
+### 21. Backend cancel workflow: already wired, frontend just hooks in
+
+The backend cancel pipeline was already fully wired end-to-end
+before the UI ever needed it:
+
+```
+POST /api/llm/session/:sid/stop
+  → llm_history.cancelSession
+  → UPDATE worker SET cancelled=1
+workflow loop:
+  - polls isWorkerCancelled at top of every iteration (workflow.zig:500)
+  - polls at retry delay (retry_delay_ms.zig:42)
+  → breaks, deleteWorker
+  → SSE "worker deleted" event
+  → App.vue removes session from processingState
+```
+
+A frontend task that needs "stop the agent" only needs:
+- An `api.stopSession(sessionId)` wrapper.
+- A button gated on `isLLMProcessing`.
+- An emit → handler → API call.
+
+Don't try to mid-stream cancel or add new state — the backend
+polls, so iteration-boundary cancel is the contract.
+
+Reference: `chatview-stop-button-2026-08-06.md`.
+
+### 22. Init-time pre-fetch for "I clicked it, then refresh, then it's empty"
+
+Sidebar trees with expandable rows (kanban columns, design
+pages) need data pre-fetched in `workspacesStore.init()` so
+that:
+- Browser refresh shows the data immediately (no spinner).
+- The chevron click doesn't need a separate fetch.
+
+```ts
+// In init() fan-out:
+await Promise.all(
+  items.map(async (item) => {
+    if (item.item_type === 'design') {
+      try { await fetchDesignPages(ws.id, item.id) } catch { /* best-effort */ }
+    }
+  }),
+)
+```
+
+In-flight guards (the `Map<itemId, Promise>` dedupe pattern) on
+the store action prevent double-fetches when chevron-click races
+init().
+
+References: `auto-expand-design-pages-2026-08-06.md`,
+`kanban-prefetch-on-init`.
+
+### 23. Multi-tool ↔ multi-storage 3-contract alignment
+
+Three places must stay in sync whenever you add a field that
+crosses tool ↔ storage:
+
+1. **Schema** (LLM-visible tool definition) — declares type.
+2. **Parser** (Zig struct for `parseFromSlice`) — declares
+   matching Zig type.
+3. **Storage** (DB layer) — accepts the canonical type.
+
+The boundary conversion (string ↔ array, JSON ↔ XML, etc.)
+happens at the tool layer. The storage layer keeps the
+canonical type because it's the right primitive for SQL bind
+loops.
+
+If you ever change the schema, change the parser; the storage
+layer should stay the same.
+
+Anti-pattern: schema says `string`, parser expects `array` —
+LLM faithfully sends the schema type, parser throws
+`UnexpectedToken`. The mismatch is silent.
+
+References: `save-memory-bug-2026-08-06.md` (tags),
+`show-preview-parameters-xml-vs-json-2026-08-06.md`.
+
+### 24. Backwards compatibility for legacy wire shapes
+
+When adding a new component that processes the same data as an
+existing one (e.g. `ShowPreview.vue` chat-bubble card alongside
+`PreviewSidePanel.vue`):
+
+- Single source of truth: extract the shared extraction logic
+  into a helper (`previewArgs.ts::extractPreviewArgs`).
+- The helper tries the NEW format first, falls back to the OLD
+  format (JSON for legacy rows), returns `{}` on malformed
+  input.
+- Both components use the helper. No drift.
+- For new fields that need them: `withContent: true` opt-in to
+  bypass the snippet-only anti-bloat default.
+
+Reference: `show-preview-parameters-xml-vs-json-2026-08-06.md`.
+
+---
+
+## 🚫 Patterns explicitly OUT of scope for next iterations
+
+(Recorded from "Out of scope" sections of past plans, surfaced as
+risks the user has already considered.)
+
+- **Inline rename** for design pages (Notion/Linear pattern —
+  currently uses modal).
+- **Marquee drag-select** in design canvas (Shift+click is
+  enough for 1-5 elements).
+- **Snap-to-grid** toggle (Figma parity — deferred).
+- **Drag from layers-panel to canvas** (cross-list DnD —
+  deferred).
+- **Lock/hide elements** (needs schema migration).
+- **Group containers — drag INTO a frame** (the `frame`/`group`
+  types exist; UI doesn't support drag-into yet).
+- **Per-task image cap** (only the 10 MB total cap exists).
+- **Mid-stream cancellation** in `Agent.zig::callStreaming`
+  (cancel only fires at iteration boundaries today).
+- **Keyboard shortcut** for the Stop button (`Esc` / `Cmd+.`).
+- **Confirmation modal** for Stop.
+- **Cancelling queued messages**.
+- **Smart-spacing / distribute-horizontal/vertical** (needs
+  server-side batch endpoint).
+- **Cross-tab scroll sync** for chat scroll position (currently
+  localStorage only).
+- **Per-tool recovery strategy** for stranded tool results
+  (all get generic "interrupted" message for v1).
+- **Live "tool running" UI** beyond the Stop button.
+- **Streaming placeholder content** for in-flight tool results.
+- **Page rename → cascade-rename paired chat task** (Migration
+  066 limitation; manual today).
+- **Delete page → cascade-delete chat task** (manual cascade
+  today).
+- **`show_preview` display mode per-call mixing** (single global
+  toggle for v1).
+- **ShowPreview animation** when switching modes.
+- **ShowPreview keyboard shortcut** (`Cmd/Ctrl+Shift+P`).
+- **Per-column COUNT endpoint** for kanban (heuristic handles
+  sparse columns via auto-load).
+- **Per-column search** (search stays board-wide).
+- **CLI static-binary option** via `zig build -Dpic`.
+- **CLI Windows resource metadata** (icon, version).
+
+---
+
+## 📚 Lessons retained from `compacted-reference-2026-08-06.md`
+
+The pre-existing `compacted-reference-2026-08-06.md` had patterns
+not covered above. Most are already in this AGENTS.md (see
+"Mandatory Rules", "Zig 0.16 API Removals", "Cross-platform
+Pitfalls", "Static-contract tests are banned", "Functional
+scenarios"). The few worth keeping separately:
+
+### Three-layer memory model
+
+- **Project-local** (`.nalar/memories/`) — project-specific
+  patterns (now folded into AGENTS.md; the folder is empty
+  after this compaction).
+- **Cross-project** (`~/.config/nalar/memories/`) — patterns
+  applicable to any Zig / Vue / SQLite project.
+- **Skills** (`~/.config/nalar/skills/` or `.nalar/skills/`) —
+  repeatable multi-step procedures.
+
+If the insight is a fact, it's a memory. If it's a repeatable
+procedure, it's a skill. Update whichever, not both.
+
+### Static-contract tests are permanently banned
+
+Already in AGENTS.md. Worth restating the cost: ~60 static-contract
+tests were deleted across Zig + Vue/TS in the project audit.
+Every new test should be behavioural — call the function and
+assert the return; mount the component and assert the DOM.
+
+### Lazy-analysis-hidden bugs (extended)
+
+Beyond Pattern 5 above, three more latent bugs Zig 0.16 lazy
+semantic analysis hides:
+
+1. `child.wait(io)` after `child.kill(io)` — kill already
+   reaps, wait asserts `child.id != null` and panics.
+2. `defer allocator.free("literal")` — invalid free panic in
+   debug.
+3. `field: T = runtime_local` in anonymous struct — `'X' not
+   accessible outside function scope`.
+
+These are documented in the cross-project memory
+`zig-lazy-analysis-hides-divide-and-pub-bugs.md`.
+
+---
+
+## 📦 Inventory (post-compaction)
+
+After this compaction, `.nalar/memories/` contains ZERO files.
+All cross-cutting patterns are folded into this AGENTS.md
+section. Per-feature implementation details live in git history
+(branch names + commit hashes preserved in past changelog
+entries).
+
+If a future agent needs the detailed writeup of a specific
+fix, use `git log --all --oneline` + `git show <commit>` to
+reconstruct it from the changelog breadcrumbs below.
+
+The `.nalar/memories/` folder may be repopulated for FUTURE
+fixes (when a future agent decides to write a memory instead of
+appending to AGENTS.md). The convention is unchanged — AGENTS.md
+is the canonical project doc; memories are working notes that
+get compacted when they get too numerous.
+
+## 2026-08-06: Memory compaction
+
+**Symptom.** `.nalar/memories/` had grown to 23 files (~2770
+lines, ~125KB) auto-loaded at every session start. Bloat risk
+for future agents' context budget.
+
+**What landed.** Single new section in AGENTS.md:
+**"Cross-cutting patterns (consolidated 2026-08-06)"** —
+extracted 24 reusable patterns from the per-bug memory files.
+23 memory files deleted after consolidation.
+
+**Patterns captured.** SSE handler mirror-before-refetch, URL
+is breadcrumb, wire formats always carry inputs, test fixtures
+match production, Zig lazy semantic analysis, migrations
+module in tests, per-component state isolation, surface
+trade-offs first, 3-phase tool call INSERT, inline CSS for
+z-index, document mousedown cleanup, store init wipes
+fixtures, per-task storage columns, module-level singleton ref,
+Vue ref() not plain objects, Vite HMR hard refresh, SQL bind
+empty string literal, config schemas accept arbitrary keys,
+@click.stop on nested triggers, parallel-branch merge
+patterns, cancel workflow hookup, init-time pre-fetch,
+multi-tool 3-contract alignment, backwards compat for legacy
+wire shapes.
+
+**Plus.** "Patterns explicitly OUT of scope" — 25+ items
+documented as deliberate deferrals (so future agents don't
+re-litigate them). "Lessons retained from
+compacted-reference" — three-layer memory model, no
+static-contract tests rule, extended lazy-analysis-hidden
+bugs.
+
+**Verification.** AGENTS.md grew from 3235 to ~3680 lines
+(net +445 for the new section, much smaller than the 2770
+lines deleted). Future agents no longer auto-load 23
+detailed writeups; instead they read this single section +
+the git history (which has all per-feature commits preserved
+in the changelog breadcrumbs).
+
+**Why not use save_memory instead.** This IS the
+save_memory-equivalent — the section is in AGENTS.md so it's
+auto-loaded at every session start, same as memories. The
+difference: it's indexed in the canonical doc alongside the
+mandatory rules + cross-platform pitfalls + recent changes,
+so a future agent searching for "wire formats always carry
+inputs" finds it alongside "static-contract tests are banned"
+without having to load a separate file.

@@ -1839,3 +1839,94 @@ test "build_agent_prompt Search Tool Preference appears even with non-empty tool
     try std.testing.expect(contains(prompt, "## Search Tool Preference (MANDATORY)"));
     try std.testing.expect(contains(prompt, "always use the `search` tool"));
 }
+
+// -------------------------------------------------------------------------
+// Memory Tools Rule (save_memory + load_memory) — gated on `load_memory`
+// -------------------------------------------------------------------------
+
+test "build_agent_prompt renders Memory Tools section when load_memory is in tool list" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    // load_memory IS in tools → section rendered.
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+        makeTool("load_memory", "Search saved notes (FTS5)"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "",
+        "",
+        "",
+        "",
+    );
+    defer alloc.free(prompt);
+
+    // Section header is rendered.
+    try std.testing.expect(contains(prompt, "## Memory Tools"));
+    // Both tool names are mentioned (the rule covers both tools).
+    try std.testing.expect(contains(prompt, "save_memory"));
+    try std.testing.expect(contains(prompt, "load_memory"));
+    // FTS5 sanitization note is preserved (mirrors SearchHistoryToolRule pattern).
+    try std.testing.expect(contains(prompt, "FTS5") or contains(prompt, "FTS query syntax is auto-sanitized"));
+    // When-to-call example survives.
+    try std.testing.expect(contains(prompt, "do you remember"));
+}
+
+test "build_agent_prompt omits Memory Tools section when load_memory is absent" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    // load_memory NOT in tools → section omitted entirely.
+    const tools = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+        makeTool("bash", "Run shell"),
+    };
+    const prompt = try prompts.build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "",
+        "",
+        "",
+        "",
+    );
+    defer alloc.free(prompt);
+
+    try std.testing.expect(!contains(prompt, "## Memory Tools"));
+}
+
+test "CompactionAgent constant teaches save_memory + load_memory (cross-session memory block)" {
+    // CompactionAgent is a comptime string literal (`pub const X = \\…`),
+    // so we read it directly without an allocator. The new block must
+    // teach the compaction step to forward save/load cues to the next
+    // agent rather than pasting the value verbatim.
+    const prompt: []const u8 = prompts.CompactionAgent;
+
+    // The new block is present.
+    try std.testing.expect(contains(prompt, "CROSS-SESSION MEMORY"));
+    // Both tools are referenced.
+    try std.testing.expect(contains(prompt, "save_memory"));
+    try std.testing.expect(contains(prompt, "load_memory"));
+    // The block teaches the compaction step to forward save/load cues to
+    // the next agent rather than pasting the value verbatim.
+    try std.testing.expect(contains(prompt, "save_memory id=") or
+        contains(prompt, "load_memory query=") or
+        contains(prompt, "next agent"));
+}
