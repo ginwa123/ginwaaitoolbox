@@ -28,6 +28,11 @@ defineProps<{
 
 const emit = defineEmits<{
   setActive: [name: string]
+  /// Reset the active profile to "no active" — emitted when the user
+  /// clicks the Reset button next to the active pill. Parent saves
+  /// `active_profile: null` to config.json; the backend cascade then
+  /// falls through to top-level config for every new chat / task.
+  clearActive: []
   edit: [profile: ProfileRow]
   delete: [name: string]
   add: []
@@ -68,7 +73,7 @@ function compactionSummary(profile: ProfileRow): string {
 
 <template>
   <div class="space-y-4">
-    <!-- Header with active pill + add button -->
+    <!-- Header with active pill + reset button + add button -->
     <div class="flex items-center justify-between">
       <div class="flex items-center gap-2">
         <span class="text-xs font-mono" style="color: var(--semantic-text-dim);">Active</span>
@@ -83,6 +88,18 @@ function compactionSummary(profile: ProfileRow): string {
           class="text-xs italic"
           style="color: var(--semantic-text-dim);"
         >(none — pick one below)</span>
+        <!-- Reset: only when a profile is currently active. Clears
+             active_profile in config.json so the backend cascade falls
+             through to top-level config. -->
+        <button
+          v-if="activeProfile"
+          type="button"
+          data-testid="reset-active-btn"
+          :title="`Clear active profile — every chat will use the top-level config`"
+          @click="emit('clearActive')"
+          class="px-2 h-6 rounded-md text-[10px] font-mono border transition-colors duration-150 hover:opacity-80"
+          style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
+        >Reset</button>
       </div>
       <button
         type="button"

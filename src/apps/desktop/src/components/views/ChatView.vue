@@ -767,12 +767,21 @@ const maxTotalTokens = ref(0)
 const maxCapacityTotalTokens = ref(200000)
 
 // ─── Profile selection ────────────────────────────────────────────────────────
-// Per-session model selection. The chip in the status bar shows the current
-// selection (Default = no profile set) and lets the user pick a profile from
-// the list in NalarConfig. Selected via PUT /api/llm/session/:id and passed
-// to the next LLM call via POST /api/llm/session.
+// Per-session model selection. The chip in the status bar shows the EFFECTIVE
+// profile (per-session `selected_profile_model` → `config.active_profile` →
+// top-level default) and lets the user pick a profile from the list in
+// NalarConfig. Per-session selection is persisted via PUT
+// /api/llm/session/:id and forwarded to the next LLM call via POST
+// /api/llm/session. The chip mirrors the backend cascade in
+// `workflow.zig::resolveProfileField` so the user sees the same name that's
+// actually applied.
 const availableProfiles = ref<Array<{ name: string; model: string; base_url: string }>>([])
 const selectedProfile = ref<string | null>(null)
+/// User-chosen default profile from NalarSettings → Profiles → "Set active".
+/// `null` when no profile is marked active (or no profiles configured). The
+/// chatview shows this as the chip's effective selection when no per-session
+/// override is set. See plan docs/superpowers/plans/2026-08-06-chatview-profile-cascade-display.md.
+const activeProfile = ref<string | null>(null)
 const showProfilePicker = ref(false)
 const isUpdatingProfile = ref(false)
 const profilePickerRef = ref<HTMLElement | null>(null)
@@ -789,11 +798,45 @@ const loadProfiles = async () => {
       model: p.model ?? '',
       base_url: p.base_url ?? '',
     }))
+    // `active_profile` is the user-chosen default from NalarSettings. Empty
+    // string → null (matches the backend's PUT coercion in
+    // `nalar_config_put.zig`).
+    const raw = (config as { active_profile?: string | null }).active_profile
+    activeProfile.value = raw && raw.length > 0 ? raw : null
   } catch (err) {
     console.error('Failed to load profiles:', err)
     availableProfiles.value = []
+    activeProfile.value = null
   }
 }
+
+/// Effective profile the chip / picker reflect — mirrors the backend cascade
+/// in `workflow.zig::resolveProfileField`. `selectedProfile` wins; if the
+/// user has not picked one for this session, `activeProfile` (the
+/// NalarSettings "Set active" default) applies; otherwise the chip shows
+/// "Default" and the backend uses the top-level config.
+///
+/// NOTE: we use `||` (not `??`) so an empty string from the session's
+/// `selected_profile_model` falls through to the active profile. `??` only
+/// catches `null` / `undefined`, but the per-session value arrives as `""`
+/// (empty string) when the user never picked one — see
+/// `api.getSession.selectedProfile` which returns the raw string. Falling
+/// through `||` makes the empty-string case match the cascade.
+const effectiveProfile = computed<string | null>(() => {
+  const sel = selectedProfile.value
+  if (sel && sel.length > 0) return sel
+  return activeProfile.value
+})
+
+/// Tooltip text reflecting what the backend will actually use. Distinguishes
+/// "explicit per-session choice" from "defaulted to active profile" so the
+/// user understands the cascade.
+const profileChipTooltip = computed(() => {
+  const sel = selectedProfile.value
+  if (sel && sel.length > 0) return `Using profile: ${sel}`
+  if (activeProfile.value) return `Using active profile: ${activeProfile.value}`
+  return 'Using default (top-level config)'
+})
 
 const selectProfile = async (name: string | null) => {
   if (isUpdatingProfile.value) return
@@ -2779,14 +2822,10 @@ const compactSession = async () => {
                   border: 1px solid var(--color-border);
                   color: var(--semantic-text);
                 "
-                :title="
-                  selectedProfile
-                    ? `Using profile: ${selectedProfile}`
-                    : 'Using default (top-level config)'
-                "
+                :title="profileChipTooltip"
               >
                 <span>🤖</span>
-                <span>{{ selectedProfile ?? 'Default' }}</span>
+                <span>{{ effectiveProfile ?? 'Default' }}</span>
                 <span class="text-[10px]">▾</span>
               </button>
               <div
@@ -2801,9 +2840,10 @@ const compactSession = async () => {
                   @click="selectProfile(null)"
                   class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between"
                   style="color: var(--semantic-text)"
+                  data-testid="profile-picker-default"
                 >
                   <span>Default (top-level config)</span>
-                  <span v-if="!selectedProfile">✓</span>
+                  <span v-if="!selectedProfile && !activeProfile">✓</span>
                 </button>
                 <button
                   v-for="p in availableProfiles"
@@ -2811,10 +2851,19 @@ const compactSession = async () => {
                   @click="selectProfile(p.name)"
                   class="w-full text-left px-3 py-2 text-xs hover:opacity-80"
                   style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
+                  :data-testid="`profile-picker-${p.name}`"
                 >
                   <div class="flex items-center justify-between">
-                    <span class="font-medium">{{ p.name }}</span>
-                    <span v-if="selectedProfile === p.name">✓</span>
+                    <span class="font-medium">
+                      {{ p.name }}
+                      <span
+                        v-if="activeProfile === p.name"
+                        class="text-[10px] ml-1 px-1 py-0.5 rounded"
+                        :style="{ backgroundColor: 'var(--color-violet)', color: '#181616' }"
+                        data-testid="profile-picker-active-badge"
+                      >(active)</span>
+                    </span>
+                    <span v-if="effectiveProfile === p.name">✓</span>
                   </div>
                   <div class="text-[10px] mt-0.5" style="color: var(--semantic-text-muted)">
                     {{ p.model }} · {{ p.base_url }}
