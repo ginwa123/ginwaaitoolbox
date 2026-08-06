@@ -9,12 +9,14 @@
   copy-paste drift.
 
   Two consumers:
-    1. <PreviewSidePanel> — passes the active preview's
-       `contentType` (extracted from the response envelope) and
-       `args` (extracted from the <parameters> tag via
-       tryUnwrapToolOutput).
-    2. <ShowPreview> — in `inline` mode, passes the same shape so
-       the rich content renders inside the chat bubble.
+    1. <PreviewSidePanel> — passes `variant="side"` (the default).
+       Full-width 480px column with a tall iframe (min-h-480px).
+    2. <ShowPreview> — passes `variant="inline"` when the user has
+       flipped the display mode to 'inline'. The chat bubble gets a
+       shorter max-h-[320px] iframe + an "Open full preview" button
+       (data-testid="preview-open-full-button") that opens the
+       HTML in a new browser tab via a Blob URL — letting the user
+       see the full-width page when the inline view truncates.
 
   Props:
     - `contentType`: one of 'markdown' | 'text' | 'code' | 'image' | 'html'.
@@ -22,6 +24,8 @@
       `content` is the raw payload. `title` renders above. `caption`
       renders below. `language` is required for `code` (matches the
       schema in show_preview.zig).
+    - `variant` (default 'side'): `'side'` for the full-width panel,
+      `'inline'` for the compact chat-bubble layout.
 
   Branch table (mirrors PreviewSidePanel.vue:199-244 + 334-347):
 
@@ -31,7 +35,8 @@
     | text          | <pre class="whitespace-pre-wrap"> + escaped |
     | code          | <pre><code class="language-X"> + escaped    |
     | image         | <img :src="data:/http URL only">            |
-    | html          | <iframe sandbox="allow-scripts" srcdoc=...> |
+    | html          | <iframe sandbox="allow-scripts" srcdoc=...> +  |
+    |               | (inline only) "Open full preview" → button  |
     | (anything else) | empty container (defensive)              |
 
   Security note for the `html` branch:
@@ -54,10 +59,23 @@ export interface PreviewArgs {
   caption?: string
 }
 
-const props = defineProps<{
-  contentType: 'markdown' | 'text' | 'code' | 'image' | 'html'
-  args: PreviewArgs
-}>()
+const props = withDefaults(
+  defineProps<{
+    contentType: 'markdown' | 'text' | 'code' | 'image' | 'html'
+    args: PreviewArgs
+    /**
+     * `'side'` (default) — full-width panel layout, 480px-tall iframe.
+     * `'inline'` — compact chat-bubble layout: cap at max-h-[320px],
+     * `max-w-full` so it fits the chat column, plus an "Open full
+     * preview" button that opens the HTML in a new tab via Blob URL
+     * (lets the user see the full-width page when inline truncates).
+     */
+    variant?: 'side' | 'inline'
+  }>(),
+  { variant: 'side' },
+)
+
+const isInline = computed(() => props.variant === 'inline')
 
 function escapeHtml(s: string): string {
   return s
@@ -124,6 +142,38 @@ const htmlSrcDoc = computed<string | null>(() => {
   const raw = props.args.content ?? ''
   return `<style>html,body{margin:0;padding:0;background:#fff;}</style>${raw}`
 })
+
+// ─── Open full preview (inline variant only) ─────────────────────────
+//
+// In inline mode the iframe is bounded to max-h-[320px] + max-w-full — the
+// user's HTML page may be larger than the chat bubble (e.g. a dashboard
+// designed for 1440px wide). The "Open full preview" button gives the
+// user a one-click path to see the full-width page without leaving the
+// chat.
+//
+// Implementation: build a Blob URL from the SAME srcdoc value the iframe
+// uses (so what they see inline matches what they see in the new tab),
+// then `window.open(url, '_blank', 'noopener,noreferrer')`.
+//
+// We construct the Blob at click-time (not at computed-time) so the URL
+// is only created when the user actually wants to open it.
+function openFullPreview() {
+  if (!htmlSrcDoc.value) return
+  if (typeof window === 'undefined' || typeof URL === 'undefined' || typeof Blob === 'undefined') {
+    return
+  }
+  const blob = new Blob([htmlSrcDoc.value], { type: 'text/html;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const win = window.open(url, '_blank', 'noopener,noreferrer')
+  // Revoke the blob URL after a short delay so the new tab has time
+  // to load it. defer-style: schedule via setTimeout so the click
+  // handler returns immediately.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  // No-op if window.open was blocked (returns null). Caller can
+  // inspect via tooltip, but we don't surface a toast — the
+  // browser's pop-up block hint is enough.
+  void win
+}
 </script>
 
 <template>
@@ -155,17 +205,46 @@ const htmlSrcDoc = computed<string | null>(() => {
       </div>
     </div>
 
+    <!--
+      HTML iframe container — sizing differs by variant:
+        side   : min-h-[480px], fills the parent (full-width panel)
+        inline : max-h-[320px] + max-w-full (fits the chat bubble)
+                 + has an "Open full preview" button below for the
+                 user to see the HTML at full width in a new tab.
+    -->
     <div
       v-else-if="contentType === 'html' && htmlSrcDoc"
-      class="h-full min-h-[480px] rounded overflow-hidden border border-[var(--color-border)] bg-white"
+      data-testid="preview-html-container"
+      :class="isInline
+        ? 'relative max-w-full max-h-[320px] rounded overflow-hidden border border-[var(--color-border)] bg-white'
+        : 'h-full min-h-[480px] rounded overflow-hidden border border-[var(--color-border)] bg-white'"
     >
       <iframe
         sandbox="allow-scripts"
         :srcdoc="htmlSrcDoc"
-        class="w-full h-full min-h-[480px] border-0 block"
+        :class="isInline
+          ? 'w-full max-h-[320px] border-0 block'
+          : 'w-full h-full min-h-[480px] border-0 block'"
         :title="args.title || 'HTML preview'"
         data-testid="preview-html-iframe"
       />
+      <!--
+        Floating "Open full preview" button — only in inline mode where
+        the iframe can't show the full page. Positioned at the top-right
+        of the iframe so it never overlaps the HTML content (which
+        typically has its own header). The iframe's sandbox="allow-scripts"
+        doesn't apply to the parent window's window.open — the new tab
+        is OUTSIDE the iframe, so the parent-doc's anchor/preview
+        element is unaffected.
+      -->
+      <button
+        v-if="isInline"
+        type="button"
+        class="absolute top-1 right-1 px-1.5 py-0.5 text-[0.65rem] font-mono rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)]/90 backdrop-blur hover:bg-[var(--color-violet)]/20 hover:border-[var(--color-violet)]/60 hover:text-[var(--color-violet)] text-[var(--semantic-text-muted)] transition-colors"
+        data-testid="preview-open-full-button"
+        title="Open this HTML in a new browser tab at full width"
+        @click.stop="openFullPreview"
+      >↗ Open full</button>
     </div>
 
     <div

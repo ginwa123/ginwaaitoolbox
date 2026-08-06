@@ -313,16 +313,23 @@ const copyPreviewId = async (e: Event) => {
       Inline-mode body: rich content rendered directly inside the
       chat bubble (no need to click through to the side panel).
       Hidden in 'side' mode (the user clicks to open the panel).
+
+      The container has its own padding + max-w-full so the renderer
+      (which renders an iframe at up to 320px tall) stays visually
+      distinct from the message thread above it. `variant="inline"`
+      switches PreviewContentRenderer to compact sizing and adds an
+      "Open full preview" button for HTML content.
     -->
     <div
       v-if="isInline && isSuccess && resolvedContentType"
-      class="border-t border-dashed border-[var(--color-border)]"
+      class="border-t border-dashed border-[var(--color-border)] px-3 py-2"
       data-testid="show-preview-inline-content"
       @click.stop
     >
       <PreviewContentRenderer
         :content-type="resolvedContentType"
         :args="rendererArgs"
+        variant="inline"
       />
     </div>
 

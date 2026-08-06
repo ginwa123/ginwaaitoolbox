@@ -179,4 +179,98 @@ describe('PreviewContentRenderer', () => {
     expect(wrapper.find('img').exists()).toBe(false)
     expect(wrapper.find('iframe').exists()).toBe(false)
   })
+
+  // ─── Variant prop (2026-08-06) ────────────────────────────────────
+  //
+  // The renderer is used in TWO layouts: the side panel (full-width
+  // 480px column with a tall iframe) and the chat bubble (variable
+  // width, scrollable bubble, "Open full preview" affordance). The
+  // default behavior (no variant prop) matches the original side-
+  // panel sizing for back-compat. Passing `variant="inline"` switches
+  // to a compact inline layout: shorter min-height, "Open full
+  // preview" button, and a max-w-full on the container so the iframe
+  // can never overflow its chat-bubble column.
+  describe('variant: inline (chat-bubble layout)', () => {
+    it('applies a compact max-h-[320px] to the html iframe (not the 480px side-panel default)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      const iframeContainer = wrapper.find('[data-testid="preview-html-container"]')
+      expect(iframeContainer.exists()).toBe(true)
+      const classes = iframeContainer.attributes('class') ?? ''
+      expect(classes).toContain('max-h-[320px]')
+      // The side-panel default `min-h-[480px]` must NOT be present.
+      expect(classes).not.toContain('min-h-[480px]')
+    })
+
+    it('caps iframe width at the chat-bubble width (max-w-full)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      const iframeContainer = wrapper.find('[data-testid="preview-html-container"]')
+      const classes = iframeContainer.attributes('class') ?? ''
+      expect(classes).toContain('max-w-full')
+    })
+
+    it('renders an "Open full preview" button next to the html iframe (inline only)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      const openBtn = wrapper.find('[data-testid="preview-open-full-button"]')
+      expect(openBtn.exists()).toBe(true)
+    })
+
+    it('does NOT render the "Open full preview" button in side-panel variant (no need — full-width panel)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'side',
+        },
+      })
+      expect(wrapper.find('[data-testid="preview-open-full-button"]').exists()).toBe(false)
+    })
+
+    it('does NOT render the "Open full preview" button for non-html content types (markdown/code/text/image)', () => {
+      // The "open full" affordance only applies to html (which is the
+      // content type that has a fixed width + scrolling; markdown /
+      // code / text already flow naturally; image is already responsive).
+      for (const ct of ['markdown', 'text', 'code', 'image'] as const) {
+        const wrapper = mount(PreviewContentRenderer, {
+          props: {
+            contentType: ct,
+            args: { content: ct === 'image' ? 'data:image/png;base64,abc' : 'body' },
+            variant: 'inline',
+          },
+        })
+        expect(wrapper.find('[data-testid="preview-open-full-button"]').exists()).toBe(false)
+      }
+    })
+
+    it('default variant is "side" (no max-h-[320px], no "Open full" button)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+        },
+      })
+      // No variant passed → defaults to 'side' (back-compat).
+      const iframeContainer = wrapper.find('[data-testid="preview-html-container"]')
+      const classes = iframeContainer.attributes('class') ?? ''
+      expect(classes).not.toContain('max-h-[320px]')
+      expect(wrapper.find('[data-testid="preview-open-full-button"]').exists()).toBe(false)
+    })
+  })
 })
