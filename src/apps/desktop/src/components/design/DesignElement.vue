@@ -45,6 +45,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import type { DesignElement } from '../../api'
 import { getDesignElementHtml } from '../../api'
 import DesignElementPreview from './DesignElementPreview.vue'
+import { useWorkspacesStore } from '../../stores/workspaces'
 import { abbrevElement, designLogger } from '../../helpers/designLogger'
 
 const props = withDefaults(
@@ -195,6 +196,11 @@ type ResizeHandle = 'nw' | 'n' | 'ne' | 'w' | 'e' | 'sw' | 's' | 'se'
 
 const isDragging = ref(false)
 
+// Workspace store — used to look up the parent element by id when
+// the user clicks on a child. The store is the canonical source of
+// page elements (mirrored from the backend's `design_elements` array).
+const workspacesStore = useWorkspacesStore()
+
 // True when this element is nested inside a parent group/frame. The
 // backend's `COALESCE(parent_id, '')` returns '' for top-level rows,
 // non-empty for nested rows. Legacy / pre-migration shapes may
@@ -203,6 +209,30 @@ const isDragging = ref(false)
 const isChildOfGroup = computed(() => {
   const pid = props.element.parent_id
   return !!pid && pid !== ''
+})
+
+// The immediate parent element, looked up from the workspace store's
+// `item.design_elements[]` array (the mirrored backend payload). Null
+// when:
+//   - the element is top-level (parent_id is empty/null/undefined)
+//   - the required ids (workspaceId/itemId) are missing from props
+//   - the store doesn't have the workspace/item loaded
+//   - the parent can't be found in the elements array (orphan row)
+//
+// The reactivity means the parent is re-resolved when the page's
+// elements array changes (e.g. SSE `design_element_created` adds
+// the parent that this child references). For the common case
+// (the canvas is open + elements are fetched), the parent is found
+// on the first click.
+const parentElement = computed<DesignElement | null>(() => {
+  const pid = props.element.parent_id
+  if (!pid || pid === '') return null
+  if (!props.workspaceId || !props.itemId) return null
+  const ws = workspacesStore.workspaces.find((w) => w.id === props.workspaceId)
+  if (!ws) return null
+  const item = ws.items.find((i) => i.id === props.itemId)
+  if (!item?.design_elements) return null
+  return item.design_elements.find((e) => e.id === pid) ?? null
 })
 
 const startDrag = (event: PointerEvent, mode: DragMode): void => {
@@ -263,16 +293,58 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
     console.log('GIL START DDRAGGING button', event)
     return
   }
+  // ─── Click on child: select the parent group instead ─────────────────
+  // User request (2026-08-06, follow-up to drag-suppress): clicking
+  // on a child element should select the parent group, not the child
+  // itself. The user wants to interact with the GROUP layer (drag
+  // the whole subtree, edit group properties), not the child row.
+  // Without this redirect, the user must click the parent header
+  // separately — a two-step flow that's easy to miss.
+  //
+  // Shift+click keeps the existing toggle behaviour (toggle the
+  // CHILD in the multi-selection). For Shift+click we want the
+  // child in the multi-select, not the parent — the user's intent
+  // is "operate on this child", not "select its parent group".
+  //
+  // Falls back to selecting the child itself when:
+  //   - the parent can't be looked up (orphan child, store not
+  //     loaded, missing ids) — safe-degrade to the old behaviour
+  //   - shift+click (additive select)
+  //   - top-level element (parent_id is empty/null/undefined)
+  //
+  // Placement: this is the SELECT resolution. The drag-suppress
+  // guard below still fires for child pointer-drags (the user has
+  // to click on the parent's bounding box after the redirect to
+  // initiate a drag; the redirect is purely a selection concern).
+  const useParentSelect =
+    !event.shiftKey && isChildOfGroup.value && parentElement.value !== null
+  const selectTarget = useParentSelect ? parentElement.value : null
+  const selectElementId = selectTarget ? selectTarget.id : props.element.id
+
   emit('select', {
-    elementId: props.element.id,
+    elementId: selectElementId,
     additive: event.shiftKey,
   })
-  designLogger.info({
-    reason: 'emit:select',
-    caller: 'DesignElement.startDrag',
-    element: abbrevElement(props.element),
-    extra: { additive: event.shiftKey, mode },
-  })
+  if (selectTarget) {
+    designLogger.info({
+      reason: 'emit:select:parent-of-child',
+      caller: 'DesignElement.startDrag',
+      element: abbrevElement(props.element),
+      extra: {
+        parentId: selectTarget.id,
+        parentName: selectTarget.name,
+        additive: event.shiftKey,
+        mode,
+      },
+    })
+  } else {
+    designLogger.info({
+      reason: 'emit:select',
+      caller: 'DesignElement.startDrag',
+      element: abbrevElement(props.element),
+      extra: { additive: event.shiftKey, mode },
+    })
+  }
 
   // ─── Child-of-group: block single-element move drag ─────────────────
   // User request (2026-08-06, drag-on-child-element bug): a child

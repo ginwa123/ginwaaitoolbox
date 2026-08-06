@@ -143,6 +143,7 @@ export type DesignReason =
   | 'drag:throttled-emit'          // onMove fired and throttle passed
   | 'drag:trailing-emit'           // pointerup trailing emit (capture final pos)
   | 'emit:select'                  // emit('select', …)
+  | 'emit:select:parent-of-child'  // emit('select', parent.id) — child redirect (2026-08-06)
   | 'emit:dragStart'               // emit('dragStart', ids)
   | 'emit:dragEnd'                 // emit('dragEnd')
   | 'emit:translate'               // emit('translate', delta)

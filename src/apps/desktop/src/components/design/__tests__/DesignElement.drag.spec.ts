@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DesignElement from '../DesignElement.vue'
+import { useWorkspacesStore } from '../../../stores/workspaces'
 import type { DesignElement as DesignElementApi } from '../../../api'
 
 const ELEMENT: DesignElementApi = {
@@ -677,5 +678,157 @@ describe('DesignElement drag', () => {
     const groupDrags = wrapper.emitted('groupDrag') ?? []
     expect(groupDrags.length).toBeGreaterThan(0)
     expect(wrapper.emitted('translate')).toBeUndefined()
+  })
+
+  // ─── Click on child: select parent (2026-08-06 follow-up) ────────────
+  // User report: "when i click the element group, why its still select
+  // that child element? why not directly select the group? so i can
+  // move the group layer". Clicking a child element should now select
+  // the parent group (Figma-style deep grouping), so the user can
+  // immediately drag the group without first clicking the header.
+
+  // Helper: register a parent element in the workspace store so
+  // `parentElement` (computed via `useWorkspacesStore`) can find it.
+  const seedParentFor = (parentId: string): void => {
+    const wsId = 'ws_test'
+    const itemId = 'item_test'
+    const parent: DesignElementApi = {
+      id: parentId,
+      name: 'Group 5',
+      type: 'frame',
+      page_id: 'page_1',
+      x: 0, y: 0, width: 1440, height: 1024,
+      rotation: 0, opacity: 1, fill: '', stroke: '', stroke_width: 0,
+      corner_radius: 0, text_content: '', text_style: '', image_url: '',
+      z_index: 0, position: 0,
+      file_path: '', created_at: '', updated_at: '',
+    }
+    const ws = useWorkspacesStore()
+    ws.workspaces.push({
+      // The store's Workspace type accepts a permissive shape — fields
+      // unused by `parentElement` lookup can be `any`.
+      id: wsId,
+      name: 'Test Workspace',
+      slug: 'test',
+      path: '/tmp/test',
+      items: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    ws.workspaces[0]!.items.push({
+      id: itemId,
+      name: 'Design Item',
+      path: '/tmp/test/design',
+      design_elements: [parent],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+  }
+
+  it('click on a child emits select with the PARENT id (not the child)', async () => {
+    const CHILD: DesignElementApi = {
+      ...ELEMENT,
+      id: 'el_child',
+      parent_id: 'el_parent_group',
+    }
+    setActivePinia(createPinia())
+    seedParentFor('el_parent_group')
+
+    const wrapper = mount(DesignElement, {
+      props: { element: CHILD, selected: true, zoom: 1.0, workspaceId: 'ws_test', itemId: 'item_test', pageId: 'page_1' },
+    })
+    const root = wrapper.find('[data-design-element]').element as HTMLElement
+    root.dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true,
+    }))
+
+    // The whole point: select is emitted with the PARENT's id, not
+    // the child's. The parent has a `'frame'` shape (created in
+    // seedParentFor). The user now sees the parent selected in the
+    // Properties panel + Layers panel and can immediately drag it.
+    const selects = wrapper.emitted('select') ?? []
+    expect(selects.length).toBe(1)
+    expect(selects[0]?.[0]).toEqual({
+      elementId: 'el_parent_group',
+      additive: false,
+    })
+  })
+
+  it('click on a child with shift held still emits select with the CHILD id (toggle behaviour preserved)', async () => {
+    const CHILD: DesignElementApi = {
+      ...ELEMENT,
+      id: 'el_child_shift',
+      parent_id: 'el_parent_group',
+    }
+    setActivePinia(createPinia())
+    seedParentFor('el_parent_group')
+
+    const wrapper = mount(DesignElement, {
+      props: { element: CHILD, selected: true, zoom: 1.0, workspaceId: 'ws_test', itemId: 'item_test', pageId: 'page_1' },
+    })
+    const root = wrapper.find('[data-design-element]').element as HTMLElement
+    // Shift+click — additive=true → user wants the child in the
+    // multi-select, NOT the parent.
+    root.dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true, shiftKey: true,
+    }))
+
+    const selects = wrapper.emitted('select') ?? []
+    expect(selects[0]?.[0]).toEqual({
+      elementId: 'el_child_shift',
+      additive: true,
+    })
+  })
+
+  it('click on a top-level element emits select with SELF id (regression guard)', async () => {
+    // Top-level element (parent_id === '') — no parent to redirect
+    // to. Existing behaviour preserved.
+    const TOP: DesignElementApi = {
+      ...ELEMENT,
+      id: 'el_top',
+      parent_id: '',
+    }
+    setActivePinia(createPinia())
+    // No need to seed a parent — the lookup returns null for top-level.
+
+    const wrapper = mount(DesignElement, {
+      props: { element: TOP, selected: true, zoom: 1.0 },
+    })
+    const root = wrapper.find('[data-design-element]').element as HTMLElement
+    root.dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true,
+    }))
+
+    const selects = wrapper.emitted('select') ?? []
+    expect(selects[0]?.[0]).toEqual({
+      elementId: 'el_top',
+      additive: false,
+    })
+  })
+
+  it('click on a child with parent NOT in the store falls back to selecting the child (safe-degrade)', async () => {
+    // Seeded store has no element matching the child's parent_id.
+    // Lookup returns null → safe-degrade to the old behaviour
+    // (select the child). Prevents a "select nothing" if the page
+    // data is mid-fetch or the parent was deleted.
+    const CHILD_ORPHAN: DesignElementApi = {
+      ...ELEMENT,
+      id: 'el_orphan',
+      parent_id: 'el_parent_missing',
+    }
+    setActivePinia(createPinia())
+    seedParentFor('el_parent_other')  // different parent on purpose
+
+    const wrapper = mount(DesignElement, {
+      props: { element: CHILD_ORPHAN, selected: true, zoom: 1.0, workspaceId: 'ws_test', itemId: 'item_test', pageId: 'page_1' },
+    })
+    const root = wrapper.find('[data-design-element]').element as HTMLElement
+    root.dispatchEvent(new PointerEvent('pointerdown', {
+      button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true,
+    }))
+
+    const selects = wrapper.emitted('select') ?? []
+    expect(selects[0]?.[0]).toEqual({
+      elementId: 'el_orphan',
+      additive: false,
+    })
   })
 })

@@ -718,7 +718,6 @@ debug info belongs in a logger (out of scope for this commit).
 - The watcher read `route.query.view` SYNCHRONOUSLY at fire time — no `await` on the route ref. Without `await`, the watcher fires with stale `route.query.view` (the OLD view before the push). This is the subtle bug the `await` closes.
 - `finally` is critical — if the push throws (e.g. navigation guard rejects), the flag must still clear so subsequent navigations work.
 
-### 2026-08-06: `design_model.deletePage` derives on-disk page directory from `design_page_elements.file_path` (no JOIN to `workspace_items`)
 
 **Symptom (user report, task `task_1785957229448`).** User: *"do not delete form workspace items, when deleting, do not get from workspace items table, but from design_pages_element instead, change this code"*.
 
@@ -3274,6 +3273,64 @@ renders literal `&lt;p&gt;` instead of an actual `<p>` element.
 - **Properties panel drag arrow buttons** (←/→ up/down by 1px) — the existing nudge handler already moves child elements by 1px via keyboard. Out of scope for this fix.
 - **Drag-from-layers-panel-to-canvas** — already works (LayersPanel's drag handler emits reparent events, not translate events).
 - **Cross-platform drag-cursor differences** — `cursor-pointer` is universally supported; no per-OS conditional CSS needed.
+
+### 2026-08-06: Design mode — click on child selects parent group, not the child (Figma-style deep grouping)
+
+**Symptom (user follow-up, task_1786025937033).** *"when i click the element group, why its still select that child element ? why not directlynya select the group? so i can move the group layer"*. After the child-drag-suppress fix (commit `af234428`), clicking a child element selected the CHILD in the side panel — but the user wanted to interact with the GROUP layer. The two-step flow (click child → click group header) was unnecessary friction.
+
+**What landed (commit `7f8f9616`).** Surgical frontend-only fix. 4 files, +247/-8.
+
+1. **`DesignElement.vue::parentElement` computed** — walks `workspacesStore.workspaces → item → design_elements[]` to find the row matching `props.element.parent_id`. Returns `null` on any failure (orphan row, missing ids, store not loaded). Safe-degrade to selecting self when the parent can't be found.
+
+2. **`DesignElement.vue::startDrag`** — before emitting `select`, computes:
+   ```ts
+   const useParentSelect =
+     !event.shiftKey && isChildOfGroup.value && parentElement.value !== null
+   ```
+   If `true`, emits `select` with the parent's id; otherwise emits the child's id (existing behaviour). The `!event.shiftKey` exception preserves the toggle behaviour for multi-select — Shift+click adds the CHILD (not the parent) to the multi-selection.
+
+3. **`designLogger.ts::DesignReason`** — added `'emit:select:parent-of-child'` to the union so the redirect is greppable.
+
+4. **`DesignElement.zIndexInlineStyle.spec.ts`** — added `setActivePinia(createPinia())` in `beforeEach`. Required because `DesignElement.vue::setup` now reads from the Pinia store. Without this the test throws "getActivePinia() was called but there was no active Pinia". The store is empty in this test, so `parentElement` returns null → no behaviour change for the z-index assertions.
+
+**Behaviour.**
+
+| Action | Result |
+|---|---|
+| Plain click on child | Selects the PARENT group (not the child). User can then drag the group's bounding box. |
+| Shift+click on child | Selects the CHILD (toggle in multi-select). User's intent is "operate on this child", not "select its parent". |
+| Plain click on top-level | Selects self (existing behaviour). |
+| Plain click on child whose parent isn't in the store (orphan / mid-fetch) | Safe-degrade to selecting the child (old behaviour). Prevents a "select nothing" if the page data is mid-fetch. |
+| Right-click on child | Shows the parent's context menu (because the parent is now selected). The LayersPanel's own context menu still operates on individual layer rows for child-specific actions like "Leave group". |
+
+**Tests (4 new, all green).**
+
+- `click on a child emits select with the PARENT id (not the child)` — the regression test (red before fix, green after).
+- `click on a child with shift held still emits select with the CHILD id (toggle behaviour preserved)` — multi-select carve-out.
+- `click on a top-level element emits select with SELF id (regression guard)` — boundary case.
+- `click on a child with parent NOT in the store falls back to selecting the child (safe-degrade)` — missing-parent edge case.
+
+**Verification.**
+- `bun run build` → vue-tsc clean.
+- `bunx vitest run src/components/design/__tests__/DesignElement.drag.spec.ts` → **24/24 pass** (was 20/20, +4 new).
+- `bunx vitest run src/__tests__/DesignElement.zIndexInlineStyle.spec.ts` → **5/5 pass** (was failing pre-fix due to Pinia missing).
+- `bunx vitest run` (full suite) → **2101 pass / 19 fail**. The 19 are PRE-EXISTING baseline (unchanged from `main @ 2a33cc7a`): `AppLayout.memoriesGate ×4`, `AppLayout.urlPersist ×7`, `sidebarKanbanSortUrl ×2`, `DesignView.nudge clamp ×1`, `DesignElement` static-contract ×5. The 5 static-contract failures predate this fix. **Zero regressions.**
+
+**Pitfalls (record for future agents).**
+
+- **Pinia setup is required.** Any test that mounts `DesignElement.vue` must call `setActivePinia(createPinia())` in `beforeEach`. The new store import (`useWorkspacesStore` at setup time) will throw if there's no active Pinia. Existing tests that already set up Pinia (`DesignElement.drag.spec.ts`) needed no change; existing tests that didn't (`DesignElement.zIndexInlineStyle.spec.ts`) needed a `beforeEach` block added.
+- **Safe-degrade to selecting self when parent not found.** The parentElement lookup can fail: orphan row, mid-fetch store, missing workspaceId/itemId. In every failure case, returning `null` and selecting the child itself is the safer behaviour — it's the existing pre-fix contract, and avoids a confusing "click did nothing" if the data isn't ready.
+- **Shift+click carve-out is essential.** Without `!event.shiftKey`, the user could never multi-select children — shift+click on a child would replace the multi-selection with the parent, breaking the existing toggle behaviour. The carve-out preserves shift+click → toggle child (the user's intent is "operate on this child", not "select its parent").
+- **Right-click on canvas operates on `selectedIds`, not on the right-clicked element.** After the redirect, the right-click menu on a child shows the PARENT's actions (because the parent is now in `selectedIds`). Child-specific actions like "Leave group" are still accessible via the LayersPanel's own context menu (right-click on the layer row).
+- **Cursor stays `cursor-pointer` on children.** Clicking selects the parent but does NOT initiate a drag (the suppress guard still fires for the click+drag on the child). The user has to click on the parent's bounding box separately to drag. `cursor: move` would be misleading (the click is "select, not drag").
+- **Reactivity of `parentElement`.** The computed re-runs when `workspacesStore.workspaces` changes (Pinia reactivity). If the SSE `design_element_created` event adds the parent after the page load, the lookup will find it on the next click. No need to manually invalidate.
+
+**Why NOT Figma-style "click+drag on child → drag parent".** Figma also lets you click+drag on a child and have it drag the parent (single-gesture). Implementing this requires refactoring `startDrag` to swap the target element mid-gesture (the drag handlers currently use `props.element` for the wire — would need to be parameterized by parent if child + move). The user's literal request is "click → select parent"; the drag-from-parent-bounding-box flow works. A future enhancement could implement single-gesture drag, but it's a larger change.
+
+**Out of scope (deferred to follow-ups).**
+
+- **Click+drag on child → drag the parent** (Figma's single-gesture cascade) — requires refactoring `startDrag` to swap the target element mid-gesture. The user can drag the parent from its bounding box after the click-on-child select.
+- **Double-click on child → drill down to select the child** — Sketch-style deep selection. Currently the only way to select a child is via the LayersPanel (right-click on the row, or single-click on the row in the panel).
 ## 🎓 Cross-cutting patterns (consolidated 2026-08-06)
 
 > These are the most reusable patterns that emerged from 22+ fixes
@@ -3969,4 +4026,3 @@ difference: it's indexed in the canonical doc alongside the
 mandatory rules + cross-platform pitfalls + recent changes,
 so a future agent searching for "wire formats always carry
 inputs" finds it alongside "static-contract tests are banned"
-without having to load a separate file.

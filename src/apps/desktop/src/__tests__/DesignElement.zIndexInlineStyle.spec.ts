@@ -20,8 +20,9 @@
  * attribute contains `z-index: <z_index>px` for every element, so
  * CSS stacking matches the database's z_index.
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 
 import DesignElement from '../components/design/DesignElement.vue'
@@ -61,6 +62,18 @@ function makeElement(overrides: Partial<DesignElementApi> = {}): DesignElementAp
 
 describe('DesignElement.vue — elementStyle applies z_index as inline CSS z-index', () => {
   let wrapper: VueWrapper | null = null
+
+// Pinia is required because `DesignElement.vue::setup` now imports
+  // `useWorkspacesStore` (added 2026-08-06 so the element can look up
+  // its parent for the "click on child → select parent" redirect).
+  // The store is created here but remains empty — the lookup returns
+  // null for any element, which the component treats as "no parent
+  // found → safe-degrade to existing behaviour" (select the element
+  // itself, no z-index impact). See DesignElement.drag.spec.ts for
+  // the parent-found tests.
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
 
   afterEach(() => {
     wrapper?.unmount()

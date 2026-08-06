@@ -1813,12 +1813,10 @@ pub const allMigrations: []const Migration = &.{
     // images or base 64 in kanban description, after create a task or
     // run aent").
     .{ .version = Migration069AddTaskImageUrls.version, .name = Migration069AddTaskImageUrls.name, .up = Migration069AddTaskImageUrls.up },
-
     // Migration 070 — agent_memories table + agent_memories_fts FTS5 +
     // 3 sync triggers. Backs the save_memory + load_memory agent tools
     // (Task task_1785958319567, plan 2026-08-06-save-load-memory-fts5).
     .{ .version = Migration070AddAgentMemories.version, .name = Migration070AddAgentMemories.name, .up = Migration070AddAgentMemories.up },
-
     // Migration 071 — adds `workspace_item_tasks.cwd` (the per-task
     // cwd_session). Each task can now carry its own cwd path;
     // session_create.zig::useCase resolves cwd in 3 levels:
