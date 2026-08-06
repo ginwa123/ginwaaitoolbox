@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from 'vue'
 import { tryUnwrapToolOutput } from '@/helpers/unwrapToolOutput'
+import { extractPreviewArgs, type PreviewArgs } from '@/helpers/previewArgs'
 import { usePreviewDisplayMode, type PreviewDisplayMode } from '@/composables/usePreviewDisplayMode'
 import PreviewContentRenderer from './PreviewContentRenderer.vue'
 
@@ -159,38 +160,19 @@ const activePreview = computed(() => props.previews[activeIndex.value] ?? null)
 const activeContentType = computed(() => findTag(activePreview.value?.content ?? '', 'content_type') ?? 'text')
 const activePreviewId = computed(() => findTag(activePreview.value?.content ?? '', 'preview_id') ?? '')
 
-interface Args { content_type?: string; content?: string; title?: string; language?: string; caption?: string }
-const activeArgs = computed<Args>(() => {
+// Extract the show_preview tool-call arguments from the wrapper
+// envelope via the shared `extractPreviewArgs` helper (handles both
+// XML-shaped parameters from current backend and raw-JSON legacy rows).
+// (2026-08-06): the local implementation was duplicated between
+// PreviewSidePanel.vue and ShowPreview.vue; consolidating into one
+// helper eliminated the chat-bubble-blank bug where ShowPreview only
+// parsed JSON and silently swallowed the XML shape from production.
+const activeArgs = computed<PreviewArgs>(() => {
   const p = activePreview.value
   if (!p) return {}
-  // Extract the show_preview tool-call arguments from the wrapper
-  // envelope. The backend stores the input inside the
-  // `<parameters>...</parameters>` tag of the `<tool>...</tool>`
-  // envelope (see tool_registry.wrapToolOutput). After my backend fix
-  // for the `<parameters>` double-wrap, the inner content is XML
-  // (converted by jsonArgsToXml), NOT raw JSON — so we must read it
-  // with findTag, not JSON.parse. The JSON.parse fallback handles
-  // the rare case of legacy rows still in raw-JSON form.
   const unwrapped = tryUnwrapToolOutput(p.content)
   if (!unwrapped?.parameters) return {}
-  const paramsXml = unwrapped.parameters
-  // Try XML-based extraction first (current backend behavior).
-  const fromXml: Args = {
-    content_type: findTag(paramsXml, 'content_type') ?? undefined,
-    content: findTag(paramsXml, 'content') ?? undefined,
-    title: findTag(paramsXml, 'title') ?? undefined,
-    language: findTag(paramsXml, 'language') ?? undefined,
-    caption: findTag(paramsXml, 'caption') ?? undefined,
-  }
-  if (fromXml.content) return fromXml
-  // Fallback: try JSON (legacy raw-JSON rows, if any exist).
-  try {
-    const parsed = JSON.parse(paramsXml) as Args
-    if (parsed && typeof parsed === 'object') return parsed
-  } catch {
-    /* not JSON — fall through */
-  }
-  return {}
+  return extractPreviewArgs(unwrapped.parameters)
 })
 
 const ICONS: Record<string, string> = { markdown: 'M', text: 'T', code: 'C', image: 'I', html: 'H' }
