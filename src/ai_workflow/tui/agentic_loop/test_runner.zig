@@ -38,4 +38,5 @@ test {
     _ = @import("build_messages_for_agent_prompt_test.zig");
     _ = @import("build_messages_for_agent_prompt_design_canvas_test.zig"); // design-mode-scrollbar-fix — iframe scrollbar guidance in BuildDesignCanvasPrompt
     _ = @import("build_messages_for_agent_prompt_filtering_tools_test.zig"); // unit-test-filtering-tools — behavioural tests for the per-item-type tool filter
+    _ = @import("prompts_make_working_directory_context.zig"); // never-create-memory-md — makeWorkingDirectoryContext must never force-create AGENTS.md / CLAUDE.md / NALAR.md (inline tests at the bottom of the impl file)
 }
