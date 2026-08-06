@@ -161,3 +161,60 @@ test "parseConfigInput: rejects malformed JSON with SyntaxError (not InvalidChar
     const result = parseConfigInput(testing.allocator, body);
     try testing.expectError(error.SyntaxError, result);
 }
+
+// ─── active_profile wire contract (Reset button regression) ────────────────
+//
+// The Reset button previously sent `active_profile: undefined` (stripped
+// to no key) which the parser + handler treated as "don't touch".
+// The fix is for the frontend to send `active_profile: ""` (empty
+// string) — the existing handler at nalar_config_put.zig:246-252
+// already interprets an empty string as "clear". These tests lock
+// in the parser's contract for both wire states.
+//
+// (The empty-string sentinel is slightly less explicit than a JSON
+// null, but it works within the existing `?[]const u8` type. Using
+// `null` would require a type change to `?json.Value` to distinguish
+// absent vs present-null in std.json — not worth the migration cost
+// for one optional field.)
+
+test "parseConfigInput: active_profile absent in body → null (don't touch)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const body =
+        \\{"api_key":"k","model":"m"}
+    ;
+
+    const input = try parseConfigInput(arena.allocator(), body);
+    try testing.expect(input.active_profile == null);
+}
+
+test "parseConfigInput: active_profile explicit empty string → Some(\"\") (clear sentinel)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // The exact body NalarSettings.vue::clearActiveProfile sends.
+    // Empty string is the "clear" sentinel — the handler interprets
+    // ap.len == 0 as "drop the active_profile field".
+    const body =
+        \\{"api_key":"k","model":"m","active_profile":""}
+    ;
+
+    const input = try parseConfigInput(arena.allocator(), body);
+    try testing.expect(input.active_profile != null);
+    try testing.expectEqualStrings("", input.active_profile.?);
+}
+
+test "parseConfigInput: active_profile explicit non-empty string → Some(\"work\") (set)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // The exact body NalarSettings.vue::setActiveProfile sends.
+    const body =
+        \\{"api_key":"k","model":"m","active_profile":"work"}
+    ;
+
+    const input = try parseConfigInput(arena.allocator(), body);
+    try testing.expect(input.active_profile != null);
+    try testing.expectEqualStrings("work", input.active_profile.?);
+}
