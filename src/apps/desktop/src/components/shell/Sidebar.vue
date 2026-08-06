@@ -1471,7 +1471,7 @@ defineExpose({
 
     <!-- Header. Minimal text-driven header — no logo gradient
          pill, no decorative sub-label. Two layouts: collapsed shows
-         a thin monogram "N" character; expanded shows "Nalar" word
+         a thin monogram "A" character; expanded shows "AnakMagang" word
          + a small settings chevron. The thin border-bottom keeps
          the section boundary visible without any visual heaviness. -->
     <div
@@ -1484,16 +1484,16 @@ defineExpose({
         class="flex items-center gap-2"
         data-testid="sidebar-header-expanded"
       >
-        <span class="text-sm font-semibold tracking-tight" style="color: var(--semantic-text);">Nalar</span>
+        <span class="text-sm font-semibold tracking-tight" style="color: var(--semantic-text);">AnakMagang</span>
       </div>
       <span
         v-else
         class="text-sm font-semibold tracking-tight"
         style="color: var(--semantic-text);"
-        title="Nalar"
-        aria-label="Nalar"
+        title="AnakMagang"
+        aria-label="AnakMagang"
         data-testid="sidebar-header-collapsed"
-      >N</span>
+      >A</span>
       <button
         v-if="!isCollapsed"
         @click="goToSettings"
