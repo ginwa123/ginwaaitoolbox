@@ -49,7 +49,7 @@
   Plan: docs/superpowers/specs/2026-08-06-show-preview-display-mode-design.md
 -->
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { marked } from 'marked'
 
 export interface PreviewArgs {
@@ -65,10 +65,11 @@ const props = withDefaults(
     args: PreviewArgs
     /**
      * `'side'` (default) — full-width panel layout, 480px-tall iframe.
-     * `'inline'` — compact chat-bubble layout: cap at max-h-[320px],
-     * `max-w-full` so it fits the chat column, plus an "Open full
-     * preview" button that opens the HTML in a new tab via Blob URL
-     * (lets the user see the full-width page when inline truncates).
+     * `'inline'` — compact chat-bubble layout that auto-resizes to fit
+     * the iframe's content height (via a tiny postMessage protocol —
+     * no scrollbar, no fixed cap), plus an "Open full preview" button
+     * that opens the HTML in a new tab via Blob URL for the
+     * long-content case.
      */
     variant?: 'side' | 'inline'
   }>(),
@@ -76,6 +77,96 @@ const props = withDefaults(
 )
 
 const isInline = computed(() => props.variant === 'inline')
+
+// ─── Iframe ref + auto-resize message handling ──────────────────────
+//
+// The inline iframe auto-sizes to fit its content via a tiny postMessage
+// protocol: a script inside the iframe reports its scrollHeight to the
+// parent, which clamps the value (200px ≤ h ≤ 2000px) and sets
+// `iframe.style.height`. This way the user sees the full HTML inline
+// without a scrollbar.
+//
+// Why 200px min: empty/short content shouldn't collapse the iframe to
+// zero (the surrounding bubble has visible borders).
+// Why 2000px max: runaway content (huge dashboards, infinite-scroll pages)
+// must not break the chat layout — the user clicks "Open full" for that.
+
+const iframeRef = ref<HTMLIFrameElement | null>(null)
+const MIN_IFRAME_HEIGHT = 200
+const MAX_IFRAME_HEIGHT = 2000
+
+function onIframeMessage(e: MessageEvent) {
+  // Filter by source — only messages from our own auto-resize script.
+  if (
+    !e.data ||
+    typeof e.data !== 'object' ||
+    e.data.source !== 'show-preview-auto-resize' ||
+    typeof e.data.height !== 'number'
+  ) {
+    return
+  }
+  const iframe = iframeRef.value
+  if (!iframe) return
+  const clamped = Math.max(MIN_IFRAME_HEIGHT, Math.min(MAX_IFRAME_HEIGHT, e.data.height))
+  iframe.style.height = `${clamped}px`
+}
+
+onMounted(() => {
+  if (typeof window !== 'undefined') {
+    window.addEventListener('message', onIframeMessage)
+  }
+})
+
+onUnmounted(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('message', onIframeMessage)
+  }
+})
+
+// ─── Auto-resize script (prepended to the iframe srcdoc) ────────────
+//
+// This script is injected at the start of the iframe's srcdoc so it runs
+// at parse time. It measures the iframe's content scrollHeight and
+// posts it back to the parent on every layout change (load, resize,
+// DOM mutation). The parent's `onIframeMessage` updates `iframe.style.height`
+// to match.
+//
+// Security note: the iframe has `sandbox="allow-scripts"`. The script
+// runs in a NULL-origin context (no cookies, no localStorage, no parent
+// DOM access). It only does `parent.postMessage(...)` — no network, no
+// eval, no escape. The parent only adjusts `iframe.style.height` — no
+// other side effects. The protocol is safe.
+const AUTO_RESIZE_SCRIPT = `<script>(function(){
+var REPORT_SOURCE = 'show-preview-auto-resize';
+function report(){
+  try {
+    var de = document.documentElement;
+    var body = document.body;
+    var h = Math.max(
+      de ? de.scrollHeight : 0,
+      body ? body.scrollHeight : 0,
+      de ? de.offsetHeight : 0,
+      body ? body.offsetHeight : 0
+    );
+    parent.postMessage({ source: REPORT_SOURCE, height: h }, '*');
+  } catch(e) {}
+}
+function init(){
+  report();
+  window.addEventListener('load', report);
+  window.addEventListener('resize', report);
+  if (document.body && typeof MutationObserver !== 'undefined') {
+    try {
+      new MutationObserver(report).observe(document.body, { childList: true, subtree: true });
+    } catch(e) {}
+  }
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
+})();<\/script>`
 
 function escapeHtml(s: string): string {
   return s
@@ -133,23 +224,27 @@ const imageSrc = computed<string | null>(() => {
  *
  * Vue's reactive `:srcdoc` binding calls setAttribute for us.
  *
- * Also wraps the HTML in a tiny `<style>` reset so the preview doesn't
- * get a default-margin surprise from the browser body. Mirrors the
- * existing PreviewSidePanel pattern.
+ * Also wraps the HTML in:
+ *   1. A tiny `<style>` reset so the preview doesn't get a default-
+ *      margin surprise from the browser body.
+ *   2. The AUTO_RESIZE_SCRIPT (prepended BEFORE the user's HTML) which
+ *      sets up the postMessage protocol that makes the iframe auto-size
+ *      to fit its content height. Mirrors the existing
+ *      PreviewSidePanel pattern.
  */
 const htmlSrcDoc = computed<string | null>(() => {
   if (props.contentType !== 'html') return null
   const raw = props.args.content ?? ''
-  return `<style>html,body{margin:0;padding:0;background:#fff;}</style>${raw}`
+  return `${AUTO_RESIZE_SCRIPT}<style>html,body{margin:0;padding:0;background:#fff;}</style>${raw}`
 })
 
 // ─── Open full preview (inline variant only) ─────────────────────────
 //
-// In inline mode the iframe is bounded to max-h-[320px] + max-w-full — the
-// user's HTML page may be larger than the chat bubble (e.g. a dashboard
-// designed for 1440px wide). The "Open full preview" button gives the
-// user a one-click path to see the full-width page without leaving the
-// chat.
+// In inline mode the iframe is auto-sized to its content, but the chat
+// column may still be narrower than the user's HTML page (e.g. a
+// dashboard designed for 1440px wide). The "Open full preview" button
+// gives the user a one-click path to see the page at full window width
+// without leaving the chat.
 //
 // Implementation: build a Blob URL from the SAME srcdoc value the iframe
 // uses (so what they see inline matches what they see in the new tab),
@@ -206,43 +301,41 @@ function openFullPreview() {
     </div>
 
     <!--
-      HTML iframe container — sizing differs by variant:
-        side   : min-h-[480px], fills the parent (full-width panel)
-        inline : min-h-[480px] + max-w-full (fits the chat column)
-                 + has an "Open full preview" button so the user can
-                 see the page at full width in a new tab when the
-                 content overflows the inline area.
-
-      Why NO max-h for inline: the previous 320px cap forced a
-      scrollbar even on normal-sized HTML (cards, dashboards, simple
-      pages). 480px is the typical viewport height — most user HTML
-      fits without scrolling, and the "Open full" button covers the
-      long-content case.
+      HTML iframe container — sizing:
+        side   : min-h-[480px], fills the parent panel
+        inline : auto-sized via the postMessage protocol in
+                 AUTO_RESIZE_SCRIPT (see <script setup>).
+                 The script reports the iframe's content height to the
+                 parent, which sets `iframe.style.height` accordingly
+                 (clamped 200-2000px). Result: every inline HTML preview
+                 fits its content with NO SCROLLBAR. The "↗ Open full"
+                 button covers the long-content case (full window
+                 width in a new tab via Blob URL).
     -->
     <div
       v-else-if="contentType === 'html' && htmlSrcDoc"
       data-testid="preview-html-container"
       :class="isInline
-        ? 'relative max-w-full min-h-[480px] rounded overflow-hidden border border-[var(--color-border)] bg-white'
+        ? 'relative max-w-full rounded overflow-hidden border border-[var(--color-border)] bg-white'
         : 'h-full min-h-[480px] rounded overflow-hidden border border-[var(--color-border)] bg-white'"
     >
       <iframe
+        ref="iframeRef"
         sandbox="allow-scripts"
         :srcdoc="htmlSrcDoc"
+        :style="isInline ? 'min-height: 200px' : ''"
         :class="isInline
-          ? 'w-full min-h-[480px] border-0 block'
+          ? 'w-full border-0 block'
           : 'w-full h-full min-h-[480px] border-0 block'"
         :title="args.title || 'HTML preview'"
         data-testid="preview-html-iframe"
       />
       <!--
-        Floating "Open full preview" button — only in inline mode where
-        the iframe can't show the full page. Positioned at the top-right
-        of the iframe so it never overlaps the HTML content (which
-        typically has its own header). The iframe's sandbox="allow-scripts"
-        doesn't apply to the parent window's window.open — the new tab
-        is OUTSIDE the iframe, so the parent-doc's anchor/preview
-        element is unaffected.
+        Floating "Open full preview" button — only in inline mode.
+        Positioned at the top-right of the iframe so it never overlaps
+        the HTML content (which typically has its own header). The
+        iframe's sandbox="allow-scripts" doesn't apply to the parent
+        window's window.open — the new tab is OUTSIDE the iframe.
       -->
       <button
         v-if="isInline"
