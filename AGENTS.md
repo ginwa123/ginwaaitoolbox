@@ -2748,7 +2748,7 @@ User: "is this tool only fetching is_llm_feed 0 or is_llm_seaf_feed 1 or search 
 - PR: pending squash-merge candidate
 - Worktree: `/home/ginwa/ginwaaitoolbox/.worktrees/design-page-delete-confirm`
 
-### 2026-08-06: Per-task `cwd_session` + optional kanban cwd (Migration 070)
+### 2026-08-06: Per-task `cwd_session` + optional kanban cwd (Migration 071)
 
 **Symptom (user report, task_1785959915548).** *"when user want to create a kanban, make cwd session as optional ... after we create a kanban, and then want to add task, add field input to select folder so it will become a cwd session"*.
 
@@ -2760,7 +2760,7 @@ Two-part user request:
 ```
 RequestSession.cwd_session       (explicit per-call override — frontend sends)
   ↓ if empty
-workspace_item_tasks.cwd         ← NEW column (Migration 070) — per-task cwd
+workspace_item_tasks.cwd         ← NEW column (Migration 071) — per-task cwd
   ↓ if empty
 workspace_items.path             (kanban-level cwd — pre-existing)
   ↓ if empty
@@ -2772,7 +2772,7 @@ Each task can now carry its own cwd; the kanban's path is just the default for t
 **What landed.**
 
 **Backend (Zig):**
-- **Migration 070** — `ALTER TABLE workspace_item_tasks ADD COLUMN cwd TEXT NOT NULL DEFAULT ''`. Registered in `allMigrations`. Idempotent on re-run. Pre-existing rows backfill to `''`. 5 column tests + 3 `createWorkspaceItemTask` round-trip tests (`migration_070_test.zig`).
+- `workspace_item_tasks.cwd` migration (now Migration 071) — `ALTER TABLE workspace_item_tasks ADD COLUMN cwd TEXT NOT NULL DEFAULT ''`. Registered in `allMigrations`. Idempotent on re-run. Pre-existing rows backfill to `''`. 5 column tests + 3 `createWorkspaceItemTask` round-trip tests (`migration_071_test.zig`).
 - **`WorkspaceItemTaskInfo.cwd`** — new field + `deinit` free.
 - **`listWorkspaceItemTasksWithCursor`** SELECT — includes `t.cwd` at index 23 (row indices comment + struct literal updated).
 - **`createWorkspaceItemTask`** — accepts `cwd: ?[]const u8` as 10th arg. Dynamic SQL builder (null → omit, `""` → SQL `''` literal, non-empty → bind via `?`) — same shape as `description` / `tags` / `image_urls` (avoids the empty-slice-binds-as-NULL footgun).
@@ -2821,7 +2821,7 @@ Each task can now carry its own cwd; the kanban's path is just the default for t
 - **Edit-mode cwd change** is OUT OF SCOPE for this PR — the dialog's edit mode shows the cwd as a read-only strip. User can delete + recreate the task to change cwd, OR rely on the kanban-level "Set project root" banner for the rare case. Future plan if requested.
 - **The `addTask` API path persists `cwd` directly** — no second `updateTaskDetails` patch needed (unlike `imageUrls` which uses an update-then-imageUrls pattern because cwdSession is fetched via the `cwd` POST param). The image_urls pattern is for the late-upload-then-patch flow; cwd is set at creation time.
 - **Frontend 3-level fallback in `runAgentOnNewTask`** — the backend re-derives the same chain for non-Vue clients. Both layers doing the same chain is intentional defense-in-depth (Vue path is the primary contract; the backend chain protects curl / LLM tool callers).
-- **Test setup `setupDb` must include `task_type TEXT NOT NULL DEFAULT 'standard'`** — without it, `createWorkspaceItemTask` (which always INSERTs task_type) fails with "no such column: task_type". This bit me on the first round-trip test; pinned in the migration_070_test setupDb comment.
+- **Test setup `setupDb` must include `task_type TEXT NOT NULL DEFAULT 'standard'`** — without it, `createWorkspaceItemTask` (which always INSERTs task_type) fails with "no such column: task_type". This bit me on the first round-trip test; pinned in the migration_071_test setupDb comment.
 - **Returned `cwd` slice is borrowed from the per-request arena** — same lifetime pattern as `tags` / `image_urls` / `git_worktree_cwd`. The session_create `resolveCwdFromTaskOrItem` returns a borrowed slice; the caller (useCase) must NOT free it.
 
 **Branch / commit / Plan / PR.**

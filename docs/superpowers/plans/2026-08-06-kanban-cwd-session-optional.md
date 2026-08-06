@@ -44,7 +44,7 @@ This unlocks the user's actual mental model:
 `session_create.zig::useCase` resolves the cwd in this order:
 
 ```
-1. task.cwd_session  ← per-task (NEW column, Migration 070)
+1. task.cwd_session  ← per-task (NEW column, Migration 071)
 2. workspace_item.path  ← kanban-level (existing column)
 3. createSandbox(...)  ← per-session TMPDIR/session_<id>/ (existing fallback)
 ```
@@ -121,7 +121,7 @@ frontend's resolution is the primary contract.
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ 9. Migration 070 — add cwd_session column                            │
+│ 9. Migration 071 — add cwd_session column                            │
 │    ALTER TABLE workspace_item_tasks                                  │
 │    ADD COLUMN cwd_session TEXT NOT NULL DEFAULT ''                   │
 │    Existing rows backfill to '' (cwd-less legacy tasks)             │
@@ -192,9 +192,9 @@ frontend's resolution is the primary contract.
 
 ### Backend (Zig)
 
-**New migration** — `src/migrations/migration.zig::Migration070AddTaskCwdSession`:
+**New migration** — `src/migrations/migration.zig::Migration071AddTaskCwd`:
 ```zig
-pub const Migration070AddTaskCwdSession = struct {
+pub const Migration071AddTaskCwd = struct {
     pub const version: u32 = 70;
     pub const name = "add_task_cwd_session";
 
@@ -212,7 +212,7 @@ pub const Migration070AddTaskCwdSession = struct {
 };
 ```
 Registered in `allMigrations` slice. **6 inline behavioural tests** in
-`src/migrations/migration_070_test.zig` (mirrors `migration_069_test.zig`):
+`src/migrations/migration_071_test.zig` (mirrors `migration_069_test.zig`):
 column exists with right type+default, idempotent on re-run, pre-existing
 rows backfill to `''`, registered in `allMigrations`.
 
@@ -320,12 +320,12 @@ rows backfill to `''`, registered in `allMigrations`.
 ### Files
 
 **New (2):**
-- `src/migrations/migration_070_test.zig`
+- `src/migrations/migration_071_test.zig`
 - `src/apps/desktop/src/__tests__/KanbanTaskDetailDialog.cwdSession.spec.ts`
 
 **Modified (15+):**
-- `src/migrations/migration.zig` (Migration070 struct + registration)
-- `src/migrations/test_runner.zig` (register migration_070_test)
+- `src/migrations/migration.zig` (Migration071 struct + registration)
+- `src/migrations/test_runner.zig` (register migration_071_test)
 - `src/ai_workflow/tui/llm_history.zig` (struct + SELECT + create fn)
 - `src/ai_workflow/tui/http_handlers/http_response.zig` (3 wire types)
 - `src/ai_workflow/tui/http_handlers/task_create.zig` (pass-through)
@@ -416,9 +416,9 @@ Otherwise the defaults above will be used.
 
 ## TDD trace (planned)
 
-1. **RED** — write migration_070_test (6 tests) — fail because the
+1. **RED** — write migration_071_test (6 tests) — fail because the
    column doesn't exist.
-2. **GREEN** — add `Migration070AddTaskCwdSession` struct + register
+2. **GREEN** — add `Migration071AddTaskCwd` struct + register
    it. All 6 tests pass.
 3. **RED** — update `WorkspaceItemTaskInfo` + SELECT + create fn +
    wire types. Existing tests start failing because the SQL now

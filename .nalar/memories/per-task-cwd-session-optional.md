@@ -1,4 +1,4 @@
-# Per-task cwd_session (Migration 070, kanban-cwd-session-optional plan, 2026-08-06)
+# Per-task cwd_session (Migration 071, kanban-cwd-session-optional plan, 2026-08-06)
 
 ## Mental model
 
@@ -8,7 +8,7 @@ Each kanban **task** can carry its own `cwd_session` (different repos per task).
 
 ```
 1. RequestSession.cwd_session     ← explicit per-call override (frontend sends)
-2. workspace_item_tasks.cwd       ← NEW column, per-task (Migration 070)
+2. workspace_item_tasks.cwd       ← NEW column, per-task (Migration 071)
 3. workspace_items.path           ← kanban-level cwd (pre-existing)
 4. createSandbox($TMPDIR/session_<id>/)  ← per-session sandbox (pre-existing)
 ```
@@ -29,7 +29,7 @@ The frontend computes the same chain at `KanbanView.handleCreateTaskSave` (3-lev
 ## Backend shape
 
 ```zig
-// Migration 070 (idempotent — pre-existing rows backfill to '')
+// Migration 071 (idempotent — pre-existing rows backfill to '')
 ALTER TABLE workspace_item_tasks ADD COLUMN cwd TEXT NOT NULL DEFAULT '';
 
 // createWorkspaceItemTask accepts cwd: ?[]const u8 as 10th arg.
@@ -59,7 +59,7 @@ ALTER TABLE workspace_item_tasks ADD COLUMN cwd TEXT NOT NULL DEFAULT '';
 
 ## Test counts
 
-- Backend: `migration_070_test.zig` — 5 column tests + 3 `createWorkspaceItemTask` round-trip tests.
+- Backend: `migration_071_test.zig` — 5 column tests + 3 `createWorkspaceItemTask` round-trip tests.
 - Frontend: 3 updated emit tests (`emits create`, `emits create with unattended`, `emits create-and-run with mode create_and_run`) to include `cwdSession: ''` in the expected payload.
 - AddKanbanDialog: 3 new tests for the optional-path behavior (button enabled without folder, "Skip (no project root)" placeholder, "(optional)" hint shown).
 
@@ -71,6 +71,6 @@ ALTER TABLE workspace_item_tasks ADD COLUMN cwd TEXT NOT NULL DEFAULT '';
 
 ## Related
 
-- AGENTS.md changelog entry: `### 2026-08-06: Per-task cwd_session + optional kanban cwd (Migration 070)`
+- AGENTS.md changelog entry: `### 2026-08-06: Per-task cwd_session + optional kanban cwd (Migration 071)`
 - Plan doc: `docs/superpowers/plans/2026-08-06-kanban-cwd-session-optional.md`
-- Cross-references: Migration 067 (per-task tags), Migration 069 (per-task image_urls) — both follow the same per-task column + dynamic SQL builder + `||`-for-image_urls convention. Migration 070 follows the same pattern but uses a single absolute path (no `||` separator).
+- Cross-references: Migration 067 (per-task tags), Migration 069 (per-task image_urls) — both follow the same per-task column + dynamic SQL builder + `||`-for-image_urls convention. Migration 071 follows the same pattern but uses a single absolute path (no `||` separator).

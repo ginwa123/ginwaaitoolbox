@@ -249,7 +249,7 @@ test "createWorkspaceItemTask: description = null succeeds and stores ''" {
         // cwd (Migration 070) — null (omitted body field → empty-string
         // sentinel). migration_062_test predates Migration 070 and
         // exercises the description path only; cwd is fully covered in
-        // migration_070_test.zig.
+        // migration_071_test.zig.
         null);
     defer task.deinit(alloc);
 

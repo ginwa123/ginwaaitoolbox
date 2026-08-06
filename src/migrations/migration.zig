@@ -1814,7 +1814,7 @@ pub const allMigrations: []const Migration = &.{
     // run aent").
     .{ .version = Migration069AddTaskImageUrls.version, .name = Migration069AddTaskImageUrls.name, .up = Migration069AddTaskImageUrls.up },
 
-    // Migration 070 — adds `workspace_item_tasks.cwd` (the per-task
+    // Migration 071 — adds `workspace_item_tasks.cwd` (the per-task
     // cwd_session). Each task can now carry its own cwd path;
     // session_create.zig::useCase resolves cwd in 3 levels:
     //   1. RequestSession.cwd_session (explicit per-call override)
@@ -1828,7 +1828,11 @@ pub const allMigrations: []const Migration = &.{
     // chain on the client before sending cwd_session to the chat
     // session create endpoint. Plan:
     // docs/superpowers/plans/2026-08-06-kanban-cwd-session-optional.md
-    .{ .version = Migration070AddTaskCwd.version, .name = Migration070AddTaskCwd.name, .up = Migration070AddTaskCwd.up },
+    //
+    // Renamed from Migration 070 during PR #200 merge (main already
+    // used 070 for the agent_memories migration — save_memory +
+    // load_memory agent tools, plan 2026-08-06-save-load-memory-fts5).
+    .{ .version = Migration071AddTaskCwd.version, .name = Migration071AddTaskCwd.name, .up = Migration071AddTaskCwd.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -2724,7 +2728,7 @@ pub const Migration069AddTaskImageUrls = struct {
     }
 };
 
-/// Migration 070 — `workspace_item_tasks.cwd` (per-task cwd_session).
+/// Migration 071 — `workspace_item_tasks.cwd` (per-task cwd_session).
 ///
 /// Adds a `cwd TEXT NOT NULL DEFAULT ''` column so each kanban task
 /// can carry its own cwd override. The legacy `cwd_session` HTTP
@@ -2755,8 +2759,11 @@ pub const Migration069AddTaskImageUrls = struct {
 /// Plan: docs/superpowers/plans/2026-08-06-kanban-cwd-session-optional.md
 /// Task: task_1785959915548 (kanban: sprint bulan juni →
 ///   "when user want to create a kanban, make cwd session as optional")
-pub const Migration070AddTaskCwd = struct {
-    pub const version: u32 = 70;
+///
+/// Renamed from Migration 070 during PR #200 merge (main already
+/// used 070 for the agent_memories migration).
+pub const Migration071AddTaskCwd = struct {
+    pub const version: u32 = 71;
     pub const name = "add_task_cwd";
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {

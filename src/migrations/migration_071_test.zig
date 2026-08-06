@@ -1,9 +1,9 @@
-//! Behavioural regression checks for Migration 070
+//! Behavioural regression checks for Migration 071
 //! (`workspace_item_tasks.cwd`).
 //!
 //! Why this file exists
 //! ────────────────────
-//! Migration 070 adds a `cwd TEXT NOT NULL DEFAULT ''` column to
+//! Migration 071 adds a `cwd TEXT NOT NULL DEFAULT ''` column to
 //! `workspace_item_tasks` so each task can carry its own cwd_session
 //! (which becomes the cwd_session for that task's chat sessions).
 //! Per-task cwd OVERRIDES the kanban-level path (`workspace_items.path`)
@@ -28,7 +28,7 @@ const std = @import("std");
 const testing = std.testing;
 const sqlite = @import("nalarcore").sqlite;
 
-const Migration070AddTaskCwd = @import("migration.zig").Migration070AddTaskCwd;
+const Migration071AddTaskCwd = @import("migration.zig").Migration071AddTaskCwd;
 
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
@@ -76,7 +76,7 @@ fn setupDb() !TestCtx {
     return .{ .db = db, .threaded = threaded };
 }
 
-test "Migration070 adds cwd column to workspace_item_tasks" {
+test "Migration071 adds cwd column to workspace_item_tasks" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.db.deinit();
@@ -93,7 +93,7 @@ test "Migration070 adds cwd column to workspace_item_tasks" {
     }
 
     // Apply the migration.
-    try Migration070AddTaskCwd.up(&ctx.db, alloc);
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
 
     // Confirm the column exists with the expected name.
     var q = try ctx.db.query(alloc,
@@ -130,16 +130,16 @@ test "Migration070 adds cwd column to workspace_item_tasks" {
     try testing.expect(dflt.len == 0 or std.mem.eql(u8, dflt, "''"));
 }
 
-test "Migration070 is idempotent on a re-run" {
+test "Migration071 is idempotent on a re-run" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
     // Run the migration once…
-    try Migration070AddTaskCwd.up(&ctx.db, alloc);
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
     // …and a second time. Must not crash with "duplicate column name".
-    try Migration070AddTaskCwd.up(&ctx.db, alloc);
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
 
     // Still exactly one cwd column.
     var q = try ctx.db.query(alloc,
@@ -152,7 +152,7 @@ test "Migration070 is idempotent on a re-run" {
     try testing.expectEqualStrings("1", row.values[0]);
 }
 
-test "Migration070 leaves pre-existing rows at cwd='' (the no-per-task-cwd sentinel)" {
+test "Migration071 leaves pre-existing rows at cwd='' (the no-per-task-cwd sentinel)" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.db.deinit();
@@ -168,7 +168,7 @@ test "Migration070 leaves pre-existing rows at cwd='' (the no-per-task-cwd senti
             "VALUES ('task_pre_070', 'Pre-existing task', 'item_1')",
         &.{});
 
-    try Migration070AddTaskCwd.up(&ctx.db, alloc);
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
 
     var q = try ctx.db.query(alloc,
         "SELECT cwd FROM workspace_item_tasks WHERE id = 'task_pre_070'",
@@ -179,13 +179,13 @@ test "Migration070 leaves pre-existing rows at cwd='' (the no-per-task-cwd senti
     try testing.expectEqualStrings("", row.values[0]);
 }
 
-test "Migration070 round-trips a per-task cwd path" {
+test "Migration071 round-trips a per-task cwd path" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
-    try Migration070AddTaskCwd.up(&ctx.db, alloc);
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
 
     // Insert a task with an absolute path on disk as its per-task cwd.
     // Confirm the raw string round-trips — the column stores bytes
@@ -206,19 +206,19 @@ test "Migration070 round-trips a per-task cwd path" {
     try testing.expectEqualStrings(cwd_path, row.values[0]);
 }
 
-test "Migration070 is registered in allMigrations" {
+test "Migration071 is registered in allMigrations" {
     // Catches the silent-skip regression where the struct is defined
     // but the registration tuple is missing (per project memory
     // `migration-registration-trap`). Search the slice by version
     // number so the test stays stable across reordering.
     const all = @import("migration.zig").allMigrations;
     for (all) |m| {
-        if (m.version == Migration070AddTaskCwd.version) return;
+        if (m.version == Migration071AddTaskCwd.version) return;
     }
-    return error.Migration070NotRegistered;
+    return error.Migration071NotRegistered;
 }
 
-// ─── createWorkspaceItemTask round-trip tests (Migration 070) ───────────
+// ─── createWorkspaceItemTask round-trip tests (Migration 071) ───────────
 //
 // These tests exercise the model's createWorkspaceItemTask function
 // (the canonical INSERT path for new tasks) to lock in the contract:
@@ -234,7 +234,7 @@ test "createWorkspaceItemTask: cwd = '/home/me/proj-A' round-trips verbatim" {
     var ctx = try setupDb();
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
-    try Migration070AddTaskCwd.up(&ctx.db, alloc);
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
 
     const parent_id = try insertWorkspaceItem(&ctx, alloc, "item_001");
 
@@ -248,7 +248,7 @@ test "createWorkspaceItemTask: cwd = '/home/me/proj-A' round-trips verbatim" {
         null, // description
         null, // tags
         null, // image_urls
-        "/home/me/proj-A", // cwd (Migration 070 10th arg)
+        "/home/me/proj-A", // cwd (Migration 071 10th arg)
     );
     defer task.deinit(alloc);
 
@@ -269,7 +269,7 @@ test "createWorkspaceItemTask: cwd = '' stores '' (SQL '' literal, NOT NULL DEFA
     var ctx = try setupDb();
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
-    try Migration070AddTaskCwd.up(&ctx.db, alloc);
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
 
     const parent_id = try insertWorkspaceItem(&ctx, alloc, "item_002");
 
@@ -305,7 +305,7 @@ test "createWorkspaceItemTask: cwd = null omits column (DEFAULT '' applies)" {
     var ctx = try setupDb();
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
-    try Migration070AddTaskCwd.up(&ctx.db, alloc);
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
 
     const parent_id = try insertWorkspaceItem(&ctx, alloc, "item_003");
 
