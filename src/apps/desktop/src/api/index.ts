@@ -1752,17 +1752,26 @@ export async function createDesignPage(
 /**
  * PATCH /api/workspaces/:workspaceId/items/:itemId/design/pages/:pageId
  *
- * Update an existing design page's width/height. Backend validates
- * the ranges (width 320-4096, height 240-4096); out-of-range returns
- * 400 with an explicit error message so the UI can surface it.
+ * Update an existing design page. Backend validates the ranges
+ * (width 320-4096, height 240-4096) and rejects empty `name` with
+ * 400; otherwise the same name + size semantics apply.
  *
- * Returns 200 OK with the full DesignPage record.
+ * - `width` + `height` are required (the canvas header W × H inputs).
+ * - `name` is optional (NEW for the rename menu, 2026-08-06).
+ *   When present, the page is renamed in place. When omitted
+ *   (or explicitly `undefined`), the name is left unchanged — the
+ *   backend distinguishes "absent in JSON" from "null" by treating
+ *   `null` as "leave unchanged" too (per the useCase's `?[]const u8`
+ *   → `?null` coercion in `updateDesignPage`).
+ *
+ * Returns 200 OK with the full DesignPage record (post-update name +
+ * width + height + updated_at).
  */
 export async function updateDesignPage(
   workspaceId: string,
   itemId: string,
   pageId: string,
-  patch: { width: number; height: number },
+  patch: { width: number; height: number; name?: string },
 ): Promise<DesignPage> {
   return await apiFetch<DesignPage>(
     `/workspaces/${workspaceId}/items/${itemId}/design/pages/${pageId}`,

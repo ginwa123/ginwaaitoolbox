@@ -1,12 +1,21 @@
 //! `PATCH /api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id`.
 //!
-//! Update an existing design page's width/height by id. UPDATE-only;
-//! does NOT insert — see `design_pages_create.zig` for the upsert
-//! path used by the agent's `set_design_page` tool.
+//! Update an existing design page by id. UPDATE-only; does NOT
+//! insert — see `design_pages_create.zig` for the upsert path used
+//! by the agent's `set_design_page` tool.
 //!
-//! Body: `{width: number, height: number}`. Both required, both
-//! must validate against `updateDesignPage`'s range (width
-//! 320-4096, height 240-4096). Out-of-range is rejected with 400
+//! Body: `{width: number, height: number, name?: string}`.
+//!   - `width` and `height` are required and must validate against
+//!     `updateDesignPage`'s range (width 320-4096, height 240-4096).
+//!   - `name` is OPTIONAL — when present and non-empty, the page is
+//!     renamed (the new name replaces the existing row's name in
+//!     `design_pages`). When missing or null, the name is left
+//!     unchanged (back-compat with the pre-rename body shape).
+//!   - Empty-string `name` is rejected with 400 (matches the
+//!     `setDesignPage` guard — an empty page name would break the
+//!     on-disk folder derivation in design_io).
+//!
+//! Out-of-range width/height and empty name are rejected with 400
 //! so the frontend gets explicit feedback (no silent clamping).
 //!
 //! Response shape: `DesignPageResponse` for the post-update page.
@@ -24,12 +33,15 @@
 //!
 //! Errors:
 //!   - 400 missing `page_id` path param, invalid JSON body,
-//!     out-of-range width / height
+//!     out-of-range width / height, empty `name`
 //!   - 404 page_id not found in `design_pages`
 //!   - 500 DB failure (update, fetch, or consistency violation)
 //!
 //! Plan: docs/superpowers/plans/2026-07-19-design-canvas-resize-and-zoom.md
 //!   (Chunk 1, Task 1.2)
+//!
+//! Plan: docs/superpowers/plans/2026-08-06-rename-design-pages.md
+//!   (Chunk 1 — extend the patch body with optional `name`)
 
 const std = @import("std");
 const nalarcore = @import("nalarcore");
@@ -37,11 +49,17 @@ const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
 const design_model = @import("../design_model.zig");
 
-/// HTTP request body for page-update. Both fields required; the
-/// backend rejects missing or out-of-range with 400.
+/// HTTP request body for page-update. `width` + `height` are
+/// required; `name` is optional (null = leave unchanged; "" =
+/// rejected with 400 by the use-case).
 const UpdatePageBody = struct {
     width: i64,
     height: i64,
+    // NEW (2026-08-06 — design page rename menu). Optional page name.
+    // JSON `null`/absent maps to Zig `null` → name preserved. Empty
+    // string is preserved as-is at the HTTP layer (use-case rejects
+    // it with BadPageName → mapped to 400).
+    name: ?[]const u8 = null,
 };
 
 /// Domain-level error set for `useCase`. The handler maps each
@@ -58,6 +76,9 @@ pub const DesignPageUpdateError = error{
     WidthOutOfRange,
     /// Body `height` field was < 240 or > 4096.
     HeightOutOfRange,
+    /// Body `name` field was `""` (empty string). Matches the
+    /// `setDesignPage` guard — a page must have a non-empty name.
+    BadPageName,
     /// `design_model.updateDesignPage` returned `PageNotFound`
     /// (no row with that `page_id`).
     PageNotFound,
@@ -74,6 +95,7 @@ pub const UpdatePageInput = struct {
     page_id: []const u8,
     width: i64,
     height: i64,
+    name: ?[]const u8,
 };
 
 /// Output of the update-page use-case.
@@ -91,12 +113,13 @@ pub const UpdatePageOutput = struct {
 // Use case
 // =====================================================================
 
-/// Update an existing design page's width/height.
+/// Update an existing design page.
 ///
 /// Steps:
 ///   1. Validate `page_id` non-empty.
 ///   2. Delegate to `design_model.updateDesignPage` (which validates
-///      the width/height range and re-fetches the row).
+///      the width/height range, optionally renames, and re-fetches
+///      the row).
 ///   3. Return the heap-owned `DesignPage` for the response.
 ///
 /// Allocator-agnostic: works for both the per-request arena
@@ -114,10 +137,12 @@ fn useCase(
         .page_id = input.page_id,
         .width = input.width,
         .height = input.height,
+        .name = input.name,
     }) catch |err| switch (err) {
         error.PageIdRequired => return error.PageIdRequired,
         error.WidthOutOfRange => return error.WidthOutOfRange,
         error.HeightOutOfRange => return error.HeightOutOfRange,
+        error.BadPageName => return error.BadPageName,
         error.PageNotFound => return error.PageNotFound,
         else => return error.DbError,
     };
@@ -170,6 +195,7 @@ pub fn designPagesUpdateHandler(
         .page_id = page_id,
         .width = parsed.width,
         .height = parsed.height,
+        .name = parsed.name,
     }) catch |err| {
         // 3. Map the use-case error to an HTTP response. Both
         //    switches are exhaustive over the inferred error set —
@@ -180,6 +206,7 @@ pub fn designPagesUpdateHandler(
             error.PageIdRequired => 400,
             error.WidthOutOfRange => 400,
             error.HeightOutOfRange => 400,
+            error.BadPageName => 400,
             error.PageNotFound => 404,
             error.DbError => 500,
             error.OutOfMemory => 500,
@@ -188,6 +215,7 @@ pub fn designPagesUpdateHandler(
             error.PageIdRequired => "page_id required",
             error.WidthOutOfRange => "width must be between 320 and 4096",
             error.HeightOutOfRange => "height must be between 240 and 4096",
+            error.BadPageName => "name must not be empty",
             error.PageNotFound => "Page not found",
             error.DbError => "Failed to update page",
             error.OutOfMemory => "Out of memory",

@@ -29,6 +29,15 @@
 //!     LLM context budget.
 //!   - **limit default 10, max 50** (MAX_LIMIT). Caller's `limit`
 //!     higher than MAX_LIMIT is capped silently.
+//!
+//! Why `tags` is a string, not an array:
+//!   The LLM tool schema declares `tags: { type: "string" }`. The
+//!   LLM faithfully sends a string. The previous struct shape
+//!   (`tags: []const []const u8`) parsed as a JSON array, so
+//!   every string-form failed with "UnexpectedToken" (user bug,
+//!   session-1785986173692, 2026-08-06). Split on `||` (preferred),
+//!   `|`, `,`, or space at the boundary before passing to the
+//!   storage layer (which uses the array as individual LIKE patterns).
 
 const std = @import("std");
 const schemas = @import("schemas.zig");
@@ -36,6 +45,7 @@ const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const agent_memories = nalarcore.agent_memories;
+const save_memory_mod = nalarcore.save_memory;
 
 const helpers = nalarcore.helpers;
 const xmlEscape = helpers.xml_escape;
@@ -46,9 +56,11 @@ pub const LoadMemoryInput = struct {
     /// `agent_memories.loadMemoriesByFts` (which calls `escapeFtsQuery`
     /// to strip FTS5 operators like `.`, `-`, `:`, `*`).
     query: []const u8 = "",
-    /// AND filter: every tag must be present in the row's tags.
-    /// Empty array = no filter.
-    tags: []const []const u8 = &.{},
+    /// Optional AND filter as a single string. Multiple tags separated
+    /// by `||` (preferred), `|`, `,`, or space. Empty string = no
+    /// filter. Split at the boundary into `[]const []const u8` before
+    /// passing to `agent_memories.loadMemoriesByFts`.
+    tags: []const u8 = "",
     /// Max rows to return. Default 10, hard cap MAX_LIMIT (50).
     limit: u32 = 10,
     /// Skip the first N rows. Default 0.
@@ -95,7 +107,7 @@ pub const load_memory_tool = AgentTool{
             .type = "object",
             .properties = &.{
                 .{ .name = "query", .type = "string", .description = "FTS5 phrase search. Required, non-empty. Auto-sanitized." },
-                .{ .name = "tags", .type = "string", .description = "Optional AND filter: every tag must be present in the row's tags. Empty = no filter." },
+                .{ .name = "tags", .type = "string", .description = "Optional AND filter as a single string. Multiple tags separated by `||` (preferred), e.g. 'preferences||user'. Also accepts `|`, `,`, or space as separators. Empty string = no filter." },
                 .{ .name = "limit", .type = "number", .description = "Max rows to return. Default 10, hard cap 50." },
                 .{ .name = "offset", .type = "number", .description = "Skip the first N results. Default 0. Use <total_count> to know when to stop." },
                 .{ .name = "with_content", .type = "boolean", .description = "Include truncated full content (max 2 KiB per row). Default false (snippet-only — anti-bloat)." },
@@ -119,10 +131,15 @@ pub fn executeLoadMemory(
 
     const effective_limit = @min(input.limit, MAX_LIMIT);
 
+    // Split the wire-string tags into an array for the storage layer.
+    // Empty string → empty array (canonical "no filter" sentinel).
+    const tags_array = try save_memory_mod.splitTagsString(allocator, input.tags);
+    defer allocator.free(tags_array);
+
     // Build hits from the FTS5 query.
     const hits = agent_memories.loadMemoriesByFts(allocator, db, .{
         .query = input.query,
-        .tags = input.tags,
+        .tags = tags_array,
         .limit = effective_limit,
         .offset = input.offset,
     }) catch |err| {

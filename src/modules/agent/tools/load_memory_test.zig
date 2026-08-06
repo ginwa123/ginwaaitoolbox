@@ -60,15 +60,16 @@ test "load_memory_tool: returns success XML envelope" {
     defer ctx.db.deinit();
 
     // Seed one memory.
-    _ = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+    const _out = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
         .content = "the user prefers dark mode",
-        .tags = &.{"preferences"},
+        .tags = "preferences",
         .id = "user-dark-mode",
     });
+    defer alloc.free(_out);
 
     const input = load_memory_mod.LoadMemoryInput{
         .query = "dark mode",
-        .tags = &.{},
+        .tags = "",
         .limit = 10,
         .offset = 0,
         .with_content = false,
@@ -93,7 +94,7 @@ test "load_memory_tool: returns error XML on empty query" {
 
     const input = load_memory_mod.LoadMemoryInput{
         .query = "",
-        .tags = &.{},
+        .tags = "",
         .limit = 10,
         .offset = 0,
         .with_content = false,
@@ -115,17 +116,18 @@ test "load_memory_tool: limits result count to MAX_LIMIT (50) when caller reques
     while (i < 60) : (i += 1) {
         const id = std.fmt.allocPrint(alloc, "mem-cap-{d}", .{i}) catch unreachable;
         defer alloc.free(id);
-        _ = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+        const _out = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
             .content = "shared memory content for cap test",
-            .tags = &.{},
+            .tags = "",
             .id = id,
         });
+        defer alloc.free(_out);
     }
 
     // Request limit=999 — should be capped to 50.
     const input = load_memory_mod.LoadMemoryInput{
         .query = "shared",
-        .tags = &.{},
+        .tags = "",
         .limit = 999,
         .offset = 0,
         .with_content = false,
@@ -144,15 +146,16 @@ test "load_memory_tool: snippets contain [match] markers (FTS5 convention)" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    _ = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+    const _out = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
         .content = "the user prefers dark mode for the editor",
-        .tags = &.{},
+        .tags = "",
         .id = "mem-snippet",
     });
+    defer alloc.free(_out);
 
     const input = load_memory_mod.LoadMemoryInput{
         .query = "dark",
-        .tags = &.{},
+        .tags = "",
         .limit = 10,
         .offset = 0,
         .with_content = false,
@@ -172,25 +175,28 @@ test "load_memory_tool: AND-filters by tags" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    _ = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+    const _out1 = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
         .content = "memory one with model preference",
-        .tags = &.{"preferences", "user"},
+        .tags = "preferences||user",
         .id = "mem-one",
     });
-    _ = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+    defer alloc.free(_out1);
+    const _out2 = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
         .content = "memory two with project context",
-        .tags = &.{"preferences", "project"},
+        .tags = "preferences||project",
         .id = "mem-two",
     });
-    _ = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+    defer alloc.free(_out2);
+    const _out3 = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
         .content = "memory three with project context",
-        .tags = &.{"project"},
+        .tags = "project",
         .id = "mem-three",
     });
+    defer alloc.free(_out3);
 
     const input = load_memory_mod.LoadMemoryInput{
         .query = "context",
-        .tags = &.{"project"},
+        .tags = "project",
         .limit = 10,
         .offset = 0,
         .with_content = false,
@@ -212,15 +218,16 @@ test "load_memory_tool: without with_content, snippets only (no raw <content>)" 
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    _ = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+    const _out = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
         .content = "short content for anti-bloat test",
-        .tags = &.{},
+        .tags = "",
         .id = "mem-no-content",
     });
+    defer alloc.free(_out);
 
     const input = load_memory_mod.LoadMemoryInput{
         .query = "content",
-        .tags = &.{},
+        .tags = "",
         .limit = 10,
         .offset = 0,
         .with_content = false, // ← snippets only
@@ -244,15 +251,16 @@ test "load_memory_tool: with with_content=true, full content truncated at 2 KiB"
     defer alloc.free(big_content);
     @memset(big_content, 'a');
 
-    _ = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+    const _out = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
         .content = big_content,
-        .tags = &.{},
+        .tags = "",
         .id = "mem-large",
     });
+    defer alloc.free(_out);
 
     const input = load_memory_mod.LoadMemoryInput{
         .query = "aaa",
-        .tags = &.{},
+        .tags = "",
         .limit = 10,
         .offset = 0,
         .with_content = true,
@@ -275,17 +283,18 @@ test "load_memory_tool: paginates via limit + offset" {
     while (i < 5) : (i += 1) {
         const id = std.fmt.allocPrint(alloc, "mem-page-{d}", .{i}) catch unreachable;
         defer alloc.free(id);
-        _ = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+        const _out = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
             .content = "pageword row",
-            .tags = &.{},
+            .tags = "",
             .id = id,
         });
+        defer alloc.free(_out);
     }
 
     // Page 1: limit=3 → 3 hits.
     const out1 = try load_memory_mod.executeLoadMemory(alloc, &ctx.db, .{
         .query = "pageword",
-        .tags = &.{},
+        .tags = "",
         .limit = 3,
         .offset = 0,
         .with_content = false,
@@ -297,7 +306,7 @@ test "load_memory_tool: paginates via limit + offset" {
     // Page 2: limit=3 offset=3 → 2 hits.
     const out2 = try load_memory_mod.executeLoadMemory(alloc, &ctx.db, .{
         .query = "pageword",
-        .tags = &.{},
+        .tags = "",
         .limit = 3,
         .offset = 3,
         .with_content = false,
@@ -313,16 +322,17 @@ test "load_memory_tool: FTS5 query sanitization (dots, dashes, colons don't cras
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    _ = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+    const _out = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
         .content = "this row contains handle_tool.zig and AGENTS.md",
-        .tags = &.{},
+        .tags = "",
         .id = "mem-special-chars",
     });
+    defer alloc.free(_out);
 
     // Queries with FTS5-special chars must NOT crash (escapeFtsQuery wraps them).
     const input = load_memory_mod.LoadMemoryInput{
         .query = "handle_tool.zig",
-        .tags = &.{},
+        .tags = "",
         .limit = 10,
         .offset = 0,
         .with_content = false,
@@ -342,15 +352,16 @@ test "load_memory_tool: returns 0 hits cleanly when query matches nothing" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    _ = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+    const _out = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
         .content = "this is a memory",
-        .tags = &.{},
+        .tags = "",
         .id = "mem-foo",
     });
+    defer alloc.free(_out);
 
     const input = load_memory_mod.LoadMemoryInput{
         .query = "xyznevermatch",
-        .tags = &.{},
+        .tags = "",
         .limit = 10,
         .offset = 0,
         .with_content = false,

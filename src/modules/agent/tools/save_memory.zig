@@ -5,7 +5,7 @@
 //! Task: task_1785958319567
 //!
 //! Wire shape:
-//!   input:  { content: string, tags?: string[], id?: string }
+//!   input:  { content: string, tags?: string, id?: string }
 //!   output: <save_memory><id>...</id><created_at>...</created_at>
 //!            <updated_at>...</updated_at></save_memory>
 //!   or:     <save_memory><error>...</error></save_memory>
@@ -18,8 +18,21 @@
 //!   - Caller-provided `id` is optional. Empty → auto-generated
 //!     `mem_<16-hex>` (collision-free for 10K rows, opaque token).
 //!   - Per-row size cap is 1 MiB (rejects overflow, doesn't truncate).
-//!   - Tags stored as `||`-joined string (matches the project's
-//!     `tags` / `image_urls` convention — Migration 067 / 069).
+//!   - Tags is a SINGLE STRING on the wire (matches the schema
+//!     `type: "string"`). Multiple tags are joined with `||`
+//!     (the project convention — matches Migration 067 / 069).
+//!     The parser ALSO accepts `|`, `,`, and space as separators
+//!     for robustness — the LLM has tried all of these.
+//!   - Empty string → empty `tags` array (canonical "no tags" sentinel).
+//!
+//! Why `tags` is a string, not an array:
+//!   The LLM tool schema declares `tags: { type: "string" }`. The
+//!   LLM faithfully sends a string. The previous struct shape
+//!   (`tags: []const []const u8`) parsed as a JSON array, so
+//!   every string-form failed with "UnexpectedToken" (user bug,
+//!   session-1785986173692, 2026-08-06). The string form is also
+//!   simpler to reason about and matches the documented contract
+//!   "Joined with `||` in storage".
 
 const std = @import("std");
 const schemas = @import("schemas.zig");
@@ -35,9 +48,11 @@ const xmlEscape = helpers.xml_escape;
 pub const SaveMemoryInput = struct {
     /// The note body. 1 KiB – 1 MiB (validated by `agent_memories.saveMemory`).
     content: []const u8 = "",
-    /// Optional labels. Stored as `||`-joined (matches the project's
-    /// `tags` / `image_urls` convention).
-    tags: []const []const u8 = &.{},
+    /// Optional labels as a single string. Multiple tags separated
+    /// by `||` (preferred), `|`, `,`, or space. Empty string = no tags.
+    /// Split at the boundary into `[]const []const u8` before passing
+    /// to `agent_memories.saveMemory` (which joins with `||` for storage).
+    tags: []const u8 = "",
     /// Caller-provided id slug for UPSERT. Empty → auto-generate
     /// `mem_<16-hex>`.
     id: []const u8 = "",
@@ -68,7 +83,7 @@ pub const save_memory_tool = AgentTool{
             .type = "object",
             .properties = &.{
                 .{ .name = "content", .type = "string", .description = "The note body. 1 KiB – 1 MiB. Required." },
-                .{ .name = "tags", .type = "string", .description = "Optional labels (e.g. 'preferences', 'user'). Joined with '||' in storage. Each tag is a short, distinct string." },
+                .{ .name = "tags", .type = "string", .description = "Optional labels as a single string. Multiple tags separated by `||` (preferred), e.g. 'preferences||user'. Also accepts `|`, `,`, or space as separators for robustness. Empty string = no tags." },
                 .{ .name = "id", .type = "string", .description = "Optional caller-provided id slug for UPSERT. Empty string → auto-generated 'mem_<16-hex>'." },
             },
             .required = &.{"content"},
@@ -84,9 +99,14 @@ pub fn executeSaveMemory(
     db: *sqlite.SqliteBackend,
     input: SaveMemoryInput,
 ) ![]const u8 {
+    // Split the wire-string tags into an array for the storage layer.
+    // Empty string → empty array (canonical "no tags" sentinel).
+    const tags_array = try splitTagsString(allocator, input.tags);
+    defer allocator.free(tags_array);
+
     const row = agent_memories.saveMemory(allocator, db, .{
         .content = input.content,
-        .tags = input.tags,
+        .tags = tags_array,
         .id = input.id,
     }) catch |err| {
         const msg = switch (err) {
@@ -100,6 +120,60 @@ pub fn executeSaveMemory(
     defer agent_memories.freeMemoryRow(allocator, row);
 
     return successXml(allocator, row);
+}
+
+/// Split a tags wire string by `||` (preferred), `|`, `,`, and space.
+/// Returns an allocated array of `[]const u8` slices — caller owns the
+/// array and the slices (free the array with `allocator.free()`; the
+/// slices are views into the input string and don't need individual
+/// frees unless they were trimmed).
+///
+/// The bounds are loose: `"foo, ,bar"` yields `["foo", "bar"]` (empty
+/// segments skipped). Whitespace around tags is trimmed.
+pub fn splitTagsString(allocator: std.mem.Allocator, input: []const u8) ![]const []const u8 {
+    // First pass: count tags (skip empty segments).
+    var count: usize = 0;
+    var in_segment = false;
+    for (input) |c| {
+        const is_sep = c == '|' or c == ',' or c == ' ';
+        if (!is_sep and !in_segment) {
+            count += 1;
+            in_segment = true;
+        } else if (is_sep) {
+            in_segment = false;
+        }
+    }
+    if (count == 0) return &.{};
+
+    // Second pass: extract each tag (pointers into the input; bounds-check
+    // ensures the input slice stays alive for the caller's use).
+    var out = try allocator.alloc([]const u8, count);
+    var idx: usize = 0;
+    var start: ?usize = null;
+    for (input, 0..) |c, i| {
+        const is_sep = c == '|' or c == ',' or c == ' ';
+        if (is_sep) {
+            if (start) |s| {
+                out[idx] = trimWhitespace(input[s..i]);
+                idx += 1;
+                start = null;
+            }
+        } else if (start == null) {
+            start = i;
+        }
+    }
+    if (start) |s| {
+        out[idx] = trimWhitespace(input[s..]);
+    }
+    return out;
+}
+
+fn trimWhitespace(s: []const u8) []const u8 {
+    var start: usize = 0;
+    var end: usize = s.len;
+    while (start < end and (s[start] == ' ' or s[start] == '\t' or s[start] == '\n' or s[start] == '\r')) : (start += 1) {}
+    while (end > start and (s[end - 1] == ' ' or s[end - 1] == '\t' or s[end - 1] == '\n' or s[end - 1] == '\r')) : (end -= 1) {}
+    return s[start..end];
 }
 
 fn successXml(allocator: std.mem.Allocator, row: agent_memories.MemoryRow) ![]u8 {
