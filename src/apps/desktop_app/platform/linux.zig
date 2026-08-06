@@ -180,6 +180,7 @@ extern "c" fn webkit_web_view_get_settings(web_view: *GtkWidget) *WebKitSettings
 
 extern "c" fn webkit_settings_set_user_agent(settings: *WebKitSettings, user_agent: [*:0]const u8) void;
 extern "c" fn webkit_settings_set_enable_developer_extras(settings: *WebKitSettings, enabled: gboolean) void;
+extern "c" fn webkit_settings_get_enable_developer_extras(settings: *WebKitSettings) gboolean;
 extern "c" fn webkit_settings_set_javascript_can_access_clipboard(settings: *WebKitSettings, enabled: gboolean) void;
 
 // --- WebKitGTK inspector (DevTools) ---
@@ -308,32 +309,40 @@ pub export fn nalar_webview_create(
     }
     gtk_container_add(@ptrCast(window), web_view);
 
-    // DevTools: when --devtools is passed, enable developer extras and hook
-    // the context menu so right-click → "Inspect Element" pops the
-    // WebKit inspector window. The inspector is a normal GTK window that
-    // the user can dock or float.
+    // Context menu: ALWAYS suppress WebKit's default right-click menu
+    // (copy / paste / select-all / etc.) so the page's JavaScript
+    // `@contextmenu` handlers fire. Without this, WebKit eats the
+    // right-click and shows its own menu — the user gets the webview's
+    // browser-like menu instead of the app's custom Vue menu.
     //
-    // WebKitGTK's "context-menu" signal is the standard way to add custom
-    // items to the right-click menu. Returning FALSE keeps WebKit's
-    // default items (copy / paste / select-all / etc.) so we get the
-    // browser-like menu plus our "Inspect Element" at the bottom.
+    // WebKitGTK's "context-menu" signal fires before the menu is shown.
+    // Returning 1 (TRUE) suppresses the default menu entirely; the page's
+    // DOM `contextmenu` event still fires, so Vue's @contextmenu.prevent
+    // handlers run as intended.
+    //
+    // When --devtools is passed, we ALSO enable developer extras AND
+    // append the stock "Inspect Element" item to the (suppressed) menu
+    // — but the menu is still suppressed, so this just gives the WebKit
+    // inspector a way to be invoked via keyboard (Ctrl+Shift+I). The
+    // right-click menu stays clean.
+    //
+    // user_data is unused by contextMenuCallback (it just uses the
+    // web_view parameter), so pass the web_view as a placeholder
+    // (gpointer is `*anyopaque`, not nullable, so we need a real
+    // pointer). The signal connection lives for the lifetime of the
+    // web_view — when the web_view is destroyed, the signal is
+    // disconnected automatically.
+    _ = g_signal_connect_data(
+        @ptrCast(web_view),
+        "context-menu",
+        @ptrCast(&contextMenuCallback),
+        @ptrCast(web_view),
+        null,
+        0,
+    );
     if (cfg.enable_developer_extras) {
         const settings = webkit_web_view_get_settings(web_view);
         webkit_settings_set_enable_developer_extras(settings, 1);
-        // user_data is unused by contextMenuCallback (it just uses the
-        // web_view parameter), so pass the web_view as a placeholder
-        // (gpointer is `*anyopaque`, not nullable, so we need a real
-        // pointer). The signal connection lives for the lifetime of
-        // the web_view — when the web_view is destroyed, the signal
-        // is disconnected automatically.
-        _ = g_signal_connect_data(
-            @ptrCast(web_view),
-            "context-menu",
-            @ptrCast(&contextMenuCallback),
-            @ptrCast(web_view),
-            null,
-            0,
-        );
     }
 
     // Main loop
@@ -417,12 +426,18 @@ fn destroyCallback(widget: *GtkWidget, user_data: gpointer) callconv(.c) void {
 }
 
 /// "context-menu" signal handler for the WebKit web view. Fires on
-/// right-click in the page (or via the keyboard). We append the
-/// stock "Inspect Element" item — WebKitGTK handles the rest
-/// internally (showing the inspector when activated). Returning
-/// 0 (FALSE) keeps WebKit's default items (copy / paste /
-/// select-all / etc.) so the user gets the full browser-like
-/// context menu with our item at the bottom.
+/// right-click in the page (or via the keyboard). We ALWAYS return
+/// 1 (TRUE) to suppress WebKit's default context menu — the page's
+/// JavaScript `@contextmenu` event still fires, so the Vue app's
+/// custom context menus (DesignView, LayersPanel, GitChanges, etc.)
+/// handle the right-click.
+///
+/// When `enable_developer_extras` was set on the Config, we ALSO append
+/// the stock "Inspect Element" item — but the menu is still suppressed
+/// (return 1), so the inspector is reachable via Ctrl+Shift+I only, not
+/// via right-click. This keeps the right-click menu clean (always
+/// the app's custom menu) while still giving developers a way to open
+/// DevTools.
 ///
 /// C signature (from webkit2/webkit2.h):
 ///   gboolean user_function(WebKitWebView *web_view,
@@ -440,24 +455,34 @@ fn contextMenuCallback(
     event: *GdkEvent,
     user_data: gpointer,
 ) callconv(.c) gboolean {
-    _ = web_view;
     _ = event;
     _ = user_data;
 
-    // Create the stock "Inspect Element" item. The label is automatic
-    // (WebKit picks "Inspect Element" for this stock action) and the
-    // activation handler is built into WebKit — it calls
-    // webkit_web_inspector_show() on the web view's inspector when
-    // triggered. No custom GAction or signal handler needed.
-    const item = webkit_context_menu_item_new_from_stock_action(
-        WEBKIT_CONTEXT_MENU_ACTION_INSPECT_ELEMENT,
-    );
-    webkit_context_menu_append(context_menu, item);
+    // Look up whether developer extras are enabled (set via
+    // `webkit_settings_set_enable_developer_extras` in create()).
+    // Per WebKitGTK's contract, `webkit_web_view_get_settings`
+    // always returns a valid (non-null) pointer — the webview owns
+    // its settings object internally. So we don't need a null check
+    // (opaque types in Zig can't be compared to null anyway).
+    const settings = webkit_web_view_get_settings(web_view);
+    if (webkit_settings_get_enable_developer_extras(settings) != 0)
+    {
+        // Stock "Inspect Element" item. WebKitGTK handles the
+        // activation internally (calls webkit_web_inspector_show()
+        // on the web view's inspector). Even though the menu is
+        // suppressed (we return TRUE below), the inspector is
+        // still reachable via Ctrl+Shift+I — adding the item
+        // makes that path explicit.
+        const item = webkit_context_menu_item_new_from_stock_action(
+            WEBKIT_CONTEXT_MENU_ACTION_INSPECT_ELEMENT,
+        );
+        webkit_context_menu_append(context_menu, item);
+    }
 
-    // Return 0 (FALSE) to keep WebKit's default context menu items
-    // (copy / paste / select-all / etc.). Returning 1 (TRUE) would
-    // suppress them — we don't want that.
-    return 0;
+    // Return 1 (TRUE) to suppress WebKit's default context menu
+    // items. The page's `contextmenu` DOM event still fires, so the
+    // Vue app's @contextmenu.prevent handlers run as intended.
+    return 1;
 }
 
 /// URI scheme callback for the `app://` scheme. Fires on the GTK main

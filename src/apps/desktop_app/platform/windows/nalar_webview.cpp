@@ -485,6 +485,44 @@ extern "C" nalar_webview* nalar_webview_create(
                                 ).Get(),
                                 NULL);
 
+                            // Suppress WebView2's default right-click
+                            // context menu (Back / Forward / Stop /
+                            // Reload / Open Frame in New Window /
+                            // Inspect Element / etc.). The
+                            // `add_ContextMenuRequested` event fires
+                            // before WebView2 shows the menu; setting
+                            // `args->put_Handled(TRUE)` suppresses it.
+                            // The page's JavaScript `contextmenu` DOM
+                            // event still fires, so the Vue app's
+                            // @contextmenu.prevent handlers run as
+                            // intended (DesignView, LayersPanel,
+                            // GitChanges, etc.).
+                            //
+                            // WebView2's "Inspect Element" stock debug
+                            // item is intentionally NOT exposed via the
+                            // context menu — it's a noise item in
+                            // production. Developers who need DevTools
+                            // can launch with --devtools flag and use
+                            // the existing developer extras path; this
+                            // is a deliberate trade-off.
+                            wv_for_callback->webview->add_ContextMenuRequested(
+                                Callback<ICoreWebView2ContextMenuRequestedEventHandler>(
+                                    [](
+                                        ICoreWebView2* sender,
+                                        ICoreWebView2ContextMenuRequestedEventArgs* args) -> HRESULT
+                                    {
+                                        (void)sender;
+                                        // Mark the menu as handled —
+                                        // WebView2 will NOT show its
+                                        // default context menu. The
+                                        // page's `contextmenu` DOM
+                                        // event still fires inside the
+                                        // webview (unchanged).
+                                        return args->put_Handled(TRUE);
+                                    }
+                                ).Get(),
+                                NULL);
+
                             // Navigate to the initial URL. Navigate copies
                             // the URL synchronously into WebView2's
                             // internal state, so freeing the caller's
