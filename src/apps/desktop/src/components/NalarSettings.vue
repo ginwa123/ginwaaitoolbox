@@ -460,6 +460,35 @@ async function setActiveProfile(name: string) {
   }
 }
 
+// Clear the active profile — same instant-save path as setActiveProfile,
+// but writes `active_profile: undefined` to config.json (the key is
+// omitted on serialization, so the file is identical to a hand-edited
+// version that simply omits the field). The backend
+// `nalar_config_put.zig` handler already treats a missing key as
+// "no active profile" (same as the `null` path). After the save,
+// `resolveProfileField` in workflow.zig falls through to top-level
+// config for every new chat / task.
+//
+// Mirrors the existing `setActiveProfile` flow so the UI feedback
+// (success / error notification) is consistent. The `as NalarConfig`
+// cast is needed because `active_profile: undefined` narrows the
+// type to `{ active_profile?: string }` only after the spread merges
+// in the rest of the config.
+async function clearActiveProfile() {
+  const previous = activeProfile.value
+  activeProfile.value = null
+  isSettingActive.value = true
+  try {
+    await saveNalarConfig({ ...(config.value ?? {}), active_profile: undefined } as NalarConfig)
+    emit('notification', `Active profile cleared — using top-level config`, 'success')
+  } catch (err) {
+    activeProfile.value = previous // optimistic-rollback on failure
+    emit('notification', `Failed to clear active: ${err instanceof Error ? err.message : String(err)}`, 'error')
+  } finally {
+    isSettingActive.value = false
+  }
+}
+
 // ─── Save / Reset ────────────────────────────────────────────────────────
 async function handleSave() {
   try {
@@ -515,6 +544,7 @@ const isLoading = computed(() => !loaded.value)
           v-model="profilesList"
           :active-profile="activeProfile"
           @set-active="setActiveProfile"
+          @clear-active="clearActiveProfile"
           @edit="startEditProfile"
           @delete="requestDeleteProfile"
           @add="startAddProfile"

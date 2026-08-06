@@ -173,4 +173,49 @@ describe('ProfilesSection', () => {
     await wrapper.find('[data-testid="delete-sub-agent-btn-work-coder"]').trigger('click')
     expect(wrapper.emitted('deleteSubAgent')?.[0]).toEqual(['work', 'coder'])
   })
+
+  // ─── Clear active profile ───────────────────────────────────────────
+  // Plan 2026-08-06-reset-active-profile: when a profile is marked
+  // active, the header shows a "Reset" button next to the pill. Clicking
+  // it emits `clearActive` so the parent (NalarSettings) can save
+  // `active_profile: null` to config.json. After the save, the cascade
+  // in `workflow.zig::resolveProfileField` falls through to the top-level
+  // config and every chat session / task uses the bare defaults.
+  it('shows a Reset button next to the active pill when an active profile is set', () => {
+    const wrapper = mount(ProfilesSection, {
+      props: { modelValue: [baseProfile], activeProfile: 'work' },
+    })
+    const resetBtn = wrapper.find('[data-testid="reset-active-btn"]')
+    expect(resetBtn.exists()).toBe(true)
+    expect(resetBtn.text().toLowerCase()).toContain('reset')
+  })
+
+  it('does NOT show a Reset button when no active profile is set', () => {
+    const wrapper = mount(ProfilesSection, {
+      props: { modelValue: [baseProfile], activeProfile: null },
+    })
+    expect(wrapper.find('[data-testid="reset-active-btn"]').exists()).toBe(false)
+  })
+
+  it('emits clearActive when the Reset button is clicked', async () => {
+    const wrapper = mount(ProfilesSection, {
+      props: { modelValue: [baseProfile], activeProfile: 'work' },
+    })
+    await wrapper.find('[data-testid="reset-active-btn"]').trigger('click')
+    expect(wrapper.emitted('clearActive')).toBeTruthy()
+  })
+
+  it('keeps the Set active button hidden on the active row even when Reset is visible', () => {
+    const wrapper = mount(ProfilesSection, {
+      props: {
+        modelValue: [baseProfile, { ...baseProfile, name: 'home' }],
+        activeProfile: 'work',
+      },
+    })
+    // The 'work' row is active → no Set active button on it
+    const setActiveBtns = wrapper.findAll('[data-testid="set-active-btn"]')
+    expect(setActiveBtns.length).toBe(1) // only 'home' has one
+    // Reset is visible in the header
+    expect(wrapper.find('[data-testid="reset-active-btn"]').exists()).toBe(true)
+  })
 })
