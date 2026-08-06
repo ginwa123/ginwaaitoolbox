@@ -12,6 +12,7 @@ const handle_tool = @import("handle_tool.zig").handle_tool;
 const notifications = nalarcore.notifications_mod;
 
 const sqlite = nalarcore.sqlite;
+const migration_mod = nalarcore.migrations_mod.migration;
 const config_mod = nalarcore.config;
 const logger_mod = nalarcore.loggermod;
 const agent = nalarcore.agent;
@@ -380,6 +381,171 @@ test "resolveProfileField: profile with empty field falls through to top-level f
     try testing.expectEqualStrings("https://default.example.com", resolveProfileField("base_url", &cfg, "", "alpha", cfg.base_url));
 }
 
+// ─── re_read_selected_profile_model — live-re-read from sessions table ─────
+//
+// **Why this helper exists** (bug report task_1786031708725, 2026-08-06):
+// The workflow's `while (true)` loop in `runAgenticMultiStepnew` previously
+// used a snapshot of `selected_profile_model` taken at the top of the run
+// (`copy_selected_profile_model = parent_allocator.dupe(u8, params.selected_profile_model)`).
+// So when the user picked a different profile in the chatview dropdown
+// mid-run (PUT /api/llm/session/:id), the DB updated but the running
+// loop continued with the snapshot — the new profile was silently ignored
+// until the next message was sent.
+//
+// The fix: re-read `selected_profile_model` from the DB at the top of every
+// loop iteration (mirror the existing `is_auto_retry_until_stop` re-read
+// pattern at workflow.zig:543-552). The returned slice is borrowed from
+// the per-iteration arena — caller MUST NOT free it.
+//
+// Fallback behavior: any read failure (query throws, no row) returns the
+// `fallback` argument (typically `params.selected_profile_model`, the
+// snapshot). Same graceful-degrade as `is_auto_retry_until_stop`.
+fn re_read_selected_profile_model(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    fallback: []const u8,
+) []const u8 {
+    var rows = db.query(
+        allocator,
+        "SELECT COALESCE(selected_profile_model, '') FROM sessions WHERE id = ?",
+        &.{session_id},
+    ) catch return fallback;
+    defer rows.deinit();
+
+    const maybe_row = rows.next() catch return fallback;
+    if (maybe_row) |row| {
+        defer row.deinit(allocator);
+        // CRITICAL: row.deinit() frees row.values[0]'s backing memory.
+        // We must dupe into `allocator` (the per-iteration arena in
+        // production; the test allocator here) so the returned slice
+        // outlives the row's deferred free. Returning row.values[0]
+        // directly would crash the caller on read.
+        return allocator.dupe(u8, row.values[0]) catch return fallback;
+    }
+    return fallback;
+}
+
+// ─── Test fixture for re_read_selected_profile_model ─────────────────────────
+//
+// In-memory SQLite with the full migration chain applied (so the
+// `sessions` table has the `selected_profile_model` column exactly as
+// production does — see `llm-history-test-use-migrations-module.md`).
+// Mirrors `src/ai_workflow/tui/llm_history_search_fts_query_safety_test.zig::setupDb`.
+const ReReadTestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn re_read_setupDb() !ReReadTestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    var manager = migration_mod.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try migration_mod.registerAllMigrations(&manager);
+    try manager.runMigrations();
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn re_read_teardown(ctx: *ReReadTestCtx) void {
+    ctx.db.deinit();
+    ctx.threaded.deinit();
+}
+
+/// Insert a minimal session row (matching the production schema: the
+/// `sessions` table's NOT NULL columns are id, name, status, cwd, created_at,
+/// updated_at, selected_profile_model, is_auto_retry_until_stop).
+fn re_read_insertSession(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    selected_profile_model: []const u8,
+) !void {
+    try db.exec(
+        alloc,
+        \\INSERT INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop)
+        \\VALUES (?, 'test', 'active', '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, '0')
+    ,
+        &.{ session_id, selected_profile_model },
+    );
+}
+
+test "re_read_selected_profile_model: returns live DB value when row exists" {
+    // Wrap in a per-test arena so the dupe'd slice is freed at the
+    // end of the test (matches production usage in runAgenticMultiStepnew
+    // where the caller passes the per-iteration arena allocator).
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var ctx = try re_read_setupDb();
+    defer re_read_teardown(&ctx);
+
+    try re_read_insertSession(alloc, &ctx.db, "s_alpha", "beta");
+    const got = re_read_selected_profile_model(alloc, &ctx.db, "s_alpha", "fallback-snapshot");
+    try testing.expectEqualStrings("beta", got);
+}
+
+test "re_read_selected_profile_model: returns empty string when DB has empty (mirrors COALESCE)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var ctx = try re_read_setupDb();
+    defer re_read_teardown(&ctx);
+
+    try re_read_insertSession(alloc, &ctx.db, "s_empty", "");
+    const got = re_read_selected_profile_model(alloc, &ctx.db, "s_empty", "fallback-snapshot");
+    try testing.expectEqualStrings("", got);
+}
+
+test "re_read_selected_profile_model: returns fallback when no session row exists" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var ctx = try re_read_setupDb();
+    defer re_read_teardown(&ctx);
+
+    const got = re_read_selected_profile_model(alloc, &ctx.db, "s_missing", "fallback-snapshot");
+    try testing.expectEqualStrings("fallback-snapshot", got);
+}
+
+test "re_read_selected_profile_model: subsequent reads see UPDATEd value (live re-read)" {
+    // The whole point of this helper: a second call after a session
+    // row UPDATE picks up the new value, NOT the snapshot. If this
+    // test ever fails, the workflow loop is back to using a snapshot
+    // — the original bug returns.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var ctx = try re_read_setupDb();
+    defer re_read_teardown(&ctx);
+
+    try re_read_insertSession(alloc, &ctx.db, "s_live", "alpha");
+    const first = re_read_selected_profile_model(alloc, &ctx.db, "s_live", "snapshot");
+    try testing.expectEqualStrings("alpha", first);
+
+    // Simulate the user picking a different profile in the chatview
+    // dropdown (PUT /api/llm/session/:id → sessions.selected_profile_model).
+    try ctx.db.exec(
+        alloc,
+        "UPDATE sessions SET selected_profile_model = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        &.{ "gamma", "s_live" },
+    );
+
+    const second = re_read_selected_profile_model(alloc, &ctx.db, "s_live", "snapshot");
+    try testing.expectEqualStrings("gamma", second);
+}
+
 pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew) !void {
     var parent_arena_allocator = std.heap.ArenaAllocator.init(di.allocator);
     defer parent_arena_allocator.deinit();
@@ -416,7 +582,12 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const copy_is_sub_agent = params.is_sub_agent;
     const copy_image_urls = try parent_allocator.dupe(u8, params.image_urls);
     const copy_inherited_context = try parent_allocator.dupe(u8, params.inherited_context);
-    const copy_selected_profile_model = try parent_allocator.dupe(u8, params.selected_profile_model);
+    // Note: `copy_selected_profile_model` was removed (plan
+    // 2026-08-06-workflow-re-read-profile-per-iter). Per-session profile
+    // changes now take effect on the next loop iteration via
+    // `re_read_selected_profile_model` (re-reads `sessions.selected_profile_model`
+    // each iteration, with `params.selected_profile_model` as the
+    // snapshot fallback when the DB read fails).
 
     var is_have_queue_message = false;
 
@@ -563,18 +734,36 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         // keeping the swapped-out config alive until this run finishes.
         config = nalarcore.getLlmConfig(di.di);
 
+        // ─── Live per-session profile re-read (plan 2026-08-06-workflow-re-read-profile) ───
+        // The previous snapshot pattern (params.selected_profile_model) silently
+        // ignored mid-run profile changes via PUT /api/llm/session/:id. Now we
+        // re-read `sessions.selected_profile_model` per iteration so the next
+        // LLM call + any sub-agent spawned in this iteration use the user's
+        // freshly-picked profile. Mirrors the live-config-re-read above + the
+        // is_auto_retry_until_stop re-read above that.
+        //
+        // The dupe'd slice is owned by `allocator` (the per-iteration arena)
+        // and freed at iteration end. Falls back to the snapshot
+        // `params.selected_profile_model` on any read failure.
+        const live_selected_profile_model: []const u8 = re_read_selected_profile_model(
+            allocator,
+            db,
+            copy_session_id,
+            params.selected_profile_model,
+        );
+
         // Step 1 produces a warning when the named profile is missing.
         // Step 2 (`config.active_profile`) is silent — it's the user's
         // default, so a typo there is a normal fall-through to top-level.
-        if (params.selected_profile_model.len > 0 and
-            config.getProfile(params.selected_profile_model) == null)
+        if (live_selected_profile_model.len > 0 and
+            config.getProfile(live_selected_profile_model) == null)
         {
-            logger.warnFmt("WORKFLOW: selected_profile_model '{s}' not found in LlmConfig.profiles_models, using top-level config", .{params.selected_profile_model});
+            logger.warnFmt("WORKFLOW: selected_profile_model '{s}' not found in LlmConfig.profiles_models, using top-level config", .{live_selected_profile_model});
         }
-        effective_api_key = resolveProfileField("api_key", config, params.selected_profile_model, config.active_profile, config.api_key);
-        effective_model = resolveProfileField("model", config, params.selected_profile_model, config.active_profile, config.model);
-        effective_base_url = resolveProfileField("base_url", config, params.selected_profile_model, config.active_profile, config.base_url);
-        effective_url_style = resolveProfileField("url_style", config, params.selected_profile_model, config.active_profile, config.url_style);
+        effective_api_key = resolveProfileField("api_key", config, live_selected_profile_model, config.active_profile, config.api_key);
+        effective_model = resolveProfileField("model", config, live_selected_profile_model, config.active_profile, config.model);
+        effective_base_url = resolveProfileField("base_url", config, live_selected_profile_model, config.active_profile, config.base_url);
+        effective_url_style = resolveProfileField("url_style", config, live_selected_profile_model, config.active_profile, config.url_style);
 
         logger.infoFmt(
             "[CHECKPOINT] loop iter start session_id={s} loop_counter={d} retry_count={d} effective_model={s}",
@@ -1073,7 +1262,17 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     "[CHECKPOINT] finish_reason=tool_calls session_id={s} loop_counter={d} tool_count={d}",
                     .{ copy_session_id, loop_counter, if (res_dynamic_agent.tool_calls) |tc| tc.len else 0 },
                 );
-                try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, copy_selected_profile_model);
+                // Forward the LIVE per-session profile (re-read at the top
+                // of this iteration) to handle_tool. Sub-agents spawned via
+                // spawn_sub_agent use this as their RunParamsNew.selected_profile_model
+                // — so a sub-agent spawned mid-run, after the user picks a
+                // new profile in the chatview dropdown, uses the NEW
+                // profile from its first LLM call. (Previously the
+                // snapshot copy_selected_profile_model was forwarded, so
+                // sub-agents stuck to the profile at run start.) The snapshot
+                // stays allocated for the run's lifetime as the fallback if
+                // a future iteration's re-read fails.
+                try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, live_selected_profile_model);
             } else {
                 retry_count += 1;
                 // Capture the unexpected finish_reason as a synthetic
