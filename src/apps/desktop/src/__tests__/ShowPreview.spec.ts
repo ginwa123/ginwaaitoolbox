@@ -337,4 +337,218 @@ describe('ShowPreview card', () => {
       ).toBe(true)
     })
   })
+
+  // ─── Production-shape parameters (XML, not JSON) ──────────────────
+  //
+  // Background: ChatView.vue passes `parameters` as the result of
+  // `tryUnwrapToolOutput(msg.content)?.parameters`, which is the
+  // XML-unescaped inner content of the `<parameters>...</parameters>`
+  // tag. Since the backend's `jsonArgsToXml` (tools_wrap_output.zig)
+  // converts the JSON args into `<content_type>html</content_type>
+  // <content>...</content>` form (after the 2026 PR #55 double-wrap
+  // fix), the `parameters` prop in PRODUCTION is XML, not raw JSON.
+  //
+  // The earlier tests in this file use `JSON.stringify(params)` for
+  // convenience, which doesn't match production. They test the
+  // "legacy raw-JSON" path, which `JSON.parse(props.parameters)`
+  // handles correctly. The tests below use the actual production
+  // shape (XML) and currently FAIL because `ShowPreview.vue` only
+  // does `JSON.parse(props.parameters)` — XML throws SyntaxError,
+  // falls through to `{}`, and the iframe renders blank.
+  //
+  // See commit history (2026-08-06): tools_wrap_output.zig was
+  // fixed to stop double-wrapping the params; the side panel was
+  // updated then to read XML via `findTag`; ShowPreview.vue was NOT
+  // updated, so chat-bubble HTML previews render blank while the
+  // same preview in the side panel renders correctly. THE BUG.
+  describe('production-shape parameters (XML from jsonArgsToXml)', () => {
+    /**
+     * Build the production-shape parameters string. This mirrors what
+     * `tryUnwrapToolOutput(msg.content)?.parameters` returns AFTER one
+     * layer of XML-unescape has been applied to the backend's escaped
+     * form. Concretely:
+     *
+     *   Backend produces (jsonArgsToXml escapes each JSON value once):
+     *     <parameters><content_type>html</content_type>
+     *       <content>&lt;p&gt;A &amp; B &lt; C&lt;/p&gt;</content></parameters>
+     *
+     *   tryUnwrapToolOutput unescapes the entire parameters string
+     *   once → result has raw text inside each tag:
+     *     <content_type>html</content_type>
+     *       <content><p>A & B < C</p></content>
+     *
+     * The fixture below matches the SECOND form (raw text — no inner
+     * escape), which is what reaches `ShowPreview.vue::props.parameters`
+     * in production. For test inputs that don't contain `</content>`
+     * the raw insertion is safe (findXmlTag uses simple indexOf on
+     * the literal `<content>` / `</content>` delimiters).
+     */
+    function buildXmlParameters(input: {
+      content_type: string
+      content: string
+      title?: string
+      language?: string
+      caption?: string
+    }): string {
+      let xml = `<content_type>${input.content_type}</content_type>`
+      xml += `<content>${input.content}</content>`
+      if (input.title) xml += `<title>${input.title}</title>`
+      if (input.language) xml += `<language>${input.language}</language>`
+      if (input.caption) xml += `<caption>${input.caption}</caption>`
+      return xml
+    }
+
+    function makeXmlMessage(opts: {
+      id: string
+      contentType: 'markdown' | 'text' | 'code' | 'image' | 'html'
+      content: string
+      title?: string
+      language?: string
+    }) {
+      // The inner data envelope is the same shape regardless of params format.
+      const innerData = [
+        '<show_preview>',
+        '<status>shown</status>',
+        '<preview_id>pv_xml_1</preview_id>',
+        `<content_type>${opts.contentType}</content_type>`,
+        `<content_length>${opts.content.length}</content_length>`,
+        '</show_preview>',
+      ].join('')
+      return {
+        id: opts.id,
+        content: innerData,
+        parameters: buildXmlParameters({
+          content_type: opts.contentType,
+          content: opts.content,
+          title: opts.title,
+          language: opts.language,
+        }),
+        messageId: opts.id,
+      }
+    }
+
+    it('renders the html content into the iframe when parameters are XML (production shape)', () => {
+      const msg = makeXmlMessage({
+        id: 'xml-html-1',
+        contentType: 'html',
+        content: '<h1>Hi from XML params</h1>',
+      })
+      const wrapper = mount(ShowPreview, {
+        props: {
+          content: msg.content,
+          parameters: msg.parameters,
+          messageId: msg.id,
+        },
+      })
+      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]')
+      expect(iframe.exists()).toBe(true)
+      const srcdoc = iframe.attributes('srcdoc') ?? ''
+      // The raw HTML MUST be present in the iframe's srcdoc. If
+      // `JSON.parse(props.parameters)` swallowed the XML silently
+      // (the pre-fix bug), the iframe renders only the <style> reset
+      // and the user HTML is missing.
+      expect(srcdoc).toContain('<h1>Hi from XML params</h1>')
+    })
+
+    it('renders the markdown content body when parameters are XML', () => {
+      const msg = makeXmlMessage({
+        id: 'xml-md-1',
+        contentType: 'markdown',
+        content: '# XML Title\n\nBody text.',
+      })
+      const wrapper = mount(ShowPreview, {
+        props: {
+          content: msg.content,
+          parameters: msg.parameters,
+          messageId: msg.id,
+        },
+      })
+      expect(
+        wrapper.find('[data-testid="show-preview-inline-content"]').exists(),
+      ).toBe(true)
+      // The marked.parse output should contain the heading.
+      expect(wrapper.html()).toContain('XML Title')
+      expect(wrapper.html()).toContain('Body text.')
+    })
+
+    it('renders the code language class when parameters are XML', () => {
+      const msg = makeXmlMessage({
+        id: 'xml-code-1',
+        contentType: 'code',
+        content: 'fn main() void {}',
+        language: 'zig',
+      })
+      const wrapper = mount(ShowPreview, {
+        props: {
+          content: msg.content,
+          parameters: msg.parameters,
+          messageId: msg.id,
+        },
+      })
+      expect(wrapper.html()).toContain('language-zig')
+    })
+
+    it('renders the image src when parameters are XML', () => {
+      const msg = makeXmlMessage({
+        id: 'xml-img-1',
+        contentType: 'image',
+        content: 'data:image/png;base64,iVBORw0KGgo=',
+      })
+      const wrapper = mount(ShowPreview, {
+        props: {
+          content: msg.content,
+          parameters: msg.parameters,
+          messageId: msg.id,
+        },
+      })
+      const img = wrapper.find('img')
+      expect(img.exists()).toBe(true)
+      expect(img.attributes('src')).toBe('data:image/png;base64,iVBORw0KGgo=')
+    })
+
+    it('renders the title (from XML params) next to the content_type in the header', () => {
+      const msg = makeXmlMessage({
+        id: 'xml-title-1',
+        contentType: 'markdown',
+        content: '# Body',
+        title: 'My Plan',
+      })
+      const wrapper = mount(ShowPreview, {
+        props: {
+          content: msg.content,
+          parameters: msg.parameters,
+          messageId: msg.id,
+        },
+      })
+      // The header label prefers the parameter title.
+      expect(wrapper.html()).toContain('My Plan')
+      expect(wrapper.html()).toContain('markdown')
+    })
+
+    it('the raw user HTML is passed through into the iframe srcdoc (post-unescape state)', () => {
+      // After tryUnwrapToolOutput's one layer of XML-unescape, the
+      // parameters string has the raw user HTML inside <content>...</content>.
+      // ShowPreview's extractor (extractPreviewArgs) must surface the
+      // raw HTML so the iframe renders it as HTML (not as escaped text).
+      const msg = makeXmlMessage({
+        id: 'xml-html-2',
+        contentType: 'html',
+        content: '<p>A & B < C</p>',
+      })
+      const wrapper = mount(ShowPreview, {
+        props: {
+          content: msg.content,
+          parameters: msg.parameters,
+          messageId: msg.id,
+        },
+      })
+      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]')
+      const srcdoc = iframe.attributes('srcdoc') ?? ''
+      // The raw HTML must be present in the decoded attribute value.
+      // If extractPreviewArgs swallowed the content (or kept it
+      // double-escaped), the iframe would render the literal text
+      // "&lt;p&gt;..." instead of the actual <p>...</p> element.
+      expect(srcdoc).toContain('<p>A & B < C</p>')
+    })
+  })
 })

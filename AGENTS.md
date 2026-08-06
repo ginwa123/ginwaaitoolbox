@@ -3036,6 +3036,122 @@ The boundary split (string → array) happens in the tool layer. The storage lay
 **Memory:** `.nalar/memories/save-memory-bug-2026-08-06.md` (full details + pitfalls).
 **Branch / commit.** Pending — worktree at `/home/ginwa/ginwaaitoolbox` (direct edit, not a separate worktree this time).
 
+### 2026-08-06: ShowPreview.vue renders blank for HTML — fix XML params parsing (task `task_1786002189411`)
+
+**Symptom (user report).** *"fix the tool output show_preivew - why theres a 2 different result ? one is blank one is not"*. Two screenshots showed:
+- Side panel rendered `load_memory — example output card` correctly with snippet highlighting, tag chips, pagination badges.
+- Chat bubble `show_preview.html 2.0 KB` rendered a blank white iframe.
+
+Same `show_preview` invocation. Two different places. One worked, one didn't.
+
+**Root cause.** `ShowPreview.vue` (the chat-bubble card) tried `JSON.parse(props.parameters)` directly. In production, `props.parameters` is the XML form produced by `jsonArgsToXml` (tools_wrap_output.zig) and XML-unescaped once by `tryUnwrapToolOutput`:
+
+```
+Backend:     <parameters><content_type>html</content_type>
+                <content>&lt;h1&gt;Hi&lt;/h1&gt;</content></parameters>
+After unwrap:<content_type>html</content_type>
+                <content><h1>Hi</h1></content>
+```
+
+`JSON.parse` throws `SyntaxError` on this XML. ShowPreview's try/catch silently fell through to `{}`, so `previewArgs.value.content` was undefined. The iframe srcdoc became just `<style>html,body{margin:0...}</style>` (empty-content fallback). User saw a blank white iframe.
+
+`PreviewSidePanel.vue` already handled both shapes (try XML via `findTag`, then JSON.parse fallback). ShowPreview.vue was missed when `jsonArgsToXml`'s double-wrap was fixed (PR #55 area). Result: two renderers with divergent behaviour and a silent regression.
+
+**What landed (commit `a5855776`, branch `worktree/show-preview-fix-xml-params`).**
+
+1. **NEW helper** `src/apps/desktop/src/helpers/previewArgs.ts::extractPreviewArgs`. Single source of truth — tries XML first (current backend), falls back to `JSON.parse` (legacy rows), returns `{}` on malformed input.
+2. **NEW test file** `src/__tests__/previewArgs.spec.ts` — 14 behavioural tests covering XML happy paths, legacy JSON, edge cases (empty/null/malformed inputs), and the XML-precedence invariant.
+3. **UPDATED** `ShowPreview.vue` — drops the local `JSON.parse(...)` branch, calls `extractPreviewArgs(props.parameters)`. Removes the now-unused `findTag` extraction from parameters (kept for the `content` envelope).
+4. **UPDATED** `PreviewSidePanel.vue` — same helper, eliminating the duplicate XML/JSON extraction logic.
+5. **EXPORTED** `findXmlTag` from `unwrapToolOutput.ts` (was private) so the new helper can reuse it.
+6. **NEW regression tests** in `__tests__/ShowPreview.spec.ts` (6 tests in a new `production-shape parameters (XML from jsonArgsToXml)` describe block) — the regression guard for the chat-bubble-blank bug. Each test uses the actual production wire shape (XML parameters, raw text inside `<content>` after `tryUnwrapToolOutput`'s one layer of XML-unescape).
+
+**Files (2 new + 4 modified).**
+
+- `src/apps/desktop/src/helpers/previewArgs.ts` (new, ~95 lines)
+- `src/apps/desktop/src/__tests__/previewArgs.spec.ts` (new, 14 tests)
+- `src/apps/desktop/src/components/tool_outputs/ShowPreview.vue`
+- `src/apps/desktop/src/components/preview/PreviewSidePanel.vue`
+- `src/apps/desktop/src/helpers/unwrapToolOutput.ts`
+- `src/apps/desktop/src/__tests__/ShowPreview.spec.ts` (+214 lines, 6 tests)
+
+**TDD trace.**
+
+- RED (round 1): 6 tests fail — iframe blank, markdown empty, code language missing, image src missing, title missing, raw HTML swallowed.
+- GREEN: all 6 pass after applying the helper-based fix. Full touched suite: 70/70 (14 helper + 10 old ShowPreview + 17 new ShowPreview + 29 previewSidePanel).
+
+**Verification.**
+
+- `bunx vitest run` on touched files: 70/70 pass. `chatViewShowPreviewBubble.spec.ts`: 11/11 pass.
+- `bun run build` (vue-tsc --build): clean.
+- Full vitest suite: 221 pass / 4 fail. The 4 failures are pre-existing baseline (AppLayout.memoriesGate ×4, AppLayout.urlPersist ×2, DesignView.nudge ×1, sidebarKanbanSortUrl ×2) — unchanged from main.
+- `zig build test --summary all`: 2343/2356 pass + 6 skip + 6 fail + 1 crash (same as main, pre-existing PR #181 baseline) — frontend-only change, zero backend regressions.
+- Cross-compile smoke (`zig build-obj -fno-emit-bin -target x86_64-windows-gnu` + `aarch64-macos`): not run (frontend-only change).
+
+**Why the test fixture was wrong.** The pre-fix `ShowPreview.spec.ts::makeShowPreviewMessage` used `JSON.stringify(params)` (legacy shape) which doesn't match production wire. The bug only manifested on the XML shape; all tests "passed" against the convenience fixture. **Lesson: test fixtures MUST match the actual production wire shape, or the test only validates the test's invented shape.**
+
+**The full escape/unescape flow (record for future agents).**
+
+```
+1. Backend jsonArgsToXml → XML-escapes each JSON value (one layer)
+2. (No second xmlEscape at wrapToolOutput level)
+3. Frontend tryUnwrapToolOutput → XML-unescapes the entire parameters
+   string (one layer)
+4. extractPreviewArgs finds the <content> tag value (no further unescape)
+5. Iframe srcdoc → browser encodes for wire format → iframe parser decodes
+   back → renders as expected HTML element
+```
+
+Test fixture rule: the parameters string passed to `props.parameters`
+should match step 3 (post-unescape, raw text inside tags) — NOT step 1
+(pre-unescape, escaped text). Pre-unescape → double-escape → iframe
+renders literal `&lt;p&gt;` instead of an actual `<p>` element.
+
+**Plan / memory.**
+
+- Plan: `docs/superpowers/plans/2026-08-06-show-preview-chat-bubble-blank.md`
+- Memory: `.nalar/memories/show-preview-parameters-xml-vs-json-2026-08-06.md`
+
+**Branch / commit.**
+
+- Branch: `worktree/show-preview-fix-xml-params` @ `a5855776`
+- Worktree: `/home/ginwa/ginwaaitoolbox/.worktrees/show-preview-fix-xml-params`
+- 6 files changed, 504 insertions(+), 93 deletions(-)
+
+**Out of scope (deferred).**
+
+- `previewSidePanel.spec.ts::buildEnvelope` still uses raw JSON parameters.
+  The XML variant `buildXmlEnvelope` already exists and is used in 3 tests.
+  Legacy helper is fine for back-compat.
+- Removing `unwrapToolOutput.ts::findTag` from `PreviewSidePanel.vue` —
+  still used for `findTag(activePreview.value?.content ?? '', 'content_type')`
+  which extracts from the INNER envelope `<show_preview>...</show_preview>`
+  (not the parameters). Different extraction path; not affected by this bug.
+- Migration plan for legacy raw-JSON rows — no schema migration needed;
+  the helper handles both shapes. Old rows in DB continue to render correctly.
+
+**Pitfalls (record for future agents).**
+
+- **`tryUnwrapToolOutput` is NOT a no-op.** It XML-unescapes the parameters
+  string ONCE. So the value reaching `ShowPreview.vue::props.parameters`
+  has the inner content as raw text (NOT escaped). Forgetting this leads
+  to "missing content" bugs when the iframe renders escaped HTML as literal text.
+
+- **`JSON.parse` on XML throws `SyntaxError`, not a custom error class.**
+  The catch MUST silently fall through (or log + fall through). A re-throw
+  would surface every production message as a tool error to the user.
+
+- **Two components sharing data shape logic = future drift.** The fix
+  consolidated to one helper (`extractPreviewArgs`). If a third consumer
+  ever needs the same shape, route through it.
+
+- **Header comments lie.** The pre-fix `ShowPreview.vue` header comment
+  claimed ChatView passes "JSON-string of the show_preview tool-call args"
+  — that was true at one point but FALSE after the jsonArgsToXml double-wrap
+  fix. Comments documenting cross-component behaviour rot silently unless
+  backed by tests; the new `production-shape parameters` describe block
+  is the regression guard.
+
 ### 2026-08-06: Design page ⋮ rename menu (task `task_1785986998916`)
 
 **Symptom (user report, with screenshot).** *"add a menu to rename design pages"*. Sidebar tree shows a `design` item expanded to three pages (`AI Chat View`, `Kanban Mode`, `Untitled`); only × delete on hover, no way to rename.

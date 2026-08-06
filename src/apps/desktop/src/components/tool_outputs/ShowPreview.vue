@@ -51,6 +51,7 @@
 import { computed } from 'vue'
 import { usePreviewDisplayMode } from '@/composables/usePreviewDisplayMode'
 import PreviewContentRenderer from '@/components/preview/PreviewContentRenderer.vue'
+import { extractPreviewArgs, type PreviewArgs } from '@/helpers/previewArgs'
 
 interface Props {
   /** The XML envelope produced by the show_preview tool. */
@@ -61,15 +62,19 @@ interface Props {
    */
   messageId: string
   /**
-   * OPTIONAL — JSON-stringified tool-call arguments. When provided,
-   * `title` is rendered alongside the content_type for context.
-   * Default: `'{}'`.
+   * OPTIONAL — the inner content of the show_preview tool's
+   * `<parameters>...</parameters>` tag (as returned by
+   * `tryUnwrapToolOutput(msg.content)?.parameters`). In production
+   * this is XML-shaped (e.g. `<content_type>html</content_type>
+   * <content>...</content>`); in legacy raw-JSON rows it's a JSON
+   * string. Both shapes are accepted via `extractPreviewArgs`.
+   * Default: empty string.
    */
   parameters?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  parameters: '{}',
+  parameters: '',
 })
 
 const emit = defineEmits<{
@@ -88,6 +93,10 @@ const emit = defineEmits<{
 // Same regex-based extractor used in PreviewSidePanel.vue. Kept
 // inline so ShowPreview has zero cross-file coupling (project convention
 // for tool-output components — see KanbanMove.vue:47-82).
+//
+// Used to extract fields from the `content` prop (the INNER envelope,
+// `<show_preview>...</show_preview>`), which is ALWAYS XML — never JSON.
+// Don't try to JSON.parse this; it always starts with `<show_preview>`.
 
 function findTag(haystack: string, tag: string): string | null {
   const openSeq = `<${tag}>`
@@ -112,23 +121,6 @@ const status = computed(() => {
   return v?.trim() || null
 })
 
-const contentType = computed(() => {
-  // Prefer the parameter value (it's what the LLM actually requested).
-  // Fall back to the response envelope's `<content_type>` (which is the
-  // canonical value the side panel will render).
-  try {
-    const parsed = JSON.parse(props.parameters) as { content_type?: unknown }
-    if (typeof parsed.content_type === 'string' && parsed.content_type.length > 0) {
-      return parsed.content_type
-    }
-  } catch {
-    // parameters may be invalid JSON (legacy messages, malformed envelope) —
-    // silently fall through to the response envelope.
-  }
-  const v = findTag(props.content, 'content_type')
-  return v?.trim() || null
-})
-
 const contentLength = computed(() => {
   const v = findTag(props.content, 'content_length')
   if (!v) return null
@@ -141,57 +133,39 @@ const errorMessage = computed(() => {
   return v?.trim() || null
 })
 
-// Title from parameters — shows above the content_type on success.
-const title = computed(() => {
-  try {
-    const parsed = JSON.parse(props.parameters) as { title?: unknown }
-    if (typeof parsed.title === 'string' && parsed.title.length > 0) {
-      return parsed.title
-    }
-  } catch {
-    // ignore — fall through to no title.
-  }
-  return null
-})
-
 // ─── Inline-mode rendering (2026-08-06) ──────────────────────────────────
 //
-// When the user has flipped the global display mode to 'inline' via
-// the PreviewSidePanel header toggle (or the ChatView restore button),
-// this card mounts the shared PreviewContentRenderer inside the chat
-// bubble so the rich content is visible inline. In 'side' mode
-// (the opt-in alternative), the card stays minimal — click to open
-// the side panel.
+// Args extracted from the `parameters` prop via the shared
+// `extractPreviewArgs` helper (helpers/previewArgs.ts). The helper
+// tries XML extraction first (current backend — `jsonArgsToXml`)
+// then falls back to JSON.parse (legacy raw-JSON rows).
 //
-// Args extracted from the parameters JSON prop. ChatView passes
-// `parameters` as a JSON-string of the show_preview tool-call args
-// (e.g. `{"content_type":"markdown","content":"# Plan","title":"Plan"}`).
-// The `content` prop, by contrast, carries the INNER envelope
-// (just `<show_preview><status>...</status>...</show_preview>`) — NOT
-// the `<tool>` wrapper. So we read directly from `props.parameters`
-// (the JSON) instead of trying to unwrap `props.content` (which
-// would always return null in production).
+// Bug fix (2026-08-06): the previous code did `JSON.parse(props.parameters)`
+// directly, which threw SyntaxError on the XML shape (current production
+// data) and silently fell through to `{}` — so the iframe was blank
+// while the same preview in the side panel rendered correctly. Both
+// renderers now go through the same helper.
 
 const { isInline } = usePreviewDisplayMode()
 
-interface PreviewParameters {
-  content_type?: string
-  content?: string
-  title?: string
-  language?: string
-  caption?: string
-}
+const previewArgs = computed<PreviewArgs>(() => extractPreviewArgs(props.parameters))
 
-const previewArgs = computed<PreviewParameters>(() => {
-  try {
-    const parsed = JSON.parse(props.parameters) as PreviewParameters
-    if (parsed && typeof parsed === 'object') return parsed
-  } catch {
-    // parameters may be invalid JSON (legacy messages, malformed
-    // envelope) — silently fall through to an empty object. The
-    // header still renders; only the inline content body is empty.
-  }
-  return {}
+const contentTypeFromParams = computed(() => previewArgs.value.content_type ?? null)
+const titleFromParams = computed(() => previewArgs.value.title ?? null)
+
+// Prefer the response envelope's `<content_type>` for the header meta
+// (it's the canonical value the side panel renders), but fall back to
+// the parameter value if the response envelope omits it. This matches
+// the pre-fix behaviour but reads both sources through the new helper.
+const contentType = computed(() => {
+  const fromEnvelope = findTag(props.content, 'content_type')?.trim()
+  if (fromEnvelope) return fromEnvelope
+  return contentTypeFromParams.value
+})
+
+const title = computed(() => {
+  // Prefer parameter title when present.
+  return titleFromParams.value
 })
 
 const resolvedContentType = computed<
