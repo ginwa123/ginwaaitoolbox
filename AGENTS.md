@@ -525,6 +525,74 @@ A "delete useless tests" task identified ~60 static-contract tests across
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Desktop app — suppress webview's default context menu (right-click → app menu)
+
+**Symptom (user report, task `task_1786035961751`).** User's screenshot
+showed the **WEBVIEW's default context menu** appearing instead of
+the app's custom Vue menu. Menu items: "Back, Forward, Stop, Reload,
+Open Frame in New Window, Inspect Element, Inspect Element" — all
+Chromium / WebKitGTK defaults. The app's `@contextmenu` handlers
+(`DesignView.vue:2153`, `LayersPanel.vue:369`, `LayerRow.vue:280`,
+`GitChanges.vue:361/410/458`) were correctly wired but never fired
+because the webview swallowed the right-click at the native layer.
+
+**Fix (surgical, 3 platforms).** Each platform's webview has a
+different mechanism to suppress the default context menu:
+
+| Platform | Webview | Suppression mechanism |
+|----------|---------|------------------------|
+| Linux    | WebKitGTK 4.1 | Always connect `context-menu` signal, return `1` (TRUE). When `--devtools`, append stock "Inspect Element" item (still suppressed — inspector reachable via Ctrl+Shift+I only). |
+| macOS    | WKWebView | Subclass WKWebView (`NalarWebView`), override `menuForEvent:` to return nil. (Native macOS has no public WKUIDelegate context-menu suppression API.) |
+| Windows  | WebView2 | Register `add_ContextMenuRequested` handler, call `args->put_Handled(TRUE)`. |
+
+The page's JavaScript `contextmenu` DOM event still fires in all
+three platforms — only the native NSMenu / GTK menu / Chromium menu
+is suppressed, so Vue's `@contextmenu.prevent` handlers run as
+intended.
+
+**Files (3 modified + 1 plan).**
+- `src/apps/desktop_app/platform/linux.zig` — `contextMenuCallback`
+  always returns `1` (TRUE). Added `webkit_settings_get_enable_developer_extras`
+  extern + checked it to gate the "Inspect Element" item. Moved the
+  `g_signal_connect_data` call OUTSIDE the `enable_developer_extras` block.
+- `src/apps/desktop_app/platform/macos/nalar_webview.mm` — new
+  `NalarWebView : WKWebView` subclass + `-menuForEvent:` override.
+  Replaced the plain `[[WKWebView alloc] init]` with `[[NalarWebView alloc] init]`.
+- `src/apps/desktop_app/platform/windows/nalar_webview.cpp` — new
+  `add_ContextMenuRequested` handler in the controller-ready callback
+  that calls `args->put_Handled(TRUE)`.
+- `docs/superpowers/plans/2026-08-06-desktop-contextmenu-suppress.md` (new)
+
+**Verification.**
+- `zig build test:desktop-app --summary all` — clean.
+- `zig build-obj -fno-emit-bin -target x86_64-windows-gnu` — clean.
+- `zig build-obj -fno-emit-bin -target aarch64-macos` — clean.
+- `zig build nalar-desktop` — produces `zig-out/bin/nalar-desktop` (~13 MB).
+- `cd src/apps/desktop && bun run build` — vue-tsc + vite clean (~2.4 s).
+- `zig build test --summary all` — 2354 pass / 6 skip / 12 fail / 1 crash / 18 leaks. **Zero new failures** (the 12 fail + 1 crash + 18 leaks are the documented pre-existing baseline from `inserLLMHistories` (commit `20d061c6`) + `design_model_set_element_parent_test`).
+
+**Why not just add a global `window.oncontextmenu = (e) => e.preventDefault()` in `main.ts`.** The webview consumes the right-click BEFORE it reaches the page's `window`. By the time the page's JS runs, the webview has already opened its NSMenu / GTK menu / Chromium popup. The page can only suppress the menu INSIDE the webview's event chain — not via a page-level JS listener. Hence the per-platform native-side fix.
+
+**Why three different mechanisms (not a shared helper).** Each webview exposes its own native API:
+- WebKitGTK: `g_signal_connect_data("context-menu", ..., return gboolean)` — return TRUE to suppress
+- WKWebView: NSView `menuForEvent:` override (no WKUIDelegate API for native macOS)
+- WebView2: `add_ContextMenuRequested` COM event with `put_Handled(TRUE)`
+
+There is no shared C ABI for "suppress context menu" — each platform's webview is fundamentally different. A shared helper would be a one-liner (just `{ return true; }` per platform), not worth abstracting.
+
+**Branch / commit.** `worktree/desktop-contextmenu-suppress` @ `14cf5bd8`. PR pending.
+
+**Out of scope (deferred).**
+- macOS / Windows support for "Inspect Element" stock debug item. WebKitGTK gets it for free via stock action; macOS native has no public API; WebView2 has `COREWEBVIEW2_CONTEXT_MENU_KIND_INSPECT_ELEMENT` but enabling it requires the WebView2 DevTools protocol to be reachable. Add later if the user asks.
+- Iframe-internal right-click menus. The iframe is `sandbox="allow-scripts"` (no `allow-same-origin`), so the outer Vue can't reach into it. If a user wants right-click inside the iframe to also show the app menu, that requires a `postMessage` bridge — separate plan.
+- WebView2 DevTools protocol access. Out of scope.
+
+**Pitfalls (record for future agents).**
+- **Opaque types can't be compared to null.** `const WebKitSettings = opaque {}` — `settings != null` is a compile error. Per WebKitGTK's contract, `webkit_web_view_get_settings` always returns a valid (non-null) pointer; trust the contract and skip the null check.
+- **macOS menu suppression API confusion.** `UIContextMenuConfiguration` is iOS / Mac Catalyst only — NOT native macOS. Native macOS WKWebView uses NSView's `menuForEvent:` override. The official Apple guidance for "WKWebView suppress default context menu" is the NSView subclass pattern.
+- **`get_enable_developer_extras` is needed.** WebKitGTK's `webkit_settings_t` has both `set_*` and `get_*` for each property. The `context-menu` callback needs to RE-DERIVE the state (we can't pass a flag through `gpointer`). Calling `webkit_settings_get_enable_developer_extras` on the webview's settings object is the canonical pattern.
+- **`return TRUE` from `g_signal_connect_data` callback suppresses the default.** The `gboolean` return value is the "handled" flag — TRUE means "the signal handled it, don't run default handlers (don't show the menu)". FALSE would let WebKit show its defaults.
+
 ### 2026-08-06: Config parser — arbitrary `profiles_models` keys (task_1785963505875)
 
 **Symptom (user report).** User said *"when change profile via chatview
