@@ -2984,3 +2984,85 @@ Backed by Migration 070:
 **Why this matters.** The agent's mental model was previously: *"I forget everything between sessions unless it's in a chat log I can search."* With save_memory + load_memory, the agent can now persist and recall structured facts (preferences, decisions, lookup keys) with FTS5-grade relevance ranking, without polluting `search_history` with operational noise.
 
 **Branch / commit.** `worktree/save-load-memory-fts5` @ `0dd73609` (Task 4), `cb9b12fe` (Tasks 5+6 wiring). Plan: `docs/superpowers/plans/2026-08-06-save-load-memory-fts5.md`. Spec: `docs/superpowers/specs/2026-08-06-save-load-memory-fts5-design.md`. PR: pending.
+
+### 2026-08-06: Design page ⋮ rename menu (task `task_1785986998916`)
+
+**Symptom (user report, with screenshot).** *"add a menu to rename design pages"*. Sidebar tree shows a `design` item expanded to three pages (`AI Chat View`, `Kanban Mode`, `Untitled`); only × delete on hover, no way to rename.
+
+**What landed (commit pending, worktree `worktree/rename-design-pages`).**
+
+- **Backend (Zig).** Extended `updateDesignPage` to accept an optional `name` in the patch. `UpdateDesignPageInput` gains `name: ?[]const u8`; the function builds a dynamic SQL `UPDATE` (width + height always; `name = ?` only when present). Empty `name` is rejected with `BadPageName` (matches the `setDesignPage` guard — empty page names break the on-disk folder derivation in `design_io`). Handler `UpdatePageBody` mirrors the optional field; new error maps to 400 "name must not be empty".
+
+- **API layer (TS).** `updateDesignPage` now accepts `{ width, height, name? }`. Wire shape unchanged otherwise.
+
+- **Pinia store.** New `workspacesStore.renameDesignPage(workspaceId, itemId, pageId, newName)` action. Optimistic update on the cached struct (Pinia's reactive proxy sees the assignment + sidebar tree re-renders immediately); rolls back on PATCH failure; throws so the caller can surface a toast.
+
+- **UI — `DesignPageRow.vue`.** Adds a ⋮ three-dot menu trigger button between the page name and the × delete button (hover-revealed via the existing `group/page` modifier). Menu has **Rename** + **Delete** items. `@click.stop` on the trigger prevents the outer row's `selectPage` handler from firing. Document `mousedown` listener closes the dropdown on outside clicks (added on open, removed on close to avoid leaking listeners across N rows). The × delete button stays as a direct one-click affordance — both paths share the same `deletePage` emit.
+
+- **UI — `RenameDesignPageModal.vue` (new).** Mirrors `RenameTaskModal.vue` (centered single-input modal, Esc + Enter + Save/Cancel). Distinct component rather than a generic `RenameModal` so the visual styling + testid naming stay scoped per surface.
+
+- **UI — Sidebar.vue.** 4 target refs (workspaceId/itemId/pageId/currentName) + modal state + `handleRenameDesignPage` (sets state + opens modal) + `handleConfirmDesignPageRename` (calls store + surfaces errors via `useNotificationStore`).
+
+- **Wire plumbing.** WorkspaceItem.vue + WorkspaceList.vue forward the new `renameDesignPage` event up to Sidebar (same pass-through pattern as `selectDesignPage` / `deleteDesignPage`).
+
+**Behavioural matrix.**
+
+| Action | Result |
+|---|---|
+| Hover page row → ⋮ + × appear | Both visible; click handlers use `stopPropagation` |
+| Click ⋮ → dropdown opens, click elsewhere → closes | Document mousedown listener; menuRef.contains(target) check |
+| Click "Rename" → modal opens with name pre-selected + auto-focused | Sidebar sets 4 target refs + opens modal |
+| Type new name + Enter/Save | Modal emits `rename(name)` → `workspacesStore.renameDesignPage` → cache update + PATCH succeeds → no toast |
+| Backend PATCH fails | Cache rolls back; error toast |
+| Empty / unchanged name | Save button disabled; emits nothing |
+| Click "Delete" in ⋮ | Opens existing `<ConfirmDialog>` (same path as × button) |
+| Click × directly | Same delete confirm flow (existing behaviour preserved) |
+
+**Verification.**
+
+- `zig build test --summary all` → 2339 pass (+3 from baseline 2336), 6 skip, 6 fail, 1 crash. 6 fail + 1 crash = pre-existing baseline. **Zero regressions.**
+- `zig build-obj -fno-emit-bin -target x86_64-windows-gnu` + `-target aarch64-macos` → both clean.
+- `node_modules/.bin/vue-tsc --build --force` → clean.
+- `bunx vitest run src/__tests__/DesignPageRow.spec.ts src/__tests__/workspacesStoreRenameDesignPage.spec.ts` → 18/18 pass (13 DesignPageRow + 5 store).
+- Full vitest suite → 2015 pass / 14 fail — the 14 are PRE-EXISTING baseline (`AppLayout.memoriesGate` ×4, `DesignElement` static contract ×1, `DesignView.undoHidden` ×5, `DesignView.nudge clamp` ×1, `AppLayout.translateResize` ×1, `AppLayout.urlPersist` ×2). No new regressions.
+- Full zig build (`rm -rf zig-out/bin && zig build`) → 3 binaries produced (`nalarcore-linux-x86_64`, `nalar-desktop`, `nalarcli`).
+
+**Files (8 modified + 3 new).**
+
+- Modified: `design_model.zig`, `design_pages_update.zig`, `api/index.ts`, `stores/workspaces.ts`, `DesignPageRow.vue`, `WorkspaceItem.vue`, `WorkspaceList.vue`, `Sidebar.vue`, `DesignPageRow.spec.ts`, `AGENTS.md`, `docs/SPEC.md` (changelog)
+- New: `RenameDesignPageModal.vue`, `workspacesStoreRenameDesignPage.spec.ts`, `docs/superpowers/plans/2026-08-06-rename-design-pages.md`
+
+**Why the menu (⋮) and not just a pencil button.** The kanban-column ⋮ menu pattern (kanban-sort-by, 2026-08-06) is already established in the sidebar — same width, same `data-testid` shape (`design-page-menu-${pageId}-rename` etc.), same click-outside-close behaviour. Future page actions (duplicate, lock, move-to) slot into the same menu without growing the row's button cluster. The × delete button stays on hover for one-click deletion parity with the pre-menu UX.
+
+**Why NOT a generic `RenameModal.vue`.** Both `RenameTaskModal.vue` and `RenameDesignPageModal.vue` share the same visual styling + keyboard shortcuts, but each has a distinct testid prefix (`rename-task-*` vs `rename-design-page-*`) and a distinct title (`Rename Task` vs `Rename Page`). A generic helper would either need title/testid props (a 1-page refactor with no benefit) or two `<RenameModal>` mounts sharing an inner component — overengineered for v1.
+
+**Pitfalls (record for future agents).**
+
+- **`freePages` does NOT work on stack arrays** — it ends with `allocator.free(pages)` which crashes on a stack-allocated `[1]DesignPage`. For `updateDesignPage` returning a single `DesignPage` struct, free each field manually. See `testing_update_page` at the bottom of design_model.zig.
+
+- **Dynamic SQL builder for the optional `name`** — preserve the existing SQL verbatim when `name == null` (back-compat). When `name != null`, emit a second form that includes `name = ?` AND change the args slice length. Don't reuse the same args slice for both paths.
+
+- **`@click.stop` on the ⋮ trigger** — without it, clicking ⋮ fires the outer row's `selectPage` handler (the row is a `<div role="button">`, not a `<button>`, so Vue doesn't auto-prevent). Symptom: clicking ⋮ navigates to the page before opening the dropdown. Test: `DesignPageRow.spec.ts > "clicking the ⋮ trigger does NOT emit selectPage (stopPropagation)"`.
+
+- **Document mousedown listener cleanup** — added on menu open, removed on close. Without the cleanup, every menu-open leaks a global listener. With many rows, this leaks across the whole sidebar tree.
+
+- **Modal state pattern (4 target refs)** — mirrors `RenameTaskModal.vue`. The modal's `emit('rename', name)` only carries the trimmed name; the 4 refs persist across modal close + reopen cycles. Don't merge into a single object — Vue's reactivity loses the previous values when the watcher resets.
+
+- **No active-page fallback needed** — renaming is pure metadata. DesignView reads from `activeDesignPageId`, not from the page's name. The canvas keeps rendering whatever page it was already on; URL and sidebar re-render the new name.
+
+- **Page-name validation mirrors `setDesignPage`** — `BadPageName` (empty string → 400) is intentionally the same guard. An empty name would break the on-disk folder derivation in `design_io`.
+
+**Branch / commit / PR.**
+
+- Branch: `worktree/rename-design-pages` (worktree at `/home/ginwa/ginwaaitoolbox/.worktrees/rename-design-pages`)
+- Plan: `docs/superpowers/plans/2026-08-06-rename-design-pages.md`
+- Spec: not separate (TDD executed per the plan's "TDD sequence" section)
+- PR: pending (squash-merge candidate)
+
+**Out of scope (deferred to follow-ups).**
+
+- Inline rename (click pencil → row turns into input → Enter saves) — Notion / Linear pattern. Lighter weight than a modal but less consistent with the existing task-rename UX.
+- Rename history / undo — backend doesn't keep a history of names.
+- Rename via DesignView toolbar — the active page's name is visible in the toolbar but there's no rename affordance there yet.
+- Bulk rename (rename multiple pages at once) — would need a new endpoint.
+- Persist the original name on rename for migration / rollback — no `previous_name` column exists today.

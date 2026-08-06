@@ -10,6 +10,7 @@ import ChatsList from '../views/ChatsList.vue'
 import WorkspaceModal from '../dialogs/WorkspaceModal.vue'
 import RenameWorkspaceModal from '../dialogs/RenameWorkspaceModal.vue'
 import RenameTaskModal from '../dialogs/RenameTaskModal.vue'
+import RenameDesignPageModal from '../dialogs/RenameDesignPageModal.vue'
 import AddItemDialog from '../dialogs/AddItemDialog.vue'
 import AddKanbanDialog from '../dialogs/AddKanbanDialog.vue'
 // NEW (design-mode feature): the modal that creates a design
@@ -183,6 +184,16 @@ const renameTargetTaskWorkspaceId = ref<string | null>(null)
 const renameTargetTaskItemId = ref<string | null>(null)
 const renameTargetTaskId = ref<string | null>(null)
 const renameTargetTaskName = ref('')
+// NEW (rename-design-pages plan, 2026-08-06): ⋮ menu "Rename"
+// opens the RenameDesignPageModal. Same four-ref pattern as the
+// task-rename state above — the four vars survive across modal
+// close + reopen lifecycles, since the modal's emit('rename', name)
+// only carries the name (not the ids).
+const showRenameDesignPageModal = ref(false)
+const renameTargetDesignPageWorkspaceId = ref<string | null>(null)
+const renameTargetDesignPageItemId = ref<string | null>(null)
+const renameTargetDesignPageId = ref<string | null>(null)
+const renameTargetDesignPageName = ref('')
 
 // ─── Add Task picker + per-type dialog state (Chunk 6) ──────────────────────
 //
@@ -678,6 +689,65 @@ const handleCloseTaskRenameModal = () => {
   renameTargetTaskItemId.value = null
   renameTargetTaskId.value = null
   renameTargetTaskName.value = ''
+}
+
+// ─── Rename Design Page (rename-design-pages, 2026-08-06) ───────────────
+//
+// Mirrors the workspace-rename + task-rename patterns. The state
+// is split across four refs (workspace id, item id, page id, name)
+// because the modal's emit('rename', name) only carries the name —
+// the ids need to survive across the modal's close + reopen cycle.
+//
+// On confirm, calls `workspacesStore.renameDesignPage(...)`. The
+// store handles the optimistic update + rollback + PATCH
+// round-trip; Sidebar's only job is opening the modal + dispatching
+// the action. Failure surfaces as a toast via the store's catch
+// (renamed page = re-throws so the modal close awaits, then the
+// caller catches + notifies).
+const handleRenameDesignPage = (
+  workspaceId: string,
+  itemId: string,
+  pageId: string,
+  currentName: string,
+) => {
+  renameTargetDesignPageWorkspaceId.value = workspaceId
+  renameTargetDesignPageItemId.value = itemId
+  renameTargetDesignPageId.value = pageId
+  renameTargetDesignPageName.value = currentName
+  showRenameDesignPageModal.value = true
+}
+
+const handleConfirmDesignPageRename = async (newName: string) => {
+  if (
+    renameTargetDesignPageWorkspaceId.value &&
+    renameTargetDesignPageItemId.value &&
+    renameTargetDesignPageId.value
+  ) {
+    try {
+      await workspacesStore.renameDesignPage(
+        renameTargetDesignPageWorkspaceId.value,
+        renameTargetDesignPageItemId.value,
+        renameTargetDesignPageId.value,
+        newName,
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      useNotificationStore().notifyError('Failed to rename page', message)
+    }
+  }
+  showRenameDesignPageModal.value = false
+  renameTargetDesignPageWorkspaceId.value = null
+  renameTargetDesignPageItemId.value = null
+  renameTargetDesignPageId.value = null
+  renameTargetDesignPageName.value = ''
+}
+
+const handleCloseDesignPageRenameModal = () => {
+  showRenameDesignPageModal.value = false
+  renameTargetDesignPageWorkspaceId.value = null
+  renameTargetDesignPageItemId.value = null
+  renameTargetDesignPageId.value = null
+  renameTargetDesignPageName.value = ''
 }
 
 // Open the picker when the user clicks the green `+` on a
@@ -1474,6 +1544,7 @@ defineExpose({
           @select-design-page="handleSelectDesignPage"
           @delete-design-page="handleDeleteDesignPage"
           @add-design-page="handleAddDesignPage"
+          @rename-design-page="handleRenameDesignPage"
         />
         <!-- Collapsed workspaces: minimal text-driven monograms.
              Each workspace is rendered as a 1-2 letter monogram
@@ -1519,6 +1590,10 @@ defineExpose({
     <WorkspaceModal :show="showAddWorkspaceModal" @close="handleCloseModal" @create="handleCreateWorkspace" />
     <RenameWorkspaceModal :show="showRenameWorkspaceModal" :current-name="renameTargetName" @close="handleCloseRenameModal" @rename="handleConfirmRename" />
     <RenameTaskModal :show="showRenameTaskModal" :current-name="renameTargetTaskName" @close="handleCloseTaskRenameModal" @rename="handleConfirmTaskRename" />
+    <!-- NEW (rename-design-pages, 2026-08-06): ⋮ menu "Rename"
+         opens this modal; confirm fires workspaceStore.renameDesignPage
+         which PATCHes the page + optimistically updates the local cache. -->
+    <RenameDesignPageModal :show="showRenameDesignPageModal" :current-name="renameTargetDesignPageName" @close="handleCloseDesignPageRenameModal" @rename="handleConfirmDesignPageRename" />
     <AddItemDialog :show="showAddItemDialog" @close="handleCloseAddItemDialog" @create="handleCreateItem" />
     <AddKanbanDialog :show="showAddKanbanDialog" @close="handleCloseAddKanbanDialog" @create="handleCreateKanban" />
     <!-- NEW (design-mode feature): modal for creating a design-mode

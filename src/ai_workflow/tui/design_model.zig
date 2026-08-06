@@ -268,11 +268,19 @@ pub const UpdateDesignPageInput = struct {
     page_id: []const u8,
     width: i64,
     height: i64,
+    // NEW (2026-08-06 — design page rename menu). Optional page name.
+    // When non-null AND non-empty, the UPDATE statement writes it to
+    // `design_pages.name` (via dynamic SQL — building the SET clause
+    // conditionally so empty patches don't trigger NULL writes).
+    // Empty string is rejected with BadPageName (matches the same
+    // guard `setDesignPage` enforces — a page with an empty name
+    // would break the design folder derivation in design_io).
+    name: ?[]const u8 = null,
 };
 
-/// Update an existing design page's width/height by id. UPDATE-only;
-/// does NOT insert — see `setDesignPage` for the upsert path used
-/// by the agent's `set_design_page` tool. Returns the post-update
+/// Update an existing design page by id. UPDATE-only; does NOT
+/// insert — see `setDesignPage` for the upsert path used by the
+/// agent's `set_design_page` tool. Returns the post-update
 /// `DesignPage` with heap-owned string fields; caller MUST release
 /// with `freePages(allocator, &[_]DesignPage{result})` or pass the
 /// whole struct to `freePages` wrapped in a single-element array.
@@ -280,6 +288,8 @@ pub const UpdateDesignPageInput = struct {
 /// Width must be in [320, 4096], height in [240, 4096]. These ranges
 /// match typical viewport sizes (320 = iPhone SE width, 4096 = common
 /// 4K width; 240 = iPhone SE height, 4096 = tall scrollable hero).
+/// `name`, when provided, must be non-empty (matches `setDesignPage`'s
+/// BadPageName guard).
 pub fn updateDesignPage(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -288,6 +298,11 @@ pub fn updateDesignPage(
     if (input.page_id.len == 0) return error.PageIdRequired;
     if (input.width < 320 or input.width > 4096) return error.WidthOutOfRange;
     if (input.height < 240 or input.height > 4096) return error.HeightOutOfRange;
+    // Only validate the name when it's actually being updated (avoids
+    // a back-compat break for callers that always pass `name: null`).
+    if (input.name) |n| {
+        if (n.len == 0) return error.BadPageName;
+    }
 
     // Existence check first — distinguishes PageNotFound from a silent
     // no-op UPDATE on a non-existent row. Also gives us the
@@ -311,10 +326,26 @@ pub fn updateDesignPage(
     const height_str = try std.fmt.allocPrint(allocator, "{d}", .{input.height});
     defer allocator.free(height_str);
 
-    db.exec(allocator,
+    // Dynamic SQL builder — width+height are always set, name is
+    // conditional. Back-compat: when `name == null`, the produced
+    // SQL is identical to the pre-fix `UPDATE design_pages SET
+    // width=?, height=?, updated_at=datetime('now') WHERE id=?`.
+    // The `name` value is bound via `?` so the SQLite driver handles
+    // escaping (matches `setDesignPage`'s naming convention).
+    const has_name = input.name != null;
+    const update_sql: []const u8 = if (has_name)
+        "UPDATE design_pages SET width = ?, height = ?, name = ?, " ++
+            "updated_at = datetime('now') WHERE id = ?"
+    else
         "UPDATE design_pages SET width = ?, height = ?, " ++
-        "updated_at = datetime('now') WHERE id = ?",
-        &.{ width_str, height_str, input.page_id }) catch return error.DbError;
+            "updated_at = datetime('now') WHERE id = ?";
+
+    const update_args: []const []const u8 = if (has_name)
+        &.{ width_str, height_str, input.name.?, input.page_id }
+    else
+        &.{ width_str, height_str, input.page_id };
+
+    db.exec(allocator, update_sql, update_args) catch return error.DbError;
 
     // Re-fetch the updated row to return the full DesignPage. Same
     // ownership pattern as `design_pages_create.zig` useCase:
@@ -5771,4 +5802,179 @@ test "moveElementToPage rejects ElementNotFound (element not on source page)" {
         .apply_to_children = true,
     });
     try testing_move_to_page.expectError(error.ElementNotFound, result);
+}
+
+// ─── updateDesignPage (rename + size) ────────────────────────────────────
+//
+// Inline tests for the optional `name` field on UpdateDesignPageInput
+// (2026-08-06 — design page rename menu). Covers:
+//   - Back-compat: passing `name = null` keeps the old width/height-only
+//     UPDATE behaviour (regression guard for the dynamic-SQL builder).
+//   - Rename only: passing `name = "new"` updates the row's name while
+//     leaving width/height unchanged.
+//   - Empty name: `name = ""` returns BadPageName (matches the same
+//     guard `setDesignPage` enforces).
+//   - Round-trip: post-update listPages reflects the new name + unchanged
+//     geometry (catches the dynamic-SQL "name not persisted" bug).
+//
+// Per project convention, the test-setup helper + alias are namespaced
+// to avoid colliding with the pre-existing `testing_geometry` / etc.
+// aliases above.
+
+const testing_update_page = std.testing;
+
+fn setupUpdatePageDbAndItem() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_id: []u8,
+    page_id: []u8,
+} {
+    const alloc = testing_update_page.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)
+    , &.{});
+
+    const item_id = try alloc.dupe(u8, "item_rename_test");
+    errdefer alloc.free(item_id);
+
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name) " ++
+            "VALUES (?, 'ws_1', 'design', 'Design Item')",
+        &.{item_id});
+
+    // Direct INSERT (skipping setDesignPage, which requires a non-empty
+    // path on workspace_items). The test only exercises the UPDATE
+    // path of updateDesignPage — name validation, dynamic SQL builder,
+    // round-trip via listPages — so the page-create invariants
+    // (linked chat task, on-disk folder write) are out of scope here.
+    const page_id = try alloc.dupe(u8, "page_rename_target");
+    errdefer alloc.free(page_id);
+
+    try db.exec(alloc,
+        \\INSERT INTO design_pages (
+        \\    id, workspace_item_id, name,
+        \\    width, height, position
+        \\) VALUES (?, ?, ?, ?, ?, 0)
+    , &.{ page_id, item_id, "Original Name", "1440", "1024" });
+
+    return .{
+        .db = db,
+        .threaded = threaded,
+        .item_id = item_id,
+        .page_id = page_id,
+    };
+}
+
+fn teardownUpdatePage(
+    db: *sqlite.SqliteBackend,
+    threaded: *std.Io.Threaded,
+    item_id: []u8,
+    page_id: []u8,
+) void {
+    db.deinit();
+    threaded.deinit();
+    testing_update_page.allocator.free(item_id);
+    testing_update_page.allocator.free(page_id);
+}
+
+test "updateDesignPage with name=null is back-compat (size-only update)" {
+    const alloc = testing_update_page.allocator;
+    var ctx = try setupUpdatePageDbAndItem();
+    defer teardownUpdatePage(&ctx.db, &ctx.threaded, ctx.item_id, ctx.page_id);
+
+    const updated = try updateDesignPage(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .width = 1920,
+        .height = 1080,
+        .name = null,
+    });
+    // Manual field-by-field free (the page is returned as a single
+    // struct, not a slice — `freePages` ends with `allocator.free(pages)`
+    // which expects a heap-allocated slice; a single struct return needs
+    // the per-field frees below).
+    defer {
+        alloc.free(updated.id);
+        alloc.free(updated.workspace_item_id);
+        alloc.free(updated.name);
+        alloc.free(updated.workspace_item_task_id);
+        alloc.free(updated.created_at);
+        alloc.free(updated.updated_at);
+    }
+
+    try testing_update_page.expectEqual(@as(i64, 1920), updated.width);
+    try testing_update_page.expectEqual(@as(i64, 1080), updated.height);
+    // Name preserved (NOT blanked — the dynamic SQL builder skips the
+    // `name = ?` clause when null).
+    try testing_update_page.expectEqualStrings("Original Name", updated.name);
+}
+
+test "updateDesignPage with name persists the new name and keeps size" {
+    const alloc = testing_update_page.allocator;
+    var ctx = try setupUpdatePageDbAndItem();
+    defer teardownUpdatePage(&ctx.db, &ctx.threaded, ctx.item_id, ctx.page_id);
+
+    const updated = try updateDesignPage(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .width = 1440,
+        .height = 1024,
+        .name = "Renamed Page",
+    });
+    defer {
+        alloc.free(updated.id);
+        alloc.free(updated.workspace_item_id);
+        alloc.free(updated.name);
+        alloc.free(updated.workspace_item_task_id);
+        alloc.free(updated.created_at);
+        alloc.free(updated.updated_at);
+    }
+
+    try testing_update_page.expectEqualStrings("Renamed Page", updated.name);
+    try testing_update_page.expectEqual(@as(i64, 1440), updated.width);
+    try testing_update_page.expectEqual(@as(i64, 1024), updated.height);
+
+    // Round-trip via listPages — catches the "name got bound to the
+    // wrong slot" / "SQL clause skipped silently" bugs.
+    const pages = try listPages(alloc, &ctx.db, ctx.item_id);
+    defer freePages(alloc, pages);
+    try testing_update_page.expectEqual(@as(usize, 1), pages.len);
+    try testing_update_page.expectEqualStrings("Renamed Page", pages[0].name);
+}
+
+test "updateDesignPage with empty name returns BadPageName" {
+    const alloc = testing_update_page.allocator;
+    var ctx = try setupUpdatePageDbAndItem();
+    defer teardownUpdatePage(&ctx.db, &ctx.threaded, ctx.item_id, ctx.page_id);
+
+    const result = updateDesignPage(alloc, &ctx.db, .{
+        .page_id = ctx.page_id,
+        .width = 1440,
+        .height = 1024,
+        .name = "",
+    });
+    try testing_update_page.expectError(error.BadPageName, result);
 }
