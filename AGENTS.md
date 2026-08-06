@@ -3233,6 +3233,74 @@ renders literal `&lt;p&gt;` instead of an actual `<p>` element.
 - Rename via DesignView toolbar — the active page's name is visible in the toolbar but there's no rename affordance there yet.
 - Bulk rename (rename multiple pages at once) — would need a new endpoint.
 - Persist the original name on rename for migration / rollback — no `previous_name` column exists today.
+
+### 2026-08-06: Design mode — suppress pointer-drag on child elements (only the parent group header is movable)
+
+**Symptom (user report, task_1786025937033).** *"why i still can move the ekleemnt, if am select child elemment ? that elemen is inside grouip it should be cannot to move, unles i move the group header"*. An element nested inside a parent group/frame (e.g. `chat-area`, `input-area` inside `Group 5`) was independently movable via pointer-drag. The single-element drag path in `DesignElement.startDrag` fires for any leaf element (rectangle / ellipse / text / image) regardless of `parent_id`.
+
+**What landed (commit `af234428`).** Surgical frontend-only fix. 3 files, +257/-1.
+
+1. **`DesignElement.vue::isChildOfGroup` computed** — true when `parent_id` is non-empty + non-null + non-undefined. The wire form is the backend's `COALESCE(parent_id, '')` so top-level rows arrive as `''` (or `null`/`undefined` for legacy pre-migration rows); only non-empty `parent_id` means nested.
+
+2. **`DesignElement.vue::startDrag` early-return guard** (placed AFTER `emit('select')` so selection still fires; BEFORE `emit('dragStart')` so the undo-state capture doesn't fire for a gesture that will never happen):
+
+   ```ts
+   const inMultiSelect = props.selectedIds.length > 1
+                        && props.selectedIds.includes(props.element.id)
+   if (mode === 'move' && isChildOfGroup.value && !inMultiSelect) {
+     designLogger.debug({ reason: 'drag:noop:child-of-group', … })
+     return
+   }
+   ```
+
+   Multi-select still routes through the existing `triggerGroupDrag` branch (the `inMultiselect` part of the `triggerGroupDrag = (inMultiselect || isGroupLike) && mode === 'move'` check returns early for any multi-select — including multi-selects of children), so a multi-child selection can still move via the existing group path.
+
+3. **Cursor class** — switches from `cursor-move` to `cursor-pointer` on child elements (UX hint: "you can click to select, but not drag").
+
+4. **`designLogger.ts::DesignReason` type** — added `'drag:noop:child-of-group'` to the union.
+
+**Behaviour.**
+
+| Action | Result |
+|---|---|
+| Click a child element | Selection fires (`emit('select')`). Cursor = `pointer`. |
+| Click + drag a child element | NO movement. Selection stays. No undo state captured. |
+| Click + drag a multi-select of children | The whole selection moves (via existing `triggerGroupDrag` group path). |
+| Click + drag a parent group/frame | The whole subtree moves (existing group path). |
+| Click + drag a TOP-LEVEL element (no `parent_id`) | The element moves (unchanged). |
+| Drag a resize handle on a child | Resize still works (Figma parity — child resize is independent, only child move is blocked). |
+
+**Tests (5 new, all green).**
+
+- `drag on a child element (parent_id set) does NOT emit translate` — the regression test (red before fix, green after).
+- `resize on a child element still emits resize (resize handles unaffected)` — Figma parity regression guard.
+- `drag on a top-level element (parent_id === "") still emits translate (regression guard)` — boundary case (empty string = top-level).
+- `drag on a child element with parent_id = null (legacy shape) is treated as top-level` — legacy elements remain draggable.
+- `multi-select containing children still triggers groupDrag (parent_id ignored in multi-select)` — the multi-select carve-out.
+
+**Verification.**
+- `bun run build` → vue-tsc clean (4.08s).
+- `bunx vitest run src/components/design/__tests__/DesignElement.drag.spec.ts` → **20/20 pass** (was 15/15 before this PR; +5 new tests).
+- `bunx vitest run` (full suite) → **2092 pass / 14 fail**. The 14 failures are PRE-EXISTING baseline (unchanged from `main @ 2a33cc7a`): `AppLayout.memoriesGate ×4`, `AppLayout.urlPersist ×7`, `sidebarKanbanSortUrl ×2`, `DesignView.nudge clamp ×1`. Zero regressions from this fix.
+
+**Pitfalls (record for future agents).**
+
+- **Placement of the guard matters.** The guard must be AFTER the `emit('select')` call (so selection still works — the user can still edit properties in the side panel) AND BEFORE the `emit('dragStart')` call (so the parent's undo-state capture doesn't fire for a gesture that will never happen).
+- **Multi-select carve-out.** The guard has an explicit `&& !inMultiSelect` exception. Without it, multi-selects of children stop working — they were moving via the `triggerGroupDrag` branch (inMultiSelect fires → `return` → group path), but if the guard fires first they don't reach that branch.
+- **Wire-form `parent_id` quirks.** The backend's `COALESCE(parent_id, '')` returns `''` for top-level rows (NOT `null`). Legacy pre-migration elements may have `parent_id = null` or `undefined`. All three of `''`, `null`, `undefined` mean "not in a group" — `isChildOfGroup` must accept all three. The canonical check is `!!pid && pid !== ''` (mirrors `DesignContextMenu::canLeaveGroup`).
+- **Resize handles still work on children.** The guard only fires for `mode === 'move'`. Resize handles (`mode = { resize: ResizeHandle }`) are unaffected — Figma parity: child resize is independent, only child move is blocked.
+- **UX hint — `cursor-pointer` vs `cursor-default`.** `cursor: pointer` is the honest affordance for "you can click to select, but not drag". `cursor: default` would suggest "no interaction" which is wrong (the user CAN click to select).
+- **Properties panel X/Y inputs still work.** Even though pointer-drag is suppressed, the user can still numerically change x/y in the PropertiesPanel. That's intentional — the user is explicitly setting the position, not pointer-dragging.
+- **The dragStart emit is a no-op without a follow-up dragEnd.** The undo state capture system in `DesignView.vue::handleDragStart:resetSnapshot` is keyed on `dragStart` → `dragEnd` pairs. With the guard firing before `dragStart`, the undo state never accumulates for suppressed drags. No risk of orphaned undo state.
+
+**Why NOT Figma-style "drag child = drag group".** Figma's convention is that clicking on a child initiates a drag of the WHOLE parent (so the relative position of children stays fixed). The user's wording "should be cannot to move, unles i move the group header" matches the harder stop (block child pointer-drag entirely) rather than the Figma cascade. Implementing the Figma cascade would require either (a) walking the parent chain to find the topmost ancestor and dispatching to its drag handler, or (b) sending a `move-batch` PATCH on the parent's id with `apply_to_children: true`. Both are larger changes; the user's literal request was a hard block.
+
+**Out of scope (deferred to follow-ups).**
+
+- **Figma-style "click child to drag group"** — would require cascade dispatch (parent chain walk + group-translate). The hard-block implementation matches the user's literal request.
+- **Properties panel drag arrow buttons** (←/→ up/down by 1px) — the existing nudge handler already moves child elements by 1px via keyboard. Out of scope for this fix.
+- **Drag-from-layers-panel-to-canvas** — already works (LayersPanel's drag handler emits reparent events, not translate events).
+- **Cross-platform drag-cursor differences** — `cursor-pointer` is universally supported; no per-OS conditional CSS needed.
 ## 🎓 Cross-cutting patterns (consolidated 2026-08-06)
 
 > These are the most reusable patterns that emerged from 22+ fixes
