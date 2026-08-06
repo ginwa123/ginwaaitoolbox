@@ -170,6 +170,18 @@ const elementStyle = computed(() => ({
   // and the v-if on the parent only renders elements with valid
   // geometry, so no extra defensive checks needed.
   opacity: props.element.opacity,
+  // FIX 2026-08-06 (task_1785988530202): apply `z-index` inline so
+  // CSS handles the z-axis stacking. Without this, the right-click
+  // reorder menu (Bring to front / forward / Send backward / back) and
+  // the Ctrl+]/[ keyboard shortcuts WERE updating the DB
+  // `z_index` values correctly but the canvas visual stacking didn't
+  // change — because for `position: absolute` elements without an
+  // explicit `z-index` CSS, DOM order = visual stacking; and the
+  // frontend's `reorderDesignElements` mirrors the response IN-PLACE
+  // (preserves array order), so the DOM order doesn't change either.
+  // Net: z_index changed in DB but the canvas looked identical.
+  // The fix is the single line below — CSS does the rest.
+  zIndex: props.element.z_index,
   // Selection outline is rendered as a child absolutely-positioned
   // div via the .selected class below; the parent keeps the
   // standard border styling from the element itself.
