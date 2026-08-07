@@ -1,1 +1,0 @@
-/home/ginwa/ginwasaas/vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400/sqlite3.h

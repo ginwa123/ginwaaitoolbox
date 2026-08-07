@@ -1,1 +1,0 @@
-/usr/x86_64-w64-mingw32/include/d2d1effects_2.h

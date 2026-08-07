@@ -1,1 +1,0 @@
-/usr/x86_64-w64-mingw32/include/windows.graphics.directx.direct3d11.h
