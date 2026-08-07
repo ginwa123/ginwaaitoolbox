@@ -108,20 +108,70 @@ fn constantTimeEql(a: []const u8, b: []const u8) bool {
 }
 
 /// Generate a cryptographically-secure random nonce of `len` bytes.
+///
+/// Platform CSPRNG dispatch:
+///   * Linux    → syscall getrandom(2) (no fd, no /dev/urandom setup).
+///   * macOS    → arc4random_buf (declared in std.c private; uses
+///                SecRandomCopyBytes under the hood since macOS 10.12,
+///                i.e. effectively a CSPRNG — the "arc4" name is stale).
+///   * Windows  → BCryptGenRandom from bcrypt.dll with
+///                BCRYPT_USE_SYSTEM_PREFERRED_RNG. Built at link time via
+///                `linkSystemLibrary("bcrypt")` in build.zig.
+/// `std.c.getrandom` exists only on Linux/FreeBSD; on Windows and macOS it
+/// resolves to `void` (Zig's c.zig switch), which is why this function is
+/// target-aware rather than a single line.
 fn generateNonce(allocator: std.mem.Allocator, len: usize) ![]u8 {
     const buf = try allocator.alloc(u8, len);
     errdefer allocator.free(buf);
-    var filled: usize = 0;
-    while (filled < len) {
-        // std.c.getrandom returns the number of bytes written (isize),
-        // or -1 on error. Loop until the buffer is full.
-        const slice = buf[filled..];
-        const n = std.c.getrandom(slice.ptr, slice.len, 0);
-        if (n <= 0) return error.RandomFailed;
-        filled += @intCast(n);
+
+    switch (builtin.os.tag) {
+        .linux, .freebsd, .openbsd, .netbsd => {
+            var filled: usize = 0;
+            while (filled < len) {
+                // std.c.getrandom returns the number of bytes written (isize),
+                // or -1 on error. Loop until the buffer is full.
+                const slice = buf[filled..];
+                const n = std.c.getrandom(slice.ptr, slice.len, 0);
+                if (n <= 0) return error.RandomFailed;
+                filled += @intCast(n);
+            }
+        },
+        .macos, .ios, .tvos, .watchos => {
+            // arc4random_buf is declared in std.c private; available on all
+            // Apple targets. The Zig 0.16 std.c exports it as
+            // `std.c.arc4random_buf` but only on Darwin-family — gate here.
+            std.c.arc4random_buf(buf.ptr, buf.len);
+        },
+        .windows => {
+            // BCrypt.dll → BCRYPT_USE_SYSTEM_PREFERRED_RNG (0x00000002).
+            // hAlgorithm = NULL means "use the system-preferred RNG" which
+            // the docs guarantee is suitable for cryptographic use and is
+            // seeded from the OS entropy pool at boot.
+            const status = bcrypt.BCryptGenRandom(
+                null,
+                buf.ptr,
+                @intCast(buf.len),
+                0x00000002, // BCRYPT_USE_SYSTEM_PREFERRED_RNG
+            );
+            if (status != 0) return error.RandomFailed;
+        },
+        else => return error.UnsupportedPlatform,
     }
     return buf;
 }
+
+/// Windows bcrypt.dll bindings. Declared locally because std.c only covers
+/// libc; bcrypt is a separate system DLL that build.zig links via
+/// `linkSystemLibrary("bcrypt")`. Both functions are stdcall-equivalent
+/// (c_long on x86_64) per Microsoft's bcrypt.h.
+const bcrypt = struct {
+    extern "bcrypt" fn BCryptGenRandom(
+        hAlgorithm: ?*const anyopaque,
+        pbBuffer: [*]u8,
+        cbBuffer: c_ulong,
+        dwFlags: c_ulong,
+    ) callconv(.c) c_long;
+};
 
 /// Generate an HMAC-SHA256 over `msg` keyed by `secret`. Returns a heap
 /// buffer of `HMAC_LEN` bytes; caller owns it.
