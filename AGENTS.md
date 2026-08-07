@@ -2682,6 +2682,54 @@ Total cli test count: **43/43 pass, 0 leaks.**
 
 **Branch.** `worktree/cli-app` (uncommitted).
 
+### 2026-08-06: Workflow loop re-reads `selected_profile_model` per iteration
+
+**Symptom (user report, task `task_1786031708725`).** *"Profile change should pick up the NEW profile on the running loop's NEXT iteration, that mean if i select profile no need queue message to workflow agentick just re read selected_profile_model"*. Previously, the chatview profile dropdown updated `sessions.selected_profile_model` via `PUT /api/llm/session/:id`, but the running workflow's `while (true)` loop in `runAgenticMultiStepnew` used a **snapshot** of `selected_profile_model` taken at the top of the run (`copy_selected_profile_model = parent_allocator.dupe(u8, params.selected_profile_model)`). The DB updated but the loop continued with the snapshot — the new profile was silently ignored until the next message was sent.
+
+**What landed (1 file changed, +114/-9).** New private helper `re_read_selected_profile_model(allocator, db, session_id, fallback)` in `workflow.zig` does a single-row `SELECT COALESCE(selected_profile_model, '') FROM sessions WHERE id = ?` and returns the live value (dupe'd into the per-iteration arena). Falls back to the snapshot on any read failure (mirrors the existing `is_auto_retry_until_stop` graceful-degrade at `workflow.zig:709-718`).
+
+**Wiring.** Inside the loop body (right after the live-config-re-read at `workflow.zig:730`):
+1. `live_selected_profile_model = re_read_selected_profile_model(allocator, db, copy_session_id, params.selected_profile_model)` — fresh value each iteration.
+2. Replaced `params.selected_profile_model` with `live_selected_profile_model` in the warning check (`workflow.zig:735-738`) and the four `resolveProfileField(...)` calls (`workflow.zig:740-743`).
+3. Replaced `copy_selected_profile_model` with `live_selected_profile_model` in the `handle_tool(...)` call (`workflow.zig:1260`) so sub-agents spawned mid-run pick up the new profile via `RunParamsNew.selected_profile_model`.
+4. Removed the now-unused `copy_selected_profile_model` snapshot declaration (`workflow.zig:585` was its only consumer other than `handle_tool`).
+
+**Tests (4 new inline `test "..." { ... }` blocks at the bottom of `workflow.zig`).**
+- `re_read_selected_profile_model: returns live DB value when row exists` — happy path.
+- `re_read_selected_profile_model: returns empty string when DB has empty (mirrors COALESCE)` — empty-string edge case.
+- `re_read_selected_profile_model: returns fallback when no session row exists` — missing row.
+- `re_read_selected_profile_model: subsequent reads see UPDATEd value (live re-read)` — **the regression test for this bug**: insert session with 'alpha', read (asserts 'alpha'), UPDATE to 'gamma', read again (asserts 'gamma'). If this test ever fails, the workflow is back to using a snapshot — the original bug returns.
+
+Test setup mirrors `llm_history_search_fts_query_safety_test.zig::setupDb`: `std.Io.Threaded.init + db.init(io, ":memory:")` + `MigrationManager.init + registerAllMigrations + runMigrations` (per `llm-history-test-use-migrations-module.md`). Each test wraps in a `std.heap.ArenaAllocator` to match production's per-iteration arena pattern.
+
+**Verification.**
+- `zig build test --summary all` → 2358/2377 pass, 6 skip, 12 fail, 1 crash (pre-existing baseline: PR #181 tool-call-loading-placeholder regressions documented above). +4 new pass, zero new failures.
+- `zig build-obj -fno-emit-bin -target x86_64-windows-gnu` → clean.
+- `zig build-obj -fno-emit-bin -target aarch64-macos` → clean.
+- `rm -rf zig-out/bin && zig build` → all 3 binaries produced (`nalarcore-linux-x86_64` 94 MB, `nalar-desktop` 14 MB, `nalarcli` 12 MB).
+
+**Pitfalls (record for future agents).**
+- **`row.deinit()` frees `row.values[0]`'s backing memory** (see `Sqlite.zig:356-362`). The helper MUST dupe into the caller-supplied allocator before the deferred `row.deinit` fires — otherwise the returned slice is freed by the time the caller uses it. Caught during testing: SEGV in `std.mem.findDiff` at `expectEqualStrings`.
+- **The re-read slice is owned by the per-iteration arena** (`arenaAllocatorWhileLoop` at `workflow.zig:680`). Safe for the iteration; freed at iteration end. Do NOT cache across iterations.
+- **`params.selected_profile_model` is now used only as the fallback**, not as the source of truth. The live value comes from `re_read_selected_profile_model`. If the DB read fails (transient SQLite error), the loop falls back to the snapshot — same graceful-degrade as `is_auto_retry_until_stop`.
+- **`copy_selected_profile_model` is gone**. If a future code path needs the snapshot (e.g. a sub-agent that wants the "original" profile), re-add it as a separate variable — don't reintroduce it in place.
+- **No frontend change.** The PUT endpoint + SSE broadcast + chatview chip update are all untouched. The fix is purely on the read side: the workflow loop now notices DB updates between iterations.
+- **No migration.** The `sessions.selected_profile_model` column already exists (Migration 067 era). No DB schema change.
+- **No wire shape change.** `RequestSession.selected_profile_model` + `RunParamsNew.selected_profile_model` + `sessions.selected_profile_model` all stay as-is.
+
+**Behavioural matrix.**
+| Scenario | Result |
+|---|---|
+| User picks profile "X" before any message | DB has "X". Worker starts. Loop re-reads "X" each iteration. Uses profile "X" from LlmConfig. ✅ |
+| User picks "Y" mid-run (running with "X") | DB updates to "Y". Next iteration re-reads "Y". Next LLM call uses "Y"'s api_key/model/base_url. ✅ |
+| User clears `selected_profile_model` to "" (back to "Default") | DB has "". Next iteration re-reads "". Falls through to `config.active_profile` → top-level. ✅ |
+| DB read fails | Fall back to `params.selected_profile_model` (snapshot). Loop continues. Next iteration retries. **Graceful-degrade.** |
+| Sub-agent spawned mid-run after picking "Y" | `handle_tool` receives `live_selected_profile_model = "Y"`. Sub-agent uses "Y" from first LLM call. ✅ |
+| Rapid profile picks (Y then Z before next iteration) | DB updates to Z. Next iteration sees Z (latest). ✅ |
+
+**Plan.** `docs/superpowers/plans/2026-08-06-workflow-re-read-profile-per-iter.md`.
+**Branch.** `worktree/workflow-re-read-profile` (uncommitted, ready for squash-merge).
+
 ### 2026-08-06: Tool-call loading placeholder — kill "Invalid function ID" on crash
 
 **Symptom (user report, task_1785784899843).** After the agent
