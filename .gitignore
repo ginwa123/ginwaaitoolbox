@@ -11,16 +11,16 @@ test_main
 .nalar/tasks/
 /zig-pkg
 
-# Vendored C sources — fetched on demand by scripts/fetch-vendor-sqlite3.sh
-# instead of committed to the repo. The amalgamation is ~10 MB of binary-like
-# data that bloats git clones and has no diffable content (only version
-# bumps). For non-Linux targets (Windows, macOS, cross-compile from Linux),
-# the build.zig references vendor/sqlite3/sqlite3.c directly — the fetch
-# script restores it on demand before the first zig build call.
+# Vendored cross-platform SQLite3 sources (committed — ginwasaas pattern).
+# Provides prebuilt libsqlite3.a for Windows (via the MinGW symlink farm at
+# vendor/sqlite3/libc-windows-amd64/) + macOS-{arm64,x86_64} so that
+# `zig build install:windows` and `zig build install:macos*` link successfully
+# on a Linux host WITHOUT needing vcpkg or brew installed locally.
 #
-# To regenerate after bumping SQLite: delete vendor/sqlite3/ and re-run
-# `scripts/fetch-vendor-sqlite3.sh`.
-/vendor/
+# The legacy /vendor/ ignore was removed 2026-08-06 — see vendor/sqlite3/README.md
+# for the layout + how the artifacts were produced. To bump SQLite: re-run
+# the steps in vendor/sqlite3/README.md and replace vendor/sqlite3/amalgamation/
+# with the new version's files.
 
 # Test artifacts (created by zig build test runs)
 test_logger_*.log

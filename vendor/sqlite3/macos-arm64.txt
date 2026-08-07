@@ -1,0 +1,6 @@
+include_dir=/home/ginwa/ginwasaas/vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400
+sys_include_dir=/home/ginwa/ginwasaas/vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400
+crt_dir=
+msvc_lib_dir=
+kernel32_lib_dir=
+gcc_dir=
