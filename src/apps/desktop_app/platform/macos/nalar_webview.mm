@@ -80,6 +80,36 @@
 
 @end
 
+#pragma mark - WebView subclass (context menu suppression)
+
+/// WKWebView subclass that suppresses the default right-click context
+/// menu by overriding `menuForEvent:` to return nil. WKWebView's public
+/// API has no first-class "suppress default context menu" hook on macOS
+/// (the `webView:contextMenuConfigurationForElement:` API uses
+/// `UIContextMenuConfiguration` which is iOS / Mac Catalyst only, NOT
+/// native macOS), so we subclass and override the NSView-level
+/// `menuForEvent:` instead.
+///
+/// The page's JavaScript `contextmenu` DOM event still fires — the
+/// WKWebView's right-click handling is unchanged; we only suppress the
+/// NSMenu that the NSView system would otherwise show. So Vue's
+/// @contextmenu.prevent handlers in the webapp (DesignView, LayersPanel,
+/// GitChanges, etc.) run as intended.
+@interface NalarWebView : WKWebView
+@end
+
+@implementation NalarWebView
+
+- (NSMenu *)menuForEvent:(NSEvent *)event {
+    (void)event;
+    // Returning nil suppresses the default right-click context menu.
+    // The DOM `contextmenu` event still fires inside the WKWebView —
+    // we only prevent the NSMenu from appearing.
+    return nil;
+}
+
+@end
+
 @implementation NalarAppDelegate
 
 @synthesize config = _config;
@@ -143,7 +173,7 @@
     // (Keeping this commented to document the API history.)
     // wkconfig.preferences.javaScriptCanAccessClipboard = YES;
 
-    _webView = [[WKWebView alloc] initWithFrame:frame configuration:wkconfig];
+    _webView = [[NalarWebView alloc] initWithFrame:frame configuration:wkconfig];
     [_webView setNavigationDelegate:self];
 
     // The WKWebView IS the window's content view. This is the
