@@ -1,151 +1,54 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// Link platform-specific system libraries (sqlite3/openssl) + include paths
-/// for a Compile step based on the COMPILE'S OWN target (NOT the global
-/// default target). Every caller that produces a binary linked against
-/// nalarcore MUST call this — otherwise the cross-compile link line will
-/// miss the target's sqlite3/openssl.
+/// Link platform-specific system libraries + include paths for a Compile
+/// step based on the COMPILE'S OWN target (NOT the global default target).
+/// Every caller that produces a binary linked against nalarcore MUST
+/// call this — otherwise the cross-compile link line will miss the
+/// target's per-platform deps.
 ///
-/// Why per-Compile and not on `mod`: putting these on `mod` causes the
-/// Linux native system libs (sqlite3/ssl/crypto/pq + /usr/include) to leak
-/// into every consumer of `mod`, including `install:windows` and
-/// `install:macos` cross-compile artifacts. The cross-target linker then
-/// fails with "unable to find dynamic system library 'sqlite3'" because
-/// those Linux libs don't exist on Windows/macOS.
+/// What lives here (post-`databases` package extraction):
+///   - universal: libc + link_libc
+///   - Linux:     ssl / crypto / pq + /usr/include (sqlite3 lives in the
+///                `databases` package — propagated via the module graph)
+///   - macOS:     (nothing — curl is universal via custom_http_client_mod)
+///   - Windows:   bcrypt (for src/modules/custom_http_server/src/security.zig)
 ///
-/// Universal link (libc + link_libc) is set on every platform. The
-/// platform-specific block adds sqlite3/openssl (Linux), brew sqlite3
-/// (macOS), or the vendored amalgamation (Windows + cross-compile to
-/// Windows/macOS).
-/// Link platform-specific system libraries (sqlite3/openssl) + include paths
-/// for a Compile step based on the COMPILE'S OWN target (NOT the global
-/// default target). Every caller that produces a binary linked against
-/// nalarcore MUST call this — otherwise the cross-compile link line will
-/// miss the target's sqlite3/openssl.
-///
-/// Why per-Compile and not on `mod`: putting these on `mod` causes the
-/// Linux native system libs (sqlite3/ssl/crypto/pq + /usr/include) to leak
-/// into every consumer of `mod`, including `install:windows` and
-/// `install:macos` cross-compile artifacts. The cross-target linker then
-/// fails with "unable to find dynamic system library 'sqlite3'" because
-/// those Linux libs don't exist on Windows/macOS.
-///
-/// Universal link (libc + link_libc) is set on every platform. The
-/// platform-specific block adds sqlite3/openssl (Linux), brew sqlite3
-/// (macOS), or the vendored amalgamation (Windows + cross-compile to
-/// Windows/macOS).
-///
-/// `sqlite_prefix` is the Homebrew prefix for the macOS keg (default
-/// /opt/homebrew). Declared once at the top of `build` because
-/// `b.option()` panics on duplicate declarations.
+/// What used to live here: per-platform sqlite3 amalgamation/archives
+/// + brew paths. Those moved to src/modules/databases/build.zig, which
+/// runs once per target the consumer passes via `b.dependency("databases",
+/// .{ .target = ... })` and emits the right sqlite3 deps for that target.
 fn linkPlatformDeps(
-    b: *std.Build,
+    _b: *std.Build,
     exe: *std.Build.Step.Compile,
     target: std.Build.ResolvedTarget,
 ) void {
+    _ = _b;
     exe.root_module.linkSystemLibrary("c", .{});
     exe.root_module.link_libc = true;
     switch (target.result.os.tag) {
         .linux => {
-            // Linux (native + cross-compile): use the VENDORED prebuilt
-            // libsqlite3.a from vendor/sqlite3/linux-x86_64/ (built once
-            // via `zig cc -target x86_64-linux-gnu` + `zig ar` from the
-            // amalgamation). The amalgamation header is at
-            // vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400/sqlite3.h.
-            //
-            // Why NOT system sqlite3:
-            // - A developer on macOS or Windows host can't `apt install
-            //   libsqlite3-dev` to cross-compile for Linux. Vendoring
-            //   makes the build hermetic across host OSes.
-            // - brew layout is keg-only fragile; system libsqlite3 may
-            //   be a different version than the amalgamation header.
-            //
-            // OpenSSL + libpq are still linked from the system because
-            // they're nearly always present on Linux distros and aren't
-            // currently vendored (out of scope here — see plan if
-            // macOS-host builds need them too).
-            const linux_lib = switch (target.result.cpu.arch) {
-                .x86_64 => "vendor/sqlite3/linux-x86_64",
-                else => "", // unsupported Linux arch (aarch64 etc.)
-            };
-            if (linux_lib.len > 0) {
-                exe.root_module.addIncludePath(b.path("vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400"));
-                exe.root_module.addLibraryPath(b.path(linux_lib));
-                exe.root_module.linkSystemLibrary("sqlite3", .{});
-            }
-            exe.root_module.linkSystemLibrary("ssl", .{});
-            exe.root_module.linkSystemLibrary("crypto", .{});
-            exe.root_module.linkSystemLibrary("pq", .{});
-            exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
-            // Debian/Ubuntu layout: libpq-fe.h lives in
-            // /usr/include/postgresql (Arch has it directly in
-            // /usr/include). Adding both is harmless.
-            exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include/postgresql" });
+            // Everything database-related (sqlite3 amalgamation + openssl +
+            // crypto + libpq + /usr/include + /usr/include/postgresql) is
+            // handled by the `databases` package — propagated to this
+            // Compile via mod.addImport → databases_mod. Nothing else
+            // needed for Linux.
         },
         .macos => {
-            // macOS (native + cross-compile): use the VENDORED prebuilt
-            // libsqlite3.a from vendor/sqlite3/macos-{arm64,x86_64}/.
-            // The amalgamation header is at
-            // vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400/sqlite3.h.
-            //
-            // Why NOT system sqlite3 (Homebrew brew install sqlite3):
-            // - brew doesn't exist on a Linux host cross-compiling to macOS.
-            // - brew layout (keg-only at <prefix>/opt/sqlite/{include,lib})
-            //   is fragile and breaks when the user installs/uninstalls brew.
-            // - The prebuilt archive is hermetic: identical output on every
-            //   build, no surprises from brew version skew.
-            //
-            // Why NOT compile sqlite3.c per-build (as older code did):
-            // - zig cc -target aarch64-macos works but the vendored
-            //   amalgamation panics on arm64 with "member access within
-            //   misaligned address" (vendor/sqlite3/sqlite3.c:32137) when
-            //   compiled with Zig 0.16's x86_64 host gcc. The prebuilt
-            //   archive was produced by zig cc itself, so it has the
-            //   correct alignment for the target arch.
-            const macos_lib = switch (target.result.cpu.arch) {
-                .aarch64 => "vendor/sqlite3/macos-arm64",
-                .x86_64 => "vendor/sqlite3/macos-x86_64",
-                else => "", // unsupported macOS arch (e.g. i386) — leave empty
-            };
-            if (macos_lib.len > 0) {
-                exe.root_module.addIncludePath(b.path("vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400"));
-                exe.root_module.addLibraryPath(b.path(macos_lib));
-                exe.root_module.linkSystemLibrary("sqlite3", .{});
-            }
+            // Everything database-related (sqlite3 amalgamation) is handled
+            // by the `databases` package. macOS doesn't need openssl/pq
+            // here (libpq is not currently used on macOS; openssl rides
+            // along via custom_http_client_mod).
         },
         .windows => {
-            // Windows (native + cross-compile): use the prebuilt libsqlite3.a
-            // import library from vendor/sqlite3/libc-windows-amd64/lib (a
-            // merged symlink farm pointing at /usr/x86_64-w64-mingw32/ + the
-            // sqlite3 import lib generated via `zig dlltool`). The header is
-            // at vendor/sqlite3/libc-windows-amd64/include/sqlite3.h.
-            //
-            // Why NOT compile sqlite3.c per-build (as older code did):
-            // zig cc -target x86_64-windows-gnu works, but the resulting
-            // libsqlite3.a is rebuilt every build and the dlltool step
-            // (to convert sqlite3.def into an import lib) is skipped. The
-            // prebuilt archive is hermetic: every build just links the
-            // archive, no per-build C compilation needed.
-            //
-            // bcrypt.dll is needed by src/modules/custom_http_server/src/security.zig
+            // Everything database-related (sqlite3 amalgamation + bcrypt)
+            // is handled by the `databases` package. bcrypt.dll is needed
+            // by src/modules/custom_http_server/src/security.zig
             // (BCryptGenRandom — Zig's std.c.getrandom is `void` on Windows).
-            // The MinGW symlink farm provides kernel32/user32/etc.; bcrypt
-            // must be added explicitly because MinGW doesn't ship bcrypt.
-            exe.root_module.addIncludePath(b.path("vendor/sqlite3/libc-windows-amd64/include"));
-            exe.root_module.addLibraryPath(b.path("vendor/sqlite3/libc-windows-amd64/lib"));
-            exe.root_module.linkSystemLibrary("sqlite3", .{});
-            exe.root_module.linkSystemLibrary("bcrypt", .{});
         },
         else => {
-            // Cross-compile to non-Linux/macOS/Windows targets (e.g.
-            // FreeBSD, Android, WASI). Fall back to the amalgamation
-            // compilation. Most cross-target users won't hit this branch.
-            exe.root_module.addIncludePath(b.path("vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400"));
-            exe.root_module.addCSourceFile(.{
-                .file = b.path("vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400/sqlite3.c"),
-                .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_FTS5" },
-            });
+            // Cross-compile to non-Linux/macOS/Windows targets. The
+            // `databases` package covers everything — nothing extra to add.
         },
     }
 }
@@ -209,11 +112,11 @@ pub fn build(b: *std.Build) void {
     // so `b.option()`'s anti-duplicate rule isn't violated when the same
     // value feeds multiple link sites (linux_exe / windows_exe / macos_exe
     // / dev_exe / tests).
-    const sqlite_prefix = b.option(
-        []const u8,
-        "sqlite-prefix",
-        "Homebrew prefix for the sqlite3 keg (default: /opt/homebrew)",
-    ) orelse "/opt/homebrew";
+    //
+    // Note: `sqlite-prefix` is gone — sqlite3 wiring lives in the
+    // `databases` package's own build.zig. The package picks up
+    // system sqlite3 via `linkSystemLibrary` / amalgamation compile
+    // based on the target the consumer passes via b.dependency().
     const curl_prefix = b.option(
         []const u8,
         "curl-prefix",
@@ -231,6 +134,26 @@ pub fn build(b: *std.Build) void {
     });
 
     mod.addImport("nalarcore", mod);
+
+    // === Self-contained `databases` package (sqlite3 + openssl + libpq) ===
+    // The package (at src/modules/databases/) carries its own build.zig
+    // that wires sqlite3 / openssl / libpq + the vendored sqlite3.c
+    // amalgamation based on the TARGET passed in. Every Compile that
+    // imports `mod` (and therefore the `databases` module via
+    // mod.addImport below) inherits those deps — no per-Compile
+    // linkPlatformDeps branch for sqlite3 anymore.
+    //
+    // The `vendor-dir` option passes through to the package's build.zig
+    // so the package can locate vendor/sqlite3/ relative to its own
+    // location. Default `../../vendor/sqlite3` resolves to the project
+    // root's vendor/sqlite3/ — works for the default layout. Override
+    // with `-Dvendor-dir=...` if you move either side.
+    const databases_dep = b.dependency("databases", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const databases_mod = databases_dep.module("databases");
+    mod.addImport("databases", databases_mod);
 
     // === custom_http_client module (libcurl-backed HTTP) ===
     // Exposed as a separate module so Agent2.zig (in src/modules/agent/)
@@ -764,11 +687,13 @@ pub fn build(b: *std.Build) void {
     //      fallback. Used by Zig's cimport on any host (Windows gcc still
     //      finds the .h there via the include path even though it doesn't
     //      look in /usr/include).
-    mod.linkSystemLibrary("c", .{});
-    mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    mod.addIncludePath(.{ .cwd_relative = "/usr/include/postgresql" });
-    mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/sqlite/include", .{sqlite_prefix}) });
-    mod.addIncludePath(b.path("vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400"));
+    // sqlite3 / openssl / libpq + vendor/sqlite3 amalgamation paths are
+    // NO LONGER on `mod` — they live in src/modules/databases/build.zig
+    // and propagate to `mod` via the `databases` module's addImport graph.
+    // Adding them here would re-leak Linux native system libs into every
+    // Compile that imports `mod` (including cross-compile artifacts) —
+    // the exact bug the per-Compile linkPlatformDeps pattern was designed
+    // to prevent.
 
     // Tests need a SEPARATE module (not `mod`) so we can attach native
     // platform deps without polluting `mod` for cross-compile consumers.
@@ -783,39 +708,35 @@ pub fn build(b: *std.Build) void {
     });
     mod_tests_module.addImport("nalarcore", mod_tests_module);
     mod_tests_module.addImport("custom_http_client", custom_http_client_mod);
+    // Same `databases` import as `mod` — tests that touch sqlite3 get
+    // the package's deps (link_libc + sqlite3.c amalgamation + openssl +
+    // libpq) via the module-graph dep propagation. No need to re-link
+    // them on `mod_tests_module` directly.
+    mod_tests_module.addImport("databases", databases_mod);
     // Apply platform deps directly on the module (modules accumulate
     // deps additively). Using a throwaway Compile step here would be
     // cleaner, but b.addTest({...}).root_module IS the module, so we
     // mutate it in place before b.addTest captures it.
+    //
+    // After the `databases` package extraction: sqlite3 amalgamation +
+    // openssl + crypto + libpq + /usr/include + /usr/include/postgresql
+    // are ALL propagated via mod.addImport above. We only need libc +
+    // curl include path here (curl is universal via custom_http_client_mod
+    // but its INCLUDE path needs the right host layout — handled the
+    // same way as the exe path).
     {
         mod_tests_module.linkSystemLibrary("c", .{});
         mod_tests_module.link_libc = true;
         switch (test_target.result.os.tag) {
-            .linux => {
-                mod_tests_module.linkSystemLibrary("sqlite3", .{});
-                mod_tests_module.linkSystemLibrary("ssl", .{});
-                mod_tests_module.linkSystemLibrary("crypto", .{});
-                mod_tests_module.linkSystemLibrary("pq", .{});
-                mod_tests_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
-                mod_tests_module.addIncludePath(.{ .cwd_relative = "/usr/include/postgresql" });
-            },
             .macos => {
-                mod_tests_module.linkSystemLibrary("sqlite3", .{});
-                mod_tests_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/sqlite/include", .{sqlite_prefix}) });
-                mod_tests_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/opt/sqlite/lib", .{sqlite_prefix}) });
                 mod_tests_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/curl/include", .{curl_prefix}) });
                 mod_tests_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/opt/curl/lib", .{curl_prefix}) });
             },
             .windows => {
-                mod_tests_module.addIncludePath(b.path("vendor/sqlite3"));
-                mod_tests_module.addCSourceFile(.{ .file = b.path("vendor/sqlite3/sqlite3.c"), .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_FTS5" } });
                 mod_tests_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/include", .{curl_vcpkg_root}) });
                 mod_tests_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/lib", .{curl_vcpkg_root}) });
             },
-            else => {
-                mod_tests_module.addIncludePath(b.path("vendor/sqlite3"));
-                mod_tests_module.addCSourceFile(.{ .file = b.path("vendor/sqlite3/sqlite3.c"), .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_FTS5" } });
-            },
+            else => {},
         }
     }
 
@@ -1048,37 +969,88 @@ pub fn build(b: *std.Build) void {
     // check shows "missing" even though the build succeeded. Static
     // text is always right; the user's actual binary locations are
     // deterministic from the build config.
-    const build_banner = b.addSystemCommand(&.{
-        "/bin/sh",
-        "-c",
+    // Host-aware binary name (replaces the previous hardcoded
+    // `nalarcore-linux-x86_64`). `zig build` on a macOS host should
+    // produce `nalarcore-macos-aarch64` (or `...-x86_64` for Intel),
+    // on a Windows host should produce `nalarcore-windows-x86_64.exe`,
+    // etc. Cross-compile artifacts remain available via explicit
+    // `zig build install:<target>` (linux / macos / macos-arm / windows).
+    const host_binary_name = switch (b.graph.host.result.os.tag) {
+        .linux => "nalarcore-linux-x86_64",
+        .macos => if (b.graph.host.result.cpu.arch == .aarch64)
+            "nalarcore-macos-aarch64"
+        else
+            "nalarcore-macos-x86_64",
+        .windows => "nalarcore-windows-x86_64.exe",
+        else => "nalarcore-unknown",
+    };
+    const desktop_binary_name = switch (b.graph.host.result.os.tag) {
+        .windows => "nalar-desktop.exe",
+        else => "nalar-desktop",
+    };
+    const cli_binary_name = switch (b.graph.host.result.os.tag) {
+        .windows => "nalarcli.exe",
+        else => "nalarcli",
+    };
+
+    // Build the banner script with host-specific binary names spliced in
+    // via std.fmt.allocPrint. The script is a heredoc body; binary names
+    // come from the const declarations above. On exotic hosts
+    // (`host_binary_name` = "nalarcore-unknown") the banner still prints
+    // correctly — the user just sees the placeholder name.
+    //
+    // Note: std.fmt.comptimePrint would be cleaner, but `b.graph.host`
+    // values aren't comptime-known in build.zig context, so we have to
+    // use the runtime allocPrint + b.allocator. The script slice is
+    // leaked (b.allocator is the build-graph arena; everything is freed
+    // when the build runner exits).
+    const banner_script = std.fmt.allocPrint(
+        b.allocator,
         \\
         \\D=zig-out/bin
         \\echo ""
         \\echo "[zig build success]"
         \\echo ""
-        \\echo "  nalar service binary  →  $D/nalarcore-linux-x86_64"
-        \\echo "  nalar desktop binary  →  $D/nalar-desktop"
-        \\echo "  nalarcli binary       →  $D/nalarcli"
+        \\echo "  nalar service binary  →  $D/{s}"
+        \\echo "  nalar desktop binary  →  $D/{s}"
+        \\echo "  nalarcli binary       →  $D/{s}"
         \\echo ""
-        \\echo "  (If a binary is missing, run \`rm -rf $D && zig build\`"
+        \\echo "  (If a binary is missing, run `rm -rf $D && zig build`"
         \\echo "   to force a fresh install — the cache sometimes hides"
         \\echo "   manual deletions.)"
         \\echo ""
-        \\echo "  Run with:  $D/nalarcore-linux-x86_64 service start --port 8080"
-        \\echo "             $D/nalar-desktop --devtools"
-        \\echo "             $D/nalarcli sessions list"
+        \\echo "  Run with:  $D/{s} service start --port 8080"
+        \\echo "             $D/{s} --devtools"
+        \\echo "             $D/{s} sessions list"
         \\echo ""
-        ,
-    });
+    ,
+        .{
+            host_binary_name,
+            desktop_binary_name,
+            cli_binary_name,
+            host_binary_name,
+            desktop_binary_name,
+            cli_binary_name,
+        },
+    ) catch @panic("OOM allocating build banner");
+
+    const build_banner = b.addSystemCommand(&.{ "/bin/sh", "-c", banner_script });
     const build_all_step = b.step("build:all", "Build nalar service + nalar-desktop, with end-of-build summary");
     // The binaries live on different top-level install steps:
-    //   - nalarcore-linux-x86_64  → install:linux   (cross target, Linux x86_64)
-    //   - nalar-desktop           → install           (native target, includes
-    //                                               b.installArtifact(desktop_exe))
-    //   - nalarcli                → cli_install      (manual addInstallArtifact;
-    //                                               see note above `cli_install`
-    //                                               for why we don't use the
-    //                                               default `install` step)
+    //   - host-specific nalarcore binary → install:<host> (Linux / macOS-arm / macOS / Windows)
+    //   - nalar-desktop                   → install (native target, includes
+    //                                                  b.installArtifact(desktop_exe))
+    //   - nalarcli                        → cli_install (manual addInstallArtifact;
+    //                                                  see note above `cli_install`
+    //                                                  for why we don't use the
+    //                                                  default `install` step)
+    //
+    // `zig build` (the default) picks the install step matching the HOST
+    // — so a macOS host gets `nalarcore-macos-aarch64`, a Linux host gets
+    // `nalarcore-linux-x86_64`, a Windows host gets
+    // `nalarcore-windows-x86_64.exe`. Cross-compile to other targets is
+    // still available via explicit `zig build install:<target>`.
+    //
     // The native `nalar` binary is also in `install`. We want all in
     // one command, so depend on the inner install steps (not just the
     // outer top-level wrappers). Depending on the outer wrappers would
@@ -1087,10 +1059,18 @@ pub fn build(b: *std.Build) void {
     // file — so my banner would see a stale (possibly deleted) bin/ and
     // print missing-file lines.
     //
-    // `dependOn` takes `*Step` not `*const *Step` — `install_linux` and
-    // `desktop_install` are both `*InstallArtifact` whose `.step` field
-    // is what `dependOn` needs.
-    build_all_step.dependOn(&install_linux.step);
+    // `dependOn` takes `*Step` not `*const *Step` — each `install_*` is
+    // an `*InstallArtifact` whose `.step` field is what `dependOn` needs.
+    const host_install_step = switch (b.graph.host.result.os.tag) {
+        .linux => &install_linux.step,
+        .macos => if (b.graph.host.result.cpu.arch == .aarch64)
+            &install_macos_arm.step
+        else
+            &install_macos.step,
+        .windows => &install_windows.step,
+        else => &install_linux.step, // safest default for exotic hosts
+    };
+    build_all_step.dependOn(host_install_step);
     build_all_step.dependOn(&desktop_install.step);
     build_all_step.dependOn(&cli_install.step);
     build_all_step.dependOn(&build_banner.step);

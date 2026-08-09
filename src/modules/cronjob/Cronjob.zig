@@ -1,6 +1,8 @@
 const std = @import("std");
 const process_checker = @import("ProcessChecker.zig");
-const sqlite = @import("../databases/sqlite/Sqlite.zig");
+// `databases` is the self-contained sqlite3 package — propagated to
+// this module via mod.addImport("databases", ...) in build.zig.
+const sqlite = @import("databases").sqlite;
 
 /// Cronjob configuration
 pub const CronjobConfig = struct {
