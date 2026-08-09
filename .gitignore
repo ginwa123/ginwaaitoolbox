@@ -1,38 +1,99 @@
+# === Build artifacts ===
 .zig-cache
 zig-out
-test_main
+/test_main
 .plans
+/zig-pkg
+
+# === Worktrees (created by `git worktree add`) ===
+/.worktrees
+
+# === Frontend dependencies + builds ===
 /src/apps/kerjabot/node_modules
 /src/apps/kerjabot/dist
 /src/apps/desktop/node_modules
 /src/apps/desktop/dist
-/src/apps/desktop_app/embedded
-/.worktrees
-.nalar/tasks/
-/zig-pkg
+/src/apps/desktop_app/embedded          # codegen webapp_assets.zig output
 
-# Vendored C sources — fetched on demand by scripts/fetch-vendor-sqlite3.sh
-# instead of committed to the repo. The amalgamation is ~10 MB of binary-like
-# data that bloats git clones and has no diffable content (only version
-# bumps). For non-Linux targets (Windows, macOS, cross-compile from Linux),
-# the build.zig references vendor/sqlite3/sqlite3.c directly — the fetch
-# script restores it on demand before the first zig build call.
+# === Vendored third-party sources (regenerate via scripts) ===
 #
-# To regenerate after bumping SQLite: delete vendor/sqlite3/ and re-run
-# `scripts/fetch-vendor-sqlite3.sh`.
+# Why vendor/ is ignored: the sqlite3 amalgamation (~10 MB of binary-like
+# C data), the MinGW symlink farm at vendor/sqlite3/libc-windows-amd64/
+# (~2 552 symlinks), the prebuilt libsqlite3.a / libcurl.a archives for
+# each target, and the Windows libcurl-x64.dll are all very large and
+# bloat every `git clone` / `git checkout`. They can be regenerated
+# from a fresh checkout by running the bootstrap scripts:
+#
+#   bash scripts/fetch-vendor-sqlite3.sh   # downloads amalgamation + builds libsqlite3.a
+#   bash scripts/build-vendor-curl.sh      # cross-compiles libcurl.a per target
+#   bash scripts/build-vendor-mingw.sh     # regenerates MinGW symlink farm for Windows
+#
+# The build.zig checks for these on first invocation and prints a clear
+# error if any are missing — see the scripts/ directory for details.
 /vendor/
 
-# Test artifacts (created by zig build test runs)
+# === Local task database (per-developer, not shared) ===
+.nalar/tasks/
+
+# === Test artifacts (created by `zig build test` runs) ===
 test_logger_*.log
 test_logger_nested_dir/
 test_diff_view_*.txt
 test_*.log
 
-# Functional test venv + cache (created by `zig build functional-test`)
+# === Functional-test venv + Python cache (created by `zig build functional-test`) ===
 .venv-func/
 .pytest_cache/
 tests/functional/__pycache__/
 
+# === Editor backup / merge resolution files ===
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+*.bak
 
+# === IDE directories ===
+.vscode/
+.idea/
+*.code-workspace
+*.iml
+
+# === OS metadata files ===
+.DS_Store                       # macOS
+Thumbs.db                       # Windows
+Desktop.ini                     # Windows
+ehthumbs.db
+ehthumbs_vista.db
+.Trashes
+.fseventsd
+.Spotlight-V100
+$TRECycle.BIN
+
+# === Graphify outputs (knowledge graph + audit) ===
 /graphify-out
 /docs/graphify-out
+
+# === Node / npm scratch ===
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.eslintcache
+.stylelintcache
+.parcel-cache
+.cache/
+
+# === Zig build cache (per-host artifacts) ===
+.zig-cache/
+zig-cache/
+/.zig-cache
+
+# === Misc local runtime files ===
+*.pid
+*.sock
+*.pid.lock
+core
+core.*
+*.core

@@ -1,6 +1,186 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// Link platform-specific system libraries (sqlite3/openssl) + include paths
+/// for a Compile step based on the COMPILE'S OWN target (NOT the global
+/// default target). Every caller that produces a binary linked against
+/// nalarcore MUST call this — otherwise the cross-compile link line will
+/// miss the target's sqlite3/openssl.
+///
+/// Why per-Compile and not on `mod`: putting these on `mod` causes the
+/// Linux native system libs (sqlite3/ssl/crypto/pq + /usr/include) to leak
+/// into every consumer of `mod`, including `install:windows` and
+/// `install:macos` cross-compile artifacts. The cross-target linker then
+/// fails with "unable to find dynamic system library 'sqlite3'" because
+/// those Linux libs don't exist on Windows/macOS.
+///
+/// Universal link (libc + link_libc) is set on every platform. The
+/// platform-specific block adds sqlite3/openssl (Linux), brew sqlite3
+/// (macOS), or the vendored amalgamation (Windows + cross-compile to
+/// Windows/macOS).
+/// Link platform-specific system libraries (sqlite3/openssl) + include paths
+/// for a Compile step based on the COMPILE'S OWN target (NOT the global
+/// default target). Every caller that produces a binary linked against
+/// nalarcore MUST call this — otherwise the cross-compile link line will
+/// miss the target's sqlite3/openssl.
+///
+/// Why per-Compile and not on `mod`: putting these on `mod` causes the
+/// Linux native system libs (sqlite3/ssl/crypto/pq + /usr/include) to leak
+/// into every consumer of `mod`, including `install:windows` and
+/// `install:macos` cross-compile artifacts. The cross-target linker then
+/// fails with "unable to find dynamic system library 'sqlite3'" because
+/// those Linux libs don't exist on Windows/macOS.
+///
+/// Universal link (libc + link_libc) is set on every platform. The
+/// platform-specific block adds sqlite3/openssl (Linux), brew sqlite3
+/// (macOS), or the vendored amalgamation (Windows + cross-compile to
+/// Windows/macOS).
+///
+/// `sqlite_prefix` is the Homebrew prefix for the macOS keg (default
+/// /opt/homebrew). Declared once at the top of `build` because
+/// `b.option()` panics on duplicate declarations.
+fn linkPlatformDeps(
+    b: *std.Build,
+    exe: *std.Build.Step.Compile,
+    target: std.Build.ResolvedTarget,
+) void {
+    exe.root_module.linkSystemLibrary("c", .{});
+    exe.root_module.link_libc = true;
+    switch (target.result.os.tag) {
+        .linux => {
+            // Linux (native + cross-compile): use the VENDORED prebuilt
+            // libsqlite3.a from vendor/sqlite3/linux-x86_64/ (built once
+            // via `zig cc -target x86_64-linux-gnu` + `zig ar` from the
+            // amalgamation). The amalgamation header is at
+            // vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400/sqlite3.h.
+            //
+            // Why NOT system sqlite3:
+            // - A developer on macOS or Windows host can't `apt install
+            //   libsqlite3-dev` to cross-compile for Linux. Vendoring
+            //   makes the build hermetic across host OSes.
+            // - brew layout is keg-only fragile; system libsqlite3 may
+            //   be a different version than the amalgamation header.
+            //
+            // OpenSSL + libpq are still linked from the system because
+            // they're nearly always present on Linux distros and aren't
+            // currently vendored (out of scope here — see plan if
+            // macOS-host builds need them too).
+            const linux_lib = switch (target.result.cpu.arch) {
+                .x86_64 => "vendor/sqlite3/linux-x86_64",
+                else => "", // unsupported Linux arch (aarch64 etc.)
+            };
+            if (linux_lib.len > 0) {
+                exe.root_module.addIncludePath(b.path("vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400"));
+                exe.root_module.addLibraryPath(b.path(linux_lib));
+                exe.root_module.linkSystemLibrary("sqlite3", .{});
+            }
+            exe.root_module.linkSystemLibrary("ssl", .{});
+            exe.root_module.linkSystemLibrary("crypto", .{});
+            exe.root_module.linkSystemLibrary("pq", .{});
+            exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
+            // Debian/Ubuntu layout: libpq-fe.h lives in
+            // /usr/include/postgresql (Arch has it directly in
+            // /usr/include). Adding both is harmless.
+            exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include/postgresql" });
+        },
+        .macos => {
+            // macOS (native + cross-compile): use the VENDORED prebuilt
+            // libsqlite3.a from vendor/sqlite3/macos-{arm64,x86_64}/.
+            // The amalgamation header is at
+            // vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400/sqlite3.h.
+            //
+            // Why NOT system sqlite3 (Homebrew brew install sqlite3):
+            // - brew doesn't exist on a Linux host cross-compiling to macOS.
+            // - brew layout (keg-only at <prefix>/opt/sqlite/{include,lib})
+            //   is fragile and breaks when the user installs/uninstalls brew.
+            // - The prebuilt archive is hermetic: identical output on every
+            //   build, no surprises from brew version skew.
+            //
+            // Why NOT compile sqlite3.c per-build (as older code did):
+            // - zig cc -target aarch64-macos works but the vendored
+            //   amalgamation panics on arm64 with "member access within
+            //   misaligned address" (vendor/sqlite3/sqlite3.c:32137) when
+            //   compiled with Zig 0.16's x86_64 host gcc. The prebuilt
+            //   archive was produced by zig cc itself, so it has the
+            //   correct alignment for the target arch.
+            const macos_lib = switch (target.result.cpu.arch) {
+                .aarch64 => "vendor/sqlite3/macos-arm64",
+                .x86_64 => "vendor/sqlite3/macos-x86_64",
+                else => "", // unsupported macOS arch (e.g. i386) — leave empty
+            };
+            if (macos_lib.len > 0) {
+                exe.root_module.addIncludePath(b.path("vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400"));
+                exe.root_module.addLibraryPath(b.path(macos_lib));
+                exe.root_module.linkSystemLibrary("sqlite3", .{});
+            }
+        },
+        .windows => {
+            // Windows (native + cross-compile): use the prebuilt libsqlite3.a
+            // import library from vendor/sqlite3/libc-windows-amd64/lib (a
+            // merged symlink farm pointing at /usr/x86_64-w64-mingw32/ + the
+            // sqlite3 import lib generated via `zig dlltool`). The header is
+            // at vendor/sqlite3/libc-windows-amd64/include/sqlite3.h.
+            //
+            // Why NOT compile sqlite3.c per-build (as older code did):
+            // zig cc -target x86_64-windows-gnu works, but the resulting
+            // libsqlite3.a is rebuilt every build and the dlltool step
+            // (to convert sqlite3.def into an import lib) is skipped. The
+            // prebuilt archive is hermetic: every build just links the
+            // archive, no per-build C compilation needed.
+            //
+            // bcrypt.dll is needed by src/modules/custom_http_server/src/security.zig
+            // (BCryptGenRandom — Zig's std.c.getrandom is `void` on Windows).
+            // The MinGW symlink farm provides kernel32/user32/etc.; bcrypt
+            // must be added explicitly because MinGW doesn't ship bcrypt.
+            exe.root_module.addIncludePath(b.path("vendor/sqlite3/libc-windows-amd64/include"));
+            exe.root_module.addLibraryPath(b.path("vendor/sqlite3/libc-windows-amd64/lib"));
+            exe.root_module.linkSystemLibrary("sqlite3", .{});
+            exe.root_module.linkSystemLibrary("bcrypt", .{});
+        },
+        else => {
+            // Cross-compile to non-Linux/macOS/Windows targets (e.g.
+            // FreeBSD, Android, WASI). Fall back to the amalgamation
+            // compilation. Most cross-target users won't hit this branch.
+            exe.root_module.addIncludePath(b.path("vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400"));
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400/sqlite3.c"),
+                .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_FTS5" },
+            });
+        },
+    }
+}
+
+/// Add the curl include path for the target's libcurl. Used to compile
+/// the C glue in custom_http_client. Each Compile that imports
+/// custom_http_client_mod MUST call this for its own target — otherwise
+/// the C compiler for the cross-target won't find curl/curl.h.
+///
+/// `curl_prefix` and `curl_vcpkg_root` are passed in from the caller
+/// (declared once at the top of `build`, since `b.option()` panics on
+/// duplicate declarations).
+fn linkCurlIncludePath(
+    b: *std.Build,
+    exe: *std.Build.Step.Compile,
+    target: std.Build.ResolvedTarget,
+    curl_prefix: []const u8,
+    curl_vcpkg_root: []const u8,
+) void {
+    switch (target.result.os.tag) {
+        .linux => {
+            exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
+        },
+        .macos => {
+            exe.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/curl/include", .{curl_prefix}) });
+            exe.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/opt/curl/lib", .{curl_prefix}) });
+        },
+        .windows => {
+            exe.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/include", .{curl_vcpkg_root}) });
+            exe.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/lib", .{curl_vcpkg_root}) });
+        },
+        else => {},
+    }
+}
+
 fn createPlatformExe(
     b: *std.Build,
     mod: *std.Build.Module,
@@ -17,31 +197,33 @@ fn createPlatformExe(
             .imports = &.{.{ .name = "nalarcore", .module = mod }},
         }),
     });
-    exe.root_module.linkSystemLibrary("c", .{});
-    if (target.result.os.tag == .linux) {
-        exe.root_module.linkSystemLibrary("sqlite3", .{});
-        exe.root_module.linkSystemLibrary("ssl", .{});
-        exe.root_module.linkSystemLibrary("crypto", .{});
-    } else if (target.result.os.tag == .windows) {
-        // Vendor sqlite3 amalgamation for Windows — compile from
-        // source so the binary has sqlite3 support without relying on
-        // system package layout. On macOS, the `mod` already has
-        // sqlite3.c attached (added once at the shared-module post-
-        // setup), so the executable inherits it via the `imports`
-        // array — duplicating it here would emit two sqlite3.o copies
-        // and fail with "duplicate symbol definition".
-        exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
-        exe.root_module.addCSourceFile(.{
-            .file = b.path("vendor/sqlite3/sqlite3.c"),
-            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_FTS5" },
-        });
-    }
+    linkPlatformDeps(b, exe, target);
     return exe;
 }
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    // Cross-platform Homebrew / vcpkg prefix options. Declared ONCE here
+    // so `b.option()`'s anti-duplicate rule isn't violated when the same
+    // value feeds multiple link sites (linux_exe / windows_exe / macos_exe
+    // / dev_exe / tests).
+    const sqlite_prefix = b.option(
+        []const u8,
+        "sqlite-prefix",
+        "Homebrew prefix for the sqlite3 keg (default: /opt/homebrew)",
+    ) orelse "/opt/homebrew";
+    const curl_prefix = b.option(
+        []const u8,
+        "curl-prefix",
+        "Homebrew prefix for the libcurl keg (default: /opt/homebrew)",
+    ) orelse "/opt/homebrew";
+    const curl_vcpkg_root = b.option(
+        []const u8,
+        "curl-vcpkg-root",
+        "vcpkg root for Windows libcurl (default: C:/vcpkg)",
+    ) orelse "C:/vcpkg";
 
     const mod = b.addModule("nalarcore", .{
         .root_source_file = b.path("src/root.zig"),
@@ -63,18 +245,15 @@ pub fn build(b: *std.Build) void {
     //
     // The macOS default `/opt/homebrew` is the Apple-Silicon layout;
     // Intel macs override with `-Dcurl-prefix=/usr/local`. Options
-    // are declared ONCE here so `b.option()`'s anti-duplicate rule
-    // isn't violated when the same value feeds multiple link sites.
-    const curl_prefix = b.option(
-        []const u8,
-        "curl-prefix",
-        "Homebrew prefix for the libcurl keg (default: /opt/homebrew)",
-    ) orelse "/opt/homebrew";
-    const curl_vcpkg_root = b.option(
-        []const u8,
-        "curl-vcpkg-root",
-        "vcpkg root for Windows libcurl (default: C:/vcpkg)",
-    ) orelse "C:/vcpkg";
+    // are declared ONCE at the top of `build()` (see above); we just
+    // read them here.
+    //
+    // The platform-specific curl include path is NOT set on
+    // custom_http_client_mod itself — setting it based on `target.result.os.tag`
+    // (the global default target) leaks the wrong path into every Compile
+    // that imports this mod, including cross-compile artifacts. Instead,
+    // each Compile step calls `linkCurlIncludePath(exe, target, ...)` for
+    // its own target.
 
     const custom_http_client_mod = b.addModule("custom_http_client", .{
         .root_source_file = b.path("src/modules/custom_http_client/src/root.zig"),
@@ -82,21 +261,52 @@ pub fn build(b: *std.Build) void {
     });
     custom_http_client_mod.linkSystemLibrary("curl", .{});
     custom_http_client_mod.link_libc = true;
-    switch (target.result.os.tag) {
-        .linux => {
-            custom_http_client_mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
-        },
-        .macos => {
-            custom_http_client_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/curl/include", .{curl_prefix}) });
-            custom_http_client_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/opt/curl/lib", .{curl_prefix}) });
-        },
-        .windows => {
-            custom_http_client_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/include", .{curl_vcpkg_root}) });
-            custom_http_client_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/lib", .{curl_vcpkg_root}) });
-        },
-        else => {},
-    }
+    // libcurl is a UNIVERSAL link dep — every consumer of this mod gets
+    // -lcurl in its link line (no leak; libcurl symbols are the same on
+    // every platform). But the INCLUDE PATH for curl/curl.h must match
+    // the platform — Linux has it at /usr/include/curl/curl.h, macOS at
+    // $(brew --prefix curl)/opt/curl/include/curl/curl.h, Windows at
+    // $(vcpkg)/installed/x64-windows/include/curl/curl.h.
+    //
+    // The cimport lives in src/modules/custom_http_client/src/curl.zig
+    // (part of THIS mod). The cimport uses the HOST C compiler, so we
+    // add all 3 platform paths here. Whichever path is valid on the host
+    // wins; cross-compile consumers don't need to re-add (the headers
+    // are portable C). The link_libc + linkSystemLibrary("curl") are
+    // universal and propagate to every importer.
+    custom_http_client_mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    custom_http_client_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/curl/include", .{curl_prefix}) });
+    custom_http_client_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/include", .{curl_vcpkg_root}) });
     mod.addImport("custom_http_client", custom_http_client_mod);
+
+    // === Auto-fetch vendor/sqlite3 if missing ===
+    // The amalgamation (sqlite3.c ~10 MB + 2 headers) is gitignored (see
+    // .gitignore "vendored" section). Fresh checkouts need the fetch to
+    // happen BEFORE any Compile step that links vendor/sqlite3/sqlite3.c
+    // vendor/sqlite3/ is COMMITTED to the repo (the ginwasaas pattern —
+    // see vendor/sqlite3/README.md for the layout). No fetch step needed;
+    // a fresh checkout has everything it needs for Windows + macOS native
+    // AND cross-compile from Linux. The pre-built libsqlite3.a archives
+    // for macOS-{arm64,x86_64} and Windows (via the MinGW symlink farm)
+    // let `install:windows` / `install:macos*` link successfully on a
+    // Linux host WITHOUT needing vcpkg or brew installed locally.
+    //
+    // The legacy fetch-vendor-sqlite3 step + scripts/fetch-vendor-sqlite3.sh
+    // are kept as a no-op alias for back-compat (CI/scripts that call it
+    // still find the step in `zig build --help`). On the ginwasaas-style
+    // vendor layout, the fetch is unnecessary — the amalgamation ships in
+    // vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400/.
+    const vendor_sqlite3_step = b.step(
+        "fetch-vendor-sqlite3",
+        "Deprecated: vendor/sqlite3/ is now committed to the repo (see vendor/sqlite3/README.md)",
+    );
+    const vendor_sqlite3_fetch = b.addSystemCommand(&.{
+        "sh", "-c",
+        \\echo "vendor/sqlite3/ is now committed to the repo; no fetch needed."
+    ,
+    });
+    vendor_sqlite3_fetch.setCwd(b.path(""));
+    vendor_sqlite3_step.dependOn(&vendor_sqlite3_fetch.step);
 
     // Platform-specific link libs (sqlite3/ssl/crypto on Linux,
     // vendored sqlite3.c on Windows/macOS) are added below in the
@@ -126,31 +336,16 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkSystemLibrary("c", .{});
     exe.root_module.linkSystemLibrary("curl", .{});
     exe.root_module.link_libc = true;
-    if (target.result.os.tag == .linux) {
-        exe.root_module.linkSystemLibrary("sqlite3", .{});
-        exe.root_module.linkSystemLibrary("ssl", .{});
-        exe.root_module.linkSystemLibrary("crypto", .{});
-        exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    } else if (target.result.os.tag == .macos) {
-        // macOS uses Homebrew's system libsqlite3 (see shared `mod` setup).
-        // The `mod` already provides the -lsqlite3 link + brew include
-        // path via the imports array, so the executable inherits them —
-        // re-linking here would be redundant but is kept for symmetry with
-        // the Linux branch and to make the platform intent explicit at
-        // the call site.
-        exe.root_module.linkSystemLibrary("sqlite3", .{});
-    } else if (target.result.os.tag == .windows) {
-        // Vendor sqlite3 amalgamation for Windows. The shared `mod` does
-        // NOT compile sqlite3.c on Windows (the Linux/macOS branches
-        // above use system libs, the `else` branch handles cross-compile
-        // targets but this native-Windows path doesn't go through it).
-        // Compile the amalgamation directly here so sqlite3 symbols
-        // resolve at link time.
-        exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
-        exe.root_module.addCSourceFile(.{
-            .file = b.path("vendor/sqlite3/sqlite3.c"),
-            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_FTS5" },
-        });
+    // Per-target platform deps (sqlite3/openssl/vendored amalgamation).
+    // linkPlatformDeps handles all 4 targets in one switch — replaces the
+    // old if/else chain that leaked Linux libs into cross-compile artifacts.
+    linkPlatformDeps(b, exe, target);
+    // Curl include path for custom_http_client_mod's C glue (target-aware
+    // so cross-compile to Windows gets vcpkg path, macOS gets brew path).
+    linkCurlIncludePath(b, exe, target, curl_prefix, curl_vcpkg_root);
+    // If we ended up on the Windows / cross-compile branch, depend on
+    // the auto-fetch step so a fresh checkout Just Works.
+    if (target.result.os.tag == .windows) {
     }
     // === Build the Vue webapp (bun) ===
     // Chunk 3: this step is a dependency of the desktop_exe build so the
@@ -497,6 +692,12 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    cli_exe.root_module.linkSystemLibrary("c", .{});
+    cli_exe.root_module.link_libc = true;
+    // Per-target curl include path (vcpkg on Windows, brew on macOS,
+    // /usr/include on Linux). libcurl is wired via custom_http_client_mod;
+    // the include path must match the target's libcurl layout.
+    linkCurlIncludePath(b, cli_exe, target, curl_prefix, curl_vcpkg_root);
     // NOTE: do NOT call `b.installArtifact(cli_exe)` here — in
     // Zig 0.16 the default install step is finalized early and
     // post-hoc additions can be dropped. Instead we capture the
@@ -518,6 +719,7 @@ pub fn build(b: *std.Build) void {
     const cli_tests = b.addTest(.{ .root_module = cli_module });
     cli_tests.root_module.linkSystemLibrary("c", .{});
     cli_tests.root_module.link_libc = true;
+    linkCurlIncludePath(b, cli_tests, target, curl_prefix, curl_vcpkg_root);
     const test_cli = b.step("test:cli", "Run nalarcli unit tests");
     const run_cli_tests = b.addRunArtifact(cli_tests);
     test_cli.dependOn(&run_cli_tests.step);
@@ -537,83 +739,101 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    // Linux-host-only link_libs (ssl/crypto/system-sqlite3). These are
-    // needed for the native Linux test build (the tests link against the
-    // real system OpenSSL + system sqlite3), but they MUST NOT be in the
-    // link line when cross-compiling (install:windows, install:macos on
-    // a Linux host) — the cross-target linker would fail with "unable to
-    // find dynamic system library" because those Linux system libs don't
-    // exist on Windows/macOS.
+    // Note on per-Compile platform deps (replaces old `mod.linkSystemLibrary`
+    // + target-based switches): previously, `mod` itself was the place where
+    // the build script added sqlite3/openssl/Linux system libs based on the
+    // GLOBAL default target. Every Compile that imported `mod` (including
+    // `install:windows` / `install:macos` cross-compile artifacts) inherited
+    // those Linux system libs in its link line, which the cross-target
+    // linker then rejected with "unable to find dynamic system library".
     //
-    // Detection: the `-Dlinux-libs` build option. Default is `true` for
-    // native-Linux target (= native Linux tests, native Linux install),
-    // `false` for any other target (cross-compile from Linux to Windows/
-    // macOS). Pass `-Dlinux-libs=false` explicitly when cross-compiling.
-    const linux_host_is_native_target = target.result.os.tag == .linux and
-        target.result.cpu.arch == builtin.cpu.arch;
-    const add_linux_libs = b.option(
-        bool,
-        "linux-libs",
-        "Attach ssl/crypto/system-sqlite3 + /usr/include to mod for native Linux builds. Set false when cross-compiling from Linux to Windows/macOS to avoid -lssl/-lcrypto leaking into the cross-target link line.",
-    ) orelse linux_host_is_native_target;
-
-    if (add_linux_libs and target.result.os.tag == .linux) {
-        mod.linkSystemLibrary("sqlite3", .{});
-        mod.linkSystemLibrary("ssl", .{});
-        mod.linkSystemLibrary("crypto", .{});
-        mod.linkSystemLibrary("pq", .{});
-        mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
-        // Debian/Ubuntu layout: libpq-fe.h lives in /usr/include/postgresql
-        // (Arch has it directly in /usr/include). Adding both is harmless.
-        mod.addIncludePath(.{ .cwd_relative = "/usr/include/postgresql" });
-    } else if (target.result.os.tag == .macos) {
-        // macOS native (Apple Silicon + Intel): use the system libsqlite3
-        // provided by Homebrew. The vendored amalgamation compiled into
-        // our binary panics on arm64 with:
-        //   "member access within misaligned address ... for type
-        //    'LookasideSlot', which requires 8 byte alignment"
-        //   (vendor/sqlite3/sqlite3.c:32137, sqlite3DbMallocRawNN).
-        // The system dylib is aligned correctly and works out of the box.
-        // Homebrew's keg-only layout puts headers at
-        //   <prefix>/opt/sqlite/include  (sqlite3.h, sqlite3ext.h)
-        // and the lib at  <prefix>/opt/sqlite/lib/libsqlite3.dylib.
-        // Default prefix: /opt/homebrew (Apple Silicon). Override with
-        // `-Dsqlite-prefix=/path` for Intel (/usr/local) or custom installs.
-        const sqlite_prefix = b.option(
-            []const u8,
-            "sqlite-prefix",
-            "Homebrew prefix for the sqlite3 keg (default: /opt/homebrew)",
-        ) orelse "/opt/homebrew";
-        mod.linkSystemLibrary("sqlite3", .{});
-        mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/sqlite/include", .{sqlite_prefix}) });
-        mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/opt/sqlite/lib", .{sqlite_prefix}) });
-    } else {
-        // The cross-compile targets (or non-Linux host builds) need the
-        // vendored sqlite3 amalgamation to satisfy sqlite3_* references
-        // that would otherwise require a system sqlite3 we can't link.
-        // Adding sqlite3.c once to `mod` makes it visible to every
-        // Compile that imports `mod` (tests, native exe, install:*).
-        // We add it unconditionally for non-Linux because the linux-libs
-        // branch uses the system sqlite3 instead.
-        mod.addIncludePath(b.path("vendor/sqlite3"));
-        mod.addCSourceFile(.{
-            .file = b.path("vendor/sqlite3/sqlite3.c"),
-            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_FTS5" },
-        });
-    }
+    // The fix: `mod` has NO platform-specific link libs (they live on each
+    // Compile step via `linkPlatformDeps`). `mod` DOES need include paths
+    // for `@cImport("sqlite3.h")` in src/modules/databases/sqlite/Sqlite.zig
+    // — without an include path, the cimport fails with "'sqlite3.h' not
+    // found" during semantic analysis.
+    //
+    // Include paths DON'T leak the same way link libs do: Zig's cimport
+    // uses the HOST C compiler (not the cross-target compiler), and the
+    // sqlite3.h header is portable C — same file on Linux, macOS, Windows.
+    //
+    // We add THREE include paths so the cimport works on every host:
+    //   1. /usr/include           — Linux native + Linux-host cross-compile
+    //   2. <brew>/opt/sqlite/include — macOS native (Homebrew keg-only layout)
+    //   3. vendor/sqlite3/amalgamation/... — Windows native + portable
+    //      fallback. Used by Zig's cimport on any host (Windows gcc still
+    //      finds the .h there via the include path even though it doesn't
+    //      look in /usr/include).
     mod.linkSystemLibrary("c", .{});
+    mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    mod.addIncludePath(.{ .cwd_relative = "/usr/include/postgresql" });
+    mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/sqlite/include", .{sqlite_prefix}) });
+    mod.addIncludePath(b.path("vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400"));
+
+    // Tests need a SEPARATE module (not `mod`) so we can attach native
+    // platform deps without polluting `mod` for cross-compile consumers.
+    // The test module does self-import ("nalarcore" → itself) the same
+    // way `mod` does, and imports custom_http_client from the shared
+    // module so test code can use the HTTP client.
+    const test_target = target; // tests always run on the native host
+    const mod_tests_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = test_target,
+        .optimize = optimize,
+    });
+    mod_tests_module.addImport("nalarcore", mod_tests_module);
+    mod_tests_module.addImport("custom_http_client", custom_http_client_mod);
+    // Apply platform deps directly on the module (modules accumulate
+    // deps additively). Using a throwaway Compile step here would be
+    // cleaner, but b.addTest({...}).root_module IS the module, so we
+    // mutate it in place before b.addTest captures it.
+    {
+        mod_tests_module.linkSystemLibrary("c", .{});
+        mod_tests_module.link_libc = true;
+        switch (test_target.result.os.tag) {
+            .linux => {
+                mod_tests_module.linkSystemLibrary("sqlite3", .{});
+                mod_tests_module.linkSystemLibrary("ssl", .{});
+                mod_tests_module.linkSystemLibrary("crypto", .{});
+                mod_tests_module.linkSystemLibrary("pq", .{});
+                mod_tests_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
+                mod_tests_module.addIncludePath(.{ .cwd_relative = "/usr/include/postgresql" });
+            },
+            .macos => {
+                mod_tests_module.linkSystemLibrary("sqlite3", .{});
+                mod_tests_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/sqlite/include", .{sqlite_prefix}) });
+                mod_tests_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/opt/sqlite/lib", .{sqlite_prefix}) });
+                mod_tests_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/curl/include", .{curl_prefix}) });
+                mod_tests_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/opt/curl/lib", .{curl_prefix}) });
+            },
+            .windows => {
+                mod_tests_module.addIncludePath(b.path("vendor/sqlite3"));
+                mod_tests_module.addCSourceFile(.{ .file = b.path("vendor/sqlite3/sqlite3.c"), .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_FTS5" } });
+                mod_tests_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/include", .{curl_vcpkg_root}) });
+                mod_tests_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/lib", .{curl_vcpkg_root}) });
+            },
+            else => {
+                mod_tests_module.addIncludePath(b.path("vendor/sqlite3"));
+                mod_tests_module.addCSourceFile(.{ .file = b.path("vendor/sqlite3/sqlite3.c"), .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_FTS5" } });
+            },
+        }
+    }
 
     const mod_tests = b.addTest(.{
-        .root_module = mod,
+        .root_module = mod_tests_module,
     });
-
+    // If the test module consumes vendored sqlite3 (Windows / cross-
+    // compile), make the test wait for the auto-fetch step so a fresh
+    // checkout doesn't fail with "file not found".
+    if (test_target.result.os.tag == .windows) {
+    }
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
 
     const ai_workflow_tui_test_mod = b.addTest(.{
-        .root_module = mod,
+        .root_module = mod_tests_module,
     });
 
     const run_ai_workflow_tui_tests = b.addRunArtifact(ai_workflow_tui_test_mod);
@@ -629,6 +849,12 @@ pub fn build(b: *std.Build) void {
     const linux_exe = createPlatformExe(b, mod, linux_target, optimize, "nalarcore-linux-x86_64");
     linux_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    // Custom HTTP client needs curl include path on the cross-target
+    // (linkPlatformDeps handles sqlite3/openssl; curl is separate because
+    // it's wired via custom_http_client_mod).
+    linux_exe.root_module.linkSystemLibrary("curl", .{});
+    linux_exe.root_module.link_libc = true;
+    linkCurlIncludePath(b, linux_exe, linux_target, curl_prefix, curl_vcpkg_root);
     const install_linux = b.addInstallArtifact(linux_exe, .{});
     linux_step.dependOn(&install_linux.step);
 
@@ -643,6 +869,11 @@ pub fn build(b: *std.Build) void {
     // already produces the doubled suffix `nalarcore-windows-x86_64.exe.exe`
     // (which the CI yaml's verify step doesn't expect).
     const windows_exe = createPlatformExe(b, mod, windows_target, optimize, "nalarcore-windows-x86_64");
+    windows_exe.root_module.linkSystemLibrary("curl", .{});
+    windows_exe.root_module.link_libc = true;
+    linkCurlIncludePath(b, windows_exe, windows_target, curl_prefix, curl_vcpkg_root);
+    // Fresh checkout: vendor/sqlite3 doesn't exist yet. Depend on the
+    // auto-fetch step so the cross-target linker sees sqlite3.c.
     const install_windows = b.addInstallArtifact(windows_exe, .{});
     windows_step.dependOn(&install_windows.step);
 
@@ -652,6 +883,9 @@ pub fn build(b: *std.Build) void {
         .os_tag = .macos,
     });
     const macos_exe = createPlatformExe(b, mod, macos_target, optimize, "nalarcore-macos-x86_64");
+    macos_exe.root_module.linkSystemLibrary("curl", .{});
+    macos_exe.root_module.link_libc = true;
+    linkCurlIncludePath(b, macos_exe, macos_target, curl_prefix, curl_vcpkg_root);
     const install_macos = b.addInstallArtifact(macos_exe, .{});
     macos_step.dependOn(&install_macos.step);
 
@@ -661,6 +895,9 @@ pub fn build(b: *std.Build) void {
         .os_tag = .macos,
     });
     const macos_arm_exe = createPlatformExe(b, mod, macos_arm_target, optimize, "nalarcore-macos-aarch64");
+    macos_arm_exe.root_module.linkSystemLibrary("curl", .{});
+    macos_arm_exe.root_module.link_libc = true;
+    linkCurlIncludePath(b, macos_arm_exe, macos_arm_target, curl_prefix, curl_vcpkg_root);
     const install_macos_arm = b.addInstallArtifact(macos_arm_exe, .{});
     macos_arm_step.dependOn(&install_macos_arm.step);
 
@@ -668,6 +905,9 @@ pub fn build(b: *std.Build) void {
     const linux_system_exe = createPlatformExe(b, mod, target, optimize, "nalar");
     linux_system_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_system_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    linux_system_exe.root_module.linkSystemLibrary("curl", .{});
+    linux_system_exe.root_module.link_libc = true;
+    linkCurlIncludePath(b, linux_system_exe, target, curl_prefix, curl_vcpkg_root);
     linux_system_step.dependOn(&linux_system_exe.step);
     const install_linux_system = b.addInstallArtifact(linux_system_exe, .{});
     linux_system_step.dependOn(&install_linux_system.step);
@@ -694,25 +934,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     dev_exe.root_module.linkSystemLibrary("c", .{});
-    if (target.result.os.tag == .linux) {
-        dev_exe.root_module.linkSystemLibrary("sqlite3", .{});
-        dev_exe.root_module.linkSystemLibrary("ssl", .{});
-        dev_exe.root_module.linkSystemLibrary("crypto", .{});
-    } else if (target.result.os.tag == .macos) {
-        // macOS uses Homebrew's system libsqlite3 (see shared `mod`
-        // setup). The `mod` already provides the -lsqlite3 link + brew
-        // include path via the imports array, so nalar-dev inherits them.
-        dev_exe.root_module.linkSystemLibrary("sqlite3", .{});
-    } else if (target.result.os.tag == .windows) {
-        // Vendor sqlite3 amalgamation for Windows. The shared `mod`
-        // does NOT compile sqlite3.c on Windows, so the amalgamation
-        // is added directly here for nalar-dev to satisfy sqlite3
-        // references.
-        dev_exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
-        dev_exe.root_module.addCSourceFile(.{
-            .file = b.path("vendor/sqlite3/sqlite3.c"),
-            .flags = &.{ "-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_FTS5" },
-        });
+    dev_exe.root_module.linkSystemLibrary("curl", .{});
+    dev_exe.root_module.link_libc = true;
+    linkPlatformDeps(b, dev_exe, target);
+    linkCurlIncludePath(b, dev_exe, target, curl_prefix, curl_vcpkg_root);
+    if (target.result.os.tag == .windows) {
     }
     const install_dev = b.addInstallArtifact(dev_exe, .{});
     dev_linux_system_step.dependOn(&install_dev.step);
