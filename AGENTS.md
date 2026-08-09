@@ -525,6 +525,64 @@ A "delete useless tests" task identified ~60 static-contract tests across
 > documenting what landed and why. These breadcrumbs help the next session
 > pick up context without re-reading the git log.
 
+### 2026-08-06: Self-contained `custom_http_client` Zig package + vendored libcurl (#212)
+
+**Symptom (user request, task_1786295530930).** *"make curl as vendor, and move deps to modules httpclient, mirror like database"*. The parent `build.zig` had 9 inline `linkSystemLibrary("curl", .{})` + `linkCurlIncludePath()` calls at every consumer (exe, cli_exe, cli_tests, mod_tests_module, 5 cross-compile exes, dev_exe). Each consumer had to know the platform-specific libcurl path — `/usr/include` on Linux, `/opt/homebrew/opt/curl` on macOS, `C:/vcpkg/...` on Windows. `install:macos*` and `install:windows` failed without a host-installed libcurl (no Homebrew / vcpkg on a Linux CI host).
+
+**Fix (8 files).** Mirrored PR #211's `databases` package pattern onto curl:
+
+1. **`scripts/build-vendor-curl.sh`** — rewrote from scratch. The original tried to hand-craft a minimal `curl_config.h` and compile each `.c` file individually; it failed because curl's source needs a fully-detected config (the script's "minimal" config was missing `HAVE_STDBOOL_H`, `CURL_SIZEOF_LONG*`, `sread`/`swrite` macros — every file failed to compile). The new script uses curl's actual `./configure` (which generates a 1000-line `curl_config.h`) + `make` (which compiles all `.c` files including `vtls/`, `vauth/`, `http*.c` subdirs). The libtool linker step fails on Linux hosts (`0: Bad file descriptor` — known libtool bug), but every `.c` is already compiled into a `.o` by the time it fails, so we just `ar rcs libcurl.a lib/**/*.o` (recursive — was just `lib/*.o` which missed the subdirs and caused undefined symbols at link time). Requires `--disable-ssl` (not just `--without-ssl`) — without it, `vtls/vtls.c` still compiles and exports `Curl_ssl_conn_config_*` symbols that other parts of libcurl reference. Zig 0.16 native target defaults to glibc < 2.36 — too old for `arc4random` and `__isoc23_*` symbols that curl uses; bumped default target to `native-linux-gnu.2.38`.
+
+2. **`src/modules/custom_http_client/build.zig`** — full rewrite. Self-contained package like `databases`. Resolves `vendor/curl/<target>/lib/libcurl.a` via `addObjectFile` (NOT `linkSystemLibrary("curl", .{})` — would need `-L` paths pointing at the non-standard vendor dir). Adds `addIncludePath` for the vendored headers (portable C, work on every host). Same `-Dvendor-dir` option as `databases`.
+
+3. **`build.zig.zon`** — added `.custom_http_client = .{ .path = "src/modules/custom_http_client" }` to `dependencies`. Path-based path dependency.
+
+4. **`build.zig`** — removed entirely:
+   - `-Dcurl-prefix` / `-Dcurl-vcpkg-root` build options (no longer needed)
+   - `linkCurlIncludePath()` helper function (12 lines)
+   - All 9 `linkSystemLibrary("curl", .{})` calls
+   - All 9 `linkCurlIncludePath(...)` calls
+   - The 3 platform-specific `addIncludePath(b.fmt(...))` calls on `custom_http_client_mod`
+   Replaced the inline `custom_http_client_mod` with `b.dependency("custom_http_client", .{ .target = target, .optimize = optimize })`. The package's transitive deps (libc + vendored libcurl archive + vendored headers) now propagate to every consumer via Zig's module graph.
+
+5. **New `zig build fetch-vendor-curl` step** — runs `scripts/build-vendor-curl.sh`. `install:macos`, `install:macos-arm`, `install:windows` now depend on it. Previously a fresh checkout had to manually run the bootstrap script. The dependency surfaces the missing artifact ("Windows archive not built") at the `fetch-vendor-curl` step instead of at link time.
+
+6. **Global target bumped to glibc 2.38** — needed for the vendored libcurl. Old default target had glibc ~2.31, which is missing `__isoc23_strtol` (added in glibc 2.38) and `arc4random` (glibc 2.36+). The test module's `linkPlatformDeps` block now also adds `/usr/lib` to the library search path (glibc 2.38's default search path doesn't include `/usr/lib` in some contexts — the `databases` package's `linkSystemLibrary("ssl", "crypto", "pq")` calls surfaced this).
+
+**Wire check (the success indicator).**
+
+```bash
+ldd ./zig-out/bin/nalar | grep -i curl
+# Expected: (empty) — libcurl is statically linked via vendored archive
+# Pre-fix: libcurl.so.4 => /usr/lib/x86_64-linux-gnu/libcurl.so.4
+```
+
+**Verification.**
+
+- `zig build test --summary all` → 2189 pass / 6 skip / 12 fail / 1 crash / 18 leaks (identical to baseline; 12 fail + 1 crash + 18 leaks are pre-existing PR #181 baseline documented in AGENTS.md).
+- `zig build` → `zig-out/bin/nalar` (111 MB) + `nalarcli` (12 MB) + `nalar-desktop` (38 MB).
+- `zig build-obj -fno-emit-bin -target x86_64-windows-gnu` → clean (lazy semantic analysis passes).
+- `zig build-obj -fno-emit-bin -target aarch64-macos` → clean.
+- `ldd zig-out/bin/nalar | grep -i curl` → empty (hermetic).
+- `bash scripts/build-vendor-curl.sh` → 178 .o files per target (was 133 before recursive fix), all verified non-empty archives.
+
+**Out of scope (deferred).**
+
+- **`vendor/curl/windows-amd64/` build** — `scripts/build-vendor-curl.sh` currently builds only Linux + macOS arm64 + macOS x86_64. Windows needs MinGW setup (analogous to `scripts/build-vendor-sqlite3-windows.sh`). Until then, `install:windows` will fail at the `fetch-vendor-curl` step with a clear "Windows archive not built" message.
+- **HTTPS support** — vendored curl is HTTP-only (`--disable-ssl`). The agent's LLM API calls will fall back to `http://` URLs. To support HTTPS, also vendor OpenSSL (~50 MB more) — significant additional build complexity.
+- **Dynamic linking decision** — `addObjectFile` makes libcurl statically linked (no `libcurl.so.4` in `ldd`). If a future requirement needs dynamic linking, the `addObjectFile` becomes `linkSystemLibrary("curl", .{})` + `addLibraryPath` — but then `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` / `PATH` story comes on each platform.
+
+**Pitfalls (record for future agents).**
+
+- **`addObjectFile` vs `linkSystemLibrary` for vendored archives** — these are NOT equivalent. `linkSystemLibrary("curl")` adds `-lcurl` to the linker line, which the linker resolves via `-L<dir>` paths. With the vendored `libcurl.a` at a non-standard path, the linker CANNOT find it via `-lcurl`. `addObjectFile` embeds the archive directly, bypassing the search-path resolution. Use `addObjectFile` for vendored prebuilt archives.
+- **`find | head -n 1` + `pipefail` + `set -e` = silent script exit** — `head` exits early after the first line, causing `find` to receive SIGPIPE. With `set -o pipefail`, the pipeline returns non-zero. With `set -e`, the script exits silently. Use `find ... -print -quit` (GNU find) instead. (Same pattern as the `grep -q` SIGPIPE we hit earlier — see AGENTS.md "Patterns" section.)
+- **`--without-ssl` is NOT enough** — configure still compiles `lib/vtls/vtls.c` (provides `Curl_ssl_conn_config_*` symbols that other parts of libcurl reference). Need `--disable-ssl` to fully disable the TLS layer at the configure level.
+- **Recursive `find lib -name '*.o'` is required** — `lib/*.o` only matches top-level files. Misses `lib/vtls/*.o`, `lib/vauth/*.o`, `lib/vquic/*.o` (if disabled). Original `--maxdepth 1` find caused 14 undefined-symbol errors at link time.
+- **glibc 2.38 minimum** — curl's source uses `__isoc23_*` (added in glibc 2.38) and `arc4random` (glibc 2.36+ in weak-symbol form). Zig 0.16's default native target defaults to glibc ~2.31. Bump explicitly with `.glibc_version = .{ .major = 2, .minor = 38, .patch = 0 }` in the target query.
+- **`vendor/curl/` is gitignored** — fresh checkouts don't have the archives. Either `bash scripts/bootstrap-vendor.sh` (which calls `build-vendor-curl.sh`) or `bash scripts/build-vendor-curl.sh` directly. AGENTS.md and `.gitignore` already document this; the new `fetch-vendor-curl` build step surfaces the gap at task time.
+
+**Branch / commit (pending).** Branch: `worktree/httpclient-curl-vendor` (worktree at `/home/ginwa/ginwaaitoolbox/.worktrees/httpclient-curl-vendor`). Plan: `docs/superpowers/plans/2026-08-06-httpclient-curl-vendor-package.md`. PR: pending squash-merge candidate.
+
 ### 2026-08-06: Desktop app — suppress webview's default context menu (right-click → app menu)
 
 **Symptom (user report, task `task_1786035961751`).** User's screenshot

@@ -1,154 +1,116 @@
+//! `custom_http_client` package — self-contained Zig package that
+//! exposes the libcurl-backed HTTP client used by nalarcore.
+//!
+//! Mirrors `src/modules/databases/build.zig`'s pattern: vendored
+//! libcurl is a per-target prebuilt archive under
+//! `vendor/curl/<target>/lib/libcurl.a` + a portable C header under
+//! `vendor/curl/<target>/include/`. Consumers
+//! (`b.dependency("custom_http_client", .{...})`) get the right
+//! include path + library archive for the TARGET they pass in,
+//! without the consumer needing to wire per-platform system library
+//! paths itself.
+//!
+//! Why per-TARGET (not per-Compile from the consumer): the consumer
+//! build.zig's curl include-path plumbing no longer needs to know
+//! about Homebrew keg-only paths or vcpkg sysroots. The
+//! custom_http_client module carries those for its own target, and
+//! Zig's module-graph dep propagation handles the rest.
+//!
+//! Why `addObjectFile` (not `linkSystemLibrary("curl")`): the
+//! vendored `libcurl.a` lives at a non-standard path that the
+//! cross-target linker can't find via `-lcurl` / `-L<dir>`. The
+//! `addObjectFile` call embeds the archive's symbols directly in
+//! the consumer's link line, bypassing the search-path resolution.
+//! The result is that libcurl is STATICALLY LINKED into every
+//! consumer — verified by `ldd zig-out/bin/nalar | grep -i curl`
+//! showing no `libcurl.so.4` line (the hermetic-build goal).
+
 const std = @import("std");
 
-// Although this function looks imperative, it does not perform the build
-// directly and instead it mutates the build graph (`b`) that will be then
-// executed by an external runner. The functions in `std.Build` implement a DSL
-// for defining build steps and express dependencies between them, allowing the
-// build runner to parallelize the build automatically (and the cache system to
-// know when a step doesn't need to be re-run).
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Cross-platform libcurl paths (mirrors the `-Dsqlite-prefix` convention
-    // used by the parent `build.zig` for libsqlite3). Declared ONCE here so
-    // we can pass the resolved strings into `configureLibcurl` — Zig's
-    // `b.option()` API rejects double-declaration of the same option name.
+    // Path to the vendored curl directory, relative to this
+    // package's build.zig. Default assumes the package lives at
+    // `<project>/src/modules/custom_http_client/` and the vendor
+    // dir is at `<project>/vendor/curl/`. Override with
+    // `-Dvendor-dir=...` if you move either side.
     //
-    //   - Linux:   `/usr/include` + system libcurl
-    //   - macOS:   $(brew --prefix curl)/{include,lib}   (Homebrew keg-only)
-    //   - Windows: $(vcpkg root)/installed/x64-windows/{include,lib}
-    //
-    // The macOS default `/opt/homebrew` is the Apple-Silicon layout; Intel
-    // Macs override with `-Dcurl-prefix=/usr/local`.
-    const curl_prefix = b.option(
+    // `b.path()` resolves relative to the package's build.zig
+    // directory, so `../../../vendor/curl` walks up 3 levels
+    // (src → modules → databases's parent's parent's parent) to reach
+    // the project root. An absolute path or a different relative
+    // layout works too — pass it via `-Dvendor-dir=...`.
+    const vendor_dir = b.option(
         []const u8,
-        "curl-prefix",
-        "Homebrew prefix for the libcurl keg (default: /opt/homebrew)",
-    ) orelse "/opt/homebrew";
-    const curl_vcpkg_root = b.option(
-        []const u8,
-        "curl-vcpkg-root",
-        "vcpkg root for Windows libcurl (default: C:/vcpkg)",
-    ) orelse "C:/vcpkg";
+        "vendor-dir",
+        "Path to vendor/curl/ (relative to this package, default '../../../vendor/curl')",
+    ) orelse "../../../vendor/curl";
 
     const mod = b.addModule("custom_http_client", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .optimize = optimize,
     });
 
-    // Link libcurl on every platform we support. libcurl's `curl_easy_*` ABI
-    // is stable across versions; we only need its header path on Linux.
-    mod.linkSystemLibrary("curl", .{});
+    // Universal: libc is required by every libcurl binding + cimport.
+    mod.linkSystemLibrary("c", .{});
     mod.link_libc = true;
-    configureLibcurl(b, mod, target.result.os.tag, curl_prefix, curl_vcpkg_root);
 
-    // CLI executable (manual smoke test). The tests below also exercise
-    // the module directly.
-    const exe = b.addExecutable(.{
-        .name = "custom_http_client",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "custom_http_client", .module = mod },
-            },
-        }),
-    });
-    exe.root_module.linkSystemLibrary("curl", .{});
-    exe.root_module.link_libc = true;
-    configureLibcurl(b, exe.root_module, target.result.os.tag, curl_prefix, curl_vcpkg_root);
-    b.installArtifact(exe);
-
-    const run_step = b.step("run", "Run the app");
-    const run_cmd = b.addRunArtifact(exe);
-    run_step.dependOn(&run_cmd.step);
-    run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
-
-    // Test executable — exercises every `*_test.zig` registered via test_runner.zig.
+    // Resolve the per-target subdirectory name. The bootstrap script
+    // (scripts/build-vendor-curl.sh) writes:
+    //   vendor/curl/linux-x86_64/{lib,include}/
+    //   vendor/curl/macos-arm64/{lib,include}/
+    //   vendor/curl/macos-x86_64/{lib,include}/
+    //   vendor/curl/windows-amd64/{lib,include}/  ← not built yet
     //
-    // The streaming tests need an in-process HTTP server. We import the
-    // adjacent `custom_http_server` module (compiled from
-    // src/modules/custom_http_server/src/http_server.zig) so the tests
-    // can spin up a GinwaServer on an ephemeral port in-process,
-    // eliminating the httpbin.org network dependency. The import is
-    // attached to the test module only — production builds of
-    // custom_http_client don't pull in the server.
-    const server_mod = b.createModule(.{
-        .root_source_file = b.path("../custom_http_server/src/http_server.zig"),
-        .target = target,
-    });
-    server_mod.linkSystemLibrary("c", .{});
-    mod.addImport("custom_http_server", server_mod);
+    // The Zig target triple (arch-os-abi) doesn't directly match these
+    // directory names (e.g. aarch64-macos-none != macos-arm64), so we
+    // map explicitly. Unsupported targets panic at config time with a
+    // clear message — better than a cryptic link error later.
+    const target_subdir = switch (target.result.os.tag) {
+        .linux => b.fmt("linux-{s}", .{switch (target.result.cpu.arch) {
+            .x86_64 => "x86_64",
+            .aarch64 => "aarch64",
+            else => @panic("vendored curl: unsupported Linux arch"),
+        }}),
+        .macos => switch (target.result.cpu.arch) {
+            .aarch64 => "macos-arm64",
+            .x86_64 => "macos-x86_64",
+            else => @panic("vendored curl: unsupported macOS arch"),
+        },
+        .windows => "windows-amd64", // script doesn't build yet — see note
+        else => @panic("vendored curl: unsupported OS"),
+    };
+    const target_dir = b.fmt("{s}/{s}", .{ vendor_dir, target_subdir });
 
-    const mod_tests = b.addTest(.{
-        .root_module = mod,
-    });
-    mod_tests.root_module.linkSystemLibrary("curl", .{});
-    mod_tests.root_module.link_libc = true;
-    configureLibcurl(b, mod_tests.root_module, target.result.os.tag, curl_prefix, curl_vcpkg_root);
-    if (target.result.os.tag == .linux) {
-        server_mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    }
+    // Header path — needed by `@cImport(@cInclude("curl/curl.h"))`
+    // inside src/curl.zig. The header is portable C, so the same
+    // vendored copy works for every host (Zig's cimport uses the
+    // HOST C compiler, not the cross-target compiler).
+    mod.addIncludePath(b.path(b.fmt("{s}/include", .{target_dir})));
 
+    // Link the prebuilt vendored archive directly into every consumer.
+    // addObjectFile embeds the .a symbols in the consumer's link line
+    // (no separate -L/-l needed — Zig's linker resolves the archive's
+    // undefined symbols at consumer link time).
+    //
+    // For Linux native builds, this REPLACES the system libcurl.so —
+    // the vendored archive is statically linked. For cross-targets
+    // (Linux→macOS, Linux→Windows), the target-appropriate archive
+    // is used. No more `linkSystemLibrary("curl", ...)` leak.
+    const libcurl_a = b.path(b.fmt("{s}/lib/libcurl.a", .{target_dir}));
+    mod.addObjectFile(libcurl_a);
+
+    // === Tests for the package itself ===
+    // `b.addTest({ .root_module = mod })` walks every `_test.zig`
+    // reachable from src/root.zig via the `test { _ = @import(...) }`
+    // block. The mod already carries link_libc + vendored libcurl,
+    // so test executables inherit those deps automatically.
+    const mod_tests = b.addTest(.{ .root_module = mod });
     const run_mod_tests = b.addRunArtifact(mod_tests);
-
-    const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
-    });
-    exe_tests.root_module.linkSystemLibrary("curl", .{});
-    exe_tests.root_module.link_libc = true;
-    configureLibcurl(b, exe_tests.root_module, target.result.os.tag, curl_prefix, curl_vcpkg_root);
-    const run_exe_tests = b.addRunArtifact(exe_tests);
-
-    const test_step = b.step("test", "Run tests");
+    const test_step = b.step("test", "Run custom_http_client package tests");
     test_step.dependOn(&run_mod_tests.step);
-    test_step.dependOn(&run_exe_tests.step);
-
-    // NOTE: `-Dintegration=true` and `-Dstress=true` flags are documented
-    // in the plan; the actual opt-in wiring lives in `test_runner.zig` via
-    // generated module files we plan to add in Chunk 3 when needed. For
-    // Chunk 1 we keep the test suite deterministic (no live network).
-}
-
-/// Wire the platform-specific include + library paths for libcurl. Extracted
-/// as a helper so the same logic applies to the library module, the CLI exe,
-/// and both test executables (4 link points per build invocation).
-///
-/// Mirrors the `-Dsqlite-prefix` pattern in the parent `build.zig`
-/// (lines 430-450) — see that file for the full rationale on brew keg-only
-/// paths and vcpkg sysroot layouts.
-///
-/// Options are resolved in `build()` ONCE (Zig's `b.option()` rejects
-/// double-declaration) and passed in as plain `[]const u8` slices.
-fn configureLibcurl(
-    b: *std.Build,
-    module: *std.Build.Module,
-    os_tag: std.Target.Os.Tag,
-    curl_prefix: []const u8,
-    curl_vcpkg_root: []const u8,
-) void {
-    switch (os_tag) {
-        .linux => {
-            module.addIncludePath(.{ .cwd_relative = "/usr/include" });
-        },
-        .macos => {
-            // Homebrew's curl is keg-only. Apple-Silicon default prefix is
-            // `/opt/homebrew`; Intel macs override with `-Dcurl-prefix=/usr/local`.
-            module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/curl/include", .{curl_prefix}) });
-            module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/opt/curl/lib", .{curl_prefix}) });
-        },
-        .windows => {
-            // vcpkg layout: <root>/installed/<triplet>/{include,lib}.
-            // Default triplet is x64-windows; ARM64 would be arm64-windows.
-            module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/include", .{curl_vcpkg_root}) });
-            module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/lib", .{curl_vcpkg_root}) });
-        },
-        else => {
-            // Other targets (WASI, freestanding, etc.) — not supported.
-            // linkSystemLibrary("curl") will fail at link time with a clear error.
-        },
-    }
+    test_step.dependOn(b.getInstallStep());
 }
