@@ -861,3 +861,53 @@ describe('KanbanTaskDetailDialog — column dropdown (create mode)', () => {
     expect(itemStyle).not.toMatch(/border-top/i)
   })
 })
+
+describe('KanbanTaskDetailDialog — layout', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    findAllInDom('[data-testid="kanban-task-detail-dialog"]').forEach((el) =>
+      el.remove(),
+    )
+  })
+
+  function mountDialog(task: Task | null = TASK) {
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: { show: true, task },
+    })
+    return wrapper
+  }
+
+  // Regression for the "huge empty space below form" bug. The previous
+  // code used `height: min(80vh, calc(100vh - 2rem))` on the dialog card,
+  // which forced the dialog to always render at 80vh. The body
+  // (`flex-1 overflow-y-auto min-h-0`) then filled the remaining space,
+  // leaving a large gap between the form fields and the action buttons
+  // when the content was short (e.g. a new task with no description).
+  //
+  // Fix: switch to `max-height: min(80vh, calc(100vh - 2rem))` so the
+  // card shrinks to fit content when short, but caps at 80vh when the
+  // content overflows (the body then scrolls as before).
+  it('uses max-height (not fixed height) so the dialog shrinks to fit short content', async () => {
+    mountDialog()
+    await flushPromises()
+    const card = document.querySelector<HTMLDivElement>(
+      '[data-testid="kanban-task-detail-dialog"] > div.relative.max-w-xl',
+    )
+    expect(card).not.toBeNull()
+    const style = card!.getAttribute('style') ?? ''
+    // The fix: max-height caps at 80vh, but the card can shrink below it.
+    expect(style).toMatch(/max-height:\s*min\(80vh,\s*calc\(100vh\s*-\s*2rem\)\)/)
+    // The bug: a fixed `height: min(80vh, ...)` forced the card to 80vh
+    // regardless of content height. Make sure we haven't reintroduced it.
+    expect(style).not.toMatch(/(^|[\s;])height:\s*min\(80vh/)
+  })
+})

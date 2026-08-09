@@ -775,8 +775,18 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
         />
 
         <!-- Dialog Card. Wider than AddTaskDialog (max-w-xl) so the
-             description has room to breathe. min(80vh, ...) for the
-             height so it scrolls on short viewports. -->
+             description has room to breathe. `max-height: min(80vh,
+             calc(100vh - 2rem))` (NOT a fixed height) so the card
+             shrinks to fit its content when short — the body
+             (`flex-1 overflow-y-auto min-h-0`) just takes its natural
+             height when there's room, no empty space below the form.
+             When content overflows the 80vh cap, the body fills the
+             remaining space and scrolls (the original goal of the
+             `min(80vh, ...)` constraint). Using `height:` instead
+             forced the card to 80vh regardless of content, leaving
+             a large gap between the form fields and the action
+             buttons on short content (e.g. a brand-new task with no
+             description). -->
         <div
           class="relative w-full max-w-xl mx-4 rounded-xl shadow-2xl flex flex-col overflow-hidden"
           style="
@@ -785,7 +795,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
             box-shadow:
               0 1px 2px rgba(0, 0, 0, 0.4),
               0 8px 24px rgba(0, 0, 0, 0.35);
-            height: min(80vh, calc(100vh - 2rem));
+            max-height: min(80vh, calc(100vh - 2rem));
           "
         >
           <!-- Header -->
