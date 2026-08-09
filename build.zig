@@ -28,35 +28,27 @@ fn linkPlatformDeps(
     exe.root_module.link_libc = true;
     switch (target.result.os.tag) {
         .linux => {
-            // sqlite3 amalgamation compile is handled by the `databases`
-            // package — propagated to this Compile via mod.addImport
-            // → databases_mod. We only need the OTHER Linux system libs
-            // here (ssl/crypto/pq + postgresql headers).
-            exe.root_module.linkSystemLibrary("ssl", .{});
-            exe.root_module.linkSystemLibrary("crypto", .{});
-            exe.root_module.linkSystemLibrary("pq", .{});
-            exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
-            // Debian/Ubuntu layout: libpq-fe.h lives in
-            // /usr/include/postgresql (Arch has it directly in
-            // /usr/include). Adding both is harmless.
-            exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include/postgresql" });
+            // Everything database-related (sqlite3 amalgamation + openssl +
+            // crypto + libpq + /usr/include + /usr/include/postgresql) is
+            // handled by the `databases` package — propagated to this
+            // Compile via mod.addImport → databases_mod. Nothing else
+            // needed for Linux.
         },
         .macos => {
-            // sqlite3 amalgamation compile is handled by the `databases`
-            // package. macOS doesn't need openssl/pq here (libpq is
-            // not currently used on macOS; openssl rides along via
-            // custom_http_client_mod).
+            // Everything database-related (sqlite3 amalgamation) is handled
+            // by the `databases` package. macOS doesn't need openssl/pq
+            // here (libpq is not currently used on macOS; openssl rides
+            // along via custom_http_client_mod).
         },
         .windows => {
-            // sqlite3 amalgamation compile is handled by the `databases`
-            // package. We only need to add bcrypt here — MinGW doesn't
-            // ship bcrypt.dll, but src/modules/custom_http_server/src/security.zig
-            // needs BCryptGenRandom (Zig's std.c.getrandom is `void` on Windows).
-            exe.root_module.linkSystemLibrary("bcrypt", .{});
+            // Everything database-related (sqlite3 amalgamation + bcrypt)
+            // is handled by the `databases` package. bcrypt.dll is needed
+            // by src/modules/custom_http_server/src/security.zig
+            // (BCryptGenRandom — Zig's std.c.getrandom is `void` on Windows).
         },
         else => {
             // Cross-compile to non-Linux/macOS/Windows targets. The
-            // `databases` package covers sqlite3 — nothing extra to add.
+            // `databases` package covers everything — nothing extra to add.
         },
     }
 }
@@ -726,22 +718,16 @@ pub fn build(b: *std.Build) void {
     // cleaner, but b.addTest({...}).root_module IS the module, so we
     // mutate it in place before b.addTest captures it.
     //
-    // After the `databases` package extraction: sqlite3 amalgamation is
-    // propagated via mod.addImport above. We only need libc + per-target
-    // ssl/crypto/pq + curl include path here (curl is universal via
-    // custom_http_client_mod but its INCLUDE path needs the right host
-    // layout — handled the same way as the exe path).
+    // After the `databases` package extraction: sqlite3 amalgamation +
+    // openssl + crypto + libpq + /usr/include + /usr/include/postgresql
+    // are ALL propagated via mod.addImport above. We only need libc +
+    // curl include path here (curl is universal via custom_http_client_mod
+    // but its INCLUDE path needs the right host layout — handled the
+    // same way as the exe path).
     {
         mod_tests_module.linkSystemLibrary("c", .{});
         mod_tests_module.link_libc = true;
         switch (test_target.result.os.tag) {
-            .linux => {
-                mod_tests_module.linkSystemLibrary("ssl", .{});
-                mod_tests_module.linkSystemLibrary("crypto", .{});
-                mod_tests_module.linkSystemLibrary("pq", .{});
-                mod_tests_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
-                mod_tests_module.addIncludePath(.{ .cwd_relative = "/usr/include/postgresql" });
-            },
             .macos => {
                 mod_tests_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/curl/include", .{curl_prefix}) });
                 mod_tests_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/opt/curl/lib", .{curl_prefix}) });
