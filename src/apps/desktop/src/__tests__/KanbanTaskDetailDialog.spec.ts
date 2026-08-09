@@ -886,6 +886,21 @@ describe('KanbanTaskDetailDialog — layout', () => {
     return wrapper
   }
 
+  function mountCreateDialog(cwd: string = '') {
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        mode: 'create',
+        task: null,
+        column: null,
+        cwd,
+      },
+    })
+    return wrapper
+  }
+
   // Regression for the "huge empty space below form" bug. The previous
   // code used `height: min(80vh, calc(100vh - 2rem))` on the dialog card,
   // which forced the dialog to always render at 80vh. The body
@@ -900,7 +915,7 @@ describe('KanbanTaskDetailDialog — layout', () => {
     mountDialog()
     await flushPromises()
     const card = document.querySelector<HTMLDivElement>(
-      '[data-testid="kanban-task-detail-dialog"] > div.relative.max-w-xl',
+      '[data-testid="kanban-task-detail-dialog"] > div.relative',
     )
     expect(card).not.toBeNull()
     const style = card!.getAttribute('style') ?? ''
@@ -909,5 +924,82 @@ describe('KanbanTaskDetailDialog — layout', () => {
     // The bug: a fixed `height: min(80vh, ...)` forced the card to 80vh
     // regardless of content height. Make sure we haven't reintroduced it.
     expect(style).not.toMatch(/(^|[\s;])height:\s*min\(80vh/)
+  })
+
+  // User feedback: "make the dialog bigger". The previous `max-w-xl`
+  // (576px) was narrow for a multi-field form (task name + column
+  // picker + description + tags + folder picker + profile picker +
+  // unattended mode). Bumped to `max-w-2xl` (672px) for ~16% more
+  // horizontal room without crossing into "wide modal" territory.
+  it('uses max-w-2xl (bigger) so the form has more horizontal room', async () => {
+    mountDialog()
+    await flushPromises()
+    const card = document.querySelector<HTMLDivElement>(
+      '[data-testid="kanban-task-detail-dialog"] > div.relative',
+    )
+    expect(card).not.toBeNull()
+    const classAttr = card!.getAttribute('class') ?? ''
+    expect(classAttr).toContain('max-w-2xl')
+    // Make sure we didn't accidentally revert to max-w-xl.
+    expect(classAttr).not.toMatch(/(^|\s)max-w-xl(\s|$)/)
+  })
+
+  // User feedback: "fix the color font folder". The previous folder
+  // picker used the `📂` emoji which renders as a system-colorful icon
+  // (orange/yellow) that doesn't match the muted dark theme — the
+  // picker looked "out of place" next to the cleaner robot-emoji
+  // profile picker. Replace with an inline SVG folder icon that
+  // inherits the button's text color (so it follows the theme).
+  it('create mode: folder picker uses an inline SVG icon (not the 📂 emoji)', async () => {
+    mountCreateDialog('/home/user/projects/foo')
+    await flushPromises()
+    const picker = document.querySelector<HTMLElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )
+    expect(picker).not.toBeNull()
+    const text = picker!.textContent ?? ''
+    // The emoji is gone.
+    expect(text).not.toMatch(/📂/)
+    // An SVG icon is rendered instead (replaces the emoji span).
+    const svg = picker!.querySelector('svg')
+    expect(svg).not.toBeNull()
+    // The SVG has a sensible folder-icon viewBox.
+    expect(svg!.getAttribute('viewBox')).toBe('0 0 20 20')
+  })
+
+  // When the cwd is set, the folder picker's text color is bright
+  // (`var(--semantic-text)` = #c5c9c5) — not dim — so the picked folder
+  // path reads clearly against the dark background. Previously the
+  // dim text color (`var(--semantic-text-dim)` = #7a8382) made the path
+  // look faded next to the profile picker's bright "Default" label.
+  it('create mode: folder picker text color is bright when cwd is set', async () => {
+    mountCreateDialog('/home/user/projects/foo')
+    await flushPromises()
+    const picker = document.querySelector<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )
+    expect(picker).not.toBeNull()
+    // Read the inline style and assert it does NOT use the dim color.
+    // The button's color is set via inline style (Vue's :style binding).
+    const inlineStyle = picker!.getAttribute('style') ?? ''
+    // The new contract: when cwd is set, color is --semantic-text (bright).
+    expect(inlineStyle).toMatch(/color:\s*var\(--semantic-text\)/)
+    // No dim color when cwd is set.
+    expect(inlineStyle).not.toMatch(/color:\s*var\(--semantic-text-dim\)/)
+  })
+
+  // When the cwd is NOT set (the "skip" / optional state), the folder
+  // picker text stays dim — this is intentional because the path slot
+  // shows the "Skip (no project root)" placeholder, which shouldn't
+  // look like an active selection.
+  it('create mode: folder picker text color is dim when cwd is empty', async () => {
+    mountCreateDialog('')
+    await flushPromises()
+    const picker = document.querySelector<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )
+    expect(picker).not.toBeNull()
+    const inlineStyle = picker!.getAttribute('style') ?? ''
+    expect(inlineStyle).toMatch(/color:\s*var\(--semantic-text-dim\)/)
   })
 })
