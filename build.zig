@@ -31,8 +31,15 @@ fn linkPlatformDeps(
             // Everything database-related (sqlite3 amalgamation + openssl +
             // crypto + libpq + /usr/include + /usr/include/postgresql) is
             // handled by the `databases` package — propagated to this
-            // Compile via mod.addImport → databases_mod. Nothing else
-            // needed for Linux.
+            // Compile via mod.addImport → databases_mod.
+            //
+            // ALSO add /usr/lib to the library search path. With glibc 2.38
+            // (the global default target), the linker default search path
+            // doesn't include /usr/lib in some contexts — the `linkSystemLibrary("ssl", "crypto", "pq")`
+            // calls inside the `databases` package surface this with
+            // "unable to find dynamic system library 'ssl' using strategy 'paths_first'. searched paths: none".
+            // Forcing the path here makes the linker find the system libs.
+            exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
         },
         .macos => {
             // Everything database-related (sqlite3 amalgamation) is handled
@@ -227,27 +234,38 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    b.installArtifact(exe);
-
     // === fetch-vendor-curl build step ===
-    // Cross-compile to macOS/Windows needs the vendored libcurl.a
-    // archive in vendor/curl/<target>/lib/. The script
-    // (scripts/build-vendor-curl.sh) cross-compiles from source.
-    // It's idempotent — re-running on a populated vendor/ is fast.
-    // On Linux native builds, the script is a no-op (the linux-x86_64
-    // archive is already needed for native Linux; the build script
-    // populates it on the first run).
+    // Cross-compile to macOS/Windows AND native Linux builds need
+    // the vendored libcurl.a archive in
+    // src/modules/custom_http_client/vendor/curl/<target>/lib/. The
+    // script (src/modules/custom_http_client/scripts/build-vendor-curl.sh
+    // — co-located with the package) cross-compiles from source. It's
+    // idempotent — re-running on a populated vendor/ is fast (no-op
+    // after first build).
+    //
+    // MUST be defined BEFORE `b.installArtifact(exe)` below — the
+    // default `install` step (which `zig build` runs) depends on
+    // the installed artifact's step, which we're about to add a
+    // dependency on. Defining fetch_vendor_curl_step after
+    // b.installArtifact would mean the default install doesn't
+    // trigger the fetch, leaving the build broken on fresh checkouts
+    // (where vendor/curl/ is gitignored + empty).
     const fetch_vendor_curl_step = b.step(
         "fetch-vendor-curl",
-        "Build vendor/curl/<target>/ from source (cross-compiles libcurl for Linux + macOS; idempotent). " ++
-            "Run scripts/build-vendor-curl.sh or scripts/bootstrap-vendor.sh to populate before " ++
-            "install:macos, install:macos-arm, install:windows, or any cross-compile.",
+        "Build src/modules/custom_http_client/vendor/curl/<target>/ from source (cross-compiles libcurl for Linux + macOS; idempotent). " ++
+            "Auto-runs on `zig build` or any install:* target when the vendor dir is missing.",
     );
     const fetch_vendor_curl_run = b.addSystemCommand(&.{
-        "bash", "scripts/build-vendor-curl.sh",
+        "bash", "src/modules/custom_http_client/scripts/build-vendor-curl.sh",
     });
     fetch_vendor_curl_run.setCwd(b.path(""));
     fetch_vendor_curl_step.dependOn(&fetch_vendor_curl_run.step);
+
+    b.installArtifact(exe);
+    // Make the default `install` step (which `zig build` runs)
+    // depend on fetch_vendor_curl — this is what makes `zig build`
+    // work on a fresh checkout where vendor/curl/ is empty.
+    b.getInstallStep().dependOn(fetch_vendor_curl_step);
 
     exe.root_module.linkSystemLibrary("c", .{});
     exe.root_module.link_libc = true;
@@ -471,6 +489,18 @@ pub fn build(b: *std.Build) void {
             // GTK/WebKit headers — cc handles _Pragma correctly. The Zig
             // extern declarations trust the signatures and link against
             // libwebkit2gtk-4.1 / libgtk-3 / libsoup-3.0 / libglib-2.0.
+            //
+            // Library search path: with glibc 2.38 target, the linker's
+            // default search path doesn't include /usr/lib in some contexts.
+            // Add it explicitly so `linkSystemLibrary` finds the SO files
+            // (otherwise we get "unable to find dynamic system library
+            // 'webkit2gtk-4.1' using strategy 'paths_first'. searched paths: none").
+            // Note: don't add `/usr/lib/x86_64-linux-gnu` — that's a
+            // Debian/Ubuntu multi-arch path that doesn't exist on Arch /
+            // Fedora, and Zig treats a missing library dir as a fatal error.
+            // /usr/lib alone catches both layouts (Debian symlinks .so files
+            // at /usr/lib too).
+            desktop_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
             desktop_exe.root_module.linkSystemLibrary("webkit2gtk-4.1", .{});
             desktop_exe.root_module.linkSystemLibrary("gtk-3", .{});
             desktop_exe.root_module.linkSystemLibrary("soup-3.0", .{});
@@ -740,6 +770,7 @@ pub fn build(b: *std.Build) void {
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
     const test_step = b.step("test", "Run tests");
+    test_step.dependOn(fetch_vendor_curl_step);
     test_step.dependOn(&run_mod_tests.step);
 
     const ai_workflow_tui_test_mod = b.addTest(.{
@@ -755,6 +786,7 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .x86_64,
         .os_tag = .linux,
         .abi = .gnu,
+        .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
     });
     const linux_exe = createPlatformExe(b, mod, linux_target, optimize, "nalarcore-linux-x86_64");
     linux_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
@@ -764,6 +796,7 @@ pub fn build(b: *std.Build) void {
     // build.zig). No need to call linkSystemLibrary("curl", ...) or
     // linkCurlIncludePath here — the module graph handles it.
     linux_exe.root_module.link_libc = true;
+    linux_step.dependOn(fetch_vendor_curl_step);
     const install_linux = b.addInstallArtifact(linux_exe, .{});
     linux_step.dependOn(&install_linux.step);
 
@@ -779,13 +812,15 @@ pub fn build(b: *std.Build) void {
     // (which the CI yaml's verify step doesn't expect).
     const windows_exe = createPlatformExe(b, mod, windows_target, optimize, "nalarcore-windows-x86_64");
     // libcurl is linked via custom_http_client_mod's transitive deps.
-    // NOTE: vendor/curl/windows-amd64/ is NOT built yet (MinGW setup
-    // pending — see scripts/build-vendor-curl.sh for the gap).
+    // NOTE: src/modules/custom_http_client/vendor/curl/windows-amd64/
+    // is NOT built yet (MinGW setup pending — see the curl build
+    // script for the gap).
     windows_exe.root_module.link_libc = true;
-    // Fresh checkout: vendor/sqlite3 doesn't exist yet. Depend on the
-    // auto-fetch step so the cross-target linker sees sqlite3.c.
-    // Also depend on fetch-vendor-curl so vendor/curl/windows-amd64/
-    // gets built (currently fails — see MinGW note above).
+    // Fresh checkout: src/modules/databases/vendor/sqlite3/ doesn't
+    // exist yet. Depend on the auto-fetch step so the cross-target
+    // linker sees sqlite3.c.
+    // Also depend on fetch-vendor-curl so the windows-amd64/ vendor
+    // dir gets built (currently fails — see MinGW note above).
     windows_step.dependOn(fetch_vendor_curl_step);
     const install_windows = b.addInstallArtifact(windows_exe, .{});
     windows_step.dependOn(&install_windows.step);
@@ -820,6 +855,7 @@ pub fn build(b: *std.Build) void {
     linux_system_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
     // libcurl is linked via custom_http_client_mod's transitive deps.
     linux_system_exe.root_module.link_libc = true;
+    linux_system_step.dependOn(fetch_vendor_curl_step);
     linux_system_step.dependOn(&linux_system_exe.step);
     const install_linux_system = b.addInstallArtifact(linux_system_exe, .{});
     linux_system_step.dependOn(&install_linux_system.step);
@@ -848,6 +884,7 @@ pub fn build(b: *std.Build) void {
     dev_exe.root_module.linkSystemLibrary("c", .{});
     // libcurl is linked via custom_http_client_mod's transitive deps.
     dev_exe.root_module.link_libc = true;
+    dev_linux_system_step.dependOn(fetch_vendor_curl_step);
     linkPlatformDeps(b, dev_exe, target);
     if (target.result.os.tag == .windows) {
     }
@@ -1064,6 +1101,10 @@ pub fn build(b: *std.Build) void {
     build_all_step.dependOn(&desktop_install.step);
     build_all_step.dependOn(&cli_install.step);
     build_all_step.dependOn(&build_banner.step);
+    // Make `zig build` (default) auto-fetch the vendored curl archive
+    // when missing. The fetch script is idempotent — re-running on a
+    // populated vendor/ is a fast no-op.
+    build_all_step.dependOn(fetch_vendor_curl_step);
 
     // Default: same as `build:all`. Without this, `zig build` (no args)
     // runs the `install` step alone, which prints no summary on success.

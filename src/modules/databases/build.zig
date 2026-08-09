@@ -22,21 +22,15 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Path to the vendored sqlite3 amalgamation, relative to this
-    // package's build.zig. Default assumes the package lives at
-    // `<project>/src/modules/databases/` and the vendor dir is at
-    // `<project>/vendor/sqlite3/`. Override with `-Dvendor-dir=...`
-    // if you move either side.
-    //
-    // `b.path()` resolves relative to the package's build.zig
-    // directory, so `../../../vendor/sqlite3` walks up 3 levels
-    // (src → modules → databases's parent's parent's parent) to reach
-    // the project root. An absolute path or a different relative
-    // layout works too — pass it via `-Dvendor-dir=...`.
+    // package's build.zig. Default is `vendor/sqlite3/` co-located with
+    // this build.zig (the package owns its own vendor dir — the fetch
+    // script at scripts/fetch-vendor-sqlite3.sh populates it).
+    // Override with `-Dvendor-dir=...` if you move it elsewhere.
     const vendor_dir = b.option(
         []const u8,
         "vendor-dir",
-        "Path to vendor/sqlite3/ (relative to this package, default '../../../vendor/sqlite3')",
-    ) orelse "../../../vendor/sqlite3";
+        "Path to vendor/sqlite3/ (relative to this package, default 'vendor/sqlite3')",
+    ) orelse "vendor/sqlite3";
 
     const mod = b.addModule("databases", .{
         .root_source_file = b.path("src/root.zig"),

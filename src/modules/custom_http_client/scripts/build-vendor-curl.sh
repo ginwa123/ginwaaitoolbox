@@ -45,7 +45,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 PROJECT_DIR="$( cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd )"
-VENDOR_DIR="${PROJECT_DIR}/vendor/curl"
+# Modules own their own vendor dir. The script lives in
+# src/modules/custom_http_client/scripts/ and writes to a `vendor/`
+# dir co-located with the package (../vendor/curl from here).
+VENDOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/vendor/curl"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/nalar-curl-XXXXXX")
 trap 'rm -rf "${TMP}"' EXIT
 
@@ -111,7 +114,36 @@ COMMON_CONFIGURE_FLAGS=(
     --disable-ech
 )
 
+# === Skip-if-already-built cache (BEFORE the source download) ===
+# Each per-target build is skipped if BOTH the archive and the headers
+# exist. Subsequent `zig build` invocations are no-ops at the script
+# level — this is the primary fix for the "always redownloading"
+# problem. Without this guard, every Zig build invocation fully
+# downloads the curl source + recompiles every .c file + re-archives.
+# Re-run the script with FORCE=1 to bypass the cache (e.g. after a
+# change to COMMON_CONFIGURE_FLAGS).
+if [[ "${FORCE:-0}" != "1" ]]; then
+    needs_build=0
+    for t in "${VENDOR_DIR}/linux-x86_64" \
+             "${VENDOR_DIR}/macos-arm64" \
+             "${VENDOR_DIR}/macos-x86_64"; do
+        if [[ ! -f "${t}/lib/libcurl.a" ]] || \
+           [[ ! -d "${t}/include/curl" ]] || \
+           [[ -z "$(ls "${t}/include/curl/" 2>/dev/null)" ]]; then
+            needs_build=1
+            break
+        fi
+    done
+    if [[ "${needs_build}" -eq 0 ]]; then
+        echo "Already built (libcurl.a + headers present for all targets)."
+        echo "Run with FORCE=1 to rebuild."
+        exit 0
+    fi
+fi
+
 # === Download curl source on first run ===
+# (Source is cached in TMP; even if TMP is cleaned up between runs,
+# the existing vendor/curl/<target>/lib/libcurl.a is the real cache.)
 if [[ ! -d "${SRC_DIR}" ]]; then
     echo "=== Downloading curl ${CURL_VERSION} source ==="
     curl -fsSL --retry 3 --connect-timeout 30 "${CURL_URL}" -o "${TMP}/curl.tar.gz"

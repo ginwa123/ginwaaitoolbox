@@ -32,21 +32,15 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Path to the vendored curl directory, relative to this
-    // package's build.zig. Default assumes the package lives at
-    // `<project>/src/modules/custom_http_client/` and the vendor
-    // dir is at `<project>/vendor/curl/`. Override with
-    // `-Dvendor-dir=...` if you move either side.
-    //
-    // `b.path()` resolves relative to the package's build.zig
-    // directory, so `../../../vendor/curl` walks up 3 levels
-    // (src → modules → databases's parent's parent's parent) to reach
-    // the project root. An absolute path or a different relative
-    // layout works too — pass it via `-Dvendor-dir=...`.
+    // package's build.zig. Default is `vendor/curl/` co-located with
+    // this build.zig (the package owns its own vendor dir — the
+    // build script at scripts/build-vendor-curl.sh populates it).
+    // Override with `-Dvendor-dir=...` if you move it elsewhere.
     const vendor_dir = b.option(
         []const u8,
         "vendor-dir",
-        "Path to vendor/curl/ (relative to this package, default '../../../vendor/curl')",
-    ) orelse "../../../vendor/curl";
+        "Path to vendor/curl/ (relative to this package, default 'vendor/curl')",
+    ) orelse "vendor/curl";
 
     const mod = b.addModule("custom_http_client", .{
         .root_source_file = b.path("src/root.zig"),
@@ -59,7 +53,7 @@ pub fn build(b: *std.Build) void {
     mod.link_libc = true;
 
     // Resolve the per-target subdirectory name. The bootstrap script
-    // (scripts/build-vendor-curl.sh) writes:
+    // (scripts/build-vendor-curl.sh — co-located with this build.zig) writes:
     //   vendor/curl/linux-x86_64/{lib,include}/
     //   vendor/curl/macos-arm64/{lib,include}/
     //   vendor/curl/macos-x86_64/{lib,include}/
