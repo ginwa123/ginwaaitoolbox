@@ -73,7 +73,7 @@ pub fn build(b: *std.Build) void {
     // the matching .a shipped.
     const sqlite_c = b.path(b.fmt("{s}/sqlite3.c", .{vendor_dir}));
     const sqlite_flags = &[_][]const u8{
-        "-DSQLITE_THREADSAFE=0",
+        "-DSQLITE_THREADSAFE=1",
         "-DSQLITE_OMIT_LOAD_EXTENSION",
         "-DSQLITE_ENABLE_FTS5",
     };

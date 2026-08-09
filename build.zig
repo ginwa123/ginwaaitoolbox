@@ -1015,7 +1015,7 @@ pub fn build(b: *std.Build) void {
         \\echo "  nalar desktop binary  →  $D/{s}"
         \\echo "  nalarcli binary       →  $D/{s}"
         \\echo ""
-        \\echo "  (If a binary is missing, run `rm -rf $D && zig build`"
+        \\echo '  (If a binary is missing, run "rm -rf $D && zig build"'
         \\echo "   to force a fresh install — the cache sometimes hides"
         \\echo "   manual deletions.)"
         \\echo ""
