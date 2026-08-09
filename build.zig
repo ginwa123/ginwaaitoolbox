@@ -577,8 +577,11 @@ pub fn build(b: *std.Build) void {
 
     // Capture the InstallArtifact so `build:all` can dependOn its inner
     // step (see the build banner section at the end of this file for why).
+    // Note: don't add to `b.getInstallStep()` here — that's the default
+    // `install` step, and `build_all_step` re-uses it via `getInstallStep().dependOn(...)`
+    // already. Adding it twice causes the desktop install to be skipped
+    // when `zig build` runs (some kind of graph dedup issue).
     const desktop_install = b.addInstallArtifact(desktop_exe, .{});
-    b.getInstallStep().dependOn(&desktop_install.step);
 
     // Make the desktop binary depend on the codegen step. The codegen runs
     // `bun run build` first (via build_webapp_step) and then walks dist/ to
