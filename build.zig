@@ -81,23 +81,34 @@ fn createPlatformExe(
 }
 
 pub fn build(b: *std.Build) void {
-    // Target glibc 2.38 — needed for vendored curl's references to
-    // `__isoc23_*` (glibc 2.38+) and `arc4random` (glibc 2.36+ in
-    // weak-symbol form). Older glibc versions fail to link with
-    // "undefined reference to __isoc23_strtol" etc. The minimum
-    // version can be overridden with `-Dtarget=...` for hosts
+    // Target glibc 2.38 on Linux hosts — needed for vendored curl's
+    // references to `__isoc23_*` (glibc 2.38+) and `arc4random`
+    // (glibc 2.36+ in weak-symbol form). Older glibc versions fail to
+    // link with "undefined reference to __isoc23_strtol" etc. The
+    // minimum version can be overridden with `-Dtarget=...` for hosts
     // running older glibc.
-    // Target glibc 2.38 — needed for vendored curl's references to
-    // `__isoc23_*` (glibc 2.38+) and `arc4random` (glibc 2.36+ in
-    // weak-symbol form). Older glibc versions fail to link with
-    // "undefined reference to __isoc23_strtol" etc. The minimum
-    // version can be overridden with `-Dtarget=...` for hosts
-    // running older glibc.
-    const target = b.standardTargetOptions(.{ .default_target = .{
-        .cpu_arch = b.graph.host.result.cpu.arch,
-        .os_tag = .linux,
-        .abi = .gnu,
-        .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
+    //
+    // On non-Linux hosts (macOS, Windows), the default target follows
+    // the HOST OS so `zig build` and `zig build test` don't try to
+    // cross-compile to Linux. Previously this default was hardcoded to
+    // `.os_tag = .linux`, which made the macOS self-hosted runner
+    // (an Apple-Silicon MacBook) cross-compile to `aarch64-linux-gnu.2.38`
+    // and then look for `vendor/curl/linux-aarch64/lib/libcurl.a` —
+    // a target the curl bootstrap script never builds. Override with
+    // `-Dtarget=x86_64-linux-gnu.2.38` (etc.) to explicitly cross-compile
+    // from a macOS/Windows host.
+    const target = b.standardTargetOptions(.{ .default_target = switch (b.graph.host.result.os.tag) {
+        .linux => .{
+            .cpu_arch = b.graph.host.result.cpu.arch,
+            .os_tag = .linux,
+            .abi = .gnu,
+            .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
+        },
+        else => .{
+            .cpu_arch = b.graph.host.result.cpu.arch,
+            .os_tag = b.graph.host.result.os.tag,
+            .abi = b.graph.host.result.abi,
+        },
     } });
     const optimize = b.standardOptimizeOption(.{});
 

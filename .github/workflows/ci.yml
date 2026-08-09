@@ -32,26 +32,27 @@ jobs:
         # There is currently no Windows self-hosted runner registered, so the
         # Windows cell/job was removed entirely rather than left to queue
         # forever waiting for a matching runner. Re-add it once a
-        # `[self-hosted, windows]`-labeled runner exists.
+        # `[self-hosted, windows]`-labeled runner exists. The Windows
+        # cross-compile artifact build (`zig build install:windows`) is
+        # also broken on a Linux host because the `databases` module's
+        # deps leak Linux system libs into the Windows link line — see
+        # AGENTS.md "Cross-platform pitfalls" for details. To enable
+        # Windows CI, fix BOTH the runner AND the cross-compile build.
         # The exclude block filters the full cross-product (2 OSes × 2 targets
         # = 4 cells) down to the 2 native-target cells.
         os:
         - [self-hosted, Linux, X64]
         - [self-hosted, macOS, ARM64]
         target:
-          # build_args is appended to `zig build <step>`. Use `-Dlinux-libs=false`
-          # when cross-compiling FROM Linux TO another target: the dev/test config
-          # attaches `ssl`/`crypto`/`sqlite3` to `mod` on Linux hosts, which
-          # would otherwise leak into the cross-target link line (`-lsqlite3
-          # -lssl -lcrypto`) and fail with "unable to find dynamic system library"
-          # because those Linux system libs don't exist on macOS targets.
-          - { zig: x86_64-linux-gnu,       step: install:linux:system, build_args: '' }
+          # Linux native — uses the host's installed glibc / openssl /
+          # sqlite3 via the `databases` package's link line.
+          - { zig: x86_64-linux-gnu,       step: install:linux:system }
           # macOS runner is Apple Silicon (ARM64), so the native target is
           # aarch64-macos. Use `install:macos-arm` (NOT `install:macos`,
           # which hardcodes x86_64-macos in build.zig and produces an
           # x86_64 binary that the ARM64 runner rejects with "Bad CPU
           # type in executable").
-          - { zig: aarch64-macos,          step: install:macos-arm,  build_args: '-Dlinux-libs=false' }
+          - { zig: aarch64-macos,          step: install:macos-arm }
         exclude:
           - os: [self-hosted, Linux, X64]
             target: { zig: aarch64-macos, step: install:macos-arm }
@@ -68,30 +69,69 @@ jobs:
 
       - name: Install system dependencies (Arch)
         if: runner.os == 'Linux'
-        # Arch self-hosted runner: assumed to already run as root, so no
-        # sudo is used (and may not even be installed on the image).
-        # base-devel provides the C toolchain, pkgconf provides
-        # pkg-config, and openssl/sqlite provide the dev headers + libs
-        # that build.zig links against.
+        # Arch self-hosted runner: the package set is pre-installed on the
+        # host machine (ginwa-laptop). The runner container that wraps
+        # each job inherits the host's package DB but runs as the host
+        # user (`ginwa`, not root) — so `pacman -S` fails with
+        # "you cannot perform this operation unless you are root" in the
+        # CI environment.
         #
-        # Resource optimization: NO `pacman -Syu` (full system upgrade).
-        # The self-hosted runner is persistent — packages installed on
-        # one run stay installed for the next. `pacman -S --needed` is
-        # idempotent and skips the network round-trip when packages are
-        # already current. A full upgrade would re-download every package
-        # in the system (~1 GB) on every CI run for no functional benefit.
-        # If the runner image ever needs updating, run `pacman -Syu` once
-        # on the runner host (out of band) and the --needed flag below
-        # will pick it up.
+        # Strategy: verify each required package is already installed
+        # (`pacman -Q` is read-only and works as a non-root user). If
+        # anything is missing, attempt `sudo -n pacman -S --needed` —
+        # `-n` (non-interactive) makes sudo fail fast if passwordless
+        # sudo isn't configured, instead of hanging waiting for input.
+        # If sudo fails, the step exits 1 with a clear remediation
+        # message ("install packages as root on the runner host").
+        #
+        # Why no `pacman -Syu`: the runner host is persistent, and a
+        # full system upgrade would re-download every package (~1 GB)
+        # on every CI run. If the host needs updating, run
+        # `pacman -Syu` on the runner host (out of band).
+        #
+        # Required packages:
+        #   base-devel      — C toolchain (gcc, make, etc.)
+        #   openssl         — dev headers + libssl/libcrypto for the
+        #                     `databases` package's link line
+        #   sqlite          — sqlite3 headers (the `databases` package
+        #                     compiles its own amalgamation, but the
+        #                     system sqlite3.h is a useful fallback for
+        #                     any cimport from outside the package)
+        #   pkgconf         — pkg-config for the "Show toolchain versions"
+        #                     diagnostic step
+        #   webkit2gtk-4.1  — runtime + headers for the nalar-desktop
+        #                     webview (Linux GTK)
+        #   gtk3            — runtime + headers for nalar-desktop
+        #   libsoup3        — runtime + headers for nalar-desktop
+        #   unzip           — needed by oven-sh/setup-bun to extract the
+        #                     Bun release archive on the runner. GitHub-
+        #                     hosted Ubuntu runners ship unzip pre-installed,
+        #                     but the self-hosted Arch runner image does not.
         run: |
-          pacman -S --needed --noconfirm \
-            base-devel \
-            openssl \
-            sqlite \
-            pkgconf \
-            webkit2gtk-4.1 \
-            gtk3 \
-            libsoup3
+          set -u
+          missing=()
+          for pkg in base-devel openssl sqlite pkgconf webkit2gtk-4.1 gtk3 libsoup3 unzip; do
+            if pacman -Q "$pkg" >/dev/null 2>&1; then
+              echo "  ✓ $pkg"
+            else
+              echo "  ✗ $pkg MISSING"
+              missing+=("$pkg")
+            fi
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo ""
+            echo "Missing packages: ${missing[*]}"
+            echo "Attempting passwordless sudo install..."
+            if sudo -n true 2>/dev/null; then
+              sudo -n pacman -S --needed --noconfirm "${missing[@]}"
+            else
+              echo "✗ passwordless sudo is not available on the runner" >&2
+              echo "  Fix: run on the runner host as root:" >&2
+              echo "    pacman -S --needed ${missing[*]}" >&2
+              exit 1
+            fi
+          fi
+          echo "✓ all required packages present"
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
@@ -149,16 +189,22 @@ jobs:
 
       - name: Fetch vendored SQLite amalgamation (non-Linux)
         if: runner.os != 'Linux'
-        # The amalgamation is gitignored (`/vendor/` in .gitignore) to
-        # avoid bloating the repo with ~10 MB of binary-like content. On
-        # macOS, `build.zig` compiles sqlite3.c from `vendor/sqlite3/`, so
-        # we need to fetch it before any zig build call. The script is
+        # The amalgamation is gitignored (in .gitignore as
+        # `src/modules/databases/vendor/`) to avoid bloating the repo with
+        # ~10 MB of binary-like content. On macOS, `build.zig` compiles
+        # sqlite3.c from `src/modules/databases/vendor/sqlite3/`, so we
+        # need to fetch it before any zig build call. The script is
         # idempotent: it skips if the files already exist (e.g., restored
         # from a prior run's cache).
+        #
+        # The script lives at `src/modules/databases/scripts/` (co-located
+        # with the `databases` Zig package that consumes it — moved there
+        # in PR #211's self-contained-package refactor; the old
+        # `scripts/fetch-vendor-sqlite3.sh` top-level alias was removed).
         shell: bash
         run: |
-          chmod +x scripts/fetch-vendor-sqlite3.sh
-          ./scripts/fetch-vendor-sqlite3.sh
+          chmod +x src/modules/databases/scripts/fetch-vendor-sqlite3.sh
+          ./src/modules/databases/scripts/fetch-vendor-sqlite3.sh
 
       - name: Install Bun ${{ env.BUN_VERSION }}
         uses: oven-sh/setup-bun@v2
@@ -183,11 +229,22 @@ jobs:
           path: |
             .zig-cache
             zig-out
-            vendor
+            # Module-owned vendor dirs (each module carries its own; the
+            # root-level `vendor/` was removed in PR #211's
+            # self-contained-package refactor). Both `src/modules/...`
+            # paths are the ones build.zig's `addObjectFile` and
+            # `addIncludePath` calls read from.
+            src/modules/databases/vendor
+            src/modules/custom_http_client/vendor
             src/apps/desktop_app/embedded
-          key: zig-${{ runner.os }}-${{ matrix.target.zig }}-${{ hashFiles('build.zig', 'build.zig.zon', 'src/apps/desktop_app/main.zig', 'src/apps/desktop/bun.lock', 'scripts/fetch-vendor-sqlite3.sh') }}
+          # Cache key includes `build.zig` so a build.zig change invalidates
+          # the cache. `scripts/fetch-vendor-sqlite3.sh` is no longer at
+          # the repo root — moved to `src/modules/databases/scripts/` —
+          # but we keep hashing it via its new path for forward-compat
+          # with future cache-invalidation needs.
+          key: v2-zig-${{ runner.os }}-${{ matrix.target.zig }}-${{ hashFiles('build.zig', 'build.zig.zon', 'src/apps/desktop_app/main.zig', 'src/apps/desktop/bun.lock', 'src/modules/databases/scripts/fetch-vendor-sqlite3.sh') }}
           restore-keys: |
-            zig-${{ runner.os }}-${{ matrix.target.zig }}-
+            v2-zig-${{ runner.os }}-${{ matrix.target.zig }}-
 
       - name: Run main test suite
         run: zig build test --summary all

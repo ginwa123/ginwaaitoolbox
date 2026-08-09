@@ -4154,6 +4154,167 @@ appending to AGENTS.md). The convention is unchanged — AGENTS.md
 is the canonical project doc; memories are working notes that
 get compacted when they get too numerous.
 
+## 2026-08-06: CI — fix Linux pacman non-root + macOS hardcoded Linux target
+
+**Symptom (4 distinct CI failures observed across runs #31328267494,
+#31330286544, #31331115629, #31331253415).**
+1. **Linux X64 cell** failed at `Install system dependencies (Arch)`:
+   `error: you cannot perform this operation unless you are root.`
+   The pacman step needed root but the self-hosted runner (`540e85458d47`
+   on `ginwa-laptop`) runs as user `ginwa` (uid 1000), not root.
+2. **macOS ARM64 cell** failed at `Run main test suite` with
+   `.../vendor/curl/linux-aarch64/lib/libcurl.a: file not found`.
+   The macOS self-hosted runner (`ginwas-MacBook-Air`) cross-compiled
+   to `aarch64-linux-gnu.2.38` instead of building natively for
+   `aarch64-macos` — and the vendored curl archive for Linux-aarch64
+   was never produced by `build-vendor-curl.sh`.
+3. **macOS cell** failed at `Fetch vendored SQLite amalgamation
+   (non-Linux)` because the CI workflow called
+   `scripts/fetch-vendor-sqlite3.sh` (now removed) instead of
+   `src/modules/databases/scripts/fetch-vendor-sqlite3.sh`.
+4. **Linux cell** failed at `Install Bun 1.3.11` with
+   `Error: Unable to locate executable file: unzip` (oven-sh/setup-bun
+   uses `unzip` internally; the self-hosted Arch runner image doesn't
+   ship it).
+5. **Linux cell** failed at `Run main test suite` because the CI cache
+   restored the OLD `vendor/` root-level path (pre-PR #211 layout) —
+   the new code reads from `src/modules/custom_http_client/vendor/`.
+
+**Root causes.**
+1. `build.zig:98` hardcoded `.os_tag = .linux` as the default target.
+   On macOS hosts, `b.standardTargetOptions(.{})` returned
+   `aarch64-linux-gnu.2.38`, so the `databases_mod` and
+   `custom_http_client_mod` (both built with `target = ...` from
+   `b.standardTargetOptions`) wired up Linux system libs (ssl/crypto/pq)
+   and looked for `vendor/curl/linux-aarch64/lib/libcurl.a` (a target
+   the bootstrap script doesn't build).
+2. `ci.yml` step `Install system dependencies (Arch)` assumed the
+   runner "already runs as root" — wrong. Same machine runs as user
+   `ginwa`, so `pacman -S` failed before any package could be checked.
+3. PR #211's self-contained-package refactor moved vendor dirs from
+   the repo-root `vendor/` to per-module `src/modules/*/vendor/` but
+   the CI workflow's script paths and cache paths weren't updated.
+4. The CI cache key didn't include the new vendor path AND used a
+   `restore-keys` prefix that matched OLD caches (which had the
+   pre-PR #211 root-level `vendor/` layout).
+
+**What landed (2 files, +125/-58).**
+- `build.zig:84-112` — host-aware default target. Linux hosts keep
+  the existing `.glibc_version = 2.38` setup; non-Linux hosts use
+  `b.graph.host.result.os.tag` + `.abi` (no glibc override).
+  Override with `-Dtarget=...` for explicit cross-compile.
+- `.github/workflows/ci.yml:69-130` — replaced the broken
+  `pacman -S` step with a verify-then-install loop:
+  `pacman -Q` (read-only, no root needed) checks each required
+  package; missing packages trigger `sudo -n pacman -S --needed`
+  (non-interactive, fails fast if passwordless sudo isn't available,
+  then exits 1 with a clear "install on the runner host" remediation).
+  Added `unzip` to the package list (needed by oven-sh/setup-bun).
+- `.github/workflows/ci.yml:190-204` — updated the sqlite3 fetch step
+  to call the new script path (`src/modules/databases/scripts/`).
+- `.github/workflows/ci.yml:226-249` — updated the Zig cache config:
+  - Cache path now lists `src/modules/databases/vendor` and
+    `src/modules/custom_http_client/vendor` instead of the dead
+    `vendor/` root path.
+  - Cache key bumped to `v2-zig-...` prefix to invalidate all OLD
+    caches that have the pre-PR #211 root-level `vendor/` layout.
+    Without the bump, the `restore-keys` prefix match would restore
+    an OLD cache with the wrong path layout — the build would then
+    try to use an archive that doesn't exist at the new location.
+- `.github/workflows/ci.yml:29-54` — removed dead `build_args` field
+  from the matrix (declared but never referenced; the `-Dlinux-libs`
+  option it pointed to was deleted in PR #211's `databases` package
+  extraction). Comment block now accurately describes the 2-cell
+  matrix + the gap (Windows CI requires both a registered runner AND
+  a working `install:windows` cross-compile).
+
+**Verification (CI run #31331253415 on PR #213).**
+- ✓ Linux X64 cell — Install system dependencies (Arch) passes
+  (7/7 packages verified, no pacman error).
+- ✓ Linux X64 cell — Install Bun 1.3.11 passes (unzip now present).
+- ✗ Linux X64 cell — Run main test suite (CACHE issue; fixed in
+  subsequent commit by bumping cache key prefix to `v2-`).
+- ✗ macOS ARM64 cell — Fetch vendored SQLite amalgamation (non-Linux)
+  (script path wrong; fixed in subsequent commit).
+- Both cells reach the previously-failing steps, confirming the
+  root causes above.
+
+**Local verification.**
+- `zig build --summary all` — 12/12 steps succeeded.
+- `zig build nalar-desktop --summary all` — 6/6 steps succeeded.
+- `zig build test --summary all` — **2185 pass / 6 skip / 16 fail /
+  1 crash / 18 leaks** (identical to main HEAD — zero regressions;
+  the 16 fail + 1 crash + 18 leaks are the pre-existing
+  PR #181 tool-call-loading-placeholder baseline).
+- `zig build-obj -fno-emit-bin -target aarch64-macos` — clean.
+- `zig build-obj -fno-emit-bin -target x86_64-windows-gnu` — clean.
+- New pacman step: verified 7/7 packages locally, both success +
+  failure paths work.
+
+**Out of scope (deferred to future PRs).**
+- **Windows CI** — needs BOTH a registered `[self-hosted, windows]`
+  runner AND a fix to `install:windows` (the `databases_mod` link
+  line still leaks `-lssl -lcrypto -lpq` into the Windows compile
+  because `databases_mod` is built with the HOST target's deps).
+- **macOS ARM64 runner offline** — `ginwas-MacBook-Air` is registered
+  but offline. The CI workflow step changes above (host-aware default
+  target + correct sqlite3 script path) will make the macOS cell
+  pass once the runner is brought back online.
+- **`install:macos-arm` / `install:windows` cross-compile from Linux
+  host** — pre-existing bug (same root cause as the Windows leak:
+  `databases_mod` built with host target). Affects dev convenience,
+  not CI (the matrix `exclude` filters those cells out).
+
+**Pitfalls (record for future agents).**
+- **`b.graph.host.result.os.tag` works at build-time (comptime-ish)
+  in Zig 0.16** — no need for `@hasDecl` defensive checks. Verified
+  by the existing code at `build.zig:1008-1024` (host binary name
+  switch) which uses the same pattern.
+- **`pacman -Q` works as non-root** (read-only metadata access);
+  only `pacman -S` requires root. The verify-then-install loop relies
+  on this distinction.
+- **`sudo -n` is essential** — without `-n`, sudo would hang waiting
+  for a password in a non-interactive CI shell, eventually timing out
+  in a way that looks like a CI infrastructure bug rather than a
+  config issue.
+- **The CI matrix `step` field is dead documentation** — no step
+  actually invokes `matrix.target.step`; the build command is the
+  unconditional `zig build nalar-desktop`. The matrix only uses
+  `matrix.target.zig` (artifact name) and `matrix.os` (runner
+  selection). Kept `step` in the matrix for human readability.
+- **CI cache key bumps invalidate caches cleanly** — adding a `v2-`
+  prefix (or any non-overlapping token) makes `restore-keys` fail
+  to match OLD caches, forcing a fresh build. Without the bump,
+  `restore-keys` is a prefix-match fallback — it would happily
+  restore an OLD cache whose path layout is incompatible with the
+  new code.
+- **Don't trust the "assumed to already run as root" comment** in
+  the pre-fix CI workflow — it was wrong on the actual runner
+  (`uid=1000 ginwa`, not root). When you see such assumptions in CI
+  configs, verify them on the live runner before relying on them.
+- **The CI comment about `-Dlinux-libs=false`** referred to a build
+  option that was deleted in PR #211's `databases` package
+  extraction. The new comment accurately describes the current state
+  (no `-Dlinux-libs`; the link-leak bug it referenced is fixed by
+  the per-package `addImport` graph, except for the Windows
+  cross-compile edge case which still needs the same fix on the
+  `install:windows` build path).
+- **oven-sh/setup-bun needs `unzip` on the runner** — `unzip` is
+  pre-installed on GitHub-hosted Ubuntu runners but NOT on the
+  self-hosted Arch runner image. Always verify the runner image's
+  base tooling when using actions that shell out to common Unix
+  utilities.
+- **PR #211's vendor-path move broke CI in 4 places** — the script
+  path (sqlite3), the cache path (curl + sqlite), the package
+  (Windows self-host runner), and the package ownership of the
+  cache config. All 4 needed updates together; doing only one would
+  leave CI broken in a different way.
+
+**Branch / commit.**
+- Branch: `worktree/fix-ci-linux-macos`
+- PR: #213
+- 1 squash-merge candidate commit.
+
 ## 2026-08-06: Memory compaction
 
 **Symptom.** `.nalar/memories/` had grown to 23 files (~2770
