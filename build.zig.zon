@@ -3,10 +3,22 @@
     .version = "0.0.0",
     .fingerprint = 0x288cfd2ff6c19f4c,
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        // Self-contained sqlite3 / openssl / libpq package. The package
+        // lives in-tree at src/modules/databases/ and exposes a single
+        // `databases` module; consumers `@import("databases")` to use it.
+        .databases = .{
+            .path = "src/modules/databases",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
+        // Exclude vendored deps from the package hash — they're
+        // hermetic (sqlite3 amalgamation is deterministic) but bloat
+        // the cache. Same convention as custom_http_client/build.zig.zon.
+        // (Doesn't matter much for in-tree path deps, but keeps the
+        // hash consistent with future url-based consumers.)
     },
 }
