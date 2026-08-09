@@ -10,6 +10,15 @@
         .databases = .{
             .path = "src/modules/databases",
         },
+        // Self-contained libcurl-backed HTTP client package. The package
+        // lives in-tree at src/modules/custom_http_client/ and exposes a
+        // single `custom_http_client` module; consumers
+        // `@import("custom_http_client")` to use it. The package's own
+        // build.zig wires the vendored prebuilt archive from
+        // vendor/curl/<target>/lib/libcurl.a (HTTP-only — no TLS).
+        .custom_http_client = .{
+            .path = "src/modules/custom_http_client",
+        },
     },
     .paths = .{
         "build.zig",

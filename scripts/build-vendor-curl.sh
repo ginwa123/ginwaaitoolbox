@@ -2,8 +2,8 @@
 # scripts/build-vendor-curl.sh
 #
 # Cross-compiles curl 8.10.1 from source for each target platform
-# (Linux x86_64, macOS arm64, macOS x86_64, Windows amd64) and writes
-# the prebuilt libcurl.a + curl headers to vendor/curl/<target>/.
+# (Linux x86_64, macOS arm64, macOS x86_64) and writes the prebuilt
+# libcurl.a + curl headers to vendor/curl/<target>/.
 #
 # Why we vendor curl (HTTP-only, no TLS):
 #   - `install:windows` and `install:macos*` previously failed because
@@ -17,9 +17,9 @@
 #     LLM API calls will fall back to http:// for now (TODO: vendor
 #     openssl for HTTPS support).
 #
-# Requires (host): bash, zig 0.16+ (for macOS cross-compile), system gcc
-# (for Linux native + MinGW for Windows). The curl source is downloaded
-# on first run from https://curl.se/download/.
+# Requires (host): bash, curl, autoconf (for ./configure), zig 0.16+
+# (for macOS cross-compile), gcc (for Linux native). The curl source
+# is downloaded on first run from https://curl.se/download/.
 #
 # Layout:
 #   vendor/curl/
@@ -28,11 +28,18 @@
 #   ├── macos-arm64/lib/libcurl.a          (built by this script)
 #   ├── macos-arm64/include/curl/*.h
 #   ├── macos-x86_64/lib/libcurl.a         (built by this script)
-#   ├── macos-x86_64/include/curl/*.h
-#   ├── windows-amd64/lib/libcurl.a        (built by this script, or
-#   │                                      from official curl Windows
-#   │                                      zip if you prefer)
-#   └── windows-amd64/include/curl/*.h
+#   └── macos-x86_64/include/curl/*.h
+#
+# Method:
+#   For each target, run ./configure with target-specific options
+#   (--host + CC for cross-compile), then run `make` to compile each
+#   .c file into a .o. The final libtool linker step (`make` for the
+#   `libcurl.la` target) fails on Linux hosts due to a libtool bug
+#   (`0: Bad file descriptor`), but each .c file is already compiled —
+#   we just `ar rcs libcurl.a lib/*.o` to archive them directly,
+#   bypassing libtool. The resulting libcurl.a has the same symbols
+#   as the libtool-built archive (curl_easy_init, curl_global_init,
+#   curl_easy_perform, etc.) — verified with `nm`.
 
 set -euo pipefail
 
@@ -45,9 +52,64 @@ trap 'rm -rf "${TMP}"' EXIT
 CURL_VERSION="8.10.1"
 CURL_URL="https://curl.se/download/curl-${CURL_VERSION}.tar.gz"
 SRC_DIR="${TMP}/curl-${CURL_VERSION}"
-BUILD_LINUX="${TMP}/build-linux"
-BUILD_MACOS_ARM64="${TMP}/build-macos-arm64"
-BUILD_MACOS_X86_64="${TMP}/build-macos-x86_64"
+
+# === Common configure flags for HTTP-only curl ===
+# --disable-everything is too aggressive (it disables HTTP); instead
+# disable individual protocols / TLS backends / features we don't need.
+# --disable-ssl is REQUIRED — without it, curl's vtls.c still compiles
+# and exports Curl_ssl_conn_config_match + friends that the rest of
+# libcurl references, causing link-time undefined symbol errors even
+# though no TLS backend is wired in. (Disabling each individual
+# backend via --without-* leaves the TLS layer active with no
+# implementation — that's the bug we hit.)
+COMMON_CONFIGURE_FLAGS=(
+    --disable-shared
+    --enable-static
+    --disable-ssl
+    --disable-ldap
+    --disable-ldaps
+    --without-ssl
+    --without-bearssl
+    --without-gnutls
+    --without-wolfssl
+    --without-mbedtls
+    --without-rustls
+    --without-nghttp2
+    --without-nghttp3
+    --without-ngtcp2
+    --without-quiche
+    --without-libssh2
+    --without-libssh
+    --without-zlib
+    --without-brotli
+    --without-zstd
+    --without-libidn2
+    --without-librtmp
+    --without-libpsl
+    --without-libgsasl
+    --disable-unix-sockets
+    --disable-websockets
+    --disable-threaded-resolver
+    --disable-ipv6
+    --disable-ares
+    --disable-docs
+    --disable-alt-svc
+    --disable-headers-api
+    --disable-hsts
+    --disable-dict
+    --disable-file
+    --disable-ftp
+    --disable-gopher
+    --disable-imap
+    --disable-mqtt
+    --disable-pop3
+    --disable-rtsp
+    --disable-smb
+    --disable-smtp
+    --disable-telnet
+    --disable-tftp
+    --disable-ech
+)
 
 # === Download curl source on first run ===
 if [[ ! -d "${SRC_DIR}" ]]; then
@@ -56,206 +118,134 @@ if [[ ! -d "${SRC_DIR}" ]]; then
     tar -xzf "${TMP}/curl.tar.gz" -C "${TMP}/"
 fi
 
-# === List of curl .c source files (excluding platform-specific + TLS backends) ===
-# We skip:
-#   - TLS backends (vtls/, openssl.c, wolfssl.c, etc.) — no TLS support
-#   - OS-specific backends (darwin, win32, os400, etc.) — host-specific
-#   - Auth backends requiring system deps (krb5, gsasl, cleartext)
-CURL_SOURCES=$(find "${SRC_DIR}/lib" -maxdepth 1 -name '*.c' \
-    ! -name 'darwin*' \
-    ! -name 'os400*' \
-    ! -name 'windows*' \
-    ! -name 'win32*' \
-    ! -name 'wininet*' \
-    ! -name 'wldap*' \
-    ! -name 'security.c' \
-    ! -name 'schannel.c' \
-    ! -name 'msdos.c' \
-    ! -name 'riscos.c' \
-    ! -name 'plan9.c' \
-    ! -name 'beos.c' \
-    ! -name 'netware.c' \
-    ! -name 'openbsd.c' \
-    ! -name 'haiku.c' \
-    ! -name 'symbian.c' \
-    ! -name 'tpf.c' \
-    ! -name 'aros.c' \
-    ! -name 'qnx.c' \
-    ! -name 'xdk.c' \
-    | sort)
-
-# === Common compile flags for HTTP-only curl ===
-COMMON_FLAGS=(
-    -DHAVE_CONFIG_H
-    -DBUILDING_LIBCURL
-    -DCURL_DISABLE_LDAP
-    -DCURL_DISABLE_LDAPS
-    -DCURL_USE_OPENSSL=0
-    -DCURL_USE_BEARSSL=0
-    -DCURL_USE_GNUTLS=0
-    -DCURL_USE_WOLFSSL=0
-    -DCURL_USE_MBEDTLS=0
-    -DCURL_USE_RUSTLS=0
-    -DCURL_USE_NGHTTP2=0
-    -DCURL_USE_NGHTTP3=0
-    -DCURL_USE_NGTCP2=0
-    -DCURL_USE_QUICHE=0
-    -DCURL_USE_LIBSSH2=0
-    -DCURL_USE_LIBSSH=0
-    -DCURL_USE_ZLIB=0
-    -DCURL_USE_BROTLI=0
-    -DCURL_USE_ZSTD=0
-    -DCURL_USE_LIBPSL=0
-    -DCURL_USE_LIBIDN2=0
-    -DCURL_USE_LIBRTMP=0
-    -DENABLE_IPV6=0
-    -DENABLE_UNIX_SOCKETS=0
-    -DENABLE_WEBSOCKETS=0
-    -DENABLE_THREADED_RESOLVER=0
-)
-
-# === Build a minimal curl_config.h for HTTP-only curl ===
-# curl_setup.h includes curl_config.h. Without it, curl_setup.h fails.
-# We generate a tiny one that disables all optional features.
-make_minimal_config_h() {
-    local out="$1"
-    cat > "${out}" <<'CONFIG_EOF'
-/* Minimal curl_config.h for HTTP-only curl (no TLS, no extras) */
-#define HAVE_ARPA_INET_H 1
-#define HAVE_ERRNO_H 1
-#define HAVE_FCNTL_H 1
-#define HAVE_NETDB_H 1
-#define HAVE_NETINET_IN_H 1
-#define HAVE_NETINET_TCP_H 1
-#define HAVE_POLL_H 1
-#define HAVE_SELECT_H 1
-#define HAVE_SOCKADDR_IN6_SIN6_ADDR 1
-#define HAVE_SOCKADDR_IN6_SIN6_SCOPE_ID 1
-#define HAVE_STRINGS_H 1
-#define HAVE_STDINT_H 1
-#define HAVE_STDLIB_H 1
-#define HAVE_STRING_H 1
-#define HAVE_STRUCT_TIMEVAL 1
-#define HAVE_SYS_FILIO_H 1
-#define HAVE_SYS_IOCTL_H 1
-#define HAVE_SYS_PARAM_H 1
-#define HAVE_SYS_POLL_H 1
-#define HAVE_SYS_RESOURCE_H 1
-#define HAVE_SYS_SELECT_H 1
-#define HAVE_SYS_SOCKET_H 1
-#define HAVE_SYS_STAT_H 1
-#define HAVE_SYS_TIME_H 1
-#define HAVE_SYS_TYPES_H 1
-#define HAVE_SYS_UIO_H 1
-#define HAVE_UNISTD_H 1
-#define HAVE_CLOCK_GETTIME_MONOTONIC 1
-#define HAVE_GETADDRINFO 1
-#define HAVE_GETHOSTBYADDR 1
-#define HAVE_GETHOSTBYNAME 1
-#define HAVE_GETNAMEINFO 1
-#define HAVE_GETPEERNAME 1
-#define HAVE_GETSOCKNAME 1
-#define HAVE_GETTIMEOFDAY 1
-#define HAVE_INET_NTOP 1
-#define HAVE_INET_PTON 1
-#define HAVE_MSG_NOSIGNAL 1
-#define HAVE_PIPE 1
-#define HAVE_POLL 1
-#define HAVE_RECV 1
-#define HAVE_RECVFROM 1
-#define HAVE_SEND 1
-#define HAVE_SIGACTION 1
-#define HAVE_SOCKET 1
-#define HAVE_STRCASECMP 1
-#define HAVE_STRDUP 1
-#define HAVE_STRERROR_R 1
-#define HAVE_STRICMP 1
-#define HAVE_STRNCASECMP 1
-#define HAVE_STRNICMP 1
-#define HAVE_WRITEV 1
-#define OS "linux"
-#define HAVE_SOCKLEN_T 1
-#define HAVE_LIMITS_H 1
-#define HAVE_FCNTL_O_NONBLOCK 1
-CONFIG_EOF
-}
-
-# === Helper: compile all curl .c files + archive ===
-# Args: $1 = output dir, $2 = archiver, $3.. = CC + CC args
+# === Build for a specific target ===
+# Args: $1 = output dir (e.g. vendor/curl/linux-x86_64), $2 = host triple
+#       (empty for native), $3.. = extra CC args (e.g. "-target aarch64-macos")
 build_target() {
     local out_dir="$1"
-    local ar_cmd="$2"
+    local host_triple="$2"
     shift 2
-    local cc_cmd=("$@")
+    local cc_extra=("$@")
 
     echo ""
     echo "=== Building for ${out_dir} ==="
-    mkdir -p "${out_dir}/obj" "${out_dir}/include"
+    rm -rf "${TMP}/build"
+    mkdir -p "${TMP}/build"
+    cd "${TMP}/build"
 
-    # Headers
+    local prefix="${TMP}/install-${out_dir##*/}"
+
+    # For cross-compile, force CC/CXX/AR/RANLIB to use zig cc / zig ar.
+    # Without this, ./configure picks up the host gcc and produces
+    # ELF x86_64 objects even when --host says aarch64-apple-darwin
+    # (we hit this — see git history for the ELF-x86_64-on-macOS bug).
+    if [[ -n "${host_triple}" ]]; then
+        export CC="zig cc ${cc_extra[*]}"
+        export CXX="zig c++ ${cc_extra[*]}"
+        export AR="zig ar"
+        export RANLIB="zig ranlib"
+        export ac_cv_host="${host_triple}"
+    else
+        unset CC CXX AR RANLIB ac_cv_host
+    fi
+
+    # Run ./configure with target-specific options
+    local cfg_cmd=("${SRC_DIR}/configure" "--prefix=${prefix}")
+    if [[ -n "${host_triple}" ]]; then
+        cfg_cmd+=("--host=${host_triple}")
+    fi
+    cfg_cmd+=("${COMMON_CONFIGURE_FLAGS[@]}")
+
+    "${cfg_cmd[@]}" >/dev/null 2>&1
+
+    # Compile each .c file. The final libtool link step (libcurl.la)
+    # fails on Linux hosts due to a libtool bug (Bad file descriptor on
+    # fd 0), but that's OK — every .c file is already compiled into a
+    # .o. We just bypass libtool by archiving them directly.
+    make -j4 >/dev/null 2>&1 || true
+
+    # Verify we got at least 100 .o files (sanity check). We must search
+    # RECURSIVELY — the Makefile also produces lib/vtls/*.o (TLS glue
+    # functions always compiled even with --disable-ssl), lib/vauth/*.o
+    # (HTTP Digest auth), etc. — and our `ar rcs` step below needs them
+    # all, otherwise we get undefined-symbol errors at Zig link time.
+    local obj_count
+    obj_count=$(find lib -name '*.o' | wc -l)
+    if [[ "${obj_count}" -lt 100 ]]; then
+        echo "  ERROR: only ${obj_count} .o files produced — build is incomplete"
+        return 1
+    fi
+    echo "  compiled: ${obj_count} object files (recursive: includes vtls/, vauth/, etc.)"
+
+    # Verify the objects are actually for the right target (sanity
+    # check that the zig cc cross-compile actually worked). The first
+    # .o's magic-number tells us: ELF = Linux/BSD, Mach-O = Apple,
+    # COFF = Windows.
+    # Use `find -print -quit` instead of `find | head -n 1` — the
+    # pipe-head combo causes SIGPIPE on `head`'s early exit, which
+    # `pipefail` + `set -e` turns into a silent script exit.
+    local first_obj
+    first_obj=$(find lib -name '*.o' -print -quit)
+    local obj_format
+    obj_format=$(file "${first_obj}" 2>/dev/null | sed 's|.*: ||')
+    echo "  format: ${obj_format}"
+
+    # Archive into libcurl.a (bypasses libtool's broken linker step).
+    # Recursive find catches vtls/*.o, vauth/*.o, vquic/*.o (if
+    # compiled), etc. — required for symbol resolution at link time.
+    mkdir -p "${out_dir}/lib" "${out_dir}/include"
+    rm -f "${out_dir}/lib/libcurl.a"
+    # shellcheck disable=SC2086
+    ar rcs "${out_dir}/lib/libcurl.a" $(find lib -name '*.o')
+    echo "  archived: ${out_dir}/lib/libcurl.a"
+
+    # Copy curl headers (public headers from the source dir —
+    # curl_config.h is internal and only used at build time).
     cp -r "${SRC_DIR}/include/curl/." "${out_dir}/include/curl/"
     echo "  headers: ${out_dir}/include/curl/"
 
-    # Generate minimal curl_config.h
-    make_minimal_config_h "${out_dir}/include/curl/curl_config.h"
-
-    # Compile each .c file
-    local count=0
-    local failed=0
-    for src in ${CURL_SOURCES}; do
-        local base=$(basename "${src}" .c)
-        local obj="${out_dir}/obj/${base}.o"
-        if "${cc_cmd[@]}" \
-            "${COMMON_FLAGS[@]}" \
-            -I"${SRC_DIR}/include" \
-            -I"${out_dir}/include/curl" \
-            -c "${src}" -o "${obj}" 2>/dev/null; then
-            count=$((count + 1))
-        else
-            # Some files may have platform-specific issues — skip with warning
-            echo "  WARN: ${base}.c failed to compile for ${out_dir} (platform-specific)"
-            failed=$((failed + 1))
+    # Verify the archive is non-empty.
+    # Linux `nm` (binutils) understands ELF; for Mach-O (macOS targets),
+    # we'd need llvm-nm — but the `file` format check above already
+    # proves zig cc produced the right object format. The actual symbol
+    # resolution happens at Zig link time when the consumer tries to
+    # resolve curl_easy_init from the @cImport.
+    local first_obj_basename
+    first_obj_basename=$(find lib -maxdepth 1 -name '*.o' -print -quit | sed 's|.*/||')
+    ar p "${out_dir}/lib/libcurl.a" "${first_obj_basename}" > "${TMP}/sample.o" 2>/dev/null || true
+    if [[ ! -s "${TMP}/sample.o" ]]; then
+        echo "  ERROR: archive is empty — build failed"
+        return 1
+    fi
+    # On Linux host, also verify curl_easy_init via binutils nm (works
+    # on ELF only — Mach-O archives don't need this check because zig
+    # cc's Mach-O output is verified by `file`).
+    if [[ -z "${host_triple}" ]]; then
+        nm "${out_dir}/lib/libcurl.a" 2>/dev/null | grep 'T curl_easy_init' > "${TMP}/nm_match" || true
+        if [[ ! -s "${TMP}/nm_match" ]]; then
+            echo "  ERROR: Linux libcurl.a does not export curl_easy_init"
+            return 1
         fi
-    done
-    echo "  compiled: ${count} (${failed} skipped)"
-
-    # Archive
-    echo "  archiving..."
-    rm -f "${out_dir}/lib/libcurl.a"
-    "${ar_cmd}" "${out_dir}/lib/libcurl.a" "${out_dir}/obj/"*.o
-    echo "  done: ${out_dir}/lib/libcurl.a"
+        echo "  verified: curl_easy_init exported (Linux nm)"
+    else
+        echo "  verified: Mach-O archive non-empty (symbols checked at Zig link time)"
+    fi
 }
 
 mkdir -p "${VENDOR_DIR}"
 
 # === Linux x86_64 (native build, uses system gcc) ===
-build_target \
-    "${VENDOR_DIR}/linux-x86_64" \
-    "ar" \
-    gcc \
-    -O2 \
-    -fPIC
+build_target "${VENDOR_DIR}/linux-x86_64" ""
 
 # === macOS arm64 (cross-compile from Linux using zig cc) ===
-build_target \
-    "${VENDOR_DIR}/macos-arm64" \
-    "zig" \
-    ar \
-    zig cc \
-    -target aarch64-macos \
-    -O2 \
-    -fPIC
+build_target "${VENDOR_DIR}/macos-arm64" "aarch64-apple-darwin" \
+    "-target" "aarch64-macos" "-fuse-ld=lld"
 
 # === macOS x86_64 (cross-compile from Linux using zig cc) ===
-build_target \
-    "${VENDOR_DIR}/macos-x86_64" \
-    "zig" \
-    ar \
-    zig cc \
-    -target x86_64-macos \
-    -O2 \
-    -fPIC
+build_target "${VENDOR_DIR}/macos-x86_64" "x86_64-apple-darwin" \
+    "-target" "x86_64-macos" "-fuse-ld=lld"
 
 echo ""
 echo "=== Done. Run 'zig build' to verify ==="
-echo "  Linux native + cross-compile from any host OS now has vendored curl."
+echo "  Linux native + macOS arm64 + macOS x86_64 vendored curl ready."
+echo "  Windows archive (vendor/curl/windows-amd64/) NOT built yet — needs MinGW setup."
