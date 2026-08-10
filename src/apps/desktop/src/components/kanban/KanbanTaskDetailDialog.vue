@@ -1182,6 +1182,8 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                     :is-expandable="(e: any) => e.is_directory as boolean"
                     :label-for="(e: any) => e.name as string"
                     :close-on-select="true"
+                    :initial-path="cwdSession || props.cwd || '/'"
+                    :selected-path="cwdSession || props.cwd || ''"
                     title="Select Per-Task Project Root"
                     @select="selectCwd"
                   />

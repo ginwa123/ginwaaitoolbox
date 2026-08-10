@@ -14,11 +14,12 @@
  * Plan: docs/superpowers/plans/2026-07-16-kanban-task-detail-dialog.md
  *   Chunk 3 / Task 3.2
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 
 import KanbanTaskDetailDialog from '@/components/kanban/KanbanTaskDetailDialog.vue'
+import * as api from '@/api'
 import type { Task, KanbanColumn } from '@/stores/workspaces'
 
 const TASK: Task = {
@@ -1001,5 +1002,108 @@ describe('KanbanTaskDetailDialog — layout', () => {
     expect(picker).not.toBeNull()
     const inlineStyle = picker!.getAttribute('style') ?? ''
     expect(inlineStyle).toMatch(/color:\s*var\(--semantic-text-dim\)/)
+  })
+
+  // ── cwd picker: open at the right place ─────────────────────────────────
+  // User feedback: "fix the folder query" — the per-task cwd picker used to
+  // always open at "/" regardless of cwd_session, forcing the user to
+  // navigate back to their cwd on every reopen. The picker now passes
+  // cwd_session as both initial-path and selected-path so reopening
+  // drops the user at the current cwd with the cwd pre-selected.
+  //
+  // These tests mock the global `fetch` (the API module calls fetch
+  // internally via apiFetch) so we can assert exactly which paths get
+  // queried — vi.spyOn(api, 'listFolder') doesn't work because the
+  // KanbanTaskDetailDialog destructures `listFolder` at module load
+  // time, before the spy replaces the namespace property.
+  describe('create mode: cwd picker opens at cwd_session (folder query fix)', () => {
+    function mockFetchWithFs(entries: Record<string, Array<{ name: string; path: string; is_directory: boolean }>>) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString()
+        const u = new URL(url, 'http://localhost')
+        const path = u.searchParams.get('path') ?? ''
+        const action = u.searchParams.get('action') ?? 'list'
+        if (action !== 'list') {
+          return new Response(JSON.stringify({ content: '' }), { status: 200 })
+        }
+        const data = path
+          ? { path: '/', absolute: path, home: '/home/test', entries: entries[path] ?? [] }
+          : { path: '/', absolute: '/home/test', home: '/home/test', entries: entries['__home__'] ?? [] }
+        return new Response(JSON.stringify(data), { status: 200 })
+      })
+    }
+
+    it('when cwd_session is set, the picker opens AT cwd_session (not at "/")', async () => {
+      mockFetchWithFs({
+        '/': [{ name: 'home', path: '/home', is_directory: true }],
+        '/home': [{ name: 'user', path: '/home/user', is_directory: true }],
+        '/home/user': [{ name: 'projects', path: '/home/user/projects', is_directory: true }],
+        '/home/user/projects': [{ name: 'foo', path: '/home/user/projects/foo', is_directory: true }],
+        '/home/user/projects/foo': [
+          { name: 'src', path: '/home/user/projects/foo/src', is_directory: true },
+          { name: 'package.json', path: '/home/user/projects/foo/package.json', is_directory: false },
+        ],
+      })
+
+      mountCreateDialog('/home/user/projects/foo')
+      await flushPromises()
+      // Open the picker.
+      clickInDom('[data-testid="kanban-task-detail-cwd-picker"]')
+      await flushPromises()
+
+      // The cwd's children must be in the content pane — proving
+      // expandAncestors walked the chain back to cwd_session (not
+      // stopping at "/" because the picker opened at cwd_session).
+      expect(
+        document.querySelector('[data-testid="file-picker-item-/home/user/projects/foo/src"]'),
+      ).not.toBeNull()
+      // And the cwd breadcrumb is rendered with all four segments.
+      const crumbs = document.querySelectorAll('[data-testid^="file-picker-crumb-"]')
+      const crumbTexts = Array.from(crumbs).map((el) => el.textContent?.trim())
+      expect(crumbTexts).toEqual(['home', 'user', 'projects', 'foo'])
+    })
+
+    it('when cwd_session is empty, the picker opens at "/" (root folders visible)', async () => {
+      mockFetchWithFs({
+        '/': [{ name: 'home', path: '/home', is_directory: true }],
+        __home__: [{ name: 'test', path: '/home/test', is_directory: true }],
+      })
+
+      mountCreateDialog('')
+      await flushPromises()
+      clickInDom('[data-testid="kanban-task-detail-cwd-picker"]')
+      await flushPromises()
+
+      // No cwd → picker opens at "/" → listFolder('/') is called →
+      // root entries are displayed.
+      expect(
+        document.querySelector('[data-testid="file-picker-item-/home"]'),
+      ).not.toBeNull()
+      // The breadcrumb should show just the root.
+      const crumbs = document.querySelectorAll('[data-testid^="file-picker-crumb-"]')
+      expect(crumbs.length).toBe(0)
+    })
+
+    it('cwd_session is pre-selected in the picker so the footer shows the current cwd', async () => {
+      mockFetchWithFs({
+        '/': [{ name: 'home', path: '/home', is_directory: true }],
+        '/home': [{ name: 'user', path: '/home/user', is_directory: true }],
+        '/home/user': [{ name: 'projects', path: '/home/user/projects', is_directory: true }],
+        '/home/user/projects': [{ name: 'foo', path: '/home/user/projects/foo', is_directory: true }],
+        '/home/user/projects/foo': [{ name: 'src', path: '/home/user/projects/foo/src', is_directory: true }],
+      })
+
+      mountCreateDialog('/home/user/projects/foo')
+      await flushPromises()
+      clickInDom('[data-testid="kanban-task-detail-cwd-picker"]')
+      await flushPromises()
+
+      // The footer "Selected:" line should reflect cwd_session so the
+      // user sees what they're about to overwrite on Select.
+      const selectedPath = document.querySelector(
+        '[data-testid="file-picker-selected-path"]',
+      )
+      expect(selectedPath?.textContent?.trim()).toBe('/home/user/projects/foo')
+    })
   })
 })
