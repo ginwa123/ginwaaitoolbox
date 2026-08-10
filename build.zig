@@ -194,30 +194,24 @@ pub fn build(b: *std.Build) void {
     // `linkCurlIncludePath()` helper. The package owns its own deps.
 
     // === Auto-fetch vendor/sqlite3 if missing ===
-    // The amalgamation (sqlite3.c ~10 MB + 2 headers) is gitignored (see
-    // .gitignore "vendored" section). Fresh checkouts need the fetch to
-    // happen BEFORE any Compile step that links vendor/sqlite3/sqlite3.c
-    // vendor/sqlite3/ is COMMITTED to the repo (the ginwasaas pattern —
-    // see vendor/sqlite3/README.md for the layout). No fetch step needed;
-    // a fresh checkout has everything it needs for Windows + macOS native
-    // AND cross-compile from Linux. The pre-built libsqlite3.a archives
-    // for macOS-{arm64,x86_64} and Windows (via the MinGW symlink farm)
-    // let `install:windows` / `install:macos*` link successfully on a
-    // Linux host WITHOUT needing vcpkg or brew installed locally.
+    // The amalgamation (`src/modules/databases/vendor/sqlite3/sqlite3.c`
+    // ~10 MB + 2 headers) is gitignored (per .gitignore — the
+    // `src/modules/databases/vendor/` path is excluded). Fresh checkouts
+    // need the fetch to happen BEFORE any Compile step that links the
+    // amalgamation. The script (`src/modules/databases/scripts/fetch-vendor-sqlite3.sh`)
+    // downloads + verifies the SHA3-256 of the official amalgamation ZIP
+    // and writes it to the package's own vendor dir. Idempotent: skips
+    // if the files already exist.
     //
-    // The legacy fetch-vendor-sqlite3 step + scripts/fetch-vendor-sqlite3.sh
-    // are kept as a no-op alias for back-compat (CI/scripts that call it
-    // still find the step in `zig build --help`). On the ginwasaas-style
-    // vendor layout, the fetch is unnecessary — the amalgamation ships in
-    // vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400/.
+    // The `fetch-vendor-sqlite3` step is depended on by `test_step` (and
+    // every `install:*` cross-compile target) so a fresh checkout Just
+    // Works without a separate `bash bootstrap-vendor.sh` invocation.
     const vendor_sqlite3_step = b.step(
         "fetch-vendor-sqlite3",
-        "Deprecated: vendor/sqlite3/ is now committed to the repo (see vendor/sqlite3/README.md)",
+        "Fetch the sqlite3 amalgamation into src/modules/databases/vendor/sqlite3/ (idempotent). Auto-runs before `zig build test` and every `install:*` target on a fresh checkout.",
     );
     const vendor_sqlite3_fetch = b.addSystemCommand(&.{
-        "sh", "-c",
-        \\echo "vendor/sqlite3/ is now committed to the repo; no fetch needed."
-    ,
+        "bash", "src/modules/databases/scripts/fetch-vendor-sqlite3.sh",
     });
     vendor_sqlite3_fetch.setCwd(b.path(""));
     vendor_sqlite3_step.dependOn(&vendor_sqlite3_fetch.step);
@@ -784,7 +778,14 @@ pub fn build(b: *std.Build) void {
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
     const test_step = b.step("test", "Run tests");
+    // Fresh checkouts need both vendor dirs populated before any
+    // Compile step can link the vendored libcurl archive or compile
+    // the sqlite3 amalgamation. Without these deps, `zig build test`
+    // on a clean checkout fails with "file not found" for
+    // vendor/sqlite3/sqlite3.c (databases package) and/or
+    // vendor/curl/<target>/lib/libcurl.a (custom_http_client package).
     test_step.dependOn(fetch_vendor_curl_step);
+    test_step.dependOn(vendor_sqlite3_step);
     test_step.dependOn(&run_mod_tests.step);
 
     const ai_workflow_tui_test_mod = b.addTest(.{
@@ -836,6 +837,7 @@ pub fn build(b: *std.Build) void {
     // Also depend on fetch-vendor-curl so the windows-amd64/ vendor
     // dir gets built (currently fails — see MinGW note above).
     windows_step.dependOn(fetch_vendor_curl_step);
+    windows_step.dependOn(vendor_sqlite3_step);
     const install_windows = b.addInstallArtifact(windows_exe, .{});
     windows_step.dependOn(&install_windows.step);
 
@@ -848,6 +850,7 @@ pub fn build(b: *std.Build) void {
     // libcurl is linked via custom_http_client_mod's transitive deps.
     macos_exe.root_module.link_libc = true;
     macos_step.dependOn(fetch_vendor_curl_step);
+    macos_step.dependOn(vendor_sqlite3_step);
     const install_macos = b.addInstallArtifact(macos_exe, .{});
     macos_step.dependOn(&install_macos.step);
 
@@ -860,6 +863,7 @@ pub fn build(b: *std.Build) void {
     // libcurl is linked via custom_http_client_mod's transitive deps.
     macos_arm_exe.root_module.link_libc = true;
     macos_arm_step.dependOn(fetch_vendor_curl_step);
+    macos_arm_step.dependOn(vendor_sqlite3_step);
     const install_macos_arm = b.addInstallArtifact(macos_arm_exe, .{});
     macos_arm_step.dependOn(&install_macos_arm.step);
 
@@ -870,6 +874,7 @@ pub fn build(b: *std.Build) void {
     // libcurl is linked via custom_http_client_mod's transitive deps.
     linux_system_exe.root_module.link_libc = true;
     linux_system_step.dependOn(fetch_vendor_curl_step);
+    linux_system_step.dependOn(vendor_sqlite3_step);
     linux_system_step.dependOn(&linux_system_exe.step);
     const install_linux_system = b.addInstallArtifact(linux_system_exe, .{});
     linux_system_step.dependOn(&install_linux_system.step);

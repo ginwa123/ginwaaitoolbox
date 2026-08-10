@@ -187,24 +187,12 @@ jobs:
           pkg-config --modversion sqlite3 2>/dev/null || echo "sqlite3.pc: not installed (vendored amalgamation is used on macOS)"
           pkg-config --modversion openssl  2>/dev/null || echo "openssl.pc:  not installed (not linked on macOS)"
 
-      - name: Fetch vendored SQLite amalgamation (non-Linux)
-        if: runner.os != 'Linux'
-        # The amalgamation is gitignored (in .gitignore as
-        # `src/modules/databases/vendor/`) to avoid bloating the repo with
-        # ~10 MB of binary-like content. On macOS, `build.zig` compiles
-        # sqlite3.c from `src/modules/databases/vendor/sqlite3/`, so we
-        # need to fetch it before any zig build call. The script is
-        # idempotent: it skips if the files already exist (e.g., restored
-        # from a prior run's cache).
-        #
-        # The script lives at `src/modules/databases/scripts/` (co-located
-        # with the `databases` Zig package that consumes it — moved there
-        # in PR #211's self-contained-package refactor; the old
-        # `scripts/fetch-vendor-sqlite3.sh` top-level alias was removed).
-        shell: bash
-        run: |
-          chmod +x src/modules/databases/scripts/fetch-vendor-sqlite3.sh
-          ./src/modules/databases/scripts/fetch-vendor-sqlite3.sh
+      # Note: the sqlite3 amalgamation fetch is now handled by
+      # build.zig's `vendor_sqlite3_step` (wired into `test_step` and
+      # every `install:*` step) — no separate CI step needed. The fetch
+      # runs automatically on a fresh checkout (when the vendor dir is
+      # missing); on subsequent runs the script's idempotent skip makes
+      # it a no-op.
 
       - name: Install Bun ${{ env.BUN_VERSION }}
         uses: oven-sh/setup-bun@v2
