@@ -4361,3 +4361,55 @@ difference: it's indexed in the canonical doc alongside the
 mandatory rules + cross-platform pitfalls + recent changes,
 so a future agent searching for "wire formats always carry
 inputs" finds it alongside "static-contract tests are banned"
+
+### 2026-08-10: Build self-bootstraps sqlite3 amalgamation (PR #213)
+
+**Symptom.** Fresh `git clone` of `ginwaaitoolbox` couldn't run `zig
+build test` or `zig build install:macos*` without first manually
+running `bash src/modules/databases/scripts/fetch-vendor-sqlite3.sh`.
+CI had to maintain an explicit "Fetch vendored SQLite amalgamation
+(non-Linux)" step that duplicated the build.zig concern. The PR
+prelanding state had `fetch-vendor-sqlite3` as a no-op alias that
+just printed "scripts are no longer needed", which was a regression
+from the prior vendor-the-amalgamation-in-the-repo plan.
+
+**What landed (commit `921f11ff`, branch `worktree/fix-ci-linux-macos`).
+**Flipped the inversion: `build.zig` now fetches the amalgamation
+on demand, and every consumer step depends on it:
+
+- `build.zig` — `fetch-vendor-sqlite3` step now runs the actual
+  `bash src/modules/databases/scripts/fetch-vendor-sqlite3.sh` (was
+  a no-op echo). `test_step` + `install:linux:system` + `install:macos`
+  + `install:macos:arm` + `install:windows` all `dependOn` it. The
+  script is idempotent (skips if `src/modules/databases/vendor/sqlite3/`
+  exists), so subsequent runs are no-ops.
+- `.github/workflows/ci.yml` — removed the explicit non-Linux fetch
+  step. `zig build` now handles it implicitly. CI is shorter (one
+  fewer step) and less duplicative.
+
+**Verification.**
+- `zig build test --summary all` → 5/7 steps succeeded; `fetch-vendor-sqlite3`
+  ran in 6 ms (idempotent skip path because vendor/ already exists).
+  2184/2208 tests pass — the 17 failures + 1 crash are the documented
+  pre-existing baseline from PR #181 + `inserLLMHistories` regressions.
+- `zig build` → all 3 binaries produced (`nalarcore-linux-x86_64`,
+  `nalar-desktop`, `nalarcli`). The `webapp_assets.zig` regenerated
+  warning is unchanged (the webapp dist is provided by `bun run build`
+  on the frontend side, not by this PR).
+- `git push origin worktree/fix-ci-linux-macos` → clean.
+
+**Why the inversion (CI step → build.zig dep).** The duplication
+was a maintenance trap: every CI change had to also remember the
+local bootstrap script, and every "clone and try to build" on a
+fresh dev box had to read the README to discover the bootstrap
+command. Putting the dependency in `build.zig` makes it invisible
+to both consumers — the build Just Works.
+
+**Out of scope (deferred).**
+- Same auto-fetch pattern for `vendor/curl/` (already done in PR #212).
+- Per-platform sqlite3 fetching (the amalgamation is platform-agnostic
+  C — one fetch works for all targets).
+- The `vendor/sqlite3/` directory is currently committed in the repo
+  (per the ginwasaas pattern). If a future cleanup removes the
+  directory from git, this commit's auto-fetch becomes the only
+  way to get the amalgamation.
