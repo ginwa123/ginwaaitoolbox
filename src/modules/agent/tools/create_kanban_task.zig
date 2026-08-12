@@ -13,7 +13,8 @@
 //!   4. Resolve the target column id. When `column_id` is null, pick
 //!      the first column by `position ASC`. When supplied, verify the
 //!      column belongs to the same `workspace_item_id`.
-//!   5. UPDATE the task's `kanban_column_id` and `kanban_position`
+//!   5. INSERT OR REPLACE INTO the `kanban` join table (post-
+//!      Migration 072) with `kanban_column_id` and `kanban_position`
 //!      (set to MAX(position)+1 within the target column).
 //!   6. Emit a `kanban_task` SSE event with `action="created"` for
 //!      multi-tab sync (fire-and-forget; log + continue on error).
