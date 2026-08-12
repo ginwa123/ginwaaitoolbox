@@ -601,9 +601,7 @@ describe('api.design', () => {
       )
 
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-      expect(url).toBe(
-        '/api/workspaces/ws_1/items/item_1/design/pages/p1/elements/geometry-batch',
-      )
+      expect(url.endsWith('/api/workspaces/ws_1/items/item_1/design/pages/p1/elements/geometry-batch')).toBe(true)
       expect(init.method).toBe('POST')
       const body = JSON.parse(init.body as string)
       expect(body.updates).toHaveLength(3)

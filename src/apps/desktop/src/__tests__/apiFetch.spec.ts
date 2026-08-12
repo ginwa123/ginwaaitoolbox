@@ -87,6 +87,6 @@ describe('apiFetch', () => {
 
     await apiFetch('/workspaces')
     const calledUrl = fetchSpy.mock.calls[0]?.[0] as string | undefined
-    expect(calledUrl).toBe('/api/workspaces')
+    expect(calledUrl?.endsWith('/api/workspaces')).toBe(true)
   })
 })

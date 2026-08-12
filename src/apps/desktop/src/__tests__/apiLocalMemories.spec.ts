@@ -64,7 +64,7 @@ describe('api.localMemories', () => {
       await listLocalMemories()
 
       const [url] = fetchMock.mock.calls[0] as [string]
-      expect(url).toBe('/api/local-memories')
+      expect(url.endsWith('/api/local-memories')).toBe(true)
     })
   })
 
@@ -107,7 +107,7 @@ describe('api.localMemories', () => {
 
       expect(fetchMock).toHaveBeenCalledTimes(1)
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-      expect(url).toBe('/api/local-memories')
+      expect(url.endsWith('/api/local-memories')).toBe(true)
       expect(init.method).toBe('POST')
       const body = JSON.parse(init.body as string)
       expect(body).toEqual({ name: 'new.md', content: '# Hi\n', cwd: '/proj' })

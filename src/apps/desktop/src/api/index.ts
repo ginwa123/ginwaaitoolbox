@@ -48,7 +48,21 @@ export async function apiFetch<T = unknown>(
     body: body !== undefined ? JSON.stringify(body) : undefined,
   }
 
-  const response = await fetch(`${API_BASE}${url}`, fetchInit)
+  // Resolve relative URLs against the page origin. The browser's
+  // fetch() implicitly resolves `/api/...` against the page origin,
+  // but undici (used by Node + jsdom under vitest) does not — it
+  // throws `TypeError: Failed to parse URL from /api/...` because
+  // there is no base. Prepending `window.location.origin` keeps the
+  // behaviour identical in a real browser (origin matches the page)
+  // and gives jsdom a parseable absolute URL. Guarded by
+  // `typeof window` so this module remains importable in pure Node
+  // contexts (e.g. tooling that imports the API types only).
+  const fullUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.origin}${API_BASE}${url}`
+      : `${API_BASE}${url}`
+
+  const response = await fetch(fullUrl, fetchInit)
 
   if (!response.ok) {
     const responseBody = await response.text().catch(() => '')

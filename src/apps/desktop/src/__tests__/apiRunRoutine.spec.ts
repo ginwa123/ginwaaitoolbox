@@ -42,7 +42,7 @@ describe('api.runRoutine', () => {
     expect(result).toEqual({ session_id: 'task_alpha' })
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/api/workspaces/ws_1/items/item_1/tasks/task_alpha/run')
+    expect(url.endsWith('/api/workspaces/ws_1/items/item_1/tasks/task_alpha/run')).toBe(true)
     expect(init.method).toBe('POST')
     // Body is empty (the backend doesn't need any input — it
     // already knows the routine from the path).
@@ -100,7 +100,7 @@ describe('api.createTask (extended signature)', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/api/workspaces/ws_1/items/item_1/tasks')
+    expect(url.endsWith('/api/workspaces/ws_1/items/item_1/tasks')).toBe(true)
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual({
       name: 'Daily',
@@ -163,7 +163,7 @@ describe('api.updateTaskSimple (routine fields)', () => {
     })
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/api/workspaces/tasks/task_1')
+    expect(url.endsWith('/api/workspaces/tasks/task_1')).toBe(true)
     expect(init.method).toBe('PUT')
     expect(JSON.parse(init.body as string)).toEqual({
       name: 'Daily standup',
