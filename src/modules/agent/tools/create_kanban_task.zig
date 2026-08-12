@@ -13,7 +13,8 @@
 //!   4. Resolve the target column id. When `column_id` is null, pick
 //!      the first column by `position ASC`. When supplied, verify the
 //!      column belongs to the same `workspace_item_id`.
-//!   5. UPDATE the task's `kanban_column_id` and `kanban_position`
+//!   5. INSERT OR REPLACE INTO the `kanban` join table (post-
+//!      Migration 072) with `kanban_column_id` and `kanban_position`
 //!      (set to MAX(position)+1 within the target column).
 //!   6. Emit a `kanban_task` SSE event with `action="created"` for
 //!      multi-tab sync (fire-and-forget; log + continue on error).
@@ -357,7 +358,7 @@ fn computeNextPosition(
     column_id: []const u8,
 ) i64 {
     var q = db.query(allocator,
-        "SELECT COALESCE(MAX(kanban_position), -1) + 1 FROM workspace_item_tasks WHERE kanban_column_id = ?",
+        "SELECT COALESCE(MAX(k.kanban_position), -1) + 1 FROM kanban k WHERE k.kanban_column_id = ?",
         &[_][]const u8{column_id},
     ) catch return 0;
     defer q.deinit();
@@ -450,8 +451,8 @@ pub fn executeCreateKanbanTaskToString(
     const position_str = std.fmt.allocPrint(allocator, "{d}", .{position}) catch "0";
     defer allocator.free(position_str);
     db.exec(allocator,
-        "UPDATE workspace_item_tasks SET kanban_column_id = ?, kanban_position = ? WHERE id = ?",
-        &[_][]const u8{ target_column_id, position_str, task_id },
+        "INSERT OR REPLACE INTO kanban (task_id, kanban_column_id, kanban_position) VALUES (?, ?, ?)",
+        &[_][]const u8{ task_id, target_column_id, position_str },
     ) catch |err| {
         std.log.warn("create_kanban_task: kanban auto-assign failed (non-fatal): {s}", .{@errorName(err)});
     };

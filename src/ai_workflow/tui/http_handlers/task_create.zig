@@ -510,9 +510,13 @@ fn createStandardTask(
             };
             if (first_col_id) |col_id| {
                 defer allocator.free(col_id);
+                // Post-Migration-072: the task→column assignment lives
+                // in the `kanban` join table. INSERT OR IGNORE so a
+                // re-run on an already-assigned task is a no-op (the
+                // SELECT MAX below handles position conflicts).
                 db.exec(allocator,
-                    "UPDATE workspace_item_tasks SET kanban_column_id = ?, kanban_position = (SELECT COALESCE(MAX(kanban_position), -1) + 1 FROM workspace_item_tasks WHERE kanban_column_id = ?) WHERE id = ?",
-                    &[_][]const u8{ col_id, col_id, task_id },
+                    "INSERT OR IGNORE INTO kanban (task_id, kanban_column_id, kanban_position) VALUES (?, ?, (SELECT COALESCE(MAX(k.kanban_position), -1) + 1 FROM kanban k WHERE k.kanban_column_id = ?))",
+                    &[_][]const u8{ task_id, col_id, col_id },
                 ) catch |err| {
                     std.log.warn("task_create: kanban auto-assign failed (non-fatal): {s}", .{@errorName(err)});
                 };
@@ -521,7 +525,7 @@ fn createStandardTask(
                 // frontend's KanbanTaskEvent union variant.
                 const assigned_pos: i64 = blk: {
                     var q = db.query(allocator,
-                        "SELECT COALESCE(kanban_position, 0) FROM workspace_item_tasks WHERE id = ?",
+                        "SELECT COALESCE(k.kanban_position, 0) FROM kanban k WHERE k.task_id = ?",
                         &[_][]const u8{task_id}) catch break :blk 0;
                     defer q.deinit();
                     const row = (q.next() catch break :blk 0) orelse break :blk 0;
@@ -538,10 +542,10 @@ fn createStandardTask(
                 }) catch |err| {
                     std.log.warn("task_create: SSE emit failed (non-fatal): {s}", .{@errorName(err)});
                 };
-                // Re-read kanban fields after the UPDATE so the
+                // Re-read kanban fields after the INSERT so the
                 // response carries the assigned values.
                 var q2 = db.query(allocator,
-                    "SELECT kanban_column_id, COALESCE(kanban_position, 0) FROM workspace_item_tasks WHERE id = ?",
+                    "SELECT k.kanban_column_id, COALESCE(k.kanban_position, 0) FROM kanban k WHERE k.task_id = ?",
                     &[_][]const u8{task_id}) catch return .{
                     .task_id = task_id,
                     .name = task.name,

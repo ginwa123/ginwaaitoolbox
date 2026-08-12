@@ -206,9 +206,15 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\  name TEXT,
         \\  description TEXT NOT NULL DEFAULT '',
         \\  task_type TEXT,
-        \\  kanban_column_id TEXT,
-        \\  kanban_position INTEGER,
         \\  last_human_touched_at INTEGER
+        \\)
+    , &[_][]const u8{});
+    // Post-Migration-072: task→column mapping lives in `kanban` join table
+    try db.exec(alloc,
+        \\CREATE TABLE kanban (
+        \\  task_id TEXT PRIMARY KEY,
+        \\  kanban_column_id TEXT NOT NULL,
+        \\  kanban_position INTEGER NOT NULL DEFAULT 0
         \\)
     , &[_][]const u8{});
 
@@ -302,13 +308,18 @@ test "executeCreateKanbanTaskToString appends at MAX(kanban_position)+1 when col
 
     // Seed 2 existing tasks in the todo column at positions 0 and 1.
     try s.db.exec(alloc,
-        "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type, kanban_column_id, kanban_position) " ++
-            "VALUES ('t_existing_1', 'item_k1', 'first', 'standard', 'col_todo', 0)",
+        "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) " ++
+            "VALUES ('t_existing_1', 'item_k1', 'first', 'standard')",
         &[_][]const u8{},
     );
     try s.db.exec(alloc,
-        "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type, kanban_column_id, kanban_position) " ++
-            "VALUES ('t_existing_2', 'item_k1', 'second', 'standard', 'col_todo', 1)",
+        "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) " ++
+            "VALUES ('t_existing_2', 'item_k1', 'second', 'standard')",
+        &[_][]const u8{},
+    );
+    try s.db.exec(alloc,
+        "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) " ++
+            "VALUES ('t_existing_1', 'col_todo', 0), ('t_existing_2', 'col_todo', 1)",
         &[_][]const u8{},
     );
 

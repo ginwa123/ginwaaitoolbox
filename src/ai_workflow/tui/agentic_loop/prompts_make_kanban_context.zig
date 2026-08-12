@@ -87,12 +87,16 @@ pub fn makeKanbanContext(
     defer freeColumns(allocator, cols);
 
     // 3. Read the task's current kanban_column_id (may be NULL when
-    //    unassigned). One-row query — task.id == session_id per the
-    //    workspace-context convention.
+    //    unassigned — i.e. no kanban row exists for the task). One-row
+    //    query — task.id == session_id per the workspace-context
+    //    convention. After Migration 072, the current column lives in
+    //    the `kanban` join table (a row exists IFF the task is on a
+    //    column); LEFT JOIN preserves the unassigned case (NULL).
     const current_column_id: ?[]const u8 = blk: {
         var q = try db.query(allocator,
-            \\SELECT COALESCE(kanban_column_id, '')
+            \\SELECT COALESCE(k.kanban_column_id, '')
             \\FROM workspace_item_tasks t
+            \\LEFT JOIN kanban k ON k.task_id = t.id
             \\WHERE t.id = ?
         , &.{session_id});
         defer q.deinit();

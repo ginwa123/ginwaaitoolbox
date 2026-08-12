@@ -145,9 +145,15 @@ test "needs_human_review predicate returns 1 when finish_reason='stop' AND no hu
         \\  id TEXT PRIMARY KEY,
         \\  name TEXT,
         \\  workspace_item_id TEXT,
-        \\  kanban_column_id TEXT,
-        \\  kanban_position INTEGER,
         \\  last_human_touched_at INTEGER
+        \\)
+    , &.{});
+    // Post-Migration-072: kanban placement lives in the `kanban` join table.
+    try db.exec(alloc,
+        \\CREATE TABLE kanban (
+        \\  task_id TEXT PRIMARY KEY,
+        \\  kanban_column_id TEXT NOT NULL,
+        \\  kanban_position INTEGER NOT NULL DEFAULT 0
         \\)
     , &.{});
     try db.exec(alloc,
