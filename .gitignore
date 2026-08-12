@@ -17,20 +17,23 @@ zig-out
 
 # === Vendored third-party sources (regenerate via scripts) ===
 #
+# Each module owns its own vendor dir. The bootstrap scripts are
+# task-scoped scripts/ and built into the modules that need them.
+#
 # Why vendor/ is ignored: the sqlite3 amalgamation (~10 MB of binary-like
 # C data), the MinGW symlink farm at vendor/sqlite3/libc-windows-amd64/
 # (~2 552 symlinks), the prebuilt libsqlite3.a / libcurl.a archives for
 # each target, and the Windows libcurl-x64.dll are all very large and
 # bloat every `git clone` / `git checkout`. They can be regenerated
-# from a fresh checkout by running the bootstrap scripts:
+# from a fresh checkout by running the bootstrap script:
 #
-#   bash scripts/fetch-vendor-sqlite3.sh   # downloads amalgamation + builds libsqlite3.a
-#   bash scripts/build-vendor-curl.sh      # cross-compiles libcurl.a per target
-#   bash scripts/build-vendor-mingw.sh     # regenerates MinGW symlink farm for Windows
+#   bash scripts/bootstrap-vendor.sh        # runs all per-module fetch scripts
 #
-# The build.zig checks for these on first invocation and prints a clear
-# error if any are missing — see the scripts/ directory for details.
+# The build.zig auto-fetches the curl vendor via `fetch-vendor-curl` step
+# (no-op if already built).
 /vendor/
+/src/modules/databases/vendor/
+/src/modules/custom_http_client/vendor/
 
 # === Local task database (per-developer, not shared) ===
 .nalar/tasks/

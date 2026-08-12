@@ -34,10 +34,13 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     // `workspace_item_tasks` (ALTER TABLE target). Mirror the
     // existing `kanban_model_test_description.zig` setup: the
     // production migrator walks 001 → 051 in order, so by the time
-    // 051 runs these tables are already there. The kanban columns
-    // (`kanban_column_id`, `kanban_position`) are NOT pre-declared
-    // because Migration 051 itself adds them via `ALTER TABLE …
-    // ADD COLUMN`.
+    // 051 runs these tables are already there.
+    //
+    // After Migration 072 (extract kanban table plan, 2026-08-15),
+    // the kanban_column_id + kanban_position columns are no longer on
+    // workspace_item_tasks — they live on the new `kanban` join table.
+    // We apply 051 + 053 (legacy column-add) + 072 (legacy column-drop
+    // + kanban table create) to get the post-Migration-072 schema.
     try db.exec(alloc,
         "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
         &.{});
@@ -47,6 +50,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     const migration = @import("nalarcore").migrations_mod.migration;
     try migration.Migration051AddKanban.up(&db, alloc);
     try migration.Migration053AddKanbanColumnDescription.up(&db, alloc);
+    try migration.Migration072ExtractKanbanTable.up(&db, alloc);
     return .{ .db = db, .threaded = threaded };
 }
 
@@ -165,22 +169,43 @@ test "replaceColumnsWith unassigns tasks on the deleted target columns" {
     const legacy_id = try kanban_model.addColumn(alloc, &ctx.db, "wi_tgt", "legacy", "", 0);
     defer alloc.free(legacy_id);
 
-    // Create a task assigned to the target's "legacy" column.
+    // Create a task assigned to the target's "legacy" column. After
+    // Migration 072, the task→column mapping lives in the `kanban`
+    // join table (1:1 row per assigned task), not on
+    // workspace_item_tasks directly.
     try ctx.db.exec(alloc,
-        "INSERT INTO workspace_item_tasks (id, workspace_item_id, kanban_column_id) VALUES ('task_1', 'wi_tgt', ?)",
+        "INSERT INTO workspace_item_tasks (id, workspace_item_id) VALUES ('task_1', 'wi_tgt')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('task_1', ?, 0)",
         &.{legacy_id});
 
     try kanban_model.replaceColumnsWith(alloc, &ctx.db, "wi_src", "wi_tgt");
 
-    // Verify the task was unassigned (kanban_column_id NULL → empty
-    // string from COALESCE in the SELECT).
-    var q = try ctx.db.query(alloc,
-        "SELECT COALESCE(t.kanban_column_id, '') FROM workspace_item_tasks t WHERE t.id = 'task_1'",
-        &.{});
-    defer q.deinit();
-    const row = (try q.next()) orelse return error.RowMissing;
-    defer row.deinit(alloc);
-    try testing.expectEqualStrings("", row.values[0]);
+    // Verify the kanban card row was DELETED when the column was
+    // replaced (FK CASCADE simulation — PRAGMA foreign_keys is off in
+    // this codebase, so we explicitly DELETE the kanban rows in
+    // deleteColumn). The task itself is NOT removed.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT COUNT(*) FROM kanban k WHERE k.workspace_item_task_id = 'task_1'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("0", row.values[0]);
+    }
+
+    // Sanity: the task row still exists.
+    {
+        var q2 = try ctx.db.query(alloc,
+            "SELECT t.id FROM workspace_item_tasks t WHERE t.id = 'task_1'",
+            &.{});
+        defer q2.deinit();
+        const r2 = (try q2.next()) orelse return error.RowMissing;
+        defer r2.deinit(alloc);
+        try testing.expectEqualStrings("task_1", r2.values[0]);
+    }
 }
 
 test "replaceColumnsWith with empty source empties the target" {

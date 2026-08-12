@@ -31,8 +31,15 @@ fn linkPlatformDeps(
             // Everything database-related (sqlite3 amalgamation + openssl +
             // crypto + libpq + /usr/include + /usr/include/postgresql) is
             // handled by the `databases` package — propagated to this
-            // Compile via mod.addImport → databases_mod. Nothing else
-            // needed for Linux.
+            // Compile via mod.addImport → databases_mod.
+            //
+            // ALSO add /usr/lib to the library search path. With glibc 2.38
+            // (the global default target), the linker default search path
+            // doesn't include /usr/lib in some contexts — the `linkSystemLibrary("ssl", "crypto", "pq")`
+            // calls inside the `databases` package surface this with
+            // "unable to find dynamic system library 'ssl' using strategy 'paths_first'. searched paths: none".
+            // Forcing the path here makes the linker find the system libs.
+            exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
         },
         .macos => {
             // Everything database-related (sqlite3 amalgamation) is handled
@@ -50,37 +57,6 @@ fn linkPlatformDeps(
             // Cross-compile to non-Linux/macOS/Windows targets. The
             // `databases` package covers everything — nothing extra to add.
         },
-    }
-}
-
-/// Add the curl include path for the target's libcurl. Used to compile
-/// the C glue in custom_http_client. Each Compile that imports
-/// custom_http_client_mod MUST call this for its own target — otherwise
-/// the C compiler for the cross-target won't find curl/curl.h.
-///
-/// `curl_prefix` and `curl_vcpkg_root` are passed in from the caller
-/// (declared once at the top of `build`, since `b.option()` panics on
-/// duplicate declarations).
-fn linkCurlIncludePath(
-    b: *std.Build,
-    exe: *std.Build.Step.Compile,
-    target: std.Build.ResolvedTarget,
-    curl_prefix: []const u8,
-    curl_vcpkg_root: []const u8,
-) void {
-    switch (target.result.os.tag) {
-        .linux => {
-            exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
-        },
-        .macos => {
-            exe.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/curl/include", .{curl_prefix}) });
-            exe.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/opt/curl/lib", .{curl_prefix}) });
-        },
-        .windows => {
-            exe.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/include", .{curl_vcpkg_root}) });
-            exe.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/lib", .{curl_vcpkg_root}) });
-        },
-        else => {},
     }
 }
 
@@ -105,7 +81,35 @@ fn createPlatformExe(
 }
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    // Target glibc 2.38 on Linux hosts — needed for vendored curl's
+    // references to `__isoc23_*` (glibc 2.38+) and `arc4random`
+    // (glibc 2.36+ in weak-symbol form). Older glibc versions fail to
+    // link with "undefined reference to __isoc23_strtol" etc. The
+    // minimum version can be overridden with `-Dtarget=...` for hosts
+    // running older glibc.
+    //
+    // On non-Linux hosts (macOS, Windows), the default target follows
+    // the HOST OS so `zig build` and `zig build test` don't try to
+    // cross-compile to Linux. Previously this default was hardcoded to
+    // `.os_tag = .linux`, which made the macOS self-hosted runner
+    // (an Apple-Silicon MacBook) cross-compile to `aarch64-linux-gnu.2.38`
+    // and then look for `vendor/curl/linux-aarch64/lib/libcurl.a` —
+    // a target the curl bootstrap script never builds. Override with
+    // `-Dtarget=x86_64-linux-gnu.2.38` (etc.) to explicitly cross-compile
+    // from a macOS/Windows host.
+    const target = b.standardTargetOptions(.{ .default_target = switch (b.graph.host.result.os.tag) {
+        .linux => .{
+            .cpu_arch = b.graph.host.result.cpu.arch,
+            .os_tag = .linux,
+            .abi = .gnu,
+            .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
+        },
+        else => .{
+            .cpu_arch = b.graph.host.result.cpu.arch,
+            .os_tag = b.graph.host.result.os.tag,
+            .abi = b.graph.host.result.abi,
+        },
+    } });
     const optimize = b.standardOptimizeOption(.{});
 
     // Cross-platform Homebrew / vcpkg prefix options. Declared ONCE here
@@ -117,16 +121,14 @@ pub fn build(b: *std.Build) void {
     // `databases` package's own build.zig. The package picks up
     // system sqlite3 via `linkSystemLibrary` / amalgamation compile
     // based on the target the consumer passes via b.dependency().
-    const curl_prefix = b.option(
-        []const u8,
-        "curl-prefix",
-        "Homebrew prefix for the libcurl keg (default: /opt/homebrew)",
-    ) orelse "/opt/homebrew";
-    const curl_vcpkg_root = b.option(
-        []const u8,
-        "curl-vcpkg-root",
-        "vcpkg root for Windows libcurl (default: C:/vcpkg)",
-    ) orelse "C:/vcpkg";
+    //
+    // Note: `-Dcurl-prefix` / `-Dcurl-vcpkg-root` are gone — curl wiring
+    // now lives in the `custom_http_client` package's own build.zig,
+    // which links the vendored prebuilt archive from
+    // vendor/curl/<target>/lib/libcurl.a. The package picks up the
+    // right archive based on the target the consumer passes via
+    // b.dependency(). See src/modules/custom_http_client/build.zig for
+    // the full rationale.
 
     const mod = b.addModule("nalarcore", .{
         .root_source_file = b.path("src/root.zig"),
@@ -155,78 +157,61 @@ pub fn build(b: *std.Build) void {
     const databases_mod = databases_dep.module("databases");
     mod.addImport("databases", databases_mod);
 
+    // === Self-contained `custom_http_client` package (vendored libcurl) ===
+    // Mirrors the `databases` package pattern. The package's own build.zig
+    // wires the vendored prebuilt archive from vendor/curl/<target>/lib/
+    // libcurl.a based on the TARGET we pass in below. Consumers (mod,
+    // mod_tests_module, cli_module, every install:* cross-compile exe)
+    // get the right archive + include path automatically via Zig's
+    // module-graph dep propagation.
+    //
+    // Required glibc version bumped to 2.38 — curl's source uses
+    // `__isoc23_*` (glibc 2.38+) and `arc4random` (glibc 2.36+ in
+    // weak-symbol form). Older glibc versions fail to link with
+    // "undefined reference to __isoc23_strtol" etc. The custom
+    // http_client target overrides glibc when needed.
+    const custom_http_client_dep = b.dependency("custom_http_client", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const custom_http_client_mod = custom_http_client_dep.module("custom_http_client");
+    mod.addImport("custom_http_client", custom_http_client_mod);
+
     // === custom_http_client module (libcurl-backed HTTP) ===
     // Exposed as a separate module so Agent2.zig (in src/modules/agent/)
     // can `@import("custom_http_client")`. Same libcurl deps as the
     // sibling build at src/modules/custom_http_client/build.zig.
     //
-    // Cross-platform libcurl paths (mirrors `-Dsqlite-prefix` for
-    // libsqlite3 — see `configureSqlitePrefix` below):
-    //   - Linux:   /usr/include + system libcurl
-    //   - macOS:   $(brew --prefix curl)/{include,lib}   (keg-only)
-    //   - Windows: $(vcpkg root)/installed/x64-windows/{include,lib}
+    // Self-contained package — mirrors the `databases` package pattern.
+    // The package's own build.zig wires the vendored prebuilt archive
+    // from vendor/curl/<target>/lib/libcurl.a based on the TARGET we
+    // pass in below. Consumers (mod, mod_tests_module, cli_module, every
+    // install:* cross-compile exe) get the right archive + include path
+    // automatically via Zig's module-graph dep propagation.
     //
-    // The macOS default `/opt/homebrew` is the Apple-Silicon layout;
-    // Intel macs override with `-Dcurl-prefix=/usr/local`. Options
-    // are declared ONCE at the top of `build()` (see above); we just
-    // read them here.
-    //
-    // The platform-specific curl include path is NOT set on
-    // custom_http_client_mod itself — setting it based on `target.result.os.tag`
-    // (the global default target) leaks the wrong path into every Compile
-    // that imports this mod, including cross-compile artifacts. Instead,
-    // each Compile step calls `linkCurlIncludePath(exe, target, ...)` for
-    // its own target.
-
-    const custom_http_client_mod = b.addModule("custom_http_client", .{
-        .root_source_file = b.path("src/modules/custom_http_client/src/root.zig"),
-        .target = target,
-    });
-    custom_http_client_mod.linkSystemLibrary("curl", .{});
-    custom_http_client_mod.link_libc = true;
-    // libcurl is a UNIVERSAL link dep — every consumer of this mod gets
-    // -lcurl in its link line (no leak; libcurl symbols are the same on
-    // every platform). But the INCLUDE PATH for curl/curl.h must match
-    // the platform — Linux has it at /usr/include/curl/curl.h, macOS at
-    // $(brew --prefix curl)/opt/curl/include/curl/curl.h, Windows at
-    // $(vcpkg)/installed/x64-windows/include/curl/curl.h.
-    //
-    // The cimport lives in src/modules/custom_http_client/src/curl.zig
-    // (part of THIS mod). The cimport uses the HOST C compiler, so we
-    // add all 3 platform paths here. Whichever path is valid on the host
-    // wins; cross-compile consumers don't need to re-add (the headers
-    // are portable C). The link_libc + linkSystemLibrary("curl") are
-    // universal and propagate to every importer.
-    custom_http_client_mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    custom_http_client_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/curl/include", .{curl_prefix}) });
-    custom_http_client_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/include", .{curl_vcpkg_root}) });
-    mod.addImport("custom_http_client", custom_http_client_mod);
+    // No more `-Dcurl-prefix` / `-Dcurl-vcpkg-root` options, no more
+    // `linkSystemLibrary("curl", .{})` calls in this file, no more
+    // `linkCurlIncludePath()` helper. The package owns its own deps.
 
     // === Auto-fetch vendor/sqlite3 if missing ===
-    // The amalgamation (sqlite3.c ~10 MB + 2 headers) is gitignored (see
-    // .gitignore "vendored" section). Fresh checkouts need the fetch to
-    // happen BEFORE any Compile step that links vendor/sqlite3/sqlite3.c
-    // vendor/sqlite3/ is COMMITTED to the repo (the ginwasaas pattern —
-    // see vendor/sqlite3/README.md for the layout). No fetch step needed;
-    // a fresh checkout has everything it needs for Windows + macOS native
-    // AND cross-compile from Linux. The pre-built libsqlite3.a archives
-    // for macOS-{arm64,x86_64} and Windows (via the MinGW symlink farm)
-    // let `install:windows` / `install:macos*` link successfully on a
-    // Linux host WITHOUT needing vcpkg or brew installed locally.
+    // The amalgamation (`src/modules/databases/vendor/sqlite3/sqlite3.c`
+    // ~10 MB + 2 headers) is gitignored (per .gitignore — the
+    // `src/modules/databases/vendor/` path is excluded). Fresh checkouts
+    // need the fetch to happen BEFORE any Compile step that links the
+    // amalgamation. The script (`src/modules/databases/scripts/fetch-vendor-sqlite3.sh`)
+    // downloads + verifies the SHA3-256 of the official amalgamation ZIP
+    // and writes it to the package's own vendor dir. Idempotent: skips
+    // if the files already exist.
     //
-    // The legacy fetch-vendor-sqlite3 step + scripts/fetch-vendor-sqlite3.sh
-    // are kept as a no-op alias for back-compat (CI/scripts that call it
-    // still find the step in `zig build --help`). On the ginwasaas-style
-    // vendor layout, the fetch is unnecessary — the amalgamation ships in
-    // vendor/sqlite3/amalgamation/sqlite-amalgamation-3530400/.
+    // The `fetch-vendor-sqlite3` step is depended on by `test_step` (and
+    // every `install:*` cross-compile target) so a fresh checkout Just
+    // Works without a separate `bash bootstrap-vendor.sh` invocation.
     const vendor_sqlite3_step = b.step(
         "fetch-vendor-sqlite3",
-        "Deprecated: vendor/sqlite3/ is now committed to the repo (see vendor/sqlite3/README.md)",
+        "Fetch the sqlite3 amalgamation into src/modules/databases/vendor/sqlite3/ (idempotent). Auto-runs before `zig build test` and every `install:*` target on a fresh checkout.",
     );
     const vendor_sqlite3_fetch = b.addSystemCommand(&.{
-        "sh", "-c",
-        \\echo "vendor/sqlite3/ is now committed to the repo; no fetch needed."
-    ,
+        "bash", "src/modules/databases/scripts/fetch-vendor-sqlite3.sh",
     });
     vendor_sqlite3_fetch.setCwd(b.path(""));
     vendor_sqlite3_step.dependOn(&vendor_sqlite3_fetch.step);
@@ -254,18 +239,49 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // === fetch-vendor-curl build step ===
+    // Cross-compile to macOS/Windows AND native Linux builds need
+    // the vendored libcurl.a archive in
+    // src/modules/custom_http_client/vendor/curl/<target>/lib/. The
+    // script (src/modules/custom_http_client/scripts/build-vendor-curl.sh
+    // — co-located with the package) cross-compiles from source. It's
+    // idempotent — re-running on a populated vendor/ is fast (no-op
+    // after first build).
+    //
+    // MUST be defined BEFORE `b.installArtifact(exe)` below — the
+    // default `install` step (which `zig build` runs) depends on
+    // the installed artifact's step, which we're about to add a
+    // dependency on. Defining fetch_vendor_curl_step after
+    // b.installArtifact would mean the default install doesn't
+    // trigger the fetch, leaving the build broken on fresh checkouts
+    // (where vendor/curl/ is gitignored + empty).
+    const fetch_vendor_curl_step = b.step(
+        "fetch-vendor-curl",
+        "Build src/modules/custom_http_client/vendor/curl/<target>/ from source (cross-compiles libcurl for Linux + macOS; idempotent). " ++
+            "Auto-runs on `zig build` or any install:* target when the vendor dir is missing.",
+    );
+    const fetch_vendor_curl_run = b.addSystemCommand(&.{
+        "bash", "src/modules/custom_http_client/scripts/build-vendor-curl.sh",
+    });
+    fetch_vendor_curl_run.setCwd(b.path(""));
+    fetch_vendor_curl_step.dependOn(&fetch_vendor_curl_run.step);
+
     b.installArtifact(exe);
+    // Make the default `install` step (which `zig build` runs)
+    // depend on fetch_vendor_curl — this is what makes `zig build`
+    // work on a fresh checkout where vendor/curl/ is empty.
+    b.getInstallStep().dependOn(fetch_vendor_curl_step);
 
     exe.root_module.linkSystemLibrary("c", .{});
-    exe.root_module.linkSystemLibrary("curl", .{});
     exe.root_module.link_libc = true;
     // Per-target platform deps (sqlite3/openssl/vendored amalgamation).
     // linkPlatformDeps handles all 4 targets in one switch — replaces the
     // old if/else chain that leaked Linux libs into cross-compile artifacts.
     linkPlatformDeps(b, exe, target);
-    // Curl include path for custom_http_client_mod's C glue (target-aware
-    // so cross-compile to Windows gets vcpkg path, macOS gets brew path).
-    linkCurlIncludePath(b, exe, target, curl_prefix, curl_vcpkg_root);
+    // libcurl is linked via custom_http_client_mod's transitive deps
+    // (the vendored prebuilt archive is added in the package's own
+    // build.zig). No need to call linkSystemLibrary("curl", ...) or
+    // addIncludePath here — the module graph handles it.
     // If we ended up on the Windows / cross-compile branch, depend on
     // the auto-fetch step so a fresh checkout Just Works.
     if (target.result.os.tag == .windows) {
@@ -478,6 +494,18 @@ pub fn build(b: *std.Build) void {
             // GTK/WebKit headers — cc handles _Pragma correctly. The Zig
             // extern declarations trust the signatures and link against
             // libwebkit2gtk-4.1 / libgtk-3 / libsoup-3.0 / libglib-2.0.
+            //
+            // Library search path: with glibc 2.38 target, the linker's
+            // default search path doesn't include /usr/lib in some contexts.
+            // Add it explicitly so `linkSystemLibrary` finds the SO files
+            // (otherwise we get "unable to find dynamic system library
+            // 'webkit2gtk-4.1' using strategy 'paths_first'. searched paths: none").
+            // Note: don't add `/usr/lib/x86_64-linux-gnu` — that's a
+            // Debian/Ubuntu multi-arch path that doesn't exist on Arch /
+            // Fedora, and Zig treats a missing library dir as a fatal error.
+            // /usr/lib alone catches both layouts (Debian symlinks .so files
+            // at /usr/lib too).
+            desktop_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
             desktop_exe.root_module.linkSystemLibrary("webkit2gtk-4.1", .{});
             desktop_exe.root_module.linkSystemLibrary("gtk-3", .{});
             desktop_exe.root_module.linkSystemLibrary("soup-3.0", .{});
@@ -554,8 +582,11 @@ pub fn build(b: *std.Build) void {
 
     // Capture the InstallArtifact so `build:all` can dependOn its inner
     // step (see the build banner section at the end of this file for why).
+    // Note: don't add to `b.getInstallStep()` here — that's the default
+    // `install` step, and `build_all_step` re-uses it via `getInstallStep().dependOn(...)`
+    // already. Adding it twice causes the desktop install to be skipped
+    // when `zig build` runs (some kind of graph dedup issue).
     const desktop_install = b.addInstallArtifact(desktop_exe, .{});
-    b.getInstallStep().dependOn(&desktop_install.step);
 
     // Make the desktop binary depend on the codegen step. The codegen runs
     // `bun run build` first (via build_webapp_step) and then walks dist/ to
@@ -617,10 +648,10 @@ pub fn build(b: *std.Build) void {
     });
     cli_exe.root_module.linkSystemLibrary("c", .{});
     cli_exe.root_module.link_libc = true;
-    // Per-target curl include path (vcpkg on Windows, brew on macOS,
-    // /usr/include on Linux). libcurl is wired via custom_http_client_mod;
-    // the include path must match the target's libcurl layout.
-    linkCurlIncludePath(b, cli_exe, target, curl_prefix, curl_vcpkg_root);
+    // libcurl is linked via custom_http_client_mod's transitive deps
+    // (the vendored prebuilt archive is added in the package's own
+    // build.zig). No need to call linkCurlIncludePath here — the
+    // module graph handles it.
     // NOTE: do NOT call `b.installArtifact(cli_exe)` here — in
     // Zig 0.16 the default install step is finalized early and
     // post-hoc additions can be dropped. Instead we capture the
@@ -638,11 +669,10 @@ pub fn build(b: *std.Build) void {
     // The CLI module re-exports test files via its `root.zig`, so a
     // single `b.addTest({ .root_module = cli_module })` step picks up
     // every `_test.zig` under `src/apps/cli/` without listing them.
-    // Same libc + curl link line as the exe.
+    // libcurl is wired via custom_http_client_mod's transitive deps.
     const cli_tests = b.addTest(.{ .root_module = cli_module });
     cli_tests.root_module.linkSystemLibrary("c", .{});
     cli_tests.root_module.link_libc = true;
-    linkCurlIncludePath(b, cli_tests, target, curl_prefix, curl_vcpkg_root);
     const test_cli = b.step("test:cli", "Run nalarcli unit tests");
     const run_cli_tests = b.addRunArtifact(cli_tests);
     test_cli.dependOn(&run_cli_tests.step);
@@ -720,23 +750,20 @@ pub fn build(b: *std.Build) void {
     //
     // After the `databases` package extraction: sqlite3 amalgamation +
     // openssl + crypto + libpq + /usr/include + /usr/include/postgresql
-    // are ALL propagated via mod.addImport above. We only need libc +
-    // curl include path here (curl is universal via custom_http_client_mod
-    // but its INCLUDE path needs the right host layout — handled the
-    // same way as the exe path).
+    // are ALL propagated via mod.addImport above. We only need libc here
+    // — libcurl is fully wired via custom_http_client_mod's transitive
+    // deps (the vendored prebuilt archive handles the link line; the
+    // portable C headers handle the @cImport include path on every host).
+    //
+    // With glibc 2.38 target, the test module's `linkSystemLibrary("ssl", "crypto", "pq")`
+    // (added by the `databases` package) needs the system's `/usr/lib`
+    // to be on the linker search path. The `databases` package only adds
+    // /usr/include for headers, not the library path — so we add it here.
     {
         mod_tests_module.linkSystemLibrary("c", .{});
         mod_tests_module.link_libc = true;
-        switch (test_target.result.os.tag) {
-            .macos => {
-                mod_tests_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/opt/curl/include", .{curl_prefix}) });
-                mod_tests_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/opt/curl/lib", .{curl_prefix}) });
-            },
-            .windows => {
-                mod_tests_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/include", .{curl_vcpkg_root}) });
-                mod_tests_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/installed/x64-windows/lib", .{curl_vcpkg_root}) });
-            },
-            else => {},
+        if (test_target.result.os.tag == .linux) {
+            mod_tests_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
         }
     }
 
@@ -751,6 +778,14 @@ pub fn build(b: *std.Build) void {
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
     const test_step = b.step("test", "Run tests");
+    // Fresh checkouts need both vendor dirs populated before any
+    // Compile step can link the vendored libcurl archive or compile
+    // the sqlite3 amalgamation. Without these deps, `zig build test`
+    // on a clean checkout fails with "file not found" for
+    // vendor/sqlite3/sqlite3.c (databases package) and/or
+    // vendor/curl/<target>/lib/libcurl.a (custom_http_client package).
+    test_step.dependOn(fetch_vendor_curl_step);
+    test_step.dependOn(vendor_sqlite3_step);
     test_step.dependOn(&run_mod_tests.step);
 
     const ai_workflow_tui_test_mod = b.addTest(.{
@@ -766,16 +801,17 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .x86_64,
         .os_tag = .linux,
         .abi = .gnu,
+        .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
     });
     const linux_exe = createPlatformExe(b, mod, linux_target, optimize, "nalarcore-linux-x86_64");
     linux_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    // Custom HTTP client needs curl include path on the cross-target
-    // (linkPlatformDeps handles sqlite3/openssl; curl is separate because
-    // it's wired via custom_http_client_mod).
-    linux_exe.root_module.linkSystemLibrary("curl", .{});
+    // libcurl is linked via custom_http_client_mod's transitive deps
+    // (the vendored prebuilt archive is added in the package's own
+    // build.zig). No need to call linkSystemLibrary("curl", ...) or
+    // linkCurlIncludePath here — the module graph handles it.
     linux_exe.root_module.link_libc = true;
-    linkCurlIncludePath(b, linux_exe, linux_target, curl_prefix, curl_vcpkg_root);
+    linux_step.dependOn(fetch_vendor_curl_step);
     const install_linux = b.addInstallArtifact(linux_exe, .{});
     linux_step.dependOn(&install_linux.step);
 
@@ -790,11 +826,18 @@ pub fn build(b: *std.Build) void {
     // already produces the doubled suffix `nalarcore-windows-x86_64.exe.exe`
     // (which the CI yaml's verify step doesn't expect).
     const windows_exe = createPlatformExe(b, mod, windows_target, optimize, "nalarcore-windows-x86_64");
-    windows_exe.root_module.linkSystemLibrary("curl", .{});
+    // libcurl is linked via custom_http_client_mod's transitive deps.
+    // NOTE: src/modules/custom_http_client/vendor/curl/windows-amd64/
+    // is NOT built yet (MinGW setup pending — see the curl build
+    // script for the gap).
     windows_exe.root_module.link_libc = true;
-    linkCurlIncludePath(b, windows_exe, windows_target, curl_prefix, curl_vcpkg_root);
-    // Fresh checkout: vendor/sqlite3 doesn't exist yet. Depend on the
-    // auto-fetch step so the cross-target linker sees sqlite3.c.
+    // Fresh checkout: src/modules/databases/vendor/sqlite3/ doesn't
+    // exist yet. Depend on the auto-fetch step so the cross-target
+    // linker sees sqlite3.c.
+    // Also depend on fetch-vendor-curl so the windows-amd64/ vendor
+    // dir gets built (currently fails — see MinGW note above).
+    windows_step.dependOn(fetch_vendor_curl_step);
+    windows_step.dependOn(vendor_sqlite3_step);
     const install_windows = b.addInstallArtifact(windows_exe, .{});
     windows_step.dependOn(&install_windows.step);
 
@@ -804,9 +847,10 @@ pub fn build(b: *std.Build) void {
         .os_tag = .macos,
     });
     const macos_exe = createPlatformExe(b, mod, macos_target, optimize, "nalarcore-macos-x86_64");
-    macos_exe.root_module.linkSystemLibrary("curl", .{});
+    // libcurl is linked via custom_http_client_mod's transitive deps.
     macos_exe.root_module.link_libc = true;
-    linkCurlIncludePath(b, macos_exe, macos_target, curl_prefix, curl_vcpkg_root);
+    macos_step.dependOn(fetch_vendor_curl_step);
+    macos_step.dependOn(vendor_sqlite3_step);
     const install_macos = b.addInstallArtifact(macos_exe, .{});
     macos_step.dependOn(&install_macos.step);
 
@@ -816,9 +860,10 @@ pub fn build(b: *std.Build) void {
         .os_tag = .macos,
     });
     const macos_arm_exe = createPlatformExe(b, mod, macos_arm_target, optimize, "nalarcore-macos-aarch64");
-    macos_arm_exe.root_module.linkSystemLibrary("curl", .{});
+    // libcurl is linked via custom_http_client_mod's transitive deps.
     macos_arm_exe.root_module.link_libc = true;
-    linkCurlIncludePath(b, macos_arm_exe, macos_arm_target, curl_prefix, curl_vcpkg_root);
+    macos_arm_step.dependOn(fetch_vendor_curl_step);
+    macos_arm_step.dependOn(vendor_sqlite3_step);
     const install_macos_arm = b.addInstallArtifact(macos_arm_exe, .{});
     macos_arm_step.dependOn(&install_macos_arm.step);
 
@@ -826,9 +871,10 @@ pub fn build(b: *std.Build) void {
     const linux_system_exe = createPlatformExe(b, mod, target, optimize, "nalar");
     linux_system_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_system_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    linux_system_exe.root_module.linkSystemLibrary("curl", .{});
+    // libcurl is linked via custom_http_client_mod's transitive deps.
     linux_system_exe.root_module.link_libc = true;
-    linkCurlIncludePath(b, linux_system_exe, target, curl_prefix, curl_vcpkg_root);
+    linux_system_step.dependOn(fetch_vendor_curl_step);
+    linux_system_step.dependOn(vendor_sqlite3_step);
     linux_system_step.dependOn(&linux_system_exe.step);
     const install_linux_system = b.addInstallArtifact(linux_system_exe, .{});
     linux_system_step.dependOn(&install_linux_system.step);
@@ -855,10 +901,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
     dev_exe.root_module.linkSystemLibrary("c", .{});
-    dev_exe.root_module.linkSystemLibrary("curl", .{});
+    // libcurl is linked via custom_http_client_mod's transitive deps.
     dev_exe.root_module.link_libc = true;
+    dev_linux_system_step.dependOn(fetch_vendor_curl_step);
     linkPlatformDeps(b, dev_exe, target);
-    linkCurlIncludePath(b, dev_exe, target, curl_prefix, curl_vcpkg_root);
     if (target.result.os.tag == .windows) {
     }
     const install_dev = b.addInstallArtifact(dev_exe, .{});
@@ -1074,6 +1120,10 @@ pub fn build(b: *std.Build) void {
     build_all_step.dependOn(&desktop_install.step);
     build_all_step.dependOn(&cli_install.step);
     build_all_step.dependOn(&build_banner.step);
+    // Make `zig build` (default) auto-fetch the vendored curl archive
+    // when missing. The fetch script is idempotent — re-running on a
+    // populated vendor/ is a fast no-op.
+    build_all_step.dependOn(fetch_vendor_curl_step);
 
     // Default: same as `build:all`. Without this, `zig build` (no args)
     // runs the `install` step alone, which prints no summary on success.

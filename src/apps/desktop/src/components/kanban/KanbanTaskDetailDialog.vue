@@ -311,7 +311,7 @@ const selectColumn = (id: string) => {
 // string = "no per-task cwd" (falls back to kanban-level path +
 // sandbox). The picker writes the absolute path; the picker dialog's
 // "cancel" / backdrop-close leaves it empty.
-const cwdSession = ref<string>('')
+const cwdSession = ref<string>(props.cwd ?? '')
 const isCwdPickerOpen = ref(false)
 const cwdPickerRef = ref<HTMLElement | null>(null)
 // Pre-populate from the parent kanban's `cwd` prop on dialog open.
@@ -319,6 +319,13 @@ const cwdPickerRef = ref<HTMLElement | null>(null)
 // cwd) as this prop — when set, the new task's per-task cwd defaults
 // to it (the user can change or skip). When the parent kanban is
 // cwd-less, the picker starts empty.
+//
+// Initialized from the prop (NOT via the watcher below) so the picker
+// has the right value on the very first render — without the
+// initial-value read, the watcher needed `show` to flip false→true to
+// fire, which leaves the picker empty if the parent mounts the dialog
+// with `show=true` on the first tick (same pattern as
+// `selectedColumnId` above, which also initializes from its prop).
 watch(
   () => props.show,
   (show) => {
@@ -345,6 +352,28 @@ const handleDocumentClickCwd = (event: MouseEvent) => {
     isCwdPickerOpen.value = false
   }
 }
+
+// NEW (plan: 2026-08-06-kanban-folder-picker-style). Computed
+// style object for the cwd picker button. The previous version used
+// a static `style="..."` attribute with template expressions
+// (`cwdSession ? ... : ...`) inline — Vue does NOT evaluate
+// expressions inside static style attributes, so the resulting CSS
+// was syntactically invalid and the browser silently dropped the
+// `color` and `background-color` properties. The picker looked
+// identical regardless of whether cwd was set. This computed is
+// the proper `:style` binding so the conditional resolves correctly
+// at render time. When cwd is set: bright text on the active-bg
+// (clearly reads as "you picked something"). When cwd is empty:
+// dim text on the sidebar-bg (clearly reads as "skip / optional").
+const cwdPickerStyle = computed<Record<string, string>>(() => ({
+  backgroundColor: cwdSession.value
+    ? 'var(--semantic-active-bg)'
+    : 'var(--semantic-sidebar-bg)',
+  border: '1px solid var(--color-border)',
+  color: cwdSession.value
+    ? 'var(--semantic-text)'
+    : 'var(--semantic-text-dim)',
+}))
 // FilePickerDialog data adapter — same `path: string => Promise<T[]>`
 // contract used by AddKanbanDialog. Mirrors its loadItemsForPicker
 // helper (kept duplicated, not extracted, per the AddKanbanDialog
@@ -774,18 +803,32 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
           @click="handleClose"
         />
 
-        <!-- Dialog Card. Wider than AddTaskDialog (max-w-xl) so the
-             description has room to breathe. min(80vh, ...) for the
-             height so it scrolls on short viewports. -->
+        <!-- Dialog Card. `max-w-2xl` (672px) — bumped from the previous
+             `max-w-xl` (576px) per user feedback "make the dialog
+             bigger" so the multi-field form (task name + column
+             picker + description + tags + folder picker + profile
+             picker + unattended mode) has more horizontal room
+             without crossing into "wide modal" territory. `max-height:
+             min(80vh, calc(100vh - 2rem))` (NOT a fixed height) so
+             the card shrinks to fit its content when short — the
+             body (`flex-1 overflow-y-auto min-h-0`) just takes its
+             natural height when there's room, no empty space below
+             the form. When content overflows the 80vh cap, the body
+             fills the remaining space and scrolls (the original goal
+             of the `min(80vh, ...)` constraint). Using `height:`
+             instead forced the card to 80vh regardless of content,
+             leaving a large gap between the form fields and the
+             action buttons on short content (e.g. a brand-new task
+             with no description). -->
         <div
-          class="relative w-full max-w-xl mx-4 rounded-xl shadow-2xl flex flex-col overflow-hidden"
+          class="relative w-full max-w-2xl mx-4 rounded-xl shadow-2xl flex flex-col overflow-hidden"
           style="
             background-color: var(--semantic-card-bg);
             border: 1px solid var(--color-border);
             box-shadow:
               0 1px 2px rgba(0, 0, 0, 0.4),
               0 8px 24px rgba(0, 0, 0, 0.35);
-            height: min(80vh, calc(100vh - 2rem));
+            max-height: min(80vh, calc(100vh - 2rem));
           "
         >
           <!-- Header -->
@@ -1094,16 +1137,8 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                 <button
                   type="button"
                   @click.stop="toggleCwdPicker"
-                  class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 hover:opacity-80"
-                  style="
-                    background-color: cwdSession
-                      ? 'var(--semantic-active-bg)'
-                      : 'var(--semantic-sidebar-bg)';
-                    border: 1px solid var(--color-border);
-                    color: cwdSession
-                      ? 'var(--semantic-text)'
-                      : 'var(--semantic-text-dim)';
-                  "
+                  class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 hover:opacity-80 inline-flex items-center gap-1.5"
+                  :style="cwdPickerStyle"
                   :title="
                     cwdSession
                       ? `Project root: ${cwdSession}`
@@ -1111,11 +1146,27 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                   "
                   data-testid="kanban-task-detail-cwd-picker"
                 >
-                  <span aria-hidden="true">📂</span>
-                  <span class="ml-1 font-mono truncate max-w-[180px] inline-block align-middle">
+                  <!-- NEW (plan: 2026-08-06-kanban-folder-picker-style).
+                       Inline SVG folder icon instead of the 📂 emoji.
+                       `fill="currentColor"` inherits the button's text
+                       color, so the icon matches the muted dark theme
+                       (the emoji rendered as a system-colorful orange
+                       icon that looked out of place next to the cleaner
+                       profile picker's robot emoji). -->
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    class="w-3.5 h-3.5 shrink-0"
+                    aria-hidden="true"
+                    data-testid="kanban-task-detail-cwd-picker-icon"
+                  >
+                    <path d="M2 5a2 2 0 012-2h4.586a1 1 0 01.707.293L11 5h5a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V5z" />
+                  </svg>
+                  <span class="font-mono truncate max-w-[180px] inline-block align-middle">
                     {{ cwdSession || 'Skip (no project root)' }}
                   </span>
-                  <span class="ml-1 text-[10px]">▾</span>
+                  <span class="text-[10px] shrink-0">▾</span>
                 </button>
                 <div
                   v-if="isCwdPickerOpen"
@@ -1131,6 +1182,8 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                     :is-expandable="(e: any) => e.is_directory as boolean"
                     :label-for="(e: any) => e.name as string"
                     :close-on-select="true"
+                    :initial-path="cwdSession || props.cwd || '/'"
+                    :selected-path="cwdSession || props.cwd || ''"
                     title="Select Per-Task Project Root"
                     @select="selectCwd"
                   />

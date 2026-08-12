@@ -778,6 +778,16 @@ pub const Agent = struct {
     httpOptions: HttpOptions = .{},
     UrlStyle: []const u8 = "openai",
     userIdentifier: []const u8 = "AnakMagang",
+    /// Most recent server/transporter error detail (e.g. the JSON error body
+    /// the LLM provider returned for HTTP >=400, or a synthesized reason for
+    /// mid-stream failures like scanner errors / missing finish_reason).
+    /// Heap-allocated via `self.allocator`; freed by `deinit()`. Survives
+    /// only until the next `callStreaming` call or `deinit()`. Workflow
+    /// reads this in its retry-catch block to log WHY the call failed —
+    /// without it we only see error names like "ApiError" /
+    /// "StreamInterrupted" and have no way to distinguish a rate limit
+    /// from an auth failure from a transport glitch.
+    last_error_message: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Agent {
         return Agent{
@@ -1229,6 +1239,30 @@ pub const Agent = struct {
         };
         defer self.allocator.free(uri_str);
 
+        // Validate the URL scheme BEFORE handing it to libcurl. libcurl
+        // returns CURLE_UNSUPPORTED_PROTOCOL (LocalError.UnsupportedProtocol)
+        // for any URL it can't parse a scheme out of — which surfaces to
+        // the workflow as `scanner.next failed ...: UnsupportedProtocol`
+        // with no hint about *why*. Catching it here lets us name the
+        // actual misconfiguration (empty base_url, missing scheme, typo
+        // like "htttps://") instead of forcing the user to dig through
+        // libcurl docs.
+        const has_http_scheme = std.mem.startsWith(u8, uri_str, "http://") or
+            std.mem.startsWith(u8, uri_str, "https://");
+        if (!has_http_scheme) {
+            const detail = std.fmt.allocPrint(
+                self.allocator,
+                "baseUrl+endpoint={s} has no http:// or https:// scheme — check api_key/model/base_url in config",
+                .{uri_str},
+            ) catch null;
+            if (detail) |d| {
+                if (self.last_error_message) |prev| self.allocator.free(prev);
+                self.last_error_message = d;
+            }
+            self.log_fmt(.err, "[STREAM] unsupported URL scheme (must start with http:// or https://): {s}", .{uri_str});
+            return error.InvalidUri;
+        }
+
         // 3. Compose auth header.
         const auth_value = std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey }) catch |err| {
             self.log_error("concat auth", err, null);
@@ -1271,6 +1305,35 @@ pub const Agent = struct {
 
         if (status >= 400) {
             self.log_fmt(.err, "[STREAM] HTTP error status: {d}", .{status});
+            // Drain the error body so the workflow catch block can log the
+            // server's actual reason (rate limit, auth, model not found,
+            // context length, etc.) instead of just `error.ApiError`. Cap at
+            // 4 KiB to avoid blowing up logs on a runaway server response;
+            // truncated payloads get a trailing "..." marker.
+            var body_buf: std.ArrayList(u8) = .empty;
+            defer body_buf.deinit(self.allocator);
+            const max_body_len: usize = 4096;
+            drain_loop: while (body_buf.items.len < max_body_len) {
+                const next_chunk = stream.next() catch break :drain_loop;
+                if (next_chunk) |chunk| {
+                    const remaining = max_body_len - body_buf.items.len;
+                    const to_copy = @min(chunk.len, remaining);
+                    body_buf.appendSlice(self.allocator, chunk[0..to_copy]) catch break :drain_loop;
+                    if (chunk.len > to_copy) break :drain_loop;
+                } else break :drain_loop;
+            }
+            const truncated = body_buf.items.len >= max_body_len;
+            if (body_buf.items.len > 0) {
+                const msg = std.fmt.allocPrint(
+                    self.allocator,
+                    "HTTP {d}: {s}{s}",
+                    .{ status, body_buf.items, if (truncated) "..." else "" },
+                ) catch null;
+                if (msg) |m| {
+                    if (self.last_error_message) |prev| self.allocator.free(prev);
+                    self.last_error_message = m;
+                }
+            }
             return error.ApiError;
         }
 
@@ -1317,6 +1380,33 @@ pub const Agent = struct {
         while (true) {
             const next_result = scanner.next() catch |err| {
                 self.log_fmt(.err, "[STREAM] scanner.next failed: {s}", .{@errorName(err)});
+                // Surface the underlying scanner error name to the workflow
+                // catch block so it can tell apart a parse failure from a
+                // network drop from an EOF mid-line, instead of all collapsing
+                // into "StreamInterrupted". Special-case `UnsupportedProtocol`
+                // when the URL was https:// — the vendored libcurl in
+                // src/modules/custom_http_client/vendor/curl/ is built with
+                // --disable-ssl (see scripts/build-vendor-curl.sh:8-18), so
+                // the only way an https URL produces CURLE_UNSUPPORTED_PROTOCOL
+                // is that the vendored libcurl literally doesn't know the
+                // scheme. A bare `UnsupportedProtocol` is otherwise opaque.
+                const detail: ?[]u8 = if (err == error.UnsupportedProtocol and
+                    std.mem.startsWith(u8, uri_str, "https://"))
+                std.fmt.allocPrint(
+                    self.allocator,
+                    "scanner.next failed after {d} chunk(s): UnsupportedProtocol — vendored libcurl was built --disable-ssl (see custom_http_client/scripts/build-vendor-curl.sh); URL must be http:// until OpenSSL is vendored, or change base_url in ~/.config/nalar/config.json to an http:// endpoint",
+                    .{chunk_count},
+                ) catch null
+                else
+                    std.fmt.allocPrint(
+                        self.allocator,
+                        "scanner.next failed after {d} chunk(s): {s}",
+                        .{ chunk_count, @errorName(err) },
+                    ) catch null;
+                if (detail) |d| {
+                    if (self.last_error_message) |prev| self.allocator.free(prev);
+                    self.last_error_message = d;
+                }
                 return error.StreamInterrupted;
             };
             if (next_result) |line| {
@@ -1350,6 +1440,19 @@ pub const Agent = struct {
         // sending a finish_reason chunk. Treat as a mid-stream death.
         if (aggregator.finish_reason == null) {
             self.log_fmt(.err, "[STREAM] stream ended without finish_reason (chunks={})", .{chunk_count});
+            // Tell the workflow catch block HOW the stream died and roughly
+            // how far it got, so the user can distinguish "the server cut
+            // us off after a few tokens" from "it never started streaming
+            // at all" — both surface as StreamInterrupted today.
+            const detail = std.fmt.allocPrint(
+                self.allocator,
+                "stream ended without finish_reason after {d} chunk(s)",
+                .{chunk_count},
+            ) catch null;
+            if (detail) |d| {
+                if (self.last_error_message) |prev| self.allocator.free(prev);
+                self.last_error_message = d;
+            }
             return error.StreamInterrupted;
         }
         stream_ended_cleanly = true;
@@ -1377,6 +1480,10 @@ pub const Agent = struct {
     }
 
     pub fn deinit(self: *Agent) void {
+        if (self.last_error_message) |msg| {
+            self.allocator.free(msg);
+            self.last_error_message = null;
+        }
         self.client.deinit();
     }
 };

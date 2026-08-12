@@ -3433,7 +3433,7 @@ pub fn listAllWorkspaceItems(
 }
 
 // =============================================================================
-// Workspace Context (used by build_messages_for_agent_prompt.zig to render
+// Workspace Context (used by prompts_build_messages_for_agent_prompt.zig to render
 // the `## Workspace Context` section of the system prompt — see
 // docs/plans/2026-06-19-workspace-siblings-in-prompt.md, Chunk 1)
 // =============================================================================
@@ -3443,7 +3443,7 @@ pub fn listAllWorkspaceItems(
 /// first 20 (sorted with `is_self` first) and reports
 /// `truncated_items_count = total_item_count - MAX_SIBLING_ITEMS`.
 /// Centralized here as a `pub const` so the Chunk 2 renderer
-/// (`BuildWorkspaceContext` in `build_messages_for_agent_prompt.zig`)
+/// (`BuildWorkspaceContext` in `prompts_build_messages_for_agent_prompt.zig`)
 /// can reuse the same value to format the cap footer.
 pub const MAX_SIBLING_ITEMS: u32 = 20;
 
@@ -4285,9 +4285,11 @@ pub fn listWorkspaceItemTasks(
     const sql =
         \\SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type,
         \\       COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0),
-        \\       t.kanban_column_id, COALESCE(t.kanban_position, 0),
+        \\       k.kanban_column_id, COALESCE(k.kanban_position, 0),
         \\       r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error
-        \\FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id
+        \\FROM workspace_item_tasks t
+        \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
+        \\LEFT JOIN routines r ON r.task_id = t.id
         \\WHERE t.workspace_item_id = ?
         \\ORDER BY t.is_pinned DESC, t.pinned_position DESC, t.updated_at DESC, t.id DESC
     ;
@@ -4508,7 +4510,7 @@ pub fn listWorkspaceItemTasksWithCursor(
         if (cid.len > 0) {
             column_id_clause = try std.fmt.allocPrint(
                 allocator,
-                " AND (t.kanban_column_id = ? OR t.kanban_column_id IS NULL)",
+                " AND (k.kanban_column_id = ? OR k.kanban_column_id IS NULL)",
                 .{},
             );
         }
@@ -4521,9 +4523,11 @@ pub fn listWorkspaceItemTasksWithCursor(
         // sessions.id (per the project convention task.id ==
         // session.id for routine tasks; standard tasks that have
         // no matching session row get NULL → COALESCE to '0').
-        // COALESCE(t.kanban_position, 0) ensures standard tasks
-        // without a kanban_position still get '0' (the column is
-        // nullable per Migration 048). s.is_auto_retry_until_stop
+        // COALESCE(k.kanban_position, 0) ensures tasks not on any kanban
+        // column (no kanban row from the LEFT JOIN) still get '0'.
+        // The `k.kanban_position` column itself is NOT NULL DEFAULT 0
+        // in the new schema, but the LEFT JOIN can produce NULL when
+        // the task has no kanban row at all. s.is_auto_retry_until_stop
         // appends as column 18, shifting nothing because routines
         // fields are already past it (still 11-17).
         //
@@ -4544,7 +4548,7 @@ pub fn listWorkspaceItemTasksWithCursor(
         // passthrough column at index 21:
         //   21: t.tags — JSON-encode array string ('' when no tags).
         //       NOT NULL DEFAULT '' so always present.
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), t.kanban_column_id, COALESCE(t.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at IS NULL OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd FROM workspace_item_tasks t LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at IS NULL OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
         .{ cursor_clause, column_id_clause, q_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -5076,11 +5080,18 @@ fn setupDb() !TestCtx {
         \\    task_type TEXT NOT NULL DEFAULT 'standard',
         \\    is_pinned INTEGER DEFAULT 0,
         \\    pinned_position INTEGER DEFAULT 0,
-        \\    kanban_column_id TEXT,
-        \\    kanban_position INTEGER DEFAULT 0,
+        \\    -- kanban_column_id / kanban_position REMOVED post-Migration-072
+        \\    -- (they now live in the `kanban` join table below)
         \\    last_human_touched_at INTEGER,
         \\    tags TEXT NOT NULL DEFAULT '',
         \\    cwd TEXT NOT NULL DEFAULT ''
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE kanban (
+        \\    workspace_item_task_id TEXT PRIMARY KEY,
+        \\    kanban_column_id TEXT NOT NULL,
+        \\    kanban_position INTEGER NOT NULL DEFAULT 0
         \\)
     , &.{});
     try db.exec(alloc,
@@ -5128,8 +5139,8 @@ fn insertTask(
 /// pagination.md, Task 3). Inserts a task with an explicit
 /// `kanban_column_id` (and optional `kanban_position` for predictable
 /// ordering). When `column_id` is null, the task is stored without a
-/// column assignment (legacy behaviour — the DB schema permits
-/// `kanban_column_id IS NULL` per Migration 048).
+/// column assignment (legacy behaviour — the post-Migration-072 schema
+/// permits no kanban row, which the LEFT JOIN surfaces as NULL).
 fn insertTaskInColumn(
     ctx: *TestCtx,
     alloc: std.mem.Allocator,
@@ -5145,18 +5156,19 @@ fn insertTaskInColumn(
     // SQLite exec binds only TEXT, so format position as a string.
     const pos_str = try std.fmt.allocPrint(alloc, "{d}", .{position});
     defer alloc.free(pos_str);
+    // Post-Migration-072: the task→column mapping lives in `kanban`.
+    // Insert the task row first (no kanban columns), then optionally
+    // insert a kanban row when column_id is set.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_item_tasks
+        \\(id, name, workspace_item_id, description, updated_at, task_type, tags)
+        \\VALUES (?, ?, 'wi_1', ?, datetime('now'), 'standard', ?)
+    , &.{ id, name, description, tags });
     if (column_id) |cid| {
         try ctx.db.exec(alloc,
-            \\INSERT INTO workspace_item_tasks
-            \\(id, name, workspace_item_id, description, updated_at, task_type, tags, kanban_column_id, kanban_position)
-            \\VALUES (?, ?, 'wi_1', ?, datetime('now'), 'standard', ?, ?, ?)
-        , &.{ id, name, description, tags, cid, pos_str });
-    } else {
-        try ctx.db.exec(alloc,
-            \\INSERT INTO workspace_item_tasks
-            \\(id, name, workspace_item_id, description, updated_at, task_type, tags, kanban_position)
-            \\VALUES (?, ?, 'wi_1', ?, datetime('now'), 'standard', ?, ?)
-        , &.{ id, name, description, tags, pos_str });
+            \\INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position)
+            \\VALUES (?, ?, ?)
+        , &.{ id, cid, pos_str });
     }
 }
 

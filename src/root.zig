@@ -43,6 +43,17 @@ pub const LlmConfigHolder = struct {
     lock: std.Io.Mutex = .init,
 };
 
+/// Input to `ContextIPCTui.emit_run_agent`.
+///
+/// The string fields are PASSED-THROUGH — `emit_run_agent` does not dupe
+/// them. Callers can pass borrowed slices if those slices outlive the
+/// synchronous `emit_run_agent` call (which they almost always do — most
+/// call sites use literals or stable config strings).
+///
+/// If a caller has borrowed slices that will be freed before the
+/// concurrent task runs, they MUST dup into a long-lived allocator first
+/// (see `useCase` in `session_create.zig` for the safe pattern that dups
+/// via `di.allocator`).
 pub const EmitRunAgentInput = struct {
     session_id: []const u8,
     session_name: []const u8,
@@ -75,7 +86,47 @@ pub const ContextIPCTui = struct {
 
     static_dir_path: ?[]const u8 = null,
 
+    /// Schedule an async session-create task on the Io group.
+    ///
+    /// Lifetime contract: the string fields of `obj` are duped into
+    /// `self.allocator` (long-lived) **synchronously**, before the
+    /// concurrent task is scheduled. The concurrent task then consumes
+    /// the duped slices directly and frees them via `defer` when done.
+    /// This is the safe pattern: the source slices (typically borrowed
+    /// from `req.body` via `parseFromSliceLeaky` in the HTTP handler)
+    /// are freed when the handler returns, but our dupes live in
+    /// `self.allocator` which outlives the request arena. The earlier
+    /// implementation duped INSIDE the concurrent task, which was a
+    /// use-after-free because the source was already gone by then —
+    /// SEGV in `local.dupe(u8, qmsg)` at root.zig:101.
+    ///
+    /// Mirrors the `fireRoutine` pattern in `routines/fire.zig` which
+    /// has been working correctly since the async rewrite.
     pub fn emit_run_agent(self: *ContextIPCTui, obj: EmitRunAgentInput) !void {
+        // Heap-dupe each string synchronously into the long-lived
+        // `self.allocator`. Each dupe is owned by us and will be freed
+        // by the concurrent task once it has used them. `errdefer`
+        // chains unwind cleanly on mid-allocation failure — the caller
+        // still hasn't seen the concurrent() error.
+        const owned_session_id = try self.allocator.dupe(u8, obj.session_id);
+        errdefer self.allocator.free(owned_session_id);
+        const owned_session_name = try self.allocator.dupe(u8, obj.session_name);
+        errdefer self.allocator.free(owned_session_name);
+        const owned_queue_message = try self.allocator.dupe(u8, obj.queue_message);
+        errdefer self.allocator.free(owned_queue_message);
+        const owned_cwd = try self.allocator.dupe(u8, obj.cwd);
+        errdefer self.allocator.free(owned_cwd);
+        const owned_body_message = try self.allocator.dupe(u8, obj.body_message);
+        errdefer self.allocator.free(owned_body_message);
+        const owned_allowed_tools = try self.allocator.dupe(u8, obj.allowed_tools);
+        errdefer self.allocator.free(owned_allowed_tools);
+        const owned_image_urls = try self.allocator.dupe(u8, obj.image_urls);
+        errdefer self.allocator.free(owned_image_urls);
+        const owned_selected_profile_model = try self.allocator.dupe(u8, obj.selected_profile_model);
+        errdefer self.allocator.free(owned_selected_profile_model);
+        const owned_is_auto_retry_until_stop = try self.allocator.dupe(u8, obj.is_auto_retry_until_stop);
+        errdefer self.allocator.free(owned_is_auto_retry_until_stop);
+
         try self.group_emit_session_create.concurrent(
             self.io,
             struct {
@@ -91,50 +142,49 @@ pub const ContextIPCTui = struct {
                     spm: []const u8,
                     iaur: []const u8,
                 ) void {
-                    var arena_allocator = std.heap.ArenaAllocator.init(di_inner.allocator);
-                    defer arena_allocator.deinit();
-                    const local = arena_allocator.allocator();
-
-                    // --- Heap-allocate data for the async task (task owns these, frees them) ---
-                    const copy_session_id = local.dupe(u8, sid) catch unreachable;
-                    const copy_session_name = local.dupe(u8, sname) catch unreachable;
-                    const copy_queue_message = local.dupe(u8, qmsg) catch unreachable;
-                    const copy_cwd = local.dupe(u8, cwd) catch unreachable;
-                    const copy_body_message = local.dupe(u8, bmsg) catch unreachable;
-                    const copy_allowed_tools = local.dupe(u8, atools) catch unreachable;
-                    const copy_image_urls = local.dupe(u8, iurls) catch unreachable;
-                    const copy_selected_profile_model = local.dupe(u8, spm) catch unreachable;
-                    const copy_is_auto_retry_until_stop = local.dupe(u8, iaur) catch unreachable;
+                    // These slices are owned by the Io task lifetime —
+                    // they were duped synchronously by `emit_run_agent`
+                    // into `di_inner.allocator` (which lives forever).
+                    // Free them all on the way out, in reverse order.
+                    defer di_inner.allocator.free(iaur);
+                    defer di_inner.allocator.free(spm);
+                    defer di_inner.allocator.free(iurls);
+                    defer di_inner.allocator.free(atools);
+                    defer di_inner.allocator.free(bmsg);
+                    defer di_inner.allocator.free(cwd);
+                    defer di_inner.allocator.free(qmsg);
+                    defer di_inner.allocator.free(sname);
+                    defer di_inner.allocator.free(sid);
 
                     const event_buss = di_inner.event_bus;
 
-                    di_inner.insert_worker(local, .{
-                        .session_id = copy_session_id,
-                        .session_name = copy_session_name,
-                        .queue_message = copy_queue_message,
-                        .cwd = copy_cwd,
-                        .body_message = copy_body_message,
-                        .allowed_tools = copy_allowed_tools,
-                        .image_urls = copy_image_urls,
-                        .selected_profile_model = copy_selected_profile_model,
-                        .is_auto_retry_until_stop = copy_is_auto_retry_until_stop,
+                    di_inner.insert_worker(di_inner.allocator, .{
+                        .session_id = sid,
+                        .session_name = sname,
+                        .queue_message = qmsg,
+                        .cwd = cwd,
+                        .body_message = bmsg,
+                        .allowed_tools = atools,
+                        .image_urls = iurls,
+                        .selected_profile_model = spm,
+                        .is_auto_retry_until_stop = iaur,
                     }) catch unreachable;
 
                     event_buss.emit(agentic_loop_mod.RunParamsNew, "ai_worker_flow", .{
-                        .parent_session_id = copy_session_id,
-                        .session_id = copy_session_id,
-                        .message = copy_queue_message,
-                        .cwd = copy_cwd,
-                        .body = copy_body_message,
-                        .allowed_tools = copy_allowed_tools,
+                        .parent_session_id = sid,
+                        .session_id = sid,
+                        .message = qmsg,
+                        .cwd = cwd,
+                        .body = bmsg,
+                        .allowed_tools = atools,
                         .is_sub_agent = false,
-                        .image_urls = copy_image_urls,
-                        .selected_profile_model = copy_selected_profile_model,
-                        .is_auto_retry_until_stop = copy_is_auto_retry_until_stop,
+                        .image_urls = iurls,
+                        .selected_profile_model = spm,
+                        .is_auto_retry_until_stop = iaur,
                     });
                 }
             }.run,
-            .{ self, obj.session_id, obj.session_name, obj.queue_message, obj.cwd, obj.body_message, obj.allowed_tools, obj.image_urls, obj.selected_profile_model, obj.is_auto_retry_until_stop },
+            .{ self, owned_session_id, owned_session_name, owned_queue_message, owned_cwd, owned_body_message, owned_allowed_tools, owned_image_urls, owned_selected_profile_model, owned_is_auto_retry_until_stop },
         );
     }
 

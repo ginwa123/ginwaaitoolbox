@@ -54,7 +54,7 @@ pub fn freeKanbanTaskRows(allocator: std.mem.Allocator, rows: []KanbanTaskRow) v
 /// The agent should pass `workspace_id` + `item_id` from the active
 /// chat context (injected by the frontend into the system prompt —
 /// see `BuildWorkspaceContext` in
-/// `src/ai_workflow/tui/build_messages_for_agent_prompt.zig`). The
+/// `src/ai_workflow/tui/prompts_build_messages_for_agent_prompt.zig`). The
 /// LLM is told in the description that the active kanban is
 /// discoverable from the chat's workspace context.
 pub const KanbanListInput = struct {
@@ -145,10 +145,11 @@ pub fn listKanbanTasks(
     workspace_item_id: []const u8,
 ) ![]KanbanTaskRow {
     var q = try db.query(allocator,
-        \\SELECT t.id, t.name, COALESCE(t.kanban_column_id, ''), COALESCE(t.kanban_position, -1)
+        \\SELECT t.id, t.name, COALESCE(k.kanban_column_id, ''), COALESCE(k.kanban_position, -1)
         \\FROM workspace_item_tasks t
+        \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
         \\WHERE t.workspace_item_id = ?
-        \\ORDER BY t.kanban_column_id ASC, t.kanban_position ASC, t.id ASC
+        \\ORDER BY k.kanban_column_id ASC, k.kanban_position ASC, t.id ASC
     , &.{workspace_item_id});
     defer q.deinit();
 

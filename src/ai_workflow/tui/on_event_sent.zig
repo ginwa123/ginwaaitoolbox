@@ -394,10 +394,23 @@ pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSess
     const data_copy = try allocator.dupe(u8, buf.items);
 
     // Granular event name drives the SSE wire format `event:` line.
-    // Today only `created` is emitted; the if/else covers future actions.
+    // Three actions are mapped:
+    //   - "created" → "session_created" (initial session row insert)
+    //   - "updated" → "session_updated" (auto-rename on first user message,
+    //     unattended-mode toggle, last_finish_reason refresh)
+    //   - "deleted" → "session_deleted"
+    // The frontend's createUnifiedSseConnection pre-registers all three
+    // names in additionalEventTypes (api/index.ts:2925-2926) so the
+    // browser's EventSource dispatches each to the JS handler. A new
+    // action NOT in this map still falls through to "session_unknown"
+    // (the future-proofing default), which is currently NOT registered
+    // by the frontend — by design, so unknown actions don't leak into
+    // the session channel callback without an explicit contract.
     // (Zig 0.16 can't `switch` on `[]const u8`.)
     const event_type_name: []const u8 = if (std.mem.eql(u8, input.action, "created"))
         "session_created"
+    else if (std.mem.eql(u8, input.action, "updated"))
+        "session_updated"
     else if (std.mem.eql(u8, input.action, "deleted"))
         "session_deleted"
     else

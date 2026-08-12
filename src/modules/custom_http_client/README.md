@@ -14,7 +14,7 @@ those problems don't exist by construction.
 
 This module is **new and currently unused by the rest of nalar**.
 A future plan moves `handle_mcp_tool.zig` and
-`build_messages_for_agent_prompt.zig` off the bash-spawning client
+`prompts_build_messages_for_agent_prompt.zig` off the bash-spawning client
 onto this one.
 
 ## Build

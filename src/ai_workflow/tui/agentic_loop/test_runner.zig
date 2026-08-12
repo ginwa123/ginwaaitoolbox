@@ -27,6 +27,7 @@ test {
     _ = @import("get_llm_histories.zig");
     _ = @import("sse_send_event_worker.zig");
     _ = @import("sse_on_event_send_llm_history.zig");
+    _ = @import("sse_on_event_send_session.zig"); // task_1786507100896 — behavioural tests for wire-format event_type_name mapping
     _ = @import("parsing.zig");
     _ = @import("parsing_test.zig");
     _ = @import("workflow.zig");
@@ -35,8 +36,5 @@ test {
     _ = @import("workflow_commpact_message.zig");
     _ = @import("compaction_context.zig"); // 2026-07-30-better-compaction-context — parseReadFilePath + fetchUserChatHistory + fetchReadFilePaths + enrichCompactionXml
     _ = @import("compaction.zig"); // 2026-08-06-encapsulate-compaction-prompt — buildCompactMessagePrompt inline tests
-    _ = @import("build_messages_for_agent_prompt_test.zig");
-    _ = @import("build_messages_for_agent_prompt_design_canvas_test.zig"); // design-mode-scrollbar-fix — iframe scrollbar guidance in BuildDesignCanvasPrompt
-    _ = @import("build_messages_for_agent_prompt_filtering_tools_test.zig"); // unit-test-filtering-tools — behavioural tests for the per-item-type tool filter
     _ = @import("prompts_make_working_directory_context.zig"); // never-create-memory-md — makeWorkingDirectoryContext must never force-create AGENTS.md / CLAUDE.md / NALAR.md (inline tests at the bottom of the impl file)
 }

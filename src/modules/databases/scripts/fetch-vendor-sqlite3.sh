@@ -40,7 +40,10 @@ URL="https://sqlite.org/${SQLITE_YEAR}/sqlite-amalgamation-${SQLITE_VERSION_NUMB
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 PROJECT_DIR="$( cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd )"
-DEST="${PROJECT_DIR}/vendor/sqlite3"
+# Modules own their own vendor dir. The script lives in
+# src/modules/databases/scripts/ and writes to a `vendor/` dir
+# co-located with the package (../vendor/sqlite3 from here).
+DEST="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/vendor/sqlite3"
 
 REQUIRED_FILES=( "sqlite3.c" "sqlite3.h" "sqlite3ext.h" )
 # ---------- /constants ----------

@@ -279,7 +279,7 @@ pub fn loadLocalKnowledge(
 ///     the global memories path (XDG-aware: $XDG_CONFIG_HOME or $HOME).
 ///     When null, the Global Knowledge section is omitted.
 ///   - `workspaceContext: []const u8` — pre-rendered "Workspace Context"
-///     block (built by `BuildWorkspaceContext` in `build_messages_for_agent_prompt.zig`).
+///     block (built by `BuildWorkspaceContext` in `prompts_build_messages_for_agent_prompt.zig`).
 ///     Empty string means "session not bound to any workspace task" (section
 ///     is silently omitted). Rendered between the cwd line and the OS info.
 pub fn build_agent_prompt(
@@ -307,7 +307,7 @@ pub fn build_agent_prompt(
     workspaceContext: []const u8,
     /// Pre-rendered "Kanban Status Tracking" markdown block, built by
     /// `BuildKanbanStatusPrompt(allocator, db, session_id)` in
-    /// `build_messages_for_agent_prompt.zig`. Empty string means "the
+    /// `prompts_build_messages_for_agent_prompt.zig`. Empty string means "the
     /// session is not on a kanban board" (the section is silently
     /// omitted). The block already includes its `## Kanban Status
     /// Tracking` header. Rendered right after the Workspace Context
@@ -316,7 +316,7 @@ pub fn build_agent_prompt(
     kanbanStatusContent: []const u8,
     /// Pre-rendered "Design Canvas" markdown block, built by
     /// `BuildDesignCanvasPrompt(allocator, db, session_id)` in
-    /// `build_messages_for_agent_prompt.zig`. Empty string means "the
+    /// `prompts_build_messages_for_agent_prompt.zig`. Empty string means "the
     /// session is not on a design canvas" (the section is silently
     /// omitted). The block already includes its `## Design Canvas`
     /// header. Rendered right after the Kanban Status Tracking

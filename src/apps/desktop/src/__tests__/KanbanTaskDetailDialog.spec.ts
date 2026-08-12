@@ -14,11 +14,12 @@
  * Plan: docs/superpowers/plans/2026-07-16-kanban-task-detail-dialog.md
  *   Chunk 3 / Task 3.2
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 
 import KanbanTaskDetailDialog from '@/components/kanban/KanbanTaskDetailDialog.vue'
+import * as api from '@/api'
 import type { Task, KanbanColumn } from '@/stores/workspaces'
 
 const TASK: Task = {
@@ -859,5 +860,250 @@ describe('KanbanTaskDetailDialog — column dropdown (create mode)', () => {
     expect(item).not.toBeNull()
     const itemStyle = item!.getAttribute('style') ?? ''
     expect(itemStyle).not.toMatch(/border-top/i)
+  })
+})
+
+describe('KanbanTaskDetailDialog — layout', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    findAllInDom('[data-testid="kanban-task-detail-dialog"]').forEach((el) =>
+      el.remove(),
+    )
+  })
+
+  function mountDialog(task: Task | null = TASK) {
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: { show: true, task },
+    })
+    return wrapper
+  }
+
+  function mountCreateDialog(cwd: string = '') {
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        mode: 'create',
+        task: null,
+        column: null,
+        cwd,
+      },
+    })
+    return wrapper
+  }
+
+  // Regression for the "huge empty space below form" bug. The previous
+  // code used `height: min(80vh, calc(100vh - 2rem))` on the dialog card,
+  // which forced the dialog to always render at 80vh. The body
+  // (`flex-1 overflow-y-auto min-h-0`) then filled the remaining space,
+  // leaving a large gap between the form fields and the action buttons
+  // when the content was short (e.g. a new task with no description).
+  //
+  // Fix: switch to `max-height: min(80vh, calc(100vh - 2rem))` so the
+  // card shrinks to fit content when short, but caps at 80vh when the
+  // content overflows (the body then scrolls as before).
+  it('uses max-height (not fixed height) so the dialog shrinks to fit short content', async () => {
+    mountDialog()
+    await flushPromises()
+    const card = document.querySelector<HTMLDivElement>(
+      '[data-testid="kanban-task-detail-dialog"] > div.relative',
+    )
+    expect(card).not.toBeNull()
+    const style = card!.getAttribute('style') ?? ''
+    // The fix: max-height caps at 80vh, but the card can shrink below it.
+    expect(style).toMatch(/max-height:\s*min\(80vh,\s*calc\(100vh\s*-\s*2rem\)\)/)
+    // The bug: a fixed `height: min(80vh, ...)` forced the card to 80vh
+    // regardless of content height. Make sure we haven't reintroduced it.
+    expect(style).not.toMatch(/(^|[\s;])height:\s*min\(80vh/)
+  })
+
+  // User feedback: "make the dialog bigger". The previous `max-w-xl`
+  // (576px) was narrow for a multi-field form (task name + column
+  // picker + description + tags + folder picker + profile picker +
+  // unattended mode). Bumped to `max-w-2xl` (672px) for ~16% more
+  // horizontal room without crossing into "wide modal" territory.
+  it('uses max-w-2xl (bigger) so the form has more horizontal room', async () => {
+    mountDialog()
+    await flushPromises()
+    const card = document.querySelector<HTMLDivElement>(
+      '[data-testid="kanban-task-detail-dialog"] > div.relative',
+    )
+    expect(card).not.toBeNull()
+    const classAttr = card!.getAttribute('class') ?? ''
+    expect(classAttr).toContain('max-w-2xl')
+    // Make sure we didn't accidentally revert to max-w-xl.
+    expect(classAttr).not.toMatch(/(^|\s)max-w-xl(\s|$)/)
+  })
+
+  // User feedback: "fix the color font folder". The previous folder
+  // picker used the `📂` emoji which renders as a system-colorful icon
+  // (orange/yellow) that doesn't match the muted dark theme — the
+  // picker looked "out of place" next to the cleaner robot-emoji
+  // profile picker. Replace with an inline SVG folder icon that
+  // inherits the button's text color (so it follows the theme).
+  it('create mode: folder picker uses an inline SVG icon (not the 📂 emoji)', async () => {
+    mountCreateDialog('/home/user/projects/foo')
+    await flushPromises()
+    const picker = document.querySelector<HTMLElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )
+    expect(picker).not.toBeNull()
+    const text = picker!.textContent ?? ''
+    // The emoji is gone.
+    expect(text).not.toMatch(/📂/)
+    // An SVG icon is rendered instead (replaces the emoji span).
+    const svg = picker!.querySelector('svg')
+    expect(svg).not.toBeNull()
+    // The SVG has a sensible folder-icon viewBox.
+    expect(svg!.getAttribute('viewBox')).toBe('0 0 20 20')
+  })
+
+  // When the cwd is set, the folder picker's text color is bright
+  // (`var(--semantic-text)` = #c5c9c5) — not dim — so the picked folder
+  // path reads clearly against the dark background. Previously the
+  // dim text color (`var(--semantic-text-dim)` = #7a8382) made the path
+  // look faded next to the profile picker's bright "Default" label.
+  it('create mode: folder picker text color is bright when cwd is set', async () => {
+    mountCreateDialog('/home/user/projects/foo')
+    await flushPromises()
+    const picker = document.querySelector<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )
+    expect(picker).not.toBeNull()
+    // Read the inline style and assert it does NOT use the dim color.
+    // The button's color is set via inline style (Vue's :style binding).
+    const inlineStyle = picker!.getAttribute('style') ?? ''
+    // The new contract: when cwd is set, color is --semantic-text (bright).
+    expect(inlineStyle).toMatch(/color:\s*var\(--semantic-text\)/)
+    // No dim color when cwd is set.
+    expect(inlineStyle).not.toMatch(/color:\s*var\(--semantic-text-dim\)/)
+  })
+
+  // When the cwd is NOT set (the "skip" / optional state), the folder
+  // picker text stays dim — this is intentional because the path slot
+  // shows the "Skip (no project root)" placeholder, which shouldn't
+  // look like an active selection.
+  it('create mode: folder picker text color is dim when cwd is empty', async () => {
+    mountCreateDialog('')
+    await flushPromises()
+    const picker = document.querySelector<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )
+    expect(picker).not.toBeNull()
+    const inlineStyle = picker!.getAttribute('style') ?? ''
+    expect(inlineStyle).toMatch(/color:\s*var\(--semantic-text-dim\)/)
+  })
+
+  // ── cwd picker: open at the right place ─────────────────────────────────
+  // User feedback: "fix the folder query" — the per-task cwd picker used to
+  // always open at "/" regardless of cwd_session, forcing the user to
+  // navigate back to their cwd on every reopen. The picker now passes
+  // cwd_session as both initial-path and selected-path so reopening
+  // drops the user at the current cwd with the cwd pre-selected.
+  //
+  // These tests mock the global `fetch` (the API module calls fetch
+  // internally via apiFetch) so we can assert exactly which paths get
+  // queried — vi.spyOn(api, 'listFolder') doesn't work because the
+  // KanbanTaskDetailDialog destructures `listFolder` at module load
+  // time, before the spy replaces the namespace property.
+  describe('create mode: cwd picker opens at cwd_session (folder query fix)', () => {
+    function mockFetchWithFs(entries: Record<string, Array<{ name: string; path: string; is_directory: boolean }>>) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString()
+        const u = new URL(url, 'http://localhost')
+        const path = u.searchParams.get('path') ?? ''
+        const action = u.searchParams.get('action') ?? 'list'
+        if (action !== 'list') {
+          return new Response(JSON.stringify({ content: '' }), { status: 200 })
+        }
+        const data = path
+          ? { path: '/', absolute: path, home: '/home/test', entries: entries[path] ?? [] }
+          : { path: '/', absolute: '/home/test', home: '/home/test', entries: entries['__home__'] ?? [] }
+        return new Response(JSON.stringify(data), { status: 200 })
+      })
+    }
+
+    it('when cwd_session is set, the picker opens AT cwd_session (not at "/")', async () => {
+      mockFetchWithFs({
+        '/': [{ name: 'home', path: '/home', is_directory: true }],
+        '/home': [{ name: 'user', path: '/home/user', is_directory: true }],
+        '/home/user': [{ name: 'projects', path: '/home/user/projects', is_directory: true }],
+        '/home/user/projects': [{ name: 'foo', path: '/home/user/projects/foo', is_directory: true }],
+        '/home/user/projects/foo': [
+          { name: 'src', path: '/home/user/projects/foo/src', is_directory: true },
+          { name: 'package.json', path: '/home/user/projects/foo/package.json', is_directory: false },
+        ],
+      })
+
+      mountCreateDialog('/home/user/projects/foo')
+      await flushPromises()
+      // Open the picker.
+      clickInDom('[data-testid="kanban-task-detail-cwd-picker"]')
+      await flushPromises()
+
+      // The cwd's children must be in the content pane — proving
+      // expandAncestors walked the chain back to cwd_session (not
+      // stopping at "/" because the picker opened at cwd_session).
+      expect(
+        document.querySelector('[data-testid="file-picker-item-/home/user/projects/foo/src"]'),
+      ).not.toBeNull()
+      // And the cwd breadcrumb is rendered with all four segments.
+      const crumbs = document.querySelectorAll('[data-testid^="file-picker-crumb-"]')
+      const crumbTexts = Array.from(crumbs).map((el) => el.textContent?.trim())
+      expect(crumbTexts).toEqual(['home', 'user', 'projects', 'foo'])
+    })
+
+    it('when cwd_session is empty, the picker opens at "/" (root folders visible)', async () => {
+      mockFetchWithFs({
+        '/': [{ name: 'home', path: '/home', is_directory: true }],
+        __home__: [{ name: 'test', path: '/home/test', is_directory: true }],
+      })
+
+      mountCreateDialog('')
+      await flushPromises()
+      clickInDom('[data-testid="kanban-task-detail-cwd-picker"]')
+      await flushPromises()
+
+      // No cwd → picker opens at "/" → listFolder('/') is called →
+      // root entries are displayed.
+      expect(
+        document.querySelector('[data-testid="file-picker-item-/home"]'),
+      ).not.toBeNull()
+      // The breadcrumb should show just the root.
+      const crumbs = document.querySelectorAll('[data-testid^="file-picker-crumb-"]')
+      expect(crumbs.length).toBe(0)
+    })
+
+    it('cwd_session is pre-selected in the picker so the footer shows the current cwd', async () => {
+      mockFetchWithFs({
+        '/': [{ name: 'home', path: '/home', is_directory: true }],
+        '/home': [{ name: 'user', path: '/home/user', is_directory: true }],
+        '/home/user': [{ name: 'projects', path: '/home/user/projects', is_directory: true }],
+        '/home/user/projects': [{ name: 'foo', path: '/home/user/projects/foo', is_directory: true }],
+        '/home/user/projects/foo': [{ name: 'src', path: '/home/user/projects/foo/src', is_directory: true }],
+      })
+
+      mountCreateDialog('/home/user/projects/foo')
+      await flushPromises()
+      clickInDom('[data-testid="kanban-task-detail-cwd-picker"]')
+      await flushPromises()
+
+      // The footer "Selected:" line should reflect cwd_session so the
+      // user sees what they're about to overwrite on Select.
+      const selectedPath = document.querySelector(
+        '[data-testid="file-picker-selected-path"]',
+      )
+      expect(selectedPath?.textContent?.trim()).toBe('/home/user/projects/foo')
+    })
   })
 })

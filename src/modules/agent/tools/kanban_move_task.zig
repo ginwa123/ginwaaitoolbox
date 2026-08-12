@@ -185,10 +185,15 @@ fn readTaskCurrentColumn(
     db: *sqlite.SqliteBackend,
     task_id: []const u8,
 ) !struct { column_id: []u8, column_name: []u8 } {
+    // After Migration 072, the task's current kanban column lives in
+    // the `kanban` join table. LEFT JOIN kanban so unassigned tasks
+    // (no kanban row) return column_id = '' + column_name = '' (the
+    // COALESCE fallback).
     var q = try db.query(allocator,
-        \\SELECT COALESCE(t.kanban_column_id, ''), COALESCE(kc.name, '')
+        \\SELECT COALESCE(k.kanban_column_id, ''), COALESCE(kc.name, '')
         \\FROM workspace_item_tasks t
-        \\LEFT JOIN kanban_columns kc ON kc.id = t.kanban_column_id
+        \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
+        \\LEFT JOIN kanban_columns kc ON kc.id = k.kanban_column_id
         \\WHERE t.id = ?
     , &.{task_id});
     defer q.deinit();
@@ -302,7 +307,7 @@ pub fn executeKanbanMoveTaskToString(
     //    sentinel 1_000_000".
     const position: i64 = input.position orelse blk: {
         var q = try db.query(allocator,
-            "SELECT COALESCE(MAX(t.kanban_position), -1) + 1 FROM workspace_item_tasks t WHERE t.kanban_column_id = ?",
+            "SELECT COALESCE(MAX(k.kanban_position), -1) + 1 FROM kanban k WHERE k.kanban_column_id = ?",
             &.{target_column_id},
         );
         defer q.deinit();

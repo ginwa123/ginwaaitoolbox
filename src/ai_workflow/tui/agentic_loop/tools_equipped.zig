@@ -150,7 +150,7 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // + a new SELECT on workspace_item_tasks) instead of going
         // through the HTTP layer. This avoids the round-trip cost AND
         // works around the GET /tasks endpoint not returning
-        // kanban_column_id / kanban_position (see project memory
+        // kanban table placement data directly (see project memory
         // nalar-image-urls-vs-image-url for the parallel image_url
         // situation).
         .{ .name = "kanban_list", .exec = tools.execKanbanList, .tool_def = kanban_list_mod.kanban_list_tool },

@@ -604,6 +604,13 @@ watch(
       closeDialog()
     }
   },
+  // `immediate: true` so openDialog runs on mount when the parent
+  // created this dialog with modelValue already true (the common
+  // v-if + v-model="show" pattern). Without this, the watcher is
+  // lazy and never fires for the initial value — the dialog renders
+  // but contentEntries / treeEntriesCache stay empty, so the user
+  // sees "No folders / Empty folder" until they navigate manually.
+  { immediate: true },
 )
 
 watch(
