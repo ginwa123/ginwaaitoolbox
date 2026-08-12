@@ -27,6 +27,7 @@ test {
     _ = @import("get_llm_histories.zig");
     _ = @import("sse_send_event_worker.zig");
     _ = @import("sse_on_event_send_llm_history.zig");
+    _ = @import("sse_on_event_send_session.zig"); // task_1786507100896 — behavioural tests for wire-format event_type_name mapping
     _ = @import("parsing.zig");
     _ = @import("parsing_test.zig");
     _ = @import("workflow.zig");
