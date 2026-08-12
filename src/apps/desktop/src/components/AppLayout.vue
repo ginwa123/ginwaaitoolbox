@@ -442,7 +442,11 @@ const handleNavigate = (
       // sort defaults the user committed to on click.
       if (sortsParam) query.sorts = sortsParam
     }
-    router.push({ path: '/app', query })
+    // router.replace (not push) so the user can hit back to leave
+    // the workspace context without stacking the same URL twice in
+    // the history. All other branches in this handler also use
+    // replace; the workspace branch was the lone hold-out.
+    router.replace({ path: '/app', query })
   } else if (view === 'task') {
     navigationStore.setActiveTask(taskId || null)
     chatSessionCwd.value = ''
@@ -1979,45 +1983,153 @@ defineExpose({
       />
       <Chats v-else-if="currentView === 'chat'" />
       <!--
-        Workspace folder preview — the "no item selected, pick one"
-        empty-state. Only renders when the user has navigated to
-        `?view=workspace` AND has no active workspace item. If an
-        item is active (kanban / design / folder with memories /
-        etc.), the dedicated branch above handles rendering; we
-        MUST NOT also render the preview or the user sees the
-        workspace name duplicated below the dedicated view
-        (regression confirmed by the user's screenshot on
-        2026-08-06 after the kanban-chat-as-dialog plan removed a
-        stale secondary <KanbanView> mount that was previously
-        acting as an implicit guard).
-
-        The `!activeWorkspaceItem` guard ensures mutual exclusivity
-        with the dedicated branches above. Without it, the chain
-        would still resolve to this branch when currentView is
-        'workspace' even if a kanban/design is active, because
-        the kanban + dialog + chat-view mounts live in different
-        v-if chains (they were refactored to mount in their own
-        chains during the kanban-embed-chatview plan).
+        Workspace memories view (for non-kanban / non-design items with
+        a path). Mirrors the kanban / design branches above but for
+        any other item_type (folder, etc.) — the dedicated views above
+        should win first in the chain, but the explicit `item_type !==
+        'kanban'` / `'design'` guards are defensive: they prevent the
+        memories view from ever rendering in those cases even if the
+        chain is reordered. Item's own header (🧠 + name + path) lives
+        inside WorkspaceItemMemoriesView, so no outer header is needed.
+        Regression test: AppLayout.memoriesGate.spec.ts.
       -->
       <div
-        v-if="currentView === 'workspace' && !activeWorkspaceItem"
-        class="flex-1 flex flex-col"
-        data-testid="workspace-folder-preview"
+        v-else-if="
+          activeWorkspaceItem &&
+          activeWorkspaceItem.path &&
+          activeWorkspaceItem.item_type !== 'kanban' &&
+          activeWorkspaceItem.item_type !== 'design'
+        "
+        class="flex-1 min-h-0"
       >
-        <!--
-          The three inner branches (memories view / no-path
-          centered card / workspaces picker) only ever need to
-          render when there IS no active workspace item — the
-          outer v-if already guarantees that. The inner branches
-          previously referenced `activeWorkspaceItem` defensively
-          for type narrowing; we keep them as-is but rely on the
-          outer guard so the inner conditions don't need to
-          re-check. Vue's template type-checker can't infer the
-          type from `v-if` short-circuit across nested v-if/v-else
-          chains, so the inner conditions stay as they were. This
-          is a no-op at runtime since `activeWorkspaceItem` is
-          always null here.
-        -->
+        <WorkspaceItemMemoriesView
+          :key="activeWorkspaceItem.id"
+          :cwd="activeWorkspaceItem.path"
+          :item-name="activeWorkspaceItem.name"
+        />
+      </div>
+      <!--
+        Workspace view branch — no-path centered card + workspaces
+        picker. Renders when `currentView === 'workspace'` AND no
+        earlier branch in the chain matched (kanban / design / folder
+        memories / chat- / Chats all win first — their dedicated
+        mounts handle the active item). The `!activeWorkspaceItem`
+        guard on the INNER testid ensures mutual exclusivity with
+        the dedicated branches above. Without it, the kanban
+        branch above + the chain break from the v-if KanbanChatDialog
+        would resolve to this branch when currentView is 'workspace'
+        even if a kanban is active, causing the workspace folder
+        preview to render UNDER the kanban board (regression
+        introduced in commit d0a05eb0; pinned by
+        AppLayout.kanban.spec.ts → "kanban renders alone, workspace
+        folder preview is not in DOM"). The chain-order test
+        (AppLayout.memoriesGate.spec.ts → "kanban branch BEFORE the
+        workspace view branch") pins that this v-else-if comes AFTER
+        the kanban v-else-if in source.
+      -->
+      <div
+        v-else-if="currentView === 'workspace'"
+        class="flex-1 flex flex-col"
+      >
+        <!-- No-path fallback: keep today's centered card. Reached when
+             the user navigates to a workspace item that has no `path`
+             (e.g. a stub folder with no project root) AND the item
+             is not a kanban/design (those have their own dedicated
+             views above). The inner `!activeWorkspaceItem` guard on
+             the workspaces-picker testid below ensures the kanban
+             chain doesn't accidentally show the picker. -->
+        <div
+          v-if="
+            activeWorkspaceItem &&
+            activeWorkspaceItem.item_type !== 'kanban' &&
+            activeWorkspaceItem.item_type !== 'design'
+          "
+          class="flex-1 flex flex-col items-center justify-center p-8"
+        >
+          <div
+            class="w-full max-w-2xl p-8 rounded-xl text-center"
+            style="
+              background: linear-gradient(
+                135deg,
+                var(--semantic-card-bg),
+                var(--semantic-sidebar-bg)
+              );
+              border: 1px solid var(--color-border);
+            "
+          >
+            <div
+              class="w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center"
+              style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue))"
+            >
+              <svg
+                class="w-8 h-8"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                style="color: var(--color-bg)"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                />
+              </svg>
+            </div>
+            <h2 class="text-2xl font-bold mb-2" style="color: var(--semantic-text)">
+              {{ activeWorkspaceItem.name }}
+            </h2>
+            <p class="text-sm mb-4" style="color: var(--semantic-text-muted)">
+              {{ workspacesStore.activeWorkspace?.name }}
+            </p>
+            <div
+              v-if="activeWorkspaceItem.path"
+              class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
+              style="background-color: var(--semantic-active-bg); color: var(--semantic-text-muted)"
+            >
+              <span>{{ activeWorkspaceItem.path }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div
+          v-else-if="!activeWorkspaceItem"
+          class="flex-1 flex flex-col"
+          data-testid="workspace-folder-preview"
+        >
+          <div class="text-center">
+            <div
+              class="w-20 h-20 rounded-2xl mx-auto mb-6 flex items-center justify-center text-4xl"
+              style="background: linear-gradient(135deg, var(--color-yellow), var(--color-orange))"
+            >
+              📂
+            </div>
+            <h2 class="text-2xl font-bold mb-2" style="color: var(--semantic-text)">Workspaces</h2>
+            <p style="color: var(--semantic-text-muted)">
+              Select a project from the sidebar to get started
+            </p>
+
+            <div class="mt-8 grid grid-cols-3 gap-4 max-w-md">
+              <div
+                v-for="workspace in workspacesStore.workspaces"
+                :key="workspace.id"
+                class="p-4 rounded-lg text-center"
+                style="
+                  background-color: var(--semantic-card-bg);
+                  border: 1px solid var(--color-border);
+                "
+              >
+                <div class="text-2xl mb-2">{{ workspace.icon }}</div>
+                <div class="text-sm font-medium truncate" style="color: var(--semantic-text)">
+                  {{ workspace.name }}
+                </div>
+                <div class="text-xs mt-1" style="color: var(--semantic-text-dim)">
+                  {{ workspace.items.length }} projects
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </main>
 
