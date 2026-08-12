@@ -1,77 +1,103 @@
 #!/usr/bin/env bash
 # scripts/build-vendor-curl.sh
 #
-# Cross-compiles curl 8.10.1 from source for each target platform
-# (Linux x86_64, macOS arm64, macOS x86_64) and writes the prebuilt
-# libcurl.a + curl headers to vendor/curl/<target>/.
+# Cross-compiles a *standard* curl 8.10.1 (with TLS via vendored
+# OpenSSL, and the normal protocol set: http, https, ftp, ftps, imap,
+# pop3, smtp, telnet, tftp, dict, file, gopher) from source for each
+# target platform (Linux x86_64, macOS arm64, macOS x86_64) and writes
+# the prebuilt libcurl.a + libssl.a + libcrypto.a + headers to
+# vendor/curl/<target>/ and vendor/openssl/<target>/.
 #
-# Why we vendor curl (HTTP-only, no TLS):
+# Why we vendor curl + OpenSSL:
 #   - `install:windows` and `install:macos*` previously failed because
-#     the cross-target linker couldn't find a host-installed libcurl
-#     (vcpkg / brew / pkg-config aren't on a Linux host).
+#     the cross-target linker couldn't find host-installed libcurl /
+#     libssl (vcpkg / brew / pkg-config aren't on a Linux host).
 #   - Vendoring makes the build hermetic across host OSes — a developer
 #     on macOS, Linux, or Windows can build for any target without
 #     installing target-specific system libraries.
-#   - HTTP-only (no TLS) keeps the build small + simple. HTTPS calls
-#     require vendoring OpenSSL too — out of scope here. The agent's
-#     LLM API calls will fall back to http:// for now (TODO: vendor
-#     openssl for HTTPS support).
+#   - Earlier revisions of this script shipped an HTTP-only curl
+#     (--disable-ssl) to sidestep TLS vendoring. That's no longer
+#     "standard curl" behavior (the agent's LLM API calls need
+#     https://), so this revision vendors OpenSSL too and links curl
+#     against it, restoring HTTPS support and the normal protocol set.
 #
-# Requires (host): bash, curl, autoconf (for ./configure), zig 0.16+
-# (for macOS cross-compile), gcc (for Linux native). The curl source
-# is downloaded on first run from https://curl.se/download/.
+# Requires (host): bash, curl, autoconf/perl (for ./Configure and
+# ./configure), zig 0.16+ (for macOS cross-compile), gcc (for Linux
+# native). curl + OpenSSL sources are downloaded on first run from
+# https://curl.se/download/ and https://www.openssl.org/source/.
 #
 # Layout:
+#   vendor/openssl/
+#   ├── linux-x86_64/lib/{libssl.a,libcrypto.a}
+#   ├── linux-x86_64/include/openssl/*.h
+#   ├── macos-arm64/lib/{libssl.a,libcrypto.a}
+#   ├── macos-arm64/include/openssl/*.h
+#   ├── macos-x86_64/lib/{libssl.a,libcrypto.a}
+#   └── macos-x86_64/include/openssl/*.h
 #   vendor/curl/
-#   ├── linux-x86_64/lib/libcurl.a         (built by this script)
-#   ├── linux-x86_64/include/curl/*.h      (curl headers)
-#   ├── macos-arm64/lib/libcurl.a          (built by this script)
+#   ├── linux-x86_64/lib/libcurl.a
+#   ├── linux-x86_64/include/curl/*.h
+#   ├── macos-arm64/lib/libcurl.a
 #   ├── macos-arm64/include/curl/*.h
-#   ├── macos-x86_64/lib/libcurl.a         (built by this script)
+#   ├── macos-x86_64/lib/libcurl.a
 #   └── macos-x86_64/include/curl/*.h
 #
 # Method:
-#   For each target, run ./configure with target-specific options
-#   (--host + CC for cross-compile), then run `make` to compile each
-#   .c file into a .o. The final libtool linker step (`make` for the
-#   `libcurl.la` target) fails on Linux hosts due to a libtool bug
-#   (`0: Bad file descriptor`), but each .c file is already compiled —
-#   we just `ar rcs libcurl.a lib/*.o` to archive them directly,
-#   bypassing libtool. The resulting libcurl.a has the same symbols
-#   as the libtool-built archive (curl_easy_init, curl_global_init,
-#   curl_easy_perform, etc.) — verified with `nm`.
+#   1. Build OpenSSL first (static, no-shared, no-asm — no-asm avoids
+#      needing a target-specific perlasm/assembler toolchain during
+#      cross-compilation; it costs some crypto performance but keeps
+#      the cross build hermetic and simple). `make build_libs` builds
+#      only libssl.a/libcrypto.a, skipping the `apps` target (the
+#      openssl CLI binary), which we don't need and which is awkward
+#      to cross-link.
+#   2. Build curl with `--with-openssl=<vendor/openssl/<target>>` so
+#      it links against our static OpenSSL instead of requiring a
+#      host TLS library. The final libtool link step (`make` for the
+#      `libcurl.la` target) fails on Linux hosts due to a libtool bug
+#      (`0: Bad file descriptor`), but each .c file is already
+#      compiled — we just `ar rcs libcurl.a lib/*.o` to archive them
+#      directly, bypassing libtool.
 
 set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 PROJECT_DIR="$( cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd )"
 # Modules own their own vendor dir. The script lives in
-# src/modules/custom_http_client/scripts/ and writes to a `vendor/`
-# dir co-located with the package (../vendor/curl from here).
-VENDOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/vendor/curl"
+# src/modules/custom_http_client/scripts/ and writes to `vendor/`
+# dirs co-located with the package (../vendor/{curl,openssl} from here).
+VENDOR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/vendor"
+CURL_VENDOR_DIR="${VENDOR_ROOT}/curl"
+OPENSSL_VENDOR_DIR="${VENDOR_ROOT}/openssl"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/nalar-curl-XXXXXX")
 trap 'rm -rf "${TMP}"' EXIT
 
 CURL_VERSION="8.10.1"
 CURL_URL="https://curl.se/download/curl-${CURL_VERSION}.tar.gz"
-SRC_DIR="${TMP}/curl-${CURL_VERSION}"
+CURL_SRC_DIR="${TMP}/curl-${CURL_VERSION}"
 
-# === Common configure flags for HTTP-only curl ===
-# --disable-everything is too aggressive (it disables HTTP); instead
-# disable individual protocols / TLS backends / features we don't need.
-# --disable-ssl is REQUIRED — without it, curl's vtls.c still compiles
-# and exports Curl_ssl_conn_config_match + friends that the rest of
-# libcurl references, causing link-time undefined symbol errors even
-# though no TLS backend is wired in. (Disabling each individual
-# backend via --without-* leaves the TLS layer active with no
-# implementation — that's the bug we hit.)
+OPENSSL_VERSION="3.4.0"
+OPENSSL_URL="https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz"
+OPENSSL_SRC_DIR="${TMP}/openssl-${OPENSSL_VERSION}"
+
+# === Common configure flags for a standard curl build ===
+# We keep TLS enabled (linked against our vendored OpenSSL) and the
+# normal protocol set. We still disable pieces that would require
+# *additional* vendored dependencies we don't build here:
+#   - ldap/ldaps          (needs system LDAP libs)
+#   - libssh2/libssh       (scp/sftp — needs vendoring libssh2 too)
+#   - librtmp               (needs vendoring librtmp too)
+#   - libpsl / libgsasl     (optional helper libs, not vendored)
+#   - brotli / zstd / zlib  (compression — not vendored; TODO below)
+#   - libidn2               (IDN — not vendored)
+#   - nghttp2/nghttp3/ngtcp2/quiche (HTTP/2 + HTTP/3 — not vendored;
+#     TODO: vendor nghttp2 for HTTP/2 support)
+#   - docs                  (irrelevant to a vendored static lib)
+# Everything else (http, https, ftp, ftps, imap, pop3, smtp, telnet,
+# tftp, dict, file, gopher, ipv6, threaded resolver, alt-svc, hsts,
+# headers-api, websockets) is left at curl's normal defaults.
 COMMON_CONFIGURE_FLAGS=(
     --disable-shared
     --enable-static
-    --disable-ssl
-    --disable-ldap
-    --disable-ldaps
-    --without-ssl
     --without-bearssl
     --without-gnutls
     --without-wolfssl
@@ -90,77 +116,119 @@ COMMON_CONFIGURE_FLAGS=(
     --without-librtmp
     --without-libpsl
     --without-libgsasl
-    --disable-unix-sockets
-    --disable-websockets
-    --disable-threaded-resolver
-    --disable-ipv6
-    --disable-ares
+    --disable-ldap
+    --disable-ldaps
     --disable-docs
-    --disable-alt-svc
-    --disable-headers-api
-    --disable-hsts
-    --disable-dict
-    --disable-file
-    --disable-ftp
-    --disable-gopher
-    --disable-imap
-    --disable-mqtt
-    --disable-pop3
-    --disable-rtsp
-    --disable-smb
-    --disable-smtp
-    --disable-telnet
-    --disable-tftp
     --disable-ech
 )
 
-# === Skip-if-already-built cache (BEFORE the source download) ===
-# Each per-target build is skipped if BOTH the archive and the headers
-# exist. Subsequent `zig build` invocations are no-ops at the script
-# level — this is the primary fix for the "always redownloading"
-# problem. Without this guard, every Zig build invocation fully
-# downloads the curl source + recompiles every .c file + re-archives.
-# Re-run the script with FORCE=1 to bypass the cache (e.g. after a
-# change to COMMON_CONFIGURE_FLAGS).
+# === Skip-if-already-built cache (BEFORE any source download) ===
+# Each per-target build is skipped only if the curl archive+headers
+# AND the OpenSSL archives+headers already exist. Re-run with FORCE=1
+# to bypass the cache (e.g. after changing COMMON_CONFIGURE_FLAGS or
+# bumping CURL_VERSION/OPENSSL_VERSION).
 if [[ "${FORCE:-0}" != "1" ]]; then
     needs_build=0
-    for t in "${VENDOR_DIR}/linux-x86_64" \
-             "${VENDOR_DIR}/macos-arm64" \
-             "${VENDOR_DIR}/macos-x86_64"; do
-        if [[ ! -f "${t}/lib/libcurl.a" ]] || \
-           [[ ! -d "${t}/include/curl" ]] || \
-           [[ -z "$(ls "${t}/include/curl/" 2>/dev/null)" ]]; then
+    for target in linux-x86_64 macos-arm64 macos-x86_64; do
+        ct="${CURL_VENDOR_DIR}/${target}"
+        ot="${OPENSSL_VENDOR_DIR}/${target}"
+        if [[ ! -f "${ct}/lib/libcurl.a" ]] || \
+           [[ ! -d "${ct}/include/curl" ]] || \
+           [[ -z "$(ls "${ct}/include/curl/" 2>/dev/null)" ]] || \
+           [[ ! -f "${ot}/lib/libssl.a" ]] || \
+           [[ ! -f "${ot}/lib/libcrypto.a" ]] || \
+           [[ ! -d "${ot}/include/openssl" ]]; then
             needs_build=1
             break
         fi
     done
     if [[ "${needs_build}" -eq 0 ]]; then
-        echo "Already built (libcurl.a + headers present for all targets)."
+        echo "Already built (libcurl.a + libssl.a + libcrypto.a + headers present for all targets)."
         echo "Run with FORCE=1 to rebuild."
         exit 0
     fi
 fi
 
-# === Download curl source on first run ===
-# (Source is cached in TMP; even if TMP is cleaned up between runs,
-# the existing vendor/curl/<target>/lib/libcurl.a is the real cache.)
-if [[ ! -d "${SRC_DIR}" ]]; then
+# === Download sources on first run ===
+if [[ ! -d "${CURL_SRC_DIR}" ]]; then
     echo "=== Downloading curl ${CURL_VERSION} source ==="
     curl -fsSL --retry 3 --connect-timeout 30 "${CURL_URL}" -o "${TMP}/curl.tar.gz"
     tar -xzf "${TMP}/curl.tar.gz" -C "${TMP}/"
 fi
+if [[ ! -d "${OPENSSL_SRC_DIR}" ]]; then
+    echo "=== Downloading OpenSSL ${OPENSSL_VERSION} source ==="
+    curl -fsSL --retry 3 --connect-timeout 30 "${OPENSSL_URL}" -o "${TMP}/openssl.tar.gz"
+    tar -xzf "${TMP}/openssl.tar.gz" -C "${TMP}/"
+fi
 
-# === Build for a specific target ===
-# Args: $1 = output dir (e.g. vendor/curl/linux-x86_64), $2 = host triple
-#       (empty for native), $3.. = extra CC args (e.g. "-target aarch64-macos")
-build_target() {
+# === Build OpenSSL (static, no-asm) for a specific target ===
+# Args: $1 = output dir (e.g. vendor/openssl/linux-x86_64)
+#       $2 = OpenSSL Configure target name (e.g. "linux-x86_64",
+#            "darwin64-arm64-cc", "darwin64-x86_64-cc")
+#       $3.. = extra CC args for cross-compile (empty for native)
+build_openssl_target() {
     local out_dir="$1"
-    local host_triple="$2"
+    local ossl_target="$2"
     shift 2
     local cc_extra=("$@")
 
     echo ""
-    echo "=== Building for ${out_dir} ==="
+    echo "=== Building OpenSSL for ${out_dir} ==="
+    local build_dir="${TMP}/openssl-build-${out_dir##*/}"
+    rm -rf "${build_dir}"
+    mkdir -p "${build_dir}"
+    cd "${build_dir}"
+
+    local cc="cc"
+    local ar_bin="ar"
+    local ranlib_bin="ranlib"
+    if [[ ${#cc_extra[@]} -gt 0 ]]; then
+        cc="zig cc ${cc_extra[*]}"
+        ar_bin="zig ar"
+        ranlib_bin="zig ranlib"
+    fi
+
+    # no-shared: static libs only. no-asm: skip perlasm — avoids
+    # needing a target-specific assembler during cross-compilation.
+    # no-tests / no-apps: we only need libssl.a/libcrypto.a, not the
+    # openssl CLI or test suite (both are awkward to cross-link).
+    "${OPENSSL_SRC_DIR}/Configure" "${ossl_target}" \
+        no-shared no-asm no-tests no-apps no-docs \
+        --prefix="${out_dir}" \
+        --openssldir="${out_dir}/ssl" \
+        CC="${cc}" AR="${ar_bin}" RANLIB="${ranlib_bin}" \
+        >/dev/null
+
+    # build_libs only builds libssl.a/libcrypto.a (skips `apps`,
+    # `test`, `doc` — matches the no-apps/no-tests/no-docs flags above
+    # but some older OpenSSL Makefiles still need the narrower target).
+    make -j4 build_libs >/dev/null
+
+    if [[ ! -f "libssl.a" ]] || [[ ! -f "libcrypto.a" ]]; then
+        echo "  ERROR: libssl.a/libcrypto.a not produced — OpenSSL build failed"
+        return 1
+    fi
+
+    mkdir -p "${out_dir}/lib" "${out_dir}/include"
+    cp libssl.a libcrypto.a "${out_dir}/lib/"
+    cp -r include/openssl "${out_dir}/include/"
+    echo "  archived: ${out_dir}/lib/{libssl.a,libcrypto.a}"
+    echo "  headers:  ${out_dir}/include/openssl/"
+}
+
+# === Build curl for a specific target ===
+# Args: $1 = output dir (e.g. vendor/curl/linux-x86_64), $2 = host triple
+#       (empty for native), $3 = matching OpenSSL vendor dir,
+#       $4.. = extra CC args (e.g. "-target aarch64-macos")
+build_curl_target() {
+    local out_dir="$1"
+    local host_triple="$2"
+    local openssl_dir="$3"
+    shift 3
+    local cc_extra=("$@")
+
+    echo ""
+    echo "=== Building curl for ${out_dir} ==="
     rm -rf "${TMP}/build"
     mkdir -p "${TMP}/build"
     cd "${TMP}/build"
@@ -180,12 +248,16 @@ build_target() {
     else
         unset CC CXX AR RANLIB ac_cv_host
     fi
+    # Point pkg-config-less configure at our vendored, static OpenSSL.
+    export CPPFLAGS="-I${openssl_dir}/include"
+    export LDFLAGS="-L${openssl_dir}/lib"
 
     # Run ./configure with target-specific options
-    local cfg_cmd=("${SRC_DIR}/configure" "--prefix=${prefix}")
+    local cfg_cmd=("${CURL_SRC_DIR}/configure" "--prefix=${prefix}")
     if [[ -n "${host_triple}" ]]; then
         cfg_cmd+=("--host=${host_triple}")
     fi
+    cfg_cmd+=("--with-openssl=${openssl_dir}")
     cfg_cmd+=("${COMMON_CONFIGURE_FLAGS[@]}")
 
     "${cfg_cmd[@]}" >/dev/null 2>&1
@@ -196,11 +268,10 @@ build_target() {
     # .o. We just bypass libtool by archiving them directly.
     make -j4 >/dev/null 2>&1 || true
 
-    # Verify we got at least 100 .o files (sanity check). We must search
-    # RECURSIVELY — the Makefile also produces lib/vtls/*.o (TLS glue
-    # functions always compiled even with --disable-ssl), lib/vauth/*.o
-    # (HTTP Digest auth), etc. — and our `ar rcs` step below needs them
-    # all, otherwise we get undefined-symbol errors at Zig link time.
+    # Verify we got a healthy number of .o files (sanity check; a
+    # TLS-enabled build compiles more of lib/vtls/* than the HTTP-only
+    # build did). Search RECURSIVELY — lib/vtls/*.o, lib/vauth/*.o,
+    # lib/vquic/*.o, etc. are all needed for symbol resolution below.
     local obj_count
     obj_count=$(find lib -name '*.o' | wc -l)
     if [[ "${obj_count}" -lt 100 ]]; then
@@ -223,25 +294,50 @@ build_target() {
     echo "  format: ${obj_format}"
 
     # Archive into libcurl.a (bypasses libtool's broken linker step).
-    # Recursive find catches vtls/*.o, vauth/*.o, vquic/*.o (if
-    # compiled), etc. — required for symbol resolution at link time.
+    #
+    # IMPORTANT: libcurl.a must be self-contained. Callers (e.g.
+    # `zig build`) link a single vendor/curl/<target>/lib/libcurl.a —
+    # they don't separately link vendor/openssl/<target>/lib/{libssl,
+    # libcrypto}.a. If we archive only curl's own .o files, the
+    # archive references OpenSSL symbols (ERR_peek_error,
+    # SSL_CTX_set_keylog_callback, etc.) that are never defined
+    # anywhere the linker looks, and the final `zig build` link fails
+    # with "undefined symbol". So we extract libssl.a's and
+    # libcrypto.a's object files and fold them into the same archive
+    # as curl's objects, producing one fat, self-contained libcurl.a
+    # per target — exactly like the pre-OpenSSL HTTP-only build was
+    # (a single archive consumers link against).
+    # AR is already exported above: "zig ar" for cross-compile targets,
+    # unset (falls back to plain "ar") for the native Linux build.
+    # Left unquoted deliberately so "zig ar" word-splits into the two
+    # argv tokens zig ar expects.
+    local ar_cmd="${AR:-ar}"
+    local ossl_extract_dir="${TMP}/openssl-objs-${out_dir##*/}"
+    rm -rf "${ossl_extract_dir}"
+    mkdir -p "${ossl_extract_dir}/ssl" "${ossl_extract_dir}/crypto"
+    ( cd "${ossl_extract_dir}/ssl" && ${ar_cmd} x "${openssl_dir}/lib/libssl.a" )
+    ( cd "${ossl_extract_dir}/crypto" && ${ar_cmd} x "${openssl_dir}/lib/libcrypto.a" )
+    # ssl/ and crypto/ objects are extracted into separate
+    # subdirectories specifically so identically-named .o files from
+    # the two libraries (e.g. both defining "bio.o") can't clobber
+    # each other in a single flat extraction directory.
+
     mkdir -p "${out_dir}/lib" "${out_dir}/include"
     rm -f "${out_dir}/lib/libcurl.a"
     # shellcheck disable=SC2086
-    ar rcs "${out_dir}/lib/libcurl.a" $(find lib -name '*.o')
-    echo "  archived: ${out_dir}/lib/libcurl.a"
+    ar rcs "${out_dir}/lib/libcurl.a" \
+        $(find lib -name '*.o') \
+        $(find "${ossl_extract_dir}" -name '*.o')
+    echo "  archived: ${out_dir}/lib/libcurl.a (curl + libssl + libcrypto, fat archive)"
 
     # Copy curl headers (public headers from the source dir —
     # curl_config.h is internal and only used at build time).
-    cp -r "${SRC_DIR}/include/curl/." "${out_dir}/include/curl/"
+    cp -r "${CURL_SRC_DIR}/include/curl/." "${out_dir}/include/curl/"
     echo "  headers: ${out_dir}/include/curl/"
 
-    # Verify the archive is non-empty.
-    # Linux `nm` (binutils) understands ELF; for Mach-O (macOS targets),
-    # we'd need llvm-nm — but the `file` format check above already
-    # proves zig cc produced the right object format. The actual symbol
-    # resolution happens at Zig link time when the consumer tries to
-    # resolve curl_easy_init from the @cImport.
+    # Verify the archive is non-empty and exports both a core curl
+    # symbol and a TLS-path symbol, proving OpenSSL actually linked in
+    # (not just compiled-and-discarded).
     local first_obj_basename
     first_obj_basename=$(find lib -maxdepth 1 -name '*.o' -print -quit | sed 's|.*/||')
     ar p "${out_dir}/lib/libcurl.a" "${first_obj_basename}" > "${TMP}/sample.o" 2>/dev/null || true
@@ -249,35 +345,55 @@ build_target() {
         echo "  ERROR: archive is empty — build failed"
         return 1
     fi
-    # On Linux host, also verify curl_easy_init via binutils nm (works
-    # on ELF only — Mach-O archives don't need this check because zig
-    # cc's Mach-O output is verified by `file`).
     if [[ -z "${host_triple}" ]]; then
         nm "${out_dir}/lib/libcurl.a" 2>/dev/null | grep 'T curl_easy_init' > "${TMP}/nm_match" || true
         if [[ ! -s "${TMP}/nm_match" ]]; then
             echo "  ERROR: Linux libcurl.a does not export curl_easy_init"
             return 1
         fi
-        echo "  verified: curl_easy_init exported (Linux nm)"
+        nm "${out_dir}/lib/libcurl.a" 2>/dev/null | grep -q 'Curl_ossl_' \
+            || echo "  WARNING: curl_easy_init found but no Curl_ossl_* symbols — HTTPS glue may not be compiled in"
+        # Confirm ERR_peek_error / SSL_CTX_set_keylog_callback are
+        # actually DEFINED ("T"/"t") in the fat archive, not merely
+        # referenced. A merge bug (e.g. AR pointing at the wrong tool,
+        # or the extract step silently producing zero .o files) would
+        # leave these referenced-but-undefined, which nm alone on the
+        # archive won't flag — only the final `zig build` link would
+        # (as undefined symbol errors). Checking here catches it early.
+        for sym in ERR_peek_error SSL_CTX_set_keylog_callback; do
+            if ! nm "${out_dir}/lib/libcurl.a" 2>/dev/null | grep -qE "[Tt] ${sym}$"; then
+                echo "  ERROR: ${sym} not defined in merged libcurl.a — OpenSSL objects did not merge correctly"
+                return 1
+            fi
+        done
+        echo "  verified: curl_easy_init + OpenSSL symbols (ERR_peek_error, SSL_CTX_set_keylog_callback) defined (Linux nm)"
     else
         echo "  verified: Mach-O archive non-empty (symbols checked at Zig link time)"
     fi
 }
 
-mkdir -p "${VENDOR_DIR}"
+mkdir -p "${CURL_VENDOR_DIR}" "${OPENSSL_VENDOR_DIR}"
 
-# === Linux x86_64 (native build, uses system gcc) ===
-build_target "${VENDOR_DIR}/linux-x86_64" ""
-
-# === macOS arm64 (cross-compile from Linux using zig cc) ===
-build_target "${VENDOR_DIR}/macos-arm64" "aarch64-apple-darwin" \
+# === Step 1: OpenSSL for each target ===
+build_openssl_target "${OPENSSL_VENDOR_DIR}/linux-x86_64" "linux-x86_64"
+build_openssl_target "${OPENSSL_VENDOR_DIR}/macos-arm64" "darwin64-arm64-cc" \
     "-target" "aarch64-macos" "-fuse-ld=lld"
+build_openssl_target "${OPENSSL_VENDOR_DIR}/macos-x86_64" "darwin64-x86_64-cc" \
+    "-target" "x86_64-macos" "-fuse-ld=lld"
 
-# === macOS x86_64 (cross-compile from Linux using zig cc) ===
-build_target "${VENDOR_DIR}/macos-x86_64" "x86_64-apple-darwin" \
+# === Step 2: curl for each target, linked against the OpenSSL above ===
+build_curl_target "${CURL_VENDOR_DIR}/linux-x86_64" "" \
+    "${OPENSSL_VENDOR_DIR}/linux-x86_64"
+build_curl_target "${CURL_VENDOR_DIR}/macos-arm64" "aarch64-apple-darwin" \
+    "${OPENSSL_VENDOR_DIR}/macos-arm64" \
+    "-target" "aarch64-macos" "-fuse-ld=lld"
+build_curl_target "${CURL_VENDOR_DIR}/macos-x86_64" "x86_64-apple-darwin" \
+    "${OPENSSL_VENDOR_DIR}/macos-x86_64" \
     "-target" "x86_64-macos" "-fuse-ld=lld"
 
 echo ""
 echo "=== Done. Run 'zig build' to verify ==="
-echo "  Linux native + macOS arm64 + macOS x86_64 vendored curl ready."
+echo "  Linux native + macOS arm64 + macOS x86_64 vendored curl (with OpenSSL/HTTPS) ready."
 echo "  Windows archive (vendor/curl/windows-amd64/) NOT built yet — needs MinGW setup."
+echo "  Note: HTTP/2 and HTTP/3 are still disabled (nghttp2/nghttp3/ngtcp2 not vendored)."
+echo "        Compression (gzip/br/zstd) is still disabled (zlib/brotli/zstd not vendored)."

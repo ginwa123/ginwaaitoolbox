@@ -1103,7 +1103,8 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             .{ copy_session_id, effective_model, loop_counter, messagesLists.items.len, current_max_tokens, retry_count },
         );
 
-        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, effective_api_key, effective_model, effective_base_url, effective_url_style, copy_session_id, merged_tools) catch |err| {
+        var last_dynamic_agent_error_message: ?[]const u8 = null;
+        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, effective_api_key, effective_model, effective_base_url, effective_url_style, copy_session_id, merged_tools, &last_dynamic_agent_error_message) catch |err| {
             if (err == error.Cancelled) {
                 logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{copy_session_id});
                 break;
@@ -1116,7 +1117,14 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // reflects — not the first failure of this session.
             last_retry_error = err;
             last_retry_source = "callDynamicAgentNew";
-            logger.errFmt("Error calling dynamic agent: {s} now retrying after {d}ms delay", .{ @errorName(err), config.retry_delay_ms });
+            // The agent populated `last_dynamic_agent_error_message` with
+            // the actual server / transport reason (e.g. "HTTP 429: rate
+            // limit exceeded", "scanner.next failed after 12 chunk(s):
+            // ConnectionResetByPeer"). Falls back to "(no server detail)"
+            // for error variants the agent doesn't synthesize a message
+            // for (Cancelled, AllocFailed, OutOfMemory, BuildRequestFailed).
+            const server_detail = last_dynamic_agent_error_message orelse "(no server detail)";
+            logger.errFmt("Error calling dynamic agent: {s} now retrying after {d}ms delay — server: {s}", .{ @errorName(err), config.retry_delay_ms, server_detail });
             // Save a per-retry diagnostic to chat history so the user sees
             // each attempt live AND the AI has the full retry progression
             // in context for its next turn (instead of only learning about
@@ -1519,6 +1527,12 @@ fn callDynamicAgentNew(
     url_style: []const u8,
     session_id: []const u8,
     equip_tools: []const agent.AgentTool,
+    /// On error, the underlying server/transporter detail (drained HTTP
+    /// error body, scanner error name, chunk count) so the retry-catch
+    /// block can log the actual reason instead of just `error.ApiError` /
+    /// `error.StreamInterrupted`. Heap-owned by the caller — freed by the
+    /// per-iteration arena at loop end. Stays null on success.
+    out_last_error_message: *?[]const u8,
 ) !agent.CallResponse {
     // Libcurl-backed Agent (custom_http_client). Same field names,
     // same callStreaming signature as the previous std.http.Client version
@@ -1548,7 +1562,17 @@ fn callDynamicAgentNew(
     // `stream_callback` is typed as agent.StreamCallback; callStreaming
     // wants the same type — direct assignment, no @ptrCast needed.
     const callback_for_agent: agent.StreamCallback = &stream_callback;
-    const res_dynamic_agent = try dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, callback_for_agent);
+    out_last_error_message.* = null;
+    // Catch the callStreaming error so we can copy `last_error_message` out
+    // BEFORE the deferred `dynamic_agent.deinit()` frees it. The
+    // per-iteration arena outlives this scope, so a dupe into `allocator`
+    // is safe to hand back to the caller's retry-catch block.
+    const res_dynamic_agent = dynamic_agent.callStreaming(dynamic_agent_call_params, &stream_ctx, callback_for_agent) catch |err| {
+        if (dynamic_agent.last_error_message) |msg| {
+            out_last_error_message.* = allocator.dupe(u8, msg) catch null;
+        }
+        return err;
+    };
     // `callDynamicAgentNew` returns `agent.CallResponse` (preserves the
     // upstream signature). Pre-rename this was a byte-identical copy from
     // agent2.CallResponse (different module). Post-rename both sides are
