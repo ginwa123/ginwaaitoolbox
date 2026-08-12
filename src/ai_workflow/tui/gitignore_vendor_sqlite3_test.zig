@@ -4,13 +4,19 @@
 //! ────────────────────
 //! The `/vendor/` directory was added to `.gitignore` to remove the
 //! ~10 MB SQLite amalgamation from the repo. The amalgamation is now
-//! fetched on demand by `scripts/fetch-vendor-sqlite3.sh` (which CI
-//! invokes on Windows/macOS runners). These checks ensure the three
-//! pieces stay in lockstep:
+//! fetched on demand by `src/modules/databases/scripts/fetch-vendor-sqlite3.sh`,
+//! which CI no longer invokes via a dedicated step — instead,
+//! build.zig's `vendor_sqlite3_step` (wired into `test_step` and
+//! every `install:*` step) is the single source of truth, and the
+//! fetch runs automatically on a fresh checkout. These checks keep
+//! the three pieces in lockstep:
 //!
 //!   1. `.gitignore` continues to ignore `/vendor/`
 //!   2. The fetch script is present, executable, and self-contained
-//!   3. The CI workflow invokes the script on non-Linux runners
+//!   3. build.zig wires `vendor_sqlite3_step` into `test_step` and
+//!      every `install:*` step (so CI doesn't need a separate step)
+//!   4. ci.yml's Zig build cache key hashes the fetch script (so a
+//!      version bump invalidates the cache and forces a re-fetch)
 //!
 //! Plan: docs/superpowers/plans/2026-07-01-gitignore-vendor-sqlite3.md
 //!       (the kanban task `git ignore vendor sqlite3`)
@@ -21,8 +27,15 @@ const nalarcore = @import("nalarcore");
 const text_normalize = nalarcore.helpers.text_normalize;
 
 const GITIGNORE_PATH = ".gitignore";
-const FETCH_SCRIPT_PATH = "scripts/fetch-vendor-sqlite3.sh";
+// The script moved out of the repo-root `scripts/` directory in the
+// self-contained-package refactor (PR #211) so the `databases` module
+// owns its own fetch script co-located with its build glue. CI no
+// longer has an explicit `if: runner.os != 'Linux'` step — instead
+// build.zig's `vendor_sqlite3_step` (wired into `test_step` and every
+// `install:*` step) is the single source of truth.
+const FETCH_SCRIPT_PATH = "src/modules/databases/scripts/fetch-vendor-sqlite3.sh";
 const CI_WORKFLOW_PATH = ".github/workflows/ci.yml";
+const BUILD_ZIG_PATH = "build.zig";
 
 /// Read a source file from disk, relative to the project root
 /// (which is the cwd when `zig build test:ai_workflow:tui` runs).
@@ -122,10 +135,11 @@ test "scripts/fetch-vendor-sqlite3.sh exists" {
         if (err == error.FileNotFound) {
             std.debug.print(
                 "\n!! {s} is missing !!\n" ++
-                    "   The amalgamation is gitignored but the build.zig still\n" ++
-                    "   references vendor/sqlite3/sqlite3.c. Without the fetch\n" ++
-                    "   script, fresh clones on Windows/macOS cannot build.\n" ++
-                    "   Restore scripts/fetch-vendor-sqlite3.sh from git.\n",
+                    "   The amalgamation is gitignored but build.zig's\n" ++
+                    "   `vendor_sqlite3_step` still references this script\n" ++
+                    "   to populate vendor/sqlite3/. Without the script,\n" ++
+                    "   fresh clones on Windows/macOS cannot build.\n" ++
+                    "   Restore src/modules/databases/scripts/fetch-vendor-sqlite3.sh from git.\n",
                 .{FETCH_SCRIPT_PATH},
             );
             return error.FetchScriptMissing;
@@ -268,42 +282,94 @@ test "fetch-vendor-sqlite3.sh has a python3 extraction fallback" {
     }
 }
 
-// ─── Contract 3: CI workflow invokes the fetch script on non-Linux ─────────
+// ─── Contract 3: build.zig wires the fetch into test + install:* steps ─────
+//
+// History: when this file was first written, CI had an explicit
+//   - name: Fetch vendored SQLite amalgamation (Windows / macOS)
+//     if: runner.os != 'Linux'
+//     run: ./scripts/fetch-vendor-sqlite3.sh
+// step, and the test enforced that step. After the self-contained-
+// package refactor (PR #211), the script moved into
+// src/modules/databases/scripts/ AND build.zig grew a
+// `vendor_sqlite3_step` (run via addSystemCommand) that the test
+// step and every install:* step depend on. The script is idempotent
+// (skips when files exist), so the fetch is a no-op on cached/second
+// runs. This means CI no longer needs a separate script-invocation
+// step — `zig build test` and `zig build nalar-desktop` Just Work on
+// a fresh checkout.
 
-test "ci.yml invokes the fetch script on non-Linux runners" {
+test "build.zig wires vendor_sqlite3_step into test + install:* steps" {
     const allocator = testing.allocator;
-    const source = try readSource(allocator, CI_WORKFLOW_PATH);
+    const source = try readSource(allocator, BUILD_ZIG_PATH);
     defer allocator.free(source);
 
-    // The CI must have a step that invokes the fetch script, gated on
-    // `runner.os != 'Linux'`. Without this, the Windows/macOS matrix
-    // cells would fail at the first `zig build` step with
-    // "unable to find file 'vendor/sqlite3/sqlite3.c'".
-    if (std.mem.indexOf(u8, source, "scripts/fetch-vendor-sqlite3.sh") == null) {
+    // 1. The fetch step must reference the script at its (new)
+    //    src/modules/databases/scripts/ location. The script moved out
+    //    of the repo-root `scripts/` directory when the `databases`
+    //    module was made self-contained.
+    if (std.mem.indexOf(
+        u8,
+        source,
+        "src/modules/databases/scripts/fetch-vendor-sqlite3.sh",
+    ) == null) {
         std.debug.print(
-            "\n!! {s} does not invoke scripts/fetch-vendor-sqlite3.sh !!\n" ++
-                "   The Windows/macOS matrix cells compile SQLite from the\n" ++
-                "   vendored amalgamation. Without a CI step that fetches it\n" ++
-                "   on non-Linux runners, every non-Linux build fails with\n" ++
-                "   \"unable to find file 'vendor/sqlite3/sqlite3.c'\".\n" ++
-                "   Add a step like:\n" ++
-                "     - name: Fetch vendored SQLite amalgamation (Windows / macOS)\n" ++
-                "       if: runner.os != 'Linux'\n" ++
-                "       shell: bash\n" ++
-                "       run: ./scripts/fetch-vendor-sqlite3.sh\n",
-            .{CI_WORKFLOW_PATH},
+            "\n!! {s} does not invoke the fetch script at its new path !!\n" ++
+                "   build.zig's `vendor_sqlite3_step` must run:\n" ++
+                "     bash src/modules/databases/scripts/fetch-vendor-sqlite3.sh\n" ++
+                "   (the old repo-root `scripts/fetch-vendor-sqlite3.sh`\n" ++
+                "    path was removed in the self-contained-package refactor).\n",
+            .{BUILD_ZIG_PATH},
         );
-        return error.CiFetchStepMissing;
+        return error.BuildZigFetchStepMissing;
     }
-    if (std.mem.indexOf(u8, source, "runner.os != 'Linux'") == null) {
+
+    // 2. The fetch must be exposed as a named build step so it can be
+    //    wired into other steps. We accept either the constant name
+    //    `vendor_sqlite3_step` or the public step name
+    //    `fetch-vendor-sqlite3` (the addSystemCommand's name).
+    if (std.mem.indexOf(u8, source, "vendor_sqlite3_step") == null and
+        std.mem.indexOf(u8, source, "fetch-vendor-sqlite3") == null)
+    {
         std.debug.print(
-            "\n!! {s} does not gate the fetch step on non-Linux runners !!\n" ++
-                "   The fetch step must be `if: runner.os != 'Linux'` so it\n" ++
-                "   runs on Windows/macOS but is skipped on Linux (which uses\n" ++
-                "   the system libsqlite3 and doesn't need the amalgamation).\n",
-            .{CI_WORKFLOW_PATH},
+            "\n!! {s} does not define a fetch-vendor-sqlite3 step !!\n" ++
+                "   The fetch must be exposed as a build step (named\n" ++
+                "   `vendor_sqlite3_step` or `fetch-vendor-sqlite3`) so it\n" ++
+                "   can be depended on by `test_step` and every `install:*` step.\n",
+            .{BUILD_ZIG_PATH},
         );
-        return error.CiFetchStepNotGated;
+        return error.VendorSqlite3StepMissing;
+    }
+
+    // 3. test_step must depend on the fetch so `zig build test` (run
+    //    by CI) triggers the fetch on a fresh checkout. Without this
+    //    wiring, the test step would fail with
+    //    "unable to find file 'vendor/sqlite3/sqlite3.c'".
+    if (std.mem.indexOf(u8, source, "test_step.dependOn(vendor_sqlite3_step)") == null) {
+        std.debug.print(
+            "\n!! {s} does not wire vendor_sqlite3_step into test_step !!\n" ++
+                "   The test step must depend on the fetch so `zig build test`\n" ++
+                "   populates src/modules/databases/vendor/sqlite3/ on a fresh\n" ++
+                "   checkout (otherwise the first compile fails with\n" ++
+                "   \"unable to find file 'vendor/sqlite3/sqlite3.c'\").\n",
+            .{BUILD_ZIG_PATH},
+        );
+        return error.TestStepNotDependingOnVendorFetch;
+    }
+
+    // 4. At least one install:* step must depend on the fetch so
+    //    `zig build nalar-desktop` (also run by CI) triggers it. The
+    //    Linux native install step (linux_system_step) is the one the
+    //    CI matrix actually exercises on the self-hosted Linux runner.
+    if (std.mem.indexOf(u8, source, "linux_system_step.dependOn(vendor_sqlite3_step)") == null) {
+        std.debug.print(
+            "\n!! {s} does not wire vendor_sqlite3_step into linux_system_step !!\n" ++
+                "   The install:linux:system step must depend on vendor_sqlite3_step\n" ++
+                "   so `zig build nalar-desktop` populates the amalgamation on a\n" ++
+                "   fresh checkout. (Other install:* steps — windows, macos,\n" ++
+                "   macos-arm — should also depend on it for cross-compile builds.)\n",
+            .{BUILD_ZIG_PATH},
+        );
+        return error.InstallStepNotDependingOnVendorFetch;
     }
 }
 
@@ -312,15 +378,27 @@ test "ci.yml cache key includes the fetch script (to invalidate on updates)" {
     const source = try readSource(allocator, CI_WORKFLOW_PATH);
     defer allocator.free(source);
 
-    // The cache key must include the fetch script so that bumping the
+    // The cache key must include the fetch script (at its NEW path
+    // under src/modules/databases/scripts/) so that bumping the
     // SQLite version in the script invalidates the cache and forces a
     // re-download. Without this, a script change could leave a stale
     // amalgamation in the cache.
-    if (std.mem.indexOf(u8, source, "scripts/fetch-vendor-sqlite3.sh") == null) {
+    //
+    // Note: we check for the explicit new path rather than just
+    // `fetch-vendor-sqlite3.sh` because the new path contains the
+    // old path as a substring (the old `scripts/...` is a suffix of
+    // the new `src/modules/databases/scripts/...`), so a substring
+    // needle would pass for either location and wouldn't catch a
+    // regression where the cache key was reverted to the old path.
+    if (std.mem.indexOf(
+        u8,
+        source,
+        "src/modules/databases/scripts/fetch-vendor-sqlite3.sh",
+    ) == null) {
         std.debug.print(
-            "\n!! {s} cache key does not include the fetch script !!\n" ++
+            "\n!! {s} cache key does not include the fetch script at its new path !!\n" ++
                 "   The Zig build cache key should be:\n" ++
-                "     ${{ hashFiles('build.zig.zon', 'build.zig', 'scripts/fetch-vendor-sqlite3.sh') }}\n" ++
+                "     ${{ hashFiles('build.zig', 'build.zig.zon', 'src/apps/desktop_app/main.zig', 'src/apps/desktop/bun.lock', 'src/modules/databases/scripts/fetch-vendor-sqlite3.sh') }}\n" ++
                 "   so that bumping the SQLite version in the script\n" ++
                 "   invalidates the cache and triggers a re-fetch.\n",
             .{CI_WORKFLOW_PATH},
