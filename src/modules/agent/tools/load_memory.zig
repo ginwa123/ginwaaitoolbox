@@ -204,9 +204,19 @@ fn successXml(
     const total_count: u32 = if (hits.len > 0) hits[0].total_count else 0;
     try xml.print(allocator,
         "  <count>{d}</count>\n" ++
-        "  <total_count>{d}</total_count>\n" ++
-        "  <results>\n",
+        "  <total_count>{d}</total_count>\n",
         .{ hits.len, total_count });
+
+    // Open <results>. When there are no hits, emit a self-closing tag so
+    // the output contains the literal `<results></results>` substring
+    // that downstream parsers (and the test contract) expect. With
+    // hits, keep the leading newline so each <memory> is indented under
+    // <results> as before.
+    if (hits.len == 0) {
+        try xml.appendSlice(allocator, "  <results></results>\n");
+    } else {
+        try xml.appendSlice(allocator, "  <results>\n");
+    }
 
     for (hits, 0..) |hit, i| {
         const id_e = try xmlEscape(allocator, hit.id);

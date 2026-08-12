@@ -1771,9 +1771,6 @@ pub fn escapeFtsQuery(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
-    // Open the FTS5 phrase.
-    try out.append(allocator, '"');
-
     // Build the inner phrase. Replace FTS5 operators with a single
     // space (so adjacent operators don't collapse). Internal `"`
     // is replaced with a space too — FTS5 phrase syntax requires
@@ -1784,12 +1781,34 @@ pub fn escapeFtsQuery(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
     while (i < query.len) : (i += 1) {
         const c = query[i];
         switch (c) {
-            '-', '+', '*', '^', ':', '(', ')', '"' => try out.append(allocator, ' '),
+            '-', '+', '*', '^', ':', '(', ')', '"', '.', '/' => try out.append(allocator, ' '),
             else => try out.append(allocator, c),
         }
     }
-    // Close the phrase.
-    try out.append(allocator, '"');
+    // Trim trailing spaces (so `dark mode ` becomes `dark mode`).
+    while (out.items.len > 0 and out.items[out.items.len - 1] == ' ') {
+        out.items.len -= 1;
+    }
+    // Empty query after trim → return empty string. Caller should
+    // pre-check; this is a defensive fallback.
+    if (out.items.len == 0) {
+        return out.toOwnedSlice(allocator);
+    }
+
+    // Append `*` so the FTS5 query becomes a prefix match. FTS5
+    // tokenizes the indexed content and the query identically; a
+    // phrase search like `"aaa"` matches a token "aaa" exactly, but
+    // it does NOT match a longer token that contains "aaa" as a
+    // substring (e.g. a 3 KiB string of 'a' is one big token that
+    // the porter stemmer leaves untouched). Adding `*` to the last
+    // token enables prefix matching, so the same memory can be
+    // recalled regardless of how long the stored token is.
+    //
+    // For multi-word queries like `dark mode` this yields
+    // `dark mode*` — FTS5 tokenizes that as two terms where the
+    // second has a prefix wildcard, which is the standard FTS5 idiom
+    // for "starts with X, then has any token starting with Y".
+    try out.append(allocator, '*');
 
     return out.toOwnedSlice(allocator);
 }
