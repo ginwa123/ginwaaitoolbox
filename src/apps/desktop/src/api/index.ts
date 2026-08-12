@@ -2924,6 +2924,7 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
       'worker_deleted',
       'session_created',
       'session_deleted',
+      'session_updated', // task_1786507100896 — auto-rename on first user message + unattended toggle
       // Design-mode element events (see src/ai_workflow/tui/on_event_sent_design.zig).
       // All granular single-element events share the `DesignElementEvent`
       // payload; the `action` discriminator tells them apart. The single
@@ -3040,12 +3041,19 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
         return
       }
 
-      // Session events. The backend sets `session_created` |
-      // `session_deleted` based on `OnEventInputSessions.action`. Today
-      // only `created` is emitted; `deleted` is wired in `on_event_sent.zig`
-      // for future use.
+      // Session events. The backend emits `session_created` (on first
+      // message of a fresh chat), `session_updated` (on auto-rename after
+      // the first user message + on unattended-mode toggle + on
+      // last_finish_reason refresh; see llm_history.zig:2896 + the cascade
+      // in update_session_name.zig:24), and `session_deleted`. All three
+      // share the `SessionEvent` payload shape; the consumer dispatches by
+      // `event.action`. The pre-registration in `additionalEventTypes`
+      // above is what wires the browser's EventSource to fire onEvent
+      // for these names — without it, the wire event is dropped on the
+      // floor (see project memory browser-eventsource-named-events.md).
       if (
         eventType === 'session_created' ||
+        eventType === 'session_updated' ||
         eventType === 'session_deleted'
       ) {
         if (!opts.channels.sessions) return

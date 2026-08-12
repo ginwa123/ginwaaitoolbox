@@ -586,7 +586,7 @@ describe('createUnifiedSseConnection: bare vs per-session tokens (Chunk 4)', () 
  *   - queue_queued, queue_deleted  (was 'queue_message' before)
  *   - llm_chunk, llm_full
  *   - worker_created, worker_updated, worker_deleted
- *   - session_created, session_deleted
+ *   - session_created, session_deleted, session_updated
  */
 describe('createUnifiedSseConnection: pre-registers all granular event names', () => {
   const REQUIRED_EVENT_TYPES = [
@@ -601,6 +601,7 @@ describe('createUnifiedSseConnection: pre-registers all granular event names', (
     'worker_deleted',
     'session_created',
     'session_deleted',
+    'session_updated', // task_1786507100896 — auto-rename on first user message + unattended toggle
     // Design-mode events (src/ai_workflow/tui/on_event_sent_design.zig):
     //   - design_element_created / _updated / _deleted — single
     //   - design_elements_geometry_batch_updated — batch (emitted
@@ -705,5 +706,69 @@ describe('createUnifiedSseConnection: pre-registers all granular event names', (
         element_ids: ['elem-root', 'elem-child1'],
       }),
     )
+  })
+
+  /**
+   * Regression test for task_1786507100896: when the backend emits a
+   * session rename on first user message (LLM auto-name), the
+   * downstream consumer's `sessions` callback MUST fire. Pre-fix, the
+   * backend emitted `event_type = "session_unknown"` (the fallthrough
+   * in sse_on_event_send_session.zig's if/else) and the frontend's
+   * additionalEventTypes didn't include the new name, so the browser's
+   * EventSource dropped the event and the sidebar task row kept
+   * showing the old name until refresh.
+   *
+   * This test simulates the wire format: caller fires
+   * `(rawJsonString, 'session_updated')` into the factory's
+   * onEvent callback. We assert the sessions channel callback runs
+   * exactly once with the parsed SessionEvent.
+   */
+  it('routes session_updated wire events to the sessions channel callback', () => {
+    const sessionsCb = vi.fn()
+    let capturedOnEvent: ((raw: string, eventType: string) => void) | null = null
+    const localSpy = vi.spyOn(sseClient, 'createSseClient')
+    localSpy.mockImplementation(((opts: sseClient.SseClientOptions) => {
+      capturedOnEvent = opts.onEvent
+      return {
+        close: vi.fn(),
+        reconnect: vi.fn(),
+        getState: () => 'open' as const,
+        onStateChange: () => () => {},
+      }
+    }) as unknown as typeof sseClient.createSseClient)
+
+    createUnifiedSseConnection({
+      channels: { sessions: sessionsCb },
+    })
+
+    expect(capturedOnEvent).not.toBeNull()
+
+    // Simulate the wire-format payload the backend emits on
+    // updateSessionName cascade (see
+    // agentic_loop/update_session_name.zig:24-34 + the
+    // OnEventInputSessions struct in sse_on_event_send_session.zig:7-17).
+    const payload = JSON.stringify({
+      action: 'updated',
+      id: 'session_abc',
+      name: 'Auto-generated name',
+      status: 'idle',
+      cwd: '/tmp',
+      created_at: '2026-08-12T10:00:00Z',
+      updated_at: '2026-08-12T10:00:05Z',
+      selected_profile_model: '',
+      git_worktree_cwd: '',
+    })
+    capturedOnEvent!(payload, 'session_updated')
+
+    expect(sessionsCb).toHaveBeenCalledTimes(1)
+    expect(sessionsCb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'updated',
+        id: 'session_abc',
+        name: 'Auto-generated name',
+      }),
+    )
+
+    localSpy.mockRestore()
   })
 })
