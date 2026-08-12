@@ -57,8 +57,13 @@ pub fn inserLLMHistories(
     // stored the raw nanosecond string AND never set `created_iso`,
     // so every row inserted via this path had NULL `created_iso` AND
     // any future fix‑up would have produced year 58,507 for them.
-    const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
-    defer allocator.free(id);
+    //
+    // `id` is borrowed from the caller (`input.id`) — the function
+    // does NOT own it and must not allocate/free it. The previous
+    // implementation allocated a fresh `id` here and returned a
+    // `dupe(u8, id)` as the function's slice return, which leaked in
+    // every test that discarded the result (`_ = try inserLLMHistories(...)`).
+    const id = input.id;
     const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(created_at);
 
@@ -226,7 +231,7 @@ pub fn inserLLMHistories(
         }
     }
 
-    return allocator.dupe(u8, id);
+    return id;
 }
 
 /// Get all skills loaded for a session
