@@ -36,5 +36,6 @@ test {
     _ = @import("migration_069_test.zig");  // workspace_item_tasks.image_urls (kanban-image-urls-column plan, 2026-08-06)
     _ = @import("migration_070_test.zig");  // agent_memories + agent_memories_fts FTS5 (save-load-memory-fts5 plan, 2026-08-06)
     _ = @import("migration_071_test.zig");  // workspace_item_tasks.cwd (kanban-cwd-session-optional plan, 2026-08-06)
+    _ = @import("migration_072_test.zig");  // workspace_item_tasks → kanban table extraction (extract-kanban-columns plan, 2026-08-15)
     _ = @import("../ai_workflow/tui/migration_057_test.zig");  // v6 design element properties — kept at old path on this branch
 }
