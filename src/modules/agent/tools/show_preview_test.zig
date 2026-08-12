@@ -633,7 +633,9 @@ test "executeShowPreviewToString with path-only image returns success envelope" 
     const prefix_len: usize = "data:image/png;base64,".len;
     const expected_b64_len = ((TEST_PNG_BYTES.len + 2) / 3) * 4;
     const expected_total = prefix_len + expected_b64_len;
-    var len_buf: [32]u8 = undefined;
+    // 64 bytes covers "<content_length>N</content_length>" (31 fixed chars)
+    // with up to 33 digits of headroom for the content_length value.
+    var len_buf: [64]u8 = undefined;
     const needle = try std.fmt.bufPrint(&len_buf, "<content_length>{d}</content_length>", .{expected_total});
     try testing.expect(std.mem.indexOf(u8, xml, needle) != null);
 }
