@@ -179,9 +179,9 @@ test "deleteColumn nulls out the kanban row's kanban_column_id" {
     , &.{});
     try s.db.exec(alloc,
         \\CREATE TABLE kanban (
-        \\    task_id TEXT PRIMARY KEY, kanban_column_id TEXT NOT NULL,
+        \\    workspace_item_task_id TEXT PRIMARY KEY, kanban_column_id TEXT NOT NULL,
         \\    kanban_position INTEGER NOT NULL DEFAULT 0,
-        \\    FOREIGN KEY (task_id) REFERENCES workspace_item_tasks(id) ON DELETE CASCADE,
+        \\    FOREIGN KEY (workspace_item_task_id) REFERENCES workspace_item_tasks(id) ON DELETE CASCADE,
         \\    FOREIGN KEY (kanban_column_id) REFERENCES kanban_columns(id) ON DELETE SET NULL)
     , &.{});
     try s.db.exec(alloc,
@@ -191,7 +191,7 @@ test "deleteColumn nulls out the kanban row's kanban_column_id" {
     try s.db.exec(alloc,
         "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES ('t1', 'A', 'item_1')", &.{});
     try s.db.exec(alloc,
-        "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t1', 'c1', 0)", &.{});
+        "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t1', 'c1', 0)", &.{});
 
     try kanban.deleteColumn(alloc, &s.db, "item_1", "c1");
 
@@ -215,7 +215,7 @@ test "deleteColumn nulls out the kanban row's kanban_column_id" {
     // kanban_column_id = NULL in the wire format).
     {
         var q = try s.db.query(alloc,
-            "SELECT COUNT(*) FROM kanban k WHERE k.task_id = 't1'", &.{});
+            "SELECT COUNT(*) FROM kanban k WHERE k.workspace_item_task_id = 't1'", &.{});
         defer q.deinit();
         const row = (try q.next()) orelse return error.NoCount;
         defer row.deinit(alloc);
@@ -240,7 +240,7 @@ test "countTasksInColumn returns the number of tasks assigned to the column" {
     , &.{});
     try s.db.exec(alloc,
         \\CREATE TABLE kanban (
-        \\    task_id TEXT PRIMARY KEY, kanban_column_id TEXT NOT NULL,
+        \\    workspace_item_task_id TEXT PRIMARY KEY, kanban_column_id TEXT NOT NULL,
         \\    kanban_position INTEGER NOT NULL DEFAULT 0)
     , &.{});
     // Three tasks in c1, one in c2, one unassigned (no kanban row).
@@ -250,7 +250,7 @@ test "countTasksInColumn returns the number of tasks assigned to the column" {
             "('t4', 'D', 'item_1'), ('t5', 'E', 'item_1')",
         &.{});
     try s.db.exec(alloc,
-        "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES " ++
+        "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES " ++
             "('t1', 'c1', 0), ('t2', 'c1', 1), ('t3', 'c1', 2), ('t4', 'c2', 0)",
         &.{});
 
@@ -270,13 +270,13 @@ test "countTasksInColumn returns 0 when no tasks reference the column" {
     , &.{});
     try s.db.exec(alloc,
         \\CREATE TABLE kanban (
-        \\    task_id TEXT PRIMARY KEY, kanban_column_id TEXT NOT NULL,
+        \\    workspace_item_task_id TEXT PRIMARY KEY, kanban_column_id TEXT NOT NULL,
         \\    kanban_position INTEGER NOT NULL DEFAULT 0)
     , &.{});
     try s.db.exec(alloc,
         "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES ('t1', 'A', 'item_1')", &.{});
     try s.db.exec(alloc,
-        "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t1', 'c1', 0)", &.{});
+        "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t1', 'c1', 0)", &.{});
 
     // c2 exists in kanban_columns but has no tasks — count is 0, not
     // an error. (The delete-handler treats 0 as "safe to delete".)
@@ -293,7 +293,7 @@ test "countTasksInColumn returns 0 when the kanban table is empty" {
 
     try s.db.exec(alloc,
         \\CREATE TABLE kanban (
-        \\    task_id TEXT PRIMARY KEY, kanban_column_id TEXT NOT NULL,
+        \\    workspace_item_task_id TEXT PRIMARY KEY, kanban_column_id TEXT NOT NULL,
         \\    kanban_position INTEGER NOT NULL DEFAULT 0)
     , &.{});
 
@@ -322,7 +322,7 @@ test "moveTask changes column and renumbers positions" {
     , &.{});
     try s.db.exec(alloc,
         \\CREATE TABLE kanban (
-        \\    task_id TEXT PRIMARY KEY, kanban_column_id TEXT NOT NULL,
+        \\    workspace_item_task_id TEXT PRIMARY KEY, kanban_column_id TEXT NOT NULL,
         \\    kanban_position INTEGER NOT NULL DEFAULT 0)
     , &.{});
     try s.db.exec(alloc,
@@ -338,19 +338,19 @@ test "moveTask changes column and renumbers positions" {
     try s.db.exec(alloc,
         "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES ('t3', 'C', 'item_1')", &.{});
     try s.db.exec(alloc,
-        "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t1', 'c1', 0)", &.{});
+        "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t1', 'c1', 0)", &.{});
     try s.db.exec(alloc,
-        "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t2', 'c1', 1)", &.{});
+        "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t2', 'c1', 1)", &.{});
     try s.db.exec(alloc,
-        "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t3', 'c2', 0)", &.{});
+        "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t3', 'c2', 0)", &.{});
 
     // Move t1 (was c1 pos 0) to c2 pos 0
     try kanban.moveTask(alloc, &s.db, "item_1", "t1", "c2", 0);
 
     var q = try s.db.query(alloc,
-        "SELECT k.task_id, k.kanban_column_id, k.kanban_position " ++
+        "SELECT k.workspace_item_task_id, k.kanban_column_id, k.kanban_position " ++
         "FROM kanban k " ++
-        "WHERE k.task_id IN ('t1', 't2', 't3') ORDER BY k.task_id", &.{});
+        "WHERE k.workspace_item_task_id IN ('t1', 't2', 't3') ORDER BY k.workspace_item_task_id", &.{});
     defer q.deinit();
     // t1 → c2, pos 0
     const r1 = (try q.next()) orelse return error.NoTask;

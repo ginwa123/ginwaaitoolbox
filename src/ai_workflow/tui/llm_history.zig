@@ -4288,7 +4288,7 @@ pub fn listWorkspaceItemTasks(
         \\       k.kanban_column_id, COALESCE(k.kanban_position, 0),
         \\       r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error
         \\FROM workspace_item_tasks t
-        \\LEFT JOIN kanban k ON k.task_id = t.id
+        \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
         \\LEFT JOIN routines r ON r.task_id = t.id
         \\WHERE t.workspace_item_id = ?
         \\ORDER BY t.is_pinned DESC, t.pinned_position DESC, t.updated_at DESC, t.id DESC
@@ -4548,7 +4548,7 @@ pub fn listWorkspaceItemTasksWithCursor(
         // passthrough column at index 21:
         //   21: t.tags — JSON-encode array string ('' when no tags).
         //       NOT NULL DEFAULT '' so always present.
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at IS NULL OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd FROM workspace_item_tasks t LEFT JOIN kanban k ON k.task_id = t.id LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at IS NULL OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
         .{ cursor_clause, column_id_clause, q_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -5089,7 +5089,7 @@ fn setupDb() !TestCtx {
     , &.{});
     try db.exec(alloc,
         \\CREATE TABLE kanban (
-        \\    task_id TEXT PRIMARY KEY,
+        \\    workspace_item_task_id TEXT PRIMARY KEY,
         \\    kanban_column_id TEXT NOT NULL,
         \\    kanban_position INTEGER NOT NULL DEFAULT 0
         \\)
@@ -5166,7 +5166,7 @@ fn insertTaskInColumn(
     , &.{ id, name, description, tags });
     if (column_id) |cid| {
         try ctx.db.exec(alloc,
-            \\INSERT INTO kanban (task_id, kanban_column_id, kanban_position)
+            \\INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position)
             \\VALUES (?, ?, ?)
         , &.{ id, cid, pos_str });
     }

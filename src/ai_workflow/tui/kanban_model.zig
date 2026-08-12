@@ -306,7 +306,7 @@ pub fn deleteColumn(
     // IMPORTANT: this codebase does NOT enable `PRAGMA foreign_keys`
     // (FK enforcement is off — see
     // `src/ai_workflow/tui/design_model_delete_parent_test.zig:8`),
-    // so the `kanban.task_id ON DELETE CASCADE` from workspace_item_tasks
+    // so the `kanban.workspace_item_task_id ON DELETE CASCADE` from workspace_item_tasks
     // works in reverse ONLY if we explicitly DELETE here. We DELETE
     // the kanban rows before the kanban_columns row to preserve the
     // "task unassigned" semantics.
@@ -618,7 +618,7 @@ pub fn moveTask(
     // `workspace_item_tasks` directly.
     const current_col_id = blk: {
         var q = try db.query(allocator,
-            "SELECT COALESCE(k.kanban_column_id, '') FROM kanban k WHERE k.task_id = ?",
+            "SELECT COALESCE(k.kanban_column_id, '') FROM kanban k WHERE k.workspace_item_task_id = ?",
             &.{task_id});
         defer q.deinit();
         const row = (try q.next()) orelse return error.TaskNotFound;
@@ -636,14 +636,14 @@ pub fn moveTask(
     // PRIMARY KEY collision on re-inserts triggers a delete-then-insert
     // which is the same observable behavior as the legacy UPDATE.
     try db.exec(allocator,
-        "INSERT OR REPLACE INTO kanban (task_id, kanban_column_id, kanban_position) VALUES (?, ?, ?)",
+        "INSERT OR REPLACE INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES (?, ?, ?)",
         &.{ task_id, target_column_id, pos_str });
 
     // Step 3: shift other tasks in the target column that are at >= target_position.
     try db.exec(allocator,
         \\UPDATE kanban
         \\SET kanban_position = kanban_position + 1
-        \\WHERE kanban_column_id = ? AND task_id != ? AND kanban_position >= ?
+        \\WHERE kanban_column_id = ? AND workspace_item_task_id != ? AND kanban_position >= ?
     , &.{ target_column_id, task_id, pos_str });
 
     // Step 4: if the column changed, compact the source column.
@@ -654,7 +654,7 @@ pub fn moveTask(
             \\    SELECT COUNT(*) FROM kanban k2
             \\    WHERE k2.kanban_column_id = kanban.kanban_column_id
             \\        AND (k2.kanban_position < kanban.kanban_position
-            \\            OR (k2.kanban_position = kanban.kanban_position AND k2.task_id <= kanban.task_id))
+            \\            OR (k2.kanban_position = kanban.kanban_position AND k2.workspace_item_task_id <= kanban.workspace_item_task_id))
             \\) - 1
             \\WHERE kanban_column_id = ?
         , &.{current_col_id});

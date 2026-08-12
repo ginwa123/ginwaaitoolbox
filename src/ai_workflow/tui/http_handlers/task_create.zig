@@ -515,7 +515,7 @@ fn createStandardTask(
                 // re-run on an already-assigned task is a no-op (the
                 // SELECT MAX below handles position conflicts).
                 db.exec(allocator,
-                    "INSERT OR IGNORE INTO kanban (task_id, kanban_column_id, kanban_position) VALUES (?, ?, (SELECT COALESCE(MAX(k.kanban_position), -1) + 1 FROM kanban k WHERE k.kanban_column_id = ?))",
+                    "INSERT OR IGNORE INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES (?, ?, (SELECT COALESCE(MAX(k.kanban_position), -1) + 1 FROM kanban k WHERE k.kanban_column_id = ?))",
                     &[_][]const u8{ task_id, col_id, col_id },
                 ) catch |err| {
                     std.log.warn("task_create: kanban auto-assign failed (non-fatal): {s}", .{@errorName(err)});
@@ -525,7 +525,7 @@ fn createStandardTask(
                 // frontend's KanbanTaskEvent union variant.
                 const assigned_pos: i64 = blk: {
                     var q = db.query(allocator,
-                        "SELECT COALESCE(k.kanban_position, 0) FROM kanban k WHERE k.task_id = ?",
+                        "SELECT COALESCE(k.kanban_position, 0) FROM kanban k WHERE k.workspace_item_task_id = ?",
                         &[_][]const u8{task_id}) catch break :blk 0;
                     defer q.deinit();
                     const row = (q.next() catch break :blk 0) orelse break :blk 0;
@@ -545,7 +545,7 @@ fn createStandardTask(
                 // Re-read kanban fields after the INSERT so the
                 // response carries the assigned values.
                 var q2 = db.query(allocator,
-                    "SELECT k.kanban_column_id, COALESCE(k.kanban_position, 0) FROM kanban k WHERE k.task_id = ?",
+                    "SELECT k.kanban_column_id, COALESCE(k.kanban_position, 0) FROM kanban k WHERE k.workspace_item_task_id = ?",
                     &[_][]const u8{task_id}) catch return .{
                     .task_id = task_id,
                     .name = task.name,

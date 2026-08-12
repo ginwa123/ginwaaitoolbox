@@ -177,7 +177,7 @@ test "replaceColumnsWith unassigns tasks on the deleted target columns" {
         "INSERT INTO workspace_item_tasks (id, workspace_item_id) VALUES ('task_1', 'wi_tgt')",
         &.{});
     try ctx.db.exec(alloc,
-        "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('task_1', ?, 0)",
+        "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('task_1', ?, 0)",
         &.{legacy_id});
 
     try kanban_model.replaceColumnsWith(alloc, &ctx.db, "wi_src", "wi_tgt");
@@ -188,7 +188,7 @@ test "replaceColumnsWith unassigns tasks on the deleted target columns" {
     // deleteColumn). The task itself is NOT removed.
     {
         var q = try ctx.db.query(alloc,
-            "SELECT COUNT(*) FROM kanban k WHERE k.task_id = 'task_1'",
+            "SELECT COUNT(*) FROM kanban k WHERE k.workspace_item_task_id = 'task_1'",
             &.{});
         defer q.deinit();
         const row = (try q.next()) orelse return error.RowMissing;

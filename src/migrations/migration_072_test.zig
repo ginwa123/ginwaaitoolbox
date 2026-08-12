@@ -8,12 +8,12 @@
 //! `workspace_item_tasks` table and into a dedicated `kanban` join
 //! table. This is purely structural — the wire format
 //! (`Task.kanban_column_id`, `Task.kanban_position`) stays identical,
-//! served via a `LEFT JOIN kanban k ON k.task_id = t.id` in list
+//! served via a `LEFT JOIN kanban k ON k.workspace_item_task_id = t.id` in list
 //! queries.
 //!
 //! The migration must:
 //!   1. Create the `kanban` table with the expected schema
-//!      (task_id PK, kanban_column_id NOT NULL, kanban_position
+//!      (workspace_item_task_id PK, kanban_column_id NOT NULL, kanban_position
 //!      DEFAULT 0, FKs to workspace_item_tasks + kanban_columns).
 //!   2. Create the `idx_kanban_column_position` index.
 //!   3. Backfill rows from existing `workspace_item_tasks`
@@ -171,7 +171,7 @@ test "Migration072 kanban_column_id FK is ON DELETE CASCADE — deleting a colum
     // Pre-condition: the kanban row exists.
     {
         var q = try ctx.db.query(alloc,
-            "SELECT 1 FROM kanban WHERE task_id = 'task_to_unplace'",
+            "SELECT 1 FROM kanban WHERE workspace_item_task_id = 'task_to_unplace'",
             &.{});
         defer q.deinit();
         const row = (try q.next()) orelse return error.RowMissing;
@@ -188,7 +188,7 @@ test "Migration072 kanban_column_id FK is ON DELETE CASCADE — deleting a colum
 
     // Post-condition: the kanban row is gone.
     var q = try ctx.db.query(alloc,
-        "SELECT 1 FROM kanban WHERE task_id = 'task_to_unplace'",
+        "SELECT 1 FROM kanban WHERE workspace_item_task_id = 'task_to_unplace'",
         &.{});
     defer q.deinit();
     try testing.expect((try q.next()) == null);
@@ -264,11 +264,11 @@ test "Migration072 backfills kanban rows from workspace_item_tasks" {
     try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
 
     // Verify the backfill: three rows in kanban with the expected
-    // task_id / column_id / position triples.
+    // workspace_item_task_id / column_id / position triples.
     var q = try ctx.db.query(alloc,
-        \\SELECT task_id, kanban_column_id, kanban_position
+        \\SELECT workspace_item_task_id, kanban_column_id, kanban_position
         \\FROM kanban
-        \\ORDER BY task_id ASC
+        \\ORDER BY workspace_item_task_id ASC
     , &.{});
     defer q.deinit();
 
@@ -328,7 +328,7 @@ test "Migration072 backfill skips tasks whose kanban_column_id has no matching k
 
     // Only the valid row was backfilled — the orphan was skipped.
     var q = try ctx.db.query(alloc,
-        "SELECT task_id FROM kanban ORDER BY task_id ASC",
+        "SELECT workspace_item_task_id FROM kanban ORDER BY workspace_item_task_id ASC",
         &.{});
     defer q.deinit();
 
@@ -459,7 +459,7 @@ test "Migration072 preserves the wire format — LEFT JOIN returns the same data
     var q = try ctx.db.query(alloc,
         \\SELECT t.id, k.kanban_column_id, COALESCE(k.kanban_position, 0)
         \\FROM workspace_item_tasks t
-        \\LEFT JOIN kanban k ON k.task_id = t.id
+        \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
         \\ORDER BY t.id ASC
     , &.{});
     defer q.deinit();

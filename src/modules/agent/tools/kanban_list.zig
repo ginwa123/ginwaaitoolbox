@@ -147,7 +147,7 @@ pub fn listKanbanTasks(
     var q = try db.query(allocator,
         \\SELECT t.id, t.name, COALESCE(k.kanban_column_id, ''), COALESCE(k.kanban_position, -1)
         \\FROM workspace_item_tasks t
-        \\LEFT JOIN kanban k ON k.task_id = t.id
+        \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
         \\WHERE t.workspace_item_id = ?
         \\ORDER BY k.kanban_column_id ASC, k.kanban_position ASC, t.id ASC
     , &.{workspace_item_id});

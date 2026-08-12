@@ -96,7 +96,7 @@ pub fn makeKanbanContext(
         var q = try db.query(allocator,
             \\SELECT COALESCE(k.kanban_column_id, '')
             \\FROM workspace_item_tasks t
-            \\LEFT JOIN kanban k ON k.task_id = t.id
+            \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
             \\WHERE t.id = ?
         , &.{session_id});
         defer q.deinit();

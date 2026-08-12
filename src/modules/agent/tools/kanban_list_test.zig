@@ -329,7 +329,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     , &.{});
     try db.exec(alloc,
         \\CREATE TABLE kanban (
-        \\  task_id TEXT PRIMARY KEY,
+        \\  workspace_item_task_id TEXT PRIMARY KEY,
         \\  kanban_column_id TEXT NOT NULL,
         \\  kanban_position INTEGER NOT NULL DEFAULT 0
         \\)
@@ -356,9 +356,9 @@ test "listKanbanTasks returns all tasks with column + position" {
     try s.db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('t2', 'item_1', 'Task 2', 'standard')", &.{});
     try s.db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('t3', 'item_1', 'Task 3', 'standard')", &.{});
     try s.db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('t4', 'item_1', 'Task 4 unassigned', 'standard')", &.{});
-    try s.db.exec(alloc, "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t1', 'col_todo', 0)", &.{});
-    try s.db.exec(alloc, "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t2', 'col_todo', 1)", &.{});
-    try s.db.exec(alloc, "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t3', 'col_done', 0)", &.{});
+    try s.db.exec(alloc, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t1', 'col_todo', 0)", &.{});
+    try s.db.exec(alloc, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t2', 'col_todo', 1)", &.{});
+    try s.db.exec(alloc, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t3', 'col_done', 0)", &.{});
     // t4 has no kanban row — unassigned (the LEFT JOIN surfaces this as
     // empty kanban_column_id in the JSON output)
 
@@ -389,9 +389,9 @@ test "executeKanbanListToString returns columns with task_count" {
     try s.db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('t1', 'item_1', 'Task 1', 'standard')", &.{});
     try s.db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('t2', 'item_1', 'Task 2', 'standard')", &.{});
     try s.db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('t3', 'item_1', 'Task 3', 'standard')", &.{});
-    try s.db.exec(alloc, "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t1', 'col_todo', 0)", &.{});
-    try s.db.exec(alloc, "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t2', 'col_todo', 1)", &.{});
-    try s.db.exec(alloc, "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t3', 'col_done', 0)", &.{});
+    try s.db.exec(alloc, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t1', 'col_todo', 0)", &.{});
+    try s.db.exec(alloc, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t2', 'col_todo', 1)", &.{});
+    try s.db.exec(alloc, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t3', 'col_done', 0)", &.{});
 
     const input = kanban_list.KanbanListInput{
         .workspace_id = "ws_1",
@@ -421,9 +421,9 @@ test "executeKanbanListToString with column_id filter returns only that column's
     try s.db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('t1', 'item_1', 'Task 1', 'standard')", &.{});
     try s.db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('t2', 'item_1', 'Task 2', 'standard')", &.{});
     try s.db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('t3', 'item_1', 'Task 3', 'standard')", &.{});
-    try s.db.exec(alloc, "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t1', 'col_todo', 0)", &.{});
-    try s.db.exec(alloc, "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t2', 'col_todo', 1)", &.{});
-    try s.db.exec(alloc, "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t3', 'col_done', 0)", &.{});
+    try s.db.exec(alloc, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t1', 'col_todo', 0)", &.{});
+    try s.db.exec(alloc, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t2', 'col_todo', 1)", &.{});
+    try s.db.exec(alloc, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t3', 'col_done', 0)", &.{});
 
     const input = kanban_list.KanbanListInput{
         .workspace_id = "ws_1",
@@ -479,7 +479,7 @@ test "executeKanbanListToString column_name is real bytes (use-after-free regres
         \\VALUES ('t_uaf', 'item_1', 'Task Under Test', 'standard')
     , &.{});
     try s.db.exec(alloc,
-        \\INSERT INTO kanban (task_id, kanban_column_id, kanban_position)
+        \\INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position)
         \\VALUES ('t_uaf', 'col_ip', 0)
     , &.{});
 
