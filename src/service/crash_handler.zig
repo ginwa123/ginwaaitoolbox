@@ -135,6 +135,30 @@ fn installCrashHandlersPosix() void {
 
 /// POSIX crash handler. Runs in signal context — only async-signal-safe
 /// (or best-effort) operations allowed. See file header for caveats.
+///
+/// Lifetime contract: this function returns normally to the kernel,
+/// which then dispatches the re-raised signal via the default handler
+/// (SIG_DFL), terminating the process and (if enabled) producing a
+/// core dump. We do NOT use `noreturn` + `unreachable` after `raise` —
+/// that combination makes Zig's safety machinery treat the unreachable
+/// as a panic, which calls `std.c.abort()` → SIGABRT → re-enters this
+/// handler for SIGABRT → loop (the secondary crash visible in the
+/// original bug report).
+///
+/// Why a plain return terminates the process:
+///   1. The signal that triggered this handler is implicitly blocked
+///      in the thread's signal mask for the duration of the handler.
+///   2. `raise(sig)` is therefore synchronous-but-queued: it returns
+///      0 after queuing the signal, because delivering it inline would
+///      recurse into the same handler context.
+///   3. When this function returns, the kernel's sigreturn restores
+///      the original signal mask (unblocking the signal), checks the
+///      pending mask, sees the queued signal, and dispatches it via
+///      SIG_DFL (terminate + core dump) — which we installed in STEP 1.
+///
+/// If `raise` itself fails (returns non-zero), we call `_Exit` directly
+/// to ensure the process still terminates (without a core dump, but at
+/// least without spinning forever).
 fn handleCrashSignal(sig: std.c.SIG) callconv(.c) void {
     // STEP 1 — restore the OS default handler BEFORE logging. If our
     // logger crashes inside this handler, the kernel re-delivers the
@@ -212,12 +236,16 @@ fn handleCrashSignal(sig: std.c.SIG) callconv(.c) void {
 
     // STEP 5 — re-raise so the OS default action runs (terminate +
     // core dump). std.c.raise returns c_int (0 on success, -1 on
-    // failure). If raise fails we still need to terminate cleanly
-    // — fall through to _Exit which IS async-signal-safe.
-    if (std.c.raise(sig) != 0) {
-        std.c._Exit(128 + @as(c_int, @intCast(@intFromEnum(sig))));
-    }
-    unreachable;
+    // failure). The signal is queued (the triggering signal is
+    // implicitly blocked in the thread's mask while the handler runs),
+    // not delivered inline — see the function doc above for why
+    // returning from this handler is what terminates the process.
+    _ = std.c.raise(sig);
+    // Either the signal is queued and will be delivered via SIG_DFL on
+    // handler return (the normal path — produces a core dump), or
+    // raise() itself failed; in that case fall through to _Exit which
+    // is async-signal-safe and ensures we still terminate.
+    std.c._Exit(128 + @as(c_int, @intCast(@intFromEnum(sig))));
 }
 
 // =============================================================================
