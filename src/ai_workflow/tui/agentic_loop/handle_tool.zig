@@ -519,7 +519,6 @@ pub fn handle_tool(
         // next worker loop start (called from workflow.zig).
         var idx: usize = 0;
         for (tc) |tool_call| {
-            const id_llm_history = list_id_that_was_loaded.items[idx];
             idx += 1;
             var tool_result: []const u8 = undefined;
             var toolAgentTemp: f32 = agent_temperature.*;
@@ -548,11 +547,11 @@ pub fn handle_tool(
                     });
                     tool_result = try wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
                     errdefer allocator.free(tool_result);
-                    try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                    try updateAndSendToolResult(allocator, io, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                     allocator.free(tool_result);
                     continue;
                 };
-                try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                try updateAndSendToolResult(allocator, io, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                 continue;
             }
 
@@ -565,7 +564,7 @@ pub fn handle_tool(
                 });
                 tool_result = try wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
                 errdefer allocator.free(tool_result);
-                try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                try updateAndSendToolResult(allocator, io, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                 allocator.free(tool_result);
                 continue;
             };
@@ -590,7 +589,7 @@ pub fn handle_tool(
                 };
             }
 
-            try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+            try updateAndSendToolResult(allocator, io, db, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
         }
     }
 
@@ -601,7 +600,6 @@ fn updateAndSendToolResult(
     allocator: std.mem.Allocator,
     io: std.Io,
     db: *sqlite.SqliteBackend,
-    id: []const u8,
     session_id: []const u8,
     cwd: []const u8,
     tool_call: agent.ToolCall,
@@ -639,7 +637,7 @@ fn updateAndSendToolResult(
     // (0 rows affected) — the old saveMessage would have created a
     // new row, but with the placeholder pattern we prefer to drop
     // the orphan rather than have an unmatched tool result.
-    try llm_history.updateToolResultById(allocator, io, db, id, .{
+    try llm_history.updateToolResultById(allocator, io, db, tool_call.id, .{
         .content = content_modified,
         .diffview_before = diffview_before,
         .diffview_after = diffview_after,
