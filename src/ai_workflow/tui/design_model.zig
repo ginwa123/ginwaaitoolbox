@@ -3237,7 +3237,8 @@ pub fn setElementParent(
             \\SELECT 1 FROM chain WHERE id = ? LIMIT 1
         , &.{ new_pid, element_id });
         defer q.deinit();
-        if (try q.next()) |_| {
+        if (try q.next()) |row| {
+            defer row.deinit(allocator);
             return error.CycleDetected;
         }
     }
