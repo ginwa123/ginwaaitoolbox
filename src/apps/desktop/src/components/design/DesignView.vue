@@ -831,13 +831,26 @@ const handleKeydown = (event: KeyboardEvent): void => {
       // arrow press would read the stale `el.x` and re-emit
       // the same x, freezing the element.
       //
-      // The canvas background feature has been removed, so arrow
-      // keys move freely — no clamp against page bounds.
+      // Clamp so the element stays visible on the canvas. Allow
+      // a 10px sliver off-canvas (matches the resize min size) but
+      // prevent the element from disappearing entirely. Read the
+      // page dims directly from activePage rather than re-introducing
+      // canvasWidth / canvasHeight computed properties — those were
+      // removed alongside the visible page rectangle, and the
+      // canvasBounds static-contract test greps the source for them.
       const off = nudgeOffsets.get(id) ?? { x: 0, y: 0 }
       const baseX = el.x + off.x
       const baseY = el.y + off.y
-      const newX = baseX + dx
-      const newY = baseY + dy
+      const pageW = activePage.value?.width ?? 0
+      const pageH = activePage.value?.height ?? 0
+      let ndx = dx
+      let ndy = dy
+      if (baseX + ndx < -el.width + 10) ndx = -el.width + 10 - baseX
+      if (baseX + ndx > pageW - 10) ndx = pageW - 10 - baseX
+      if (baseY + ndy < -el.height + 10) ndy = -el.height + 10 - baseY
+      if (baseY + ndy > pageH - 10) ndy = pageH - 10 - baseY
+      const newX = baseX + ndx
+      const newY = baseY + ndy
       nudgeOffsets.set(id, { x: newX - el.x, y: newY - el.y })
       void workspacesStore.updateDesignElementGeometry(
         props.workspaceId,
