@@ -417,7 +417,6 @@ test "generateMemoryId produces unique ids" {
     var i: usize = 0;
     while (i < 100) : (i += 1) {
         const id = try generateMemoryId(alloc);
-        defer alloc.free(id);
 
         // Check uniqueness against the array (O(n^2) but fine for n=100).
         var j: usize = 0;
@@ -426,6 +425,12 @@ test "generateMemoryId produces unique ids" {
         }
         seen[count] = id;
         count += 1;
+    }
+    // Free all ids AFTER the loop — `defer` inside the while body
+    // would free each slice while `seen[]` still aliases it, causing
+    // a SEGV on the next iteration's eql() call.
+    for (seen[0..count]) |id| {
+        alloc.free(id);
     }
 }
 
