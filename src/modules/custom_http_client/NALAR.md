@@ -112,7 +112,7 @@ Reference: `~/.nalar/memories/nalar-backend-architecture.md` "Diagnostic recipe"
 
 ## Future work (out of this plan)
 
-- Migrate `handle_mcp_tool.zig` and `build_messages_for_agent_prompt.zig`
+- Migrate `handle_mcp_tool.zig` and `prompts_build_messages_for_agent_prompt.zig`
 - Add `Connection: keep-alive` pooling via `curl_share_*`
 - Add streaming response (`ResponseStream` + `CURLOPT_XFERINFOFUNCTION`)
 - `Options.max_body_bytes` to cap response allocation

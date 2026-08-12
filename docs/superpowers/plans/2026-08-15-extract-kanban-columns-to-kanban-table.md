@@ -139,7 +139,7 @@ src/ai_workflow/tui/
 │   ├── task_update.zig                               # 0 SQL sites for kanban placement (description/tags/cwd only)
 │   └── task_delete.zig                               # VERIFY (no change needed — CASCADE handles it)
 ├── agentic_loop/
-│   ├── build_messages_for_agent_prompt.zig           # reads kanban_column_id (system-prompt context)
+│   ├── prompts_build_messages_for_agent_prompt.zig           # reads kanban_column_id (system-prompt context)
 │   ├── build_messages_for_agent_prompt_test.zig      # fixture has kanban_column_id in CREATE TABLE
 │   ├── build_messages_for_agent_prompt_design_canvas_test.zig  # same
 │   ├── build_messages_for_agent_prompt_filtering_tools_test.zig  # same
@@ -697,7 +697,7 @@ git commit -m "refactor(http_handlers): kanban auto-assign + column-id filter us
 
 (INNER JOIN because the agent only wants current placement; if the task is not on a kanban, the row is absent — match the existing behaviour where `kanban_column_id` is empty string but the agent still proceeds.)
 
-### Step 5.2 — `build_messages_for_agent_prompt.zig`
+### Step 5.2 — `prompts_build_messages_for_agent_prompt.zig`
 
 Search for `t.kanban_column_id` reads in the SELECT or WHERE clauses and update to `LEFT JOIN kanban k ON k.task_id = t.id` (same pattern as Task 3.1).
 
@@ -855,7 +855,7 @@ gh pr create --title "feat(db): extract kanban_column_id + kanban_position into 
 - [ ] `kanban_model.zig` 4 SQL sites updated + tests green (Task 2)
 - [ ] `llm_history.zig` list/SELECT queries updated + tests green (Task 3)
 - [ ] `http_handlers/task_create.zig` + `tasks_list.zig` SQL updated + tests green (Task 4)
-- [ ] `agentic_loop/prompts_make_kanban_context.zig` + `build_messages_for_agent_prompt.zig` + tools comment updated (Task 5)
+- [ ] `agentic_loop/prompts_make_kanban_context.zig` + `prompts_build_messages_for_agent_prompt.zig` + tools comment updated (Task 5)
 - [ ] All test fixtures swept (Task 6)
 - [ ] Frontend test suite + type check still green (Task 7)
 - [ ] Full build + manual smoke + migration upgrade path verified (Task 8)

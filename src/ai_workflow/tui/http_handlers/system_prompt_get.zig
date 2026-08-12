@@ -33,7 +33,7 @@ const llm_history = nalarcore.llm_history;
 const agent = nalarcore.agent;
 const tool_models = nalarcore.tool_models;
 
-const buildMessages = @import("../agentic_loop/build_messages_for_agent_prompt.zig").buildMessages;
+const buildMessages = @import("../agentic_loop/prompts_build_messages_for_agent_prompt.zig").buildMessages;
 
 const agentic_loop = @import("../agentic_loop/workflow.zig");
 const SqliteBackend = nalarcore.sqlite.SqliteBackend;
@@ -107,7 +107,7 @@ pub fn systemPromptGetHandler(
     // via the session_agents table). This is the "what does the main
     // agent see" view.
     //
-    // buildMessages' 10-arg signature (build_messages_for_agent_prompt.zig:23):
+    // buildMessages' 10-arg signature (prompts_build_messages_for_agent_prompt.zig:23):
     //   1. allocator, 2. io, 3. db, 4. cwd, 5. session_id,
     //   6. parent_session_id, 7. historyMessages, 8. tools,
     //   9. inherited_context_mode, 10. activeAgentContent
@@ -135,7 +135,7 @@ pub fn systemPromptGetHandler(
     }
 
     // buildMessages always emits messages[0] as the system message (see
-    // build_messages_for_agent_prompt.zig:131). Defensive: also check
+    // prompts_build_messages_for_agent_prompt.zig:131). Defensive: also check
     // the role so we never silently leak a different role's content.
     if (messages.len == 0 or messages[0].role != .system) {
         return res.jsonResponse(.{

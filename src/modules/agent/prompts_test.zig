@@ -1654,7 +1654,7 @@ test "loadLocalKnowledge skips a corrupt file and loads the rest" {
 // ---------------------------------------------------------------------------
 //
 // The Workspace Context section is a pre-rendered markdown block built by
-// `BuildWorkspaceContext` in `build_messages_for_agent_prompt.zig`. It is
+// `BuildWorkspaceContext` in `prompts_build_messages_for_agent_prompt.zig`. It is
 // threaded through `buildMessages` → `build_agent_prompt` as the new last
 // parameter. These tests verify the wiring: when the block is non-empty, it
 // is appended to the prompt verbatim between the cwd line and the OS info.
@@ -1666,7 +1666,7 @@ test "build_agent_prompt renders Workspace Context when section is non-empty" {
 
     const tools = [_]AgentTool{};
     // Realistic Workspace Context block (the same shape produced by
-    // `BuildWorkspaceContext` in `build_messages_for_agent_prompt.zig`).
+    // `BuildWorkspaceContext` in `prompts_build_messages_for_agent_prompt.zig`).
     // The block starts with "\n\n## Workspace Context" and includes the
     // self marker, item names, paths, and per-item task lists.
     const workspaceContext =

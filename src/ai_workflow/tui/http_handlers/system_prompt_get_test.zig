@@ -121,7 +121,7 @@ test "system_prompt_get handler delegates to buildMessages" {
         std.debug.print(
             "\n!! {s} does not call buildMessages !!\n" ++
                 "   The endpoint must use the same prompt-builder the\n" ++
-                "   production workflow uses (`build_messages_for_agent_prompt.zig`)\n" ++
+                "   production workflow uses (`prompts_build_messages_for_agent_prompt.zig`)\n" ++
                 "   — otherwise it drifts from `workflow.zig:509` and returns\n" ++
                 "   a prompt the LLM never sees. Add a `buildMessages(...)` call.\n",
             .{HANDLER_PATH},
@@ -129,12 +129,12 @@ test "system_prompt_get handler delegates to buildMessages" {
         return error.BuildMessagesCallMissing;
     }
 
-    if (std.mem.indexOf(u8, source, "../agentic_loop/build_messages_for_agent_prompt.zig") == null) {
+    if (std.mem.indexOf(u8, source, "../agentic_loop/prompts_build_messages_for_agent_prompt.zig") == null) {
         std.debug.print(
-            "\n!! {s} does not import from `../agentic_loop/build_messages_for_agent_prompt.zig` !!\n" ++
+            "\n!! {s} does not import from `../agentic_loop/prompts_build_messages_for_agent_prompt.zig` !!\n" ++
                 "   The handler must reach the canonical builder through its\n" ++
                 "   file-relative import. Add:\n" ++
-                "     const buildMessages = @import(\"../agentic_loop/build_messages_for_agent_prompt.zig\").buildMessages;\n",
+                "     const buildMessages = @import(\"../agentic_loop/prompts_build_messages_for_agent_prompt.zig\").buildMessages;\n",
             .{HANDLER_PATH},
         );
         return error.BuildMessagesImportMissing;
