@@ -2861,7 +2861,7 @@ pub const Migration072ExtractKanbanTable = struct {
             \\    FOREIGN KEY (task_id)
             \\        REFERENCES workspace_item_tasks(id) ON DELETE CASCADE,
             \\    FOREIGN KEY (kanban_column_id)
-            \\        REFERENCES kanban_columns(id)     ON DELETE SET NULL
+            \\        REFERENCES kanban_columns(id)       ON DELETE CASCADE
             \\)
         , &[_][]const u8{});
 

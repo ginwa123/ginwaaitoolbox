@@ -133,6 +133,68 @@ fn seedKanbanCard(
 }
 
 // ============================================================================
+// Test 0 — Column-delete cascades the kanban row (FK regression test)
+// ============================================================================
+//
+// The original Migration 072 DDL declared the FK on
+// `kanban.kanban_column_id` as `ON DELETE SET NULL`. That action is
+// incompatible with the column's `NOT NULL` constraint — SQLite rejects
+// the parent DELETE with "NOT NULL constraint failed:
+// kanban.kanban_column_id". The fix is `ON DELETE CASCADE`: deleting a
+// column un-places its tasks (deletes the kanban row).
+//
+// This test seeds a column + task + kanban row, runs the migration,
+// deletes the column, and asserts the kanban row is gone. Without
+// CASCADE, the DELETE would crash (and the test would fail with
+// `error.SqLiteError`).
+test "Migration072 kanban_column_id FK is ON DELETE CASCADE — deleting a column un-places its task" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // NB: PRAGMA foreign_keys is deliberately OFF in this project's
+    // SqliteBackend init (see src/ai_workflow/tui/kanban_model.zig:306
+    // for the rationale — application code simulates CASCADE
+    // manually). We turn it ON here so this test exercises the
+    // *schema-declared* FK behavior, which is what someone running
+    // with the default `sqlite3` CLI would observe. If PRAGMA is
+    // off, the FK is documentation-only and the test would falsely
+    // pass even with the buggy `SET NULL` declaration.
+    try ctx.db.exec(alloc, "PRAGMA foreign_keys = ON", &.{});
+
+    // Seed: one valid task on column col_1.
+    try seedKanbanCard(&ctx, alloc, "task_to_unplace", "col_1", 0);
+
+    try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
+
+    // Pre-condition: the kanban row exists.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM kanban WHERE task_id = 'task_to_unplace'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+    }
+
+    // Action: delete the column. With ON DELETE CASCADE this should
+    // silently cascade-delete the kanban row. With the buggy
+    // ON DELETE SET NULL, this would fail with `NOT NULL
+    // constraint failed: kanban.kanban_column_id`.
+    try ctx.db.exec(alloc,
+        "DELETE FROM kanban_columns WHERE id = 'col_1'",
+        &.{});
+
+    // Post-condition: the kanban row is gone.
+    var q = try ctx.db.query(alloc,
+        "SELECT 1 FROM kanban WHERE task_id = 'task_to_unplace'",
+        &.{});
+    defer q.deinit();
+    try testing.expect((try q.next()) == null);
+}
+
+// ============================================================================
 // Test 1 — Migration creates the `kanban` table
 // ============================================================================
 
