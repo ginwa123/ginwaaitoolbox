@@ -22,6 +22,7 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/nalar_config_profile_delete_test.zig");
     _ = @import("http_handlers/sse_handshake_test.zig");
     _ = @import("http_handlers/task_update_test.zig");
+    _ = @import("http_handlers/session_event_type_test.zig"); // task_1786507100896 — pin session_updated wire-format mapping in BOTH emitters
     _ = @import("http_handlers/task_delete_test.zig");
     _ = @import("http_handlers/tasks_list_test.zig");
     _ = @import("http_handlers/task_create_routines_test.zig");
