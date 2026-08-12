@@ -29,6 +29,7 @@
 //! suffix is the meaningful bit).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const sqlite = @import("nalarcore").sqlite;
 const llm_history = @import("llm_history.zig");
 
@@ -330,18 +331,46 @@ pub fn loadMemoriesByFts(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Generate a fresh `mem_<16-hex>` id. Uses `std.c.getrandom` for the
-/// 8 random bytes (cross-platform, per `zig-cross-platform.md`).
+/// Generate a fresh `mem_<16-hex>` id.
+///
+/// Platform CSPRNG dispatch (mirrors `src/modules/custom_http_server/src/security.zig::generateNonce`):
+///   * Linux/FreeBSD/OpenBSD/NetBSD → libc `getrandom(2)` (loops on partial reads).
+///   * macOS / iOS / tvOS / watchOS → libc `arc4random_buf` (CSPRNG under the hood;
+///     the "arc4" name is stale — uses SecRandomCopyBytes since macOS 10.12).
+///   * Windows → BCryptGenRandom via bcrypt.dll (linked by `databases` build.zig).
+/// `std.c.getrandom` exists only on Linux/FreeBSD; on macOS and Windows it resolves
+/// to `void` (Zig's c.zig switch), which is why this function is target-aware.
 /// Returns an allocated string the caller owns.
 fn generateMemoryId(allocator: std.mem.Allocator) ![]u8 {
     var bytes: [8]u8 = undefined;
-    // Retry loop in case the kernel returns short (rare but possible).
-    var filled: usize = 0;
-    while (filled < 8) {
-        const slice = bytes[filled..];
-        const got = std.c.getrandom(slice.ptr, slice.len, 0);
-        if (got <= 0) return error.RandomFailed;
-        filled += @intCast(got);
+    switch (builtin.os.tag) {
+        .linux, .freebsd, .openbsd, .netbsd => {
+            var filled: usize = 0;
+            while (filled < 8) {
+                const slice = bytes[filled..];
+                const got = std.c.getrandom(slice.ptr, slice.len, 0);
+                if (got <= 0) return error.RandomFailed;
+                filled += @intCast(got);
+            }
+        },
+        .macos, .ios, .tvos, .watchos => {
+            // arc4random_buf is declared in std.c private on Apple targets.
+            // No loop needed — it always fills in one call.
+            std.c.arc4random_buf(&bytes, bytes.len);
+        },
+        .windows => {
+            // BCrypt.dll → BCRYPT_USE_SYSTEM_PREFERRED_RNG (0x00000002).
+            // The docs guarantee it is suitable for cryptographic use and is
+            // seeded from the OS entropy pool at boot.
+            const status = bcrypt.BCryptGenRandom(
+                null,
+                &bytes,
+                @intCast(bytes.len),
+                0x00000002,
+            );
+            if (status != 0) return error.RandomFailed;
+        },
+        else => return error.UnsupportedPlatform,
     }
 
     // Format as 16 hex chars.
@@ -383,6 +412,20 @@ fn joinTags(allocator: std.mem.Allocator, tags: []const []const u8) ![]u8 {
     }
     return out;
 }
+
+/// Windows bcrypt.dll bindings. Declared locally because std.c only covers
+/// libc; bcrypt is a separate system DLL that the `databases` package links
+/// via `linkSystemLibrary("bcrypt")` (see `src/modules/databases/build.zig`).
+/// Only referenced from the `.windows` arm of `generateMemoryId`, so the
+/// Zig compiler prunes the unused extern at link time on POSIX.
+const bcrypt = struct {
+    extern "bcrypt" fn BCryptGenRandom(
+        hAlgorithm: ?*const anyopaque,
+        pbBuffer: [*]u8,
+        cbBuffer: c_ulong,
+        dwFlags: c_ulong,
+    ) callconv(.c) c_long;
+};
 
 // ---------------------------------------------------------------------------
 // Inline tests
