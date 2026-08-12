@@ -360,7 +360,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     // `kanban` join table, not on workspace_item_tasks directly.
     try db.exec(alloc,
         \\CREATE TABLE kanban (
-        \\  task_id TEXT PRIMARY KEY,
+        \\  workspace_item_task_id TEXT PRIMARY KEY,
         \\  kanban_column_id TEXT NOT NULL,
         \\  kanban_position INTEGER NOT NULL DEFAULT 0
         \\)
@@ -373,8 +373,8 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     try db.exec(alloc, "INSERT INTO kanban_columns (id, workspace_item_id, name, position) VALUES ('col_done', 'item_1', 'done', 2)", &.{});
     try db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('t1', 'item_1', 'Auth task', 'standard')", &.{});
     try db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('t2', 'item_1', 'Other task', 'standard')", &.{});
-    try db.exec(alloc, "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t1', 'col_todo', 0)", &.{});
-    try db.exec(alloc, "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t2', 'col_todo', 1)", &.{});
+    try db.exec(alloc, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t1', 'col_todo', 0)", &.{});
+    try db.exec(alloc, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t2', 'col_todo', 1)", &.{});
 
     return .{ .db = db, .threaded = threaded };
 }
@@ -550,7 +550,7 @@ test "executeKanbanMoveTaskToString without position appends to end of column" {
 
     // Insert one task in done column to set the max position.
     try s.db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('t_done', 'item_1', 'Already done', 'standard')", &.{});
-    try s.db.exec(alloc, "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) VALUES ('t_done', 'col_done', 0)", &.{});
+    try s.db.exec(alloc, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t_done', 'col_done', 0)", &.{});
 
     // Move t1 to col_done with no position.
     const input = kanban_move_task.KanbanMoveTaskInput{

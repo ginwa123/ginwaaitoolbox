@@ -6,7 +6,7 @@
 
 **Goal:** Move the two kanban-specific columns (`kanban_column_id`, `kanban_position`) off the universal `workspace_item_tasks` table into a dedicated `kanban` join table. Pure restructuring — the API wire format (`Task.kanban_column_id`, `Task.kanban_position`) is **unchanged**, so the frontend stores/components/SSE handlers stay byte-for-byte the same.
 
-**Architecture:** One new SQLite table `kanban` (1:1 with `workspace_item_tasks` via `task_id` PK), one new migration (Migration 072), surgical update to every SQL site that reads/writes `workspace_item_tasks.kanban_column_id` or `kanban_position` to instead LEFT JOIN `kanban`. All changes confined to backend (`src/ai_workflow/tui/kanban_model.zig`, `src/ai_workflow/tui/llm_history.zig`, `src/ai_workflow/tui/http_handlers/task_*.zig`, `src/ai_workflow/tui/http_handlers/tasks_*.zig`, `src/ai_workflow/tui/agentic_loop/*.zig`, `src/ai_workflow/tui/on_event_sent_kanban.zig`). Frontend `.spec.ts` fixtures unchanged.
+**Architecture:** One new SQLite table `kanban` (1:1 with `workspace_item_tasks` via `workspace_item_task_id` PK), one new migration (Migration 072), surgical update to every SQL site that reads/writes `workspace_item_tasks.kanban_column_id` or `kanban_position` to instead LEFT JOIN `kanban`. All changes confined to backend (`src/ai_workflow/tui/kanban_model.zig`, `src/ai_workflow/tui/llm_history.zig`, `src/ai_workflow/tui/http_handlers/task_*.zig`, `src/ai_workflow/tui/http_handlers/tasks_*.zig`, `src/ai_workflow/tui/agentic_loop/*.zig`, `src/ai_workflow/tui/on_event_sent_kanban.zig`). Frontend `.spec.ts` fixtures unchanged.
 
 **Tech Stack:** Zig 0.x (bundled sqlite), Vue 3 + TypeScript (untouched), Vitest, Zig test runner.
 
@@ -19,9 +19,9 @@
 Extracting the placement data into a `kanban` join table:
 
 1. Makes `workspace_item_tasks` smaller and more focused (it no longer holds board-placement state).
-2. Makes the kanban data model explicit — there's now a 1:1 table row per kanban-board card, foundable by `SELECT * FROM kanban k WHERE k.task_id = ?`.
+2. Makes the kanban data model explicit — there's now a 1:1 table row per kanban-board card, foundable by `SELECT * FROM kanban k WHERE k.workspace_item_task_id = ?`.
 3. Lets future kanban-specific fields be added next to the column/position data without touching the universal table (e.g. a future `kanban.color` or `kanban.due_date`).
-4. Keeps the wire format stable: the API response still has `kanban_column_id` + `kanban_position` on every Task, populated via a `LEFT JOIN kanban k ON k.task_id = t.id` (NULL when the task is not on a kanban).
+4. Keeps the wire format stable: the API response still has `kanban_column_id` + `kanban_position` on every Task, populated via a `LEFT JOIN kanban k ON k.workspace_item_task_id = t.id` (NULL when the task is not on a kanban).
 
 The trade-off (acknowledged): a few SQL queries change shape. None of those queries are user-observable; the migration is invisible to the frontend because the wire format doesn't change.
 
@@ -31,9 +31,9 @@ The trade-off (acknowledged): a few SQL queries change shape. None of those quer
 
 | ID | Decision | Why | Alternative rejected |
 |----|----------|-----|----------------------|
-| D1 | **`kanban` is a join table**, 1:1 with `workspace_item_tasks` via `task_id` PRIMARY KEY | A kanban card belongs to exactly one task. Composite PK `(task_id, kanban_column_id)` adds nothing. | EAV-style wide table, json column, or putting `kanban_column_id` + `position` back on a `task_metadata` TEXT — over-engineering. |
+| D1 | **`kanban` is a join table**, 1:1 with `workspace_item_tasks` via `workspace_item_task_id` PRIMARY KEY | A kanban card belongs to exactly one task. Composite PK `(workspace_item_task_id, kanban_column_id)` adds nothing. | EAV-style wide table, json column, or putting `kanban_column_id` + `position` back on a `task_metadata` TEXT — over-engineering. |
 | D2 | `kanban_column_id` is **NOT NULL** in `kanban` (nullable-ness moves OUT of the FK) | A row in the `kanban` table IS a "task is on a kanban" assertion. Tasks NOT on a kanban have no row at all, which is equivalent to `IS NULL` and easier to reason about. | Keeping `kanban_column_id` nullable in `kanban` adds a redundant state (`row exists with NULL column_id` ≡ task unassigned). |
-| D3 | `ON DELETE CASCADE` on `task_id` FK → `workspace_item_tasks(id)` | Deleting a task should drop its kanban-card row automatically. Matches the existing semantics of `task_delete.zig` (which today does nothing kanban-specific; relies on the FK relationship). | `ON DELETE SET NULL` on `task_id` — orphans card rows; `ON DELETE RESTRICT` — breaks task delete. |
+| D3 | `ON DELETE CASCADE` on `workspace_item_task_id` FK → `workspace_item_tasks(id)` | Deleting a task should drop its kanban-card row automatically. Matches the existing semantics of `task_delete.zig` (which today does nothing kanban-specific; relies on the FK relationship). | `ON DELETE SET NULL` on `workspace_item_task_id` — orphans card rows; `ON DELETE RESTRICT` — breaks task delete. |
 | D4 | `ON DELETE SET NULL` on `kanban_column_id` FK → `kanban_columns(id)` | Matches the existing `deleteColumn` contract in `kanban_model.zig:301` (`UPDATE workspace_item_tasks SET kanban_column_id = NULL WHERE kanban_column_id = ?`). After the migration, deleting a column drops card rows' column reference; the model layer then NULLs `kanban_column_id` on `kanban` rows in one statement (replaces the old `UPDATE` on `workspace_item_tasks`). | `ON DELETE CASCADE` on column FK — destroys card rows when a column is deleted (loses data the user can recover via "unassigned"). |
 | D5 | **Wire format preserved** (`Task.kanban_column_id`, `Task.kanban_position` still on every JSON task) | Frontend stores (`kanbanStore`, `workspacesStore`), components (`KanbanView`, `KanbanColumn`, `WorkspaceItemTaskCard`), SSE channels, and ~30 `.spec.ts` fixtures all read these two fields. Preserving the wire shape keeps the change invisible to the frontend. | Rename JSON fields to `column_id`/`position` — requires touching every frontend file and breaks in-flight branches. |
 | D6 | **Migration wraps CREATE + INSERT + DROP in a single `BEGIN…COMMIT`** | SQLite auto-commits each statement. A crash between `INSERT INTO kanban` and `ALTER TABLE … DROP COLUMN` would strand a half-state where the new table has data AND the old columns exist. The transaction guarantees either both succeed or both roll back. | Per-statement auto-commit — leaves the DB in an inconsistent state on crash. |
@@ -43,7 +43,7 @@ The trade-off (acknowledged): a few SQL queries change shape. None of those quer
 | D10 | Single new column on `kanban`: `created_at DATETIME DEFAULT CURRENT_TIMESTAMP` | Future-proofs ordering/caching; cheap. Mirrors `kanban_columns.created_at`. Optional; no code reads it yet. (Could also do without — YAGNI. RECOMMEND OMIT for v1.) | Add `updated_at` too — no use case yet, defer. |
 | D11 | **`migration.zig` in-file canonical CREATE TABLE** for `workspace_item_tasks` does NOT gain a `kanban` reference — fresh-DB users still create the same minimal schema, then Migration 072 runs | The canonical schema is "the shape right before any migrations would run" — fresh-DB users walk migrations 001 → 072 in order, and Migration 072 is what creates `kanban`. Mirrors how `description` was added in Migration 062. | Modifying the canonical CREATE TABLE — out of project pattern; needs careful conditional logic for "fresh DB" vs "migrating DB". |
 
-> **RECOMMEND D10 OMITTED for v1** — just `task_id`, `kanban_column_id`, `kanban_position`. Add `created_at` later if needed.
+> **RECOMMEND D10 OMITTED for v1** — just `workspace_item_task_id`, `kanban_column_id`, `kanban_position`. Add `created_at` later if needed.
 
 ---
 
@@ -93,10 +93,10 @@ CREATE TABLE workspace_item_tasks (
 );
 
 CREATE TABLE kanban (
-    task_id         TEXT PRIMARY KEY,                 -- 1:1 with workspace_item_tasks.id
+    workspace_item_task_id TEXT PRIMARY KEY,                 -- 1:1 with workspace_item_tasks.id
     kanban_column_id TEXT NOT NULL,
     kanban_position  INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (task_id)         REFERENCES workspace_item_tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (workspace_item_task_id)         REFERENCES workspace_item_tasks(id) ON DELETE CASCADE,
     FOREIGN KEY (kanban_column_id) REFERENCES kanban_columns(id)     ON DELETE SET NULL
 );
 CREATE INDEX idx_kanban_column_position
@@ -117,7 +117,7 @@ CREATE INDEX idx_kanban_column_position
 }
 ```
 
-The Task struct in `llm_history.zig` keeps fields `kanban_column_id: ?[]u8 = null` and `kanban_position: i64 = 0`. The list queries get a `LEFT JOIN kanban k ON k.task_id = t.id` to populate them.
+The Task struct in `llm_history.zig` keeps fields `kanban_column_id: ?[]u8 = null` and `kanban_position: i64 = 0`. The list queries get a `LEFT JOIN kanban k ON k.workspace_item_task_id = t.id` to populate them.
 
 ---
 
@@ -167,9 +167,9 @@ src/apps/desktop/src/  (NO CHANGES — wire format preserved)
 | R3 | **Mid-migration crash** leaves DB in inconsistent state | Wrap `CREATE kanban` + backfill INSERT + `DROP COLUMN` in `BEGIN…COMMIT` |
 | R4 | **Concurrent writes during migration** — agent runs while migration is happening | SQLite serializes writers; readers see the old schema for the duration of `BEGIN…COMMIT`. Migration holds a write lock — non-issue in single-process project |
 | R5 | **`ON DELETE SET NULL` semantics shift**: today, deleting a kanban column nulls `kanban_column_id` on tasks. After: deleting a column triggers FK ON DELETE SET NULL on `kanban.kanban_column_id`. The TASK itself is untouched. Net effect: same observable behavior. | Verify with a behavioural test in Task 5. |
-| R6 | **`workspace_items` row deletion cascade**: `workspace_items.id` is parent of `workspace_item_tasks.workspace_item_id`. When a kanban item is deleted, its tasks cascade-delete (existing FK). Now their `kanban` rows also cascade-delete via `task_id` FK. Net effect: same. | Verify with a behavioural test. |
+| R6 | **`workspace_items` row deletion cascade**: `workspace_items.id` is parent of `workspace_item_tasks.workspace_item_id`. When a kanban item is deleted, its tasks cascade-delete (existing FK). Now their `kanban` rows also cascade-delete via `workspace_item_task_id` FK. Net effect: same. | Verify with a behavioural test. |
 | R7 | **Test fixture maintenance burden**: every backend test that hand-rolls the schema needs the `kanban` table added. ~6 files. | Documented in File Structure above + checklist in Task 6. |
-| R8 | **A `task_id` row already exists in `kanban` with a `kanban_column_id` of a column that was deleted between Migration 051 and Migration 072**: after migration, those rows have `kanban_column_id` pointing at a stale / deleted column. `ON DELETE SET NULL` would have nulled them, but the FK existed only after migration. | Backfill INSERT must handle: if `kanban_column_id` on a task points at a non-existent `kanban_columns.id`, skip the row (or insert with a sentinel). Recommend: validate backfill with `INSERT … SELECT … WHERE EXISTS (kanban_columns WHERE id = t.kanban_column_id)`. |
+| R8 | **A `workspace_item_task_id` row already exists in `kanban` with a `kanban_column_id` of a column that was deleted between Migration 051 and Migration 072**: after migration, those rows have `kanban_column_id` pointing at a stale / deleted column. `ON DELETE SET NULL` would have nulled them, but the FK existed only after migration. | Backfill INSERT must handle: if `kanban_column_id` on a task points at a non-existent `kanban_columns.id`, skip the row (or insert with a sentinel). Recommend: validate backfill with `INSERT … SELECT … WHERE EXISTS (kanban_columns WHERE id = t.kanban_column_id)`. |
 | R9 | **Two separate migration paths**: production walks migrations 001 → 072; tests' hand-rolled CREATE TABLE skips migrations. Inconsistency between real schema and test schema. | All `_test.zig` fixtures that include `workspace_item_tasks` must be updated in lockstep (Task 6). |
 
 ---
@@ -239,11 +239,11 @@ Mirror the structure of `migration_062_test.zig` and `migration_071_test.zig`. R
 
 1. **Adds the `kanban` table** after migration runs.
 2. **Adds the `kanban_column_id` index** with the expected definition.
-3. **Backfills existing rows** — pre-migration rows with `kanban_column_id = 'col_xxx'` end up as rows in `kanban` with the same `task_id` and column.
+3. **Backfills existing rows** — pre-migration rows with `kanban_column_id = 'col_xxx'` end up as rows in `kanban` with the same `workspace_item_task_id` and column.
 4. **Drops `kanban_column_id` and `kanban_position` columns** from `workspace_item_tasks`.
 5. **Drops `idx_tasks_column_position`** from `workspace_item_tasks`.
 6. **Idempotent** — re-running on a DB that already has `kanban` + new schema is a no-op (uses the same `CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE` + `dropColumnIfExists` pattern).
-7. **Wire-format preservation** — after migration, `SELECT t.id, k.kanban_column_id, k.kanban_position FROM workspace_item_tasks t LEFT JOIN kanban k ON k.task_id = t.id` returns the same data the old `SELECT … t.kanban_column_id, t.kanban_position … FROM workspace_item_tasks t` would have (with NULL/0 for non-kanban tasks).
+7. **Wire-format preservation** — after migration, `SELECT t.id, k.kanban_column_id, k.kanban_position FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id` returns the same data the old `SELECT … t.kanban_column_id, t.kanban_position … FROM workspace_item_tasks t` would have (with NULL/0 for non-kanban tasks).
 
 The `setupDb()` helper for this test must create the **pre-Migration-072** schema (i.e. the schema that EXISTS today), not a hand-rolled minimum.
 
@@ -259,13 +259,13 @@ Add the struct (place it after `Migration071AddTaskCwd`, follow the same doc-com
 /// Before: the two placement columns live on the universal
 /// `workspace_item_tasks` table (alongside chat/routine/kanban task
 /// attributes like `description`, `tags`, `image_urls`, `cwd`, etc.).
-/// After: a new `kanban(task_id, kanban_column_id, kanban_position)`
+/// After: a new `kanban(workspace_item_task_id, kanban_column_id, kanban_position)`
 /// table holds the 1:1 task-to-board placement; non-kanban tasks
 /// simply have no row.
 ///
 /// Wire format UNCHANGED — `Task.kanban_column_id` and
 /// `Task.kanban_position` continue to appear on every Task JSON via
-/// a `LEFT JOIN kanban k ON k.task_id = t.id` in list queries. The
+/// a `LEFT JOIN kanban k ON k.workspace_item_task_id = t.id` in list queries. The
 /// frontend stores/components/SSE handlers stay byte-for-byte the
 /// same.
 ///
@@ -308,10 +308,10 @@ pub const Migration072ExtractKanbanTable = struct {
         // Step 1: CREATE kanban (idempotent via IF NOT EXISTS)
         try db.exec(allocator,
             \\CREATE TABLE IF NOT EXISTS kanban (
-            \\    task_id          TEXT PRIMARY KEY,
-            \\    kanban_column_id TEXT NOT NULL,
-            \\    kanban_position  INTEGER NOT NULL DEFAULT 0,
-            \\    FOREIGN KEY (task_id)
+            \\    workspace_item_task_id TEXT PRIMARY KEY,
+            \\    kanban_column_id       TEXT NOT NULL,
+            \\    kanban_position        INTEGER NOT NULL DEFAULT 0,
+            \\    FOREIGN KEY (workspace_item_task_id)
             \\        REFERENCES workspace_item_tasks(id) ON DELETE CASCADE,
             \\    FOREIGN KEY (kanban_column_id)
             \\        REFERENCES kanban_columns(id)     ON DELETE SET NULL
@@ -336,7 +336,7 @@ pub const Migration072ExtractKanbanTable = struct {
         // INSERT OR IGNORE makes a re-run safe (won't crash on the
         // PRIMARY KEY collision).
         try db.exec(allocator,
-            \\INSERT OR IGNORE INTO kanban (task_id, kanban_column_id, kanban_position)
+            \\INSERT OR IGNORE INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position)
             \\SELECT t.id, t.kanban_column_id, COALESCE(t.kanban_position, 0)
             \\FROM workspace_item_tasks t
             \\WHERE t.kanban_column_id IS NOT NULL
@@ -467,7 +467,7 @@ This is the big one — 3 of the 4 SQL statements in `moveTask` need rewriting:
 ```zig
 const current_col_id = blk: {
     var q = try db.query(allocator,
-        "SELECT COALESCE(k.kanban_column_id, '') FROM kanban k WHERE k.task_id = ?",
+        "SELECT COALESCE(k.kanban_column_id, '') FROM kanban k WHERE k.workspace_item_task_id = ?",
         &.{task_id});
     defer q.deinit();
     const row = (try q.next()) orelse return error.TaskNotFound;
@@ -480,7 +480,7 @@ defer allocator.free(current_col_id);
 **Step 2 (line ~609-611) — move task to target column:** an UPDATE on `workspace_item_tasks` becomes a no-op (the row's identity doesn't change) and an `INSERT OR REPLACE` on `kanban`:
 ```zig
 try db.exec(allocator,
-    "INSERT OR REPLACE INTO kanban (task_id, kanban_column_id, kanban_position) VALUES (?, ?, ?)",
+    "INSERT OR REPLACE INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES (?, ?, ?)",
     &.{ task_id, target_column_id, pos_str });
 ```
 
@@ -489,7 +489,7 @@ try db.exec(allocator,
 try db.exec(allocator,
     \\UPDATE kanban
     \\SET kanban_position = kanban_position + 1
-    \\WHERE kanban_column_id = ? AND task_id != ? AND kanban_position >= ?
+    \\WHERE kanban_column_id = ? AND workspace_item_task_id != ? AND kanban_position >= ?
 , &.{ target_column_id, task_id, pos_str });
 ```
 
@@ -502,7 +502,7 @@ if (!std.mem.eql(u8, current_col_id, target_column_id)) {
         \\    SELECT COUNT(*) FROM kanban k2
         \\    WHERE k2.kanban_column_id = kanban.kanban_column_id
         \\        AND (k2.kanban_position < kanban.kanban_position
-        \\            OR (k2.kanban_position = kanban.kanban_position AND k2.task_id <= kanban.task_id))
+        \\            OR (k2.kanban_position = kanban.kanban_position AND k2.workspace_item_task_id <= kanban.workspace_item_task_id))
         \\) - 1
         \\WHERE kanban_column_id = ?
     , &.{current_col_id});
@@ -535,14 +535,14 @@ try db.exec(alloc,
 , &.{});
 try db.exec(alloc,
     \\CREATE TABLE kanban (
-    \\    task_id TEXT PRIMARY KEY,
+    \\    workspace_item_task_id TEXT PRIMARY KEY,
     \\    kanban_column_id TEXT NOT NULL,
     \\    kanban_position INTEGER NOT NULL DEFAULT 0
     \\)
 , &.{});
 ```
 
-Then update the `INSERT INTO workspace_item_tasks (..., kanban_column_id, kanban_position) ...` lines (174-183, 214-216, 236-238, 290-293) to split into two statements: one INSERT into `workspace_item_tasks`, then an `INSERT OR IGNORE INTO kanban (task_id, kanban_column_id, kanban_position) VALUES (...)`.
+Then update the `INSERT INTO workspace_item_tasks (..., kanban_column_id, kanban_position) ...` lines (174-183, 214-216, 236-238, 290-293) to split into two statements: one INSERT into `workspace_item_tasks`, then an `INSERT OR IGNORE INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES (...)`.
 
 ### Step 2.5 — Run kanban_model tests
 ```bash
@@ -572,7 +572,7 @@ Two SELECT sites reference the old columns. The Task struct is unchanged; only t
 
 **After:** change the SELECT list to read from `kanban`:
 ```zig
-"SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), r.schedule, ... FROM workspace_item_tasks t LEFT JOIN kanban k ON k.task_id = t.id LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?...",
+"SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), r.schedule, ... FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?...",
 ```
 
 The read at the cursor (around line 4633) becomes:
@@ -626,13 +626,13 @@ Replace with INSERT OR IGNORE into kanban:
 // (if the kanban row already exists, the UPDATE below re-positions
 // it).
 try db.exec(allocator,
-    "INSERT OR IGNORE INTO kanban (task_id, kanban_column_id, kanban_position) VALUES (?, ?, (SELECT COALESCE(MAX(kanban_position), -1) + 1 FROM kanban WHERE kanban_column_id = ?))",
+    "INSERT OR IGNORE INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES (?, ?, (SELECT COALESCE(MAX(kanban_position), -1) + 1 FROM kanban WHERE kanban_column_id = ?))",
     &.{ task_id, column_id, column_id });
 ```
 
 Then the re-read at line 544 needs the JOIN:
 ```zig
-"SELECT k.kanban_column_id, COALESCE(k.kanban_position, 0) FROM kanban k WHERE k.task_id = ?"
+"SELECT k.kanban_column_id, COALESCE(k.kanban_position, 0) FROM kanban k WHERE k.workspace_item_task_id = ?"
 ```
 
 And the fallback at line 549 (when the task has no `kanban` row) stays as `.kanban_column_id = null, .kanban_position = 0`.
@@ -647,7 +647,7 @@ becomes:
 ```zig
 " AND (k.kanban_column_id = ? OR k.kanban_column_id IS NULL)"
 ```
-And the SELECT must be updated to include `LEFT JOIN kanban k ON k.task_id = t.id` (matching the new shape from Task 3.1).
+And the SELECT must be updated to include `LEFT JOIN kanban k ON k.workspace_item_task_id = t.id` (matching the new shape from Task 3.1).
 
 The `additional WHERE ... WHERE ... ` clause uses `{s}` placeholders; that pattern stays.
 
@@ -691,7 +691,7 @@ git commit -m "refactor(http_handlers): kanban auto-assign + column-id filter us
 ```zig
 \\SELECT COALESCE(k.kanban_column_id, '')
 \\FROM kanban k
-\\JOIN workspace_item_tasks t ON t.id = k.task_id
+\\JOIN workspace_item_tasks t ON t.id = k.workspace_item_task_id
 \\WHERE t.id = ?
 ```
 
@@ -699,7 +699,7 @@ git commit -m "refactor(http_handlers): kanban auto-assign + column-id filter us
 
 ### Step 5.2 — `prompts_build_messages_for_agent_prompt.zig`
 
-Search for `t.kanban_column_id` reads in the SELECT or WHERE clauses and update to `LEFT JOIN kanban k ON k.task_id = t.id` (same pattern as Task 3.1).
+Search for `t.kanban_column_id` reads in the SELECT or WHERE clauses and update to `LEFT JOIN kanban k ON k.workspace_item_task_id = t.id` (same pattern as Task 3.1).
 
 ### Step 5.3 — `tools_equipped.zig` (line 153)
 

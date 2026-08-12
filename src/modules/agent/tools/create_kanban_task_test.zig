@@ -212,7 +212,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     // Post-Migration-072: task→column mapping lives in `kanban` join table
     try db.exec(alloc,
         \\CREATE TABLE kanban (
-        \\  task_id TEXT PRIMARY KEY,
+        \\  workspace_item_task_id TEXT PRIMARY KEY,
         \\  kanban_column_id TEXT NOT NULL,
         \\  kanban_position INTEGER NOT NULL DEFAULT 0
         \\)
@@ -318,7 +318,7 @@ test "executeCreateKanbanTaskToString appends at MAX(kanban_position)+1 when col
         &[_][]const u8{},
     );
     try s.db.exec(alloc,
-        "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) " ++
+        "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) " ++
             "VALUES ('t_existing_1', 'col_todo', 0), ('t_existing_2', 'col_todo', 1)",
         &[_][]const u8{},
     );

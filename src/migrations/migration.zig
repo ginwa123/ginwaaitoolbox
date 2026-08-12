@@ -2531,7 +2531,7 @@ pub const Migration067AddTaskTags = struct {
             // column name AND the type. Omitting the type would create
             // a column literally named "TEXT" — see project memory
             // `addColumnIfMissing-requires-name-type`.
-            "tags TEXT",
+            "tags TEXT NOT NULL DEFAULT ''",
         );
     }
 };
@@ -2802,13 +2802,13 @@ pub const Migration071AddTaskCwd = struct {
 /// Before: the two placement columns live on the universal
 /// `workspace_item_tasks` table (alongside chat/routine/kanban task
 /// attributes like `description`, `tags`, `image_urls`, `cwd`, etc.).
-/// After: a new `kanban(task_id, kanban_column_id, kanban_position)`
+/// After: a new `kanban(workspace_item_task_id, kanban_column_id, kanban_position)`
 /// table holds the 1:1 task-to-board placement; non-kanban tasks
 /// simply have no row.
 ///
 /// Wire format UNCHANGED — `Task.kanban_column_id` and
 /// `Task.kanban_position` continue to appear on every Task JSON via
-/// a `LEFT JOIN kanban k ON k.task_id = t.id` in list queries. The
+/// a `LEFT JOIN kanban k ON k.workspace_item_task_id = t.id` in list queries. The
 /// frontend stores/components/SSE handlers stay byte-for-byte the
 /// same.
 ///
@@ -2855,13 +2855,13 @@ pub const Migration072ExtractKanbanTable = struct {
         // Step 1: CREATE kanban (idempotent via IF NOT EXISTS)
         try db.exec(allocator,
             \\CREATE TABLE IF NOT EXISTS kanban (
-            \\    task_id          TEXT PRIMARY KEY,
-            \\    kanban_column_id TEXT NOT NULL,
-            \\    kanban_position  INTEGER NOT NULL DEFAULT 0,
-            \\    FOREIGN KEY (task_id)
+            \\    workspace_item_task_id TEXT PRIMARY KEY,
+            \\    kanban_column_id       TEXT NOT NULL,
+            \\    kanban_position        INTEGER NOT NULL DEFAULT 0,
+            \\    FOREIGN KEY (workspace_item_task_id)
             \\        REFERENCES workspace_item_tasks(id) ON DELETE CASCADE,
             \\    FOREIGN KEY (kanban_column_id)
-            \\        REFERENCES kanban_columns(id)     ON DELETE SET NULL
+            \\        REFERENCES kanban_columns(id)       ON DELETE CASCADE
             \\)
         , &[_][]const u8{});
 
@@ -2912,7 +2912,7 @@ pub const Migration072ExtractKanbanTable = struct {
             // Source columns still exist — first run, do the backfill.
             row.deinit(allocator);
             try db.exec(allocator,
-                \\INSERT OR IGNORE INTO kanban (task_id, kanban_column_id, kanban_position)
+                \\INSERT OR IGNORE INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position)
                 \\SELECT t.id, t.kanban_column_id, COALESCE(t.kanban_position, 0)
                 \\FROM workspace_item_tasks t
                 \\WHERE t.kanban_column_id IS NOT NULL

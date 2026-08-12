@@ -451,7 +451,7 @@ pub fn executeCreateKanbanTaskToString(
     const position_str = std.fmt.allocPrint(allocator, "{d}", .{position}) catch "0";
     defer allocator.free(position_str);
     db.exec(allocator,
-        "INSERT OR REPLACE INTO kanban (task_id, kanban_column_id, kanban_position) VALUES (?, ?, ?)",
+        "INSERT OR REPLACE INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES (?, ?, ?)",
         &[_][]const u8{ task_id, target_column_id, position_str },
     ) catch |err| {
         std.log.warn("create_kanban_task: kanban auto-assign failed (non-fatal): {s}", .{@errorName(err)});

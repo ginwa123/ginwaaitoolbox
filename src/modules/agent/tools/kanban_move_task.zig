@@ -192,7 +192,7 @@ fn readTaskCurrentColumn(
     var q = try db.query(allocator,
         \\SELECT COALESCE(k.kanban_column_id, ''), COALESCE(kc.name, '')
         \\FROM workspace_item_tasks t
-        \\LEFT JOIN kanban k ON k.task_id = t.id
+        \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
         \\LEFT JOIN kanban_columns kc ON kc.id = k.kanban_column_id
         \\WHERE t.id = ?
     , &.{task_id});

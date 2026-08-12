@@ -8,12 +8,12 @@
 //! `workspace_item_tasks` table and into a dedicated `kanban` join
 //! table. This is purely structural — the wire format
 //! (`Task.kanban_column_id`, `Task.kanban_position`) stays identical,
-//! served via a `LEFT JOIN kanban k ON k.task_id = t.id` in list
+//! served via a `LEFT JOIN kanban k ON k.workspace_item_task_id = t.id` in list
 //! queries.
 //!
 //! The migration must:
 //!   1. Create the `kanban` table with the expected schema
-//!      (task_id PK, kanban_column_id NOT NULL, kanban_position
+//!      (workspace_item_task_id PK, kanban_column_id NOT NULL, kanban_position
 //!      DEFAULT 0, FKs to workspace_item_tasks + kanban_columns).
 //!   2. Create the `idx_kanban_column_position` index.
 //!   3. Backfill rows from existing `workspace_item_tasks`
@@ -133,6 +133,68 @@ fn seedKanbanCard(
 }
 
 // ============================================================================
+// Test 0 — Column-delete cascades the kanban row (FK regression test)
+// ============================================================================
+//
+// The original Migration 072 DDL declared the FK on
+// `kanban.kanban_column_id` as `ON DELETE SET NULL`. That action is
+// incompatible with the column's `NOT NULL` constraint — SQLite rejects
+// the parent DELETE with "NOT NULL constraint failed:
+// kanban.kanban_column_id". The fix is `ON DELETE CASCADE`: deleting a
+// column un-places its tasks (deletes the kanban row).
+//
+// This test seeds a column + task + kanban row, runs the migration,
+// deletes the column, and asserts the kanban row is gone. Without
+// CASCADE, the DELETE would crash (and the test would fail with
+// `error.SqLiteError`).
+test "Migration072 kanban_column_id FK is ON DELETE CASCADE — deleting a column un-places its task" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // NB: PRAGMA foreign_keys is deliberately OFF in this project's
+    // SqliteBackend init (see src/ai_workflow/tui/kanban_model.zig:306
+    // for the rationale — application code simulates CASCADE
+    // manually). We turn it ON here so this test exercises the
+    // *schema-declared* FK behavior, which is what someone running
+    // with the default `sqlite3` CLI would observe. If PRAGMA is
+    // off, the FK is documentation-only and the test would falsely
+    // pass even with the buggy `SET NULL` declaration.
+    try ctx.db.exec(alloc, "PRAGMA foreign_keys = ON", &.{});
+
+    // Seed: one valid task on column col_1.
+    try seedKanbanCard(&ctx, alloc, "task_to_unplace", "col_1", 0);
+
+    try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
+
+    // Pre-condition: the kanban row exists.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM kanban WHERE workspace_item_task_id = 'task_to_unplace'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+    }
+
+    // Action: delete the column. With ON DELETE CASCADE this should
+    // silently cascade-delete the kanban row. With the buggy
+    // ON DELETE SET NULL, this would fail with `NOT NULL
+    // constraint failed: kanban.kanban_column_id`.
+    try ctx.db.exec(alloc,
+        "DELETE FROM kanban_columns WHERE id = 'col_1'",
+        &.{});
+
+    // Post-condition: the kanban row is gone.
+    var q = try ctx.db.query(alloc,
+        "SELECT 1 FROM kanban WHERE workspace_item_task_id = 'task_to_unplace'",
+        &.{});
+    defer q.deinit();
+    try testing.expect((try q.next()) == null);
+}
+
+// ============================================================================
 // Test 1 — Migration creates the `kanban` table
 // ============================================================================
 
@@ -202,11 +264,11 @@ test "Migration072 backfills kanban rows from workspace_item_tasks" {
     try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
 
     // Verify the backfill: three rows in kanban with the expected
-    // task_id / column_id / position triples.
+    // workspace_item_task_id / column_id / position triples.
     var q = try ctx.db.query(alloc,
-        \\SELECT task_id, kanban_column_id, kanban_position
+        \\SELECT workspace_item_task_id, kanban_column_id, kanban_position
         \\FROM kanban
-        \\ORDER BY task_id ASC
+        \\ORDER BY workspace_item_task_id ASC
     , &.{});
     defer q.deinit();
 
@@ -266,7 +328,7 @@ test "Migration072 backfill skips tasks whose kanban_column_id has no matching k
 
     // Only the valid row was backfilled — the orphan was skipped.
     var q = try ctx.db.query(alloc,
-        "SELECT task_id FROM kanban ORDER BY task_id ASC",
+        "SELECT workspace_item_task_id FROM kanban ORDER BY workspace_item_task_id ASC",
         &.{});
     defer q.deinit();
 
@@ -397,7 +459,7 @@ test "Migration072 preserves the wire format — LEFT JOIN returns the same data
     var q = try ctx.db.query(alloc,
         \\SELECT t.id, k.kanban_column_id, COALESCE(k.kanban_position, 0)
         \\FROM workspace_item_tasks t
-        \\LEFT JOIN kanban k ON k.task_id = t.id
+        \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
         \\ORDER BY t.id ASC
     , &.{});
     defer q.deinit();
