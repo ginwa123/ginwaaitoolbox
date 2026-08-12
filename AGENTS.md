@@ -3,6 +3,28 @@
 DONT KILL THE PORT 8081 SERVER,
 for testing use another port like 8080
 
+## SSE Wire-Format Contract — Always Add Event Names in Pairs
+
+The browser's `EventSource` drops named events whose listener isn't pre-registered. There is **no error, no warning** — the event just vanishes at the wire. User-visible symptom: "feature X never updates live, only after I refresh the page".
+
+When you add (or rename) any SSE event_type name, change **all three** sites together — they're one contract, not three independent changes:
+
+1. **Backend emitter** (`src/ai_workflow/tui/**/on_event_sent*.zig` or `agentic_loop/sse_on_event_send_*.zig`): add the action → `event_type` mapping to the `event_type_name` if/else.
+2. **Frontend pre-registration** (`src/apps/desktop/src/api/index.ts` → `additionalEventTypes`): add the name to the list passed to `createSseClient`.
+3. **Frontend dispatch check** (same file → named-event `if (eventType === ...)` chain): add the name to the branch that routes to `opts.channels.<channel>`.
+
+If only one side changes, the bug is silent. Skip a step, and users see "doesn't update until refresh" — no error in the console, no failed test, no broken type check.
+
+**Verification (before claiming done):** grep for the new event_type name across the codebase. It must appear in:
+
+- All backend `onEventSend*` functions that emit it
+- `additionalEventTypes` in `api/index.ts`
+- The named-event dispatch chain in `api/index.ts`
+
+If any of those is missing, the wire contract is broken.
+
+**Concrete example** (task_1786507100896, PR #215): backend's `onEventSendSessions` had an `event_type_name` if/else that knew about `created` and `deleted` and fell through to `session_unknown` for everything else. `action="updated"` (the most common case — fired by the auto-rename-on-first-message cascade in `workflow.zig` and the unattended toggle in `llm_history.zig`) reached the wire as `event: session_unknown`, which the frontend's `additionalEventTypes` didn't pre-register. The browser silently dropped it. Sidebar task rows kept showing "New Chat" until a manual page refresh.
+
 ## Code Exploration with Graphify
 
 Before exploring or making changes in an unfamiliar or large codebase, use the `graphify` CLI to build a knowledge graph of the repo instead of manually grepping through files.
