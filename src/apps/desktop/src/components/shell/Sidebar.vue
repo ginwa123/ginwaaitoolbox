@@ -441,7 +441,7 @@ const handleSelectItem = async (workspaceId: string, itemId: string) => {
       // `sorts` and applies each entry to its column.
       sortsParam = existingSorts
     } else {
-      const columns = item.kanban_columns ?? []
+      let columns = item.kanban_columns ?? []
       if (columns.length === 0) {
         // Fire-and-await: the URL we emit must include the column ids,
         // so we wait for the columns to land. fetchKanbanColumns is
@@ -454,6 +454,21 @@ const handleSelectItem = async (workspaceId: string, itemId: string) => {
           // KanbanView mount path will apply its own fallback when
           // columns arrive. Better than throwing mid-click.
         }
+        // Re-read after the fetch — the store mutates `item.kanban_columns`
+        // in place, so the local `columns` snapshot is now stale.
+        columns = item.kanban_columns ?? []
+      }
+      if (columns.length > 0) {
+        // Build the default sorts string: `<id>:updated_at:desc`
+        // joined by ','. The order matches the columns' `position`
+        // (the store already sorts the fetched columns by position).
+        // The URL format mirrors KanbanView's `encodeSortsParam`
+        // (lines 461-467) — `${columnId}:${sortBy}:${direction}`
+        // joined by ',' — so the URL KanbanView reads on mount lines
+        // up byte-for-byte with what we write here.
+        sortsParam = columns
+          .map((c) => `${c.id}:updated_at:desc`)
+          .join(',')
       }
     }
   }
