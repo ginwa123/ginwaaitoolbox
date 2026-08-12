@@ -92,10 +92,17 @@ fn setupDb() !struct {
         \\    id TEXT PRIMARY KEY,
         \\    name TEXT NOT NULL,
         \\    workspace_item_id TEXT NOT NULL,
-        \\    kanban_column_id TEXT,
         \\    task_type TEXT NOT NULL DEFAULT 'standard',
         \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &.{});
+    // Post-Migration-072: kanban placement lives in the `kanban` join table.
+    try db.exec(alloc,
+        \\CREATE TABLE kanban (
+        \\    task_id TEXT PRIMARY KEY,
+        \\    kanban_column_id TEXT NOT NULL,
+        \\    kanban_position INTEGER NOT NULL DEFAULT 0
         \\)
     , &.{});
 
@@ -640,8 +647,12 @@ test "BuildKanbanStatusPrompt renders mandatory rule + columns for kanban parent
             "('col_c', 'wi_kanban', 'done', 'Shipped to the user', 2)",
         &.{});
     try ctx.db.exec(alloc,
-        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, kanban_column_id, task_type) " ++
-            "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'col_a', 'standard')",
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) " ++
+            "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'standard')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) " ++
+            "VALUES ('sess_kanban', 'col_a', 0)",
         &.{});
 
     const result = try agentic_loop.prompts_mod.makeKanbanContext(alloc, &ctx.db, "sess_kanban", &[_]nalarcore.tool_models.AgentTool{});
@@ -765,8 +776,12 @@ test "BuildKanbanStatusPrompt renders Follow-up Tasks hint when create_kanban_ta
             "('col_a', 'wi_kanban', 'todo', '', 0)",
         &.{});
     try ctx.db.exec(alloc,
-        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, kanban_column_id, task_type) " ++
-            "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'col_a', 'standard')",
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) " ++
+            "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'standard')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) " ++
+            "VALUES ('sess_kanban', 'col_a', 0)",
         &.{});
 
     // Equip the create_kanban_task tool.
@@ -811,8 +826,12 @@ test "BuildKanbanStatusPrompt omits Follow-up Tasks hint when create_kanban_task
             "('col_a', 'wi_kanban', 'todo', '', 0)",
         &.{});
     try ctx.db.exec(alloc,
-        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, kanban_column_id, task_type) " ++
-            "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'col_a', 'standard')",
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) " ++
+            "VALUES ('sess_kanban', 'kanban task', 'wi_kanban', 'standard')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO kanban (task_id, kanban_column_id, kanban_position) " ++
+            "VALUES ('sess_kanban', 'col_a', 0)",
         &.{});
 
     // Equip a different (unrelated) tool. The gate should NOT fire.

@@ -72,10 +72,17 @@ fn setupDb() !struct {
         \\    id TEXT PRIMARY KEY,
         \\    name TEXT NOT NULL,
         \\    workspace_item_id TEXT NOT NULL,
-        \\    kanban_column_id TEXT,
         \\    task_type TEXT NOT NULL DEFAULT 'standard',
         \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &.{});
+    // Post-Migration-072: kanban placement lives in the `kanban` join table.
+    try db.exec(alloc,
+        \\CREATE TABLE kanban (
+        \\    task_id TEXT PRIMARY KEY,
+        \\    kanban_column_id TEXT NOT NULL,
+        \\    kanban_position INTEGER NOT NULL DEFAULT 0
         \\)
     , &.{});
 
