@@ -3433,7 +3433,7 @@ pub fn listAllWorkspaceItems(
 }
 
 // =============================================================================
-// Workspace Context (used by build_messages_for_agent_prompt.zig to render
+// Workspace Context (used by prompts_build_messages_for_agent_prompt.zig to render
 // the `## Workspace Context` section of the system prompt — see
 // docs/plans/2026-06-19-workspace-siblings-in-prompt.md, Chunk 1)
 // =============================================================================
@@ -3443,7 +3443,7 @@ pub fn listAllWorkspaceItems(
 /// first 20 (sorted with `is_self` first) and reports
 /// `truncated_items_count = total_item_count - MAX_SIBLING_ITEMS`.
 /// Centralized here as a `pub const` so the Chunk 2 renderer
-/// (`BuildWorkspaceContext` in `build_messages_for_agent_prompt.zig`)
+/// (`BuildWorkspaceContext` in `prompts_build_messages_for_agent_prompt.zig`)
 /// can reuse the same value to format the cap footer.
 pub const MAX_SIBLING_ITEMS: u32 = 20;
 

@@ -127,12 +127,34 @@ COMMON_CONFIGURE_FLAGS=(
 # AND the OpenSSL archives+headers already exist. Re-run with FORCE=1
 # to bypass the cache (e.g. after changing COMMON_CONFIGURE_FLAGS or
 # bumping CURL_VERSION/OPENSSL_VERSION).
+#
+# Cache correctness depends on more than file existence: libcurl.a must
+# be the FAT archive (curl + libssl + libcrypto objects merged in one
+# archive, see build_curl_target's final `ar rcs` step), not just
+# curl's own .o files. The naive file-existence check can produce a
+# half-built state if libcurl.a was built before libssl.a/libcrypto.a
+# existed — the merge step ran with zero openssl objects, leaving a
+# thin ~178-object archive that later satisfies the file-existence
+# check forever. Consumers then hit 200+ "undefined symbol:
+# BIO_meth_set_destroy" linker errors at `zig build` time.
+#
+# Format-agnostic check via object count: thin archive ≈ 178 objects,
+# fat archive ≈ 1200. Threshold 500 gives 2x margin against future
+# curl/openssl growth. nm-based symbol lookup is intentionally NOT
+# used because Linux nm cannot parse Mach-O archives (cross-compiled
+# macOS builds seen from a Linux host), so a symbol check would
+# falsely flag fat Mach-O archives as "not fat". The build-time
+# per-archive verify at the end of build_curl_target is the source
+# of truth for symbol presence; this skip-cache check only needs to
+# catch the "thin archive" regression.
 if [[ "${FORCE:-0}" != "1" ]]; then
     needs_build=0
     for target in linux-x86_64 macos-arm64 macos-x86_64; do
         ct="${CURL_VENDOR_DIR}/${target}"
         ot="${OPENSSL_VENDOR_DIR}/${target}"
+        obj_count=$(ar t "${ct}/lib/libcurl.a" 2>/dev/null | wc -l)
         if [[ ! -f "${ct}/lib/libcurl.a" ]] || \
+           [[ "${obj_count}" -lt 500 ]] || \
            [[ ! -d "${ct}/include/curl" ]] || \
            [[ -z "$(ls "${ct}/include/curl/" 2>/dev/null)" ]] || \
            [[ ! -f "${ot}/lib/libssl.a" ]] || \
@@ -143,7 +165,7 @@ if [[ "${FORCE:-0}" != "1" ]]; then
         fi
     done
     if [[ "${needs_build}" -eq 0 ]]; then
-        echo "Already built (libcurl.a + libssl.a + libcrypto.a + headers present for all targets)."
+        echo "Already built (fat libcurl.a + libssl.a + libcrypto.a + headers present for all targets)."
         echo "Run with FORCE=1 to rebuild."
         exit 0
     fi

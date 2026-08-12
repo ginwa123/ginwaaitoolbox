@@ -54,7 +54,7 @@ pub fn freeKanbanTaskRows(allocator: std.mem.Allocator, rows: []KanbanTaskRow) v
 /// The agent should pass `workspace_id` + `item_id` from the active
 /// chat context (injected by the frontend into the system prompt —
 /// see `BuildWorkspaceContext` in
-/// `src/ai_workflow/tui/build_messages_for_agent_prompt.zig`). The
+/// `src/ai_workflow/tui/prompts_build_messages_for_agent_prompt.zig`). The
 /// LLM is told in the description that the active kanban is
 /// discoverable from the chat's workspace context.
 pub const KanbanListInput = struct {
