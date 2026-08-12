@@ -145,10 +145,11 @@ pub fn listKanbanTasks(
     workspace_item_id: []const u8,
 ) ![]KanbanTaskRow {
     var q = try db.query(allocator,
-        \\SELECT t.id, t.name, COALESCE(t.kanban_column_id, ''), COALESCE(t.kanban_position, -1)
+        \\SELECT t.id, t.name, COALESCE(k.kanban_column_id, ''), COALESCE(k.kanban_position, -1)
         \\FROM workspace_item_tasks t
+        \\LEFT JOIN kanban k ON k.task_id = t.id
         \\WHERE t.workspace_item_id = ?
-        \\ORDER BY t.kanban_column_id ASC, t.kanban_position ASC, t.id ASC
+        \\ORDER BY k.kanban_column_id ASC, k.kanban_position ASC, t.id ASC
     , &.{workspace_item_id});
     defer q.deinit();
 

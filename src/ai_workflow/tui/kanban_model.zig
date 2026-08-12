@@ -297,8 +297,25 @@ pub fn deleteColumn(
     column_id: []const u8,
 ) !void {
     _ = workspace_item_id;
+    // Tasks that were assigned to this column have their `kanban`
+    // card row DELETED (so the LEFT JOIN in list queries surfaces
+    // them as "task exists but is unassigned" — the same observable
+    // wire format as before). The tasks themselves
+    // (`workspace_item_tasks`) are NOT removed.
+    //
+    // IMPORTANT: this codebase does NOT enable `PRAGMA foreign_keys`
+    // (FK enforcement is off — see
+    // `src/ai_workflow/tui/design_model_delete_parent_test.zig:8`),
+    // so the `kanban.task_id ON DELETE CASCADE` from workspace_item_tasks
+    // works in reverse ONLY if we explicitly DELETE here. We DELETE
+    // the kanban rows before the kanban_columns row to preserve the
+    // "task unassigned" semantics.
+    //
+    // Note: we DELETE the kanban row (not NULL the column FK) because
+    // `kanban.kanban_column_id` is NOT NULL — a kanban row exists IFF
+    // its task is assigned to a specific column.
     try db.exec(allocator,
-        "UPDATE workspace_item_tasks SET kanban_column_id = NULL WHERE kanban_column_id = ?",
+        "DELETE FROM kanban WHERE kanban_column_id = ?",
         &.{column_id});
     try db.exec(allocator,
         "DELETE FROM kanban_columns WHERE id = ?",
@@ -468,8 +485,13 @@ pub fn countTasksInColumn(
     db: *sqlite.SqliteBackend,
     column_id: []const u8,
 ) !u32 {
+    // After Migration 072, "tasks in this column" is read from `kanban`
+    // (the 1:1 join table where a row exists iff a task is assigned to
+    // a kanban column). A row in `kanban` with `kanban_column_id = X`
+    // is equivalent to the legacy `workspace_item_tasks.kanban_column_id
+    // = X` query.
     var q = try db.query(allocator,
-        \\SELECT COUNT(*) FROM workspace_item_tasks t WHERE t.kanban_column_id = ?
+        \\SELECT COUNT(*) FROM kanban k WHERE k.kanban_column_id = ?
     , &.{column_id});
     defer q.deinit();
     const row = (try q.next()) orelse return 0;
@@ -591,10 +613,12 @@ pub fn moveTask(
     _ = workspace_item_id;
 
     // Step 1: read the current column for the task (needed to renumber
-    // the source column after the move).
+    // the source column after the move). After Migration 072, the
+    // task's current column lives in the `kanban` join table, not on
+    // `workspace_item_tasks` directly.
     const current_col_id = blk: {
         var q = try db.query(allocator,
-            "SELECT COALESCE(t.kanban_column_id, '') FROM workspace_item_tasks t WHERE t.id = ?",
+            "SELECT COALESCE(k.kanban_column_id, '') FROM kanban k WHERE k.task_id = ?",
             &.{task_id});
         defer q.deinit();
         const row = (try q.next()) orelse return error.TaskNotFound;
@@ -607,26 +631,30 @@ pub fn moveTask(
     defer allocator.free(pos_str);
 
     // Step 2: move the task to the target column at the target position.
+    // INSERT OR REPLACE handles both first-move (no kanban row yet) and
+    // subsequent-move (existing kanban row updated) atomically: the
+    // PRIMARY KEY collision on re-inserts triggers a delete-then-insert
+    // which is the same observable behavior as the legacy UPDATE.
     try db.exec(allocator,
-        "UPDATE workspace_item_tasks SET kanban_column_id = ?, kanban_position = ? WHERE id = ?",
-        &.{ target_column_id, pos_str, task_id });
+        "INSERT OR REPLACE INTO kanban (task_id, kanban_column_id, kanban_position) VALUES (?, ?, ?)",
+        &.{ task_id, target_column_id, pos_str });
 
     // Step 3: shift other tasks in the target column that are at >= target_position.
     try db.exec(allocator,
-        \\UPDATE workspace_item_tasks
+        \\UPDATE kanban
         \\SET kanban_position = kanban_position + 1
-        \\WHERE kanban_column_id = ? AND id != ? AND kanban_position >= ?
+        \\WHERE kanban_column_id = ? AND task_id != ? AND kanban_position >= ?
     , &.{ target_column_id, task_id, pos_str });
 
     // Step 4: if the column changed, compact the source column.
     if (!std.mem.eql(u8, current_col_id, target_column_id)) {
         try db.exec(allocator,
-            \\UPDATE workspace_item_tasks
+            \\UPDATE kanban
             \\SET kanban_position = (
-            \\    SELECT COUNT(*) FROM workspace_item_tasks t2
-            \\    WHERE t2.kanban_column_id = workspace_item_tasks.kanban_column_id
-            \\        AND (t2.kanban_position < workspace_item_tasks.kanban_position
-            \\            OR (t2.kanban_position = workspace_item_tasks.kanban_position AND t2.id <= workspace_item_tasks.id))
+            \\    SELECT COUNT(*) FROM kanban k2
+            \\    WHERE k2.kanban_column_id = kanban.kanban_column_id
+            \\        AND (k2.kanban_position < kanban.kanban_position
+            \\            OR (k2.kanban_position = kanban.kanban_position AND k2.task_id <= kanban.task_id))
             \\) - 1
             \\WHERE kanban_column_id = ?
         , &.{current_col_id});
