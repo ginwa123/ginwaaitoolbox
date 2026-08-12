@@ -2531,7 +2531,7 @@ pub const Migration067AddTaskTags = struct {
             // column name AND the type. Omitting the type would create
             // a column literally named "TEXT" — see project memory
             // `addColumnIfMissing-requires-name-type`.
-            "tags TEXT",
+            "tags TEXT NOT NULL DEFAULT ''",
         );
     }
 };
