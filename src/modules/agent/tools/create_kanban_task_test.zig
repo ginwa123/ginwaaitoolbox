@@ -206,7 +206,31 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\  name TEXT,
         \\  description TEXT NOT NULL DEFAULT '',
         \\  task_type TEXT,
-        \\  last_human_touched_at INTEGER
+        \\  last_human_touched_at INTEGER,
+        \\  -- Migrations 067 / 069 / 071: the agent tool now writes
+        \\  -- these columns via the new optional `tags` / `image_urls`
+        \\  -- / `cwd` input fields. The schema here mirrors the
+        \\  -- post-migration shape so the createWorkspaceItemTask
+        \\  -- INSERT path can bind them (the dynamic-SQL builder
+        \\  -- at llm_history.zig:4047-4056 emits `''` literals when
+        \\  -- the caller passes `""` — which fails fast without
+        \\  -- these columns present).
+        \\  tags TEXT NOT NULL DEFAULT '',
+        \\  image_urls TEXT NOT NULL DEFAULT '',
+        \\  cwd TEXT NOT NULL DEFAULT ''
+        \\)
+    , &[_][]const u8{});
+    // sessions table — required for the is_auto_retry_until_stop /
+    // selected_profile_model path. The agent tool does INSERT OR
+    // IGNORE INTO sessions keyed by the new task's id when either
+    // field is supplied (mirrors task_create.zig:587-605).
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\  id TEXT PRIMARY KEY,
+        \\  name TEXT,
+        \\  status TEXT,
+        \\  is_auto_retry_until_stop TEXT,
+        \\  selected_profile_model TEXT
         \\)
     , &[_][]const u8{});
     // Post-Migration-072: task→column mapping lives in `kanban` join table
@@ -255,6 +279,27 @@ fn taskRowExists(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, task_id: [
     const row = (try q.next()) orelse return false;
     defer row.deinit(alloc);
     return true;
+}
+
+/// Read the first column of the first row returned by `sql`.
+/// Returns a heap-owned slice; caller frees with `alloc.free`.
+/// Returns an empty slice when no row matches (NOT an error) so
+/// callers can do `readColumn(...) == ""` for "row absent" assertions.
+fn readColumn(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, sql: []const u8, args: []const []const u8) ![]u8 {
+    var q = try db.query(alloc, sql, args);
+    defer q.deinit();
+    const row = (try q.next()) orelse return try alloc.dupe(u8, "");
+    defer row.deinit(alloc);
+    return try alloc.dupe(u8, row.values[0]);
+}
+
+/// Extract the task_id from the success XML returned by the tool.
+/// Returns the borrowed slice (no allocation).
+fn extractTaskId(xml: []const u8) ![]const u8 {
+    const start = std.mem.indexOf(u8, xml, "<task_id>") orelse return error.MissingTaskIdTag;
+    const task_id_start = start + "<task_id>".len;
+    const end = std.mem.indexOf(u8, xml[task_id_start..], "</task_id>") orelse return error.MissingTaskIdCloseTag;
+    return xml[task_id_start .. task_id_start + end];
 }
 
 test "executeCreateKanbanTaskToString returns success XML on happy path" {
@@ -504,6 +549,403 @@ test "executeCreateKanbanTaskToString rejects column_id that does not belong to 
     try testing.expect(contains(xml, "<success>false</success>"));
     try testing.expect(contains(xml, "<error>"));
     try testing.expect(contains(xml, "column") or contains(xml, "Column"));
+}
+
+// ─── New optional fields: tags / image_urls / cwd / unattended / profile ──
+//
+// These tests exercise the 5 new optional input fields that were added
+// to mirror the user-facing KanbanTaskDetailDialog form (Migrations
+// 067 / 069 / 070-071 + 063 + 040). They follow the same static + DB
+// pattern as the existing tests.
+
+test "create_kanban_task parameters include tags property" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, ".name = \"tags\"")) {
+        std.debug.print(
+            "\n!! create_kanban_task.zig is missing .name = \"tags\" property !!\n" ++
+                "   The LLM won't see tags in the tool schema.\n",
+            .{},
+        );
+        return error.TagsPropertyMissing;
+    }
+}
+
+test "create_kanban_task parameters include image_urls property" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, ".name = \"image_urls\"")) {
+        std.debug.print(
+            "\n!! create_kanban_task.zig is missing .name = \"image_urls\" property !!\n" ++
+                "   The LLM won't see image_urls in the tool schema.\n",
+            .{},
+        );
+        return error.ImageUrlsPropertyMissing;
+    }
+}
+
+test "create_kanban_task parameters include cwd property" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, ".name = \"cwd\"")) {
+        std.debug.print(
+            "\n!! create_kanban_task.zig is missing .name = \"cwd\" property !!\n" ++
+                "   The LLM won't see cwd in the tool schema.\n",
+            .{},
+        );
+        return error.CwdPropertyMissing;
+    }
+}
+
+test "create_kanban_task parameters include is_auto_retry_until_stop property" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, ".name = \"is_auto_retry_until_stop\"")) {
+        std.debug.print(
+            "\n!! create_kanban_task.zig is missing .name = \"is_auto_retry_until_stop\" property !!\n" ++
+                "   The LLM won't see the unattended flag in the tool schema.\n",
+            .{},
+        );
+        return error.UnattendedPropertyMissing;
+    }
+}
+
+test "create_kanban_task parameters include selected_profile_model property" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, ".name = \"selected_profile_model\"")) {
+        std.debug.print(
+            "\n!! create_kanban_task.zig is missing .name = \"selected_profile_model\" property !!\n" ++
+                "   The LLM won't see the profile field in the tool schema.\n",
+            .{},
+        );
+        return error.SelectedProfilePropertyMissing;
+    }
+}
+
+test "create_kanban_task input struct has tags field" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, "tags: ?[]const u8 = null,")) {
+        std.debug.print(
+            "\n!! CreateKanbanTaskInput is missing the 'tags' field !!\n",
+            .{},
+        );
+        return error.TagsFieldMissing;
+    }
+}
+
+test "create_kanban_task input struct has image_urls field" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, "image_urls: ?[]const u8 = null,")) {
+        std.debug.print(
+            "\n!! CreateKanbanTaskInput is missing the 'image_urls' field !!\n",
+            .{},
+        );
+        return error.ImageUrlsFieldMissing;
+    }
+}
+
+test "create_kanban_task input struct has cwd field" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, "cwd: ?[]const u8 = null,")) {
+        std.debug.print(
+            "\n!! CreateKanbanTaskInput is missing the 'cwd' field !!\n",
+            .{},
+        );
+        return error.CwdFieldMissing;
+    }
+}
+
+test "create_kanban_task input struct has is_auto_retry_until_stop field" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, "is_auto_retry_until_stop: ?[]const u8 = null,")) {
+        std.debug.print(
+            "\n!! CreateKanbanTaskInput is missing the 'is_auto_retry_until_stop' field !!\n",
+            .{},
+        );
+        return error.UnattendedFieldMissing;
+    }
+}
+
+test "create_kanban_task input struct has selected_profile_model field" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, "selected_profile_model: ?[]const u8 = null,")) {
+        std.debug.print(
+            "\n!! CreateKanbanTaskInput is missing the 'selected_profile_model' field !!\n",
+            .{},
+        );
+        return error.SelectedProfileFieldMissing;
+    }
+}
+
+test "create_kanban_task source mentions tags_validation and image_urls_validation" {
+    // The validators live in http_handlers/ and are imported by the
+    // tool. If a refactor moves them, this test catches it.
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (!contains(source, "validateAndNormalizeTags")) {
+        std.debug.print(
+            "\n!! create_kanban_task.zig does not call validateAndNormalizeTags !!\n" ++
+                "   Tags are not being validated.\n",
+            .{},
+        );
+        return error.TagsValidatorCallMissing;
+    }
+    if (!contains(source, "validateImageUrls")) {
+        std.debug.print(
+            "\n!! create_kanban_task.zig does not call validateImageUrls !!\n" ++
+                "   image_urls are not being validated.\n",
+            .{},
+        );
+        return error.ImageUrlsValidatorCallMissing;
+    }
+    if (!contains(source, "updateTaskLastHumanTouchedAt")) {
+        std.debug.print(
+            "\n!! create_kanban_task.zig does not stamp last_human_touched_at !!\n" ++
+                "   New cards will show 'awaiting review' until the user touches them.\n",
+            .{},
+        );
+        return error.LastHumanTouchedStampMissing;
+    }
+}
+
+// ─── DB behavior tests for new optional fields ──────────────────────────
+
+test "executeCreateKanbanTaskToString persists tags when supplied" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "tagged",
+        .tags = "[\"bug\",\"urgent\"]",
+    });
+    defer alloc.free(xml);
+
+    const task_id = try extractTaskId(xml);
+    const stored = try readColumn(alloc, &s.db,
+        "SELECT tags FROM workspace_item_tasks WHERE id = ?",
+        &.{task_id});
+    defer alloc.free(stored);
+    try testing.expectEqualStrings("[\"bug\",\"urgent\"]", stored);
+}
+
+test "executeCreateKanbanTaskToString persists image_urls when supplied" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "with images",
+        .image_urls = "data:image/png;base64,abc||data:image/jpeg;base64,def",
+    });
+    defer alloc.free(xml);
+
+    const task_id = try extractTaskId(xml);
+    const stored = try readColumn(alloc, &s.db,
+        "SELECT image_urls FROM workspace_item_tasks WHERE id = ?",
+        &.{task_id});
+    defer alloc.free(stored);
+    try testing.expectEqualStrings("data:image/png;base64,abc||data:image/jpeg;base64,def", stored);
+}
+
+test "executeCreateKanbanTaskToString persists cwd when supplied" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "with cwd",
+        .cwd = "/home/me/proj",
+    });
+    defer alloc.free(xml);
+
+    const task_id = try extractTaskId(xml);
+    const stored = try readColumn(alloc, &s.db,
+        "SELECT cwd FROM workspace_item_tasks WHERE id = ?",
+        &.{task_id});
+    defer alloc.free(stored);
+    try testing.expectEqualStrings("/home/me/proj", stored);
+}
+
+test "executeCreateKanbanTaskToString stamps last_human_touched_at on happy path" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "stamped",
+    });
+    defer alloc.free(xml);
+
+    const task_id = try extractTaskId(xml);
+    const stored = try readColumn(alloc, &s.db,
+        "SELECT COALESCE(last_human_touched_at, '') FROM workspace_item_tasks WHERE id = ?",
+        &.{task_id});
+    defer alloc.free(stored);
+    // The stamp must be non-empty (a unix-ms integer string). The
+    // pre-stamp default is NULL → COALESCE returns ''. After the
+    // stamp it's a non-empty digit string.
+    try testing.expect(stored.len > 0);
+    try testing.expect(stored.len > 0 and stored[0] >= '0' and stored[0] <= '9');
+}
+
+test "executeCreateKanbanTaskToString creates sessions row when is_auto_retry_until_stop=1" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "unattended",
+        .is_auto_retry_until_stop = "1",
+    });
+    defer alloc.free(xml);
+
+    const task_id = try extractTaskId(xml);
+    const stored = try readColumn(alloc, &s.db,
+        "SELECT is_auto_retry_until_stop FROM sessions WHERE id = ?",
+        &.{task_id});
+    defer alloc.free(stored);
+    try testing.expectEqualStrings("1", stored);
+}
+
+test "executeCreateKanbanTaskToString persists selected_profile_model when supplied" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "with profile",
+        .selected_profile_model = "fast-model",
+    });
+    defer alloc.free(xml);
+
+    const task_id = try extractTaskId(xml);
+    const stored = try readColumn(alloc, &s.db,
+        "SELECT selected_profile_model FROM sessions WHERE id = ?",
+        &.{task_id});
+    defer alloc.free(stored);
+    try testing.expectEqualStrings("fast-model", stored);
+}
+
+test "executeCreateKanbanTaskToString writes both unattended and profile in single sessions row" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "combined",
+        .is_auto_retry_until_stop = "1",
+        .selected_profile_model = "my-profile",
+    });
+    defer alloc.free(xml);
+
+    const task_id = try extractTaskId(xml);
+    const flag = try readColumn(alloc, &s.db,
+        "SELECT is_auto_retry_until_stop FROM sessions WHERE id = ?",
+        &.{task_id});
+    defer alloc.free(flag);
+    try testing.expectEqualStrings("1", flag);
+
+    const profile = try readColumn(alloc, &s.db,
+        "SELECT selected_profile_model FROM sessions WHERE id = ?",
+        &.{task_id});
+    defer alloc.free(profile);
+    try testing.expectEqualStrings("my-profile", profile);
+}
+
+test "executeCreateKanbanTaskToString rejects malformed tags" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "bad tags",
+        .tags = "not-a-json-array",
+    });
+    defer alloc.free(xml);
+
+    try testing.expect(contains(xml, "<success>false</success>"));
+    try testing.expect(contains(xml, "<error>"));
+    try testing.expect(contains(xml, "tags"));
+}
+
+test "executeCreateKanbanTaskToString rejects invalid image_urls" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "bad images",
+        .image_urls = "not-a-data-url",
+    });
+    defer alloc.free(xml);
+
+    try testing.expect(contains(xml, "<success>false</success>"));
+    try testing.expect(contains(xml, "<error>"));
+    try testing.expect(contains(xml, "image_urls"));
+}
+
+test "executeCreateKanbanTaskToString rejects relative cwd" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "relative",
+        .cwd = "relative/path",
+    });
+    defer alloc.free(xml);
+
+    try testing.expect(contains(xml, "<success>false</success>"));
+    try testing.expect(contains(xml, "<error>"));
+    try testing.expect(contains(xml, "absolute"));
 }
 
 // ─── Registration static-contract tests (Task 7) ────────────────────────

@@ -29,6 +29,8 @@ const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
+const tags_validation = @import("../../../ai_workflow/tui/http_handlers/tags_validation.zig");
+const image_urls_validation = @import("../../../ai_workflow/tui/http_handlers/image_urls_validation.zig");
 
 /// Input structure for `create_kanban_task` tool.
 ///
@@ -39,6 +41,17 @@ const sqlite = nalarcore.sqlite;
 /// when omitted, the task is auto-assigned to the first column at
 /// `MAX(kanban_position) + 1` (append-to-bottom semantics matching
 /// the HTTP handler).
+///
+/// The five trailing optional fields mirror the user-facing
+/// `KanbanTaskDetailDialog` form so the agent can set everything the
+/// human user can set when adding a card from the UI:
+///   - `tags` (JSON-encoded array string like `"[\"bug\",\"urgent\"]"`)
+///   - `image_urls` (`||`-delimited `data:image/...;base64,...` URLs)
+///   - `cwd` (absolute path for the per-task project root)
+///   - `is_auto_retry_until_stop` (`"1"` to enable unattended mode)
+///   - `selected_profile_model` (name of the profile to bind on the
+///      created sessions row — see Path A in the
+///      `2026-08-06-kanban-task-profile-selector` plan)
 pub const CreateKanbanTaskInput = struct {
     /// The workspace that owns the kanban item. From chat context.
     workspace_id: []const u8 = "",
@@ -55,6 +68,37 @@ pub const CreateKanbanTaskInput = struct {
     /// `MAX(kanban_position) + 1`. When supplied, the tool verifies
     /// the column belongs to the same kanban item.
     column_id: ?[]const u8 = null,
+    /// Optional tags — JSON-encoded array string like
+    /// `"[\"bug\",\"urgent\"]"`. Validated + normalized by
+    /// `tags_validation.validateAndNormalizeTags` (≤50 chars,
+    /// `[a-zA-Z0-9_-]` only, case-insensitive dedupe). Null/empty
+    /// = no tags. Matches the wire shape `TaskCreateRequest.tags`.
+    tags: ?[]const u8 = null,
+    /// Optional image attachments — `||`-delimited
+    /// `data:image/<mime>;base64,<payload>` URLs (10 MB cap, enforced
+    /// by `image_urls_validation.validateImageUrls`). Null/empty =
+    /// no images. Matches the wire shape `TaskCreateRequest.image_urls`.
+    image_urls: ?[]const u8 = null,
+    /// Optional per-task project root — absolute path. Must start
+    /// with `/`, ≤4 KiB, no control chars. Empty/null = cwd-less
+    /// task (defaults to the kanban's path at session-create time).
+    /// Matches the wire shape `TaskCreateRequest.cwd`.
+    cwd: ?[]const u8 = null,
+    /// Optional unattended-mode flag. `"1"` enables the agent to
+    /// retry past the 10-error TooManyRetries bail (overnight runs);
+    /// any other value normalizes to `"0"`. When set, an INSERT OR
+    /// IGNORE INTO `sessions` row is created keyed by the new
+    /// task's id (task.id == session.id convention). Matches the
+    /// wire shape `TaskCreateRequest.is_auto_retry_until_stop`.
+    is_auto_retry_until_stop: ?[]const u8 = null,
+    /// Optional profile name to bind on the new sessions row. When
+    /// set, the INSERT OR IGNORE INTO `sessions` includes
+    /// `selected_profile_model`. Null/empty = backend default
+    /// (`""` = top-level config). Matches the wire shape used by
+    /// `RequestSession.selected_profile_model` (Path A — the
+    /// frontend's plain-create path also does not persist this on
+    /// the task itself, only on the chat session it spawns later).
+    selected_profile_model: ?[]const u8 = null,
 };
 
 /// Top-level tool definition for the LLM.
@@ -79,6 +123,13 @@ pub const create_kanban_task_tool = AgentTool{
             \\The workspace_id and item_id must come from the chat context — see the "## Workspace Context" section of the system prompt. Each sibling item is rendered as `- **<name>** (id: <id>, item_type: <type>, path: <path>)` where the id is a backtick-quoted id (e.g. item_1782313125507292140). The id is the **canonical** lookup key — do NOT pass the human-readable name (e.g. "sprint 1"); the DB columns are indexed by id and a name lookup returns zero rows. The kanban item is the one with `item_type='kanban'` marked with `*(this task)*` in the Workspace Context.
             \\
             \\name is required (card title shown on the board). description is optional (tooltip text). column_id is optional — when omitted, the task is auto-assigned to the first kanban column at MAX(kanban_position)+1; when supplied, the column must belong to the same kanban item. To set a specific position, call kanban_move_task after this tool returns.
+            \\
+            \\Optional fields (mirror the user-facing KanbanTaskDetailDialog form, Migration 062 / 067 / 069 / 070/071 — all five are persisted on create, not just on chat-spawn):
+            \\  - tags: JSON-encoded array string like "[\"bug\",\"urgent\"]". Letters/digits/`_`/`-` only, ≤50 chars per tag, case-insensitive dedupe. Null/empty = no tags.
+            \\  - image_urls: `||`-delimited `data:image/<mime>;base64,<payload>` URLs. Null/empty = no images. 10 MB cap.
+            \\  - cwd: absolute path for the per-task project root (must start with `/`, ≤4 KiB, no control chars). Null/empty = cwd-less (inherits the kanban's path at session-create time).
+            \\  - is_auto_retry_until_stop: "1" enables unattended mode (agent keeps retrying past the 10-error TooManyRetries bail). Anything else normalizes to "0". When set, an INSERT OR IGNORE INTO sessions row is created keyed by the new task's id.
+            \\  - selected_profile_model: name of the profile in `LlmConfig.profiles` to bind on the new sessions row (Path A — persisted on the chat session, not on the task). Null/empty = backend default.
             \\
             \\Workflow: (1) call kanban_list first to discover the kanban item id and (optionally) the column id if the user named one, (2) call create_kanban_task with those ids, (3) use kanban_move_task if the task needs to land in a non-default position. On error, recover by: (1) verify item_id from the Workspace Context listing; (2) if the parent item is not a kanban, the tool returns a structured error — pick the item marked `*(this task)*` instead; (3) if column_id was rejected, omit it and let auto-assign place the card.
         ,
@@ -109,6 +160,31 @@ pub const create_kanban_task_tool = AgentTool{
                     .name = "column_id",
                     .type = "string",
                     .description = "Optional target column id (NOT name). When omitted, the task is auto-assigned to the first column at MAX(kanban_position)+1. Use kanban_list to discover column ids — never pass the human-readable name.",
+                },
+                .{
+                    .name = "tags",
+                    .type = "string",
+                    .description = "Optional tags as a JSON-encoded array string, e.g. \"[\"bug\",\"urgent\"]\". Letters/digits/`_`/`-` only, ≤50 chars per tag, case-insensitive dedupe (validated by tags_validation). Null or empty = no tags.",
+                },
+                .{
+                    .name = "image_urls",
+                    .type = "string",
+                    .description = "Optional image attachments as a `||`-delimited string of `data:image/<mime>;base64,<payload>` URLs (10 MB cap, validated by image_urls_validation). Null or empty = no images.",
+                },
+                .{
+                    .name = "cwd",
+                    .type = "string",
+                    .description = "Optional per-task project root as an absolute path (must start with `/`, ≤4 KiB, no control chars). Null or empty = cwd-less (inherits the kanban's path at session-create time).",
+                },
+                .{
+                    .name = "is_auto_retry_until_stop",
+                    .type = "string",
+                    .description = "Optional unattended-mode flag. `\"1\"` enables retrying past the 10-error TooManyRetries bail (overnight runs); any other value normalizes to `\"0\"`. When set, a sessions row is created keyed by the new task's id.",
+                },
+                .{
+                    .name = "selected_profile_model",
+                    .type = "string",
+                    .description = "Optional profile name from `LlmConfig.profiles` to bind on the new sessions row. Null or empty = backend default (top-level config).",
                 },
             },
             .required = &.{ "workspace_id", "item_id", "name" },
@@ -402,14 +478,62 @@ pub fn executeCreateKanbanTaskToString(
     const target_column_id = try fetchTargetColumnId(allocator, db, input.item_id, input.column_id);
     defer allocator.free(target_column_id);
 
-    // 4. Generate task id.
+    // 4. Validate tags (Migration 067) — JSON-encoded array string.
+    //    The validator returns a heap-allocated, normalized
+    //    JSON-encoded array string (or "" for "no tags"). On any
+    //    validation failure (non-array, empty tag, illegal chars,
+    //    >50 chars, etc.) we surface a structured error to the LLM.
+    const validated_tags = tags_validation.validateAndNormalizeTags(
+        allocator,
+        input.tags,
+    ) catch |err| {
+        // errorXmlOwned takes ownership of `msg` — do NOT also
+        // `defer allocator.free(msg)` (would be a double-free).
+        const msg = std.fmt.allocPrint(allocator,
+            "tags validation failed: {s}. tags must be a JSON-encoded array of strings — letters/digits/`_`/`-` only, ≤50 chars per tag, e.g. \"[\\\"bug\\\",\\\"urgent\\\"]\".",
+            .{@errorName(err)},
+        ) catch return errorXml(allocator, "Out of memory while formatting tags validation error");
+        return try errorXmlOwned(allocator, msg);
+    };
+    defer allocator.free(validated_tags);
+
+    // 5. Validate image_urls (Migration 069) — `||`-delimited
+    //    data:image/<mime>;base64,... URLs. The validator returns
+    //    the input borrowed (no allocation); we just check it.
+    const validated_image_urls = image_urls_validation.validateImageUrls(
+        input.image_urls orelse "",
+    ) catch |err| switch (err) {
+        error.ImageUrlsTooLarge => {
+            return errorXml(allocator, "image_urls payload too large (max 10 MB)");
+        },
+        error.InvalidImageUrl => {
+            return errorXml(allocator, "image_urls must be `||`-delimited data:image/<mime>;base64,... URLs");
+        },
+    };
+
+    // 6. Validate cwd (Migration 070) — absolute path string,
+    //    ≤4 KiB, no control chars. Matches the HTTP handler's
+    //    inline block at `task_create.zig:421-435`. Empty/null
+    //    means cwd-less (DEFAULT '' applies).
+    const validated_cwd = blk: {
+        const raw = input.cwd orelse "";
+        if (raw.len == 0) break :blk raw;
+        if (raw.len > 4096) return errorXml(allocator, "cwd path too long (max 4 KiB)");
+        if (raw[0] != '/') return errorXml(allocator, "cwd must be an absolute path (start with `/`)");
+        for (raw) |c| {
+            if (c < 0x20 or c == 0x7f) return errorXml(allocator, "cwd contains a control character");
+        }
+        break :blk raw;
+    };
+
+    // 7. Generate task id.
     const timestamp_ns = nalarcore.helpers.unixTimestampNanos();
     const task_id = std.fmt.allocPrint(allocator, "task_{d}", .{timestamp_ns}) catch {
         return errorXml(allocator, "Out of memory while generating task id");
     };
     defer allocator.free(task_id);
 
-    // 5. INSERT task row.
+    // 8. INSERT task row.
     const task = nalarcore.ai_mod.llm_history.createWorkspaceItemTask(
         allocator,
         db,
@@ -418,35 +542,38 @@ pub fn executeCreateKanbanTaskToString(
         input.item_id,
         "standard",
         input.description,
-        // tags — the agent tool does not yet accept tags. Pass null
-        // until tags support is added to the tool surface (out of
-        // scope for the kanban-tags v1 plan; the user-facing wire
-        // path is the primary entry point).
-        null,
-        // image_urls (Migration 069) — the agent tool does not yet
-        // accept images. Pass null until the tool surface grows
-        // (the user-facing KanbanDetailDialog is the primary entry
-        // point per the kanban-image-urls-column plan).
-        null,
-        // cwd (Migration 070 — kanban-cwd-session-optional plan) —
-        // the agent tool does not accept per-task cwd yet. Pass
-        // null (column omitted from INSERT, DEFAULT '' applies —
-        // cwd-less task). Future work: surface `cwd` on the tool
-        // schema so the agent can explicitly target a different
-        // folder than the kanban's default. The user-facing
-        // KanbanDetailDialog is the primary entry point for now.
-        null,
+        // Migration 067 — tags. Pass `""` (not null) when no tags
+        // so the SQL `''` literal is bound (the dynamic-SQL builder
+        // at `llm_history.zig:4047-4056` maps null → omitted
+        // (DEFAULT ''), "" → SQL '' literal (canonical sentinel),
+        // and a non-empty validated JSON array string → bound `?`.
+        // Both null and "" produce the same on-disk value (`''`),
+        // so passing `""` here is unambiguous.
+        if (validated_tags.len == 0) "" else validated_tags,
+        // Migration 069 — image_urls. Same pattern: "" sentinel for
+        // no images; validated `||`-joined string when supplied.
+        if (validated_image_urls.len == 0) "" else validated_image_urls,
+        // Migration 070 — per-task cwd override. Borrowed from the
+        // validated block above; empty string stays empty.
+        validated_cwd,
     ) catch {
+        // NOTE: do NOT `defer allocator.free(msg)` here — `errorXmlOwned`
+        // takes ownership of `msg` and frees it on success. The previous
+        // `defer free` before `errorXmlOwned` was a latent double-free
+        // that fired only when the INSERT actually failed; my changes to
+        // pass `""` instead of `null` for tags/image_urls/cwd made this
+        // path reachable from the happy-path tests (the test schema was
+        // missing the new columns). Ownership now lives entirely with
+        // `errorXmlOwned`.
         const msg = std.fmt.allocPrint(allocator,
             "Failed to INSERT task row into workspace_item_tasks",
             .{},
         ) catch return errorXml(allocator, "Out of memory");
-        defer allocator.free(msg);
         return try errorXmlOwned(allocator, msg);
     };
     defer task.deinit(allocator);
 
-    // 6. Compute position + UPDATE kanban fields.
+    // 9. Compute position + UPDATE kanban fields.
     const position = computeNextPosition(allocator, db, target_column_id);
     const position_str = std.fmt.allocPrint(allocator, "{d}", .{position}) catch "0";
     defer allocator.free(position_str);
@@ -457,7 +584,75 @@ pub fn executeCreateKanbanTaskToString(
         std.log.warn("create_kanban_task: kanban auto-assign failed (non-fatal): {s}", .{@errorName(err)});
     };
 
-    // 7. Emit SSE event.
+    // 10. Stamp last_human_touched_at (Migration 065) — mirrors
+    //     `task_create.zig:467-469`. Fire-and-forget; without it
+    //     the new card would show "awaiting review" until the user
+    //     manually interacts with it.
+    nalarcore.ai_mod.llm_history.updateTaskLastHumanTouchedAt(
+        allocator,
+        db,
+        task_id,
+        null,
+    ) catch |err| {
+        std.log.warn("create_kanban_task: stamp last_human_touched_at failed (non-fatal): {s}", .{@errorName(err)});
+    };
+
+    // 11. INSERT OR IGNORE INTO `sessions` when unattended mode
+    //     and/or profile are set (Migrations 063 + 040). Uses the
+    //     same `task.id == session.id` convention as the HTTP
+    //     handler at `task_create.zig:587-605` so downstream SELECTs
+    //     that join `sessions` see a consistent id/name pair.
+    //     Dynamic SQL builder: include only the columns that have
+    //     a value so an empty `is_auto_retry_until_stop` + empty
+    //     `selected_profile_model` produces a minimal row that
+    //     still satisfies the (id, name) uniqueness on concurrent
+    //     chat-spawn INSERTs.
+    if (input.is_auto_retry_until_stop != null or (input.selected_profile_model != null and input.selected_profile_model.?.len > 0)) {
+        var cols_buf: std.ArrayList(u8) = .empty;
+        defer cols_buf.deinit(allocator);
+        var vals_buf: std.ArrayList(u8) = .empty;
+        defer vals_buf.deinit(allocator);
+        var bind_values: std.ArrayList([]const u8) = .empty;
+        defer bind_values.deinit(allocator);
+
+        try cols_buf.appendSlice(allocator, "(id, name, status");
+        try vals_buf.appendSlice(allocator, "(?, ?, 'active'");
+        try bind_values.append(allocator, task_id); // id
+        try bind_values.append(allocator, task_id); // name (task.id == session.id convention)
+
+        if (input.is_auto_retry_until_stop) |flag| {
+            const normalized: []const u8 = if (std.mem.eql(u8, flag, "1")) "1" else "0";
+            try cols_buf.appendSlice(allocator, ", is_auto_retry_until_stop");
+            try vals_buf.appendSlice(allocator, ", ?");
+            try bind_values.append(allocator, normalized);
+        }
+
+        if (input.selected_profile_model) |profile| {
+            if (profile.len > 0) {
+                try cols_buf.appendSlice(allocator, ", selected_profile_model");
+                try vals_buf.appendSlice(allocator, ", ?");
+                try bind_values.append(allocator, profile);
+            }
+        }
+
+        try cols_buf.appendSlice(allocator, ")");
+        try vals_buf.appendSlice(allocator, ")");
+
+        const sql = std.fmt.allocPrint(allocator, "INSERT OR IGNORE INTO sessions {s} VALUES {s}", .{
+            cols_buf.items,
+            vals_buf.items,
+        }) catch {
+            std.log.warn("create_kanban_task: allocPrint session SQL failed (non-fatal)", .{});
+            return successXml(allocator, task_id, target_column_id, position);
+        };
+        defer allocator.free(sql);
+
+        db.exec(allocator, sql, bind_values.items) catch |err| {
+            std.log.warn("create_kanban_task: session INSERT for unattended/profile failed (non-fatal): {s}", .{@errorName(err)});
+        };
+    }
+
+    // 12. Emit SSE event.
     nalarcore.ai_mod.on_event_sent_kanban.onEventSendKanbanTask(allocator, .{
         .action = "created",
         .workspace_id = input.workspace_id,
@@ -469,6 +664,6 @@ pub fn executeCreateKanbanTaskToString(
         std.log.warn("create_kanban_task: SSE emit failed (non-fatal): {s}", .{@errorName(err)});
     };
 
-    // 8. Return success XML.
+    // 13. Return success XML.
     return successXml(allocator, task_id, target_column_id, position);
 }
