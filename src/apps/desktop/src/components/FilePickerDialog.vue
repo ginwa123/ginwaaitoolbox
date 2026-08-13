@@ -317,8 +317,9 @@ async function handleItemDoubleClick(item: T) {
 }
 
 function handleSelect() {
-  if (!selectedPath.value) return
-  emit('select', selectedPath.value)
+  const path = effectiveSelection.value
+  if (!path) return
+  emit('select', path)
   // Note: Vue 3.5 auto-defaults `boolean?` to `false`, so the only way to opt
   // INTO close-on-select is to explicitly pass `closeOnSelect={true}`. If the
   // prop is omitted, the dialog stays open after selection.
@@ -332,7 +333,33 @@ function handleCancel() {
   emit('update:modelValue', false)
 }
 
-const canSelect = computed(() => !!selectedPath.value)
+const canSelect = computed(() => !!effectiveSelection.value)
+
+// Effective selection for the Select button. Order of preference:
+//   1. selectedPath — the user explicitly clicked a folder in the content pane.
+//   2. currentPath — the user navigated to a folder via the tree, breadcrumb,
+//      Up button, Backspace, or address bar. The currently-open folder is a
+//      valid selection (mirrors Finder / Explorer / zenity --directory).
+// The root path '/' is treated as "no selection" — falling back to it would
+// emit a meaningless path that every caller rejects. Plan:
+// docs/superpowers/plans/2026-08-13-folder-picker-select-button-current-folder.md
+const effectiveSelection = computed<string>(() => {
+  if (mode.value !== 'folder') return selectedPath.value
+  if (selectedPath.value) return selectedPath.value
+  if (currentPath.value && currentPath.value !== '/') return currentPath.value
+  return ''
+})
+
+// Whether the footer should show the "← current folder" hint. Only when
+// the fallback path is in use: folder mode, no explicit click, but a
+// non-root folder is open. Hidden in file mode (the fallback isn't active
+// there) and hidden after an explicit click (the click is more specific).
+const showCurrentFolderHint = computed<boolean>(
+  () =>
+    mode.value === 'folder' &&
+    !selectedPath.value &&
+    !!effectiveSelection.value,
+)
 
 // ─── Filtered view ─────────────────────────────────────────────────────────
 
@@ -475,7 +502,7 @@ function handleKeydown(event: KeyboardEvent) {
       const first = filteredContent.value[0]
       if (first) {
         handleItemClick(first.item)
-        if (selectedPath.value) handleSelect()
+        if (effectiveSelection.value) handleSelect()
       }
       event.preventDefault()
     }
@@ -492,7 +519,7 @@ function handleKeydown(event: KeyboardEvent) {
     if (highlightedIndex.value >= 0 && filteredContent.value[highlightedIndex.value]) {
       const entry = filteredContent.value[highlightedIndex.value]!
       handleItemClick(entry.item)
-      if (selectedPath.value) handleSelect()
+      if (effectiveSelection.value) handleSelect()
     } else if (canSelect.value) {
       handleSelect()
     }
@@ -1136,9 +1163,24 @@ onBeforeUnmount(() => {
                   direction: rtl;
                   text-align: left;
                 "
-                :title="selectedPath || '(none)'"
+                :title="effectiveSelection || '(none)'"
                 data-testid="file-picker-selected-path"
-                >{{ selectedPath || '(none)' }}</span
+                >{{ effectiveSelection || '(none)' }}</span
+              >
+              <!--
+                NEW (plan: 2026-08-13-folder-picker-select-button-current-folder.md).
+                Hint shown when the Select button is enabled via the fallback
+                path (currentPath, not selectedPath). Tells the user "the
+                button is on because you're sitting on this folder, not
+                because you clicked it". Hidden when selectedPath is set
+                (explicit click is more specific) or in file mode.
+              -->
+              <span
+                v-if="showCurrentFolderHint"
+                class="text-[10px] shrink-0"
+                style="color: var(--semantic-text-dim)"
+                data-testid="file-picker-selected-hint"
+                >← current folder</span
               >
             </div>
 
