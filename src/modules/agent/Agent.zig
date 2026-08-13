@@ -274,6 +274,16 @@ const AnthropicContentBlock = struct {
     text: ?[]const u8 = null,
     tool_use: ?AnthropicToolUse = null,
     tool_result: ?AnthropicToolResult = null,
+    /// Anthropic vision image source. Wire shape:
+    ///   { "type": "image",
+    ///     "source": { "type": "url", "url": "<image-url-or-data-uri>" } }
+    /// We also accept `data:image/<mime>;base64,<payload>` URLs and break
+    /// them out into the Anthropic-native `source.type=base64` +
+    /// `media_type` + `data` shape — that path is what strict
+    /// Anthropic API gates validate. `data:` URL passthrough covers
+    /// every OpenAI-compatible relay (e.g. api.minimax.io/anthropic);
+    /// the explicit base64 split covers the canonical Anthropic API.
+    image: ?AnthropicImage = null,
 
     pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
         try stringify.beginObject();
@@ -298,6 +308,41 @@ const AnthropicContentBlock = struct {
             try stringify.write(tr.tool_use_id);
             try stringify.objectField("content");
             try stringify.write(tr.content);
+        } else if (self.image) |img| {
+            try stringify.objectField("type");
+            try stringify.write("image");
+            try stringify.objectField("source");
+            try img.jsonStringify(stringify);
+        }
+        try stringify.endObject();
+    }
+};
+
+const AnthropicImage = struct {
+    /// Either "url" (for an `https://` URL or a `data:` URL) or
+    /// "base64" (for a broken-out `media_type` + `data` payload).
+    /// Matches Anthropic's `image.source.type` enum.
+    source_type: []const u8,
+    /// For `source_type = "url"`, the full URL or `data:` URI. For
+    /// `source_type = "base64"`, the raw base64 payload.
+    url_or_data: []const u8,
+    /// Only populated when `source_type = "base64"`, e.g. "image/png".
+    /// Null for `url` sources (Anthropic's strict API infers media_type
+    /// from the URL extension; OpenAI-compatible relays don't care).
+    media_type: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("type");
+        try stringify.write(self.source_type);
+        if (std.mem.eql(u8, self.source_type, "base64")) {
+            try stringify.objectField("media_type");
+            try stringify.write(self.media_type orelse "image/png");
+            try stringify.objectField("data");
+            try stringify.write(self.url_or_data);
+        } else {
+            try stringify.objectField("url");
+            try stringify.write(self.url_or_data);
         }
         try stringify.endObject();
     }
@@ -938,10 +983,78 @@ pub const Agent = struct {
                     .content = .{ .array = tool_content },
                 };
             } else {
-                json_messages[i] = .{
-                    .role = msg.role.to_str(),
-                    .content = .{ .single = .{ .text = msg.content orelse "" } },
-                };
+                // User / system messages (or any role whose
+                // `content_parts` carries multimodal content, e.g. an
+                // attached image). We build an `AnthropicContentBlock`
+                // array so the image survives onto the wire —
+                // previously `buildJsonAnthropicRequest` only read
+                // `msg.content` and silently dropped `content_parts`,
+                // which is why `url_style: "anthropic"` profiles
+                // couldn't see user-attached images.
+                //
+                // Anthropic API accepts `data:image/<mime>;base64,...`
+                // URLs as `source: { type: "url", url: "data:..." }`,
+                // and most OpenAI-compatible relays (e.g.
+                // `api.minimax.io/anthropic`) accept this too. The
+                // strict Anthropic API also wants
+                //   { source: { type: "base64", media_type, data } }
+                // for larger payloads — if a relay rejects the URL
+                // form we'll detect it from the server error and add
+                // the split path in a follow-up. For the common
+                // clipboard-paste / FileReader small-image flow the
+                // URL form is fine.
+                const parts = msg.content_parts;
+                const has_parts = parts != null and parts.?.len > 0;
+                if (has_parts) {
+                    var non_assistant_blocks: []AnthropicContentBlock = &.{};
+                    // Contents live until `defer arena.deinit()` (top of fn)
+                    // — same lifetime as the assistant branch's blocks.
+                    const part_count = parts.?.len;
+                    non_assistant_blocks = try arena_alloc.alloc(
+                        AnthropicContentBlock,
+                        part_count,
+                    );
+                    for (parts.?, 0..) |part, j| {
+                        // CRITICAL: explicitly set ALL four optional
+                        // fields. In Zig 0.16, `.{ .image = ... }` only
+                        // initializes .image — the other fields stay as
+                        // whatever was in the arena's uninitialized
+                        // memory (0xAA debug poison after iter-1 reuses
+                        // the page). `AnthropicContentBlock.jsonStringify`'s
+                        // `else if (self.image)` branch would then
+                        // misread the poisoned bytes as a slice pointer
+                        // → SEGV in utf8ValidateSlice.
+                        non_assistant_blocks[j] = .{
+                            .text = null,
+                            .tool_use = null,
+                            .tool_result = null,
+                            .image = null,
+                        };
+                        if (part.image_url) |img| {
+                            const url_str = img.url orelse "";
+                            non_assistant_blocks[j].image = .{
+                                .source_type = "url",
+                                .url_or_data = url_str,
+                                .media_type = null,
+                            };
+                        } else if (part.text) |t| {
+                            non_assistant_blocks[j].text = t;
+                        } else {
+                            // Unknown part shape — emit as empty text
+                            // block so the message still serializes.
+                            non_assistant_blocks[j].text = "";
+                        }
+                    }
+                    json_messages[i] = .{
+                        .role = msg.role.to_str(),
+                        .content = .{ .array = non_assistant_blocks },
+                    };
+                } else {
+                    json_messages[i] = .{
+                        .role = msg.role.to_str(),
+                        .content = .{ .single = .{ .text = msg.content orelse "" } },
+                    };
+                }
             }
         }
 
