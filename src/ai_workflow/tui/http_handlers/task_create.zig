@@ -584,21 +584,25 @@ fn createStandardTask(
     // sends this when the user opts in at create time). Routine and
     // memory tasks handle their own session lifecycle separately
     // and don't take this field.
+    //
+    // NEW (plan: docs/superpowers/plans/2026-08-13-kanban-task-
+    // session-name-match.md): bind sessions.name = task.name (NOT
+    // task.id). Pre-fix the bind was task.id, which made the sidebar
+    // ChatsList show "task_<timestamp>" while the kanban card showed
+    // the user-facing title. Post-fix all three views (sidebar /
+    // chat header / kanban card) display the same string at create
+    // time. task.id == session.id is still preserved (Migration 052);
+    // only the name column changes.
     if (input.body.is_auto_retry_until_stop) |flag| {
         const normalized: []const u8 = if (std.mem.eql(u8, flag, "1")) "1" else "0";
         // INSERT OR IGNORE so a concurrent PUT /api/llm/session/:id
         // that landed first (e.g. the user typed a message in the new
         // task's chat before this row was written) doesn't trip a
-        // UNIQUE constraint failure. The `name` column is NOT NULL
-        // (canonical "id == name" pattern when the session row is
-        // created bare, e.g. by worker_spawn.zig). We use the same
-        // value the routine branch uses (task.id == session.id
-        // convention) so downstream SELECTs that join sessions see a
-        // consistent id/name pair.
+        // UNIQUE constraint failure. The `name` column is NOT NULL.
         db.exec(
             allocator,
             "INSERT OR IGNORE INTO sessions (id, name, status, is_auto_retry_until_stop) VALUES (?, ?, 'active', ?)",
-            &[_][]const u8{ task.id, task.id, normalized },
+            &[_][]const u8{ task.id, task.name, normalized },
         ) catch |err| {
             std.log.warn("task_create: session INSERT for unattended flag failed (non-fatal): {s}", .{@errorName(err)});
         };
